@@ -1,0 +1,42 @@
+# Test VM for cross-compiled Linux binaries; see tools/scripts/cross/matrix.sh.
+# Runs arm64 binaries natively and x86_64 binaries through Rosetta.
+# The host directory /tmp/monty-oxide-cross is mounted read-only.
+base: template:ubuntu-24.04
+vmType: vz
+vmOpts:
+  vz:
+    rosetta:
+      enabled: true
+      binfmt: true
+cpus: 4
+memory: 8GiB
+disk: 40GiB
+containerd:
+  system: false
+  user: false
+mounts:
+  - location: /tmp/monty-oxide-cross
+    mountPoint: /tmp/monty-oxide-cross
+    writable: false
+provision:
+  # x86_64 glibc binaries need the amd64 dynamic loader and libc. arm64
+  # Ubuntu installs from ports.ubuntu.com, which has no amd64 packages, so
+  # add the main archive for amd64 only.
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -eu
+      sources=/etc/apt/sources.list.d/ubuntu.sources
+      grep -q '^Architectures:' "$sources" || sed -i '/^Types:/a Architectures: arm64' "$sources"
+      . /etc/os-release
+      cat >/etc/apt/sources.list.d/ubuntu-amd64.sources <<SOURCES
+      Types: deb
+      URIs: http://archive.ubuntu.com/ubuntu/
+      Suites: $VERSION_CODENAME $VERSION_CODENAME-updates $VERSION_CODENAME-security
+      Components: main
+      Architectures: amd64
+      Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+      SOURCES
+      dpkg --add-architecture amd64
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y libc6:amd64

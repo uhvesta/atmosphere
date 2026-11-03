@@ -7,6 +7,7 @@ _RUMDL_VERSION = "0.2.77"
 _SHFMT_VERSION = "3.14.1"
 _BUILDIFIER_VERSION = "10.0.1"
 _STARPLS_VERSION = "0.1.22"
+_LIMA_VERSION = "2.2.1"
 
 _VALE = {
     "darwin_amd64": ("macOS_64-bit", "416fdd3ba32e32dc71c87b479cb86757bb6437bcebc7a3e4a095e863b7ce583d"),
@@ -43,6 +44,36 @@ _STARPLS = {
     "linux_arm64": ("linux-aarch64", "55877ec4c3ff03e1d90d59c76f69a3a144b6c29688747c8ac4d77993e2eef1ad"),
 }
 
+_LIMA = {
+    "darwin_amd64": ("Darwin-x86_64", "6b776e4bc41f358e6ee01fefcc78e2eb26f11635a0fcff632234af77a566c6c4"),
+    "darwin_arm64": ("Darwin-arm64", "9e9eacce88f37e185c346bad73aa6136f738d8cdf8c3bb23cd42b071824bc66e"),
+    "linux_amd64": ("Linux-x86_64", "b391ac7fcac2b2a5a1628107756463188ded4d18d3104a40a66a8bb6fec01bcb"),
+    "linux_arm64": ("Linux-aarch64", "fbcf4d127936666aa2cf6013b663c250431f2a59394757b404070f8d6a160e10"),
+}
+
+def _lima_impl(ctx):
+    ctx.download_and_extract(url = ctx.attr.url, sha256 = ctx.attr.sha256)
+
+    # limactl finds its guest agents in ../share/lima, so keep the tree whole.
+    ctx.file("BUILD.bazel", """\
+exports_files(["bin/limactl"], visibility = {vis})
+
+filegroup(
+    name = "runtime",
+    srcs = glob(["libexec/**", "share/**"]),
+    visibility = {vis},
+)
+""".format(vis = repr(ctx.attr.export_visibility)))
+
+_lima = repository_rule(
+    implementation = _lima_impl,
+    attrs = {
+        "export_visibility": attr.string_list(mandatory = True),
+        "sha256": attr.string(mandatory = True),
+        "url": attr.string(mandatory = True),
+    },
+)
+
 def _archive_tool_impl(ctx):
     ctx.download_and_extract(url = ctx.attr.url, sha256 = ctx.attr.sha256)
     ctx.file("BUILD.bazel", 'exports_files(["{}"], visibility = {})\n'.format(ctx.attr.binary, repr(ctx.attr.export_visibility)))
@@ -77,6 +108,7 @@ def _host_tools_impl(module_ctx):
     rumdl_platform, rumdl_sha = _RUMDL[host_key]
     shfmt_platform, shfmt_sha = _SHFMT[host_key]
     starpls_platform, starpls_sha = _STARPLS[host_key]
+    lima_platform, lima_sha = _LIMA[host_key]
 
     _archive_tool(
         name = "vale",
@@ -112,6 +144,12 @@ def _host_tools_impl(module_ctx):
         sha256 = starpls_sha,
         binary = "starpls",
         export_visibility = ["@//tools:__pkg__"],
+    )
+    _lima(
+        name = "lima",
+        url = "https://github.com/lima-vm/lima/releases/download/v{0}/lima-{0}-{1}.tar.gz".format(_LIMA_VERSION, lima_platform),
+        sha256 = lima_sha,
+        export_visibility = ["@//tools/cross:__pkg__"],
     )
     return module_ctx.extension_metadata(reproducible = True)
 
