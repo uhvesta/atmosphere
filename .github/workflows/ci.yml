@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-15
+            # Prove nothing reads Xcode or the Command Line Tools.
+            flags: --config=no_xcode
+          - name: Linux x86_64
+            os: ubuntu-24.04
+            flags: ""
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+            flags: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Toolchain downloads (Swift alone is ~3 GB) are keyed by hash in the
+      # repository cache, so a cache hit skips them without trusting them.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/bazel-repo
+          key: bazel-repo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('MODULE.bazel', 'MODULE.bazel.lock', 'tools/rules/**/*.bzl') }}
+          restore-keys: bazel-repo-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Bootstrap Bazelisk
+        run: |
+          sh tools/scripts/bootstrap/bazelisk.sh
+          echo "$PWD/.tools/bin" >> "$GITHUB_PATH"
+          echo "common --repository_cache=$HOME/.cache/bazel-repo" > user.bazelrc
+
+      - name: Test
+        run: bazel test ${{ matrix.flags }} //...
+
+      # Build every example for every platform this host supports, and run
+      # the ones this runner can execute natively.
+      - name: Cross-compile matrix
+        run: bazel run //tools/cross:matrix -- --local

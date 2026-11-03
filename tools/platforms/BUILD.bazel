@@ -3,10 +3,12 @@
 #
 # linux_<arch>: fully static musl binaries that run on any Linux.
 # linux_<arch>_gnu: "mostly static" binaries. Only glibc is linked dynamically,
-#   against glibc 2.35 version stubs; libc++, the Rust std, and the Swift
-#   runtime are linked statically. They run on any distribution with
-#   glibc >= 2.35 (Ubuntu 22.04+, Debian 12+). 2.35 is the floor set by the
-#   prebuilt Swift Linux runtime.
+#   against glibc 2.35 version stubs; libc++ and the Rust std are linked
+#   statically. They run on any distribution with glibc >= 2.35 (Ubuntu
+#   22.04+, Debian 12+). Swift has no toolchain for these yet.
+# linux_host: the build machine's CPU with static musl. The default target
+#   platform on Linux hosts (see .bazelrc), so build outputs never depend on
+#   the build machine's glibc.
 #
 # PIE is off on Linux because Rust links musl targets with -no-pie.
 
@@ -41,6 +43,16 @@ platform(
         ("_gnu", "gnu.2.35"),
     ]
 ]
+
+platform(
+    name = "linux_host",
+    constraint_values = [
+        "@llvm//constraints/cxxstdlib:libcxx",
+        "@llvm//constraints/libc:musl",
+        "@llvm//constraints/pie:off",
+    ],
+    parents = ["@platforms//host"],
+)
 
 filegroup(
     name = "starlark",

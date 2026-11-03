@@ -6,13 +6,18 @@
 #
 #   bazel run //tools/cross:matrix                 # build and run everything
 #   bazel run //tools/cross:matrix -- --build-only # skip running
+#   bazel run //tools/cross:matrix -- --local      # run only what this
+#                                                  # machine runs natively
 #   bazel run //tools/cross:matrix -- --example swift --config linux_arm64
+#   --out DIR puts the binaries in DIR (default /tmp/monty-oxide-cross,
+#   which the VMs mount).
 #
-# Running needs macOS on Apple silicon (Lima's vz driver with Rosetta).
+# The Lima VMs need macOS on Apple silicon (vz with Rosetta). Use --local
+# elsewhere, for example in CI.
 set -eu
 
 usage() {
-  sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -33,11 +38,18 @@ interop-swift=//examples/interop:polyglot_swift_bin
 names=$(for e in $examples; do echo "${e%%=*}"; done)
 configs="macos_arm64 linux_arm64 linux_x86_64 linux_arm64_gnu linux_x86_64_gnu"
 build_only=false
+local_only=false
+out=/tmp/monty-oxide-cross
 only_names=""
 only_configs=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --build-only) build_only=true ;;
+    --local) local_only=true ;;
+    --out)
+      out=$2
+      shift
+      ;;
     --example)
       only_names="$only_names $2"
       shift
@@ -63,8 +75,6 @@ workspace=${BUILD_WORKSPACE_DIRECTORY:?run this with bazel run}
 cd "$workspace"
 bazel=${BAZEL:-$(command -v bazel || echo "$workspace/.tools/bin/bazel")}
 
-# The Lima VMs mount this directory read-only.
-out=/tmp/monty-oxide-cross
 mkdir -p "$out"
 
 # name:template:libc. Only glibc VMs run the *_gnu binaries.
@@ -84,12 +94,27 @@ name_of() { # label
   done
 }
 
+host=$(uname -s)-$(uname -m)
+
 supported() { # name config
   case "$1:$2" in
     # Swift has no glibc toolchain yet (see tools/rules/swift).
     swift:*_gnu | interop-swift:*_gnu) return 1 ;;
   esac
+  case "$host:$1:$2" in
+    # Only macOS hosts build Swift for macOS (Apple SDK license).
+    Linux-*:swift:macos_* | Linux-*:interop-swift:macos_*) return 1 ;;
+  esac
   return 0
+}
+
+runs_natively() { # config
+  case "$host:$1" in
+    Darwin-arm64:macos_arm64) return 0 ;;
+    Linux-aarch64:linux_arm64 | Linux-aarch64:linux_arm64_gnu) return 0 ;;
+    Linux-x86_64:linux_x86_64 | Linux-x86_64:linux_x86_64_gnu) return 0 ;;
+  esac
+  return 1
 }
 
 expected_arch() { # config -> regex the program must print
@@ -154,8 +179,8 @@ if $build_only; then
   exit 0
 fi
 
-if [ "$(uname -s)-$(uname -m)" != Darwin-arm64 ]; then
-  echo "running the matrix needs macOS on Apple silicon; use --build-only" >&2
+if ! $local_only && [ "$host" != Darwin-arm64 ]; then
+  echo "the Lima VMs need macOS on Apple silicon; use --local or --build-only" >&2
   exit 1
 fi
 
@@ -167,8 +192,12 @@ for config in $configs; do
       continue
     fi
     bin=$out/$config/$name
-    if [ "$config" = macos_arm64 ]; then
-      check "$name" "$config" host "$("$bin" 2>&1 || true)"
+    if $local_only || [ "$config" = macos_arm64 ]; then
+      if runs_natively "$config"; then
+        check "$name" "$config" host "$("$bin" 2>&1 || true)"
+      else
+        record SKIP "$name" "$config" - "built only; not native here"
+      fi
       continue
     fi
     if ! $vms_started; then
