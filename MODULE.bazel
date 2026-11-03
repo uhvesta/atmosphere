@@ -1,8 +1,10 @@
 module(name = "monty_oxide")
 
 bazel_dep(name = "rules_rust", version = "0.74.0")
+bazel_dep(name = "rules_cc", version = "0.2.22")
 bazel_dep(name = "rules_go", version = "0.63.0")
 bazel_dep(name = "gazelle", version = "0.54.0")
+bazel_dep(name = "llvm", version = "0.8.18")
 bazel_dep(name = "aspect_rules_lint", version = "2.9.0")
 bazel_dep(name = "aspect_rules_lint_rust", version = "0.0.3")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
@@ -10,6 +12,14 @@ bazel_dep(name = "rules_shell", version = "0.8.0")
 bazel_dep(name = "rules_python", version = "2.4.0-rc1")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "toml.bzl", version = "0.5.0")
+
+# MARK: - C/C++
+
+# Hermetic LLVM: zero-sysroot C/C++ toolchain for every exec/target pair. It
+# brings its own libc (glibc stubs, musl) and downloads the macOS SDK, so no
+# host compiler, Xcode, or sysroot is used. Rust, Go (cgo), and Swift link
+# through it.
+register_toolchains("@llvm//toolchain:all")
 
 # MARK: - Python
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")
