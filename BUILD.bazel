@@ -61,4 +61,5 @@ filegroup(
 sh_library(
     name = "bootstrap_bazelisk",
     srcs = ["//tools:scripts/bootstrap/bazelisk.sh"],
+    data = ["//tools:scripts/bootstrap/versions.lock"],
 )

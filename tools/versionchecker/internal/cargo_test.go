@@ -46,6 +46,24 @@ rust-version = '1.98.1' # keep this comment
 	}
 }
 
+func TestCratesIgnoresBuildMetadata(t *testing.T) {
+	root := t.TempDir()
+	manifest := "[workspace.dependencies]\ntoml = \"1.1.8\"\n"
+	if err := os.WriteFile(filepath.Join(root, "Cargo.toml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	crates := Crates{Root: root, Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"crate":{"max_stable_version":"1.1.8+spec-1.1.0"}}`)), Header: make(http.Header)}, nil
+	})}}
+	drifts, err := crates.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(drifts) != 0 {
+		t.Fatalf("got drifts for a build-metadata-only difference: %+v", drifts)
+	}
+}
+
 func TestCratesChecksAndFixesWorkspaceDependencies(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "Cargo.toml")
