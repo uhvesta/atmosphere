@@ -1,0 +1,24 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# A Rust CLI so it doesn't depend on the Swift toolchain it regenerates.
+# Crates come from the root Cargo workspace through crate_universe (@crates).
+rust_binary(
+    name = "update_versions",
+    srcs = ["src/main.rs"],
+    visibility = ["//tools/rules/swift:__pkg__"],
+    deps = [
+        "@crates//:bzip2",
+        "@crates//:clap",
+        "@crates//:plist",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:ureq",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

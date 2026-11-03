@@ -1,0 +1,98 @@
+{
+  "6.2": {
+    "linux_aarch64": "f0ab924711d69b5f3ee407dc17a218722e691d2b7549ca1cf44d29948c17d8a0",
+    "linux_x86_64": "717ddaf265316bd5b370fe72017f1f4f3f61ef867be1ee63f5b9d0735a95fd75",
+    "macos": "9eac4a13500c7a6dedfd90814fd31c17af2efc38150137b56b70bf5f44b2d64b",
+    "static_sdk": "d2225840e592389ca517bbf71652f7003dbf45ac35d1e57d98b9250368769378",
+    "static_sdk_version": "0.0.1",
+    "xcode": "Xcode 26"
+  },
+  "6.2.1": {
+    "linux_aarch64": "ab5f3eb0349c575c38b96ed10e9a7ffa2741b0038285c12d56251a38749cadf0",
+    "linux_x86_64": "5ec23d4004f760fafdbb76c21e380d3bacef1824300427a458dc88c1c0bef381",
+    "macos": "4ca13d0abd364664d19facd75e23630c0884898bbcaf1920b45df288bdb86cb2",
+    "static_sdk": "08e1939a504e499ec871b36826569173103e4562769e12b9b8c2a50f098374ad",
+    "static_sdk_version": "0.0.1",
+    "xcode": "Xcode 26.1"
+  },
+  "6.2.2": {
+    "linux_aarch64": "6f3bff4c2a69163e56d2bacfa8ede2535ae52f5a29824f3c13d9e4c3ad1ac155",
+    "linux_x86_64": "b3cafe1ca87ba0bf253639aec53052b545c9fcccd810da8cf15ac9ad62561f7e",
+    "macos": "1173886e2084a6705a774875e4b1b2fceeb890d79ced54ee824cfd10bdc26328",
+    "static_sdk": "a24285cd28eb5e6dcbe35495179b117711c6ca8e6d579e0507622b7b8752ee94",
+    "static_sdk_version": "0.0.1",
+    "xcode": "Xcode 26.1"
+  },
+  "6.2.3": {
+    "linux_aarch64": "fbb4282ec60107cc844700aac6c7a8115534defb1c9b36867bd77c0829e5b163",
+    "linux_x86_64": "23653abba4b153aa6625f73e63e3f119bdaf18363b00e3770a306fbd9b192aef",
+    "macos": "c1ed84cf543286c549caaccc47e0b47d8c61c3c8fedbce1205dedcbebe7601a8",
+    "static_sdk": "f30ec724d824ef43b5546e02ca06a8682dafab4b26a99fbb0e858c347e507a2c",
+    "static_sdk_version": "0.0.1",
+    "xcode": "Xcode 26.2"
+  },
+  "6.2.4": {
+    "linux_aarch64": "2650ca15c1e23c8644a7dbd36a31420444ab53413aaf18cf001c8b616cac108e",
+    "linux_x86_64": "aaaa32f060838f5c5b476afaadcb8b49170e8d5b24afe9cb9df2e8ce33d4a778",
+    "macos": "9c94637fda8312901a08e572a651c3a18a672689ad867f96c9257b43775159e9",
+    "static_sdk": "24bdf84495dd31a6de2eb679647c1982b747bfbfe1a2060c779d84dcecd902a4",
+    "static_sdk_version": "0.1.0",
+    "xcode": "Xcode 26.3"
+  },
+  "6.3": {
+    "linux_aarch64": "cb89091dda0a136a94aaaa4eb122161dd7759bd3fd9bd5c9d890dbc90f213b6c",
+    "linux_x86_64": "af1dd256952a928e19ee99d67053f56120c2d20363b96f2017e2038093bfbb49",
+    "macos": "fde42bff2e187da88f72033987be9613df1065e0ba5a629bc2c3c19688d09cbd",
+    "static_sdk": "d2078b69bdeb5c31202c10e9d8a11d6f66f82938b51a4b75f032ccb35c4c286c",
+    "static_sdk_version": "0.1.0",
+    "xcode": "Xcode 26.4"
+  },
+  "6.3.1": {
+    "linux_aarch64": "a48460921cffb91d7d5a45eaea10a5bee430bf1acff7eab498b9654c594097e0",
+    "linux_x86_64": "5cbade3ba55fda182f877ac04d83de405f1c79d19649d21cabdf9178bd64c69b",
+    "macos": "6e31d6696e7a2819f3effa7ccbbca721a45c9e300ae5f5200cb4da8ced2f82c8",
+    "static_sdk": "fac05271c1f7d060bd203240ce5251d5ca902d30ac899f553765dbb3a88b97ad",
+    "static_sdk_version": "0.1.0",
+    "xcode": "Xcode 26.4.1"
+  },
+  "6.3.2": {
+    "linux_aarch64": "08e32e29e9ced51bfbee3120793e9cbd6db0b4a92976a2d052e8270340b5ef8f",
+    "linux_x86_64": "8f75740dc534d3b0a885aecd6a66274b37ba8ed52108b99cdcb0284f53d9eeed",
+    "macos": "3dd8da736318b6f0a5d7c01b039dd8511f7994cababf9b10534dce1b19ccdca7",
+    "static_sdk": "3fd798bef6f4408f1ea5a6f94ce4d4052830c4326ab85ebc04f983f01b3da407",
+    "static_sdk_version": "0.1.0",
+    "xcode": "Xcode 26.5"
+  },
+  "6.3.3": {
+    "linux_aarch64": "3aa77d8e06cf236a2352f743648bacca7e6c3f05b0cb8b025786dc469202bea2",
+    "linux_x86_64": "2c3ad7ad74ab7249d42f172ee3b40bc8a729893010b4a3384ba26f3c61e35008",
+    "macos": "ee82e57774d6650f94aa06302435d6f44a055b9411698db8ecb85d9a3bcc91d0",
+    "static_sdk": "87c3eaf908e67c0e13a84367119e12273cec1d2cd3d81f7d74bb36722d6b607b",
+    "static_sdk_version": "0.1.0",
+    "xcode": "Xcode 26.6"
+  },
+  "6.4.0": {
+    "linux_aarch64": "28c28acb2b91ed0e3beff5e6ba3695a785e645d9bd374adcaa3b7c2a901bc763",
+    "linux_x86_64": "bce85ea80f1471b85f39993f9285dbc798ec8e1eac5f677e24b2ac693856f9f8",
+    "macos": "8fd03185b98fe27f54a54631c2449decf75d5b466ce8e34abbd414141063c6aa",
+    "static_sdk": "47d2fd89eebfdf9eb4d536b6710414297f755c17926cdebc4742c08982b40a9e",
+    "static_sdk_version": "0.1.0",
+    "xcode": "Xcode 27.0"
+  },
+  "6.4.1": {
+    "linux_aarch64": "5d50538c0500ff1b253e799f3e48f04db0547856aef76905c85e5bdfe01e6901",
+    "linux_x86_64": "e9ec2ff05ac0fc89bf2e7cecdee5da4d398898a768d7ee2b86a59d2a7f01c44b",
+    "macos": "c34e7e5fb0be4bcd61decfd40db1766434d8952d68e37aed90bcff4e8547951c",
+    "static_sdk": "cef5592d7430ed3c5ae1ddda479849c6f5252bd94a5723db1559f984caf38a7c",
+    "static_sdk_version": "0.1.0",
+    "xcode": "Xcode 27.0"
+  },
+  "6.4.2": {
+    "linux_aarch64": "2f56ac2f5aa647beb85b27b637f0ba9653413ee26894570ca33434ec041d92cc",
+    "linux_x86_64": "c3081b1817117c66e4764d2a148357d997200048922c778b0f08c795833ae06d",
+    "macos": "0a7d8489900d21dbf5f0187cb570e646a4c0226d0ddef2cbde8c7f54dfe79736",
+    "static_sdk": "3786b179936d9cc9e266dd506bd1654176358d7b25288e243359f4d17cc4dc5a",
+    "static_sdk_version": "0.1.0",
+    "xcode": "Xcode 27.2"
+  }
+}

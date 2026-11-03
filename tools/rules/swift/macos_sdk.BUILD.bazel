@@ -1,0 +1,16 @@
+# BUILD file for the Apple macOS SDK slice used by Swift (the SDK lives under
+# sdk/). Only the parts `import Foundation` needs are extracted; see
+# MACOS_SDK_FRAMEWORKS in //tools/rules/swift:versions.bzl.
+
+package(default_visibility = ["//visibility:public"])
+
+filegroup(
+    name = "sdk_files",
+    srcs = glob(["sdk/**"]),
+)
+
+# Swift runtime link stubs (libswiftCore.tbd and friends) for the OS runtime.
+filegroup(
+    name = "swift_link_files",
+    srcs = glob(["sdk/usr/lib/swift/**/*.tbd"]),
+)

@@ -1,0 +1,20 @@
+[package]
+name = "update-swift-versions"
+description = "Regenerates the Swift release and macOS SDK catalogs in tools/rules/swift."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "update_versions"
+path = "src/main.rs"
+
+[dependencies]
+bzip2.workspace = true
+clap.workspace = true
+plist.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+ureq.workspace = true
