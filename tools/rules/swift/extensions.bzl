@@ -188,10 +188,16 @@ config_setting(
 )
 """
 
+# rules_swift only adds swift_tools.additional_inputs to compile actions, so
+# each (build host, target) pair gets its own swift_tools carrying the
+# target's SDK.
 _SWIFT_TOOLS = """
 swift_tools(
-    name = "{v_}_tools_{exec}",
-    additional_inputs = ["@@{compiler}//:compiler_files"],
+    name = "{v_}_tools_{exec}_to_{target}",
+    additional_inputs = [
+        "@@{compiler}//:compiler_files",
+        "{sdk_files}",
+    ],
     swift_autolink_extract = "@@{compiler}//:toolchain/usr/bin/swift-autolink-extract",
     swift_driver = "@@{compiler}//:toolchain/usr/bin/swiftc",
     swift_symbolgraph_extract = "@@{compiler}//:toolchain/usr/bin/swift-symbolgraph-extract",
@@ -202,10 +208,18 @@ _MACOS_TOOLCHAIN = """
 swift_toolchain(
     name = "swift_{v_}_{exec}_to_macos_arm64",
     arch = "arm64",
+    # rules_swift derives an unversioned triple from the C/C++ toolchain,
+    # and an unversioned clang target means "the SDK version" (26.x). Pin
+    # both to @llvm's minimum so Swift and C objects agree.
     copts = [
         "-target",
         "arm64-apple-macos{min_os}",
+        "-Xcc",
+        "--target=arm64-apple-macos{min_os}",
     ],
+    # Run swiftc directly instead of through /usr/bin/xcrun; needs
+    # rules_swift_no_xcrun.patch.
+    env = {{"RULES_SWIFT_NO_XCRUN": "1"}},
     features = [
         "swift._supports_upcoming_features",
         "swift.no_embed_debug_module",
@@ -228,7 +242,7 @@ swift_toolchain(
     os = "wasi",
     parsed_version = "{version}",
     sdkroot = "{sdk_dir}",
-    swift_tools = ":{v_}_tools_{exec}",
+    swift_tools = ":{v_}_tools_{exec}_to_macos_arm64",
     version_file = "swift-version-{version}",
 )
 
@@ -249,11 +263,18 @@ _MUSL_TOOLCHAIN = """
 swift_toolchain(
     name = "swift_{v_}_{exec}_to_linux_{arch}_musl",
     arch = "{arch}",
+    # @llvm reports an -unknown-linux-gnu triple for every Linux platform;
+    # override it (including the clang importer's copy) so Swift sees musl.
     copts = [
         "-target",
         "{arch}-swift-linux-musl",
+        "-Xcc",
+        "--target={arch}-swift-linux-musl",
         "-Xwrapped-swift=-resource-dir={res}",
     ],
+    # Run swiftc directly instead of through /usr/bin/xcrun; needs
+    # rules_swift_no_xcrun.patch.
+    env = {{"RULES_SWIFT_NO_XCRUN": "1"}},
     features = [
         "swift._supports_upcoming_features",
         "swift.no_embed_debug_module",
@@ -266,12 +287,15 @@ swift_toolchain(
     linkopts = [
         "{res}/linux-static/{arch}/swiftrt.o",
         "-L{res}/linux-static",
+        # Foundation autolinks libraries the SDK ships (fts, xml2, curl, ...).
+        # @llvm's own libc and libc++ are found first.
+        "-L{sysroot}/usr/lib",
         "@{res}/linux-static/static-executable-args.lnk",
     ],
     os = "wasi",
     parsed_version = "{version}",
     sdkroot = "{sysroot}",
-    swift_tools = ":{v_}_tools_{exec}",
+    swift_tools = ":{v_}_tools_{exec}_to_linux_{arch}_musl",
     version_file = "swift-version-{version}",
 )
 
@@ -326,11 +350,14 @@ def _hub_impl(rctx):
                 version = version,
             )
 
-            content.append(_SWIFT_TOOLS.format(**fmt))
-
             # Apple's SDK license only covers Apple hardware, so only macOS
             # hosts build for macOS.
             if exec == "macos_arm64" and sdk:
+                content.append(_SWIFT_TOOLS.format(
+                    sdk_files = "@@%s//:sdk_files" % sdk,
+                    target = "macos_arm64",
+                    **fmt
+                ))
                 content.append(_MACOS_TOOLCHAIN.format(
                     min_os = MACOS_MINIMUM_OS,
                     sdk = sdk,
@@ -339,6 +366,11 @@ def _hub_impl(rctx):
                 ))
             for arch in _LINUX_ARCHES:
                 sysroot = "{}/musl.sdk/{}".format(_external(static_sdk), arch)
+                content.append(_SWIFT_TOOLS.format(
+                    sdk_files = "@@%s//:sdk_files_%s" % (static_sdk, arch),
+                    target = "linux_%s_musl" % arch,
+                    **fmt
+                ))
                 content.append(_MUSL_TOOLCHAIN.format(
                     arch = arch,
                     res = sysroot + "/usr/lib/swift_static",
