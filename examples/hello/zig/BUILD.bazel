@@ -1,0 +1,18 @@
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_test")
+
+zig_binary(
+    name = "hello",
+    main = "main.zig",
+)
+
+zig_test(
+    name = "hello_test",
+    size = "small",
+    main = "main.zig",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
