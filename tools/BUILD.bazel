@@ -4,7 +4,6 @@ load("@rules_shell//shell:sh_library.bzl", "sh_library")
 exports_files(
     [
         "scripts/bootstrap/bazelisk.sh",
-        "scripts/bootstrap/devtools.sh",
     ],
     visibility = ["//:__pkg__"],
 )

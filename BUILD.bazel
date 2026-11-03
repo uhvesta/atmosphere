@@ -62,8 +62,3 @@ sh_library(
     name = "bootstrap_bazelisk",
     srcs = ["//tools:scripts/bootstrap/bazelisk.sh"],
 )
-
-sh_library(
-    name = "bootstrap_devtools",
-    srcs = ["//tools:scripts/bootstrap/devtools.sh"],
-)
