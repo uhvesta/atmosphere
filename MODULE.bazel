@@ -102,6 +102,9 @@ zig = use_extension("@rules_zig//zig:extensions.bzl", "zig")
 zig.toolchain(zig_version = "0.17.0")
 use_repo(zig, "zig_toolchains")
 
+# Zig targets that match //tools/platforms (libc, glibc version, macOS minimum).
+register_toolchains("//tools/rules/zig:all")
+
 # MARK: - Host tooling
 
 host_tools = use_extension("//tools/rules/tooling:extensions.bzl", "host_tools")

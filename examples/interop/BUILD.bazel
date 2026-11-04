@@ -1,0 +1,72 @@
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_rust//rust:defs.bzl", "rust_static_library")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
+load("@rules_swift//swift:swift_interop_hint.bzl", "swift_interop_hint")
+load("@rules_zig//zig:defs.bzl", "zig_static_library")
+
+# One C ABI (polyglot.h) implemented in C, Rust and Zig, then called from C,
+# Swift and Go. Everything links through the @llvm C/C++ toolchain.
+
+rust_static_library(
+    name = "rust_part",
+    srcs = ["rust_part.rs"],
+    crate_root = "rust_part.rs",
+)
+
+zig_static_library(
+    name = "zig_part",
+    main = "zig_part.zig",
+)
+
+cc_library(
+    name = "polyglot",
+    srcs = ["c_part.c"],
+    hdrs = ["polyglot.h"],
+    aspect_hints = [":polyglot_swift"],
+    visibility = ["//examples/interop:__subpackages__"],
+    deps = [
+        ":rust_part",
+        ":zig_part",
+    ],
+)
+
+# Swift imports the cc_library as `import Polyglot`.
+swift_interop_hint(
+    name = "polyglot_swift",
+    module_name = "Polyglot",
+)
+
+cc_binary(
+    name = "polyglot_c",
+    srcs = ["main.c"],
+    deps = [":polyglot"],
+)
+
+swift_binary(
+    name = "polyglot_swift_bin",
+    srcs = ["main.swift"],
+    deps = [":polyglot"],
+)
+
+sh_test(
+    name = "polyglot_test",
+    srcs = ["polyglot_test.sh"],
+    args = [
+        "$(rootpath :polyglot_c)",
+        "$(rootpath //examples/interop/go:polyglot_go)",
+        "$(rootpath :polyglot_swift_bin)",
+    ],
+    data = [
+        ":polyglot_c",
+        ":polyglot_swift_bin",
+        "//examples/interop/go:polyglot_go",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

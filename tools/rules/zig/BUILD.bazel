@@ -1,0 +1,74 @@
+load("@rules_zig//zig:toolchain.bzl", "zig_target_toolchain")
+
+# Zig target toolchains that match //tools/platforms exactly, so Zig code
+# uses the same libc and OS minimum as the @llvm C/C++ toolchain it links
+# with. rules_zig's defaults would pick glibc 2.17 for every Linux platform
+# and Zig's own default macOS minimum. Registered in MODULE.bazel before
+# rules_zig's defaults.
+
+_TARGETS = {
+    "aarch64-linux-gnu": (
+        "aarch64-linux-gnu.2.35",
+        [
+            "@platforms//os:linux",
+            "@platforms//cpu:aarch64",
+            "@llvm//constraints/libc:gnu.2.35",
+        ],
+    ),
+    "aarch64-linux-musl": (
+        "aarch64-linux-musl",
+        [
+            "@platforms//os:linux",
+            "@platforms//cpu:aarch64",
+            "@llvm//constraints/libc:musl",
+        ],
+    ),
+    # Keep in sync with MACOS_MINIMUM_OS in //tools/rules/swift:versions.bzl.
+    "aarch64-macos": (
+        "aarch64-macos.14.0-none",
+        [
+            "@platforms//os:macos",
+            "@platforms//cpu:aarch64",
+        ],
+    ),
+    "x86_64-linux-gnu": (
+        "x86_64-linux-gnu.2.35",
+        [
+            "@platforms//os:linux",
+            "@platforms//cpu:x86_64",
+            "@llvm//constraints/libc:gnu.2.35",
+        ],
+    ),
+    "x86_64-linux-musl": (
+        "x86_64-linux-musl",
+        [
+            "@platforms//os:linux",
+            "@platforms//cpu:x86_64",
+            "@llvm//constraints/libc:musl",
+        ],
+    ),
+}
+
+[
+    zig_target_toolchain(
+        name = name,
+        target = target,
+    )
+    for name, (target, _) in _TARGETS.items()
+]
+
+[
+    toolchain(
+        name = name + "_toolchain",
+        target_compatible_with = constraints,
+        toolchain = ":" + name,
+        toolchain_type = "@rules_zig//zig/target:toolchain_type",
+    )
+    for name, (_, constraints) in _TARGETS.items()
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

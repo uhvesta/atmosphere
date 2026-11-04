@@ -1,12 +1,12 @@
 #!/bin/sh
-# Cross-compiles //examples/hello/<lang>:hello for every platform in
+# Cross-compiles the example binaries for every platform in
 # //tools/platforms and runs each binary where it belongs: macOS arm64 on
 # this machine, Linux in Lima VMs (tools/lima/*.yaml; x86_64 through
 # Rosetta). Missing VMs are created and stopped VMs are started.
 #
 #   bazel run //tools/cross:matrix                 # build and run everything
 #   bazel run //tools/cross:matrix -- --build-only # skip running
-#   bazel run //tools/cross:matrix -- --lang swift --config linux_arm64
+#   bazel run //tools/cross:matrix -- --example swift --config linux_arm64
 #
 # Running needs macOS on Apple silicon (Lima's vz driver with Rosetta).
 set -eu
@@ -19,16 +19,27 @@ usage() {
 limactl_path=$1
 shift
 
-langs="c go rust swift zig"
+# name=label. Each binary prints "hello from ..." and its architecture.
+examples="
+c=//examples/hello/c:hello
+go=//examples/hello/go:hello
+rust=//examples/hello/rust:hello
+swift=//examples/hello/swift:hello
+zig=//examples/hello/zig:hello
+interop-c=//examples/interop:polyglot_c
+interop-go=//examples/interop/go:polyglot_go
+interop-swift=//examples/interop:polyglot_swift_bin
+"
+names=$(for e in $examples; do echo "${e%%=*}"; done)
 configs="macos_arm64 linux_arm64 linux_x86_64 linux_arm64_gnu linux_x86_64_gnu"
 build_only=false
-only_langs=""
+only_names=""
 only_configs=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --build-only) build_only=true ;;
-    --lang)
-      only_langs="$only_langs $2"
+    --example)
+      only_names="$only_names $2"
       shift
       ;;
     --config)
@@ -43,7 +54,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-[ -n "$only_langs" ] && langs=$only_langs
+[ -n "$only_names" ] && names=$only_names
 [ -n "$only_configs" ] && configs=$only_configs
 
 runfiles=${RUNFILES_DIR:-$0.runfiles}
@@ -59,10 +70,24 @@ mkdir -p "$out"
 # name:template:libc. Only glibc VMs run the *_gnu binaries.
 vms="mo-ubuntu:ubuntu-24.04:gnu mo-debian:debian-13:gnu mo-alpine:alpine-3.23:musl"
 
-supported() { # lang config
+label_of() { # name
+  for e in $examples; do
+    [ "${e%%=*}" = "$1" ] && echo "${e#*=}" && return 0
+  done
+  echo "unknown example: $1" >&2
+  exit 2
+}
+
+name_of() { # label
+  for e in $examples; do
+    [ "${e#*=}" = "$1" ] && echo "${e%%=*}" && return 0
+  done
+}
+
+supported() { # name config
   case "$1:$2" in
     # Swift has no glibc toolchain yet (see tools/rules/swift).
-    swift:*_gnu) return 1 ;;
+    swift:*_gnu | interop-swift:*_gnu) return 1 ;;
   esac
   return 0
 }
@@ -77,15 +102,15 @@ expected_arch() { # config -> regex the program must print
 report=$(mktemp)
 trap 'rm -f "$report"' EXIT
 failed=0
-record() { # status lang config where detail
-  printf '%-5s %-6s %-17s %-10s %s\n' "$1" "$2" "$3" "$4" "$5" >>"$report"
+record() { # status name config where detail
+  printf '%-5s %-13s %-17s %-10s %s\n' "$1" "$2" "$3" "$4" "$5" >>"$report"
   case "$1" in
     PASS | SKIP) ;;
     *) failed=1 ;;
   esac
 }
 
-check() { # lang config where output
+check() { # name config where output
   if printf '%s' "$4" | grep -Eq "hello from .* ($(expected_arch "$2"))"; then
     record PASS "$1" "$2" "$3" "$4"
   else
@@ -104,9 +129,9 @@ ensure_vm() { # name template
 
 for config in $configs; do
   targets=""
-  for lang in $langs; do
-    if supported "$lang" "$config"; then
-      targets="$targets //examples/hello/$lang:hello"
+  for name in $names; do
+    if supported "$name" "$config"; then
+      targets="$targets $(label_of "$name")"
     fi
   done
   [ -n "$targets" ] || continue
@@ -120,8 +145,7 @@ for config in $configs; do
     --starlark:expr='str(target.label).removeprefix("@@") + " " + target.files_to_run.executable.path' \
     "$(echo "$targets" | sed 's/^ //; s/ / + /g')" 2>/dev/null |
     while read -r label path; do
-      lang=${label#//examples/hello/}
-      install -m 0755 "$path" "$out/$config/${lang%%:*}"
+      install -m 0755 "$path" "$out/$config/$(name_of "$label")"
     done
 done
 
@@ -137,30 +161,29 @@ fi
 
 vms_started=false
 for config in $configs; do
-  for lang in $langs; do
-    if ! supported "$lang" "$config"; then
-      record SKIP "$lang" "$config" - "no toolchain"
+  for name in $names; do
+    if ! supported "$name" "$config"; then
+      record SKIP "$name" "$config" - "no toolchain"
       continue
     fi
-    bin=$out/$config/$lang
+    bin=$out/$config/$name
     if [ "$config" = macos_arm64 ]; then
-      check "$lang" "$config" host "$("$bin" 2>&1 || true)"
+      check "$name" "$config" host "$("$bin" 2>&1 || true)"
       continue
     fi
     if ! $vms_started; then
       for vm in $vms; do
-        name=${vm%%:*}
         template=${vm#*:}
-        ensure_vm "$name" "${template%:*}"
+        ensure_vm "${vm%%:*}" "${template%:*}"
       done
       vms_started=true
     fi
     for vm in $vms; do
-      name=${vm%%:*}
+      vm_name=${vm%%:*}
       case "$vm:$config" in
         *:musl:*_gnu) continue ;;
       esac
-      check "$lang" "$config" "$name" "$("$limactl" shell "$name" "$bin" 2>&1 || true)"
+      check "$name" "$config" "$vm_name" "$("$limactl" shell "$vm_name" "$bin" 2>&1 || true)"
     done
   done
 done
