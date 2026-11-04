@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import LifrAvenue
 import LifrBoard
+import LifrConversations
 import LifrCore
 import LifrProcrastinated
 import LifrQuickAdd
@@ -88,6 +89,11 @@ private struct PhoneRootView: View {
                     AvenuesView(store: store.scope(state: \.avenues, action: \.avenues))
                 }
             }
+            Tab("Assistant", systemImage: "bubble.left.and.text.bubble.right", value: RootFeature.Tab.conversations) {
+                NavigationStack {
+                    ConversationsView(store: store.scope(state: \.conversations, action: \.conversations))
+                }
+            }
             Tab("Search", systemImage: "magnifyingglass", value: RootFeature.Tab.search, role: .search) {
                 NavigationStack {
                     SearchView(store: store.scope(state: \.search, action: \.search))
@@ -151,6 +157,10 @@ private struct MacRootView: View {
             ProcrastinatedView(store: store.scope(state: \.procrastinated, action: \.procrastinated))
         case .search:
             SearchView(store: store.scope(state: \.search, action: \.search))
+        case .conversations:
+            NavigationStack {
+                ConversationsView(store: store.scope(state: \.conversations, action: \.conversations))
+            }
         case .scope:
             Group {
                 if store.content == .board, let board = store.scope(state: \.board, action: \.board) {
@@ -212,6 +222,8 @@ private struct Sidebar: View {
             .tag(RootFeature.SidebarItem.procrastinated)
         Label("Search", systemImage: "magnifyingglass")
             .tag(RootFeature.SidebarItem.search)
+        Label("Assistant", systemImage: "bubble.left.and.text.bubble.right")
+            .tag(RootFeature.SidebarItem.conversations)
     }
 }
 

@@ -1,0 +1,48 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# Conversations with the assistant: the list, and each chat with its draft
+# card and Undo for what the assistant changed.
+swift_library(
+    name = "conversations",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrConversations",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/lifr/features/root:__pkg__"],
+    deps = [
+        "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/store",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# TestStore tests, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":conversations",
+        "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/store",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

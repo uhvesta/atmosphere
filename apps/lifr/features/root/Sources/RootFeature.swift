@@ -3,6 +3,7 @@ import Foundation
 import LifrAPI
 import LifrAvenue
 import LifrBoard
+import LifrConversations
 import LifrCore
 import LifrProcrastinated
 import LifrQuickAdd
@@ -30,12 +31,12 @@ package struct RootFeature {
     }
 
     package enum Tab: Hashable, Sendable {
-        case today, upcoming, avenues, search
+        case today, upcoming, avenues, conversations, search
     }
 
     /// What the Mac's sidebar can show.
     package enum SidebarItem: Hashable, Sendable {
-        case today, upcoming, procrastinated, search
+        case today, upcoming, procrastinated, conversations, search
         case scope(AvenueScope)
     }
 
@@ -58,6 +59,7 @@ package struct RootFeature {
         package var procrastinated = ProcrastinatedFeature.State()
         package var avenues = AvenuesFeature.State()
         package var search = SearchFeature.State()
+        package var conversations = ConversationsFeature.State()
         /// The Mac's selected Avenue or Project, as a list.
         package var avenue: AvenueFeature.State?
         /// The same Avenue or Project, as a board.
@@ -104,6 +106,7 @@ package struct RootFeature {
                 case .upcoming: .upcoming
                 case .avenues: avenues.avenue == nil ? nil : .openAvenue
                 case .search: .search
+                case .conversations: nil
                 }
             case .mac:
                 switch selection {
@@ -111,6 +114,7 @@ package struct RootFeature {
                 case .upcoming: .upcoming
                 case .procrastinated: .procrastinated
                 case .search: .search
+                case .conversations: nil
                 case .scope: content == .board ? .board : .avenue
                 case nil: nil
                 }
@@ -183,6 +187,7 @@ package struct RootFeature {
         case procrastinated(ProcrastinatedFeature.Action)
         case avenues(AvenuesFeature.Action)
         case search(SearchFeature.Action)
+        case conversations(ConversationsFeature.Action)
         case avenue(AvenueFeature.Action)
         case board(BoardFeature.Action)
         case settings(SettingsFeature.Action)
@@ -216,6 +221,7 @@ package struct RootFeature {
         Scope(state: \.procrastinated, action: \.procrastinated) { ProcrastinatedFeature() }
         Scope(state: \.avenues, action: \.avenues) { AvenuesFeature() }
         Scope(state: \.search, action: \.search) { SearchFeature() }
+        Scope(state: \.conversations, action: \.conversations) { ConversationsFeature() }
         Scope(state: \.settings, action: \.settings) { SettingsFeature() }
         Reduce { state, action in
             switch action {
@@ -400,11 +406,12 @@ package struct RootFeature {
                 .avenue(.delegate(.saved(let workspace))),
                 .board(.list(.delegate(.saved(let workspace)))),
                 .settings(.delegate(.saved(let workspace))),
+                .conversations(.delegate(.saved(let workspace))),
                 .quickAdd(.presented(.delegate(.saved(let workspace)))):
                 return show(workspace, in: &state)
 
             case .binding, .remindersScheduled, .today, .upcoming, .procrastinated, .avenues, .search, .avenue, .board,
-                .settings, .quickAdd, .approval, .undoAlert:
+                .conversations, .settings, .quickAdd, .approval, .undoAlert:
                 return .none
             }
         }
@@ -429,6 +436,7 @@ package struct RootFeature {
         state.avenue?.list.show(workspace, now: now, timeZone: timeZone)
         state.board?.list.show(workspace, now: now, timeZone: timeZone)
         state.settings.show(workspace)
+        state.conversations.show(workspace)
         let scheduled = workspace.scheduledReminders(now: now, timeZone: timeZone)
         return .merge(
             effects + [
