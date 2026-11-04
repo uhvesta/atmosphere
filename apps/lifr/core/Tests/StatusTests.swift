@@ -35,6 +35,15 @@ func statusTests() -> [TestCase] {
             try expectEqual(fixture.get(parent).status, .done)
             try expectEqual(fixture.get(parent).closedAt, fixture.now)
         },
+        TestCase("given an idle In Progress task, when it's set In Progress again, then it's no longer stalled") {
+            let fixture = try Fixture()
+            let task = try fixture.task("Task", status: .inProgress)
+            fixture.advance(days: 10)
+            try expectEqual(
+                fixture.get(task).procrastination(now: fixture.now, settings: Settings()), .inactive(days: 10))
+            _ = try fixture.workspace.setStatus(.inProgress, of: task.id, in: fixture.context)
+            try expectEqual(fixture.get(task).procrastination(now: fixture.now, settings: Settings()), nil)
+        },
         TestCase("given a closed task, when it reopens, then closedAt is cleared") {
             let fixture = try Fixture()
             let task = try fixture.task("Task", status: .done)

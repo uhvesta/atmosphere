@@ -23,6 +23,8 @@ extension Workspace {
         records.task("Water the plants", in: home, due: 0)
         records.task("Fix the bike's back brake", in: home, status: .procrastinated, priority: .low, due: -5)
         records.task("Renew passport", in: home, priority: .medium, due: 6)
+        records.task("Plan long runs", in: health, status: .inProgress, idle: 12)
+        records.task("Call the plumber", in: home, due: 2)
         return records.workspace
     }
 }
@@ -48,17 +50,19 @@ package struct RecordsBuilder {
     }
 
     /// `due` counts days from `now`'s day: 0 is today, -1 yesterday.
+    /// `idle` makes the task that many days before `now`, with no activity
+    /// since.
     @discardableResult
     package mutating func task(
         _ title: String, in avenue: Avenue, parent: LifrTask? = nil, status: TaskStatus = .todo,
-        priority: Priority = .none, due days: Int? = nil, at time: String? = nil
+        priority: Priority = .none, due days: Int? = nil, at time: String? = nil, idle: Int = 0
     ) -> LifrTask {
         var new = Workspace.NewTask(title: title, avenueID: avenue.id, parentID: parent?.id)
         new.status = status
         new.priority = priority
         new.dueDate = days.map { CalendarDate(now + Double($0) * 24 * 60 * 60, in: timeZone) }
         new.dueTime = time.map { try! TimeOfDay($0) }
-        let change = try! workspace.createTask(new, in: context())
+        let change = try! workspace.createTask(new, in: context(at: now - Double(idle) * 24 * 60 * 60))
         return workspace.tasks[change.previous.first { $0.value == nil }!.key]!
     }
 
@@ -66,14 +70,14 @@ package struct RecordsBuilder {
         _ = try! workspace.setStatus(status, of: task.id, in: context())
     }
 
-    private mutating func context() -> Context {
+    private mutating func context(at time: Date? = nil) -> Context {
         ids += 100
         codes += 1
         let id = ids
         let code = codes
         var next = 0
         return Context(
-            actor: .user(device: "Sample"), now: now,
+            actor: .user(device: "Sample"), now: time ?? now,
             newID: {
                 next += 1
                 return UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", id + next))!

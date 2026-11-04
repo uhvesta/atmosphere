@@ -1,0 +1,37 @@
+▿ 1 element
+  ▿ TaskSection
+    - id: "stalled"
+    ▿ notes: 2 key/value pairs
+      ▿ (2 elements)
+        - key: 00000000-0000-0000-0000-000000001101
+        - value: "Set to Procrastinated by hand. It stays until you change its status."
+      ▿ (2 elements)
+        - key: 00000000-0000-0000-0000-000000001301
+        - value: "In Progress with no activity for 12 days."
+    ▿ rows: 2 elements
+      ▿ TaskRowData
+        - avenue: "Health"
+        - code: "HEALTH-0013"
+        - due: Optional<Due>.none
+        - id: 00000000-0000-0000-0000-000000001301
+        - priority: Priority.none
+        - status: TaskStatus.procrastinated
+        - subtasks: Optional<Progress>.none
+        - title: "Plan long runs"
+      ▿ TaskRowData
+        - avenue: "Home"
+        - code: "HOME-0011"
+        ▿ due: Optional<Due>
+          ▿ some: Due
+            ▿ overdue: (2 elements)
+              ▿ .0: 2026-10-29
+                - year: 2026
+                - month: 10
+                - day: 29
+              - .1: Optional<TimeOfDay>.none
+        - id: 00000000-0000-0000-0000-000000001101
+        - priority: Priority.low
+        - status: TaskStatus.procrastinated
+        - subtasks: Optional<Progress>.none
+        - title: "Fix the bike\'s back brake"
+    - title: "Stalled"

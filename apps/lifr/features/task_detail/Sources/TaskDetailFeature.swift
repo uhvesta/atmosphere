@@ -50,7 +50,9 @@ package struct TaskDetailFeature {
             showsCommentsOnly ? timeline.filter(\.isComment) : timeline
         }
 
-        mutating func refresh(from workspace: Workspace, now: Date, timeZone: TimeZone) -> Bool {
+        /// Shows `workspace`, keeping what the person is typing. False when
+        /// the task is gone, such as moved to the trash.
+        package mutating func refresh(from workspace: Workspace, now: Date, timeZone: TimeZone) -> Bool {
             guard var refreshed = State(id: id, workspace: workspace, now: now, timeZone: timeZone) else {
                 return false
             }

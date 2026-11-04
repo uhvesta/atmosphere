@@ -2,6 +2,7 @@ import ComposableArchitecture
 import LifrCore
 import LifrSnapshotTesting
 import LifrStoreClient
+import LifrTaskList
 import LifrToday
 import LifrUI
 import SnapshotTesting
@@ -12,8 +13,8 @@ import XCTest
 @MainActor
 final class TodaySnapshotTests: XCTestCase {
     private struct Display {
-        var overdue: [TaskRowData]
-        var dueToday: [TaskRowData]
+        var sections: [TaskSection]
+        var procrastinatedCount: Int
     }
 
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
@@ -32,7 +33,7 @@ final class TodaySnapshotTests: XCTestCase {
     func testDisplayData() {
         let state = state
         assertSnapshot(
-            of: Display(overdue: state.overdue, dueToday: state.dueToday),
+            of: Display(sections: state.list.sections, procrastinatedCount: state.procrastinatedCount),
             as: Snapshotting<Any, String>.dump.pullback { $0 }, named: "today")
     }
 

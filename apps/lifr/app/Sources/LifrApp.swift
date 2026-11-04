@@ -23,7 +23,7 @@ struct LifrApp: App {
                         try? await store.insert(.sample(now: Date(), timeZone: .current))
                     }
                     for await update in await Storage.client.updates() {
-                        Storage.today.send(.loaded(.success(update.workspace)))
+                        Storage.today.send(.list(.show(update.workspace)))
                     }
                 }
             case .failure(let error):

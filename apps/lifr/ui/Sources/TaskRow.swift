@@ -58,10 +58,14 @@ package struct TaskRow: View {
                 .fixedSize()
         }
         if let subtasks = row.subtasks {
-            SwiftUI.Label("\(subtasks.closed)/\(subtasks.total)", systemImage: "checklist")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize()
+            // Not a Label: in a stacked layout it shows the icon alone.
+            HStack(spacing: 2) {
+                Image(systemName: "checklist")
+                Text("\(subtasks.closed)/\(subtasks.total)")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize()
         }
         PriorityBadge(row.priority)
             .fixedSize()

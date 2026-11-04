@@ -1,0 +1,144 @@
+▿ 3 elements
+  ▿ TaskSection
+    - id: "inProgress"
+    - notes: 0 key/value pairs
+    ▿ rows: 1 element
+      ▿ TaskRowData
+        - avenue: "Work"
+        - code: "WORK-0006"
+        ▿ due: Optional<Due>
+          ▿ some: Due
+            ▿ overdue: (2 elements)
+              ▿ .0: 2026-11-02
+                - year: 2026
+                - month: 11
+                - day: 2
+              - .1: Optional<TimeOfDay>.none
+        - id: 00000000-0000-0000-0000-000000000601
+        - priority: Priority.urgent
+        - status: TaskStatus.inProgress
+        ▿ subtasks: Optional<Progress>
+          ▿ some: Progress
+            - closed: 1
+            - total: 3
+        - title: "Review Q4 roadmap"
+    - title: "In Progress"
+  ▿ TaskSection
+    - id: "procrastinated"
+    ▿ notes: 2 key/value pairs
+      ▿ (2 elements)
+        - key: 00000000-0000-0000-0000-000000001101
+        - value: "Stalled"
+      ▿ (2 elements)
+        - key: 00000000-0000-0000-0000-000000001301
+        - value: "Stalled"
+    ▿ rows: 2 elements
+      ▿ TaskRowData
+        - avenue: "Home"
+        - code: "HOME-0011"
+        ▿ due: Optional<Due>
+          ▿ some: Due
+            ▿ overdue: (2 elements)
+              ▿ .0: 2026-10-29
+                - year: 2026
+                - month: 10
+                - day: 29
+              - .1: Optional<TimeOfDay>.none
+        - id: 00000000-0000-0000-0000-000000001101
+        - priority: Priority.low
+        - status: TaskStatus.procrastinated
+        - subtasks: Optional<Progress>.none
+        - title: "Fix the bike\'s back brake"
+      ▿ TaskRowData
+        - avenue: "Health"
+        - code: "HEALTH-0013"
+        - due: Optional<Due>.none
+        - id: 00000000-0000-0000-0000-000000001301
+        - priority: Priority.none
+        - status: TaskStatus.procrastinated
+        - subtasks: Optional<Progress>.none
+        - title: "Plan long runs"
+    - title: "Procrastinated"
+  ▿ TaskSection
+    - id: "todo"
+    - notes: 0 key/value pairs
+    ▿ rows: 5 elements
+      ▿ TaskRowData
+        - avenue: "Health"
+        - code: "HEALTH-0004"
+        ▿ due: Optional<Due>
+          ▿ some: Due
+            ▿ overdue: (2 elements)
+              ▿ .0: 2026-11-03
+                - year: 2026
+                - month: 11
+                - day: 3
+              ▿ .1: Optional<TimeOfDay>
+                ▿ some: 07:00
+                  - hour: 7
+                  - minute: 0
+        - id: 00000000-0000-0000-0000-000000000401
+        - priority: Priority.high
+        - status: TaskStatus.todo
+        - subtasks: Optional<Progress>.none
+        - title: "Long run, 10 km"
+      ▿ TaskRowData
+        - avenue: "Health"
+        - code: "HEALTH-0005"
+        ▿ due: Optional<Due>
+          ▿ some: Due
+            ▿ overdue: (2 elements)
+              ▿ .0: 2026-11-01
+                - year: 2026
+                - month: 11
+                - day: 1
+              - .1: Optional<TimeOfDay>.none
+        - id: 00000000-0000-0000-0000-000000000501
+        - priority: Priority.medium
+        - status: TaskStatus.todo
+        - subtasks: Optional<Progress>.none
+        - title: "Book physio appointment"
+      ▿ TaskRowData
+        - avenue: "Home"
+        - code: "HOME-0012"
+        ▿ due: Optional<Due>
+          ▿ some: Due
+            ▿ later: (2 elements)
+              ▿ .0: 2026-11-09
+                - year: 2026
+                - month: 11
+                - day: 9
+              - .1: Optional<TimeOfDay>.none
+        - id: 00000000-0000-0000-0000-000000001201
+        - priority: Priority.medium
+        - status: TaskStatus.todo
+        - subtasks: Optional<Progress>.none
+        - title: "Renew passport"
+      ▿ TaskRowData
+        - avenue: "Home"
+        - code: "HOME-0010"
+        ▿ due: Optional<Due>
+          ▿ some: Due
+            - today: Optional<TimeOfDay>.none
+        - id: 00000000-0000-0000-0000-000000001001
+        - priority: Priority.none
+        - status: TaskStatus.todo
+        - subtasks: Optional<Progress>.none
+        - title: "Water the plants"
+      ▿ TaskRowData
+        - avenue: "Home"
+        - code: "HOME-0014"
+        ▿ due: Optional<Due>
+          ▿ some: Due
+            ▿ later: (2 elements)
+              ▿ .0: 2026-11-05
+                - year: 2026
+                - month: 11
+                - day: 5
+              - .1: Optional<TimeOfDay>.none
+        - id: 00000000-0000-0000-0000-000000001401
+        - priority: Priority.none
+        - status: TaskStatus.todo
+        - subtasks: Optional<Progress>.none
+        - title: "Call the plumber"
+    - title: "To Do"

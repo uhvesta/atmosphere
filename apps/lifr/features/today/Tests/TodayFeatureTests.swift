@@ -12,7 +12,7 @@ final class TodayFeatureTests: XCTestCase {
     private lazy var records = RecordsBuilder(now: now, timeZone: .gmt)
     private lazy var health = records.avenue("HEALTH", "Health")
 
-    private func makeStore() -> TestStoreOf<TodayFeature> {
+    private func load() async -> TestStoreOf<TodayFeature> {
         let store = TestStore(initialState: TodayFeature.State()) {
             TodayFeature()
         } withDependencies: { [now, records] in
@@ -22,14 +22,13 @@ final class TodayFeatureTests: XCTestCase {
             $0.uuid = .incrementing
         }
         store.exhaustivity = .off
+        await store.send(.list(.task))
+        await store.receive(\.list.loaded)
         return store
     }
 
-    private func load() async -> TestStoreOf<TodayFeature> {
-        let store = makeStore()
-        await store.send(.task)
-        await store.receive(\.loaded)
-        return store
+    private func titles(_ store: TestStoreOf<TodayFeature>, _ section: String) -> [String] {
+        store.state.list.sections.first { $0.id == section }?.rows.map(\.title) ?? []
     }
 
     func testShowsOverdueAndDueTodayOpenTasksOnly() async {
@@ -41,8 +40,8 @@ final class TodayFeatureTests: XCTestCase {
 
         let store = await load()
 
-        XCTAssertEqual(store.state.overdue.map(\.title), ["Book physio"])
-        XCTAssertEqual(store.state.dueToday.map(\.title), ["Stretch"])
+        XCTAssertEqual(titles(store, "overdue"), ["Book physio"])
+        XCTAssertEqual(titles(store, "today"), ["Stretch"])
     }
 
     func testDueTimeEarlierTodayIsOverdue() async {
@@ -51,8 +50,8 @@ final class TodayFeatureTests: XCTestCase {
 
         let store = await load()
 
-        XCTAssertEqual(store.state.overdue.map(\.title), ["Before now"])
-        XCTAssertEqual(store.state.dueToday.map(\.title), ["After now"])
+        XCTAssertEqual(titles(store, "overdue"), ["Before now"])
+        XCTAssertEqual(titles(store, "today"), ["After now"])
     }
 
     func testHigherPriorityComesFirst() async {
@@ -61,50 +60,30 @@ final class TodayFeatureTests: XCTestCase {
 
         let store = await load()
 
-        XCTAssertEqual(store.state.dueToday.map(\.title), ["Urgent", "Low"])
+        XCTAssertEqual(titles(store, "today"), ["Urgent", "Low"])
     }
 
-    func testTogglingMarksDoneAndDropsTheTask() async {
-        let stretch = records.task("Stretch", in: health, due: 0)
+    func testCountsStalledTasksAndOpensTheReview() async {
+        records.task("Plan long runs", in: health, status: .inProgress, idle: 10)
+        records.task("Fix the bike", in: health, status: .procrastinated)
+        records.task("Stretch", in: health, status: .inProgress, idle: 2)
+
         let store = await load()
+        XCTAssertEqual(store.state.procrastinatedCount, 2)
 
-        await store.send(.toggled(stretch.id))
-        await store.receive(\.saved)
-
-        XCTAssertEqual(store.state.dueToday, [])
-        XCTAssertEqual(store.state.workspace?.tasks[stretch.id]?.status, .done)
+        await store.send(.procrastinatedTapped)
+        XCTAssertEqual(store.state.procrastinated?.list.rows.map(\.title), ["Plan long runs", "Fix the bike"])
     }
 
-    func testTogglingWithOpenSubtasksExplainsAndKeepsTheTask() async {
-        let review = records.task("Review", in: health, due: 0)
-        records.task("Read", in: health, parent: review)
+    func testRestartingInTheReviewUpdatesTheCount() async {
+        let plan = records.task("Plan long runs", in: health, status: .inProgress, idle: 10)
         let store = await load()
+        await store.send(.procrastinatedTapped)
 
-        await store.send(.toggled(review.id))
-        await store.receive(\.saved)
+        await store.send(.procrastinated(.presented(.list(.rowAction(plan.id, .status(.inProgress))))))
+        await store.receive(\.delegate.saved)
 
-        XCTAssertNotNil(store.state.alert)
-        XCTAssertEqual(store.state.dueToday.map(\.title), ["Review"])
-        XCTAssertEqual(store.state.dueToday.first?.status, .todo)
-    }
-
-    func testTappingARowOpensItsDetail() async {
-        let stretch = records.task("Stretch", in: health, due: 0)
-        let store = await load()
-
-        await store.send(.rowTapped(stretch.id))
-
-        XCTAssertEqual(store.state.detail?.id, stretch.id)
-    }
-
-    func testChangesInTheDetailRefreshToday() async {
-        let stretch = records.task("Stretch", in: health, due: 0)
-        let store = await load()
-        await store.send(.rowTapped(stretch.id))
-
-        await store.send(.detail(.presented(.statusPicked(.done))))
-        await store.receive(\.detail.delegate.saved)
-
-        XCTAssertEqual(store.state.dueToday, [])
+        XCTAssertEqual(store.state.procrastinatedCount, 0)
+        XCTAssertEqual(store.state.procrastinated?.list.isEmpty, true)
     }
 }

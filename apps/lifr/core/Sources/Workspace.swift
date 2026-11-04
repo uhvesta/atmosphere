@@ -302,12 +302,19 @@ package struct Workspace: Hashable, Codable, Sendable {
     ///   with `cascade: true` (`wontDoNeedsCascade`), so a client asks first.
     /// - Opening a Sub task under a closed parent moves the parent back to In
     ///   Progress.
+    ///
+    /// Setting In Progress again ("Restart") records activity, which clears
+    /// automatic Procrastinated. Setting any other status again changes
+    /// nothing.
     package mutating func setStatus(
         _ status: TaskStatus, of id: UUID, cascade: Bool = false, in context: Context
     ) throws(LifrError) -> Change {
         let task = try liveTask(id)
         var change = Change()
-        guard task.status != status else { return change }
+        guard task.status != status else {
+            if status == .inProgress { touch(id, in: context, &change) }
+            return change
+        }
         let open = openSubtasks(of: id).map(\.id)
         if status == .done, !open.isEmpty, !cascade { throw .openSubtasks(task: id, open: open) }
         if status == .wontDo, !open.isEmpty, !cascade { throw .wontDoNeedsCascade(task: id, open: open) }
