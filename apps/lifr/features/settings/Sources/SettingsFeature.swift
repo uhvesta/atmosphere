@@ -44,8 +44,6 @@ package struct SettingsFeature {
         package var apps: [ConnectedApp] = []
         package var cli = CLIInstallation.notInstalled
         package var launchesAtLogin = false
-        /// Whether conversations with the assistant sync through iCloud.
-        package var syncsConversations = false
         /// Kept so the Activity log opens on what's shown.
         package var workspace = Workspace()
         @Presents package var activity: ActivityFeature.State?
@@ -79,8 +77,6 @@ package struct SettingsFeature {
         case cliLoaded(CLIInstallation)
         case launchAtLoginLoaded(Bool)
         case launchAtLoginToggled(Bool)
-        case syncConversationsToggled(Bool)
-        case syncConversationsFailed(any Error)
         case event(SessionEvent)
         case procrastinatedDaysChanged(Int)
         case agentAccessPicked(UUID, AgentAccess)
@@ -107,7 +103,6 @@ package struct SettingsFeature {
 
     @Dependency(\.store) private var store
     @Dependency(\.session) private var session
-    @Dependency(\.conversations) private var conversations
     @Dependency(\.date.now) private var now
 
     package init() {}
@@ -116,7 +111,6 @@ package struct SettingsFeature {
         Reduce { state, action in
             switch action {
             case .task:
-                state.syncsConversations = conversations.isSyncing()
                 let loadStore: Effect<Action> = .run { [store] send in
                     await send(.loaded(Result { try await store.load() }))
                 }
@@ -159,21 +153,6 @@ package struct SettingsFeature {
                         await send(.loginItemFailed(error))
                     }
                 }
-
-            case .syncConversationsToggled(let on):
-                state.syncsConversations = on
-                return .run { [conversations] send in
-                    do {
-                        try await conversations.setSyncing(on)
-                    } catch {
-                        await send(.syncConversationsFailed(error))
-                    }
-                }
-
-            case .syncConversationsFailed(let error):
-                state.syncsConversations = conversations.isSyncing()
-                state.alert = .failed("Couldn't change Sync conversations", error)
-                return .none
 
             case .loginItemFailed(let error):
                 state.alert = .failed("Couldn't change Launch at login", error)

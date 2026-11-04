@@ -37,7 +37,7 @@ package struct SkillsView: View {
             } header: {
                 Text("Yours")
             } footer: {
-                Text("Your skills sync with conversations when Sync conversations is on.")
+                Text("Your skills sync through iCloud, encrypted end to end.")
             }
         }
         .navigationTitle("Skills")

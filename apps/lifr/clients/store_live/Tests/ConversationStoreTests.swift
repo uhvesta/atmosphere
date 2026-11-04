@@ -15,9 +15,8 @@ final class ConversationStoreTests: XCTestCase {
     private func store() throws -> (ConversationStore, synced: ModelContainerProbe, local: ModelContainerProbe) {
         let synced = try LiveStore.inMemory()
         let local = try ConversationStore.localInMemory()
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: UUID().uuidString))
         return (
-            ConversationStore(synced: synced, local: local, defaults: defaults),
+            ConversationStore(synced: synced, local: local),
             ModelContainerProbe(synced), ModelContainerProbe(local)
         )
     }
@@ -30,7 +29,7 @@ final class ConversationStoreTests: XCTestCase {
         return conversation
     }
 
-    func testKeepsConversationsOnThisDeviceUntilSyncingIsOn() async throws {
+    func testKeepsAConversationOnThisDeviceUntilItsSynced() async throws {
         let (store, synced, local) = try store()
         let chat = conversation("Plan the week", plan: Plan(tasks: [.init(title: "Shop", place: "HOME")]))
 
@@ -62,41 +61,58 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertEqual(reloaded, [chat])
     }
 
-    func testTurningSyncingOnMovesConversationsAndOffKeepsACopy() async throws {
+    func testSyncingMovesAConversationToICloudAndStoppingBringsItBack() async throws {
         let (store, synced, local) = try store()
-        let chat = conversation("Hello")
+        var chat = conversation("Hello")
+        let other = conversation("Stays here")
+        try await store.save(chat)
+        try await store.save(other)
+
+        chat.isSynced = true
+        try await store.save(chat)
+        XCTAssertEqual(try synced.count(), 1)
+        XCTAssertEqual(try local.count(), 1)
+        let afterOn = try await store.load()
+        XCTAssertEqual(Set(afterOn), [chat, other])
+
+        chat.isSynced = false
+        try await store.save(chat)
+        XCTAssertEqual(try synced.count(), 0)
+        XCTAssertEqual(try local.count(), 2)
+        let afterOff = try await store.load()
+        XCTAssertEqual(Set(afterOff), [chat, other])
+    }
+
+    func testAnArchivedConversationLoadsArchived() async throws {
+        let (store, _, _) = try store()
+        var chat = conversation("Old")
+        chat.archivedAt = now
         try await store.save(chat)
 
-        try await store.setSyncing(true)
-        XCTAssertTrue(store.isSyncing)
-        XCTAssertEqual(try synced.count(), 1)
-        XCTAssertEqual(try local.count(), 0)
-        let afterOn = try await store.load()
-        XCTAssertEqual(afterOn, [chat])
+        let loaded = try await store.load()
+        XCTAssertEqual(loaded.first?.archivedAt, now)
+    }
 
-        try await store.setSyncing(false)
-        XCTAssertEqual(try local.count(), 1)
-        XCTAssertEqual(try synced.count(), 1)
-        let afterOff = try await store.load()
-        XCTAssertEqual(afterOff, [chat])
+    func testAConversationSavedBeforeArchivingIsInTheMainListAndLocal() throws {
+        let old = Data(#"{"id":"\#(UUID())","messages":[],"changes":[],"added":[],"createdAt":0}"#.utf8)
+        let decoded = try JSONDecoder().decode(Conversation.self, from: old)
+        XCTAssertNil(decoded.archivedAt)
+        XCTAssertFalse(decoded.isSynced)
     }
 
     func testDeletingRemovesTheConversationFromBothStores() async throws {
         let (store, synced, local) = try store()
         let kept = conversation("Keep")
-        let gone = conversation("Gone")
+        var gone = conversation("Gone")
+        gone.isSynced = true
         try await store.save(gone)
-        try await store.setSyncing(true)
-        try await store.setSyncing(false)
         try await store.save(kept)
 
         try await store.delete([gone.id])
         let loaded = try await store.load()
         XCTAssertEqual(loaded, [kept])
         XCTAssertEqual(try synced.count(), 0)
-
-        try await store.deleteAll()
-        XCTAssertEqual(try local.count(), 0)
+        XCTAssertEqual(try local.count(), 1)
     }
 
     private func skill(_ name: String) throws -> Skill {
@@ -119,25 +135,23 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertEqual(loaded.first { $0.id == "undo" }?.isOn, false)
     }
 
-    func testSkillsMoveWithSyncingAndDeleteFromBothStores() async throws {
+    func testSkillsLeftOnThisDeviceMoveToICloudAndDeleteFromBoth() async throws {
         let (store, synced, local) = try store()
         let mine = try skill("Weekly")
-        try await store.saveSkill(mine, now: now)
+        let context = ModelContext(local.container)
+        let old = StoredSkill(id: mine.id)
+        old.updatedAt = now
+        old.skill = try Blob.encode(mine)
+        context.insert(old)
+        try context.save()
 
-        try await store.setSyncing(true)
+        let loaded = try await store.loadSkills()
+        XCTAssertEqual(loaded.last, mine)
         XCTAssertEqual(try synced.skillCount(), 1)
         XCTAssertEqual(try local.skillCount(), 0)
-        var edited = mine
-        edited.instructions = "Be briefer."
-        try await store.saveSkill(edited, now: now.addingTimeInterval(60))
-
-        try await store.setSyncing(false)
-        let afterOff = try await store.loadSkills()
-        XCTAssertEqual(afterOff.last, edited)
 
         try await store.deleteSkills([mine.id])
         XCTAssertEqual(try synced.skillCount(), 0)
-        XCTAssertEqual(try local.skillCount(), 0)
         let afterDelete = try await store.loadSkills()
         XCTAssertEqual(afterDelete.map(\.id), Skill.builtIn.map(\.id))
     }

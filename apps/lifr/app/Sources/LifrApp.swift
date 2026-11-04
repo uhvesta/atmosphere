@@ -86,9 +86,9 @@ private enum Storage {
         #endif
     }()
 
-    /// Conversations with the assistant and the person's skills: next to
-    /// the records, in a store that never syncs until the person turns Sync
-    /// conversations on.
+    /// Conversations with the assistant and the person's skills: each
+    /// conversation on this device until the person syncs it, and skills
+    /// with the records.
     private static let chats: (conversations: ConversationsClient, skills: SkillsClient) = {
         do {
             let store = try opened.get()

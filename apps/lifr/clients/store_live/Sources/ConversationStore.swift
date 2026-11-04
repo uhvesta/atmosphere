@@ -34,20 +34,17 @@ package enum ConversationStoreError: Error, CustomStringConvertible {
     }
 }
 
-/// Conversations and skills on SwiftData: in a local-only store, or in the
-/// synced Lifr store when the person turns syncing on. The choice is kept
-/// per device.
+/// Conversations and skills on SwiftData. Each conversation is kept in a
+/// local-only store, or in the synced Lifr store once the person syncs it.
+/// Skills are always in the synced store.
 package actor ConversationStore {
     private let synced: ModelContainer
     private let local: ModelContainer
-    private let defaults: UserDefaults
-    private static let syncingKey = "lifr.syncConversations"
 
     /// `synced` is the Lifr container; `local` never syncs.
-    package init(synced: ModelContainer, local: ModelContainer, defaults: UserDefaults = .standard) {
+    package init(synced: ModelContainer, local: ModelContainer) {
         self.synced = synced
         self.local = local
-        self.defaults = defaults
     }
 
     /// The local container, on disk as Conversations.store next to Lifr.store.
@@ -71,14 +68,24 @@ package actor ConversationStore {
         }
     }
 
-    package nonisolated var isSyncing: Bool { defaults.bool(forKey: Self.syncingKey) }
-
-    private var current: ModelContainer { isSyncing ? synced : local }
-
+    /// Both stores' conversations, each marked with the one it's in. If a
+    /// move was cut short and both have it, the newer copy wins.
     package func load() throws(ConversationStoreError) -> [Conversation] {
+        var byID: [UUID: Conversation] = [:]
+        for (container, isSynced) in [(local, false), (synced, true)] {
+            for var conversation in try Self.conversations(in: container) {
+                conversation.isSynced = isSynced
+                if let kept = byID[conversation.id], kept.updatedAt > conversation.updatedAt { continue }
+                byID[conversation.id] = conversation
+            }
+        }
+        return Array(byID.values)
+    }
+
+    private static func conversations(in container: ModelContainer) throws(ConversationStoreError) -> [Conversation] {
         let stored: [StoredConversation]
         do {
-            stored = try ModelContext(current).fetch(FetchDescriptor<StoredConversation>())
+            stored = try ModelContext(container).fetch(FetchDescriptor<StoredConversation>())
         } catch {
             throw .readFailed(error)
         }
@@ -95,11 +102,18 @@ package actor ConversationStore {
         }
     }
 
+    /// Saves into the store `isSynced` names, then removes any copy from
+    /// the other one.
     package func save(_ conversation: Conversation) throws(ConversationStoreError) {
+        let (target, other) = conversation.isSynced ? (synced, local) : (local, synced)
         do {
-            let context = ModelContext(current)
-            try Self.upsert([conversation], in: context)
+            let context = ModelContext(target)
+            try Self.upsert(conversation, in: context)
             try context.save()
+            let id = conversation.id
+            let leaving = ModelContext(other)
+            try leaving.delete(model: StoredConversation.self, where: #Predicate { $0.id == id })
+            try leaving.save()
         } catch {
             throw .saveFailed(error)
         }
@@ -118,56 +132,15 @@ package actor ConversationStore {
         }
     }
 
-    package func deleteAll() throws(ConversationStoreError) {
-        do {
-            for container in [local, synced] {
-                let context = ModelContext(container)
-                try context.delete(model: StoredConversation.self)
-                try context.save()
-            }
-        } catch {
-            throw .saveFailed(error)
-        }
-    }
-
-    /// On: moves local conversations and skills into the synced store. Off:
-    /// copies the synced ones here and leaves them in iCloud.
-    package func setSyncing(_ on: Bool) throws(ConversationStoreError) {
-        guard on != isSyncing else { return }
-        let conversations = try load()
-        let skills: [StoredSkill]
-        do {
-            skills = try ModelContext(current).fetch(FetchDescriptor<StoredSkill>())
-        } catch {
-            throw .skillsReadFailed(error)
-        }
-        do {
-            let target = ModelContext(on ? synced : local)
-            try Self.upsert(conversations, in: target)
-            for skill in skills {
-                try Self.upsert(id: skill.id, updatedAt: skill.updatedAt, data: skill.skill, in: target)
-            }
-            try target.save()
-            if on {
-                let source = ModelContext(local)
-                try source.delete(model: StoredConversation.self)
-                try source.delete(model: StoredSkill.self)
-                try source.save()
-            }
-        } catch {
-            throw .saveFailed(error)
-        }
-        defaults.set(on, forKey: Self.syncingKey)
-    }
-
     // MARK: - Skills
 
     /// The built-in skills, then the person's. A stored skill that doesn't
     /// decode is skipped.
     package func loadSkills() throws(ConversationStoreError) -> [Skill] {
+        try moveLocalSkills()
         let stored: [StoredSkill]
         do {
-            stored = try ModelContext(current).fetch(FetchDescriptor<StoredSkill>())
+            stored = try ModelContext(synced).fetch(FetchDescriptor<StoredSkill>())
         } catch {
             throw .skillsReadFailed(error)
         }
@@ -186,7 +159,7 @@ package actor ConversationStore {
     /// Adds or replaces the skill, as of `now`.
     package func saveSkill(_ skill: Skill, now: Date = .now) throws(ConversationStoreError) {
         do {
-            let context = ModelContext(current)
+            let context = ModelContext(synced)
             try Self.upsert(id: skill.id, updatedAt: now, data: Blob.encode(skill), in: context)
             try context.save()
         } catch {
@@ -207,6 +180,25 @@ package actor ConversationStore {
         }
     }
 
+    /// Moves skills kept on this device, from when skills followed a switch
+    /// for all conversations, into the synced store.
+    private func moveLocalSkills() throws(ConversationStoreError) {
+        do {
+            let source = ModelContext(local)
+            let skills = try source.fetch(FetchDescriptor<StoredSkill>())
+            guard !skills.isEmpty else { return }
+            let target = ModelContext(synced)
+            for skill in skills {
+                try Self.upsert(id: skill.id, updatedAt: skill.updatedAt, data: skill.skill, in: target)
+            }
+            try target.save()
+            try source.delete(model: StoredSkill.self)
+            try source.save()
+        } catch {
+            throw .skillSaveFailed(error)
+        }
+    }
+
     /// Adds or replaces a stored skill; a newer copy already there wins.
     private static func upsert(id: String, updatedAt: Date, data: Data?, in context: ModelContext) throws {
         let existing = try context.fetch(FetchDescriptor<StoredSkill>(predicate: #Predicate { $0.id == id }))
@@ -218,18 +210,17 @@ package actor ConversationStore {
         context.insert(record)
     }
 
-    /// Adds or replaces each conversation; a newer copy already there wins.
-    private static func upsert(_ conversations: [Conversation], in context: ModelContext) throws {
-        for conversation in conversations {
-            let id = conversation.id
-            let existing = try context.fetch(FetchDescriptor<StoredConversation>(predicate: #Predicate { $0.id == id }))
-            if let newest = existing.map(\.updatedAt).max(), newest > conversation.updatedAt { continue }
-            existing.forEach(context.delete)
-            let record = StoredConversation(id: id)
-            record.updatedAt = conversation.updatedAt
-            record.conversation = try Blob.encode(conversation)
-            context.insert(record)
-        }
+    /// Adds or replaces the conversation; a newer copy already there, such
+    /// as one from another device, wins.
+    private static func upsert(_ conversation: Conversation, in context: ModelContext) throws {
+        let id = conversation.id
+        let existing = try context.fetch(FetchDescriptor<StoredConversation>(predicate: #Predicate { $0.id == id }))
+        if let newest = existing.map(\.updatedAt).max(), newest > conversation.updatedAt { return }
+        existing.forEach(context.delete)
+        let record = StoredConversation(id: id)
+        record.updatedAt = conversation.updatedAt
+        record.conversation = try Blob.encode(conversation)
+        context.insert(record)
     }
 }
 
@@ -238,10 +229,7 @@ extension ConversationsClient {
         ConversationsClient(
             load: { try await store.load() },
             save: { try await store.save($0) },
-            delete: { try await store.delete($0) },
-            deleteAll: { try await store.deleteAll() },
-            isSyncing: { store.isSyncing },
-            setSyncing: { try await store.setSyncing($0) }
+            delete: { try await store.delete($0) }
         )
     }
 }
@@ -250,8 +238,7 @@ extension ConversationsClient {
     /// Fails every call with `error`, for when the stores didn't open.
     package static func failing(_ error: ConversationStoreError) -> Self {
         ConversationsClient(
-            load: { throw error }, save: { _ in throw error }, delete: { _ in throw error },
-            deleteAll: { throw error }, isSyncing: { false }, setSyncing: { _ in throw error })
+            load: { throw error }, save: { _ in throw error }, delete: { _ in throw error })
     }
 }
 

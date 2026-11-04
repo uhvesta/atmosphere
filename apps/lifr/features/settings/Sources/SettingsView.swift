@@ -31,17 +31,13 @@ package struct SettingsView: View {
                 Text("Every change, who made it, and from where. Any of them can be reverted.")
             }
             Section {
-                Toggle(
-                    "Sync conversations",
-                    isOn: Binding(
-                        get: { store.syncsConversations }, set: { store.send(.syncConversationsToggled($0)) }))
                 Button("Skills") { store.send(.skillsTapped) }
             } header: {
                 Text("Assistant")
             } footer: {
                 Text(
-                    "Keeps conversations with the assistant on your other devices through iCloud, encrypted end to "
-                        + "end. Turning it off keeps a copy here; copies in iCloud stay until you delete them.")
+                    "Conversations stay on this device unless you sync them: swipe right on one in Conversations. "
+                        + "Skills sync through iCloud, encrypted end to end.")
             }
             if store.showsAgents {
                 avenueAccess

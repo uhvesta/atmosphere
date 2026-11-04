@@ -46,31 +46,6 @@ final class SettingsFeatureTests: XCTestCase {
         await store.skipInFlightEffects()
     }
 
-    func testSyncsConversationsOrSaysWhyNot() async {
-        let kept = ConversationsClient.inMemory()
-        let store = TestStore(initialState: SettingsFeature.State(showsAgents: false)) {
-            SettingsFeature()
-        } withDependencies: { [records] in
-            $0.store = .inMemory(records.workspace)
-            $0.conversations = kept
-        }
-        store.exhaustivity = .off
-        await store.send(.task)
-        XCTAssertFalse(store.state.syncsConversations)
-
-        await store.send(.syncConversationsToggled(true))
-        await store.finish()
-        XCTAssertTrue(kept.isSyncing())
-
-        var failing = kept
-        failing.setSyncing = { _ in throw CancellationError() }
-        store.dependencies.conversations = failing
-        await store.send(.syncConversationsToggled(false))
-        await store.receive(\.syncConversationsFailed)
-        XCTAssertTrue(store.state.syncsConversations)
-        XCTAssertNotNil(store.state.alert)
-    }
-
     func testChangesWhenTasksCountAsProcrastinated() async {
         let store = await settings(InMemorySession())
 

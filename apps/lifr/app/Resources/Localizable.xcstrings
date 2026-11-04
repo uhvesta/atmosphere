@@ -254,6 +254,12 @@
     "Approve %@?" : {
 
     },
+    "Archive" : {
+
+    },
+    "Archived" : {
+
+    },
     "Ask about your tasks, change them, or plan what to add." : {
 
     },
@@ -386,7 +392,13 @@
     "Delete All" : {
 
     },
+    "Delete all archived conversations?" : {
+
+    },
     "Delete all conversations?" : {
+
+    },
+    "Delete “%@”?" : {
 
     },
     "Deleted" : {
@@ -495,6 +507,9 @@
 
     },
     "It can always read. Agents can never empty the trash, change Avenues or Settings, or approve apps." : {
+
+    },
+    "It's deleted here and from iCloud, and can't be undone. Tasks it changed stay." : {
 
     },
     "Its next request is refused. It can ask again, and you'd approve it anew." : {
@@ -653,6 +668,9 @@
 
     },
     "No apps yet. When an agent first runs lifr, Lifr asks you to approve it." : {
+
+    },
+    "No archived conversations" : {
 
     },
     "No change" : {
@@ -881,6 +899,9 @@
     "Status" : {
 
     },
+    "Stop Syncing" : {
+
+    },
     "Sub task" : {
 
     },
@@ -899,7 +920,16 @@
     "Summary" : {
 
     },
+    "Swipe left on a conversation to archive it." : {
+
+    },
+    "Sync" : {
+
+    },
     "Sync conversations" : {
+
+    },
+    "Synced" : {
 
     },
     "Task" : {
@@ -950,6 +980,9 @@
     "They're deleted on this device and from iCloud. Tasks the assistant added or changed stay." : {
 
     },
+    "This can't be undone. Tasks the assistant added or changed stay." : {
+
+    },
     "Time" : {
 
     },
@@ -978,6 +1011,9 @@
 
     },
     "Try other words, or clear some filters." : {
+
+    },
+    "Unarchive" : {
 
     },
     "Under %@" : {
@@ -1026,6 +1062,9 @@
 
     },
     "You on %@" : {
+
+    },
+    "Your skills sync through iCloud, encrypted end to end." : {
 
     },
     "Your skills sync with conversations when Sync conversations is on." : {

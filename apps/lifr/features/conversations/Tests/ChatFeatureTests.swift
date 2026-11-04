@@ -310,13 +310,13 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.conversations[id: first]?.messages.map(\.text), ["First", "Later."])
     }
 
-    func testDeletingConversationsKeepsTheTasks() async throws {
-        let (workspace, _) = home()
-        func chat(_ text: String) -> Conversation {
-            var conversation = Conversation(id: UUID(), createdAt: now)
-            conversation.messages = [ChatMessage(id: UUID(), role: .person, text: text, at: now)]
-            return conversation
-        }
+    private func chat(_ text: String) -> Conversation {
+        var conversation = Conversation(id: UUID(), createdAt: now)
+        conversation.messages = [ChatMessage(id: UUID(), role: .person, text: text, at: now)]
+        return conversation
+    }
+
+    func testArchivingMovesAConversationOutOfTheListAndBack() async throws {
         let first = chat("First")
         let second = chat("Second")
         let kept = ConversationsClient.inMemory([first, second])
@@ -324,17 +324,81 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.task)
         await store.skipReceivedActions()
 
-        await store.send(.deleteTapped(first.id))
+        await store.send(.archiveTapped(first.id))
         await store.finish()
+        XCTAssertEqual(store.state.sorted.map(\.id), [second.id])
+        XCTAssertEqual(store.state.archived.map(\.id), [first.id])
         var saved = try await kept.load()
-        XCTAssertEqual(saved.map(\.id), [second.id])
+        XCTAssertEqual(saved.first { $0.id == first.id }?.archivedAt, now)
 
-        await store.send(.deleteAllTapped)
-        await store.send(.confirm(.presented(.deleteAll)))
+        await store.send(.unarchiveTapped(first.id))
+        await store.finish()
+        XCTAssertEqual(Set(store.state.sorted.map(\.id)), [first.id, second.id])
+        saved = try await kept.load()
+        XCTAssertNil(saved.first { $0.id == first.id }?.archivedAt)
+    }
+
+    func testArchivingTheOpenChatClosesIt() async throws {
+        let first = chat("First")
+        let store = list(.inMemory([first]))
+        await store.send(.task)
+        await store.skipReceivedActions()
+        await store.send(.opened(first.id))
+
+        await store.send(.archiveTapped(first.id))
+        XCTAssertNil(store.state.openID)
+        XCTAssertTrue(store.state.chats.isEmpty)
+    }
+
+    func testSyncingIsPerConversationAndKeptWithIt() async throws {
+        let first = chat("First")
+        let second = chat("Second")
+        let kept = ConversationsClient.inMemory([first, second])
+        let store = list(kept)
+        await store.send(.task)
+        await store.skipReceivedActions()
+        await store.send(.opened(first.id))
+
+        await store.send(.syncTapped(first.id))
+        await store.finish()
+        XCTAssertEqual(store.state.chat?.conversation.isSynced, true)
+        var saved = try await kept.load()
+        XCTAssertEqual(saved.first { $0.id == first.id }?.isSynced, true)
+        XCTAssertEqual(saved.first { $0.id == second.id }?.isSynced, false)
+
+        await store.send(.syncTapped(first.id))
         await store.finish()
         saved = try await kept.load()
-        XCTAssertTrue(saved.isEmpty)
-        XCTAssertTrue(store.state.conversations.isEmpty)
+        XCTAssertEqual(saved.first { $0.id == first.id }?.isSynced, false)
+    }
+
+    func testDeletingArchivedConversationsAsksFirstAndKeepsTheTasks() async throws {
+        let (workspace, _) = home()
+        var first = chat("First")
+        first.archivedAt = now
+        var second = chat("Second")
+        second.archivedAt = now
+        let third = chat("Third")
+        let kept = ConversationsClient.inMemory([first, second, third])
+        let store = list(kept)
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        await store.send(.deleteTapped(first.id))
+        var saved = try await kept.load()
+        XCTAssertEqual(saved.count, 3)
+        await store.send(.confirm(.presented(.delete(first.id))))
+        await store.finish()
+        saved = try await kept.load()
+        XCTAssertEqual(Set(saved.map(\.id)), [second.id, third.id])
+
+        await store.send(.deleteArchivedTapped)
+        XCTAssertNotNil(store.state.confirm)
+        await store.send(.confirm(.presented(.deleteArchived)))
+        await store.finish()
+        saved = try await kept.load()
+        XCTAssertEqual(saved.map(\.id), [third.id])
+        XCTAssertEqual(store.state.conversations.map(\.id), [third.id])
         let tasks = try await store.dependencies.store.load().tasks.count
         XCTAssertEqual(tasks, workspace.tasks.count)
     }

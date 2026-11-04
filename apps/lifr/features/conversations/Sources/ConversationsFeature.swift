@@ -4,7 +4,9 @@ import LifrAssistantClient
 import LifrCore
 
 /// The conversations with the assistant, newest first, and the open one.
-/// Each is kept as it changes; deleting one never deletes tasks. A chat
+/// Each is kept as it changes, on this device until it's synced. Archived
+/// ones move to the archive, the only place they can be deleted; deleting
+/// one never deletes tasks. A chat
 /// stays here while it's open or its reply is still being written, so
 /// leaving it or opening another doesn't stop the reply.
 @Reducer
@@ -17,13 +19,27 @@ package struct ConversationsFeature {
         package var chats: IdentifiedArrayOf<ChatFeature.State> = []
         /// The ID of the chat on screen.
         package var openID: UUID?
+        /// Whether the archive is on screen.
+        package var showsArchive = false
         @Presents package var confirm: ConfirmationDialogState<Confirm>?
         @Presents package var alert: AlertState<Never>?
 
         package init() {}
 
+        /// The main list: conversations not archived, newest first.
         package var sorted: [Conversation] {
-            conversations.sorted { ($0.updatedAt, $0.id.uuidString) > ($1.updatedAt, $1.id.uuidString) }
+            conversations.filter { !$0.isArchived }
+                .sorted { ($0.updatedAt, $0.id.uuidString) > ($1.updatedAt, $1.id.uuidString) }
+        }
+
+        /// The archive, most recently archived first.
+        package var archived: [Conversation] {
+            conversations.filter(\.isArchived)
+                .sorted {
+                    ($0.archivedAt ?? .distantPast, $0.id.uuidString) > (
+                        $1.archivedAt ?? .distantPast, $1.id.uuidString
+                    )
+                }
         }
 
         /// The chat on screen.
@@ -43,6 +59,25 @@ package struct ConversationsFeature {
             prune()
         }
 
+        /// Changes the conversation and its chat's copy alike; nil when it
+        /// isn't here.
+        mutating func update(_ id: UUID, _ change: (inout Conversation) -> Void) -> Conversation? {
+            guard var conversation = conversations[id: id] else { return nil }
+            change(&conversation)
+            conversations[id: id] = conversation
+            chats[id: id]?.conversation = conversation
+            return conversation
+        }
+
+        /// Removes conversations and their chats.
+        mutating func remove(_ ids: [UUID]) {
+            for id in ids {
+                conversations.remove(id: id)
+                chats.remove(id: id)
+                if openID == id { openID = nil }
+            }
+        }
+
         /// Lets go of chats that are neither on screen nor working.
         mutating func prune() {
             let openID = openID
@@ -51,7 +86,8 @@ package struct ConversationsFeature {
     }
 
     package enum Confirm: Equatable, Sendable {
-        case deleteAll
+        case delete(UUID)
+        case deleteArchived
     }
 
     package enum Action {
@@ -63,8 +99,15 @@ package struct ConversationsFeature {
         case closed
         /// Lifr is back on screen: replies the system stopped go again.
         case resumed
+        /// Syncs the conversation, or stops syncing it.
+        case syncTapped(UUID)
+        case archiveTapped(UUID)
+        case unarchiveTapped(UUID)
+        case archiveShown(Bool)
+        /// Asks before deleting an archived conversation for good.
         case deleteTapped(UUID)
-        case deleteAllTapped
+        /// Asks before deleting every archived conversation.
+        case deleteArchivedTapped
         case failed(any Error)
         case chats(IdentifiedActionOf<ChatFeature>)
         case confirm(PresentationAction<Confirm>)
@@ -117,36 +160,54 @@ package struct ConversationsFeature {
                     state.chats.filter { $0.waiting != nil }.map { .send(.chats(.element(id: $0.id, action: .resume))) }
                 )
 
-            case .deleteTapped(let id):
-                state.conversations.remove(id: id)
-                state.chats.remove(id: id)
-                if state.openID == id { state.openID = nil }
-                return .run { [conversations] _ in
-                    try await conversations.delete([id])
-                } catch: { error, send in
-                    await send(.failed(error))
-                }
+            case .syncTapped(let id):
+                guard let conversation = state.update(id, { $0.isSynced.toggle() }) else { return .none }
+                return save(conversation)
 
-            case .deleteAllTapped:
+            case .archiveTapped(let id):
+                guard let conversation = state.update(id, { $0.archivedAt = now }) else { return .none }
+                if state.openID == id {
+                    state.openID = nil
+                    state.prune()
+                }
+                return save(conversation)
+
+            case .unarchiveTapped(let id):
+                guard let conversation = state.update(id, { $0.archivedAt = nil }) else { return .none }
+                return save(conversation)
+
+            case .archiveShown(let shown):
+                state.showsArchive = shown
+                return .none
+
+            case .deleteTapped(let id):
+                guard let conversation = state.conversations[id: id] else { return .none }
                 state.confirm = ConfirmationDialogState {
-                    TextState("Delete all conversations?")
+                    TextState("Delete “\(conversation.title)”?")
                 } actions: {
-                    ButtonState(role: .destructive, action: .deleteAll) { TextState("Delete All") }
+                    ButtonState(role: .destructive, action: .delete(id)) { TextState("Delete") }
                 } message: {
-                    TextState(
-                        "They're deleted on this device and from iCloud. Tasks the assistant added or changed stay.")
+                    TextState(deleteMessage(synced: conversation.isSynced))
                 }
                 return .none
 
-            case .confirm(.presented(.deleteAll)):
-                state.conversations = []
-                state.chats = []
-                state.openID = nil
-                return .run { [conversations] _ in
-                    try await conversations.deleteAll()
-                } catch: { error, send in
-                    await send(.failed(error))
+            case .deleteArchivedTapped:
+                let archived = state.archived
+                guard !archived.isEmpty else { return .none }
+                state.confirm = ConfirmationDialogState {
+                    TextState("Delete all archived conversations?")
+                } actions: {
+                    ButtonState(role: .destructive, action: .deleteArchived) { TextState("Delete All") }
+                } message: {
+                    TextState(deleteMessage(synced: archived.contains(where: \.isSynced)))
                 }
+                return .none
+
+            case .confirm(.presented(.delete(let id))):
+                return delete([id], in: &state)
+
+            case .confirm(.presented(.deleteArchived)):
+                return delete(state.archived.map(\.id), in: &state)
 
             case .loaded(.failure(let error)), .failed(let error):
                 state.alert = AlertState {
@@ -182,5 +243,28 @@ package struct ConversationsFeature {
                 await send(.failed(error))
             }
         }
+    }
+
+    private func save(_ conversation: Conversation) -> Effect<Action> {
+        .run { [conversations] _ in
+            try await conversations.save(conversation)
+        } catch: { error, send in
+            await send(.failed(error))
+        }
+    }
+
+    private func delete(_ ids: [UUID], in state: inout State) -> Effect<Action> {
+        state.remove(ids)
+        return .run { [conversations] _ in
+            try await conversations.delete(ids)
+        } catch: { error, send in
+            await send(.failed(error))
+        }
+    }
+
+    private func deleteMessage(synced: Bool) -> String {
+        synced
+            ? String(localized: "It's deleted here and from iCloud, and can't be undone. Tasks it changed stay.")
+            : String(localized: "This can't be undone. Tasks the assistant added or changed stay.")
     }
 }
