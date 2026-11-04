@@ -6,7 +6,7 @@ import LifrStoreClient
 
 /// A chat with the assistant: it answers questions, changes tasks when
 /// asked (each reply that did has Undo), and drafts plans on a card the
-/// person adds.
+/// person can edit and then add.
 @Reducer
 package struct ChatFeature {
     @ObservableState
@@ -17,7 +17,8 @@ package struct ChatFeature {
         package var availability = AssistantAvailability.available
         /// The reply as it's written, until it's complete.
         package var replying: String?
-        /// Why the draft can't be added, sent with the next message.
+        /// Why the draft can't be added as it is now, checked on every
+        /// change, and sent with the next message.
         package var problem: String?
         @Presents package var alert: AlertState<Never>?
 
@@ -25,6 +26,8 @@ package struct ChatFeature {
             self.conversation = conversation
             self.workspace = workspace
         }
+
+        package var canAdd: Bool { conversation.draft != nil && problem == nil }
 
         package var canSend: Bool {
             availability == .available && replying == nil
@@ -99,7 +102,7 @@ package struct ChatFeature {
                 state.conversation.messages.append(ChatMessage(id: id, role: .assistant, text: reply.text, at: now))
                 if let plan = reply.plan {
                     state.conversation.draft = plan
-                    state.problem = nil
+                    check(&state)
                 }
                 return .run { [store] send in
                     await send(.reloaded(messageID: id, Result { try await store.load() }))
@@ -121,6 +124,7 @@ package struct ChatFeature {
                 guard !new.isEmpty else { return .none }
                 state.conversation.changes[messageID] = new
                 state.workspace = workspace
+                check(&state)
                 return .send(.delegate(.saved(workspace)))
 
             case .reloaded(_, .failure):
@@ -139,8 +143,14 @@ package struct ChatFeature {
                 state.problem = nil
                 return .none
 
+            case .binding(\.conversation.draft):
+                // Removing the last row discards the draft.
+                if state.conversation.draft?.isEmpty == true { state.conversation.draft = nil }
+                check(&state)
+                return .none
+
             case .addTapped:
-                guard let plan = state.conversation.draft else { return .none }
+                guard state.canAdd, let plan = state.conversation.draft else { return .none }
                 let conversation = state.conversation.id
                 return .run { [store, timeZone] send in
                     await send(
@@ -169,6 +179,7 @@ package struct ChatFeature {
                         state.conversation.added.append(entry)
                     }
                 }
+                check(&state)
                 return .send(.delegate(.saved(saved.workspace)))
 
             case .saved(.failure(let error)):
@@ -186,5 +197,12 @@ package struct ChatFeature {
             }
         }
         .ifLet(\.$alert, action: \.alert)
+    }
+
+    /// Checks the draft against the records as they are now.
+    private func check(_ state: inout State) {
+        state.problem = state.conversation.draft.flatMap { plan in
+            state.workspace.problem(with: plan, timeZone: timeZone, now: now)?.description
+        }
     }
 }

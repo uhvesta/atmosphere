@@ -12,7 +12,7 @@ package struct ChatView: View {
 
     package var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 12) {
                 if store.availability != .available {
                     Text(store.availability.description)
                         .foregroundStyle(.secondary)
@@ -26,8 +26,8 @@ package struct ChatView: View {
                     Text(replying.isEmpty ? "…" : replying)
                         .foregroundStyle(.secondary)
                 }
-                if let plan = store.conversation.draft {
-                    DraftCard(plan: plan, problem: store.problem) {
+                if let plan = Binding($store.conversation.draft) {
+                    DraftCard(plan: plan, problem: store.problem, canAdd: store.canAdd) {
                         store.send(.addTapped)
                     } discard: {
                         store.send(.discardDraftTapped)
@@ -78,59 +78,5 @@ private struct MessageView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: message.role == .person ? .trailing : .leading)
-    }
-}
-
-/// The plan to add, as the person will see it in their lists.
-private struct DraftCard: View {
-    let plan: Plan
-    let problem: String?
-    let add: () -> Void
-    let discard: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Draft").font(.headline)
-            ForEach(Array(plan.avenues.enumerated()), id: \.offset) { _, avenue in
-                Label("New Avenue \(avenue.name) (\(avenue.key))", systemImage: "square.stack.3d.up")
-            }
-            ForEach(Array(plan.projects.enumerated()), id: \.offset) { _, project in
-                Label("New Project \(project.name) in \(project.avenue)", systemImage: "flag")
-                ForEach(Array(project.tasks.enumerated()), id: \.offset) { _, task in
-                    TaskLine(task: task).padding(.leading)
-                }
-            }
-            ForEach(Array(plan.tasks.enumerated()), id: \.offset) { _, task in
-                TaskLine(task: task)
-                ForEach(Array(task.subtasks.enumerated()), id: \.offset) { _, subtask in
-                    TaskLine(task: subtask).padding(.leading)
-                }
-            }
-            if let problem {
-                Text(problem).font(.caption).foregroundStyle(.red)
-            }
-            HStack {
-                Button("Discard", role: .destructive, action: discard)
-                Spacer()
-                Button("Add", action: add).buttonStyle(.borderedProminent)
-            }
-        }
-        .padding()
-        .background(.fill.quaternary, in: .rect(cornerRadius: 12))
-    }
-}
-
-private struct TaskLine: View {
-    let task: Plan.TaskDraft
-
-    var body: some View {
-        VStack(alignment: .leading) {
-            Label(task.title, systemImage: "circle")
-            let details = [task.place, task.parent.map { "under \($0)" }, task.due.map { "due \($0)" }]
-                .compactMap(\.self)
-            if !details.isEmpty {
-                Text(details.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
-            }
-        }
     }
 }

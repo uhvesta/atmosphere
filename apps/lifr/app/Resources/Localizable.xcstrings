@@ -254,6 +254,12 @@
     "Avenue" : {
 
     },
+    "Avenue name" : {
+
+    },
+    "Avenue or KEY/Project" : {
+
+    },
     "Avenues" : {
 
     },
@@ -291,6 +297,9 @@
 
     },
     "Conversations" : {
+
+    },
+    "Copy as TOML" : {
 
     },
     "Couldn't change Launch at login" : {
@@ -422,6 +431,9 @@
     "Its next request is refused. It can ask again, and you'd approve it anew." : {
 
     },
+    "KEY" : {
+
+    },
     "Key" : {
 
     },
@@ -474,6 +486,9 @@
 
     },
     "Message" : {
+
+    },
+    "More" : {
 
     },
     "Move to %@" : {
@@ -571,6 +586,9 @@
     "No due date" : {
 
     },
+    "No priority" : {
+
+    },
     "No task selected" : {
 
     },
@@ -624,6 +642,9 @@
 
     },
     "Project" : {
+
+    },
+    "Project name" : {
 
     },
     "Projects" : {
@@ -737,6 +758,9 @@
     "Status" : {
 
     },
+    "Sub task" : {
+
+    },
     "Sub task title" : {
 
     },
@@ -816,6 +840,9 @@
 
     },
     "Try other words, or clear some filters." : {
+
+    },
+    "Under %@" : {
 
     },
     "Undo" : {

@@ -58,6 +58,17 @@ func planTests() -> [TestCase] {
             }
             try expectEqual(fixture.workspace, before)
         },
+        TestCase("given a plan with a wrong key, when it's checked, then the problem is the one adding would give") {
+            let fixture = try Fixture()
+            let typo = Plan(tasks: [.init(title: "Typo", place: "HELTH")])
+            try expectEqual(
+                fixture.workspace.problem(with: typo, timeZone: gmt, now: fixture.now),
+                .plan(at: "task 1 “Typo”", .unknownAvenue(key: "HELTH", suggestion: "HEALTH")))
+            let fine = Plan(tasks: [.init(title: "Fine", place: "HEALTH")])
+            try expectEqual(fixture.workspace.problem(with: fine, timeZone: gmt, now: fixture.now), nil)
+            try expectEqual(
+                fixture.workspace.problem(with: Plan(), timeZone: gmt, now: fixture.now), .plan(at: "the plan", .empty))
+        },
         TestCase("given an existing task's code as parent, when applied, then the drafts become its Sub tasks") {
             let fixture = try Fixture()
             let run = try fixture.task("Run")

@@ -163,6 +163,19 @@ extension Workspace {
         return change
     }
 
+    /// Why `plan` can't be added at `now`, or nil when it can: the same
+    /// checks `apply` makes, without changing anything.
+    package func problem(with plan: Plan, timeZone: TimeZone, now: Date) -> LifrError? {
+        var copy = self
+        let context = Context(actor: .system(device: "", surface: .assistant), now: now)
+        do {
+            _ = try copy.apply(plan, timeZone: timeZone, in: context)
+            return nil
+        } catch {
+            return error
+        }
+    }
+
     private mutating func add(_ plan: Plan, timeZone: TimeZone, in context: Context) throws(LifrError) -> Change {
         var change = Change()
         let today = CalendarDate(context.now, in: timeZone)
