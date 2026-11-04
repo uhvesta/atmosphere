@@ -1,18 +1,21 @@
 #!/bin/sh
-# Cross-compiles the example binaries for every platform in
-# //bazel/platforms and runs each binary where it belongs: macOS arm64 on
-# this machine, Linux in Lima VMs (tools/e2e/lima/*.yaml; x86_64 through
-# Rosetta). Missing VMs are created and stopped VMs are started.
+# End-to-end check for a macOS arm64 host:
+#   1. bazel test --config=no_xcode //... (nothing may read Xcode or the
+#      Command Line Tools).
+#   2. Cross-compiles the example binaries for every platform in
+#      //bazel/platforms.
+#   3. Runs the macOS binaries on this machine and the arm64 Linux binaries
+#      in Lima VMs (tools/e2e/lima/*.yaml). x86_64 Linux is built, not run.
+# Missing VMs are created and stopped VMs are started.
 #
-#   bazel run //tools/e2e                 # build and run everything
-#   bazel run //tools/e2e -- --build-only # skip running
+#   bazel run //tools/e2e                 # everything
+#   bazel run //tools/e2e -- --skip-tests # skip step 1
+#   bazel run //tools/e2e -- --build-only # skip step 3
 #   bazel run //tools/e2e -- --example swift --config linux_arm64
-#
-# Running needs macOS on Apple silicon (Lima's vz driver with Rosetta).
 set -eu
 
 usage() {
-  sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
 }
 
@@ -32,11 +35,13 @@ interop-swift=//examples/interop:polyglot_swift_bin
 "
 names=$(for e in $examples; do echo "${e%%=*}"; done)
 configs="macos_arm64 linux_arm64 linux_x86_64 linux_arm64_gnu linux_x86_64_gnu"
+run_tests=true
 build_only=false
 only_names=""
 only_configs=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --skip-tests) run_tests=false ;;
     --build-only) build_only=true ;;
     --example)
       only_names="$only_names $2"
@@ -56,6 +61,11 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$only_names" ] && names=$only_names
 [ -n "$only_configs" ] && configs=$only_configs
+
+if [ "$(uname -s)-$(uname -m)" != Darwin-arm64 ]; then
+  echo "this check needs a macOS arm64 host: it runs the macOS binaries here and the Linux ones in Lima's vz VMs" >&2
+  exit 1
+fi
 
 runfiles=${RUNFILES_DIR:-$0.runfiles}
 limactl=$runfiles/$limactl_path
@@ -127,6 +137,11 @@ ensure_vm() { # name template
   esac
 }
 
+if $run_tests; then
+  echo "==> bazel test --config=no_xcode //..." >&2
+  "$bazel" test --config=no_xcode //...
+fi
+
 for config in $configs; do
   targets=""
   for name in $names; do
@@ -154,11 +169,6 @@ if $build_only; then
   exit 0
 fi
 
-if [ "$(uname -s)-$(uname -m)" != Darwin-arm64 ]; then
-  echo "running the matrix needs macOS on Apple silicon; use --build-only" >&2
-  exit 1
-fi
-
 vms_started=false
 for config in $configs; do
   for name in $names; do
@@ -167,10 +177,16 @@ for config in $configs; do
       continue
     fi
     bin=$out/$config/$name
-    if [ "$config" = macos_arm64 ]; then
-      check "$name" "$config" host "$("$bin" 2>&1 || true)"
-      continue
-    fi
+    case "$config" in
+      macos_*)
+        check "$name" "$config" host "$("$bin" 2>&1 || true)"
+        continue
+        ;;
+      *x86_64*)
+        record SKIP "$name" "$config" - "built, not run"
+        continue
+        ;;
+    esac
     if ! $vms_started; then
       for vm in $vms; do
         template=${vm#*:}
