@@ -90,6 +90,32 @@ final class SearchFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.list.isEmpty)
     }
 
+    func testShowsEachSetFilterAndClearsOneAtATime() async {
+        let work = records.avenue("WORK", "Work")
+        let errand = records.label("errand")
+        records.task("Buy shoes", in: health, priority: .high, labels: [errand])
+        records.task("Write report", in: work, priority: .high)
+        records.task("Stretch", in: health)
+
+        let store = await load()
+        XCTAssertEqual(store.state.chips, [])
+        await store.send(.binding(.set(\.filter.avenues, [health.id])))
+        await store.send(.binding(.set(\.filter.priorities, [.high])))
+        await store.send(.binding(.set(\.filter.labels, ["errand"])))
+        await store.send(.binding(.set(\.filter.due, .overdue)))
+        XCTAssertEqual(
+            store.state.chips.map(\.kind), [.avenue(health.id), .priority(.high), .label("errand"), .due])
+        XCTAssertEqual(store.state.chips.first?.title, "Health")
+
+        await store.send(.chipRemoved(.due))
+        XCTAssertEqual(titles(store), ["Buy shoes"])
+        await store.send(.chipRemoved(.label("errand")))
+        await store.send(.chipRemoved(.avenue(health.id)))
+        XCTAssertEqual(Set(titles(store)), ["Buy shoes", "Write report"])
+        XCTAssertEqual(store.state.chips.map(\.kind), [.priority(.high)])
+        XCTAssertEqual(store.state.filter.text, "")
+    }
+
     func testFiltersByAvenue() async {
         let work = records.avenue("WORK", "Work")
         let home = records.avenue("HOME", "Home")

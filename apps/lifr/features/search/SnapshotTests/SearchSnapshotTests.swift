@@ -35,10 +35,24 @@ final class SearchSnapshotTests: XCTestCase {
         assertSnapshot(
             of: screen(state("run", .sample(now: now, timeZone: .gmt))),
             as: .accessibilityTree(size: CGSize(width: 402, height: 874)), named: "run")
+        assertSnapshot(
+            of: screen(filtered()), as: .accessibilityTree(size: CGSize(width: 402, height: 874)), named: "filtered")
+    }
+
+    /// "run", with high priority, To Do and the next 7 days set.
+    private func filtered() -> SearchFeature.State {
+        var filter = SearchFilter()
+        filter.text = "run"
+        filter.priorities = [.high]
+        filter.statuses = [.todo]
+        filter.due = .nextSevenDays
+        return SearchFeature.State(
+            filter: filter, workspace: .sample(now: now, timeZone: .gmt), now: now, timeZone: .gmt)
     }
 
     func testImages() {
         assertScreenImages(of: screen(state("run", .sample(now: now, timeZone: .gmt))), named: "run")
+        assertScreenImages(of: screen(filtered()), named: "filtered")
     }
 
     func testEmptyImage() {

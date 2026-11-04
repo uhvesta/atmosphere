@@ -135,12 +135,52 @@ package struct SearchFeature {
         package var labelNames: [String] {
             (list.workspace?.labels.values.map(\.name) ?? []).sorted()
         }
+
+        /// Each filter value that's set, in the order the filter menu lists
+        /// them.
+        package var chips: [FilterChip] {
+            var chips: [FilterChip] = avenueChoices.filter { filter.avenues.contains($0.id) }
+                .map { FilterChip(.avenue($0.id), $0.name) }
+            for status in TaskStatus.allCases where filter.statuses.contains(status) {
+                chips.append(FilterChip(.status(status), status.title))
+            }
+            for priority in Priority.allCases where filter.priorities.contains(priority) {
+                chips.append(FilterChip(.priority(priority), priority.title ?? String(localized: "No priority")))
+            }
+            for name in filter.labels.sorted() {
+                chips.append(FilterChip(.label(name), "#\(name)"))
+            }
+            if filter.due != .any { chips.append(FilterChip(.due, filter.due.title)) }
+            return chips
+        }
+    }
+
+    /// One set filter value, shown above the results.
+    package struct FilterChip: Hashable, Identifiable, Sendable {
+        package enum Kind: Hashable, Sendable {
+            case avenue(UUID)
+            case status(TaskStatus)
+            case priority(Priority)
+            case label(String)
+            case due
+        }
+
+        package var kind: Kind
+        package var title: String
+        package var id: Kind { kind }
+
+        init(_ kind: Kind, _ title: String) {
+            self.kind = kind
+            self.title = title
+        }
     }
 
     package enum Action: BindableAction {
         case binding(BindingAction<State>)
         case list(TaskListFeature.Action)
         case clearFiltersTapped
+        /// Clears one filter value.
+        case chipRemoved(FilterChip.Kind)
         case delegate(Delegate)
 
         @CasePathable
@@ -163,6 +203,16 @@ package struct SearchFeature {
                 let text = state.filter.text
                 state.filter = SearchFilter()
                 state.filter.text = text
+                refilter(&state)
+                return .none
+            case .chipRemoved(let kind):
+                switch kind {
+                case .avenue(let id): state.filter.avenues.remove(id)
+                case .status(let status): state.filter.statuses.remove(status)
+                case .priority(let priority): state.filter.priorities.remove(priority)
+                case .label(let name): state.filter.labels.remove(name)
+                case .due: state.filter.due = .any
+                }
                 refilter(&state)
                 return .none
             case .list(.delegate(.saved(let workspace))):

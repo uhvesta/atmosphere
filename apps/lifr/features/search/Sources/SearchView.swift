@@ -12,19 +12,48 @@ package struct SearchView: View {
     }
 
     package var body: some View {
-        TaskListView(store: store.scope(state: \.list, action: \.list))
-            .searchable(text: $store.filter.text, prompt: "Titles, details and comments")
-            .navigationTitle("Search")
-            .toolbar {
-                Menu {
-                    filters
-                } label: {
-                    Label(
-                        store.filter.filterCount == 0 ? "Filters" : "Filters, \(store.filter.filterCount) set",
-                        systemImage: store.filter.filterCount == 0
-                            ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+        TaskListView(store: store.scope(state: \.list, action: \.list)) {
+            if !store.chips.isEmpty {
+                chips
+            }
+        }
+        .searchable(text: $store.filter.text, prompt: "Titles, details and comments")
+        .navigationTitle("Search")
+        .toolbar {
+            Menu {
+                filters
+            } label: {
+                Label(
+                    store.filter.filterCount == 0 ? "Filters" : "Filters, \(store.filter.filterCount) set",
+                    systemImage: store.filter.filterCount == 0
+                        ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+            }
+        }
+    }
+
+    /// The set filters, each with ✕ to clear it; tapping one opens the
+    /// filter menu.
+    private var chips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(store.chips) { chip in
+                    HStack(spacing: 4) {
+                        Menu(chip.title) { filters }
+                            .accessibilityHint("Opens the filters")
+                        Button("Remove \(chip.title)", systemImage: "xmark") { store.send(.chipRemoved(chip.kind)) }
+                            .labelStyle(.iconOnly)
+                            .font(.caption.weight(.semibold))
+                    }
+                    .font(.subheadline)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.tint.opacity(0.12), in: Capsule())
                 }
             }
+        }
+        .buttonStyle(.borderless)
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+        .listRowBackground(Color.clear)
     }
 
     @ViewBuilder
