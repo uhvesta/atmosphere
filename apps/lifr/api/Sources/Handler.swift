@@ -211,10 +211,15 @@ package struct Handler {
         case .addPlan:
             let add: AddPlan.Params = try decode(params, for: method)
             let plan: Plan
-            do {
-                plan = try PlanFile.read(add.plan)
-            } catch {
-                throw APIError.invalidParams(method.rawValue, "the plan can't be read. \(error.description)")
+            switch add.plan {
+            case .json(let json):
+                plan = json
+            case .toml(let text):
+                do {
+                    plan = try PlanFile.read(text)
+                } catch {
+                    throw APIError.invalidParams(method.rawValue, "the plan can't be read. \(error.description)")
+                }
             }
             var zone = timeZone
             if let name = add.timeZone {

@@ -444,3 +444,71 @@ extension Reminder.Trigger {
         return .at(fireAt)
     }
 }
+
+// MARK: - Decoding
+
+// Every field but the names has a default, so a plan written as JSON by an
+// agent only needs what it sets, like the TOML form.
+
+extension Plan {
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            avenues: try container.decodeIfPresent([AvenueDraft].self, forKey: .avenues) ?? [],
+            labels: try container.decodeIfPresent([LabelDraft].self, forKey: .labels) ?? [],
+            projects: try container.decodeIfPresent([ProjectDraft].self, forKey: .projects) ?? [],
+            tasks: try container.decodeIfPresent([TaskDraft].self, forKey: .tasks) ?? [])
+    }
+}
+
+extension Plan.AvenueDraft {
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            key: try container.decode(String.self, forKey: .key),
+            name: try container.decode(String.self, forKey: .name),
+            color: try container.decodeIfPresent(String.self, forKey: .color) ?? "blue",
+            symbol: try container.decodeIfPresent(String.self, forKey: .symbol) ?? "circle")
+    }
+}
+
+extension Plan.LabelDraft {
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            name: try container.decode(String.self, forKey: .name),
+            color: try container.decodeIfPresent(String.self, forKey: .color) ?? "gray")
+    }
+}
+
+extension Plan.ProjectDraft {
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            name: try container.decode(String.self, forKey: .name),
+            avenue: try container.decode(String.self, forKey: .avenue),
+            details: try container.decodeIfPresent(String.self, forKey: .details) ?? "",
+            due: try container.decodeIfPresent(String.self, forKey: .due),
+            tasks: try container.decodeIfPresent([Plan.TaskDraft].self, forKey: .tasks) ?? [])
+    }
+}
+
+extension Plan.TaskDraft {
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            title: try container.decode(String.self, forKey: .title),
+            details: try container.decodeIfPresent(String.self, forKey: .details) ?? "",
+            status: try container.decodeIfPresent(TaskStatus.self, forKey: .status) ?? .todo,
+            priority: try container.decodeIfPresent(Priority.self, forKey: .priority) ?? .none,
+            start: try container.decodeIfPresent(String.self, forKey: .start),
+            due: try container.decodeIfPresent(String.self, forKey: .due),
+            dueTime: try container.decodeIfPresent(String.self, forKey: .dueTime),
+            labels: try container.decodeIfPresent([String].self, forKey: .labels) ?? [],
+            reminders: try container.decodeIfPresent([String].self, forKey: .reminders) ?? [],
+            comments: try container.decodeIfPresent([String].self, forKey: .comments) ?? [],
+            subtasks: try container.decodeIfPresent([Plan.TaskDraft].self, forKey: .subtasks) ?? [],
+            place: try container.decodeIfPresent(String.self, forKey: .place),
+            parent: try container.decodeIfPresent(String.self, forKey: .parent))
+    }
+}

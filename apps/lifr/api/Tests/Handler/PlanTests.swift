@@ -18,6 +18,32 @@ func addPlanTests() -> [TestCase] {
             try expectEqual(result.tasks.map(\.title), ["A", "B"])
             try expectEqual(result.tasks[1].parent, result.tasks[0].code)
         },
+        TestCase("given the plan as a JSON object with only what it sets, then the rest takes the defaults") {
+            let fixture = try Fixture()
+            let params: JSONValue = [
+                "plan": [
+                    "tasks": [
+                        [
+                            "title": "A", "place": "HEALTH", "priority": "high",
+                            "subtasks": [["title": "B"]],
+                        ]
+                    ]
+                ],
+                "timeZone": "UTC",
+            ]
+            let result = try fixture.call("add_plan", params, grant: fixture.agent).response.value(AddPlan.Result.self)
+            try expectEqual(result.tasks.map(\.title), ["A", "B"])
+            try expectEqual(result.tasks[1].parent, result.tasks[0].code)
+            try expectEqual(result.tasks.map(\.priority), [.high, .none])
+        },
+        TestCase("given a JSON plan with a task missing its title, then invalidParams and nothing changes") {
+            let fixture = try Fixture()
+            let before = fixture.workspace
+            let params: JSONValue = ["plan": ["tasks": [["place": "HEALTH"]]]]
+            let response = fixture.call("add_plan", params, grant: fixture.agent).response
+            try expectEqual(response.code, .invalidParams)
+            try expectEqual(fixture.workspace, before)
+        },
         TestCase("given TOML that can't be read, then invalidParams and nothing changes") {
             let fixture = try Fixture()
             let before = fixture.workspace

@@ -268,15 +268,38 @@ package enum AddComment {
 
 package enum AddPlan {
     package struct Params: Hashable, Codable, Sendable {
-        /// The plan as TOML, starting with "# Lifr plan v1".
-        package var plan: String
+        package var plan: PlanInput
         /// An IANA time zone, such as Europe/London, for relative dates like
         /// "tomorrow". Defaults to the app's.
         package var timeZone: String?
 
-        package init(plan: String, timeZone: String? = nil) {
+        package init(plan: PlanInput, timeZone: String? = nil) {
             self.plan = plan
             self.timeZone = timeZone
+        }
+    }
+
+    /// A plan as TOML text, starting with "# Lifr plan v1", or as a JSON
+    /// object with `Plan`'s fields.
+    package enum PlanInput: Hashable, Codable, Sendable {
+        case toml(String)
+        case json(Plan)
+
+        package init(from decoder: any Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let text = try? container.decode(String.self) {
+                self = .toml(text)
+            } else {
+                self = .json(try container.decode(Plan.self))
+            }
+        }
+
+        package func encode(to encoder: any Encoder) throws {
+            var container = encoder.singleValueContainer()
+            switch self {
+            case .toml(let text): try container.encode(text)
+            case .json(let plan): try container.encode(plan)
+            }
         }
     }
 

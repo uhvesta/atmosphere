@@ -339,13 +339,420 @@
     "scope" : "write"
   },
   {
-    "description" : "Add several records at once from a TOML plan, all or nothing: new Avenues, labels, Projects with their tasks, and tasks with Sub tasks. Show the plan to the person before adding it. A table belongs to the nearest parent table above it.\n\n# Lifr plan v1\n[[avenue]]               key, name, color, symbol\n[[label]]                name, color\n[[project]]              name, avenue (key), details, due\n  [[project.task]]       task fields\n    [[project.task.subtask]]\n[[task]]                 task fields, plus in = \"KEY\" or \"KEY/Project name\", or parent = \"TASK-CODE\"\n  [[task.subtask]]       task fields\n\nTask fields: title (required), details, status (todo, in_progress, procrastinated, done, wont_do),\npriority (none, low, medium, high, urgent), start, due, due_time (\"HH:MM\"), labels, remind, comments.\nDates: YYYY-MM-DD, today, tomorrow, a weekday, next friday, +3d, +2w, +1m.\nremind: \"1 day before due\", \"2 hours before due\", or a date with a time, such as \"tomorrow 09:00\".",
+    "description" : "Add several records at once from a plan, all or nothing: new Avenues, labels, Projects with their tasks, and tasks with Sub tasks. Show the plan to the person before adding it. Give the plan as a JSON object, or as TOML text, where a table belongs to the nearest parent table above it:\n\n# Lifr plan v1\n[[avenue]]               key, name, color, symbol\n[[label]]                name, color\n[[project]]              name, avenue (key), details, due\n  [[project.task]]       task fields\n    [[project.task.subtask]]\n[[task]]                 task fields, plus in = \"KEY\" or \"KEY/Project name\", or parent = \"TASK-CODE\"\n  [[task.subtask]]       task fields\n\nTask fields: title (required), details, status (todo, in_progress, procrastinated, done, wont_do),\npriority (none, low, medium, high, urgent), start, due, due_time (\"HH:MM\"), labels, remind, comments.\nDates: YYYY-MM-DD, today, tomorrow, a weekday, next friday, +3d, +2w, +1m.\nremind: \"1 day before due\", \"2 hours before due\", or a date with a time, such as \"tomorrow 09:00\".",
     "inputSchema" : {
       "additionalProperties" : false,
       "properties" : {
         "plan" : {
-          "description" : "The plan as TOML, starting with \"# Lifr plan v1\".",
-          "type" : "string"
+          "anyOf" : [
+            {
+              "additionalProperties" : false,
+              "properties" : {
+                "avenues" : {
+                  "description" : "New Avenues.",
+                  "items" : {
+                    "additionalProperties" : false,
+                    "properties" : {
+                      "color" : {
+                        "description" : "A color name. Defaults to blue.",
+                        "type" : "string"
+                      },
+                      "key" : {
+                        "description" : "2 to 10 capital letters, such as HEALTH.",
+                        "type" : "string"
+                      },
+                      "name" : {
+                        "description" : "Its name, such as Health.",
+                        "type" : "string"
+                      },
+                      "symbol" : {
+                        "description" : "An SF Symbol name. Defaults to circle.",
+                        "type" : "string"
+                      }
+                    },
+                    "required" : [
+                      "key",
+                      "name"
+                    ],
+                    "type" : "object"
+                  },
+                  "type" : "array"
+                },
+                "labels" : {
+                  "description" : "New labels with a color.",
+                  "items" : {
+                    "additionalProperties" : false,
+                    "properties" : {
+                      "color" : {
+                        "description" : "A color name. Defaults to gray.",
+                        "type" : "string"
+                      },
+                      "name" : {
+                        "description" : "The label.",
+                        "type" : "string"
+                      }
+                    },
+                    "required" : [
+                      "name"
+                    ],
+                    "type" : "object"
+                  },
+                  "type" : "array"
+                },
+                "projects" : {
+                  "description" : "New Projects with their tasks.",
+                  "items" : {
+                    "additionalProperties" : false,
+                    "properties" : {
+                      "avenue" : {
+                        "description" : "The key of an existing Avenue or one of the plan's new ones.",
+                        "type" : "string"
+                      },
+                      "details" : {
+                        "description" : "Markdown notes.",
+                        "type" : "string"
+                      },
+                      "due" : {
+                        "description" : "YYYY-MM-DD, today, tomorrow, a weekday, next friday, +3d, +2w or +1m.",
+                        "type" : "string"
+                      },
+                      "name" : {
+                        "description" : "The goal's name.",
+                        "type" : "string"
+                      },
+                      "tasks" : {
+                        "description" : "Its tasks.",
+                        "items" : {
+                          "additionalProperties" : false,
+                          "properties" : {
+                            "comments" : {
+                              "description" : "Markdown comments.",
+                              "items" : {
+                                "type" : "string"
+                              },
+                              "type" : "array"
+                            },
+                            "details" : {
+                              "description" : "Markdown notes.",
+                              "type" : "string"
+                            },
+                            "due" : {
+                              "description" : "YYYY-MM-DD, today, tomorrow, a weekday, next friday, +3d, +2w or +1m.",
+                              "type" : "string"
+                            },
+                            "dueTime" : {
+                              "description" : "24-hour HH:MM. Needs a due date.",
+                              "pattern" : "^[0-2][0-9]:[0-5][0-9]$",
+                              "type" : "string"
+                            },
+                            "labels" : {
+                              "description" : "Label names. Ones that don't exist are created.",
+                              "items" : {
+                                "type" : "string"
+                              },
+                              "type" : "array"
+                            },
+                            "priority" : {
+                              "description" : "How urgent the task is.",
+                              "enum" : [
+                                "none",
+                                "low",
+                                "medium",
+                                "high",
+                                "urgent"
+                              ],
+                              "type" : "string"
+                            },
+                            "reminders" : {
+                              "description" : "\"1 day before due\", \"2 hours before due\", or a date with a time, such as \"tomorrow 09:00\".",
+                              "items" : {
+                                "type" : "string"
+                              },
+                              "type" : "array"
+                            },
+                            "start" : {
+                              "description" : "YYYY-MM-DD, today, tomorrow, a weekday, next friday, +3d, +2w or +1m.",
+                              "type" : "string"
+                            },
+                            "status" : {
+                              "description" : "A task status.",
+                              "enum" : [
+                                "todo",
+                                "inProgress",
+                                "procrastinated",
+                                "done",
+                                "wontDo"
+                              ],
+                              "type" : "string"
+                            },
+                            "subtasks" : {
+                              "description" : "Sub tasks.",
+                              "items" : {
+                                "additionalProperties" : false,
+                                "properties" : {
+                                  "comments" : {
+                                    "description" : "Markdown comments.",
+                                    "items" : {
+                                      "type" : "string"
+                                    },
+                                    "type" : "array"
+                                  },
+                                  "details" : {
+                                    "description" : "Markdown notes.",
+                                    "type" : "string"
+                                  },
+                                  "due" : {
+                                    "description" : "YYYY-MM-DD, today, tomorrow, a weekday, next friday, +3d, +2w or +1m.",
+                                    "type" : "string"
+                                  },
+                                  "dueTime" : {
+                                    "description" : "24-hour HH:MM. Needs a due date.",
+                                    "pattern" : "^[0-2][0-9]:[0-5][0-9]$",
+                                    "type" : "string"
+                                  },
+                                  "labels" : {
+                                    "description" : "Label names. Ones that don't exist are created.",
+                                    "items" : {
+                                      "type" : "string"
+                                    },
+                                    "type" : "array"
+                                  },
+                                  "priority" : {
+                                    "description" : "How urgent the task is.",
+                                    "enum" : [
+                                      "none",
+                                      "low",
+                                      "medium",
+                                      "high",
+                                      "urgent"
+                                    ],
+                                    "type" : "string"
+                                  },
+                                  "reminders" : {
+                                    "description" : "\"1 day before due\", \"2 hours before due\", or a date with a time, such as \"tomorrow 09:00\".",
+                                    "items" : {
+                                      "type" : "string"
+                                    },
+                                    "type" : "array"
+                                  },
+                                  "start" : {
+                                    "description" : "YYYY-MM-DD, today, tomorrow, a weekday, next friday, +3d, +2w or +1m.",
+                                    "type" : "string"
+                                  },
+                                  "status" : {
+                                    "description" : "A task status.",
+                                    "enum" : [
+                                      "todo",
+                                      "inProgress",
+                                      "procrastinated",
+                                      "done",
+                                      "wontDo"
+                                    ],
+                                    "type" : "string"
+                                  },
+                                  "title" : {
+                                    "description" : "1 to 200 characters.",
+                                    "type" : "string"
+                                  }
+                                },
+                                "required" : [
+                                  "title"
+                                ],
+                                "type" : "object"
+                              },
+                              "type" : "array"
+                            },
+                            "title" : {
+                              "description" : "1 to 200 characters.",
+                              "type" : "string"
+                            }
+                          },
+                          "required" : [
+                            "title"
+                          ],
+                          "type" : "object"
+                        },
+                        "type" : "array"
+                      }
+                    },
+                    "required" : [
+                      "name",
+                      "avenue"
+                    ],
+                    "type" : "object"
+                  },
+                  "type" : "array"
+                },
+                "tasks" : {
+                  "description" : "Tasks outside the new Projects. Each needs place or parent.",
+                  "items" : {
+                    "additionalProperties" : false,
+                    "properties" : {
+                      "comments" : {
+                        "description" : "Markdown comments.",
+                        "items" : {
+                          "type" : "string"
+                        },
+                        "type" : "array"
+                      },
+                      "details" : {
+                        "description" : "Markdown notes.",
+                        "type" : "string"
+                      },
+                      "due" : {
+                        "description" : "YYYY-MM-DD, today, tomorrow, a weekday, next friday, +3d, +2w or +1m.",
+                        "type" : "string"
+                      },
+                      "dueTime" : {
+                        "description" : "24-hour HH:MM. Needs a due date.",
+                        "pattern" : "^[0-2][0-9]:[0-5][0-9]$",
+                        "type" : "string"
+                      },
+                      "labels" : {
+                        "description" : "Label names. Ones that don't exist are created.",
+                        "items" : {
+                          "type" : "string"
+                        },
+                        "type" : "array"
+                      },
+                      "parent" : {
+                        "description" : "Code of an existing task to put this under, such as HEALTH-7K2Q.",
+                        "type" : "string"
+                      },
+                      "place" : {
+                        "description" : "An Avenue key, or \"KEY/Project name\" for an existing Project.",
+                        "type" : "string"
+                      },
+                      "priority" : {
+                        "description" : "How urgent the task is.",
+                        "enum" : [
+                          "none",
+                          "low",
+                          "medium",
+                          "high",
+                          "urgent"
+                        ],
+                        "type" : "string"
+                      },
+                      "reminders" : {
+                        "description" : "\"1 day before due\", \"2 hours before due\", or a date with a time, such as \"tomorrow 09:00\".",
+                        "items" : {
+                          "type" : "string"
+                        },
+                        "type" : "array"
+                      },
+                      "start" : {
+                        "description" : "YYYY-MM-DD, today, tomorrow, a weekday, next friday, +3d, +2w or +1m.",
+                        "type" : "string"
+                      },
+                      "status" : {
+                        "description" : "A task status.",
+                        "enum" : [
+                          "todo",
+                          "inProgress",
+                          "procrastinated",
+                          "done",
+                          "wontDo"
+                        ],
+                        "type" : "string"
+                      },
+                      "subtasks" : {
+                        "description" : "Sub tasks.",
+                        "items" : {
+                          "additionalProperties" : false,
+                          "properties" : {
+                            "comments" : {
+                              "description" : "Markdown comments.",
+                              "items" : {
+                                "type" : "string"
+                              },
+                              "type" : "array"
+                            },
+                            "details" : {
+                              "description" : "Markdown notes.",
+                              "type" : "string"
+                            },
+                            "due" : {
+                              "description" : "YYYY-MM-DD, today, tomorrow, a weekday, next friday, +3d, +2w or +1m.",
+                              "type" : "string"
+                            },
+                            "dueTime" : {
+                              "description" : "24-hour HH:MM. Needs a due date.",
+                              "pattern" : "^[0-2][0-9]:[0-5][0-9]$",
+                              "type" : "string"
+                            },
+                            "labels" : {
+                              "description" : "Label names. Ones that don't exist are created.",
+                              "items" : {
+                                "type" : "string"
+                              },
+                              "type" : "array"
+                            },
+                            "priority" : {
+                              "description" : "How urgent the task is.",
+                              "enum" : [
+                                "none",
+                                "low",
+                                "medium",
+                                "high",
+                                "urgent"
+                              ],
+                              "type" : "string"
+                            },
+                            "reminders" : {
+                              "description" : "\"1 day before due\", \"2 hours before due\", or a date with a time, such as \"tomorrow 09:00\".",
+                              "items" : {
+                                "type" : "string"
+                              },
+                              "type" : "array"
+                            },
+                            "start" : {
+                              "description" : "YYYY-MM-DD, today, tomorrow, a weekday, next friday, +3d, +2w or +1m.",
+                              "type" : "string"
+                            },
+                            "status" : {
+                              "description" : "A task status.",
+                              "enum" : [
+                                "todo",
+                                "inProgress",
+                                "procrastinated",
+                                "done",
+                                "wontDo"
+                              ],
+                              "type" : "string"
+                            },
+                            "title" : {
+                              "description" : "1 to 200 characters.",
+                              "type" : "string"
+                            }
+                          },
+                          "required" : [
+                            "title"
+                          ],
+                          "type" : "object"
+                        },
+                        "type" : "array"
+                      },
+                      "title" : {
+                        "description" : "1 to 200 characters.",
+                        "type" : "string"
+                      }
+                    },
+                    "required" : [
+                      "title"
+                    ],
+                    "type" : "object"
+                  },
+                  "type" : "array"
+                }
+              },
+              "type" : "object"
+            },
+            {
+              "description" : "The plan as TOML, starting with \"# Lifr plan v1\".",
+              "type" : "string"
+            }
+          ]
         },
         "timeZone" : {
           "description" : "IANA time zone for relative dates, such as Europe/London.",

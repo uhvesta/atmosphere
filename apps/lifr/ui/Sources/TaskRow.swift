@@ -42,7 +42,7 @@ package struct TaskRow: View {
         .accessibilityValue(row.accessibilityValue(locale))
         .accessibilityIdentifier(row.code)
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction(named: row.status.isClosed ? "Mark To Do" : "Mark Done", toggle)
+        .accessibilityAction(named: row.status.isClosed ? Text("Mark To Do") : Text("Mark Done"), toggle)
     }
 
     /// The code, due date, Sub task progress and priority. Each stays on one
