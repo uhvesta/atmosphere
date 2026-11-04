@@ -74,5 +74,12 @@ package struct MenuBarContent: View {
                 }
             }
         }
+        Divider()
+        Toggle(
+            "Local API",
+            isOn: Binding(get: { store.isAPIEnabled }, set: { store.send(.apiSwitched($0)) }))
+        if let error = store.apiSwitchError {
+            Text(error)
+        }
     }
 }

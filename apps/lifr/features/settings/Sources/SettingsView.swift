@@ -76,10 +76,22 @@ package struct SettingsView: View {
             case .installed(let path):
                 LabeledContent("Installed at", value: path)
             }
+            #if os(macOS)
+                Toggle(
+                    "Launch at login",
+                    isOn: Binding(
+                        get: { store.launchesAtLogin }, set: { store.send(.launchAtLoginToggled($0)) }))
+            #endif
         } header: {
             Text("Command line")
         } footer: {
-            Text("Then connect Claude Code with: claude mcp add lifr -- lifr mcp")
+            #if os(macOS)
+                Text(
+                    "Then connect Claude Code with: claude mcp add lifr -- lifr mcp. Launch at login keeps Lifr in the "
+                        + "menu bar, so lifr never waits for it to start.")
+            #else
+                Text("Then connect Claude Code with: claude mcp add lifr -- lifr mcp")
+            #endif
         }
     }
 }
@@ -142,6 +154,14 @@ package struct ApprovalView: View {
                 Text("\(store.request.client) wants to use your tasks through Lifr.")
                     .font(.headline)
                 LabeledContent("Signed as", value: store.request.identity)
+            } footer: {
+                if store.request.isInterpreter {
+                    Text(
+                        "\(store.request.client) runs scripts, and every script it runs would share this access. "
+                            + "Approve it only for a short time."
+                    )
+                    .foregroundStyle(.orange)
+                }
             }
             Section {
                 Toggle("Make changes", isOn: $store.canWrite)

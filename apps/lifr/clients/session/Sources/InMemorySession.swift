@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrAPI
+import LifrCore
 
 /// A session kept in memory, for tests and previews. `request` plays an
 /// unknown app launching the CLI.
@@ -9,6 +10,8 @@ package final class InMemorySession: Sendable {
         var apps: [ConnectedApp]
         var pending: [UUID: ApprovalRequest] = [:]
         var installation = CLIInstallation.notInstalled
+        var isAPIEnabled = true
+        var launchesAtLogin = false
         var listeners: [UUID: AsyncStream<SessionEvent>.Continuation] = [:]
     }
 
@@ -36,6 +39,11 @@ package final class InMemorySession: Sendable {
     package func withdraw(_ id: UUID) {
         state.withValue { $0.pending[id] = nil }
         send(.approvalWithdrawn(id))
+    }
+
+    /// A connected app changed the records.
+    package func change(_ workspace: Workspace) {
+        send(.recordsChanged(workspace))
     }
 
     /// A connected app made a request at `date`.
@@ -94,7 +102,14 @@ package final class InMemorySession: Sendable {
                 let path = try installResult.get()
                 state.withValue { $0.installation = .installed(path: path) }
                 return .installed(path: path)
-            }
+            },
+            isAPIEnabled: { [self] in state.value.isAPIEnabled },
+            setAPIEnabled: { [self] enabled in
+                state.withValue { $0.isAPIEnabled = enabled }
+                send(.apiEnabledChanged(enabled))
+            },
+            launchesAtLogin: { [self] in state.value.launchesAtLogin },
+            setLaunchesAtLogin: { [self] enabled in state.withValue { $0.launchesAtLogin = enabled } }
         )
     }
 

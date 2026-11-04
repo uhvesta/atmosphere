@@ -69,6 +69,10 @@ package struct RootFeature {
         package var apps: [ConnectedApp] = []
         /// Apps asking while another's approval sheet is up.
         package var queuedApprovals: [ApprovalRequest] = []
+        /// Whether the CLI can connect. The menu bar turns it on and off.
+        package var isAPIEnabled = true
+        /// Why turning the local API on or off failed, until it next works.
+        package var apiSwitchError: String?
         @Presents package var quickAdd: QuickAddFeature.State?
         @Presents package var approval: ApprovalFeature.State?
 
@@ -135,6 +139,10 @@ package struct RootFeature {
         /// Another device or process changed the records.
         case updated(Update)
         case appsLoaded([ConnectedApp])
+        case apiEnabledLoaded(Bool)
+        /// The menu bar's Local API switch.
+        case apiSwitched(Bool)
+        case apiSwitchFailed(String)
         case sessionEvent(SessionEvent)
         case selected(SidebarItem?)
         /// ⌘N, or the iPhone's + button.
@@ -191,6 +199,7 @@ package struct RootFeature {
                     effects.append(
                         .run { [session] send in
                             if let apps = try? await session.apps() { await send(.appsLoaded(apps)) }
+                            await send(.apiEnabledLoaded(await session.isAPIEnabled()))
                             for await event in await session.events() { await send(.sessionEvent(event)) }
                         })
                 }
@@ -212,6 +221,29 @@ package struct RootFeature {
             case .appsLoaded(let apps), .sessionEvent(.appsChanged(let apps)):
                 state.apps = apps
                 return .none
+
+            case .apiEnabledLoaded(let enabled), .sessionEvent(.apiEnabledChanged(let enabled)):
+                state.isAPIEnabled = enabled
+                state.apiSwitchError = nil
+                return .none
+
+            case .apiSwitched(let enabled):
+                state.isAPIEnabled = enabled
+                return .run { [session] send in
+                    do {
+                        try await session.setAPIEnabled(enabled)
+                    } catch {
+                        await send(.apiEnabledLoaded(await session.isAPIEnabled()))
+                        await send(.apiSwitchFailed(String(describing: error)))
+                    }
+                }
+
+            case .apiSwitchFailed(let message):
+                state.apiSwitchError = message
+                return .none
+
+            case .sessionEvent(.recordsChanged(let workspace)):
+                return show(workspace, in: &state)
 
             case .sessionEvent(.approvalRequested(let request)):
                 if state.approval == nil {

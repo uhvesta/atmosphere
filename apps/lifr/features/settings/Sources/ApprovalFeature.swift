@@ -38,6 +38,8 @@ package struct ApprovalFeature {
 
         package init(request: ApprovalRequest, workspace: Workspace) {
             self.request = request
+            // Every script an interpreter runs shares its identity.
+            if request.isInterpreter { expiry = .day }
             avenues = workspace.avenues.values
                 .filter { $0.archivedAt == nil && $0.agentAccess != .hidden }
                 .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }

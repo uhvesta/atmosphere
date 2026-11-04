@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrAPI
+import LifrCore
 
 /// An app that asked to use Lifr through the CLI, and what you allowed it.
 package struct ConnectedApp: Identifiable, Hashable, Sendable {
@@ -31,13 +32,19 @@ package struct ApprovalRequest: Identifiable, Hashable, Sendable {
     /// What its first request needs, so the sheet can say why it asked.
     package var method: APIMethod
     package var requestedAt: Date
+    /// The launcher runs scripts, such as `python3`: every script it runs
+    /// shares its identity, so the sheet warns and suggests a short expiry.
+    package var isInterpreter: Bool
 
-    package init(id: UUID, identity: String, client: String, method: APIMethod, requestedAt: Date) {
+    package init(
+        id: UUID, identity: String, client: String, method: APIMethod, requestedAt: Date, isInterpreter: Bool = false
+    ) {
         self.id = id
         self.identity = identity
         self.client = client
         self.method = method
         self.requestedAt = requestedAt
+        self.isInterpreter = isInterpreter
     }
 }
 
@@ -55,6 +62,11 @@ package enum SessionEvent: Hashable, Sendable {
     case approvalWithdrawn(UUID)
     /// Grants were used, connected or disconnected.
     case appsChanged([ConnectedApp])
+    /// A connected app changed the records. The store's own updates only
+    /// cover other devices.
+    case recordsChanged(Workspace)
+    /// The local API was turned on or off, here or from another window.
+    case apiEnabledChanged(Bool)
 }
 
 /// Why a session change failed.
@@ -64,6 +76,12 @@ package enum SessionError: Error, Equatable, CustomStringConvertible {
     /// Touch ID or the password was cancelled or failed.
     case notAuthenticated
     case installFailed(path: String, reason: String)
+    /// The Keychain refused to keep the grants.
+    case grantsNotSaved(reason: String)
+    /// Turning the local API on or off failed.
+    case apiSwitchFailed(reason: String)
+    /// macOS refused to add or remove the login item.
+    case loginItemFailed(reason: String)
 
     package var description: String {
         switch self {
@@ -76,6 +94,14 @@ package enum SessionError: Error, Equatable, CustomStringConvertible {
         case .installFailed(let path, let reason):
             "Couldn't link lifr at \(path): \(reason). Check that the folder exists and you can write to it, "
                 + "or add the app's bundled lifr to your PATH yourself."
+        case .grantsNotSaved(let reason):
+            "Couldn't keep the grant in the Keychain: \(reason). Nothing changed. Unlock the login keychain in "
+                + "Keychain Access, then try again."
+        case .apiSwitchFailed(let reason):
+            "Couldn't switch the local API: \(reason). Quit and reopen Lifr, then try again."
+        case .loginItemFailed(let reason):
+            "macOS didn't change Launch at login: \(reason). Check System Settings > General > Login Items, "
+                + "where Lifr may need to be allowed."
         }
     }
 }
@@ -100,6 +126,13 @@ package struct SessionClient: Sendable {
     package var cliInstallation: @Sendable () async -> CLIInstallation = { .notInstalled }
     /// Links the bundled `lifr` onto the PATH.
     package var installCLI: @Sendable () async throws -> CLIInstallation
+    /// Whether the CLI can connect at all.
+    package var isAPIEnabled: @Sendable () async -> Bool = { true }
+    /// Turning it off disconnects every app and tells the CLI it's off.
+    package var setAPIEnabled: @Sendable (_ enabled: Bool) async throws -> Void
+    /// Whether macOS opens Lifr at login, in the menu bar with no window.
+    package var launchesAtLogin: @Sendable () async -> Bool = { false }
+    package var setLaunchesAtLogin: @Sendable (_ enabled: Bool) async throws -> Void
 }
 
 extension Grant {

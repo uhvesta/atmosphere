@@ -11,6 +11,9 @@ import SwiftUI
 #if canImport(UIKit)
     import UIKit
 #endif
+#if os(macOS)
+    import LifrSessionLive
+#endif
 
 @main
 struct LifrApp: App {
@@ -63,9 +66,20 @@ private enum Storage {
     } withDependencies: {
         $0.store = client
         $0.reminders = .live()
-        // Until the socket server, no app can connect.
-        $0.session = InMemorySession().client
+        $0.session = session
     }
+
+    /// On the Mac, the local API that `lifr` connects to. The iPhone has no
+    /// CLI, so no app can connect there.
+    private static let session: SessionClient = {
+        #if os(macOS)
+            let server = SessionServer.live(store: client, device: deviceName)
+            Task { await server.start() }
+            return server.client
+        #else
+            return InMemorySession().client
+        #endif
+    }()
 
     static let client: StoreClient =
         if case .success(let store) = opened { .live(store, actor: actor) } else { StoreClient() }

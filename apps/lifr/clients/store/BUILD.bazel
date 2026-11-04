@@ -13,6 +13,7 @@ swift_library(
     visibility = [
         "//apps/lifr/app:__subpackages__",
         "//apps/lifr/clients/reminders:__pkg__",
+        "//apps/lifr/clients/session_live:__pkg__",
         "//apps/lifr/clients/store_live:__pkg__",
         "//apps/lifr/features:__subpackages__",
     ],

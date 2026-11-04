@@ -41,6 +41,7 @@ package struct SettingsFeature {
         package var avenues: [AvenueAccess] = []
         package var apps: [ConnectedApp] = []
         package var cli = CLIInstallation.notInstalled
+        package var launchesAtLogin = false
         @Presents package var revoke: ConfirmationDialogState<Revoke>?
         @Presents package var alert: AlertState<Never>?
 
@@ -66,6 +67,8 @@ package struct SettingsFeature {
         case loaded(Result<Workspace, any Error>)
         case appsLoaded(Result<[ConnectedApp], any Error>)
         case cliLoaded(CLIInstallation)
+        case launchAtLoginLoaded(Bool)
+        case launchAtLoginToggled(Bool)
         case event(SessionEvent)
         case procrastinatedDaysChanged(Int)
         case agentAccessPicked(UUID, AgentAccess)
@@ -73,6 +76,7 @@ package struct SettingsFeature {
         case renewTapped(String)
         case revokeTapped(String)
         case installCLITapped
+        case loginItemFailed(any Error)
         case saved(Result<Saved, any Error>)
         case sessionChanged(Result<Void, any Error>)
         case revoke(PresentationAction<Revoke>)
@@ -104,6 +108,7 @@ package struct SettingsFeature {
                     .run { [session] send in
                         await send(.appsLoaded(Result { try await session.apps() }))
                         await send(.cliLoaded(await session.cliInstallation()))
+                        await send(.launchAtLoginLoaded(await session.launchesAtLogin()))
                         for await event in await session.events() {
                             await send(.event(event))
                         }
@@ -120,6 +125,25 @@ package struct SettingsFeature {
 
             case .cliLoaded(let cli):
                 state.cli = cli
+                return .none
+
+            case .launchAtLoginLoaded(let enabled):
+                state.launchesAtLogin = enabled
+                return .none
+
+            case .launchAtLoginToggled(let enabled):
+                state.launchesAtLogin = enabled
+                return .run { [session] send in
+                    do {
+                        try await session.setLaunchesAtLogin(enabled)
+                    } catch {
+                        await send(.launchAtLoginLoaded(await session.launchesAtLogin()))
+                        await send(.loginItemFailed(error))
+                    }
+                }
+
+            case .loginItemFailed(let error):
+                state.alert = .failed("Couldn't change Launch at login", error)
                 return .none
 
             case .event:
