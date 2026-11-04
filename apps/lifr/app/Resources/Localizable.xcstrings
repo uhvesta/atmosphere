@@ -155,6 +155,9 @@
     "Add" : {
 
     },
+    "Add Skill" : {
+
+    },
     "Add Sub task" : {
 
     },
@@ -177,6 +180,9 @@
 
     },
     "Add an Avenue first, on the Avenues tab." : {
+
+    },
+    "Add details, or just send" : {
 
     },
     "Add reminder" : {
@@ -254,6 +260,9 @@
     "Assistant" : {
 
     },
+    "Attach skills to a conversation to tell the assistant what to do and which tools it may use." : {
+
+    },
     "Avenue" : {
 
     },
@@ -269,13 +278,22 @@
     "Board" : {
 
     },
+    "Built in" : {
+
+    },
     "Cancel" : {
+
+    },
+    "Change tasks" : {
 
     },
     "Changed" : {
 
     },
     "Changed %@" : {
+
+    },
+    "Changes save at once, and each can be undone from the conversation or Activity." : {
 
     },
     "Clean up titles, priorities, dates and labels." : {
@@ -291,6 +309,9 @@
 
     },
     "Command line" : {
+
+    },
+    "Comment on tasks" : {
 
     },
     "Comments" : {
@@ -329,6 +350,9 @@
     "Couldn't load your settings" : {
 
     },
+    "Couldn't load your skills" : {
+
+    },
     "Couldn't load your tasks" : {
 
     },
@@ -336,6 +360,9 @@
 
     },
     "Couldn't save" : {
+
+    },
+    "Couldn't save the skill" : {
 
     },
     "Couldn't undo" : {
@@ -365,6 +392,9 @@
     "Deny" : {
 
     },
+    "Describe the skill" : {
+
+    },
     "Description" : {
 
     },
@@ -380,10 +410,28 @@
     "Draft" : {
 
     },
+    "Draft plans" : {
+
+    },
+    "Draft with Apple Intelligence" : {
+
+    },
+    "Drafting…" : {
+
+    },
     "Due" : {
 
     },
+    "Edit" : {
+
+    },
+    "Edit Skill" : {
+
+    },
     "Edit description" : {
+
+    },
+    "Every Friday, show what I finished and what's overdue" : {
 
     },
     "Every change, who made it, and from where. Any of them can be reverted." : {
@@ -399,6 +447,15 @@
 
     },
     "Filters, %lld set" : {
+
+    },
+    "Find a skill" : {
+
+    },
+    "Give the skill a name with letters or digits." : {
+
+    },
+    "Go through what's overdue and suggest new dates." : {
 
     },
     "Group by" : {
@@ -429,6 +486,9 @@
 
     },
     "Installed at" : {
+
+    },
+    "Instructions" : {
 
     },
     "It can always read. Agents can never empty the trash, change Avenues or Settings, or approve apps." : {
@@ -486,6 +546,9 @@
 
     },
     "Make changes" : {
+
+    },
+    "Manage Skills…" : {
 
     },
     "Mark All Won't Do" : {
@@ -553,6 +616,9 @@
     "New Project…" : {
 
     },
+    "New Skill" : {
+
+    },
     "New Sub Task" : {
 
     },
@@ -613,6 +679,9 @@
     "Not used yet" : {
 
     },
+    "Note for %@" : {
+
+    },
     "Notifications are off" : {
 
     },
@@ -650,6 +719,12 @@
     "Pick a list" : {
 
     },
+    "Pick a skill for a message to tell the assistant what to do and which tools it may use." : {
+
+    },
+    "Picks another skill" : {
+
+    },
     "Plan new tasks, Projects and Avenues." : {
 
     },
@@ -671,16 +746,25 @@
     "Put back recent changes." : {
 
     },
+    "Read a task" : {
+
+    },
     "Read and write" : {
 
     },
     "Read only" : {
 
     },
+    "Redraft" : {
+
+    },
     "Reminders" : {
 
     },
     "Remove" : {
+
+    },
+    "Remove %@" : {
 
     },
     "Removed" : {
@@ -743,6 +827,15 @@
     "Search" : {
 
     },
+    "Search tasks" : {
+
+    },
+    "See recent changes" : {
+
+    },
+    "See what's due" : {
+
+    },
     "Send" : {
 
     },
@@ -765,6 +858,9 @@
 
     },
     "Signed as" : {
+
+    },
+    "Skills" : {
 
     },
     "Some fields were kept" : {
@@ -791,6 +887,12 @@
     "Sub tasks of %@" : {
 
     },
+    "Such as “only the HOME Avenue”" : {
+
+    },
+    "Summary" : {
+
+    },
     "Sync conversations" : {
 
     },
@@ -813,6 +915,12 @@
 
     },
     "The assistant couldn't answer" : {
+
+    },
+    "The assistant may" : {
+
+    },
+    "The draft fills in the fields below on this device. Check it before you save." : {
 
     },
     "The key starts each task's code, such as HEALTH-7K2Q. Use 2 to 10 letters." : {
@@ -869,10 +977,28 @@
     "Undo" : {
 
     },
+    "Undo changes" : {
+
+    },
     "Upcoming" : {
 
     },
     "Urgent" : {
+
+    },
+    "Use a Skill" : {
+
+    },
+    "Weekly review" : {
+
+    },
+    "What it's for, in a line" : {
+
+    },
+    "What the assistant does for a message that uses this skill." : {
+
+    },
+    "What the assistant does while this skill is attached." : {
 
     },
     "When" : {
@@ -884,7 +1010,19 @@
     "Won't Do + Finish" : {
 
     },
+    "Writes a note for this skill" : {
+
+    },
+    "You already have a skill called %@. Pick another name." : {
+
+    },
     "You on %@" : {
+
+    },
+    "Your skills sync with conversations when Sync conversations is on." : {
+
+    },
+    "Yours" : {
 
     }
   },

@@ -2,6 +2,7 @@ import ComposableArchitecture
 import LifrAPI
 import LifrCore
 import LifrSessionClient
+import LifrSkills
 import SwiftUI
 
 package struct SettingsView: View {
@@ -34,6 +35,7 @@ package struct SettingsView: View {
                     "Sync conversations",
                     isOn: Binding(
                         get: { store.syncsConversations }, set: { store.send(.syncConversationsToggled($0)) }))
+                Button("Skills") { store.send(.skillsTapped) }
             } header: {
                 Text("Assistant")
             } footer: {
@@ -50,6 +52,9 @@ package struct SettingsView: View {
         .navigationTitle("Settings")
         .navigationDestination(item: $store.scope(state: \.activity, action: \.activity)) { store in
             ActivityView(store: store)
+        }
+        .navigationDestination(item: $store.scope(state: \.skills, action: \.skills)) { store in
+            SkillsView(store: store)
         }
         .task { await store.send(.task).finish() }
         .confirmationDialog($store.scope(state: \.revoke, action: \.revoke))

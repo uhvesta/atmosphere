@@ -21,11 +21,11 @@ package struct Skill: Identifiable, Hashable, Codable, Sendable {
     /// "query" for a built-in skill, "user:weekly-review" for the person's.
     package var id: String
     package var summary: String
-    /// What the assistant is told to do while the skill is attached.
+    /// What the assistant is told to do for a message that uses the skill.
     package var instructions: String
     package var tools: Set<AssistantTool>
     package var draftsPlans: Bool
-    /// Off skills can't be attached.
+    /// Off skills can't be picked.
     package var isOn: Bool
 
     package init(
@@ -102,10 +102,6 @@ package struct Skill: Identifiable, Hashable, Codable, Sendable {
 
     package static let builtIn: [Skill] = [.query, .add, .tidy, .review, .undo]
 
-    /// The most skills one conversation can have, so the instructions fit
-    /// the on-device model.
-    package static let maxAttached = 3
-
     // MARK: - Search
 
     /// The skills that match `query`, best first: the title starting with
@@ -142,27 +138,29 @@ extension String {
     }
 }
 
-/// A skill attached to a conversation, with the person's note for it.
-package struct AttachedSkill: Hashable, Codable, Sendable {
-    package var id: String
-    /// Such as "only the HOME Avenue". Empty when there's none.
-    package var note: String
+/// A skill the assistant wrote from the person's description, for the
+/// editor to fill in.
+package struct SkillDraft: Hashable, Sendable {
+    package var name: String
+    package var summary: String
+    package var instructions: String
+    package var tools: Set<AssistantTool>
+    package var draftsPlans: Bool
 
-    package init(id: String, note: String = "") {
-        self.id = id
-        self.note = note
+    package init(
+        name: String, summary: String, instructions: String, tools: Set<AssistantTool>, draftsPlans: Bool
+    ) {
+        self.name = name
+        self.summary = summary
+        self.instructions = instructions
+        self.tools = tools
+        self.draftsPlans = draftsPlans
     }
-}
 
-/// A skill as one answer uses it.
-package struct SkillUse: Hashable, Sendable {
-    package var skill: Skill
-    package var note: String
-
-    package init(_ skill: Skill, note: String = "") {
-        self.skill = skill
-        self.note = note
-    }
+    package static let example = SkillDraft(
+        name: "Weekly review", summary: "Fridays: what got done and what's next.",
+        instructions: "Go through what got done this week and what's overdue, then suggest the three tasks to do next.",
+        tools: [.findTasks, .overview, .recentActivity], draftsPlans: false)
 }
 
 /// Keeps the person's skills, and which skills are on, with conversations:
@@ -175,8 +173,8 @@ package struct SkillsClient: Sendable {
     /// Adds or replaces a skill of the person's, or turns a built-in one on
     /// or off. A built-in's instructions can't change.
     package var save: @Sendable (_ skill: Skill) async throws -> Void
-    /// Removes skills of the person's. Conversations that had one attached
-    /// keep working without it.
+    /// Removes skills of the person's. Messages that used one still show
+    /// its ID.
     package var delete: @Sendable (_ ids: [String]) async throws -> Void
 }
 

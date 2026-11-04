@@ -4,6 +4,6 @@
 [text] "Every change, who made it, and from where. Any of them can be reverted."
 [header, text] "Assistant"
 [button, toggle] "Sync conversations" value: "0"
+[button] "Skills"
 [text] "Keeps conversations with the assistant on your other devices through iCloud, encrypted end to end. Turning it off keeps a copy here; copies in iCloud stay until you delete them."
 [header, text] "Agent access"
-[text] "Agents never see a Hidden Avenue, whatever their grant says."

@@ -20,6 +20,7 @@ swift_library(
         "//apps/lifr/clients/session",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
+        "//apps/lifr/features/skills",
         "//apps/lifr/features/task_detail",
         "//apps/lifr/ui",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

@@ -16,6 +16,7 @@ swift_library(
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
+        "//apps/lifr/features/skills",
         "//apps/lifr/ui",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],

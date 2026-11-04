@@ -31,6 +31,7 @@ final class ChatFeatureTests: XCTestCase {
             ChatFeature()
         } withDependencies: { [now] in
             $0.store = .inMemory(workspace, actor: .user(device: "iPhone", surface: .iPhone))
+            $0.skills = .inMemory()
             $0.assistant.availability = { .available }
             $0.assistant.reply = { request in
                 AssistantReplies { continuation in
@@ -142,6 +143,54 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello"])
     }
 
+    func testThePickedSkillGoesWithOneMessageOnly() async throws {
+        let (workspace, _) = home()
+        let sent = LockIsolated<[Skill?]>([])
+        let store = chat(workspace) { request in
+            sent.withValue { $0.append(request.skill) }
+            return AssistantReply(text: "Sure.", isComplete: true)
+        }
+
+        await store.send(.task)
+        await store.skipReceivedActions()
+        await store.send(.findSkillTapped)
+        await store.send(.binding(.set(\.skillQuery, "ti")))
+        XCTAssertEqual(store.state.skillChoices.first?.id, "tidy")
+        await store.send(.pickSkillTapped("tidy"))
+        XCTAssertFalse(store.state.findsSkill)
+        await send("Only HOME", in: store)
+        XCTAssertNil(store.state.picked)
+        await send("Thanks", in: store)
+
+        XCTAssertEqual(sent.value, [.tidy, nil])
+        XCTAssertEqual(store.state.conversation.messages.map(\.skill), ["tidy", nil, nil, nil])
+    }
+
+    func testASkillCanBeSentWithoutText() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "Here's your week.", isComplete: true) }
+
+        XCTAssertFalse(store.state.canSend)
+        await store.send(.pickSkillTapped("review"))
+        XCTAssertTrue(store.state.canSend)
+        await send("", in: store)
+        XCTAssertEqual(store.state.conversation.messages.first?.skill, "review")
+    }
+
+    func testASkillThatsOffCantBePicked() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.pickSkillTapped("query"))
+        var off = Skill.query
+        off.isOn = false
+        await store.send(.skillsLoaded([off, .tidy]))
+
+        XCTAssertNil(store.state.picked)
+        XCTAssertEqual(store.state.skillChoices.map(\.id), ["tidy"])
+        await store.send(.pickSkillTapped("query"))
+        XCTAssertNil(store.state.picked)
+    }
+
     private func list(_ kept: ConversationsClient) -> TestStoreOf<ConversationsFeature> {
         let (workspace, _) = home()
         let store = TestStore(initialState: ConversationsFeature.State()) {
@@ -149,6 +198,7 @@ final class ChatFeatureTests: XCTestCase {
         } withDependencies: { [now] in
             $0.store = .inMemory(workspace)
             $0.conversations = kept
+            $0.skills = .inMemory()
             $0.assistant = .scripted([AssistantReply(text: "Hi.", isComplete: true)])
             $0.date.now = now
             $0.timeZone = .gmt

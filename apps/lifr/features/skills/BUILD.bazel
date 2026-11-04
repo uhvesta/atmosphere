@@ -1,0 +1,60 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("//apps/lifr/testing/snapshot:defs.bzl", "lifr_snapshot_test")
+
+# The assistant's skills: turn them on or off, and write your own, with
+# opt-in help from the assistant. Opened from Settings and from a chat.
+swift_library(
+    name = "skills",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrSkills",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/lifr/features/conversations:__pkg__",
+        "//apps/lifr/features/settings:__pkg__",
+    ],
+    deps = [
+        "//apps/lifr/clients/assistant",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# TestStore tests, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":skills",
+        "//apps/lifr/clients/assistant",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+# Images of the skill list and the editor, on the pinned simulator.
+lifr_snapshot_test(
+    name = "snapshot_test",
+    srcs = glob(["SnapshotTests/*.swift"]),
+    deps = [
+        ":skills",
+        "//apps/lifr/clients/assistant",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+        "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

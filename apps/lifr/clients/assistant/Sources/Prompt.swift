@@ -64,15 +64,12 @@ package enum AssistantPrompt {
             }
         }
         if !request.draftsPlans {
-            text += "\n\nDon't propose a plan in this conversation: always leave \"plan\" out."
+            text += "\n\nDon't propose a plan for this message: leave \"plan\" out."
         }
-        if !request.skills.isEmpty {
-            text += "\n\nThe person attached these skills. Follow them:"
-            for use in request.skills {
-                text += "\n- \(use.skill.title): \(use.skill.instructions)"
-                let note = use.note.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !note.isEmpty { text += "\n  Their note: \(note)" }
-            }
+        if let skill = request.skill {
+            text +=
+                "\n\nFor this message the person picked the skill \(skill.title). Follow it:\n"
+                + skill.instructions
         }
         return text
     }
@@ -81,7 +78,11 @@ package enum AssistantPrompt {
     package static func prompt(_ request: AssistantRequest) -> String {
         var text = "Conversation so far:\n"
         text += history(request.messages).map { message in
-            (message.role == .person ? "Person: " : "You: ") + message.text
+            switch (message.role, message.skill) {
+            case (.person, let skill?): "Person, with the skill \(skill): " + message.text
+            case (.person, nil): "Person: " + message.text
+            case (.assistant, _): "You: " + message.text
+            }
         }.joined(separator: "\n")
         if let draft = request.draft, !draft.isEmpty {
             text += "\n\nThe current plan, with any edits by the person:\n" + PlanFile.write(draft)
@@ -113,6 +114,31 @@ package enum AssistantPrompt {
         let names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
         let noon = calendar.date(from: DateComponents(year: date.year, month: date.month, day: date.day, hour: 12))!
         return names[calendar.component(.weekday, from: noon) - 1]
+    }
+
+    // MARK: - Writing skills
+
+    /// What the model is told when it writes a skill for the person.
+    package static let skillInstructions = """
+        You write skills for Lifr's assistant. A skill is instructions the assistant follows for one message, \
+        and the tools it may use. From the person's description, write:
+        - "name": two or three words.
+        - "summary": one short line saying what the skill is for.
+        - "instructions": two to four sentences addressed to the assistant, saying what to do and when to ask \
+        before changing anything.
+        - "tools": only those the skill needs. findTasks searches tasks, getTask reads one, overview shows \
+        what's due, overdue or stalled, recentActivity shows recent changes, updateTasks changes tasks, \
+        addComment comments on a task, revert undoes changes.
+        - "draftsPlans": true only if the skill adds new tasks, Projects or Avenues.
+        """
+
+    /// The skill in the model's answer, or nil when it has no instructions.
+    package static func skillDraft(from answer: JSONValue) -> SkillDraft? {
+        guard let instructions = answer["instructions"]?.text else { return nil }
+        return SkillDraft(
+            name: answer["name"]?.text ?? "", summary: answer["summary"]?.text ?? "", instructions: instructions,
+            tools: Set(answer["tools"]?.items.compactMap { $0.text.flatMap(AssistantTool.init(rawValue:)) } ?? []),
+            draftsPlans: answer["draftsPlans"] == .bool(true))
     }
 
     // MARK: - Answers

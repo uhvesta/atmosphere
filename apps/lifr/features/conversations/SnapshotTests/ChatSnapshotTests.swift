@@ -8,8 +8,9 @@ import SnapshotTesting
 import SwiftUI
 import XCTest
 
-/// A chat about a garden, with the assistant's draft open on the card, for
-/// the sample records as of 2026-11-03 10:00 UTC.
+/// A chat about a garden, with the assistant's draft open on the card, and
+/// one using skills, for the sample records as of 2026-11-03 10:00
+/// UTC.
 @MainActor
 final class ChatSnapshotTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
@@ -39,6 +40,21 @@ final class ChatSnapshotTests: XCTestCase {
         return state
     }
 
+    /// A short chat whose first message used Review, with Tidy picked for
+    /// the next one.
+    private var skills: ChatFeature.State {
+        var conversation = Conversation(id: UUID(0), createdAt: now)
+        conversation.messages = [
+            ChatMessage(id: UUID(1), role: .person, text: "What's overdue at home?", at: now, skill: "review"),
+            ChatMessage(
+                id: UUID(2), role: .assistant, text: "Two tasks: Pay rent and Fix the tap. Want new dates for them?",
+                at: now),
+        ]
+        var state = ChatFeature.State(conversation: conversation, workspace: .sample(now: now, timeZone: .gmt))
+        state.skill = "tidy"
+        return state
+    }
+
     private func screen(_ state: ChatFeature.State) -> some View {
         NavigationStack {
             ChatView(store: Store(initialState: state) { EmptyReducer() })
@@ -52,5 +68,6 @@ final class ChatSnapshotTests: XCTestCase {
         assertScreenImages(of: screen(chat()), named: "draft", images: [.proMaxLight, .proMaxDark])
         assertScreenImages(
             of: screen(chat(problem: "There's no Avenue with the key HOM.")), named: "problem", images: [.proMaxLight])
+        assertScreenImages(of: screen(skills), named: "skills")
     }
 }

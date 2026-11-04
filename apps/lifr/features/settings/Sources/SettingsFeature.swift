@@ -4,6 +4,7 @@ import LifrAPI
 import LifrAssistantClient
 import LifrCore
 import LifrSessionClient
+import LifrSkills
 import LifrStoreClient
 import LifrTaskDetail
 
@@ -48,6 +49,7 @@ package struct SettingsFeature {
         /// Kept so the Activity log opens on what's shown.
         package var workspace = Workspace()
         @Presents package var activity: ActivityFeature.State?
+        @Presents package var skills: SkillsFeature.State?
         @Presents package var revoke: ConfirmationDialogState<Revoke>?
         @Presents package var alert: AlertState<Never>?
 
@@ -88,6 +90,8 @@ package struct SettingsFeature {
         case installCLITapped
         case activityTapped
         case activity(PresentationAction<ActivityFeature.Action>)
+        case skillsTapped
+        case skills(PresentationAction<SkillsFeature.Action>)
         case loginItemFailed(any Error)
         case saved(Result<Saved, any Error>)
         case sessionChanged(Result<Void, any Error>)
@@ -231,6 +235,10 @@ package struct SettingsFeature {
                 state.activity = ActivityFeature.State(workspace: state.workspace)
                 return .none
 
+            case .skillsTapped:
+                state.skills = SkillsFeature.State()
+                return .none
+
             case .activity(.presented(.delegate(.saved(let workspace)))):
                 state.show(workspace)
                 return .send(.delegate(.saved(workspace)))
@@ -251,11 +259,12 @@ package struct SettingsFeature {
                 state.alert = .failed("Couldn't change connected apps", error)
                 return .none
 
-            case .sessionChanged(.success), .activity, .revoke, .alert, .delegate:
+            case .sessionChanged(.success), .activity, .skills, .revoke, .alert, .delegate:
                 return .none
             }
         }
         .ifLet(\.$activity, action: \.activity) { ActivityFeature() }
+        .ifLet(\.$skills, action: \.skills) { SkillsFeature() }
         .ifLet(\.$revoke, action: \.revoke)
         .ifLet(\.$alert, action: \.alert)
     }

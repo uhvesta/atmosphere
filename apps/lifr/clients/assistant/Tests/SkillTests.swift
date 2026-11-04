@@ -7,37 +7,51 @@ import XCTest
 final class SkillTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
 
-    private func request(_ skills: [Skill], writes: Bool = true) -> AssistantRequest {
+    private func request(_ skill: Skill?, writes: Bool = true) -> AssistantRequest {
         AssistantRequest(
             messages: [], workspace: Workspace(), now: now, timeZone: .gmt,
-            writes: writes ? AssistantWrites(conversation: UUID()) { _ in Workspace() } : nil,
-            skills: skills.map { SkillUse($0) })
+            writes: writes ? AssistantWrites(conversation: UUID()) { _ in Workspace() } : nil, skill: skill)
     }
 
-    func testWithoutSkillsEveryToolIsAllowedAndPlansAreDrafted() {
-        XCTAssertEqual(request([]).allowedTools, Set(AssistantTool.allCases))
-        XCTAssertTrue(request([]).draftsPlans)
+    func testWithoutASkillEveryToolIsAllowedAndPlansAreDrafted() {
+        XCTAssertEqual(request(nil).allowedTools, Set(AssistantTool.allCases))
+        XCTAssertTrue(request(nil).draftsPlans)
     }
 
-    func testAttachedSkillsAllowTheirToolsTogether() {
-        let request = request([.query, .undo])
-        XCTAssertEqual(request.allowedTools, [.findTasks, .getTask, .overview, .recentActivity, .revert])
-        XCTAssertFalse(request.draftsPlans)
-        XCTAssertTrue(self.request([.query, .add]).draftsPlans)
+    func testASkillAllowsOnlyItsTools() {
+        XCTAssertEqual(request(.undo).allowedTools, [.recentActivity, .revert])
+        XCTAssertFalse(request(.undo).draftsPlans)
+        XCTAssertTrue(request(.add).draftsPlans)
     }
 
     func testToolsThatSaveNeedWrites() {
-        XCTAssertEqual(request([.undo], writes: false).allowedTools, [.recentActivity])
-        XCTAssertTrue(request([], writes: false).allowedTools.allSatisfy { !$0.writes })
+        XCTAssertEqual(request(.undo, writes: false).allowedTools, [.recentActivity])
+        XCTAssertTrue(request(nil, writes: false).allowedTools.allSatisfy { !$0.writes })
     }
 
-    func testTheInstructionsIncludeEachSkillAndItsNote() {
-        var request = request([.tidy])
-        request.skills[0].note = "only the HOME Avenue"
-        let text = AssistantPrompt.instructions(request)
+    func testTheInstructionsFollowThePickedSkill() {
+        let text = AssistantPrompt.instructions(request(.tidy))
         XCTAssertTrue(text.contains(Skill.tidy.instructions))
-        XCTAssertTrue(text.contains("only the HOME Avenue"))
         XCTAssertFalse(text.contains("revert"))
+    }
+
+    func testTheHistorySaysWhichSkillEachMessageUsed() {
+        var request = request(nil)
+        request.messages = [ChatMessage(id: UUID(), role: .person, text: "Clean up", at: now, skill: "tidy")]
+        XCTAssertTrue(AssistantPrompt.prompt(request).contains("tidy"))
+    }
+
+    func testASkillDraftNeedsInstructionsAndKeepsOnlyKnownTools() {
+        let answer = JSONValue.object([
+            "name": .string("Weekly review"), "summary": .string("Fridays."),
+            "instructions": .string("Go through the week."),
+            "tools": .array([.string("overview"), .string("sendEmail")]), "draftsPlans": .bool(false),
+        ])
+        let draft = AssistantPrompt.skillDraft(from: answer)
+        XCTAssertEqual(draft?.tools, [.overview])
+        XCTAssertEqual(draft?.name, "Weekly review")
+        XCTAssertEqual(draft?.draftsPlans, false)
+        XCTAssertNil(AssistantPrompt.skillDraft(from: .object(["name": .string("Empty")])))
     }
 
     func testAPlanIsDroppedWhenNoSkillDraftsPlans() {
@@ -78,25 +92,11 @@ final class SkillTests: XCTestCase {
         XCTAssertFalse(merged[0].isOn)
     }
 
-    func testAConversationUsesOnlySkillsThatExistAndAreOn() {
-        var conversation = Conversation(id: UUID(), createdAt: now)
-        conversation.skills = [.init(id: "tidy", note: "HOME"), .init(id: "query"), .init(id: "user:gone")]
-        var query = Skill.query
-        query.isOn = false
-        let uses = conversation.uses(of: [query, .tidy])
-        XCTAssertEqual(uses, [SkillUse(.tidy, note: "HOME")])
-    }
-
-    func testAConversationSavedBeforeSkillsHasNone() throws {
-        var conversation = Conversation(id: UUID(), createdAt: now)
-        conversation.messages = [ChatMessage(id: UUID(), role: .person, text: "Hi", at: now)]
-        var object = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: JSONEncoder().encode(conversation)) as? [String: Any])
-        object["skills"] = nil
-        let old = try JSONSerialization.data(withJSONObject: object)
-
-        let decoded = try JSONDecoder().decode(Conversation.self, from: old)
-        XCTAssertEqual(decoded, conversation)
+    func testAMessageSavedBeforeSkillsHasNone() throws {
+        let old = Data(#"{"id":"\#(UUID())","role":"person","text":"Hi","at":0}"#.utf8)
+        let decoded = try JSONDecoder().decode(ChatMessage.self, from: old)
+        XCTAssertNil(decoded.skill)
+        XCTAssertEqual(decoded.text, "Hi")
     }
 
     func testTheInMemoryClientKeepsUserSkillsAndBuiltInSwitches() async throws {

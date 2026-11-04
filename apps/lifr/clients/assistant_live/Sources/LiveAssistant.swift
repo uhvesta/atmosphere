@@ -15,14 +15,16 @@ extension AssistantClient {
             if #available(iOS 26, macOS 26, *) {
                 return AssistantClient(
                     availability: { OnDeviceModel.availability },
-                    reply: { request in OnDeviceModel.reply(to: request) })
+                    reply: { request in OnDeviceModel.reply(to: request) },
+                    draftSkill: { description in try await OnDeviceModel.draftSkill(description) })
             }
         #endif
         return AssistantClient(
             availability: { .systemTooOld },
             reply: { _ in
                 AsyncThrowingStream { $0.finish(throwing: AssistantError.unavailable(.systemTooOld)) }
-            })
+            },
+            draftSkill: { _ in throw AssistantError.unavailable(.systemTooOld) })
     }
 }
 
@@ -85,6 +87,26 @@ extension AssistantClient {
                     }
                 }
                 continuation.onTermination = { _ in task.cancel() }
+            }
+        }
+
+        static func draftSkill(_ description: String) async throws -> SkillDraft {
+            let availability = Self.availability
+            guard availability == .available else { throw AssistantError.unavailable(availability) }
+            do {
+                let session = LanguageModelSession(instructions: AssistantPrompt.skillInstructions)
+                let schema = try GenerationSchema(root: Schema.skill, dependencies: [])
+                let response = try await session.respond(to: description, schema: schema)
+                guard let draft = AssistantPrompt.skillDraft(from: json(response.content)) else {
+                    throw AssistantError.failed("it didn't write any instructions")
+                }
+                return draft
+            } catch let error as LanguageModelSession.GenerationError {
+                throw assistantError(error)
+            } catch let error as AssistantError {
+                throw error
+            } catch {
+                throw AssistantError.failed(error.localizedDescription)
             }
         }
 
@@ -175,6 +197,22 @@ extension AssistantClient {
                 optional("avenues", "New Avenues, only when the person agreed to one.", list(avenue)),
                 optional("projects", "New Projects.", list(project)),
                 optional("tasks", "New top-level tasks.", list(task(sub: false))),
+            ])
+
+        static let skill = DynamicGenerationSchema(
+            name: "Skill",
+            properties: [
+                .init(name: "name", description: "Two or three words.", schema: text),
+                .init(name: "summary", description: "One short line: what it's for.", schema: text),
+                .init(name: "instructions", description: "Two to four sentences for the assistant.", schema: text),
+                .init(
+                    name: "tools", description: "The tools it needs.",
+                    schema: list(
+                        DynamicGenerationSchema(
+                            name: "Tool", anyOf: AssistantTool.allCases.map(\.rawValue)))),
+                .init(
+                    name: "draftsPlans", description: "Whether it adds new tasks, Projects or Avenues.",
+                    schema: DynamicGenerationSchema(type: Bool.self)),
             ])
 
         static let turn = DynamicGenerationSchema(

@@ -14,6 +14,9 @@ package struct AssistantClient: Sendable {
     package var reply: @Sendable (_ request: AssistantRequest) -> AssistantReplies = { _ in
         AssistantReplies { $0.finish(throwing: AssistantError.unavailable(.deviceNotEligible)) }
     }
+    /// A skill written from the person's description of it, for them to
+    /// review before saving.
+    package var draftSkill: @Sendable (_ description: String) async throws -> SkillDraft
 }
 
 /// Each reply as it's written, the last one complete.
@@ -57,12 +60,15 @@ package struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
     package var role: Role
     package var text: String
     package var at: Date
+    /// The ID of the skill the person picked for this message, if any.
+    package var skill: String?
 
-    package init(id: UUID, role: Role, text: String, at: Date) {
+    package init(id: UUID, role: Role, text: String, at: Date, skill: String? = nil) {
         self.id = id
         self.role = role
         self.text = text
         self.at = at
+        self.skill = skill
     }
 }
 
@@ -83,13 +89,13 @@ package struct AssistantRequest: Hashable, Sendable {
     /// How the assistant saves changes it makes. Without it, it only reads
     /// and drafts plans.
     package var writes: AssistantWrites?
-    /// The skills attached to the conversation, with the person's notes.
-    /// Without any, the assistant does what every built-in skill does.
-    package var skills: [SkillUse]
+    /// The skill the person picked for this message. Without one, the
+    /// assistant may do what any built-in skill does.
+    package var skill: Skill?
 
     package init(
         messages: [ChatMessage], draft: Plan? = nil, problem: String? = nil, workspace: Workspace, now: Date,
-        timeZone: TimeZone, writes: AssistantWrites? = nil, skills: [SkillUse] = []
+        timeZone: TimeZone, writes: AssistantWrites? = nil, skill: Skill? = nil
     ) {
         self.messages = messages
         self.draft = draft
@@ -98,20 +104,19 @@ package struct AssistantRequest: Hashable, Sendable {
         self.now = now
         self.timeZone = timeZone
         self.writes = writes
-        self.skills = skills
+        self.skill = skill
     }
 
-    /// The tools the attached skills allow, or every tool without any.
-    /// Tools that save changes need `writes`.
+    /// The tools the skill allows, or every tool without one. Tools that
+    /// save changes need `writes`.
     package var allowedTools: Set<AssistantTool> {
-        let tools =
-            skills.isEmpty ? Set(AssistantTool.allCases) : skills.reduce(into: []) { $0.formUnion($1.skill.tools) }
+        let tools = skill?.tools ?? Set(AssistantTool.allCases)
         return writes == nil ? tools.filter { !$0.writes } : tools
     }
 
-    /// Whether the assistant may propose a plan: without skills, or when
-    /// an attached one drafts plans.
-    package var draftsPlans: Bool { skills.isEmpty || skills.contains(where: \.skill.draftsPlans) }
+    /// Whether the assistant may propose a plan: without a skill, or when
+    /// the skill drafts plans.
+    package var draftsPlans: Bool { skill?.draftsPlans ?? true }
 
     package var today: CalendarDate { CalendarDate(now, in: timeZone) }
     package var lookup: AssistantLookup { AssistantLookup(workspace) }
@@ -256,7 +261,8 @@ extension AssistantClient {
                     continuation.yield(done)
                     continuation.finish()
                 }
-            })
+            },
+            draftSkill: { _ in .example })
     }
 }
 
