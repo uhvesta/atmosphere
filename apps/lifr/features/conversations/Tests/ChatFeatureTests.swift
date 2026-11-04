@@ -143,6 +143,30 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello"])
     }
 
+    func testABusyReplyKeepsItsTextAndIsSentAgainOnResume() async throws {
+        let (workspace, _) = home()
+        let attempts = LockIsolated(0)
+        let store = chat(workspace) { _ in
+            let attempt = attempts.withValue {
+                $0 += 1
+                return $0
+            }
+            if attempt == 1 { throw AssistantError.busy }
+            return AssistantReply(text: "Done.", isComplete: true)
+        }
+
+        await send("Hello", in: store)
+        XCTAssertNotNil(store.state.replying)
+        XCTAssertNotNil(store.state.waiting)
+        XCTAssertNil(store.state.alert)
+        XCTAssertFalse(store.state.canSend)
+
+        await store.send(.resume)
+        await store.skipReceivedActions()
+        XCTAssertNil(store.state.waiting)
+        XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Done."])
+    }
+
     func testThePickedSkillGoesWithOneMessageOnly() async throws {
         let (workspace, _) = home()
         let sent = LockIsolated<[Skill?]>([])
@@ -215,9 +239,10 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.task)
         await store.send(.newTapped)
         XCTAssertTrue(store.state.conversations.isEmpty)
-        await store.send(.chat(.presented(.task)))
-        await store.send(.chat(.presented(.binding(.set(\.input, "Hello")))))
-        await store.send(.chat(.presented(.sendTapped)))
+        let id = try XCTUnwrap(store.state.openID)
+        await store.send(.chats(.element(id: id, action: .task)))
+        await store.send(.chats(.element(id: id, action: .binding(.set(\.input, "Hello")))))
+        await store.send(.chats(.element(id: id, action: .sendTapped)))
         await store.skipReceivedActions()
         XCTAssertEqual(store.state.conversations.map(\.title), ["Hello"])
         let saved = try await kept.load()
@@ -227,6 +252,62 @@ final class ChatFeatureTests: XCTestCase {
         await reopened.send(.task)
         await reopened.skipReceivedActions()
         XCTAssertEqual(reopened.state.conversations.map(\.title), ["Hello"])
+    }
+
+    func testAReplyKeepsGoingAfterLeavingTheChat() async throws {
+        let kept = ConversationsClient.inMemory()
+        let gate = AsyncStream.makeStream(of: Void.self)
+        let store = list(kept)
+        store.dependencies.assistant.reply = { _ in
+            AssistantReplies { continuation in
+                Task {
+                    for await _ in gate.stream { break }
+                    continuation.yield(AssistantReply(text: "Later.", isComplete: true))
+                    continuation.finish()
+                }
+            }
+        }
+
+        await store.send(.newTapped)
+        let id = try XCTUnwrap(store.state.openID)
+        await store.send(.chats(.element(id: id, action: .binding(.set(\.input, "Plan my week")))))
+        await store.send(.chats(.element(id: id, action: .sendTapped)))
+        await store.send(.closed)
+        XCTAssertNil(store.state.openID)
+        XCTAssertNotNil(store.state.chats[id: id], "a chat that's replying is kept")
+
+        gate.continuation.yield()
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.conversations[id: id]?.messages.map(\.text), ["Plan my week", "Later."])
+        XCTAssertTrue(store.state.chats.isEmpty, "a finished chat off screen is let go")
+        let saved = try await kept.load()
+        XCTAssertEqual(saved.first?.messages.count, 2)
+    }
+
+    func testOpeningAnotherChatDoesntStopAReply() async throws {
+        let kept = ConversationsClient.inMemory()
+        let gate = AsyncStream.makeStream(of: Void.self)
+        let store = list(kept)
+        store.dependencies.assistant.reply = { _ in
+            AssistantReplies { continuation in
+                Task {
+                    for await _ in gate.stream { break }
+                    continuation.yield(AssistantReply(text: "Later.", isComplete: true))
+                    continuation.finish()
+                }
+            }
+        }
+
+        await store.send(.newTapped)
+        let first = try XCTUnwrap(store.state.openID)
+        await store.send(.chats(.element(id: first, action: .binding(.set(\.input, "First")))))
+        await store.send(.chats(.element(id: first, action: .sendTapped)))
+        await store.send(.newTapped)
+        XCTAssertNotEqual(store.state.openID, first)
+
+        gate.continuation.yield()
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.conversations[id: first]?.messages.map(\.text), ["First", "Later."])
     }
 
     func testDeletingConversationsKeepsTheTasks() async throws {

@@ -16,9 +16,15 @@ package struct ConversationsView: View {
                 } label: {
                     VStack(alignment: .leading) {
                         Text(conversation.title).lineLimit(1)
-                        Text(conversation.updatedAt, format: .dateTime.month().day().hour().minute())
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        if store.chats[id: conversation.id]?.replying != nil {
+                            Text("Replying…")
+                                .font(.caption)
+                                .foregroundStyle(.tint)
+                        } else {
+                            Text(conversation.updatedAt, format: .dateTime.month().day().hour().minute())
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 .swipeActions(allowsFullSwipe: false) {
@@ -63,8 +69,12 @@ package struct ConversationsView: View {
                 }
             }
         }
-        .navigationDestination(item: $store.scope(state: \.chat, action: \.chat)) { store in
-            ChatView(store: store)
+        .navigationDestination(
+            isPresented: Binding(get: { store.openID != nil }, set: { if !$0 { store.send(.closed) } })
+        ) {
+            if let id = store.openID, let chat = store.scope(state: \.chats[id: id], action: \.chats[id: id]) {
+                ChatView(store: chat)
+            }
         }
     }
 }

@@ -15,6 +15,7 @@ import SwiftUI
 /// The app's window: tabs on iPhone, a sidebar on the Mac.
 package struct RootView: View {
     @Bindable package var store: StoreOf<RootFeature>
+    @Environment(\.scenePhase) private var scenePhase
 
     package init(store: StoreOf<RootFeature>) {
         self.store = store
@@ -43,6 +44,9 @@ package struct RootView: View {
             }
             .padding(.bottom, store.platform == .phone ? 64 : 16)
             .animation(.default, value: store.toast?.id)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { store.send(.conversations(.resumed)) }
         }
         .modifier(RegistersUndo(store: store))
         .alert($store.scope(state: \.undoAlert, action: \.undoAlert))

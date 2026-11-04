@@ -7,17 +7,23 @@ import LifrStoreClient
 
 /// A chat with the assistant: it answers questions, changes tasks when
 /// asked (each reply that did has Undo), and drafts plans on a card the
-/// person can edit and then add.
+/// person can edit and then add. A reply keeps going when the person
+/// leaves the chat or Lifr; one the system stops is sent again on `resume`.
 @Reducer
 package struct ChatFeature {
     @ObservableState
-    package struct State: Equatable {
+    package struct State: Equatable, Identifiable {
         package var conversation: Conversation
         package var workspace: Workspace
         package var input = ""
         package var availability = AssistantAvailability.available
         /// The reply as it's written, until it's complete.
         package var replying: String?
+        /// The request of a reply the system stopped, such as while Lifr
+        /// was in the background, to send again on `resume`.
+        package var waiting: AssistantRequest?
+        /// Whether the changes of the last reply are still being looked up.
+        package var reloading = false
         /// Why the draft can't be added as it is now, checked on every
         /// change, and sent with the next message.
         package var problem: String?
@@ -36,6 +42,13 @@ package struct ChatFeature {
             self.workspace = workspace
         }
 
+        package var id: UUID { conversation.id }
+
+        /// Whether a reply is being written, waits to be sent again, is
+        /// being finished, or failed with an alert not yet seen: the chat is
+        /// kept until it isn't.
+        package var isWorking: Bool { replying != nil || waiting != nil || reloading || alert != nil }
+
         package var canAdd: Bool { conversation.draft != nil && problem == nil }
 
         /// The skill picked for the next message, while it exists and is on.
@@ -50,7 +63,7 @@ package struct ChatFeature {
         }
 
         package var canSend: Bool {
-            availability == .available && replying == nil
+            availability == .available && replying == nil && waiting == nil
                 && (picked != nil || !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
@@ -65,6 +78,8 @@ package struct ChatFeature {
         case manageSkillsTapped
         case manageSkills(PresentationAction<SkillsFeature.Action>)
         case sendTapped
+        /// Lifr is back on screen: send a stopped reply's request again.
+        case resume
         case replied(AssistantReply)
         case replyFailed(any Error)
         case reloaded(messageID: UUID, Result<Workspace, any Error>)
@@ -89,6 +104,7 @@ package struct ChatFeature {
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
     @Dependency(\.uuid) private var uuid
+    @Dependency(\.backgroundTime) private var backgroundTime
 
     package init() {}
 
@@ -148,12 +164,11 @@ package struct ChatFeature {
                         try await store.save(operation).workspace
                     },
                     skill: skill)
-                return .run { [assistant] send in
-                    for try await reply in assistant.reply(request) { await send(.replied(reply)) }
-                } catch: { error, send in
-                    await send(.replyFailed(error))
-                }
-                .cancellable(id: CancelID.reply, cancelInFlight: true)
+                return reply(request, in: &state)
+
+            case .resume:
+                guard let request = state.waiting else { return .none }
+                return reply(request, in: &state)
 
             case .replied(let reply):
                 guard reply.isComplete else {
@@ -161,6 +176,8 @@ package struct ChatFeature {
                     return .none
                 }
                 state.replying = nil
+                state.waiting = nil
+                state.reloading = true
                 let id = uuid()
                 state.conversation.messages.append(ChatMessage(id: id, role: .assistant, text: reply.text, at: now))
                 if let plan = reply.plan {
@@ -171,8 +188,13 @@ package struct ChatFeature {
                     await send(.reloaded(messageID: id, Result { try await store.load() }))
                 }
 
+            case .replyFailed(let error as AssistantError) where error == .busy:
+                // Keep what's written so far, and send again on `resume`.
+                return .none
+
             case .replyFailed(let error):
                 state.replying = nil
+                state.waiting = nil
                 state.alert = AlertState {
                     TextState("The assistant couldn't answer")
                 } message: {
@@ -181,6 +203,7 @@ package struct ChatFeature {
                 return .none
 
             case .reloaded(let messageID, .success(let workspace)):
+                state.reloading = false
                 let known = Set(state.conversation.changes.values.joined()).union(state.conversation.added)
                 let new = workspace.entries(inConversation: state.conversation.id).map(\.id)
                     .filter { !known.contains($0) }
@@ -193,6 +216,7 @@ package struct ChatFeature {
             case .reloaded(_, .failure):
                 // The assistant's changes are saved; the screens catch up on
                 // the next update.
+                state.reloading = false
                 return .none
 
             case .undoTapped(let messageID):
@@ -261,6 +285,22 @@ package struct ChatFeature {
         }
         .ifLet(\.$alert, action: \.alert)
         .ifLet(\.$manageSkills, action: \.manageSkills) { SkillsFeature() }
+    }
+
+    /// Writes the reply to `request`, with background time so it keeps
+    /// going when the person leaves Lifr. Until it's complete, `waiting`
+    /// keeps the request for `resume`.
+    private func reply(_ request: AssistantRequest, in state: inout State) -> Effect<Action> {
+        state.waiting = request
+        if state.replying == nil { state.replying = "" }
+        return .run { [assistant, backgroundTime] send in
+            try await backgroundTime.run("Assistant reply") {
+                for try await reply in assistant.reply(request) { await send(.replied(reply)) }
+            }
+        } catch: { error, send in
+            await send(.replyFailed(error))
+        }
+        .cancellable(id: CancelID.reply, cancelInFlight: true)
     }
 
     /// Checks the draft against the records as they are now.
