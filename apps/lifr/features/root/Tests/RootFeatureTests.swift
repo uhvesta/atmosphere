@@ -200,6 +200,25 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testLeavingAListClosesItsTaskAndLeavingTheAssistantClosesItsChat() async {
+        let run = records.task("Run", in: health, due: 0)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.today(.list(.rowTapped(run.id))))
+        XCTAssertEqual(store.state.openTaskID, run.id)
+        await store.send(.selected(.conversations))
+        XCTAssertNil(store.state.today.list.detail)
+
+        await store.send(.conversations(.newTapped))
+        XCTAssertNotNil(store.state.conversations.chat)
+        await store.send(.selected(.today))
+        await store.receive(\.conversations.closed)
+        XCTAssertNil(store.state.conversations.chat)
+        await task.cancel()
+    }
+
     func testNewSubtaskNeedsAnOpenTaskAndGoesUnderIt() async {
         let shoes = records.task("Buy running shoes", in: health, due: 0)
         let gait = records.task("Get a gait analysis", in: health, parent: shoes)

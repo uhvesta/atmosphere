@@ -58,6 +58,10 @@ package struct RootView: View {
             NavigationStack { ApprovalView(store: store) }
                 .interactiveDismissDisabled()
         }
+        // The Mac's default Form lays out in columns and doesn't scroll, so a
+        // long one runs off the window. Grouped scrolls, and is already the
+        // iPhone's look.
+        .formStyle(.grouped)
     }
 }
 
@@ -128,8 +132,10 @@ private struct MacRootView: View {
     var body: some View {
         NavigationSplitView {
             Sidebar(store: store)
+                .navigationSplitViewColumnWidth(min: 180, ideal: 220)
         } content: {
             content
+                .navigationSplitViewColumnWidth(min: 320, ideal: 380)
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
                         AddMenu(store: store)
@@ -138,8 +144,13 @@ private struct MacRootView: View {
                 }
         } detail: {
             NavigationStack {
-                ContentUnavailableView("No task selected", systemImage: "checklist")
+                if store.selection == .conversations {
+                    ContentUnavailableView("No conversation selected", systemImage: "bubble.left.and.text.bubble.right")
+                } else {
+                    ContentUnavailableView("No task selected", systemImage: "checklist")
+                }
             }
+            .navigationSplitViewColumnWidth(min: 360, ideal: 480)
         }
     }
 
@@ -154,9 +165,9 @@ private struct MacRootView: View {
         case .search:
             SearchView(store: store.scope(state: \.search, action: \.search))
         case .conversations:
-            NavigationStack {
-                ConversationsView(store: store.scope(state: \.conversations, action: \.conversations))
-            }
+            // No stack of its own, so a chat opens in the detail column, as
+            // a task does.
+            ConversationsView(store: store.scope(state: \.conversations, action: \.conversations))
         case .scope:
             Group {
                 if store.content == .board, let board = store.scope(state: \.board, action: \.board) {

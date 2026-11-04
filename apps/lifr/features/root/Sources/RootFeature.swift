@@ -314,15 +314,26 @@ package struct RootFeature {
                 return .none
 
             case .selected(let item):
+                let left = state.selection
                 state.selection = item
                 state.avenue = nil
                 state.board = nil
-                guard case .scope(let scope) = item, let workspace = state.workspace else { return .none }
+                // What the detail column showed belongs to the list left, so
+                // it goes with it.
+                if left != item {
+                    state.today.list.detail = nil
+                    state.upcoming.list.detail = nil
+                    state.procrastinated.list.detail = nil
+                    state.search.list.detail = nil
+                }
+                let closesChat: Effect<Action> =
+                    left == .conversations && item != .conversations ? .send(.conversations(.closed)) : .none
+                guard case .scope(let scope) = item, let workspace = state.workspace else { return closesChat }
                 let avenue = AvenueFeature.State(scope: scope, workspace: workspace, now: now, timeZone: timeZone)
                 state.avenue = avenue
                 state.board = BoardFeature.State(
                     scope: scope, title: avenue.title, workspace: workspace, now: now, timeZone: timeZone)
-                return .none
+                return closesChat
 
             case .newTaskTapped:
                 showQuickAdd(.task, in: &state)
