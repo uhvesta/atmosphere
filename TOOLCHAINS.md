@@ -128,9 +128,26 @@ bazel build --config=xcode //apps/lifr/...
 bazel run //apps/lifr:xcodeproj   # generates apps/lifr/Lifr.xcodeproj
 ```
 
-Builds from the generated project use `--config=rules_xcodeproj`, which also
-builds host tools with Xcode. `rules_xcodeproj`'s rsync links lz4 and xxhash,
-which define the same symbols, and `ld64.lld` rejects that.
+`--config=xcode` also builds the tools these builds run on the build machine
+with Xcode: Swift macro plugins, which link with a flag `ld64.lld` rejects,
+and `rules_xcodeproj`'s `rsync`, whose `lz4` and `xxhash` define the same
+symbols.
+Builds from the generated project use `--config=rules_xcodeproj`, which turns
+on `--config=xcode`.
+
+### Swift packages
+
+Xcode apps can use Swift packages, through
+[`rules_swift_package_manager`](https://github.com/cgrindel/rules_swift_package_manager).
+`apps/lifr/Package.swift` lists them and `apps/lifr/Package.resolved` pins
+them. After changing either, run `bazel run @swift_package//:resolve` and then
+`bazel mod tidy`.
+
+The module extension runs Xcode's `swift package`, but `MODULE.bazel.lock`
+records its result, and the `@swiftpkg_*` repositories are only fetched by
+targets that need Xcode. Hosts without Xcode, including Linux, never run it.
+Each package compiles for its own minimum OS, as SwiftPM does, so build them
+through a `rules_apple` target rather than with `--platforms` alone.
 
 ## Rust
 

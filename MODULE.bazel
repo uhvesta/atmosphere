@@ -17,6 +17,7 @@ bazel_dep(name = "toml.bzl", version = "0.5.0")
 bazel_dep(name = "apple_support", version = "2.11.0")
 bazel_dep(name = "rules_apple", version = "5.4.0")
 bazel_dep(name = "rules_xcodeproj", version = "4.1.0")
+bazel_dep(name = "rules_swift_package_manager", version = "1.25.0")
 
 # MARK: - C/C++
 
@@ -108,6 +109,19 @@ single_version_override(
     patch_strip = 1,
     patches = ["//bazel/toolchains/swift:rules_swift_no_xcrun.patch"],
 )
+
+# MARK: - Swift packages
+
+# Third-party Swift packages for the Xcode apps, from apps/lifr/Package.swift.
+# The extension runs the host's `swift package` (Xcode's), so only builds that
+# use a @swiftpkg_* repository need Xcode. Update the pins with
+# `bazel run @swift_package//:resolve`.
+swift_deps = use_extension("@rules_swift_package_manager//:extensions.bzl", "swift_deps")
+swift_deps.from_package(
+    resolved = "//apps/lifr:Package.resolved",
+    swift = "//apps/lifr:Package.swift",
+)
+use_repo(swift_deps, "swift_package", "swiftpkg_swift_composable_architecture", "swiftpkg_swift_snapshot_testing")
 
 # MARK: - Zig
 
