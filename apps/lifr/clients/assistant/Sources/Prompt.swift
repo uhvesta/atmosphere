@@ -109,11 +109,8 @@ package enum AssistantPrompt {
     }
 
     private static func weekday(_ date: CalendarDate) -> String {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "UTC")!
         let names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-        let noon = calendar.date(from: DateComponents(year: date.year, month: date.month, day: date.day, hour: 12))!
-        return names[calendar.component(.weekday, from: noon) - 1]
+        return names[CalendarDate.utcCalendar.component(.weekday, from: date.noonUTC) - 1]
     }
 
     // MARK: - Writing skills

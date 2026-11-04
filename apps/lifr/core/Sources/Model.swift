@@ -122,7 +122,15 @@ package enum TaskStatus: String, Hashable, Codable, Sendable, CaseIterable {
 package enum Priority: String, Hashable, Codable, Sendable, CaseIterable, Comparable {
     case none, low, medium, high, urgent
 
-    var rank: Int { Self.allCases.firstIndex(of: self)! }
+    var rank: Int {
+        switch self {
+        case .none: 0
+        case .low: 1
+        case .medium: 2
+        case .high: 3
+        case .urgent: 4
+        }
+    }
 
     package static func < (lhs: Self, rhs: Self) -> Bool { lhs.rank < rhs.rank }
 }

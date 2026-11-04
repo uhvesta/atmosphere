@@ -16,7 +16,7 @@ package struct AvenueKey: Hashable, Comparable, Codable, Sendable, CustomStringC
         rawValue = key
     }
 
-    init(reconciled rawValue: String) {
+    package init(reconciled rawValue: String) {
         self.rawValue = rawValue
     }
 
@@ -131,4 +131,41 @@ package struct TaskCode: Hashable, Comparable, Codable, Sendable, CustomStringCo
 extension Character {
     var isKeyLetter: Bool { ("A"..."Z").contains(self) }
     var isKeyDigit: Bool { ("0"..."9").contains(self) }
+}
+
+extension TaskCode {
+    /// 0001 for 1: the number's last four decimal digits. For fixed codes in
+    /// samples and tests.
+    package init(sequence number: Int) {
+        self.init(digits: decimalDigits(number, count: Self.length))
+    }
+}
+
+extension UUID {
+    /// 00000000-0000-0000-0000-000000000101 for 101: the number's last 12
+    /// decimal digits as the UUID's last 12 hex digits. For fixed IDs in
+    /// samples and tests.
+    package init(sequence number: Int) {
+        let digits = decimalDigits(number, count: 12)
+        var bytes = [UInt8](repeating: 0, count: 16)
+        for index in 0..<6 {
+            bytes[10 + index] = UInt8(digits[2 * index] * 16 + digits[2 * index + 1])
+        }
+        self.init(
+            uuid: (
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9],
+                bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+            ))
+    }
+}
+
+/// The last `count` decimal digits of `number`, most significant first.
+private func decimalDigits(_ number: Int, count: Int) -> [Int] {
+    var rest = abs(number)
+    var digits = [Int](repeating: 0, count: count)
+    for place in (0..<count).reversed() {
+        digits[place] = rest % 10
+        rest /= 10
+    }
+    return digits
 }

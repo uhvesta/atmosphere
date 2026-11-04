@@ -995,6 +995,12 @@
     "The revert is a change of its own, so you can revert it too. %@" : {
 
     },
+    "The sample has no HEALTH Avenue." : {
+
+    },
+    "The sample has no task with Sub tasks." : {
+
+    },
     "The task changed again since, here or on another device, and undoing would lose that change. Open the task to change it back by hand." : {
 
     },

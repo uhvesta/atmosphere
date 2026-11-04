@@ -118,14 +118,19 @@ private struct BoardCard: View {
 
 #Preview {
     let workspace = Workspace.sample(now: Date(), timeZone: .current)
-    let avenue = workspace.avenues.values.first { $0.key.description == "HEALTH" }!
-    NavigationStack {
-        BoardView(
-            store: Store(initialState: BoardFeature.State(scope: .avenue(avenue.id), title: avenue.name)) {
-                BoardFeature()
-            } withDependencies: {
-                $0.store = .inMemory(workspace)
-            })
+    Group {
+        if let avenue = workspace.avenues.values.first(where: { $0.key.description == "HEALTH" }) {
+            NavigationStack {
+                BoardView(
+                    store: Store(initialState: BoardFeature.State(scope: .avenue(avenue.id), title: avenue.name)) {
+                        BoardFeature()
+                    } withDependencies: {
+                        $0.store = .inMemory(workspace)
+                    })
+            }
+        } else {
+            Text("The sample has no HEALTH Avenue.")
+        }
     }
     .frame(width: 1100, height: 600)
 }

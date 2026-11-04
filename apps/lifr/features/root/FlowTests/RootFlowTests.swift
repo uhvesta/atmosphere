@@ -262,7 +262,8 @@ final class RootFlowTests: XCTestCase {
         let (phone, task) = await app(.phone, client)
         XCTAssertEqual(phone.state.workspace?.tasks[shoes.id]?.status, .done)
 
-        sync(now: now) { $0.applySynced(tasks: [mac.workspace.tasks[socks.id]!]) }
+        let socksOnMac = try XCTUnwrap(mac.workspace.tasks[socks.id])
+        sync(now: now) { $0.applySynced(tasks: [socksOnMac]) }
         await phone.receive(\.updated)
 
         let workspace = try XCTUnwrap(phone.state.workspace)

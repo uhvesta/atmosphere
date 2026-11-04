@@ -18,7 +18,7 @@ final class RootFeatureTests: XCTestCase {
     private lazy var health = records.avenue("HEALTH", "Health")
 
     private let request = ApprovalRequest(
-        id: UUID(0), identity: "com.anthropic.claude-code", client: "Claude Code", method: .searchTasks,
+        id: UUID(sequence: 0), identity: "com.anthropic.claude-code", client: "Claude Code", method: .searchTasks,
         requestedAt: Date(timeIntervalSince1970: 1_793_700_000))
 
     private func makeStore(
@@ -87,7 +87,7 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
-    func testASyncThatFixedSomethingShowsTheBannerUntilDismissed() async {
+    func testASyncThatFixedSomethingShowsTheBannerUntilDismissed() async throws {
         let parent = records.task("Buy running shoes", in: health)
         // Offline, one device adds a Sub task while the other closes the parent.
         var mac = records
@@ -98,7 +98,8 @@ final class RootFeatureTests: XCTestCase {
         let task = await store.send(.task)
         await store.receive(\.loaded)
 
-        sync(now: now) { $0.applySynced(tasks: [mac.workspace.tasks[socks.id]!]) }
+        let socksOnMac = try XCTUnwrap(mac.workspace.tasks[socks.id])
+        sync(now: now) { $0.applySynced(tasks: [socksOnMac]) }
         await store.receive(\.updated)
 
         XCTAssertEqual(store.state.syncBanner?.messages.count, 1)
@@ -144,7 +145,7 @@ final class RootFeatureTests: XCTestCase {
         let task = await store.send(.task)
         await store.receive(\.loaded)
         var second = request
-        second.id = UUID(1)
+        second.id = UUID(sequence: 1)
         second.client = "Cursor"
 
         session.request(request)
@@ -373,11 +374,5 @@ final class RootFeatureTests: XCTestCase {
         await store.receive(\.today.delegate.saved)
         XCTAssertEqual(store.state.workspace?.tasks[run.id]?.status, .inProgress)
         await task.cancel()
-    }
-}
-
-extension UUID {
-    fileprivate init(_ value: Int) {
-        self.init(uuidString: String(format: "00000000-0000-0000-0000-%012d", value))!
     }
 }

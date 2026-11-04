@@ -42,8 +42,11 @@ package enum ReminderChoice: CaseIterable, Hashable, Sendable {
         case .tomorrowMorning:
             var calendar = Calendar(identifier: .gregorian)
             calendar.timeZone = timeZone
-            let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))!
-            return .at(calendar.date(bySettingHour: 9, minute: 0, second: 0, of: tomorrow)!)
+            // The calendar only fails on dates far outside any real one;
+            // a day and nine hours from midnight is close enough then.
+            let midnight = calendar.startOfDay(for: now)
+            let tomorrow = calendar.date(byAdding: .day, value: 1, to: midnight) ?? midnight + 24 * 60 * 60
+            return .at(calendar.date(bySettingHour: 9, minute: 0, second: 0, of: tomorrow) ?? tomorrow + 9 * 60 * 60)
         case .hourBeforeDue:
             return .beforeDue(seconds: 60 * 60)
         case .dayBeforeDue:

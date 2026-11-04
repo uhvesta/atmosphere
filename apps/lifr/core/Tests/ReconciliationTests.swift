@@ -74,8 +74,8 @@ func reconciliationTests() -> [TestCase] {
                 phone.workspace.tasks,
                 mac.workspace.tasks.mapValues { task in
                     var task = task
-                    task.updatedAt = phone.workspace.tasks[task.id]!.updatedAt
-                    task.lastActivityAt = phone.workspace.tasks[task.id]!.lastActivityAt
+                    task.updatedAt = try phone.workspace.tasks[task.id].unwrap().updatedAt
+                    task.lastActivityAt = try phone.workspace.tasks[task.id].unwrap().lastActivityAt
                     return task
                 })
             try expectEqual(phone.workspace.avenues, mac.workspace.avenues)
@@ -90,9 +90,9 @@ func reconciliationTests() -> [TestCase] {
             _ = phone.workspace.reconcile(in: phone.context)
             try expectEqual(phone.workspace.avenues[older.id]?.key.rawValue, "HOME")
             try expectEqual(phone.workspace.avenues[newer.id]?.key.rawValue, "HOME2")
-            try expect(phone.workspace.avenues[newer.id]!.key.needsRename)
+            try expect(phone.workspace.avenues[newer.id].unwrap().key.needsRename)
             try phone.workspace.setKey("HOUSE", ofAvenue: newer.id)
-            try expect(!phone.workspace.avenues[newer.id]!.key.needsRename)
+            try expect(!phone.workspace.avenues[newer.id].unwrap().key.needsRename)
         },
         TestCase("given a 10-letter key that collides, then the suffix still fits in 10 characters") {
             let phone = try Fixture()
@@ -138,7 +138,7 @@ func reconciliationTests() -> [TestCase] {
             let mac = copy(phone, device: "Mac")
             _ = try phone.workspace.move(parent.id, toAvenue: home.id, project: nil, in: phone.context)
             let subtask = try mac.task("Sub task", parent: mac.get(parent))
-            phone.workspace.applySynced(tasks: [mac.get(subtask)])
+            phone.workspace.applySynced(tasks: [try mac.get(subtask)])
             let fixes = phone.workspace.reconcile(in: phone.context)
             try expectEqual(phone.get(subtask).avenueID, home.id)
             try expectEqual(fixes, [.alignedWithParent(task: subtask.id)])

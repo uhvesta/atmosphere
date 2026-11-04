@@ -60,7 +60,7 @@ package enum PlanFile {
         if let place = task.place { out.append(assignment(depth, "in", place)) }
         if let parent = task.parent { out.append(assignment(depth, "parent", parent)) }
         if !task.details.isEmpty { out.append(assignment(depth, "details", task.details)) }
-        if task.status != .todo { out.append(assignment(depth, "status", statusNames[task.status]!)) }
+        if task.status != .todo { out.append(assignment(depth, "status", statusName(task.status))) }
         if task.priority != .none { out.append(assignment(depth, "priority", task.priority.rawValue)) }
         if let start = task.start { out.append(assignment(depth, "start", start)) }
         if let due = task.due { out.append(assignment(depth, "due", due)) }
@@ -107,10 +107,17 @@ package enum PlanFile {
         return out + "\""
     }
 
-    static let statusNames: [TaskStatus: String] = [
-        .todo: "todo", .inProgress: "in_progress", .procrastinated: "procrastinated", .done: "done",
-        .wontDo: "wont_do",
-    ]
+    static func statusName(_ status: TaskStatus) -> String {
+        switch status {
+        case .todo: "todo"
+        case .inProgress: "in_progress"
+        case .procrastinated: "procrastinated"
+        case .done: "done"
+        case .wontDo: "wont_do"
+        }
+    }
+
+    static let statusNames = Dictionary(uniqueKeysWithValues: TaskStatus.allCases.map { ($0, statusName($0)) })
 
     // MARK: - Reading
 
@@ -121,31 +128,29 @@ package enum PlanFile {
         return try plan(from: root)
     }
 
-    private static let keys: [String: Set<String>] = [
-        "avenue": ["key", "name", "color", "symbol"],
-        "label": ["name", "color"],
-        "project": ["name", "avenue", "details", "due"],
-        "task": [
-            "title", "in", "parent", "details", "status", "priority", "start", "due", "due_time", "labels",
-            "remind", "comments",
-        ],
+    private static let avenueKeys: Set<String> = ["key", "name", "color", "symbol"]
+    private static let labelKeys: Set<String> = ["name", "color"]
+    private static let projectKeys: Set<String> = ["name", "avenue", "details", "due"]
+    private static let taskKeys: Set<String> = [
+        "title", "in", "parent", "details", "status", "priority", "start", "due", "due_time", "labels",
+        "remind", "comments",
     ]
 
     private static func plan(from root: Node) throws(PlanFileError) -> Plan {
         var plan = Plan()
         for node in root.children("avenue") {
-            try node.check(keys["avenue"]!, children: [])
+            try node.check(avenueKeys, children: [])
             plan.avenues.append(
                 .init(
                     key: try node.required("key"), name: try node.required("name"),
                     color: try node.string("color") ?? "blue", symbol: try node.string("symbol") ?? "circle"))
         }
         for node in root.children("label") {
-            try node.check(keys["label"]!, children: [])
+            try node.check(labelKeys, children: [])
             plan.labels.append(.init(name: try node.required("name"), color: try node.string("color") ?? "gray"))
         }
         for node in root.children("project") {
-            try node.check(keys["project"]!, children: ["task"])
+            try node.check(projectKeys, children: ["task"])
             plan.projects.append(
                 .init(
                     name: try node.required("name"), avenue: try node.required("avenue"),
@@ -158,7 +163,7 @@ package enum PlanFile {
 
     private static func task(from node: Node) throws(PlanFileError) -> Plan.TaskDraft {
         let isSubtask = node.name == "subtask"
-        try node.check(keys["task"]!, children: isSubtask ? [] : ["subtask"])
+        try node.check(taskKeys, children: isSubtask ? [] : ["subtask"])
         var task = Plan.TaskDraft(title: try node.required("title"))
         task.place = try node.string("in")
         task.parent = try node.string("parent")
@@ -436,8 +441,9 @@ private struct Parser {
             }
             parent = last
         }
-        let node = Node(name: path.last!, path: joined, line: headerLine)
-        parent.tables.append((path.last!, node))
+        guard let leaf = path.last else { throw fail("Expected a table name between [[ and ]].") }
+        let node = Node(name: leaf, path: joined, line: headerLine)
+        parent.tables.append((leaf, node))
         return node
     }
 

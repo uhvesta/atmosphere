@@ -13,9 +13,10 @@ final class QuickAddFeatureTests: XCTestCase {
     private lazy var health = records.avenue("HEALTH", "Health")
     private lazy var home = records.avenue("HOME", "Home")
 
-    private func quickAdd() -> TestStoreOf<QuickAddFeature> {
+    private func quickAdd() throws -> TestStoreOf<QuickAddFeature> {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "QuickAddFeatureTests-\(UUID())"))
         let store = withDependencies {
-            $0.defaultAppStorage = UserDefaults(suiteName: "QuickAddFeatureTests-\(UUID())")!
+            $0.defaultAppStorage = defaults
         } operation: {
             TestStore(initialState: QuickAddFeature.State(workspace: records.workspace, now: now)) {
                 QuickAddFeature()
@@ -33,7 +34,7 @@ final class QuickAddFeatureTests: XCTestCase {
 
     func testAddsATaskDueTomorrowAndRemembersTheAvenue() async throws {
         _ = (health, home)
-        let store = quickAdd()
+        let store = try quickAdd()
 
         await store.send(.binding(.set(\.avenueID, home.id)))
         await store.send(.binding(.set(\.title, " Call the plumber ")))
@@ -52,7 +53,7 @@ final class QuickAddFeatureTests: XCTestCase {
 
     func testDefaultsToTheLastAvenueUsed() async throws {
         _ = (health, home)
-        let first = quickAdd()
+        let first = try quickAdd()
         XCTAssertEqual(first.state.avenueID, health.id)
 
         await first.send(.binding(.set(\.avenueID, home.id)))
@@ -68,10 +69,10 @@ final class QuickAddFeatureTests: XCTestCase {
         XCTAssertEqual(next.avenueID, home.id)
     }
 
-    func testChangingTheAvenueClearsAProjectFromAnother() async {
+    func testChangingTheAvenueClearsAProjectFromAnother() async throws {
         let marathon = records.project("Half marathon", in: health)
         _ = home
-        let store = quickAdd()
+        let store = try quickAdd()
 
         await store.send(.binding(.set(\.projectID, marathon.id)))
         await store.send(.binding(.set(\.avenueID, home.id)))
@@ -81,7 +82,7 @@ final class QuickAddFeatureTests: XCTestCase {
 
     func testSubtaskModeAddsTheTaskThenItsSubtasks() async throws {
         _ = health
-        let store = quickAdd()
+        let store = try quickAdd()
 
         await store.send(.binding(.set(\.subtaskMode, true)))
         await store.send(.binding(.set(\.title, "Race day")))
@@ -101,7 +102,7 @@ final class QuickAddFeatureTests: XCTestCase {
 
     func testAProjectGoesInThePickedAvenue() async throws {
         _ = (health, home)
-        let store = quickAdd()
+        let store = try quickAdd()
 
         await store.send(.binding(.set(\.kind, .project)))
         await store.send(.binding(.set(\.avenueID, home.id)))
@@ -114,9 +115,9 @@ final class QuickAddFeatureTests: XCTestCase {
         XCTAssertTrue(workspace.tasks.isEmpty)
     }
 
-    func testABlankTitleCantBeAdded() async {
+    func testABlankTitleCantBeAdded() async throws {
         _ = health
-        let store = quickAdd()
+        let store = try quickAdd()
 
         await store.send(.binding(.set(\.title, "   ")))
 

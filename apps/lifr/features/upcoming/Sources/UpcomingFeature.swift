@@ -54,10 +54,8 @@ package struct UpcomingFeature {
 extension CalendarDate {
     /// Such as "Thursday, Nov 5". English only for now.
     var weekdayTitle: String {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .gmt
-        let date = calendar.date(from: DateComponents(year: year, month: month, day: day))!
-        return date.formatted(
+        let calendar = CalendarDate.utcCalendar
+        return noonUTC.formatted(
             Date.FormatStyle(locale: Locale(identifier: "en_US"), calendar: calendar, timeZone: .gmt)
                 .weekday(.wide).month(.abbreviated).day())
     }

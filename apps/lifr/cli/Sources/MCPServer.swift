@@ -86,12 +86,15 @@ package final class MCPServer {
     /// A tool's result, or its error as a tool error the model can read.
     private func call(_ method: APIMethod, _ arguments: JSONValue) -> JSONValue {
         do throws(APIError) {
-            if connection == nil {
-                let new = try connect()
-                new.surface = .mcp
-                connection = new
+            let open: any Connection
+            if let connection {
+                open = connection
+            } else {
+                open = try connect()
+                open.surface = .mcp
+                connection = open
             }
-            let result = try connection!.call(method, arguments)
+            let result = try open.call(method, arguments)
             return ["content": [["type": "text", "text": .string((try? Output.json(result)) ?? "null")]]]
         } catch {
             if error.code == .appNotRunning { connection = nil }

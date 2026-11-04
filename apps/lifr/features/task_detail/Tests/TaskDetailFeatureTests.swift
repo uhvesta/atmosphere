@@ -15,9 +15,10 @@ final class TaskDetailFeatureTests: XCTestCase {
 
     private func makeStore(
         _ task: LifrTask, reminders: InMemoryReminders = RemindersClient.inMemory()
-    ) -> TestStoreOf<TaskDetailFeature> {
+    ) throws -> TestStoreOf<TaskDetailFeature> {
         let client = StoreClient.inMemory(records.workspace)
-        let state = TaskDetailFeature.State(id: task.id, workspace: records.workspace, now: now, timeZone: .gmt)!
+        let state = try XCTUnwrap(
+            TaskDetailFeature.State(id: task.id, workspace: records.workspace, now: now, timeZone: .gmt))
         let store = TestStore(initialState: state) {
             TaskDetailFeature()
         } withDependencies: { [now] in
@@ -39,9 +40,9 @@ final class TaskDetailFeatureTests: XCTestCase {
         return store
     }
 
-    func testPickingAStatusSavesItAndTellsTheList() async {
+    func testPickingAStatusSavesItAndTellsTheList() async throws {
         let stretch = records.task("Stretch", in: health)
-        let store = makeStore(stretch)
+        let store = try makeStore(stretch)
 
         await store.send(.statusPicked(.inProgress))
         await store.receive(\.delegate.saved)
@@ -49,10 +50,10 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.row.status, .inProgress)
     }
 
-    func testWontDoWithOpenSubtasksAsksThenClosesThemToo() async {
+    func testWontDoWithOpenSubtasksAsksThenClosesThemToo() async throws {
         let review = records.task("Review", in: health)
         records.task("Read", in: health, parent: review)
-        let store = makeStore(review)
+        let store = try makeStore(review)
 
         await store.send(.statusPicked(.wontDo))
         await store.receive(\.saved)
@@ -66,11 +67,11 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.subtasks.map(\.status), [.wontDo])
     }
 
-    func testDoneWithOpenSubtasksAsksThenFinishesDroppingThem() async {
+    func testDoneWithOpenSubtasksAsksThenFinishesDroppingThem() async throws {
         let review = records.task("Review", in: health)
         records.task("Read", in: health, parent: review)
         records.task("Reply", in: health, parent: review)
-        let store = makeStore(review)
+        let store = try makeStore(review)
 
         await store.send(.statusPicked(.done))
         await store.receive(\.saved)
@@ -84,11 +85,11 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.subtasks.map(\.status), [.wontDo, .wontDo])
     }
 
-    func testReopeningASubtaskReopensTheParentWithUndo() async {
+    func testReopeningASubtaskReopensTheParentWithUndo() async throws {
         let review = records.task("Review", in: health)
         let read = records.task("Read", in: health, parent: review, status: .done)
         records.setStatus(.done, of: review)
-        let store = makeStore(review)
+        let store = try makeStore(review)
 
         await store.send(.subtaskToggled(read.id))
         await store.receive(\.delegate.saved)
@@ -104,9 +105,9 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertNil(store.state.banner)
     }
 
-    func testAddingASubtaskToADoneTaskReopensItUntilUndone() async {
+    func testAddingASubtaskToADoneTaskReopensItUntilUndone() async throws {
         let shoes = records.task("Buy running shoes", in: health, status: .done)
-        let store = makeStore(shoes)
+        let store = try makeStore(shoes)
 
         await store.send(.binding(.set(\.newSubtaskTitle, "Buy socks")))
         await store.send(.addSubtaskSubmitted)
@@ -122,9 +123,9 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.row.status, .done)
     }
 
-    func testABlankSubtaskTitleAddsNothing() async {
+    func testABlankSubtaskTitleAddsNothing() async throws {
         let shoes = records.task("Buy running shoes", in: health)
-        let store = makeStore(shoes)
+        let store = try makeStore(shoes)
 
         await store.send(.binding(.set(\.newSubtaskTitle, "   ")))
         await store.send(.addSubtaskSubmitted)
@@ -132,9 +133,9 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.subtasks, [])
     }
 
-    func testACommentShowsInTheTimelineAndTheCommentsFilter() async {
+    func testACommentShowsInTheTimelineAndTheCommentsFilter() async throws {
         let shoes = records.task("Buy running shoes", in: health)
-        let store = makeStore(shoes)
+        let store = try makeStore(shoes)
 
         await store.send(.binding(.set(\.newComment, "Trail **and** road")))
         await store.send(.commentSubmitted)
@@ -149,9 +150,9 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.visibleTimeline.map(\.text), ["Trail **and** road"])
     }
 
-    func testPickingAPriorityRecordsIt() async {
+    func testPickingAPriorityRecordsIt() async throws {
         let shoes = records.task("Buy running shoes", in: health)
-        let store = makeStore(shoes)
+        let store = try makeStore(shoes)
 
         await store.send(.priorityPicked(.urgent))
         await store.receive(\.delegate.saved)
@@ -159,9 +160,9 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.row.priority, .urgent)
     }
 
-    func testAddsAReminderBeforeTheDueDate() async {
+    func testAddsAReminderBeforeTheDueDate() async throws {
         let run = records.task("Long run", in: health, due: 2, at: "07:00")
-        let store = makeStore(run)
+        let store = try makeStore(run)
         XCTAssertEqual(store.state.reminderChoices, ReminderChoice.allCases)
 
         await store.send(.reminderPicked(.dayBeforeDue))
@@ -173,15 +174,15 @@ final class TaskDetailFeatureTests: XCTestCase {
         await store.finish()
     }
 
-    func testOffersOnlySetTimesWithoutADueDate() {
+    func testOffersOnlySetTimesWithoutADueDate() throws {
         let stretch = records.task("Stretch", in: health)
-        let store = makeStore(stretch)
+        let store = try makeStore(stretch)
         XCTAssertEqual(store.state.reminderChoices, [.inOneHour, .tomorrowMorning])
     }
 
-    func testSavesTheReminderButSaysWhenNotificationsAreOff() async {
+    func testSavesTheReminderButSaysWhenNotificationsAreOff() async throws {
         let stretch = records.task("Stretch", in: health)
-        let store = makeStore(stretch, reminders: RemindersClient.inMemory(permission: .denied))
+        let store = try makeStore(stretch, reminders: RemindersClient.inMemory(permission: .denied))
 
         await store.send(.reminderPicked(.tomorrowMorning))
         await store.receive(\.delegate.saved)
@@ -191,10 +192,10 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertNotNil(store.state.alert)
     }
 
-    func testRemovesAReminder() async {
+    func testRemovesAReminder() async throws {
         let stretch = records.task("Stretch", in: health)
         records.reminder(.at(now + 3600), on: stretch)
-        let store = makeStore(stretch)
+        let store = try makeStore(stretch)
         XCTAssertEqual(store.state.reminders.count, 1)
 
         await store.send(.reminderRemoved(store.state.reminders[0].id))
@@ -203,9 +204,9 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.reminders, [])
     }
 
-    func testRenamingSavesTheNewTitle() async {
+    func testRenamingSavesTheNewTitle() async throws {
         let stretch = records.task("Stretch", in: health)
-        let store = makeStore(stretch)
+        let store = try makeStore(stretch)
 
         await store.send(.binding(.set(\.title, "  Stretch for 10 minutes ")))
         await store.send(.titleSubmitted)
@@ -216,7 +217,7 @@ final class TaskDetailFeatureTests: XCTestCase {
 
     func testUndoInTheActivityPutsBackAChangeThatIsStillCurrent() async throws {
         let stretch = records.task("Stretch", in: health)
-        let store = makeStore(stretch)
+        let store = try makeStore(stretch)
         await store.send(.binding(.set(\.title, "Stretch for 10 minutes")))
         await store.send(.titleSubmitted)
         await store.receive(\.delegate.saved)
@@ -230,9 +231,9 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.timeline.contains { $0.id == rename.id && $0.canUndo })
     }
 
-    func testAnEmptyTitleIsPutBack() async {
+    func testAnEmptyTitleIsPutBack() async throws {
         let stretch = records.task("Stretch", in: health)
-        let store = makeStore(stretch)
+        let store = try makeStore(stretch)
 
         await store.send(.binding(.set(\.title, "   ")))
         await store.send(.titleSubmitted)
@@ -240,9 +241,9 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.title, "Stretch")
     }
 
-    func testEditingTheDescriptionSavesOnlyWhenSaved() async {
+    func testEditingTheDescriptionSavesOnlyWhenSaved() async throws {
         let stretch = records.task("Stretch", in: health)
-        let store = makeStore(stretch)
+        let store = try makeStore(stretch)
 
         await store.send(.editDetailsTapped)
         await store.send(.binding(.set(\.detailsDraft, "Hips, then *back*.")))
@@ -260,7 +261,7 @@ final class TaskDetailFeatureTests: XCTestCase {
 
     func testRemovingTheDueDateRemovesItsTime() async throws {
         let stretch = records.task("Stretch", in: health, due: 1, at: "07:00")
-        let store = makeStore(stretch)
+        let store = try makeStore(stretch)
         let friday = try CalendarDate(year: 2026, month: 11, day: 6)
 
         await store.send(.dueDatePicked(friday))
@@ -274,12 +275,12 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertNil(store.state.dueTime)
     }
 
-    func testMovingToAnotherAvenueTakesTheSubtasksAndLeavesTheProject() async {
+    func testMovingToAnotherAvenueTakesTheSubtasksAndLeavesTheProject() async throws {
         let fitness = records.project("Fitness", in: health)
         let home = records.avenue("HOME", "Home")
         let stretch = records.task("Stretch", in: health, project: fitness)
         records.task("Hips", in: health, parent: stretch)
-        let store = makeStore(stretch)
+        let store = try makeStore(stretch)
         XCTAssertEqual(store.state.projectChoices.map(\.name), ["Fitness"])
 
         await store.send(.avenuePicked(home.id))
@@ -291,10 +292,10 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.subtasks.map(\.avenue), ["Home"])
     }
 
-    func testLabelsAreToggledAndNewOnesReuseAnExistingName() async {
+    func testLabelsAreToggledAndNewOnesReuseAnExistingName() async throws {
         let errands = records.label("errands")
         let stretch = records.task("Stretch", in: health)
-        let store = makeStore(stretch)
+        let store = try makeStore(stretch)
 
         await store.send(.labelToggled(errands.id))
         await store.receive(\.delegate.saved)
@@ -315,10 +316,10 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.labels, ["quick"])
     }
 
-    func testASubtaskOpensInItsOwnDetailAndItsChangesShowInTheParent() async {
+    func testASubtaskOpensInItsOwnDetailAndItsChangesShowInTheParent() async throws {
         let stretch = records.task("Stretch", in: health)
         let hips = records.task("Hips", in: health, parent: stretch)
-        let store = makeStore(stretch)
+        let store = try makeStore(stretch)
 
         await store.send(.subtaskTapped(hips.id))
         await store.receive(\.subtaskLoaded)

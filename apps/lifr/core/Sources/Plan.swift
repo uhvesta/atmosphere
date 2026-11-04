@@ -396,15 +396,9 @@ extension CalendarDate {
 
     private static let weekdays = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
 
-    private static var utc: Calendar {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "UTC")!
-        return calendar
-    }
+    private static var utc: Calendar { utcCalendar }
 
-    private var noon: Date {
-        Self.utc.date(from: DateComponents(year: year, month: month, day: day, hour: 12))!
-    }
+    private var noon: Date { noonUTC }
 
     /// 0 for Sunday through 6 for Saturday.
     private var weekdayIndex: Int { Self.utc.component(.weekday, from: noon) - 1 }

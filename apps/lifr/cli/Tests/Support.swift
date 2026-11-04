@@ -43,7 +43,7 @@ extension FixtureConnection {
         var error = ""
         let cli = CLI(
             connect: { self }, standardOutput: { output += $0 }, standardError: { error += $0 },
-            timeZone: TimeZone(identifier: "UTC")!,
+            timeZone: .gmt,
             readFile: { path in
                 guard let text = self.files[path] else { throw CocoaError(.fileReadNoSuchFile) }
                 return text
@@ -55,7 +55,7 @@ extension FixtureConnection {
 
 /// A golden file from //apps/lifr/api, copied into the test bundle.
 func golden(_ name: String) throws -> JSONValue {
-    let bundle = Bundle.allBundles.first { $0.bundleURL.pathExtension == "xctest" }!
+    let bundle = try XCTUnwrap(Bundle.allBundles.first { $0.bundleURL.pathExtension == "xctest" }, "no test bundle")
     let url = try XCTUnwrap(bundle.url(forResource: name, withExtension: "json"), "\(name).json isn't in the bundle")
     return try Wire.decoder.decode(JSONValue.self, from: Data(contentsOf: url))
 }

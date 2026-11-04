@@ -15,8 +15,7 @@ enum Output {
                 + "\(time(unlock.expiresAt, timeZone))).\n"
         case .listAvenues:
             let avenues = try result.decode([AvenueSummary].self)
-            guard !avenues.isEmpty else { return "No Avenues.\n" }
-            let width = avenues.map(\.key.count).max()!
+            guard let width = avenues.map(\.key.count).max() else { return "No Avenues.\n" }
             return lines(
                 avenues.map { avenue in
                     var line = pad(avenue.key, width) + "  " + avenue.name

@@ -36,10 +36,29 @@ package struct CalendarDate: Hashable, Comparable, Codable, Sendable, CustomStri
     package init(_ date: Date, in timeZone: TimeZone) {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
-        let parts = calendar.dateComponents([.year, .month, .day], from: date)
-        year = parts.year!
-        month = parts.month!
-        day = parts.day!
+        year = calendar.component(.year, from: date)
+        month = calendar.component(.month, from: date)
+        day = calendar.component(.day, from: date)
+    }
+
+    /// Noon UTC on this day, so the weekday and calendar math don't depend
+    /// on a time zone or a daylight saving change.
+    package var noonUTC: Date {
+        // Days since 1970-01-01, from Howard Hinnant's days_from_civil.
+        let shifted = month <= 2 ? year - 1 : year
+        let era = (shifted >= 0 ? shifted : shifted - 399) / 400
+        let yearOfEra = shifted - era * 400
+        let dayOfYear = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1
+        let dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear
+        let days = era * 146_097 + dayOfEra - 719_468
+        return Date(timeIntervalSince1970: TimeInterval(days) * 86_400 + 43_200)
+    }
+
+    /// A Gregorian calendar in UTC, for math on `noonUTC`.
+    package static var utcCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .gmt
+        return calendar
     }
 
     package var description: String {
@@ -103,9 +122,8 @@ package struct TimeOfDay: Hashable, Comparable, Codable, Sendable, CustomStringC
     package init(_ date: Date, in timeZone: TimeZone) {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
-        let parts = calendar.dateComponents([.hour, .minute], from: date)
-        hour = parts.hour!
-        minute = parts.minute!
+        hour = calendar.component(.hour, from: date)
+        minute = calendar.component(.minute, from: date)
     }
 
     package var description: String {

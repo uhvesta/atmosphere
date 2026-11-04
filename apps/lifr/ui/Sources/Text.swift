@@ -32,10 +32,8 @@ extension Priority {
 extension CalendarDate {
     /// Such as "Nov 1" in English.
     func formatted(_ locale: Locale) -> String {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .gmt
-        let date = calendar.date(from: DateComponents(year: year, month: month, day: day))!
-        return date.formatted(
+        let calendar = CalendarDate.utcCalendar
+        return noonUTC.formatted(
             Date.FormatStyle(locale: locale, calendar: calendar, timeZone: .gmt).month(.abbreviated).day())
     }
 }

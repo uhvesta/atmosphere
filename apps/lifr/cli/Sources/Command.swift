@@ -199,8 +199,7 @@ private struct Words {
 
     mutating func options(_ name: String) throws(UsageError) -> [String] {
         var values: [String] = []
-        while words.contains(name) {
-            let index = words.firstIndex(of: name)!
+        while let index = words.firstIndex(of: name) {
             guard index + 1 < words.count, !words[index + 1].hasPrefix("--") else {
                 throw UsageError("\(name) needs a value after it.")
             }

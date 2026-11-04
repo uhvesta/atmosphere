@@ -181,10 +181,10 @@ package struct AssistantLookup: Hashable, Sendable {
         }
         let keys = Dictionary(uniqueKeysWithValues: avenues.map { ($0.id, $0.key.rawValue) })
         tasks = workspace.tasks.values
-            .filter { $0.deletedAt == nil && $0.isOpen && $0.parentID == nil && keys[$0.avenueID] != nil }
+            .filter { $0.deletedAt == nil && $0.isOpen && $0.parentID == nil }
             .sorted { ($0.createdAt, $0.id.uuidString) > ($1.createdAt, $1.id.uuidString) }
-            .map { task in
-                var place = keys[task.avenueID]!
+            .compactMap { task in
+                guard var place = keys[task.avenueID] else { return nil }
                 if let project = task.projectID.flatMap({ workspace.projects[$0] }) { place += "/" + project.name }
                 return OpenTask(code: workspace.displayCode(of: task), title: task.title, place: place)
             }

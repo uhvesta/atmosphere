@@ -12,13 +12,11 @@ final class Sequences {
             actor: actor, now: now,
             newID: { [self] in
                 ids += 1
-                return UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", ids))!
+                return UUID(sequence: ids)
             },
             newCode: { [self] in
                 codes += 1
-                // A malformed code is a bug in the fixture.
-                // swiftlint:disable:next force_try
-                return try! TaskCode(String(format: "%04d", 7000 + codes))
+                return TaskCode(sequence: 7000 + codes)
             })
     }
 }
@@ -85,7 +83,10 @@ final class Fixture {
     private func create(_ new: Workspace.NewTask, at time: Date? = nil) throws -> UUID {
         let change = try workspace.createTask(
             new, in: sequences.context(.user(device: device, surface: .cli), at: time ?? now))
-        return change.previous.first { $0.value == nil }!.key
+        guard let id = change.previous.first(where: { $0.value == nil })?.key else {
+            throw FixtureError.noNewTask(new.title)
+        }
+        return id
     }
 
     /// The task with this code, as it is now.
@@ -109,5 +110,17 @@ final class Fixture {
     private func handler(_ grant: Grant?, _ confirm: @escaping (Confirmation) -> Bool) -> Handler {
         Handler(
             grant: grant, context: sequences.context(.user(device: device, surface: .cli), at: now), confirm: confirm)
+    }
+}
+
+enum FixtureError: Error, CustomStringConvertible {
+    case noNewTask(String)
+
+    var description: String { "Creating “\(title)” made no new task." }
+
+    private var title: String {
+        switch self {
+        case .noNewTask(let title): title
+        }
     }
 }

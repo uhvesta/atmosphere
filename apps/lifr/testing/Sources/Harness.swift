@@ -40,6 +40,16 @@ package func expectEqual<T: Equatable>(
     }
 }
 
+extension Optional {
+    /// The value, or a failed check when there's none.
+    package func unwrap(
+        _ message: @autoclosure () -> String = "expected a value", file: StaticString = #filePath, line: UInt = #line
+    ) throws -> Wrapped {
+        guard let self else { throw Failure(message: message(), file: file, line: line) }
+        return self
+    }
+}
+
 /// Checks that `body` throws `expected`.
 package func expectError<E: Error & Equatable, T>(
     _ expected: E, file: StaticString = #filePath, line: UInt = #line,

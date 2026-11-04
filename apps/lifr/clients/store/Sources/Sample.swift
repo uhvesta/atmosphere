@@ -1,8 +1,6 @@
+import ComposableArchitecture
 import Foundation
 import LifrCore
-
-// The sample's values are fixed, so a failing `try` is a bug in the sample.
-// swiftlint:disable force_try
 
 extension Workspace {
     /// A few Avenues with tasks due around `now`, for previews, snapshot
@@ -34,6 +32,10 @@ extension Workspace {
 
 /// Builds records with fixed IDs and codes, for samples and tests. Each record
 /// gets the next ID and code, so the same calls give the same records.
+///
+/// A record the workspace refuses, such as a bad key or title, is a mistake
+/// in the sample or test: it's reported as an issue, which fails the test,
+/// and a stand-in that isn't in the workspace is returned so the rest runs.
 package struct RecordsBuilder {
     package private(set) var workspace = Workspace()
     package let now: Date
@@ -49,11 +51,27 @@ package struct RecordsBuilder {
     package mutating func avenue(
         _ key: String, _ name: String, color: String = "blue", symbol: String = "circle"
     ) -> Avenue {
-        try! workspace.createAvenue(key: key, name: name, color: color, symbol: symbol, in: context())
+        let context = context()
+        do {
+            return try workspace.createAvenue(key: key, name: name, color: color, symbol: symbol, in: context)
+        } catch {
+            reportIssue(error)
+            return Avenue(
+                id: standInID, key: AvenueKey(reconciled: key.uppercased()), name: name, color: color,
+                symbol: symbol, sortOrder: "", agentAccess: .full, createdAt: now, archivedAt: nil)
+        }
     }
 
     package mutating func project(_ name: String, in avenue: Avenue) -> Project {
-        try! workspace.createProject(name: name, inAvenue: avenue.id, in: context())
+        let context = context()
+        do {
+            return try workspace.createProject(name: name, inAvenue: avenue.id, in: context)
+        } catch {
+            reportIssue(error)
+            return Project(
+                id: standInID, avenueID: avenue.id, name: name, details: "", status: .active, dueDate: nil,
+                sortOrder: "", createdAt: now, completedAt: nil)
+        }
     }
 
     /// `due` counts days from `now`'s day: 0 is today, -1 yesterday.
@@ -72,9 +90,27 @@ package struct RecordsBuilder {
         new.status = status
         new.priority = priority
         new.dueDate = days.map { CalendarDate(now + Double($0) * 24 * 60 * 60, in: timeZone) }
-        new.dueTime = time.map { try! TimeOfDay($0) }
-        let change = try! workspace.createTask(new, in: context(at: now - Double(idle) * 24 * 60 * 60))
-        return workspace.tasks[change.previous.first { $0.value == nil }!.key]!
+        do {
+            new.dueTime = try time.map { time throws(LifrError) in try TimeOfDay(time) }
+        } catch {
+            reportIssue(error)
+        }
+        let made = now - Double(idle) * 24 * 60 * 60
+        let context = context(at: made)
+        do {
+            let change = try workspace.createTask(new, in: context)
+            if let id = change.previous.first(where: { $0.value == nil })?.key, let task = workspace.tasks[id] {
+                return task
+            }
+            reportIssue("Creating “\(title)” changed no new task.")
+        } catch {
+            reportIssue(error)
+        }
+        return LifrTask(
+            id: standInID, code: TaskCode(sequence: codes), title: title, details: "", status: status,
+            priority: priority, startDate: nil, dueDate: new.dueDate, dueTime: new.dueTime, avenueID: avenue.id,
+            projectID: project?.id, parentID: parent?.id, labelIDs: new.labelIDs, sortOrder: "", createdAt: made,
+            updatedAt: made, lastActivityAt: made, closedAt: nil, deletedAt: nil)
     }
 
     package mutating func label(_ name: String) -> Label {
@@ -82,17 +118,34 @@ package struct RecordsBuilder {
     }
 
     package mutating func comment(_ body: String, on task: LifrTask) {
-        _ = try! workspace.addComment(body, to: task.id, in: context())
+        do {
+            _ = try workspace.addComment(body, to: task.id, in: context())
+        } catch {
+            reportIssue(error)
+        }
     }
 
     @discardableResult
     package mutating func reminder(_ trigger: Reminder.Trigger, on task: LifrTask) -> Reminder {
-        try! workspace.addReminder(trigger, to: task.id, in: context())
+        let context = context()
+        do {
+            return try workspace.addReminder(trigger, to: task.id, in: context)
+        } catch {
+            reportIssue(error)
+            return Reminder(id: standInID, taskID: task.id, trigger: trigger)
+        }
     }
 
     package mutating func setStatus(_ status: TaskStatus, of task: LifrTask) {
-        _ = try! workspace.setStatus(status, of: task.id, in: context())
+        do {
+            _ = try workspace.setStatus(status, of: task.id, in: context())
+        } catch {
+            reportIssue(error)
+        }
     }
+
+    /// An ID for a stand-in: the last one the latest context could give.
+    private var standInID: UUID { UUID(sequence: ids + 99) }
 
     private mutating func context(at time: Date? = nil) -> Context {
         ids += 100
@@ -104,9 +157,8 @@ package struct RecordsBuilder {
             actor: .user(device: "Sample", surface: .iPhone), now: time ?? now,
             newID: {
                 next += 1
-                return UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", id + next))!
+                return UUID(sequence: id + next)
             },
-            newCode: { try! TaskCode(String(format: "%04d", code)) })
+            newCode: { TaskCode(sequence: code) })
     }
 }
-// swiftlint:enable force_try

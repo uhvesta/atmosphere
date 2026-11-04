@@ -84,9 +84,10 @@ package final class SocketConnection: Connection {
 
     private func send(_ data: Data) throws {
         try data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
+            guard let base = bytes.baseAddress else { return }
             var offset = 0
             while offset < bytes.count {
-                let written = Darwin.send(socket, bytes.baseAddress! + offset, bytes.count - offset, 0)
+                let written = Darwin.send(socket, base + offset, bytes.count - offset, 0)
                 guard written > 0 else { throw closed }
                 offset += written
             }

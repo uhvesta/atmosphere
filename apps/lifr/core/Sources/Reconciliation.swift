@@ -129,7 +129,7 @@ extension Workspace {
         while let parent = tasks[current]?.parentID, tasks[parent] != nil {
             if let start = path.firstIndex(of: parent) {
                 let cycle = path[start...].compactMap { tasks[$0] }
-                return cycle.min { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }!.id
+                return cycle.min { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }?.id ?? id
             }
             path.append(parent)
             current = parent

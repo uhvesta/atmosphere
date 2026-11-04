@@ -29,7 +29,7 @@ func reminderTests() -> [TestCase] {
                 task.id, Workspace.TaskEdit(dueDate: try CalendarDate("2026-11-05")), in: fixture.context)
             let reminder = try fixture.workspace.addReminder(
                 .beforeDue(seconds: 24 * 3600), to: task.id, in: fixture.context)
-            let berlin = TimeZone(identifier: "Europe/Berlin")!
+            let berlin = try TimeZone(identifier: "Europe/Berlin").unwrap()
             try expectEqual(
                 reminder.fireDate(for: fixture.get(task), in: berlin), date("2026-11-04T08:00:00Z"))
         },

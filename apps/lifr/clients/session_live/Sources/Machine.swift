@@ -97,8 +97,10 @@
         func install() throws(SessionError) -> CLIInstallation {
             if case .installed = installation() { return installation() }
             let files = FileManager.default
-            let directory =
-                directories.first { files.isWritableFile(atPath: $0.path) } ?? directories.last!
+            let writable = directories.first { files.isWritableFile(atPath: $0.path) }
+            guard let directory = writable ?? directories.last else {
+                throw .installFailed(path: "lifr", reason: "Lifr has no folder to put it in")
+            }
             let link = directory.appendingPathComponent("lifr")
             do {
                 try files.createDirectory(at: directory, withIntermediateDirectories: true)

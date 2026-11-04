@@ -73,6 +73,13 @@ package struct APIError: Error, Hashable, Codable, Sendable, CustomStringConvert
         .apiDisabled,
         "The local API is turned off. Turn it on from Lifr's menu bar item, then retry.")
 
+    /// The change was saved, but the task it made or changed couldn't be
+    /// read back to report.
+    package static let changeUnreadable = APIError(
+        .internalError,
+        "Lifr saved the change but couldn't read the task back. Run `lifr search` to see it; don't retry, or it's "
+            + "made twice. Report it if it keeps happening.")
+
     package static func notAuthorized(_ reason: String) -> APIError {
         APIError(.notAuthorized, reason)
     }

@@ -92,7 +92,7 @@ final class AssistantTests: XCTestCase {
         XCTAssertEqual(reply, AssistantReply(text: "Which Avenue?", plan: nil, isComplete: true))
     }
 
-    func testThePromptCarriesTheDraftAndItsProblem() {
+    func testThePromptCarriesTheDraftAndItsProblem() throws {
         _ = records.avenue("HOME", "Home")
         let request = AssistantRequest(
             messages: [ChatMessage(id: UUID(), role: .person, text: "Add laundry", at: now)],
@@ -102,7 +102,7 @@ final class AssistantTests: XCTestCase {
         let prompt = AssistantPrompt.prompt(request)
 
         XCTAssertTrue(prompt.contains("Add laundry"))
-        XCTAssertTrue(prompt.contains(PlanFile.write(request.draft!)))
+        XCTAssertTrue(prompt.contains(PlanFile.write(try XCTUnwrap(request.draft))))
         XCTAssertTrue(prompt.contains("no such label"))
         XCTAssertTrue(AssistantPrompt.instructions(request).contains("HOME"))
     }
@@ -154,7 +154,7 @@ final class AssistantTests: XCTestCase {
         XCTAssertFalse(tools.getTask(code: "HOME-9999").contains("HOME-9999 ·"))
     }
 
-    func testOverviewSortsTasksByWhenTheyAreDue() {
+    func testOverviewSortsTasksByWhenTheyAreDue() throws {
         let home = records.avenue("HOME", "Home")
         let late = records.task("Late", in: home, due: -2)
         let today = records.task("Today", in: home, due: 0)
@@ -165,8 +165,8 @@ final class AssistantTests: XCTestCase {
         XCTAssertTrue(text.contains(code(late)))
         XCTAssertTrue(text.contains(code(today)))
         XCTAssertFalse(text.contains(code(later)))
-        let lateAt = text.range(of: code(late))!.lowerBound
-        XCTAssertLessThan(lateAt, text.range(of: code(today))!.lowerBound)
+        let lateAt = try XCTUnwrap(text.range(of: code(late))).lowerBound
+        XCTAssertLessThan(lateAt, try XCTUnwrap(text.range(of: code(today))).lowerBound)
     }
 
     func testTheScriptedClientStreamsTheTextThenTheWholeReply() async throws {

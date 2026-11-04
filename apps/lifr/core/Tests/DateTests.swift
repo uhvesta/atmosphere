@@ -14,9 +14,9 @@ func dateTests() -> [TestCase] {
         },
         TestCase("given an instant, then its calendar day depends on the time zone") {
             let instant = Date(timeIntervalSince1970: 1_793_664_000)  // 2026-11-03T00:00Z
-            try expectEqual(CalendarDate(instant, in: TimeZone(identifier: "UTC")!), try CalendarDate("2026-11-03"))
+            try expectEqual(CalendarDate(instant, in: TimeZone.gmt), try CalendarDate("2026-11-03"))
             try expectEqual(
-                CalendarDate(instant, in: TimeZone(identifier: "America/Los_Angeles")!),
+                CalendarDate(instant, in: TimeZone(identifier: "America/Los_Angeles").unwrap()),
                 try CalendarDate("2026-11-02"))
         },
         TestCase("given a time, then it must be 24-hour HH:MM") {

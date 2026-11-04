@@ -117,10 +117,13 @@ package struct Handler {
             return workspace.projects.values
                 .filter { ids.contains($0.avenueID) && (list.includeClosed == true || $0.status == .active) }
                 .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
-                .map {
-                    ProjectSummary(
-                        id: $0.id, avenue: workspace.avenues[$0.avenueID]!.key.rawValue,
-                        name: $0.name, status: $0.status, dueDate: $0.dueDate)
+                .compactMap { project in
+                    // Only projects in the Avenues above get here.
+                    workspace.avenues[project.avenueID].map {
+                        ProjectSummary(
+                            id: project.id, avenue: $0.key.rawValue,
+                            name: project.name, status: project.status, dueDate: project.dueDate)
+                    }
                 }
 
         case .searchTasks:
@@ -153,8 +156,10 @@ package struct Handler {
             new.labelIDs = try labelIDs(create.labels ?? [], workspace)
             try confirmWrite(method, task: nil)
             let change = try workspace.createTask(new, in: context)
-            let created = change.previous.first { $0.value == nil }!.key
-            return result(of: change, for: created, workspace)
+            guard let created = change.previous.first(where: { $0.value == nil })?.key else {
+                throw APIError.changeUnreadable
+            }
+            return try result(of: change, for: created, workspace)
 
         case .updateTask:
             let update: UpdateTask.Params = try decode(params, for: method)
@@ -167,14 +172,14 @@ package struct Handler {
                 dueTime: clear.contains(.dueTime) ? .some(nil) : update.dueTime.map { $0 },
                 labelIDs: try update.labels.map { try labelIDs($0, workspace) })
             try confirmWrite(method, task: update.task)
-            return result(of: try workspace.edit(target.id, edit, in: context), for: target.id, workspace)
+            return try result(of: try workspace.edit(target.id, edit, in: context), for: target.id, workspace)
 
         case .setStatus:
             let set: SetStatus.Params = try decode(params, for: method)
             let target = try task(set.task, workspace, writing: true)
             try confirmWrite(method, task: set.task)
             let change = try workspace.setStatus(set.status, of: target.id, cascade: set.cascade ?? false, in: context)
-            return result(of: change, for: target.id, workspace)
+            return try result(of: change, for: target.id, workspace)
 
         case .moveTask:
             let move: MoveTask.Params = try decode(params, for: method)
@@ -198,7 +203,7 @@ package struct Handler {
                 try confirmWrite(method, task: move.task)
                 change = try workspace.setParent(nil, of: target.id, in: context)
             }
-            return result(of: change, for: target.id, workspace)
+            return try result(of: change, for: target.id, workspace)
 
         case .addComment:
             let add: AddComment.Params = try decode(params, for: method)
@@ -470,13 +475,14 @@ package struct Handler {
             timeline: timeline)
     }
 
-    private func result(of change: Change, for id: UUID, _ workspace: Workspace) -> ChangeResult {
+    private func result(of change: Change, for id: UUID, _ workspace: Workspace) throws(APIError) -> ChangeResult {
+        guard let task = workspace.tasks[id] else { throw .changeUnreadable }
         let others = change.previous.keys
             .filter { $0 != id && $0 != change.reopenedParent }
             .compactMap { workspace.tasks[$0] }
             .sorted(by: LifrTask.listOrder)
         return ChangeResult(
-            task: summary(workspace.tasks[id]!, workspace),
+            task: summary(task, workspace),
             alsoChanged: others.map { summary($0, workspace) },
             reopenedParent: change.reopenedParent.flatMap { workspace.tasks[$0] }.map { workspace.displayCode(of: $0) })
     }

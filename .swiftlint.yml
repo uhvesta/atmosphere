@@ -37,3 +37,14 @@ identifier_name:
 line_length:
   warning: 120
   ignores_urls: true
+
+# A force unwrap, try! or as! traps instead of telling the person what went
+# wrong. Handle the missing value, or throw an error that says how to fix it.
+opt_in_rules:
+  - force_unwrapping
+force_unwrapping:
+  severity: error
+force_try:
+  severity: error
+force_cast:
+  severity: error

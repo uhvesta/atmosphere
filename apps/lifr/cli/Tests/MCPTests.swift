@@ -30,7 +30,10 @@ final class MCPTests: XCTestCase {
         let tools = try reply(server, ["jsonrpc": "2.0", "id": 2, "method": "tools/list"])?["result"]?["tools"]
 
         let expected = try golden("mcp_tools").array.map { tool -> JSONValue in
-            ["name": tool["name"]!, "description": tool["description"]!, "inputSchema": tool["inputSchema"]!]
+            [
+                "name": try XCTUnwrap(tool["name"]), "description": try XCTUnwrap(tool["description"]),
+                "inputSchema": try XCTUnwrap(tool["inputSchema"]),
+            ]
         }
         XCTAssertEqual(tools?.array, expected)
     }

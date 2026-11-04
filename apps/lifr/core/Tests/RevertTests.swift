@@ -25,7 +25,7 @@ func revertTests() -> [TestCase] {
             let fixture = try Fixture()
             let task = try fixture.task("Run")
             let done = try fixture.workspace.setStatus(.done, of: task.id, in: fixture.context)
-            let event = done.events.first { $0.field == .status }!
+            let event = try done.events.first { $0.field == .status }.unwrap()
             _ = try fixture.workspace.revert(event.id, in: fixture.context)
             try expectEqual(fixture.get(task).status, .todo)
         },
@@ -42,7 +42,7 @@ func revertTests() -> [TestCase] {
         TestCase("given a task's creation, when it's reverted, then cannotRevert") {
             let fixture = try Fixture()
             let task = try fixture.task("Run")
-            let created = fixture.workspace.history.first { $0.taskID == task.id && $0.kind == .created }!
+            let created = try fixture.workspace.history.first { $0.taskID == task.id && $0.kind == .created }.unwrap()
             try expectError(.cannotRevert(event: created.id)) {
                 try fixture.workspace.revert(created.id, in: fixture.context)
             }

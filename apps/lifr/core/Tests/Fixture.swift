@@ -27,14 +27,12 @@ final class Fixture {
 
     func nextID() -> UUID {
         ids += 1
-        return UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", ids))!
+        return UUID(sequence: ids)
     }
 
     func nextCode() -> TaskCode {
         codes += 1
-        // A malformed code is a bug in the fixture.
-        // swiftlint:disable:next force_try
-        return try! TaskCode(String(format: "%04d", codes))
+        return TaskCode(sequence: codes)
     }
 
     func advance(days: Double) {
@@ -49,7 +47,8 @@ final class Fixture {
         var new = Workspace.NewTask(title: title, avenueID: health.id, projectID: project?.id, parentID: parent?.id)
         new.status = status
         let change = try workspace.createTask(new, in: context)
-        return workspace.tasks[change.previous.first { $0.value == nil }!.key]!
+        let id = try change.previous.first { $0.value == nil }.unwrap("creating a task made no new one").key
+        return try workspace.tasks[id].unwrap("the new task isn't in the workspace")
     }
 
     /// A second device with the same records, as after a sync. It continues
@@ -65,7 +64,9 @@ final class Fixture {
         marathon = other.marathon
     }
 
-    func get(_ task: LifrTask) -> LifrTask { workspace.tasks[task.id]! }
+    func get(_ task: LifrTask) throws -> LifrTask {
+        try workspace.tasks[task.id].unwrap("\(task.title) isn't in the workspace")
+    }
 }
 
 /// `LifrTesting.expectError` for Core's errors, so cases can be written as

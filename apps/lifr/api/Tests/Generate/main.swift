@@ -87,9 +87,11 @@ let methodExamples: [APIMethod: Example] = [
     .export: try example("export", grant: { $0.terminal }),
 ]
 check(Set(methodExamples.keys) == Set(APIMethod.allCases), "every method needs an example")
-let methods = APIMethod.allCases.map { method in
-    let example = methodExamples[method]!
-    check(example.response.error == nil, "\(method.rawValue)'s example failed: \(example.response.error!.message)")
+let methods = APIMethod.allCases.compactMap { method -> MethodExample? in
+    guard let example = methodExamples[method] else { return nil }
+    if let error = example.response.error {
+        check(false, "\(method.rawValue)'s example failed: \(error.message)")
+    }
     return MethodExample(
         method: method.rawValue, scope: method.scope, request: example.request,
         response: example.response)

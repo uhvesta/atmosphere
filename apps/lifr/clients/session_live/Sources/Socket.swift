@@ -90,9 +90,10 @@
         @discardableResult
         func write(_ data: Data) -> Bool {
             data.withUnsafeBytes { bytes in
+                guard let base = bytes.baseAddress else { return true }
                 var offset = 0
                 while offset < bytes.count {
-                    let written = send(descriptor, bytes.baseAddress! + offset, bytes.count - offset, 0)
+                    let written = send(descriptor, base + offset, bytes.count - offset, 0)
                     guard written > 0 else { return false }
                     offset += written
                 }

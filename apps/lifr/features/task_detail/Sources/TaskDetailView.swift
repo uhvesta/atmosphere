@@ -308,16 +308,18 @@ package struct TaskDetailView: View {
 
 #Preview {
     let workspace = Workspace.sample(now: Date(), timeZone: .current)
-    let parent = workspace.tasks.values.first { !workspace.subtasks(of: $0.id).isEmpty }!
-    NavigationStack {
-        TaskDetailView(
-            store: Store(
-                initialState: TaskDetailFeature.State(
-                    id: parent.id, workspace: workspace, now: Date(), timeZone: .current)!
-            ) {
-                TaskDetailFeature()
-            } withDependencies: {
-                $0.store = .inMemory(workspace)
-            })
+    if let parent = workspace.tasks.values.first(where: { !workspace.subtasks(of: $0.id).isEmpty }),
+        let state = TaskDetailFeature.State(id: parent.id, workspace: workspace, now: Date(), timeZone: .current)
+    {
+        NavigationStack {
+            TaskDetailView(
+                store: Store(initialState: state) {
+                    TaskDetailFeature()
+                } withDependencies: {
+                    $0.store = .inMemory(workspace)
+                })
+        }
+    } else {
+        Text("The sample has no task with Sub tasks.")
     }
 }

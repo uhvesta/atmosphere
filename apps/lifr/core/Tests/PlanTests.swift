@@ -3,7 +3,7 @@ import LifrCore
 import LifrTesting
 
 func planTests() -> [TestCase] {
-    let gmt = TimeZone(identifier: "GMT")!
+    let gmt = TimeZone.gmt
 
     func titles(_ tasks: [LifrTask]) -> [String] { tasks.map(\.title) }
 
@@ -17,8 +17,8 @@ func planTests() -> [TestCase] {
                 .init(title: "Buy new clothes", subtasks: [.init(title: "Jacket")], place: "health"),
             ])
             _ = try fixture.workspace.apply(plan, timeZone: gmt, in: fixture.context)
-            let room = fixture.workspace.tasks.values.first { $0.title == "Clean up living room" }!
-            let clothes = fixture.workspace.tasks.values.first { $0.title == "Buy new clothes" }!
+            let room = try fixture.workspace.tasks.values.first { $0.title == "Clean up living room" }.unwrap()
+            let clothes = try fixture.workspace.tasks.values.first { $0.title == "Buy new clothes" }.unwrap()
             try expectEqual(titles(fixture.workspace.subtasks(of: room.id)), ["Vacuum", "Dust"])
             try expectEqual(titles(fixture.workspace.subtasks(of: clothes.id)), ["Jacket"])
         },
@@ -28,8 +28,8 @@ func planTests() -> [TestCase] {
                 avenues: [.init(key: "RENO", name: "Renovation")],
                 projects: [.init(name: "Kitchen", avenue: "RENO", tasks: [.init(title: "Get quotes")])])
             _ = try fixture.workspace.apply(plan, timeZone: gmt, in: fixture.context)
-            let task = fixture.workspace.tasks.values.first { $0.title == "Get quotes" }!
-            try expectEqual(fixture.workspace.projects[task.projectID!]?.name, "Kitchen")
+            let task = try fixture.workspace.tasks.values.first { $0.title == "Get quotes" }.unwrap()
+            try expectEqual(fixture.workspace.projects[task.projectID.unwrap()]?.name, "Kitchen")
             try expectEqual(fixture.workspace.avenues[task.avenueID]?.key.rawValue, "RENO")
         },
         TestCase("given relative dates on a Tuesday, when applied, then Lifr works out the days") {
@@ -39,8 +39,8 @@ func planTests() -> [TestCase] {
                 .init(title: "B", start: "next tuesday", due: "+2w", place: "HEALTH"),
             ])
             _ = try fixture.workspace.apply(plan, timeZone: gmt, in: fixture.context)
-            let first = fixture.workspace.tasks.values.first { $0.title == "A" }!
-            let second = fixture.workspace.tasks.values.first { $0.title == "B" }!
+            let first = try fixture.workspace.tasks.values.first { $0.title == "A" }.unwrap()
+            let second = try fixture.workspace.tasks.values.first { $0.title == "B" }.unwrap()
             try expectEqual(first.startDate?.description, "2026-11-04")
             try expectEqual(first.dueDate?.description, "2026-11-06")
             try expectEqual(second.startDate?.description, "2026-11-10")
@@ -106,7 +106,7 @@ func planTests() -> [TestCase] {
             _ = try fixture.workspace.apply(
                 Plan(tasks: [.init(title: "Long run", place: "HEALTH/Half Marathon")]), timeZone: gmt,
                 in: fixture.context)
-            let task = fixture.workspace.tasks.values.first { $0.title == "Long run" }!
+            let task = try fixture.workspace.tasks.values.first { $0.title == "Long run" }.unwrap()
             try expectEqual(task.projectID, fixture.marathon.id)
         },
         TestCase("given a Done task with an open Sub task, when applied, then closedWithOpenSubtasks") {
@@ -124,7 +124,7 @@ func planTests() -> [TestCase] {
             _ = try fixture.workspace.apply(
                 Plan(tasks: [.init(title: "Socks", labels: ["errand", "calls"], place: "HEALTH")]), timeZone: gmt,
                 in: fixture.context)
-            let task = fixture.workspace.tasks.values.first { $0.title == "Socks" }!
+            let task = try fixture.workspace.tasks.values.first { $0.title == "Socks" }.unwrap()
             try expectEqual(task.labelIDs.contains(errand.id), true)
             try expectEqual(
                 Set(task.labelIDs.compactMap { fixture.workspace.labels[$0]?.name }), ["Errand", "calls"])

@@ -193,13 +193,3 @@ func journalTests() -> [TestCase] {
         },
     ]
 }
-
-extension Optional {
-    fileprivate func unwrap(file: StaticString = #filePath, line: UInt = #line) throws -> Wrapped {
-        guard let self else {
-            try expect(false, "expected a value", file: file, line: line)
-            preconditionFailure("expect(false) throws")
-        }
-        return self
-    }
-}
