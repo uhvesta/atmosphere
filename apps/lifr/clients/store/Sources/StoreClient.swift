@@ -59,6 +59,11 @@ extension StoreClient {
         try await save { workspace, context in workspace.undo(change, in: context) }
     }
 
+    /// `Workspace.revert`: puts back what a history event changed.
+    package func revert(_ eventID: UUID) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in try workspace.revert(eventID, in: context) }
+    }
+
     package func createTask(_ new: Workspace.NewTask) async throws -> Saved {
         try await save { (workspace, context) throws(LifrError) in try workspace.createTask(new, in: context) }
     }

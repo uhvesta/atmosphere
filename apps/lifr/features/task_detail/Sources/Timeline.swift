@@ -10,6 +10,8 @@ package struct TimelineEntry: Identifiable, Hashable, Sendable {
     package var date: Date
     package var text: String
     package var isComment: Bool
+    /// Whether Undo can put back what this change did.
+    package var canUndo = false
 }
 
 extension Actor {
@@ -37,7 +39,8 @@ extension Workspace {
             .filter { $0.taskID == id && ![.commentAdded, .commentEdited, .commentDeleted].contains($0.kind) }
             .map {
                 TimelineEntry(
-                    id: $0.id, author: $0.actor.displayName, date: $0.createdAt, text: describe($0), isComment: false)
+                    id: $0.id, author: $0.actor.displayName, date: $0.createdAt, text: describe($0), isComment: false,
+                    canUndo: canRevert($0))
             }
         return (comments + events).sorted { ($0.date, $0.id.uuidString) > ($1.date, $1.id.uuidString) }
     }

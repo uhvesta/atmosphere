@@ -60,24 +60,28 @@
   ▿ timeline: 4 elements
     ▿ TimelineEntry
       - author: "You on Sample"
+      - canUndo: false
       - date: 2026-11-03T10:00:00Z
       - id: 00000000-0000-0000-0000-000000000903
       - isComment: false
       - text: "Added Sub task \"Send summary to the team\" (WORK-0009)"
     ▿ TimelineEntry
       - author: "You on Sample"
+      - canUndo: false
       - date: 2026-11-03T10:00:00Z
       - id: 00000000-0000-0000-0000-000000000803
       - isComment: false
       - text: "Added Sub task \"Leave comments\" (WORK-0008)"
     ▿ TimelineEntry
       - author: "You on Sample"
+      - canUndo: false
       - date: 2026-11-03T10:00:00Z
       - id: 00000000-0000-0000-0000-000000000703
       - isComment: false
       - text: "Added Sub task \"Read the draft\" (WORK-0007)"
     ▿ TimelineEntry
       - author: "You on Sample"
+      - canUndo: false
       - date: 2026-11-03T10:00:00Z
       - id: 00000000-0000-0000-0000-000000000602
       - isComment: false

@@ -214,6 +214,22 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.row.title, "Stretch for 10 minutes")
     }
 
+    func testUndoInTheActivityPutsBackAChangeThatIsStillCurrent() async throws {
+        let stretch = records.task("Stretch", in: health)
+        let store = makeStore(stretch)
+        await store.send(.binding(.set(\.title, "Stretch for 10 minutes")))
+        await store.send(.titleSubmitted)
+        await store.receive(\.delegate.saved)
+        let rename = try XCTUnwrap(store.state.timeline.first { $0.canUndo })
+
+        await store.send(.historyUndoTapped(rename.id))
+        await store.receive(\.delegate.saved)
+
+        XCTAssertEqual(store.state.row.title, "Stretch")
+        // The title isn't the rename's any more, so it no longer offers Undo.
+        XCTAssertFalse(store.state.timeline.contains { $0.id == rename.id && $0.canUndo })
+    }
+
     func testAnEmptyTitleIsPutBack() async {
         let stretch = records.task("Stretch", in: health)
         let store = makeStore(stretch)

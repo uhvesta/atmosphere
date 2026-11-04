@@ -141,6 +141,8 @@ package struct TaskDetailFeature {
         case subtaskToggled(UUID)
         case addSubtaskSubmitted
         case commentSubmitted
+        /// Undo on a change in the Activity list.
+        case historyUndoTapped(UUID)
         case reminderPicked(ReminderChoice)
         case reminderRemoved(UUID)
         /// The reminder was saved, but notifications are off on this device.
@@ -264,6 +266,9 @@ package struct TaskDetailFeature {
                 guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .none }
                 state.newComment = ""
                 return save { [id = state.id] in try await $0.addComment(body, to: id) }
+
+            case .historyUndoTapped(let eventID):
+                return save { try await $0.revert(eventID) }
 
             case .reminderPicked(let choice):
                 let trigger = choice.trigger(now: now, timeZone: timeZone)

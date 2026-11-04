@@ -409,6 +409,78 @@ package struct Workspace: Hashable, Codable, Sendable {
         return undone
     }
 
+    /// Whether `revert` can put back what `event` changed: a field of the
+    /// task's own that nothing has changed again since.
+    package func canRevert(_ event: HistoryEvent) -> Bool {
+        guard event.kind == .fieldChanged, let field = event.field, let task = tasks[event.taskID],
+            task.deletedAt == nil, let current = Self.value(of: field, in: task)
+        else { return false }
+        return current == event.newValue
+    }
+
+    /// Puts back the field `eventID` changed, as long as nothing changed it
+    /// again since. Status goes through `setStatus`'s rules, so it can still
+    /// be refused, for example Done with open Sub tasks.
+    package mutating func revert(_ eventID: UUID, in context: Context) throws(LifrError) -> Change {
+        guard let event = history.first(where: { $0.id == eventID }) else {
+            throw .notFound(.task, eventID.uuidString)
+        }
+        guard event.kind == .fieldChanged, let field = event.field,
+            Self.value(of: field, in: try liveTask(event.taskID)) != nil
+        else { throw .cannotRevert(event: eventID) }
+        guard canRevert(event) else { throw .changedSince(event: eventID) }
+        let id = event.taskID
+        let old = event.oldValue
+        var change: Change
+        switch field {
+        case .title:
+            change = try edit(id, TaskEdit(title: old ?? ""), in: context)
+        case .details:
+            change = try edit(id, TaskEdit(details: old ?? ""), in: context)
+        case .priority:
+            change = try edit(
+                id, TaskEdit(priority: old.flatMap(Priority.init(rawValue:)) ?? Priority.none), in: context)
+        case .startDate:
+            change = try edit(id, TaskEdit(startDate: .some(try old.map(CalendarDate.init))), in: context)
+        case .dueDate:
+            change = try edit(id, TaskEdit(dueDate: .some(try old.map(CalendarDate.init))), in: context)
+        case .dueTime:
+            change = try edit(id, TaskEdit(dueTime: .some(try old.map(TimeOfDay.init))), in: context)
+        case .labels:
+            let ids = (old ?? "").split(separator: ",").compactMap { UUID(uuidString: String($0)) }
+            change = try edit(id, TaskEdit(labelIDs: Set(ids)), in: context)
+        case .status:
+            change = try setStatus(old.flatMap(TaskStatus.init(rawValue:)) ?? .todo, of: id, in: context)
+        case .avenue, .project, .parent, .code:
+            throw .cannotRevert(event: eventID)
+        }
+        // The new events say they undo something, like ⌘Z's.
+        let ids = Set(change.events.map(\.id))
+        for index in history.indices where ids.contains(history[index].id) && history[index].reason == nil {
+            history[index].reason = .undo
+        }
+        for index in change.events.indices where change.events[index].reason == nil {
+            change.events[index].reason = .undo
+        }
+        return change
+    }
+
+    /// `field` of `task` as history records it, or `nil` for fields history
+    /// can't put back, such as moves.
+    private static func value(of field: HistoryEvent.Field, in task: LifrTask) -> String?? {
+        switch field {
+        case .title: .some(task.title)
+        case .details: .some(task.details)
+        case .priority: .some(task.priority.rawValue)
+        case .startDate: .some(task.startDate?.description)
+        case .dueDate: .some(task.dueDate?.description)
+        case .dueTime: .some(task.dueTime?.description)
+        case .labels: .some(describe(task.labelIDs))
+        case .status: .some(task.status.rawValue)
+        case .avenue, .project, .parent, .code: nil
+        }
+    }
+
     // MARK: - Trash
 
     /// Moves a task and its Sub tasks to the trash.

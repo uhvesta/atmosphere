@@ -275,8 +275,19 @@ package struct TaskDetailView: View {
                     )
                     .font(entry.isComment ? .body : .callout)
                     .foregroundStyle(entry.isComment ? .primary : .secondary)
+                    if entry.canUndo {
+                        Button("Undo") { store.send(.historyUndoTapped(entry.id)) }
+                            .font(.caption)
+                            .buttonStyle(.borderless)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
                 }
                 .accessibilityElement(children: .combine)
+                .accessibilityActions {
+                    if entry.canUndo {
+                        Button("Undo") { store.send(.historyUndoTapped(entry.id)) }
+                    }
+                }
             }
             HStack {
                 TextField("Add a comment", text: $store.newComment, axis: .vertical)

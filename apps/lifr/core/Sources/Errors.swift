@@ -32,6 +32,10 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
     case notCommentAuthor(comment: UUID)
     case inTrash(UUID)
     case reminderNeedsDueDate(UUID)
+    /// History can't put this kind of change back, such as a move.
+    case cannotRevert(event: UUID)
+    /// The field changed again after the event, so reverting would lose that.
+    case changedSince(event: UUID)
 
     package var description: String {
         switch self {
@@ -81,6 +85,11 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
             "This task is in the trash. Restore it before changing it."
         case .reminderNeedsDueDate:
             "A reminder before the due date needs a due date. Set one first, or remind at a set time instead."
+        case .cannotRevert:
+            "Only changes to a task's own fields can be undone from its history. Move it, or change its code, "
+                + "by hand instead."
+        case .changedSince:
+            "That field changed again after this. Undo the later change first, or set the field by hand."
         }
     }
 }

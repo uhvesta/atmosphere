@@ -9,4 +9,5 @@ runSuites([
     ("Comments and trash", commentAndTrashTests()),
     ("Reminders", reminderTests()),
     ("Reconciliation", reconciliationTests()),
+    ("Reverting from history", revertTests()),
 ])
