@@ -1,0 +1,24 @@
+
+
+## What
+
+## Why
+
+## Approach
+
+# ------------------------ >8 ------------------------
+# Everything from the line above down is removed, so the ## headings stay.
+#
+# Subject: imperative, under 60 characters, no period ("Add X", "Fix Y").
+#
+# Each section is one to three sentences or a few bullets, written for a
+# reviewer who has not seen the work. revup turns this message into the PR,
+# so write it once here. Don't hard-wrap: one line per paragraph or bullet.
+#   What:     the change as a user or reviewer sees it.
+#   Why:      the problem it solves or what it unlocks.
+#   Approach: how it works and the choices worth questioning. Skip what the
+#             diff already shows. Mention how you tested it.
+#
+# For revup, add trailers above the line and keep one topic per PR:
+#   Topic: short-name
+#   Relative: parent-topic    (only when stacking on another PR)

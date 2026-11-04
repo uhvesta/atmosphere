@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 pub use error::{Error, exit_with};
 pub use http::Http;
-pub use lockfile::{Pin, write_lock};
+pub use lockfile::{Pin, read_lock, write_lock};
 pub use platform::Platform;
 pub use versions::Versions;
 

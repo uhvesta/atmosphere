@@ -1,0 +1,23 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# bazel run //tools/scripts/bootstrap/revup installs revup into .tools/revup
+# from ../versions.lock and writes the .tools/bin/revup launcher.
+rust_binary(
+    name = "revup",
+    srcs = ["src/main.rs"],
+    compile_data = ["launcher.sh"],
+    deps = [
+        "//tools/scripts/bootstrap/lib:bootstrap",
+        "@crates//:flate2",
+        "@crates//:sha2",
+        "@crates//:tar",
+        "@crates//:thiserror",
+        "@crates//:zip",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

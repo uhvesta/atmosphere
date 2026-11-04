@@ -9,6 +9,11 @@ use crate::{Error, read_to_string};
 #[serde(deny_unknown_fields)]
 pub struct Versions {
     pub bazelisk: String,
+    pub python: String,
+    pub git: String,
+    pub gh: String,
+    pub revup: String,
+    pub uv: String,
 }
 
 impl Versions {
