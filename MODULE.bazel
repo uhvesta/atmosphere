@@ -78,6 +78,15 @@ use_repo(swift, "swift_toolchains")
 
 register_toolchains("@swift_toolchains//:all")
 
+# The rules_swift worker runs every compile through /usr/bin/xcrun on macOS,
+# which needs Xcode or the Command Line Tools. The patch skips xcrun when the
+# toolchain sets RULES_SWIFT_NO_XCRUN, as @swift_toolchains does.
+single_version_override(
+    module_name = "rules_swift",
+    patch_strip = 1,
+    patches = ["//tools/rules/swift:rules_swift_no_xcrun.patch"],
+)
+
 # MARK: - Zig
 
 # rules_zig downloads the Zig compiler for the build host and cross-compiles

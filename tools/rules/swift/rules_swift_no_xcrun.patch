@@ -1,0 +1,38 @@
+diff --git a/swift/toolchains/swift_toolchain.bzl b/swift/toolchains/swift_toolchain.bzl
+index 071b278..653f72b 100644
+--- a/swift/toolchains/swift_toolchain.bzl
++++ b/swift/toolchains/swift_toolchain.bzl
+@@ -193,6 +193,7 @@ def _all_tool_configs(
+             driver_config = _driver_config(mode = "swift-autolink-extract") if not swift_tools else None,
+             executable = swift_tools.swift_autolink_extract if swift_tools else None,
+             worker_mode = "wrap",
++            env = env,
+         )
+ 
+     if use_module_wrap:
+@@ -203,6 +204,7 @@ def _all_tool_configs(
+             driver_config = _driver_config(mode = "swiftc") if not swift_tools else None,
+             executable = swift_tools.swift_driver if swift_tools else None,
+             worker_mode = "wrap",
++            env = env,
+         )
+ 
+     return tool_configs
+diff --git a/tools/worker/swift_runner.cc b/tools/worker/swift_runner.cc
+index bef6960..7dc3e37 100644
+--- a/tools/worker/swift_runner.cc
++++ b/tools/worker/swift_runner.cc
+@@ -823,8 +823,11 @@ std::vector<std::string> SwiftRunner::ParseArguments(Iterator itr) {
+ void SwiftRunner::ProcessArguments(const std::vector<std::string>& args) {
+ #if __APPLE__
+   // On Apple platforms, inject `/usr/bin/xcrun` in front of our command
+-  // invocation.
+-  tool_args_.push_back("/usr/bin/xcrun");
++  // invocation, unless the toolchain is self-contained and asks us not to.
++  const char* no_xcrun = std::getenv("RULES_SWIFT_NO_XCRUN");
++  if (no_xcrun == nullptr || no_xcrun[0] == '\0') {
++    tool_args_.push_back("/usr/bin/xcrun");
++  }
+ #endif
+ 
+   // The tool is assumed to be the first argument. Push it directly.
