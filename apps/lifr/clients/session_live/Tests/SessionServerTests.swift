@@ -112,7 +112,19 @@ final class SessionServerTests: XCTestCase {
         XCTAssertEqual(saved, shown)
         let task = try XCTUnwrap(saved.tasks.values.first)
         XCTAssertEqual(task.title, "Book the dentist")
-        XCTAssertEqual(saved.history.first?.actor, .agent("Claude Code", device: "Test Mac"))
+        XCTAssertEqual(saved.history.first?.actor, .agent("Claude Code", device: "Test Mac", surface: .cli))
+        XCTAssertEqual(saved.journal.last?.actor, .agent("Claude Code", device: "Test Mac", surface: .cli))
+    }
+
+    func testAChangeOverMCPIsCreditedToMCP() async throws {
+        let harness = try await Harness(grants: [Harness.approved([.read, .write])])
+        let client = try harness.connect()
+        let response = try await background {
+            try client.call(.createTask, ["avenue": "HEALTH", "title": "Book the dentist"], surface: .mcp)
+        }
+        XCTAssertNil(response.error)
+        let saved = try await harness.store.load()
+        XCTAssertEqual(saved.journal.last?.actor, .agent("Claude Code", device: "Test Mac", surface: .mcp))
     }
 
     func testAReadOnlyGrantCantChangeAnything() async throws {

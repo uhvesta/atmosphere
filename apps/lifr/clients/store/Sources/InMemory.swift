@@ -30,7 +30,7 @@ extension StoreClient {
                     newCode: { random { TaskCode.random(using: &$0) } })
                 return try records.update { (records) throws(LifrError) -> Saved in
                     var copy = records
-                    let change = try operation(&copy, context)
+                    let change = try copy.perform(in: context, operation)
                     records = copy
                     return Saved(workspace: copy, change: change)
                 }
@@ -64,7 +64,11 @@ package final class InMemorySync: Sendable {
     package func callAsFunction(now: Date, _ body: (inout Workspace) -> Void) -> Update {
         let update = records.update { records in
             body(&records)
-            let fixes = records.reconcile(in: Context(actor: .system(device: device), now: now))
+            var fixes: [Fix] = []
+            records.perform(in: Context(actor: .system(device: device), now: now)) { records, context in
+                fixes = records.reconcile(in: context)
+                return Change()
+            }
             return Update(workspace: records, fixes: fixes)
         }
         for continuation in continuations.value { continuation.yield(update) }

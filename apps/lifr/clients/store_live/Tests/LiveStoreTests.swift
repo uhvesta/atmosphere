@@ -29,7 +29,7 @@ final class LiveStoreTests: XCTestCase {
             tasks: Array(workspace.tasks.values), labels: Array(workspace.labels.values),
             comments: Array(workspace.comments.values), reminders: Array(workspace.reminders.values),
             history: workspace.history.sorted { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) },
-            settings: workspace.settings)
+            journal: workspace.journal, settings: workspace.settings)
     }
 
     func testEveryRecordReadsBackAsWritten() async throws {
@@ -68,6 +68,34 @@ final class LiveStoreTests: XCTestCase {
         let reopened = try await LiveStore(modelContainer: container).load()
         XCTAssertEqual(reopened.tasks[plants.id]?.status, .done)
         XCTAssertEqual(reopened, sorted(saved.workspace))
+    }
+
+    func testTheJournalIsKeptAndCanBeRevertedAfterReopening() async throws {
+        let container = try LiveStore.inMemory()
+        try await LiveStore(modelContainer: container).insert(.sample(now: now, timeZone: .gmt))
+        let store = LiveStore(modelContainer: container)
+        let plants = try task("Water the plants", in: try await store.load())
+        let mac = Actor.user(device: "Test", surface: .mac)
+        let now = now
+        let saved = try await store.save(
+            in: { Context(actor: mac, now: now) },
+            { (workspace, context) throws(LifrError) in
+                try workspace.edit(plants.id, .init(title: "Water the ferns", priority: .high), in: context)
+            })
+
+        let reopened = try await LiveStore(modelContainer: container).load()
+        XCTAssertEqual(reopened.journal, saved.workspace.journal)
+        XCTAssertEqual(reopened.journal.map(\.actor), [mac])
+
+        let entry = try XCTUnwrap(saved.change.entry)
+        let revert: StoreOperation = { (workspace, context) throws(LifrError) in
+            try workspace.revert([entry], in: context)
+        }
+        let reverted = try await LiveStore(modelContainer: container).save(in: context(after: 60), revert)
+        XCTAssertEqual(reverted.workspace.tasks[plants.id]?.title, "Water the plants")
+        XCTAssertEqual(reverted.workspace.tasks[plants.id]?.priority, plants.priority)
+        let journal = try await store.load().journal
+        XCTAssertEqual(journal.last?.reverts, [entry])
     }
 
     func testARefusedChangeSavesNothing() async throws {

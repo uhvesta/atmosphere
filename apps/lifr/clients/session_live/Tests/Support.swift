@@ -120,13 +120,14 @@ final class TestClient: @unchecked Sendable {
     deinit { Darwin.close(socket) }
 
     /// Sends `method` and waits for its response.
-    func call(_ method: APIMethod, _ params: JSONValue = [:]) throws -> RPCResponse {
-        try send(method, params)
+    func call(_ method: APIMethod, _ params: JSONValue = [:], surface: Actor.Surface? = nil) throws -> RPCResponse {
+        try send(method, params, surface: surface)
         return try XCTUnwrap(receive())
     }
 
-    func send(_ method: APIMethod, _ params: JSONValue = [:]) throws {
-        let line = try Wire.line(RPCRequest(id: nextID, method: method.rawValue, params: params))
+    func send(_ method: APIMethod, _ params: JSONValue = [:], surface: Actor.Surface? = nil) throws {
+        let line = try Wire.line(
+            RPCRequest(id: nextID, method: method.rawValue, params: params, surface: surface))
         nextID += 1
         _ = line.withUnsafeBytes { Darwin.send(socket, $0.baseAddress, $0.count, 0) }
     }

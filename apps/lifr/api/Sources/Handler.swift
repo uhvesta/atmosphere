@@ -35,7 +35,9 @@ package struct Handler {
         self.context = context
         self.timeZone = timeZone
         self.confirm = confirm
-        if let grant { self.context.actor = grant.actor(device: context.actor.device) }
+        if let grant {
+            self.context.actor = grant.actor(device: context.actor.device, surface: context.actor.surface)
+        }
     }
 
     /// Answers `request`. Never throws: every failure is an error response.

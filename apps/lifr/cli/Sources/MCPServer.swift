@@ -1,5 +1,6 @@
 import Foundation
 import LifrAPI
+import LifrCore
 
 /// `lifr mcp`: an MCP server over stdio, one JSON-RPC message per line. Each
 /// tool call is one request to the app, so MCP clients get exactly what the
@@ -85,7 +86,11 @@ package final class MCPServer {
     /// A tool's result, or its error as a tool error the model can read.
     private func call(_ method: APIMethod, _ arguments: JSONValue) -> JSONValue {
         do throws(APIError) {
-            if connection == nil { connection = try connect() }
+            if connection == nil {
+                let new = try connect()
+                new.surface = .mcp
+                connection = new
+            }
             let result = try connection!.call(method, arguments)
             return ["content": [["type": "text", "text": .string((try? Output.json(result)) ?? "null")]]]
         } catch {

@@ -23,7 +23,7 @@ import SwiftData
 /// The models in the order they're registered.
 let models: [any PersistentModel.Type] = [
     StoredAvenue.self, StoredProject.self, StoredTask.self, StoredLabel.self, StoredComment.self,
-    StoredReminder.self, StoredHistoryEvent.self, StoredSettings.self,
+    StoredReminder.self, StoredHistoryEvent.self, StoredSettings.self, StoredJournalEntry.self,
 ]
 
 @Model
@@ -110,6 +110,8 @@ final class StoredComment {
     var authorKind = ""
     @Attribute(.allowsCloudEncryption) var authorDevice = ""
     @Attribute(.allowsCloudEncryption) var authorClient: String?
+    /// `Actor.Surface`; nil for comments written before it was recorded.
+    var authorSurface: String?
     var createdAt = Date.distantPast
     var editedAt: Date?
     var deletedAt: Date?
@@ -136,6 +138,8 @@ final class StoredHistoryEvent {
     var actorKind = ""
     @Attribute(.allowsCloudEncryption) var actorDevice = ""
     @Attribute(.allowsCloudEncryption) var actorClient: String?
+    /// `Actor.Surface`; nil for events written before it was recorded.
+    var actorSurface: String?
     var kind = ""
     var field: String?
     @Attribute(.allowsCloudEncryption) var oldValue: String?
@@ -153,6 +157,25 @@ final class StoredSettings {
     var id = UUID()
     var procrastinatedAfterDays = 7
     var createdAt = Date.distantPast
+
+    init(id: UUID) { self.id = id }
+}
+
+/// One journal entry. Written once, never changed or deleted. The steps
+/// hold whole records, so they're encrypted like the records are.
+@Model
+final class StoredJournalEntry {
+    var id = UUID()
+    var at = Date.distantPast
+    var actorKind = ""
+    @Attribute(.allowsCloudEncryption) var actorDevice = ""
+    @Attribute(.allowsCloudEncryption) var actorClient: String?
+    var actorSurface: String?
+    var conversation: UUID?
+    /// `[UUID]` as JSON.
+    var reverts: Data?
+    /// `[JournalStep]` as JSON.
+    @Attribute(.allowsCloudEncryption) var steps: Data?
 
     init(id: UUID) { self.id = id }
 }

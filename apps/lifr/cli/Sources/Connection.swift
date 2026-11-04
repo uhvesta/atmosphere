@@ -1,11 +1,14 @@
 import Darwin
 import Foundation
 import LifrAPI
+import LifrCore
 
 /// Sends requests to the Lifr app, one at a time.
 package protocol Connection: AnyObject {
     /// The result of `method`, or the app's `APIError`.
     func call(_ method: APIMethod, _ params: JSONValue) throws(APIError) -> JSONValue
+    /// Where the requests say they come from, for the journal.
+    var surface: Actor.Surface { get set }
 }
 
 /// A connection over the app's socket. Opening one starts the app if it
@@ -14,6 +17,7 @@ package final class SocketConnection: Connection {
     private let socket: Int32
     private var buffer = Data()
     private var nextID = 1
+    package var surface = Actor.Surface.cli
 
     /// How long to wait for the app to start.
     static let launchTimeout: TimeInterval = 10
@@ -50,7 +54,7 @@ package final class SocketConnection: Connection {
     deinit { close(socket) }
 
     package func call(_ method: APIMethod, _ params: JSONValue) throws(APIError) -> JSONValue {
-        let request = RPCRequest(id: nextID, method: method.rawValue, params: params)
+        let request = RPCRequest(id: nextID, method: method.rawValue, params: params, surface: surface)
         nextID += 1
         do {
             try send(Wire.line(request))

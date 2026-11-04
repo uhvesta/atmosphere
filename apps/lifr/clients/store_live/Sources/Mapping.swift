@@ -9,11 +9,13 @@ import LifrCore
 // status this version doesn't know, is skipped the same way.
 
 extension Actor {
-    static func stored(kind: String, device: String, client: String?) -> Actor? {
-        switch Kind(rawValue: kind) {
-        case .user: .user(device: device)
-        case .agent: .agent(client ?? "", device: device)
-        case .system: .system(device: device)
+    /// An unknown surface, from a newer version, reads as unknown.
+    static func stored(kind: String, device: String, client: String?, surface: String?) -> Actor? {
+        let surface = surface.flatMap(Surface.init(rawValue:))
+        return switch Kind(rawValue: kind) {
+        case .user: .user(device: device, surface: surface)
+        case .agent: .agent(client ?? "", device: device, surface: surface)
+        case .system: .system(device: device, surface: surface)
         case nil: nil
         }
     }
@@ -113,9 +115,10 @@ extension StoredLabel {
 
 extension StoredComment {
     var record: Comment? {
-        guard let task, let author = Actor.stored(kind: authorKind, device: authorDevice, client: authorClient) else {
-            return nil
-        }
+        guard let task,
+            let author = Actor.stored(
+                kind: authorKind, device: authorDevice, client: authorClient, surface: authorSurface)
+        else { return nil }
         return Comment(
             id: id, taskID: task.id, body: body, author: author, createdAt: createdAt, editedAt: editedAt,
             deletedAt: deletedAt)
@@ -127,6 +130,7 @@ extension StoredComment {
         authorKind = comment.author.kind.rawValue
         authorDevice = comment.author.device
         authorClient = comment.author.client
+        authorSurface = comment.author.surface?.rawValue
         createdAt = comment.createdAt
         editedAt = comment.editedAt
         deletedAt = comment.deletedAt
@@ -158,7 +162,9 @@ extension StoredReminder {
 
 extension StoredHistoryEvent {
     var record: HistoryEvent? {
-        guard let task, let actor = Actor.stored(kind: actorKind, device: actorDevice, client: actorClient),
+        guard let task,
+            let actor = Actor.stored(
+                kind: actorKind, device: actorDevice, client: actorClient, surface: actorSurface),
             let kind = HistoryEvent.Kind(rawValue: kind)
         else { return nil }
         let field = field.map(HistoryEvent.Field.init(rawValue:))
@@ -175,11 +181,39 @@ extension StoredHistoryEvent {
         actorKind = event.actor.kind.rawValue
         actorDevice = event.actor.device
         actorClient = event.actor.client
+        actorSurface = event.actor.surface?.rawValue
         kind = event.kind.rawValue
         field = event.field?.rawValue
         oldValue = event.oldValue
         newValue = event.newValue
         reason = event.reason?.rawValue
         createdAt = event.createdAt
+    }
+}
+
+extension StoredJournalEntry {
+    /// `nil` for an entry this version can't read, such as one a newer
+    /// version wrote with a kind of record it doesn't know.
+    var record: JournalEntry? {
+        let decoder = JSONDecoder()
+        guard
+            let actor = Actor.stored(kind: actorKind, device: actorDevice, client: actorClient, surface: actorSurface),
+            let steps, let decoded = try? decoder.decode([JournalStep].self, from: steps)
+        else { return nil }
+        let reverts = reverts.flatMap { try? decoder.decode([UUID].self, from: $0) } ?? []
+        return JournalEntry(
+            id: id, actor: actor, at: at, conversation: conversation, reverts: reverts, steps: decoded)
+    }
+
+    func write(_ entry: JournalEntry) throws {
+        let encoder = JSONEncoder()
+        at = entry.at
+        actorKind = entry.actor.kind.rawValue
+        actorDevice = entry.actor.device
+        actorClient = entry.actor.client
+        actorSurface = entry.actor.surface?.rawValue
+        conversation = entry.conversation
+        reverts = entry.reverts.isEmpty ? nil : try encoder.encode(entry.reverts)
+        steps = try encoder.encode(entry.steps)
     }
 }

@@ -13,6 +13,7 @@ final class FixtureConnection: Connection {
     private(set) var requests: [JSONValue] = []
     /// Files `lifr` can read, by path.
     var files: [String: String] = [:]
+    var surface = Actor.Surface.cli
 
     init(grant: (Fixture) -> Grant? = { $0.agent }) throws {
         fixture = try Fixture()

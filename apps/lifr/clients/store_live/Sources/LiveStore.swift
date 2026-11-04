@@ -10,6 +10,8 @@ package actor LiveStore: ModelActor {
     // Written out because `@ModelActor` makes these internal.
     package nonisolated let modelContainer: ModelContainer
     package nonisolated let modelExecutor: any ModelExecutor
+    /// Journal entries never change, so each is decoded once.
+    private var journal: [UUID: JournalEntry] = [:]
 
     package init(modelContainer: ModelContainer) {
         self.modelContainer = modelContainer
@@ -33,7 +35,7 @@ package actor LiveStore: ModelActor {
     ) throws -> Saved {
         let before = try load()
         var after = before
-        let change = try operation(&after, context())
+        let change = try after.perform(in: context(), operation)
         try write(from: before, to: after)
         return Saved(workspace: after, change: change)
     }
@@ -45,7 +47,11 @@ package actor LiveStore: ModelActor {
     package func reconcile(in context: @Sendable () -> Context) throws(LiveStoreError) -> [Fix] {
         let before = try load()
         var after = before
-        let fixes = after.reconcile(in: context())
+        var fixes: [Fix] = []
+        after.perform(in: context()) { workspace, context in
+            fixes = workspace.reconcile(in: context)
+            return Change()
+        }
         if !fixes.isEmpty { try write(from: before, to: after) }
         return fixes
     }
@@ -68,7 +74,7 @@ package actor LiveStore: ModelActor {
                 + workspace.history.filter { event in
                     !before.history.contains { $0.id == event.id }
                 },
-            settings: before.settings)
+            journal: before.journal, settings: before.settings)
         try write(from: before, to: merged)
     }
 
@@ -88,8 +94,19 @@ package actor LiveStore: ModelActor {
             // time.
             history: index.history.values.compactMap(\.record)
                 .sorted { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) },
+            journal: journal(index),
             settings: settings.first.map { Settings(procrastinatedAfterDays: $0.procrastinatedAfterDays) }
                 ?? Settings())
+    }
+
+    /// The journal, oldest first. Each device appends in its own order;
+    /// sync interleaves them by time.
+    private func journal(_ index: Index) -> [JournalEntry] {
+        for (id, model) in index.journal where journal[id] == nil {
+            journal[id] = model.record
+        }
+        return index.journal.keys.compactMap { journal[$0] }
+            .sorted { ($0.at, $0.id.uuidString) < ($1.at, $1.id.uuidString) }
     }
 
     // MARK: - Writing
@@ -110,6 +127,13 @@ package actor LiveStore: ModelActor {
             let previous = Dictionary(before.history.map { ($0.id, $0) }) { first, _ in first }
             let next = Dictionary(after.history.map { ($0.id, $0) }) { first, _ in first }
             sync(previous, next, &index.history) { $0.write($1, in: index) }
+            // Append-only: entries are only ever added.
+            for entry in after.journal where index.journal[entry.id] == nil {
+                let model = StoredJournalEntry(id: entry.id)
+                modelContext.insert(model)
+                try model.write(entry)
+                index.journal[entry.id] = model
+            }
             if before.settings != after.settings {
                 try storedSettings().procrastinatedAfterDays = after.settings.procrastinatedAfterDays
             }
@@ -158,6 +182,7 @@ final class Index {
     var comments: [UUID: StoredComment]
     var reminders: [UUID: StoredReminder]
     var history: [UUID: StoredHistoryEvent]
+    var journal: [UUID: StoredJournalEntry]
 
     init(_ context: ModelContext) throws {
         avenues = try Self.all(context)
@@ -167,6 +192,7 @@ final class Index {
         comments = try Self.all(context)
         reminders = try Self.all(context)
         history = try Self.all(context)
+        journal = try Self.all(context)
     }
 
     /// Two devices can create the same record only by syncing it, so
@@ -189,6 +215,7 @@ extension StoredLabel: Identified {}
 extension StoredComment: Identified {}
 extension StoredReminder: Identified {}
 extension StoredHistoryEvent: Identified {}
+extension StoredJournalEntry: Identified {}
 
 /// Reading or writing the store failed. Core's rules never throw these; they
 /// throw `LifrError`.

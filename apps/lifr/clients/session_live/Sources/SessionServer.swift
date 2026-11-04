@@ -192,7 +192,8 @@
             guard let request = try? Wire.decoder.decode(RPCRequest.self, from: line), request.jsonrpc == "2.0" else {
                 // The handler words every malformed request.
                 var empty = Workspace()
-                return Handler(grant: nil, context: context(), confirm: { _ in false }).handle(line: line, in: &empty)
+                return Handler(grant: nil, context: context(.cli), confirm: { _ in false }).handle(
+                    line: line, in: &empty)
             }
             let method = APIMethod(rawValue: request.method)
             let response: RPCResponse
@@ -338,8 +339,9 @@
             }
             let asked = OSAllocatedUnfairLock<Confirmation?>(initialState: nil)
             var copy = loaded
+            let surface = request.surface ?? .cli
             let first = Handler(
-                grant: grant, context: context(),
+                grant: grant, context: context(surface),
                 confirm: { confirmation in
                     asked.withLock { $0 = confirmation }
                     return false
@@ -357,16 +359,22 @@
             guard method?.scope == .write else {
                 // Unlock and export change nothing.
                 var again = loaded
-                return Handler(grant: grant, context: context(), confirm: confirm).handle(request, in: &again)
+                return Handler(grant: grant, context: context(surface), confirm: confirm).handle(request, in: &again)
             }
             let response = OSAllocatedUnfairLock<RPCResponse?>(initialState: nil)
             do {
                 let saved = try await environment.store.save { workspace, context in
+                    var context = context
+                    context.actor = .user(device: context.actor.device, surface: surface)
+                    let handler = Handler(grant: grant, context: context, confirm: confirm)
                     var copy = workspace
-                    let answer = Handler(grant: grant, context: context, confirm: confirm).handle(request, in: &copy)
+                    let answer = handler.handle(request, in: &copy)
                     response.withLock { $0 = answer }
                     if answer.error == nil { workspace = copy }
-                    return Change()
+                    // The journal credits the client, not the app.
+                    var change = Change()
+                    change.actor = handler.context.actor
+                    return change
                 }
                 if response.withLock({ $0?.error }) == nil { send(.recordsChanged(saved.workspace)) }
             } catch {
@@ -405,8 +413,8 @@
             }
         }
 
-        private func context() -> Context {
-            Context(actor: .user(device: environment.device), now: environment.now())
+        private func context(_ surface: Actor.Surface) -> Context {
+            Context(actor: .user(device: environment.device, surface: surface), now: environment.now())
         }
 
         private func terminalKey(_ peer: Peer) -> String? {

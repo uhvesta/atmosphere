@@ -60,7 +60,7 @@ private enum Storage {
 
     static let opened = Result { () throws(LiveStoreError) in try LiveStore(modelContainer: LiveStore.onDisk()) }
 
-    static let actor = Actor.user(device: deviceName)
+    static let actor = Actor.user(device: deviceName, surface: surface)
 
     /// One store for every screen, so each change shows everywhere.
     static let root = Store(initialState: RootFeature.State(platform: platform)) {
@@ -92,6 +92,14 @@ private enum Storage {
             .mac
         #else
             .phone
+        #endif
+    }
+
+    private static var surface: Actor.Surface {
+        #if os(macOS)
+            .mac
+        #else
+            UIDevice.current.userInterfaceIdiom == .pad ? .iPad : .iPhone
         #endif
     }
 

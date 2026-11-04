@@ -131,9 +131,10 @@ extension Workspace {
     /// Runs `operation` and appends one journal entry for every record it
     /// changed, by `change.actor` when it sets one and otherwise by the
     /// context's actor. Throws, changing nothing, when `operation` does.
-    package mutating func perform(
-        in context: Context, _ operation: (inout Workspace, Context) throws(LifrError) -> Change
-    ) throws(LifrError) -> Change {
+    @discardableResult
+    package mutating func perform<Failure: Error>(
+        in context: Context, _ operation: (inout Workspace, Context) throws(Failure) -> Change
+    ) throws(Failure) -> Change {
         let before = self
         var copy = self
         var change = try operation(&copy, context)

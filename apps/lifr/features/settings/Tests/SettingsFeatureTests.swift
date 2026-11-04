@@ -23,6 +23,7 @@ final class SettingsFeatureTests: XCTestCase {
             $0.store = .inMemory(records.workspace)
             $0.session = session.client
             $0.date.now = now
+            $0.uuid = .incrementing
         }
         store.exhaustivity = .off
         await store.send(.task)

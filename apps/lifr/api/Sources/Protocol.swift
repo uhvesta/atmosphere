@@ -1,4 +1,5 @@
 import Foundation
+import LifrCore
 
 /// The local API between `lifr` and the Mac app: JSON-RPC 2.0, one message
 /// per line, over a Unix socket in the App Group container.
@@ -55,17 +56,22 @@ package struct RPCRequest: Hashable, Codable, Sendable {
     package var id: Int
     package var method: String
     package var params: JSONValue?
+    /// Where the request comes from, for the journal: `lifr` sends `cli`
+    /// or `mcp`. Without one, `cli`.
+    package var surface: Actor.Surface?
 
-    package init(id: Int, method: APIMethod, params: some Encodable) throws {
+    package init(id: Int, method: APIMethod, params: some Encodable, surface: Actor.Surface? = nil) throws {
         self.id = id
         self.method = method.rawValue
         self.params = try JSONValue(params)
+        self.surface = surface
     }
 
-    package init(id: Int, method: String, params: JSONValue?) {
+    package init(id: Int, method: String, params: JSONValue?, surface: Actor.Surface? = nil) {
         self.id = id
         self.method = method
         self.params = params
+        self.surface = surface
     }
 }
 
