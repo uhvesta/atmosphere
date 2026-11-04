@@ -1,0 +1,34 @@
+{
+  "15.2": {
+    "posted": "2025-04-14",
+    "sha256": "55c193b80f3b4c5ae20b3bd926abe20e11a2933cdd1aa918a63f7e89c16dce21",
+    "strip_prefix": "Payload/Library/Developer/CommandLineTools/SDKs/MacOSX15.2.sdk",
+    "urls": [
+      "https://swcdn.apple.com/content/downloads/61/45/072-44426-A_16242I3TPF/74lkhd4yt26hcrwgpibrqtltf7yth9kc5w/CLTools_macOSNMOS_SDK.pkg"
+    ]
+  },
+  "15.4": {
+    "posted": "2026-06-26",
+    "sha256": "07835d08fcdc4a57b930c9a7f5c91df18666d4fa246ae994c8850cfe5aab9753",
+    "strip_prefix": "Payload/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk",
+    "urls": [
+      "https://swcdn.apple.com/content/downloads/33/19/140-17812-A_21ZLMMLY4E/zu3xwktttpoe71qiawhzgzvqss6rovawsa/CLTools_macOSLMOS_SDK.pkg"
+    ]
+  },
+  "15.5": {
+    "posted": "2025-05-28",
+    "sha256": "ba3453d62b3d2babf67f3a4a44e8073d6555c85f114856f4390a1f53bd76e24a",
+    "strip_prefix": "Payload/Library/Developer/CommandLineTools/SDKs/MacOSX15.5.sdk",
+    "urls": [
+      "https://swcdn.apple.com/content/downloads/52/01/082-41241-A_0747ZN8FHV/dectd075r63pppkkzsb75qk61s0lfee22j/CLTools_macOSNMOS_SDK.pkg"
+    ]
+  },
+  "26.5": {
+    "posted": "2026-06-26",
+    "sha256": "debe353b27a13cd678b26ab216a040acf07b62c0639d8ac522df4ca07d121eb2",
+    "strip_prefix": "Payload/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk",
+    "urls": [
+      "https://swcdn.apple.com/content/downloads/33/19/140-17812-A_21ZLMMLY4E/zu3xwktttpoe71qiawhzgzvqss6rovawsa/CLTools_macOSNMOS_SDK.pkg"
+    ]
+  }
+}

@@ -1,5 +1,5 @@
-//! Shared by the bootstrap tools: `versions.toml`, `versions.lock`, the
-//! supported platforms, and pinned downloads.
+//! Shared by the bootstrap tools and the Swift catalog tool: `versions.toml`,
+//! `versions.lock`, the supported platforms, and downloads.
 
 pub mod download;
 mod error;
@@ -11,7 +11,7 @@ mod versions;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub use error::{Error, exit_with};
+pub use error::{Error, exit_with, print_error};
 pub use http::Http;
 pub use lockfile::{Pin, read_lock, write_lock};
 pub use platform::Platform;

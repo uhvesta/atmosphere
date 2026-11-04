@@ -1,0 +1,25 @@
+exports_files([
+    "compiler.BUILD.bazel",
+    "macos_sdk.BUILD.bazel",
+    "macos_sdks.json",
+    "swift_versions.json",
+])
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "compiler.BUILD.bazel",
+        "extensions.bzl",
+        "macos_sdk.BUILD.bazel",
+        "versions.bzl",
+    ],
+    tags = ["starlark"],
+)
+
+# Regenerates swift_versions.json and macos_sdks.json:
+#   bazel run //tools/rules/swift:update_versions -- --help
+alias(
+    name = "update_versions",
+    actual = "//tools/rules/swift/update_versions",
+)
