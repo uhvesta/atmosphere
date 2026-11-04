@@ -1,5 +1,5 @@
 //! The transport: sends the request it is given and reports what came back,
-//! whatever the status. `download` decides what a status means.
+//! whatever the status. [`crate::download`] decides what a status means.
 
 use std::io::Read;
 use std::time::Duration;
@@ -8,7 +8,7 @@ use crate::Error;
 
 const USER_AGENT: &str = "monty-oxide-bootstrap";
 
-pub(crate) struct Http {
+pub struct Http {
     agent: ureq::Agent,
 }
 

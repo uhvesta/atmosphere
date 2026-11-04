@@ -7,11 +7,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
-use crate::Error;
-use crate::http::Http;
+use crate::{Error, Http};
 
 /// The body of `url` parsed as JSON, requested with `headers`.
-pub(crate) fn json<T: DeserializeOwned>(
+pub fn json<T: DeserializeOwned>(
     http: &Http,
     url: &str,
     headers: &[(&str, &str)],
@@ -23,7 +22,7 @@ pub(crate) fn json<T: DeserializeOwned>(
 }
 
 /// SHA-256 of the body, streamed; nothing is written to disk.
-pub(crate) fn sha256(http: &Http, url: &str) -> Result<String, Error> {
+pub fn sha256(http: &Http, url: &str) -> Result<String, Error> {
     copy_hashed(&mut reader(http, url, &[])?, &mut io::sink()).map_err(|error| match error {
         Copy::Read(source) | Copy::Write(source) => Error::Interrupted {
             url: url.to_owned(),
@@ -38,7 +37,7 @@ fn hex(bytes: &[u8]) -> String {
 
 /// How long a server asked us to wait before retrying, when it said.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Wait(Option<Duration>);
+pub struct Wait(Option<Duration>);
 
 impl Wait {
     /// `retry-after` is seconds to wait; `x-ratelimit-reset` is when the

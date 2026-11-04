@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 # bazel run //tools/scripts/bootstrap/lock rewrites ../versions.lock from
 # ../versions.toml. Crates come from the root Cargo workspace (@crates).
@@ -6,18 +6,10 @@ rust_binary(
     name = "lock",
     srcs = glob(["src/*.rs"]),
     deps = [
+        "//tools/scripts/bootstrap/lib:bootstrap",
         "@crates//:serde",
-        "@crates//:serde_json",
-        "@crates//:sha2",
         "@crates//:thiserror",
-        "@crates//:toml",
-        "@crates//:ureq",
     ],
-)
-
-rust_test(
-    name = "lock_test",
-    crate = ":lock",
 )
 
 filegroup(

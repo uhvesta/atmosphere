@@ -1,14 +1,12 @@
 //! GitHub's API and releases, and the SHA-256 GitHub publishes for each
 //! asset.
 
+use bootstrap::download;
+use bootstrap::{Http, Pin, Platform};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::Error;
-use crate::download;
-use crate::http::Http;
-use crate::lockfile::Pin;
-use crate::platform::Platform;
 
 pub(crate) struct GitHub<'a> {
     http: &'a Http,
@@ -30,10 +28,10 @@ impl<'a> GitHub<'a> {
             headers.push(("Authorization", authorization));
         }
         download::json(self.http, &url, &headers).map_err(|error| match error {
-            Error::RateLimited { url, wait } if self.token.is_none() => {
+            bootstrap::Error::RateLimited { url, wait } if self.token.is_none() => {
                 Error::AnonymousRateLimit { url, wait }
             }
-            error => error,
+            error => error.into(),
         })
     }
 

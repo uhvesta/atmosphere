@@ -1,0 +1,28 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Shared by the bootstrap tools: versions.toml, versions.lock, platforms, and
+# pinned downloads. Crates come from the root Cargo workspace (@crates).
+rust_library(
+    name = "bootstrap",
+    srcs = glob(["src/*.rs"]),
+    visibility = ["//tools/scripts/bootstrap/lock:__pkg__"],
+    deps = [
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:thiserror",
+        "@crates//:toml",
+        "@crates//:ureq",
+    ],
+)
+
+rust_test(
+    name = "bootstrap_test",
+    crate = ":bootstrap",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

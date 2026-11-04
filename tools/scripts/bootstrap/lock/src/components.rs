@@ -1,9 +1,9 @@
 //! What each component in `versions.toml` downloads, per platform.
 
+use bootstrap::{Pin, Platform};
+
 use crate::Error;
 use crate::github::GitHub;
-use crate::lockfile::Pin;
-use crate::platform::Platform;
 
 /// Go's `GOOS-GOARCH` spelling, used by Go projects' release assets.
 fn go(platform: Platform) -> &'static str {
