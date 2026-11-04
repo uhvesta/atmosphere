@@ -1,4 +1,4 @@
-# Test VM for cross-compiled Linux binaries; see tools/cross/matrix.sh.
+# Test VM for cross-compiled Linux binaries; see tools/e2e/e2e.sh.
 # Runs arm64 binaries natively and x86_64 binaries through Rosetta.
 # The host directory /tmp/monty-oxide-cross is mounted read-only.
 base: template:ubuntu-24.04

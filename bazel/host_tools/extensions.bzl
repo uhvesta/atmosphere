@@ -149,7 +149,7 @@ def _host_tools_impl(module_ctx):
         name = "lima",
         url = "https://github.com/lima-vm/lima/releases/download/v{0}/lima-{0}-{1}.tar.gz".format(_LIMA_VERSION, lima_platform),
         sha256 = lima_sha,
-        export_visibility = ["@//tools/cross:__pkg__"],
+        export_visibility = ["@//tools/e2e:__pkg__"],
     )
     return module_ctx.extension_metadata(reproducible = True)
 

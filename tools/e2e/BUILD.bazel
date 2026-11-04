@@ -1,9 +1,9 @@
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 
-# bazel run //tools/cross:matrix -- --help
+# bazel run //tools/e2e -- --help
 sh_binary(
-    name = "matrix",
-    srcs = ["matrix.sh"],
+    name = "e2e",
+    srcs = ["e2e.sh"],
     args = ["$(rlocationpath @lima//:bin/limactl)"],
     data = [
         "@lima//:bin/limactl",

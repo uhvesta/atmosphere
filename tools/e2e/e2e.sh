@@ -1,12 +1,12 @@
 #!/bin/sh
 # Cross-compiles the example binaries for every platform in
 # //bazel/platforms and runs each binary where it belongs: macOS arm64 on
-# this machine, Linux in Lima VMs (tools/cross/lima/*.yaml; x86_64 through
+# this machine, Linux in Lima VMs (tools/e2e/lima/*.yaml; x86_64 through
 # Rosetta). Missing VMs are created and stopped VMs are started.
 #
-#   bazel run //tools/cross:matrix                 # build and run everything
-#   bazel run //tools/cross:matrix -- --build-only # skip running
-#   bazel run //tools/cross:matrix -- --example swift --config linux_arm64
+#   bazel run //tools/e2e                 # build and run everything
+#   bazel run //tools/e2e -- --build-only # skip running
+#   bazel run //tools/e2e -- --example swift --config linux_arm64
 #
 # Running needs macOS on Apple silicon (Lima's vz driver with Rosetta).
 set -eu
@@ -122,7 +122,7 @@ ensure_vm() { # name template
   status=$("$limactl" list --format '{{.Status}}' "$1" 2>/dev/null || true)
   case "$status" in
     Running) ;;
-    "") "$limactl" start --tty=false --name="$1" "tools/cross/lima/$2.yaml" ;;
+    "") "$limactl" start --tty=false --name="$1" "tools/e2e/lima/$2.yaml" ;;
     *) "$limactl" start --tty=false "$1" ;;
   esac
 }
