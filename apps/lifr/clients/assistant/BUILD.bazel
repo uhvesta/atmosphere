@@ -1,0 +1,53 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# The assistant client: a conversation with a model that drafts plans and
+# answers questions about the records. This package has the definition,
+# the prompt, the lookup tools and a scripted version for tests and
+# previews. The live one, on Apple's on-device model, is
+# //apps/lifr/clients/assistant_live, which features never depend on.
+swift_library(
+    name = "assistant",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrAssistantClient",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/lifr/app:__subpackages__",
+        "//apps/lifr/clients/assistant_live:__pkg__",
+        "//apps/lifr/features:__subpackages__",
+    ],
+    deps = [
+        "//apps/lifr/api",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":assistant",
+        "//apps/lifr/api",
+        "//apps/lifr/clients/store",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -1,4 +1,6 @@
 import ComposableArchitecture
+import LifrAssistantClient
+import LifrAssistantLive
 import LifrCore
 import LifrRemindersClient
 import LifrRemindersLive
@@ -66,6 +68,7 @@ private enum Storage {
     } withDependencies: {
         $0.store = client
         $0.reminders = .live()
+        $0.assistant = .live()
         $0.session = session
     }
 

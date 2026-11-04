@@ -1,0 +1,182 @@
+import ComposableArchitecture
+import Foundation
+import LifrAPI
+import LifrAssistantClient
+import LifrCore
+import LifrStoreClient
+import XCTest
+
+final class AssistantTests: XCTestCase {
+    /// 2026-11-03 10:00 UTC, a Tuesday.
+    private let now = Date(timeIntervalSince1970: 1_793_700_000)
+    private lazy var records = RecordsBuilder(now: now, timeZone: .gmt)
+
+    private var tools: AssistantTools { AssistantTools(workspace: records.workspace, now: now, timeZone: .gmt) }
+
+    private func code(_ task: LifrTask) -> String { records.workspace.displayCode(of: task) }
+
+    func testLookupListsAvenuesProjectsOpenTopLevelTasksAndLabels() {
+        let home = records.avenue("HOME", "Home")
+        let move = records.project("Move", in: home)
+        let older = records.task("Pack books", in: home, project: move)
+        let newer = records.task("Call movers", in: home)
+        records.task("Tape", in: home, parent: older)
+        let done = records.task("Done", in: home)
+        records.setStatus(.done, of: done)
+        _ = records.label("errand")
+
+        let lookup = AssistantLookup(records.workspace)
+
+        XCTAssertEqual(lookup.places, [.init(key: "HOME", name: "Home", projects: ["Move"])])
+        XCTAssertEqual(Set(lookup.tasks.map(\.code)), [code(older), code(newer)])
+        XCTAssertEqual(lookup.tasks.first { $0.code == code(older) }?.place, "HOME/Move")
+        XCTAssertEqual(lookup.labels, ["errand"])
+    }
+
+    func testHistoryKeepsTheNewestMessagesThatFit() {
+        let long = String(repeating: "a", count: AssistantPrompt.historyBudget - 5)
+        let messages = ["first", long, "short", "last"].enumerated().map { index, text in
+            ChatMessage(id: UUID(), role: index % 2 == 0 ? .person : .assistant, text: text, at: now)
+        }
+
+        XCTAssertEqual(AssistantPrompt.history(messages).map(\.text), ["short", "last"])
+        XCTAssertEqual(AssistantPrompt.history(Array(messages.prefix(1))).map(\.text), ["first"])
+        XCTAssertEqual(AssistantPrompt.history([]), [])
+    }
+
+    func testHistoryCutsALastMessageThatIsTooLongByItself() {
+        let text = "start" + String(repeating: "b", count: AssistantPrompt.historyBudget)
+        let message = ChatMessage(id: UUID(), role: .person, text: text, at: now)
+
+        let kept = AssistantPrompt.history([message])
+
+        XCTAssertEqual(kept.map(\.text.count), [AssistantPrompt.historyBudget])
+        XCTAssertFalse(kept[0].text.hasPrefix("start"))
+    }
+
+    func testAPartialAnswerBecomesAPlanWithTheTasksWrittenSoFar() {
+        let answer: JSONValue = .object([
+            "message": .string(" Here you go. "),
+            "plan": .object([
+                "tasks": .array([
+                    .object([
+                        "title": .string("Clean"), "place": .string("HOME"), "priority": .string("high"),
+                        "labels": .array([.string("chore")]),
+                        "subtasks": .array([
+                            .object(["title": .string("Vacuum"), "place": .string("WORK")]), .object([:]),
+                        ]),
+                    ]),
+                    .object(["place": .string("HOME")]),
+                ])
+            ]),
+        ])
+
+        let reply = AssistantPrompt.reply(from: answer, isComplete: false)
+
+        XCTAssertEqual(reply.text, "Here you go.")
+        XCTAssertFalse(reply.isComplete)
+        let task = try? XCTUnwrap(reply.plan?.tasks.first)
+        XCTAssertEqual(reply.plan?.tasks.count, 1)
+        XCTAssertEqual(task?.place, "HOME")
+        XCTAssertEqual(task?.priority, .high)
+        XCTAssertEqual(task?.labels, ["chore"])
+        XCTAssertEqual(task?.subtasks.map(\.title), ["Vacuum"])
+        XCTAssertNil(task?.subtasks.first?.place)
+    }
+
+    func testAnAnswerWithoutAPlanHasNone() {
+        let reply = AssistantPrompt.reply(
+            from: .object(["message": .string("Which Avenue?"), "plan": .object(["tasks": .array([])])]),
+            isComplete: true)
+
+        XCTAssertEqual(reply, AssistantReply(text: "Which Avenue?", plan: nil, isComplete: true))
+    }
+
+    func testThePromptCarriesTheDraftAndItsProblem() {
+        _ = records.avenue("HOME", "Home")
+        let request = AssistantRequest(
+            messages: [ChatMessage(id: UUID(), role: .person, text: "Add laundry", at: now)],
+            draft: Plan(tasks: [.init(title: "Laundry", place: "HOME")]), problem: "no such label",
+            workspace: records.workspace, now: now, timeZone: .gmt)
+
+        let prompt = AssistantPrompt.prompt(request)
+
+        XCTAssertTrue(prompt.contains("Add laundry"))
+        XCTAssertTrue(prompt.contains(PlanFile.write(request.draft!)))
+        XCTAssertTrue(prompt.contains("no such label"))
+        XCTAssertTrue(AssistantPrompt.instructions(request).contains("HOME"))
+    }
+
+    func testFindTasksMatchesWordsAvenueStatusAndDueDate() {
+        let home = records.avenue("HOME", "Home")
+        let work = records.avenue("WORK", "Work")
+        let laundry = records.task("Do laundry", in: home, due: 1)
+        let report = records.task("Laundry report", in: work, due: 10)
+        let done = records.task("Fold laundry", in: home)
+        records.setStatus(.done, of: done)
+
+        func codes(_ text: String) -> Set<String> {
+            Set([laundry, report, done].map(code).filter { text.contains($0) })
+        }
+
+        XCTAssertEqual(
+            codes(tools.findTasks(words: "laundry", avenue: nil, status: nil, dueBy: nil)),
+            [code(laundry), code(report)])
+        XCTAssertEqual(
+            codes(tools.findTasks(words: "laundry", avenue: "home", status: nil, dueBy: nil)),
+            [code(laundry)])
+        XCTAssertEqual(codes(tools.findTasks(words: "", avenue: nil, status: "done", dueBy: nil)), [code(done)])
+        XCTAssertEqual(codes(tools.findTasks(words: "", avenue: nil, status: nil, dueBy: "+3d")), [code(laundry)])
+        XCTAssertEqual(codes(tools.findTasks(words: "", avenue: "NOPE", status: nil, dueBy: nil)), [])
+        XCTAssertEqual(codes(tools.findTasks(words: "", avenue: nil, status: "finished", dueBy: nil)), [])
+    }
+
+    func testFindTasksListsAtMostTheLimit() {
+        let home = records.avenue("HOME", "Home")
+        for index in 0..<(AssistantTools.limit + 3) { records.task("Task \(index)", in: home) }
+
+        let lines = tools.findTasks(words: "task", avenue: nil, status: nil, dueBy: nil)
+            .split(separator: "\n").filter { $0.hasPrefix("- ") }
+
+        XCTAssertEqual(lines.count, AssistantTools.limit)
+    }
+
+    func testGetTaskIncludesSubtasksAndComments() {
+        let home = records.avenue("HOME", "Home")
+        let clean = records.task("Clean", in: home)
+        let vacuum = records.task("Vacuum", in: home, parent: clean)
+        records.comment("Use the new bags", on: clean)
+
+        let text = tools.getTask(code: code(clean).lowercased())
+
+        XCTAssertTrue(text.contains(code(vacuum)))
+        XCTAssertTrue(text.contains("Use the new bags"))
+        XCTAssertFalse(tools.getTask(code: "HOME-9999").contains("HOME-9999 ·"))
+    }
+
+    func testOverviewSortsTasksByWhenTheyAreDue() {
+        let home = records.avenue("HOME", "Home")
+        let late = records.task("Late", in: home, due: -2)
+        let today = records.task("Today", in: home, due: 0)
+        let later = records.task("Later", in: home, due: 30)
+
+        let text = tools.overview()
+
+        XCTAssertTrue(text.contains(code(late)))
+        XCTAssertTrue(text.contains(code(today)))
+        XCTAssertFalse(text.contains(code(later)))
+        let lateAt = text.range(of: code(late))!.lowerBound
+        XCTAssertLessThan(lateAt, text.range(of: code(today))!.lowerBound)
+    }
+
+    func testTheScriptedClientStreamsTheTextThenTheWholeReply() async throws {
+        let client = AssistantClient.scripted([.example])
+        let request = AssistantRequest(messages: [], workspace: Workspace(), now: now, timeZone: .gmt)
+
+        var replies: [AssistantReply] = []
+        for try await reply in client.reply(request) { replies.append(reply) }
+
+        XCTAssertEqual(replies, [AssistantReply(text: AssistantReply.example.text), AssistantReply.example])
+        XCTAssertEqual(client.availability(), .available)
+    }
+}

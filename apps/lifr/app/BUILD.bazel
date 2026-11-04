@@ -14,6 +14,8 @@ swift_library(
     module_name = "LifrApp",
     target_compatible_with = ["//bazel/xcode"],
     deps = [
+        "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/assistant_live",
         "//apps/lifr/clients/reminders",
         "//apps/lifr/clients/reminders_live",
         "//apps/lifr/clients/session",
