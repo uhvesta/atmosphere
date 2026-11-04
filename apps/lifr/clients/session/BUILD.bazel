@@ -1,0 +1,52 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# The session client: approval requests from agents, the grants you gave
+# them, and the CLI install. This package has the definition and an
+# in-memory version for tests and previews. The socket server is
+# //apps/lifr/clients/session_live, which features never depend on.
+swift_library(
+    name = "session",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrSessionClient",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/lifr/app:__subpackages__",
+        "//apps/lifr/clients/session_live:__pkg__",
+        "//apps/lifr/features:__subpackages__",
+    ],
+    deps = [
+        "//apps/lifr/api",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# Tests for the in-memory version, which feature tests rely on.
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":session",
+        "//apps/lifr/api",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
