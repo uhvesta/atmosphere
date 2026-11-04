@@ -49,7 +49,7 @@ extension TaskRowData.Due {
         }
     }
 
-    var isOverdue: Bool {
+    package var isOverdue: Bool {
         if case .overdue = self { true } else { false }
     }
 }
