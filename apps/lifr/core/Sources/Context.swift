@@ -35,8 +35,31 @@ package struct Change: Hashable, Sendable {
     /// A closed parent the operation moved back to In Progress because one of
     /// its Sub tasks is open again. The UI offers to undo the whole change.
     package internal(set) var reopenedParent: UUID?
+    /// Records the operation added besides tasks' own, in the order it added
+    /// them, so undo can remove them too.
+    package internal(set) var added: [Added] = []
+
+    package enum Added: Hashable, Sendable {
+        case avenue(UUID)
+        case project(UUID)
+        case label(UUID)
+        case task(UUID)
+        case comment(UUID)
+        case reminder(UUID)
+    }
 
     package init() {}
+
+    /// Adds what `other` changed to this change. A task keeps the state it
+    /// had before the first of them.
+    mutating func merge(_ other: Change) {
+        for (id, task) in other.previous where previous[id] == nil {
+            previous[id] = task
+        }
+        events += other.events
+        reopenedParent = reopenedParent ?? other.reopenedParent
+        added += other.added
+    }
 
     package var isEmpty: Bool { previous.isEmpty && events.isEmpty }
 }

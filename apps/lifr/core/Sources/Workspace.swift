@@ -406,7 +406,33 @@ package struct Workspace: Hashable, Codable, Sendable {
                     in: context, &undone)
             }
         }
+        removeAdded(change.added)
         return undone
+    }
+
+    /// Removes records a change added, newest first. Avenues, Projects and
+    /// labels stay while anything still uses them.
+    private mutating func removeAdded(_ added: [Change.Added]) {
+        for record in added.reversed() {
+            switch record {
+            case .task:
+                break  // `previous` covers tasks.
+            case .comment(let id):
+                comments[id] = nil
+            case .reminder(let id):
+                reminders[id] = nil
+            case .label(let id):
+                if !tasks.values.contains(where: { $0.labelIDs.contains(id) }) { labels[id] = nil }
+            case .project(let id):
+                if !tasks.values.contains(where: { $0.projectID == id }) { projects[id] = nil }
+            case .avenue(let id):
+                if !tasks.values.contains(where: { $0.avenueID == id }),
+                    !projects.values.contains(where: { $0.avenueID == id })
+                {
+                    avenues[id] = nil
+                }
+            }
+        }
     }
 
     /// Whether `revert` can put back what `event` changed: a field of the

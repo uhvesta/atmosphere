@@ -36,6 +36,9 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
     case cannotRevert(event: UUID)
     /// The field changed again after the event, so reverting would lose that.
     case changedSince(event: UUID)
+    /// A plan couldn't be added; `at` says which part, such as
+    /// "task 2 “Buy clothes” › Sub task 1 “Jacket”". Nothing was added.
+    indirect case plan(at: String, PlanProblem)
 
     package var description: String {
         switch self {
@@ -90,6 +93,45 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
                 + "by hand instead."
         case .changedSince:
             "That field changed again after this. Undo the later change first, or set the field by hand."
+        case .plan(let at, let problem):
+            "Nothing was added. In \(at): \(problem.description)"
+        }
+    }
+}
+
+extension PlanProblem: CustomStringConvertible {
+    package var description: String {
+        switch self {
+        case .empty:
+            "it adds nothing. Add at least one Avenue, label, Project or task."
+        case .unknownAvenue(let key, let suggestion):
+            "there's no Avenue \(key). "
+                + (suggestion.map { "Did you mean \($0)? " } ?? "")
+                + "Use an existing Avenue's key, or add the Avenue to the plan."
+        case .unknownProject(let name, let avenue, let suggestion):
+            "\(avenue) has no Project “\(name)”. "
+                + (suggestion.map { "Did you mean “\($0)”? " } ?? "")
+                + "Use an existing Project's name, or add the Project to the plan with its tasks inside it."
+        case .projectExists(let name, let avenue):
+            "\(avenue) already has a Project “\(name)”. To add tasks to it, list them as tasks placed in "
+                + "\(avenue)/\(name), or give the new Project another name."
+        case .noPlace:
+            "the task doesn't say where it goes. Give it an Avenue key or KEY/Project name, or the code of the "
+                + "task it's a Sub task of."
+        case .placeGivenTwice:
+            "the task says where it goes more than once. Tasks inside a Project and Sub tasks go where they're "
+                + "listed, so remove their own Avenue or parent; a task on its own takes one or the other."
+        case .subtaskTooDeep:
+            "Sub tasks can't have their own Sub tasks. Make them separate Sub tasks of the same task, or a "
+                + "checklist in the description."
+        case .invalidDate(let text):
+            "“\(text)” isn't a date Lifr reads. \(Plan.dateHelp)"
+        case .invalidReminder(let text):
+            "“\(text)” isn't a reminder Lifr reads. \(Plan.reminderHelp)"
+        case .closedWithOpenSubtasks:
+            "the task is Done or Won't Do but has open Sub tasks. Close the Sub tasks too, or leave the task open."
+        case .rule(let error):
+            error.description
         }
     }
 }

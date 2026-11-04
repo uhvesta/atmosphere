@@ -10,4 +10,5 @@ runSuites([
     ("Reminders", reminderTests()),
     ("Reconciliation", reconciliationTests()),
     ("Reverting from history", revertTests()),
+    ("Plans", planTests()),
 ])
