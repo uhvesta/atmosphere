@@ -1,5 +1,5 @@
 # Repository settings for revup. Personal settings go in .tools/revupconfig
-# through revup config. Install revup with bazel run //tools/scripts/bootstrap/revup.
+# through revup config. Install revup with bazel run //tools/bootstrap/revup.
 
 [revup]
 # Shell completion needs register-python-argcomplete on PATH, which the

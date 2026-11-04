@@ -1,0 +1,33 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+# bazel run //tools/swift_catalog regenerates the Swift release and macOS SDK
+# catalogs in //bazel/toolchains/swift. A Rust CLI, so it doesn't depend on
+# the Swift toolchain it regenerates.
+# Crates come from the root Cargo workspace through crate_universe (@crates).
+rust_binary(
+    name = "swift_catalog",
+    srcs = glob(["src/*.rs"]),
+    deps = [
+        "//tools/bootstrap/lib:bootstrap",
+        "@crates//:bzip2",
+        "@crates//:clap",
+        "@crates//:plist",
+        "@crates//:rayon",
+        "@crates//:regex",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+        "@crates//:versions",
+    ],
+)
+
+rust_test(
+    name = "swift_catalog_test",
+    crate = ":swift_catalog",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

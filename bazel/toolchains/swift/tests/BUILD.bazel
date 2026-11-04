@@ -1,0 +1,55 @@
+load("@swift_toolchains//:versions.bzl", "MACOS_VERSIONS", "VERSIONS")
+load("//bazel/toolchains/swift:version_test.bzl", "swift_version_test")
+
+# Builds //examples/hello/swift with every Swift release in
+# swift_versions.json, for macOS arm64 (and runs it) and static Linux
+# arm64/x86-64. Each release downloads its own compiler and SDKs (~2.5 GB,
+# cached by hash), so these are manual:
+#
+#   bazel test //bazel/toolchains/swift/tests:all_versions
+#   bazel test //bazel/toolchains/swift/tests:swift_6_3_3_linux_x86_64
+
+_PLATFORMS = {
+    "linux_arm64": [],
+    "linux_x86_64": [],
+    # Only macOS hosts build Swift for macOS.
+    "macos_arm64": ["@platforms//os:macos"],
+}
+
+[
+    swift_version_test(
+        name = "swift_{}_{}".format(
+            version.replace(".", "_"),
+            platform,
+        ),
+        binary = "//examples/hello/swift:hello",
+        platform = "//bazel/platforms:" + platform,
+        run = platform == "macos_arm64",
+        tags = ["manual"],
+        target_compatible_with = constraints,
+        version = version,
+    )
+    for version in VERSIONS
+    for platform, constraints in _PLATFORMS.items()
+    if platform != "macos_arm64" or version in MACOS_VERSIONS
+]
+
+test_suite(
+    name = "all_versions",
+    tags = ["manual"],
+    tests = [
+        ":swift_{}_{}".format(
+            version.replace(".", "_"),
+            platform,
+        )
+        for version in VERSIONS
+        for platform in _PLATFORMS
+        if platform != "macos_arm64" or version in MACOS_VERSIONS
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

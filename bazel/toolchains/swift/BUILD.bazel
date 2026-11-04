@@ -1,0 +1,20 @@
+exports_files([
+    "compiler.BUILD.bazel",
+    "macos_sdk.BUILD.bazel",
+    "macos_sdks.json",
+    "rules_swift_no_xcrun.patch",
+    "swift_versions.json",
+])
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "compiler.BUILD.bazel",
+        "extensions.bzl",
+        "macos_sdk.BUILD.bazel",
+        "version_test.bzl",
+        "versions.bzl",
+    ],
+    tags = ["starlark"],
+)

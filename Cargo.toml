@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "tools/rules/swift/update_versions",
-    "tools/scripts/bootstrap/lib",
-    "tools/scripts/bootstrap/lock",
-    "tools/scripts/bootstrap/revup",
+    "tools/swift_catalog",
+    "tools/bootstrap/lib",
+    "tools/bootstrap/lock",
+    "tools/bootstrap/revup",
 ]
 resolver = "3"
 
@@ -12,6 +12,10 @@ edition = "2024"
 rust-version = "1.98.1"
 
 [workspace.dependencies]
+# Workspace crates.
+bootstrap = { path = "tools/bootstrap/lib" }
+
+# Third-party crates.
 bzip2 = "0.6.1"
 clap = { version = "4.6.7", features = ["derive"] }
 flate2 = "1.1.10"
@@ -25,4 +29,5 @@ tar = "0.4.46"
 thiserror = "2.0.21"
 toml = "1.1.8"
 ureq = "3.5.1"
+versions = "8.0.1"
 zip = { version = "9.3.0", default-features = false, features = ["deflate-flate2"] }

@@ -1,0 +1,61 @@
+# Target platforms for cross-compilation. Select one with
+# `--config=<name>` (see .bazelrc) or `--platforms=//bazel/platforms:<name>`.
+#
+# linux_<arch>: fully static musl binaries that run on any Linux.
+# linux_<arch>_gnu: "mostly static" binaries. Only glibc is linked dynamically,
+#   against glibc 2.35 version stubs; libc++, the Rust std, and the Swift
+#   runtime are linked statically. They run on any distribution with
+#   glibc >= 2.35 (Ubuntu 22.04+, Debian 12+). 2.35 is the floor set by the
+#   prebuilt Swift Linux runtime.
+#
+# PIE is off on Linux because Rust links musl targets with -no-pie.
+
+package(default_visibility = ["//visibility:public"])
+
+platform(
+    name = "macos_arm64",
+    constraint_values = [
+        "@llvm//constraints/cxxstdlib:libcxx",
+        "@platforms//cpu:aarch64",
+        "@platforms//os:macos",
+    ],
+)
+
+[
+    platform(
+        name = "linux_{}{}".format(arch, suffix),
+        constraint_values = [
+            "@llvm//constraints/cxxstdlib:libcxx",
+            "@llvm//constraints/libc:{}".format(libc),
+            "@llvm//constraints/pie:off",
+            "@platforms//cpu:{}".format(cpu),
+            "@platforms//os:linux",
+        ],
+    )
+    for arch, cpu in [
+        ("arm64", "aarch64"),
+        ("x86_64", "x86_64"),
+    ]
+    for suffix, libc in [
+        ("", "musl"),
+        ("_gnu", "gnu.2.35"),
+    ]
+]
+
+# Maps the build host to the names prebuilt tool releases use.
+exports_files(
+    ["host.bzl"],
+    visibility = [
+        "//bazel/host_tools:__pkg__",
+        "//bazel/toolchains/rust:__pkg__",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "host.bzl",
+    ],
+    tags = ["starlark"],
+)

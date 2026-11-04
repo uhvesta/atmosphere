@@ -1,0 +1,15 @@
+# The Bazelisk installer that .envrc runs before Bazel exists, and the lock it
+# reads. The root package wraps them for linting.
+exports_files(
+    [
+        "bazelisk.sh",
+        "versions.lock",
+    ],
+    visibility = ["//:__pkg__"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

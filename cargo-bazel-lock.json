@@ -1,5 +1,5 @@
 {
-  "checksum": "554a2a000410e94554932083127da21383bf35db4a2861faa650bb2f635b2e15",
+  "checksum": "572e5f3fad01b0fba4a043104107a72fda30c7ea5d73d332ba8330a728165c58",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -1411,6 +1411,10 @@
     },
     "either 1.19.0": {
       "common_attrs": {
+        "crate_features": [
+          "std",
+          "use_std"
+        ],
         "edition": "2021"
       },
       "library_target_name": "either",
@@ -2079,6 +2083,46 @@
       ],
       "version": "1.70.2"
     },
+    "itertools 0.15.0": {
+      "common_attrs": {
+        "crate_features": [
+          "default",
+          "use_alloc",
+          "use_std"
+        ],
+        "deps": [
+          {
+            "id": "either 1.19.0",
+            "target": "either"
+          }
+        ],
+        "edition": "2018"
+      },
+      "library_target_name": "itertools",
+      "license": "MIT OR Apache-2.0",
+      "license_file": "LICENSE-APACHE",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "name": "itertools",
+      "package_url": "https://github.com/rust-itertools/itertools",
+      "repository": {
+        "Http": {
+          "sha256": "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc",
+          "url": "https://static.crates.io/crates/itertools/0.15.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "itertools",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.15.0"
+    },
     "itoa 1.0.18": {
       "common_attrs": {
         "edition": "2021"
@@ -2438,6 +2482,45 @@
         }
       ],
       "version": "0.31.3"
+    },
+    "nom 8.0.0": {
+      "common_attrs": {
+        "crate_features": [
+          "alloc",
+          "default",
+          "std"
+        ],
+        "deps": [
+          {
+            "id": "memchr 2.8.3",
+            "target": "memchr"
+          }
+        ],
+        "edition": "2021"
+      },
+      "library_target_name": "nom",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "nom",
+      "package_url": "https://github.com/rust-bakery/nom",
+      "repository": {
+        "Http": {
+          "sha256": "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405",
+          "url": "https://static.crates.io/crates/nom/8.0.0/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "nom",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "8.0.0"
     },
     "num-conv 0.2.2": {
       "common_attrs": {
@@ -3936,6 +4019,53 @@
       ],
       "version": "2.6.1"
     },
+    "swift-catalog 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "bzip2 0.6.1",
+            "target": "bzip2"
+          },
+          {
+            "id": "clap 4.6.7",
+            "target": "clap"
+          },
+          {
+            "id": "plist 1.10.3",
+            "target": "plist"
+          },
+          {
+            "id": "rayon 1.12.0",
+            "target": "rayon"
+          },
+          {
+            "id": "regex 1.13.1",
+            "target": "regex"
+          },
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "versions 8.0.1",
+            "target": "versions"
+          }
+        ],
+        "edition": "2024"
+      },
+      "name": "swift-catalog",
+      "repository": null,
+      "targets": [],
+      "version": "0.0.0"
+    },
     "syn 3.0.9": {
       "common_attrs": {
         "crate_features": [
@@ -4551,49 +4681,6 @@
       ],
       "version": "0.9.0"
     },
-    "update-swift-versions 0.0.0": {
-      "common_attrs": {
-        "deps": [
-          {
-            "id": "bzip2 0.6.1",
-            "target": "bzip2"
-          },
-          {
-            "id": "clap 4.6.7",
-            "target": "clap"
-          },
-          {
-            "id": "plist 1.10.3",
-            "target": "plist"
-          },
-          {
-            "id": "rayon 1.12.0",
-            "target": "rayon"
-          },
-          {
-            "id": "regex 1.13.1",
-            "target": "regex"
-          },
-          {
-            "id": "serde 1.0.229",
-            "target": "serde"
-          },
-          {
-            "id": "serde_json 1.0.154",
-            "target": "serde_json"
-          },
-          {
-            "id": "thiserror 2.0.21",
-            "target": "thiserror"
-          }
-        ],
-        "edition": "2024"
-      },
-      "name": "update-swift-versions",
-      "repository": null,
-      "targets": [],
-      "version": "0.0.0"
-    },
     "ureq 3.5.1": {
       "common_attrs": {
         "crate_features": [
@@ -4785,6 +4872,44 @@
         }
       ],
       "version": "0.2.2"
+    },
+    "versions 8.0.1": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "itertools 0.15.0",
+            "target": "itertools"
+          },
+          {
+            "id": "nom 8.0.0",
+            "target": "nom"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "versions",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "versions",
+      "package_url": "https://github.com/fosskers/rs-versions",
+      "repository": {
+        "Http": {
+          "sha256": "aed0cec8c446a74ad81d34aa505e687e8a8fc411a9ca924f8c44e023d9c42358",
+          "url": "https://static.crates.io/crates/versions/8.0.1/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "versions",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "8.0.1"
     },
     "wasi 0.11.1+wasi-snapshot-preview1": {
       "common_attrs": {
@@ -5829,13 +5954,14 @@
     "thiserror 2.0.21",
     "toml 1.1.8+spec-1.1.0",
     "ureq 3.5.1",
+    "versions 8.0.1",
     "zip 9.3.0"
   ],
   "direct_dev_deps": [],
   "workspace_members": {
-    "bootstrap 0.0.0": "tools/scripts/bootstrap/lib",
-    "bootstrap-lock 0.0.0": "tools/scripts/bootstrap/lock",
-    "bootstrap-revup 0.0.0": "tools/scripts/bootstrap/revup",
-    "update-swift-versions 0.0.0": "tools/rules/swift/update_versions"
+    "bootstrap 0.0.0": "tools/bootstrap/lib",
+    "bootstrap-lock 0.0.0": "tools/bootstrap/lock",
+    "bootstrap-revup 0.0.0": "tools/bootstrap/revup",
+    "swift-catalog 0.0.0": "tools/swift_catalog"
   }
 }
