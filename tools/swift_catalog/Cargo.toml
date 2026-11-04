@@ -1,0 +1,23 @@
+[package]
+name = "swift-catalog"
+description = "Regenerates the Swift release and macOS SDK catalogs in bazel/toolchains/swift."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "swift_catalog"
+path = "src/main.rs"
+
+[dependencies]
+bootstrap.workspace = true
+bzip2.workspace = true
+clap.workspace = true
+plist.workspace = true
+rayon.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+versions.workspace = true

@@ -1,6 +1,6 @@
 {
   "bazel.executable": ".tools/bin/bazel",
-  "bazel.lsp.command": "tools/scripts/ide/starpls.sh",
+  "bazel.lsp.command": "tools/ide/starpls.sh",
   "go.alternateTools": {
     "go": "${workspaceFolder}/.tools/sdk/go/bin/go",
     "gopls": "${workspaceFolder}/.tools/bin/gopls"

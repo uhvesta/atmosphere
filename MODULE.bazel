@@ -42,7 +42,7 @@ use_repo(go_deps, "com_github_bazelbuild_buildtools", "com_github_burntsushi_tom
 
 # MARK: - Rust
 
-rust_from_cargo = use_extension("//tools/rules/rust:toolchain.bzl", "rust_from_cargo")
+rust_from_cargo = use_extension("//bazel/toolchains/rust:toolchain.bzl", "rust_from_cargo")
 use_repo(rust_from_cargo, "rust_metadata", "rust_toolchains")
 
 # Crates for the Cargo workspace (Cargo.toml, Cargo.lock). After changing
@@ -54,7 +54,7 @@ crate.from_cargo(
     lockfile = "//:cargo-bazel-lock.json",
     manifests = ["//:Cargo.toml"],
     # The hosts the Rust tools run on: the bootstrap hosts and the platforms in
-    # //tools/platforms. rules_rust matches crate selects on OS and CPU only,
+    # //bazel/platforms. rules_rust matches crate selects on OS and CPU only,
     # so the gnu triples also cover the musl platforms.
     supported_platform_triples = [
         "aarch64-apple-darwin",
@@ -77,8 +77,8 @@ register_toolchains(
 
 # Hermetic swift.org compilers plus the macOS and Static Linux (musl) SDKs.
 # Override the version from your own MODULE.bazel with
-# swift.toolchain(version = "..."); see //tools/rules/swift:versions.bzl.
-swift = use_extension("//tools/rules/swift:extensions.bzl", "swift")
+# swift.toolchain(version = "..."); see //bazel/toolchains/swift:versions.bzl.
+swift = use_extension("//bazel/toolchains/swift:extensions.bzl", "swift")
 swift.toolchain(version = "6.4.2")
 use_repo(swift, "swift_toolchains")
 
@@ -90,7 +90,7 @@ register_toolchains("@swift_toolchains//:all")
 single_version_override(
     module_name = "rules_swift",
     patch_strip = 1,
-    patches = ["//tools/rules/swift:rules_swift_no_xcrun.patch"],
+    patches = ["//bazel/toolchains/swift:rules_swift_no_xcrun.patch"],
 )
 
 # MARK: - Zig
@@ -102,10 +102,10 @@ zig = use_extension("@rules_zig//zig:extensions.bzl", "zig")
 zig.toolchain(zig_version = "0.17.0")
 use_repo(zig, "zig_toolchains")
 
-# Zig targets that match //tools/platforms (libc, glibc version, macOS minimum).
-register_toolchains("//tools/rules/zig:all")
+# Zig targets that match //bazel/platforms (libc, glibc version, macOS minimum).
+register_toolchains("//bazel/toolchains/zig:all")
 
 # MARK: - Host tooling
 
-host_tools = use_extension("//tools/rules/tooling:extensions.bzl", "host_tools")
+host_tools = use_extension("//bazel/host_tools:extensions.bzl", "host_tools")
 use_repo(host_tools, "buildifier", "lima", "rumdl", "shfmt", "starpls", "vale")

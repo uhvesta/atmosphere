@@ -3,12 +3,12 @@ load("@rules_shell//shell:sh_library.bzl", "sh_library")
 
 exports_files(
     ["Cargo.toml"],
-    visibility = ["//tools/rules/rust:__pkg__"],
+    visibility = ["//bazel/toolchains/rust:__pkg__"],
 )
 
 exports_files(
     ["MODULE.bazel"],
-    visibility = ["//tools/format:__pkg__"],
+    visibility = ["//bazel/format:__pkg__"],
 )
 
 exports_files(
@@ -17,7 +17,7 @@ exports_files(
         ".shellcheckrc",
         ".vale.ini",
     ],
-    visibility = ["//tools/lint:__pkg__"],
+    visibility = ["//bazel/lint:__pkg__"],
 )
 
 # gazelle:prefix github.com/uhvesta/monty-oxide
@@ -25,12 +25,12 @@ gazelle(name = "gazelle")
 
 alias(
     name = "format",
-    actual = "//tools/format:format",
+    actual = "//bazel/format:format",
 )
 
 alias(
     name = "format.check",
-    actual = "//tools/format:format.check",
+    actual = "//bazel/format:format.check",
 )
 
 alias(
@@ -60,6 +60,6 @@ filegroup(
 
 sh_library(
     name = "bootstrap_bazelisk",
-    srcs = ["//tools:scripts/bootstrap/bazelisk.sh"],
-    data = ["//tools:scripts/bootstrap/versions.lock"],
+    srcs = ["//tools/bootstrap:bazelisk.sh"],
+    data = ["//tools/bootstrap:versions.lock"],
 )

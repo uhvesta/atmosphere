@@ -1,0 +1,42 @@
+load("@rules_python//python:py_binary.bzl", "py_binary")
+load("@rules_shell//shell:sh_library.bzl", "sh_library")
+
+# bazel run //tools/ide:install_devtools
+py_binary(
+    name = "install_devtools",
+    srcs = ["install_devtools.py"],
+    args = [
+        "--rust-analyzer-toolchain",
+        "$(rlocationpaths @rules_rust//rust/toolchain:current_rust_analyzer_toolchain)",
+        "--starpls",
+        "$(rlocationpath @starpls//:starpls)",
+        "--gopls",
+        "$(rlocationpath @org_golang_x_tools_gopls//:gopls)",
+        "--cargo",
+        "$(rlocationpath @rules_rust//rust/toolchain:current_cargo_files)",
+        "--go",
+        "$(rlocationpath @go_sdk//:bin/go)",
+    ],
+    data = [
+        "@go_sdk//:bin/go",
+        "@org_golang_x_tools_gopls//:gopls",
+        "@rules_rust//rust/toolchain:current_cargo_files",
+        "@rules_rust//rust/toolchain:current_rust_analyzer_toolchain",
+        "@starpls",
+    ],
+    legacy_create_init = 0,
+    main = "install_devtools.py",
+    python_version = "3.14.4",
+    tags = ["manual"],
+)
+
+sh_library(
+    name = "starpls_launcher",
+    srcs = ["starpls.sh"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -1,0 +1,20 @@
+# Versions of the tools the bootstrap scripts install. After editing, run
+# `bazel run //tools/bootstrap/lock` to pin their URLs and SHA-256s
+# in versions.lock.
+
+# https://github.com/bazelbuild/bazelisk/releases
+bazelisk = "1.29.0"
+
+# revup and the tools it runs. revup is an upstream commit because the latest
+# PyPI release (0.4.0) doesn't run on Python 3.14. uv resolves its Python
+# dependencies from its setup.cfg into pure-Python wheels and installs them.
+# https://github.com/Skydio/revup/commits/main
+revup = "263175894013fb71d4906b54f3c75f2865353e4f"
+# https://github.com/astral-sh/python-build-standalone/releases
+python = "3.14.10"
+# https://github.com/desktop/dugite-native/releases
+git = "2.56.0"
+# https://github.com/cli/cli/releases
+gh = "2.103.3"
+# https://github.com/astral-sh/uv/releases
+uv = "0.13.7"

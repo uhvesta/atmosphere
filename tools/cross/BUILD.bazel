@@ -3,7 +3,7 @@ load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 # bazel run //tools/cross:matrix -- --help
 sh_binary(
     name = "matrix",
-    srcs = ["//tools:scripts/cross/matrix.sh"],
+    srcs = ["matrix.sh"],
     args = ["$(rlocationpath @lima//:bin/limactl)"],
     data = [
         "@lima//:bin/limactl",
