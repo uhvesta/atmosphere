@@ -9,8 +9,12 @@ filegroup(
     srcs = glob(["sdk/**"]),
 )
 
-# Swift runtime link stubs (libswiftCore.tbd and friends) for the OS runtime.
+# Link stubs: the OS Swift runtime (libswiftCore.tbd and friends) and the
+# frameworks that Swift modules autolink.
 filegroup(
     name = "swift_link_files",
-    srcs = glob(["sdk/usr/lib/swift/**/*.tbd"]),
+    srcs = glob([
+        "sdk/System/Library/Frameworks/**/*.tbd",
+        "sdk/usr/lib/swift/**/*.tbd",
+    ]),
 )
