@@ -30,6 +30,8 @@ package struct SearchFilter: Hashable, Sendable {
     package var priorities: Set<Priority> = []
     /// Label names; a task needs at least one of them. Empty means any.
     package var labels: Set<String> = []
+    /// Avenue IDs; a task must be in one of them. Empty means any.
+    package var avenues: Set<UUID> = []
     package var due = Due.any
 
     package init() {}
@@ -39,7 +41,7 @@ package struct SearchFilter: Hashable, Sendable {
 
     /// How many filters besides the text are set.
     package var filterCount: Int {
-        [!statuses.isEmpty, !priorities.isEmpty, !labels.isEmpty, due != .any].count { $0 }
+        [!statuses.isEmpty, !priorities.isEmpty, !labels.isEmpty, !avenues.isEmpty, due != .any].count { $0 }
     }
 
     /// The filter as text, the same each run.
@@ -47,7 +49,7 @@ package struct SearchFilter: Hashable, Sendable {
         [
             text, statuses.map(\.rawValue).sorted().joined(separator: ","),
             priorities.map { "\($0)" }.sorted().joined(separator: ","), labels.sorted().joined(separator: ","),
-            due.rawValue,
+            avenues.map(\.uuidString).sorted().joined(separator: ","), due.rawValue,
         ].joined(separator: "|")
     }
 
@@ -55,6 +57,7 @@ package struct SearchFilter: Hashable, Sendable {
         let status = task.effectiveStatus(now: now, settings: workspace.settings)
         guard statuses.isEmpty ? !status.isClosed : statuses.contains(status) else { return false }
         guard priorities.isEmpty || priorities.contains(task.priority) else { return false }
+        guard avenues.isEmpty || avenues.contains(task.avenueID) else { return false }
         if !labels.isEmpty {
             guard task.labelIDs.contains(where: { workspace.labels[$0].map { labels.contains($0.name) } == true })
             else { return false }
@@ -88,7 +91,8 @@ extension TaskQuery {
             empty: filter.isEmpty
                 ? .init(
                     "Search your tasks", systemImage: "magnifyingglass",
-                    description: "Search titles, details and comments, or filter by status, priority, label and date.")
+                    description:
+                        "Search titles, details and comments, or filter by Avenue, status, priority, label and date.")
                 : .init(
                     "No matches", systemImage: "magnifyingglass",
                     description: "Try other words, or clear some filters."),
@@ -118,6 +122,11 @@ package struct SearchFeature {
         package init(filter: SearchFilter, workspace: Workspace, now: Date, timeZone: TimeZone) {
             self.filter = filter
             list = TaskListFeature.State(query: .search(filter), workspace: workspace, now: now, timeZone: timeZone)
+        }
+
+        /// Every Avenue in sidebar order, for the Avenue filter.
+        package var avenueChoices: [Avenue] {
+            (list.workspace?.avenues.values.sorted { $0.sortOrder < $1.sortOrder }) ?? []
         }
 
         /// Every label name, for the label filter.

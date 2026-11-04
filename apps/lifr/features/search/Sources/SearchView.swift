@@ -29,6 +29,13 @@ package struct SearchView: View {
 
     @ViewBuilder
     private var filters: some View {
+        if !store.avenueChoices.isEmpty {
+            Menu("Avenue") {
+                ForEach(store.avenueChoices) { avenue in
+                    Toggle(avenue.name, isOn: $store.filter.avenues.contains(avenue.id))
+                }
+            }
+        }
         Menu("Status") {
             ForEach(TaskStatus.allCases, id: \.self) { status in
                 Toggle(status.title, isOn: $store.filter.statuses.contains(status))

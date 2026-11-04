@@ -90,6 +90,21 @@ final class SearchFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.list.isEmpty)
     }
 
+    func testFiltersByAvenue() async {
+        let work = records.avenue("WORK", "Work")
+        let home = records.avenue("HOME", "Home")
+        records.task("Stretch", in: health)
+        records.task("Write report", in: work)
+        records.task("Buy socks", in: home)
+
+        let store = await load()
+        await store.send(.binding(.set(\.filter.avenues, [work.id])))
+        XCTAssertEqual(titles(store), ["Write report"])
+
+        await store.send(.binding(.set(\.filter.avenues, [work.id, home.id])))
+        XCTAssertEqual(Set(titles(store)), ["Write report", "Buy socks"])
+    }
+
     func testMatchesDueDates() async {
         records.task("Overdue", in: health, due: -1)
         records.task("Today", in: health, due: 0)
