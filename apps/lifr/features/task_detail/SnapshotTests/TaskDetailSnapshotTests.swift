@@ -16,7 +16,11 @@ final class TaskDetailSnapshotTests: XCTestCase {
         var row: TaskRowData
         var details: String
         var project: String?
+        var labels: [String]
+        var createdAt: Date
+        var closedAt: Date?
         var subtasks: [TaskRowData]
+        var timeline: [TimelineEntry]
     }
 
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
@@ -36,7 +40,10 @@ final class TaskDetailSnapshotTests: XCTestCase {
     func testDisplayData() {
         let state = state
         assertSnapshot(
-            of: Display(row: state.row, details: state.details, project: state.project, subtasks: state.subtasks),
+            of: Display(
+                row: state.row, details: state.details, project: state.project, labels: state.labels,
+                createdAt: state.createdAt, closedAt: state.closedAt, subtasks: state.subtasks,
+                timeline: state.timeline),
             as: Snapshotting<Any, String>.dump.pullback { $0 }, named: "review")
     }
 
