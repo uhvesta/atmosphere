@@ -1,0 +1,6 @@
+# Versions of the tools the bootstrap scripts install. After editing, run
+# `bazel run //tools/scripts/bootstrap/lock` to pin their URLs and SHA-256s
+# in versions.lock.
+
+# https://github.com/bazelbuild/bazelisk/releases
+bazelisk = "1.29.0"

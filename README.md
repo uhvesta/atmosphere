@@ -1,9 +1,9 @@
 # monty-oxide
 
-- **Bootstrap:** `sh tools/scripts/bootstrap/bazelisk.sh` installs pinned Bazelisk as `bazel` on macOS or Linux (x86-64 or ARM64). It reports newer releases without changing the pin.
+- **Bootstrap:** `sh tools/scripts/bootstrap/bazelisk.sh` installs pinned Bazelisk as `bazel` on macOS or Linux (x86-64 or ARM64).
 - **Direnv (optional):** Install [direnv](https://direnv.net/docs/installation.html), hook it into your shell, then run `direnv allow` to bootstrap Bazelisk and put `.tools/bin` on `PATH` automatically. Without direnv, add `.tools/bin` to `PATH` yourself.
 - **Editor tools (optional):** `bazel run //tools:install_devtools` installs Go, Rust, `gopls`, `rust-analyzer`, and `starpls` under ignored `.tools`. Point your editor at them manually.
-- **Pinned versions:** Go comes from `go.mod`, Rust from `Cargo.toml`, Bazel from `.bazelversion`, and Bazelisk from its bootstrap script.
+- **Pinned versions:** Go comes from `go.mod`, Rust from `Cargo.toml`, Bazel from `.bazelversion`, and Bazelisk from `tools/scripts/bootstrap/versions.toml`. After editing that file, `bazel run //tools/scripts/bootstrap/lock` pins each download's URL and SHA-256 in `versions.lock`.
 - **Build and test:** `bazel build //...` and `bazel test //...`.
 - **Generate Go BUILD files:** `bazel run //:gazelle`.
 - **Version checks:** `bazel run check-deps` reports all drift;

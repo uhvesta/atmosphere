@@ -96,8 +96,11 @@ func (c Crates) Check(ctx context.Context) ([]Drift, error) {
 		if result.Crate.MaxStableVersion == "" {
 			return nil, fmt.Errorf("%s: no stable crate release", pin.name)
 		}
-		if pin.version != result.Crate.MaxStableVersion {
-			drifts = append(drifts, Drift{Name: pin.name, Current: pin.version, Latest: result.Crate.MaxStableVersion})
+		// Build metadata (toml's "1.1.8+spec-1.1.0") doesn't take part in
+		// semver comparison, and Cargo ignores it in requirements.
+		latest, _, _ := strings.Cut(result.Crate.MaxStableVersion, "+")
+		if pin.version != latest {
+			drifts = append(drifts, Drift{Name: pin.name, Current: pin.version, Latest: latest})
 		}
 	}
 	return drifts, nil
