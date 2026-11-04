@@ -1,0 +1,32 @@
+▿ (4 elements)
+  - procrastinatedAfterDays: 7
+  ▿ avenues: 3 elements
+    ▿ AvenueAccess
+      - access: AgentAccess.full
+      - id: 00000000-0000-0000-0000-000000000101
+      - name: "Health"
+    ▿ AvenueAccess
+      - access: AgentAccess.full
+      - id: 00000000-0000-0000-0000-000000000201
+      - name: "Work"
+    ▿ AvenueAccess
+      - access: AgentAccess.full
+      - id: 00000000-0000-0000-0000-000000000301
+      - name: "Home"
+  ▿ apps: 1 element
+    ▿ ConnectedApp
+      ▿ grant: Grant
+        - avenueIDs: Optional<Set<UUID>>.none
+        - client: "Claude Code"
+        - confirmWrites: false
+        - expiresAt: 2026-12-03T10:00:00Z
+        - isTerminalSession: false
+        ▿ scopes: 1 member
+          - Scope.read
+      - id: "com.anthropic.claude-code"
+      - isConnected: true
+      ▿ lastUsedAt: Optional<Date>
+        - some: 2026-11-03T09:00:00Z
+  ▿ cli: CLIInstallation
+    ▿ installed: (1 element)
+      - path: "/usr/local/bin/lifr"

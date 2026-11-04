@@ -1,0 +1,23 @@
+▿ (3 elements)
+  ▿ avenues: 3 elements
+    ▿ AvenueAccess
+      - access: AgentAccess.full
+      - id: 00000000-0000-0000-0000-000000000101
+      - name: "Health"
+    ▿ AvenueAccess
+      - access: AgentAccess.full
+      - id: 00000000-0000-0000-0000-000000000201
+      - name: "Work"
+    ▿ AvenueAccess
+      - access: AgentAccess.full
+      - id: 00000000-0000-0000-0000-000000000301
+      - name: "Home"
+  - canApprove: true
+  ▿ grant: Grant
+    - avenueIDs: Optional<Set<UUID>>.none
+    - client: "Claude Code"
+    - confirmWrites: false
+    - expiresAt: 2026-12-03T10:00:00Z
+    - isTerminalSession: false
+    ▿ scopes: 1 member
+      - Scope.read

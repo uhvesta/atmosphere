@@ -88,6 +88,14 @@ extension StoreClient {
         }
     }
 
+    /// What agents may do in an Avenue: everything, read only, or not see it.
+    package func setAgentAccess(_ access: AgentAccess, ofAvenue id: UUID) async throws -> Saved {
+        try await save { (workspace, _) throws(LifrError) in
+            try workspace.setAgentAccess(access, ofAvenue: id)
+            return Change()
+        }
+    }
+
     package func setSettings(_ settings: Settings) async throws -> Saved {
         try await save { workspace, _ in
             workspace.settings = settings
