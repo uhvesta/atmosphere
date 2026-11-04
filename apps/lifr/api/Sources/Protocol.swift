@@ -83,3 +83,26 @@ package struct RPCResponse: Hashable, Codable, Sendable {
         RPCResponse(id: id, result: nil, error: RPCError(error))
     }
 }
+
+/// Where the app listens, and how the CLI tells it's turned off.
+package enum LocalSocket {
+    /// The Mac app's App Group: team-prefixed, so the CLI can reach the
+    /// container without a provisioning profile of its own.
+    package static let appGroup = "7H66Q22DJD.com.example.lifr"
+
+    /// The App Group container, which macOS keeps from other apps.
+    package static func container(home: URL) -> URL {
+        home.appendingPathComponent("Library/Group Containers/\(appGroup)", isDirectory: true)
+    }
+
+    /// The socket, mode 0600.
+    package static func socket(home: URL) -> URL {
+        container(home: home).appendingPathComponent("lifr.sock")
+    }
+
+    /// Present while the local API is turned off from the menu bar, so the CLI
+    /// can say so instead of starting the app.
+    package static func disabledMarker(home: URL) -> URL {
+        container(home: home).appendingPathComponent("api-disabled")
+    }
+}

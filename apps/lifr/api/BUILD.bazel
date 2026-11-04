@@ -21,6 +21,18 @@ swift_library(
     deps = ["//apps/lifr/core"],
 )
 
+# The CLI's tests run against the same fixture and check --json against the
+# golden files.
+exports_files(
+    [
+        "Tests/Fixture.swift",
+        "Tests/golden/errors.json",
+        "Tests/golden/mcp_tools.json",
+        "Tests/golden/methods.json",
+    ],
+    visibility = ["//apps/lifr/cli:__pkg__"],
+)
+
 # Given/then tests for the handler, run with //apps/lifr/testing's harness.
 swift_binary(
     name = "handler_tests",

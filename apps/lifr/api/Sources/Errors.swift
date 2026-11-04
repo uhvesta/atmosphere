@@ -95,7 +95,7 @@ package struct APIError: Error, Hashable, Codable, Sendable, CustomStringConvert
 }
 
 extension RPCError {
-    init(_ error: APIError) {
+    package init(_ error: APIError) {
         self.init(code: error.code.number, message: error.message, data: error)
     }
 }
