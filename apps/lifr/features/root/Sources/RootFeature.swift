@@ -11,6 +11,7 @@ import LifrSearch
 import LifrSessionClient
 import LifrSettings
 import LifrStoreClient
+import LifrTaskDetail
 import LifrTaskList
 import LifrToday
 import LifrUpcoming
@@ -75,6 +76,16 @@ package struct RootFeature {
         package var apiSwitchError: String?
         @Presents package var quickAdd: QuickAddFeature.State?
         @Presents package var approval: ApprovalFeature.State?
+        /// Why Undo couldn't revert the last change.
+        @Presents package var undoAlert: AlertState<Never>?
+        @Shared(.lastChange) package var lastChange
+        /// The last change whose toast went away; Undo stays in the Edit menu.
+        package var dismissedToast: UUID?
+
+        /// The last change, while its toast is up.
+        package var toast: LastChange? {
+            lastChange.flatMap { $0.showsToast && $0.id != dismissedToast ? $0 : nil }
+        }
 
         package init(platform: Platform) {
             self.platform = platform
@@ -157,6 +168,11 @@ package struct RootFeature {
         case newProjectTapped(UUID)
         /// A status shortcut, for the open task.
         case statusShortcut(TaskStatus)
+        /// The toast's Undo, ⌘Z or a shake, for the change with this ID.
+        case undoTapped(UUID)
+        case undone(Result<Saved, any Error>)
+        case toastExpired(UUID)
+        case undoAlert(PresentationAction<Never>)
         case syncBannerDismissed
         /// This device's notifications match the records again.
         case remindersScheduled
@@ -185,6 +201,15 @@ package struct RootFeature {
     package init() {}
 
     package var body: some ReducerOf<Self> {
+        CombineReducers { screens }
+            .transformDependency(\.self) { dependencies in
+                dependencies.store = dependencies.store.recordingChanges(
+                    into: Shared(.lastChange), uuid: dependencies.uuid)
+            }
+    }
+
+    @ReducerBuilder<State, Action>
+    private var screens: some ReducerOf<Self> {
         BindingReducer()
         Scope(state: \.today, action: \.today) { TodayFeature() }
         Scope(state: \.upcoming, action: \.upcoming) { UpcomingFeature() }
@@ -329,6 +354,40 @@ package struct RootFeature {
                 guard let slot = state.currentList, state[list: slot]?.detail != nil else { return .none }
                 return .send(list(slot, .detail(.presented(.statusPicked(status)))))
 
+            case .undoTapped(let id):
+                guard let last = state.lastChange, last.id == id, let workspace = state.workspace else {
+                    return .none
+                }
+                guard last.isCurrent(in: workspace) else {
+                    state.$lastChange.withLock { $0 = nil }
+                    state.undoAlert = AlertState {
+                        TextState("Couldn't undo")
+                    } actions: {
+                        ButtonState(role: .cancel) { TextState("OK") }
+                    } message: {
+                        TextState(
+                            "The task changed again since, here or on another device, and undoing would lose that "
+                                + "change. Open the task to change it back by hand.")
+                    }
+                    return .none
+                }
+                return .run { [store] send in
+                    await send(.undone(Result { try await store.undo(last.change) }))
+                }
+
+            case .undone(.success(let saved)):
+                // Undoing isn't a change to undo in turn.
+                state.$lastChange.withLock { $0 = nil }
+                return show(saved.workspace, in: &state)
+
+            case .undone(.failure(let error)):
+                state.undoAlert = .failed("Couldn't undo", error)
+                return .none
+
+            case .toastExpired(let id):
+                state.dismissedToast = id
+                return .none
+
             case .syncBannerDismissed:
                 state.syncBanner = nil
                 return .none
@@ -345,7 +404,7 @@ package struct RootFeature {
                 return show(workspace, in: &state)
 
             case .binding, .remindersScheduled, .today, .upcoming, .procrastinated, .avenues, .search, .avenue, .board,
-                .settings, .quickAdd, .approval:
+                .settings, .quickAdd, .approval, .undoAlert:
                 return .none
             }
         }
@@ -353,6 +412,7 @@ package struct RootFeature {
         .ifLet(\.board, action: \.board) { BoardFeature() }
         .ifLet(\.$quickAdd, action: \.quickAdd) { QuickAddFeature() }
         .ifLet(\.$approval, action: \.approval) { ApprovalFeature() }
+        .ifLet(\.$undoAlert, action: \.undoAlert)
     }
 
     /// Shows `workspace` on every screen, then schedules its reminders.

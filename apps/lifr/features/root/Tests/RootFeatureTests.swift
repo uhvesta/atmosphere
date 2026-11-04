@@ -280,6 +280,69 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testAChangeOffersUndoAndUndoRevertsIt() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let store = makeStore(.phone)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.today(.list(.rowAction(run.id, .status(.done)))))
+        await store.receive(\.today.delegate.saved)
+        let toast = try XCTUnwrap(store.state.toast)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.status, .done)
+
+        await store.send(.toastExpired(toast.id))
+        XCTAssertNil(store.state.toast)
+
+        // Undo still works once the toast is gone, as ⌘Z or a shake.
+        await store.send(.undoTapped(toast.id))
+        await store.receive(\.undone)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.status, .todo)
+        XCTAssertNil(store.state.lastChange)
+        XCTAssertEqual(store.state.today.list.rows.map(\.title), ["Run"])
+        await task.cancel()
+    }
+
+    func testUndoRefusesOnceTheTaskChangedAgainElsewhere() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = makeStore(.phone, store: client)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.today(.list(.rowAction(run.id, .status(.done)))))
+        await store.receive(\.today.delegate.saved)
+        let id = try XCTUnwrap(store.state.lastChange).id
+
+        // Another device renames it.
+        let synced = try await withDependencies {
+            $0.uuid = UUIDGenerator { UUID() }
+            $0.date.now = now
+        } operation: {
+            try await client.edit(run.id, Workspace.TaskEdit(title: "Run 5 km"))
+        }
+        await store.send(.updated(Update(workspace: synced.workspace)))
+
+        await store.send(.undoTapped(id))
+        XCTAssertNotNil(store.state.undoAlert)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.status, .done)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.title, "Run 5 km")
+        await task.cancel()
+    }
+
+    func testAddingACommentIsNotAChangeToUndo() async {
+        let run = records.task("Run", in: health, due: 0)
+        let store = makeStore(.phone)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.today(.list(.rowTapped(run.id))))
+        await store.send(.today(.list(.detail(.presented(.binding(.set(\.newComment, "Felt good")))))))
+        await store.send(.today(.list(.detail(.presented(.commentSubmitted)))))
+        await store.receive(\.today.delegate.saved)
+        XCTAssertNil(store.state.lastChange)
+        await task.cancel()
+    }
+
     func testStatusShortcutsChangeTheOpenTaskOnly() async {
         let run = records.task("Run", in: health, due: 0)
         let store = makeStore(.mac)

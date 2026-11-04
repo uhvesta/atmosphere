@@ -27,12 +27,24 @@ package struct RootView: View {
             }
         }
         .overlay(alignment: .bottom) {
-            if let banner = store.syncBanner {
-                // Above the tab bar, clear of every screen's own controls.
-                SyncBannerView(banner: banner) { store.send(.syncBannerDismissed) }
-                    .padding(.bottom, 64)
+            // Above the tab bar, clear of every screen's own controls.
+            VStack(spacing: 8) {
+                if let toast = store.toast {
+                    UndoToast(message: toast.message) { store.send(.undoTapped(toast.id)) }
+                        .task(id: toast.id) {
+                            try? await Task.sleep(for: .seconds(5))
+                            store.send(.toastExpired(toast.id))
+                        }
+                }
+                if let banner = store.syncBanner {
+                    SyncBannerView(banner: banner) { store.send(.syncBannerDismissed) }
+                }
             }
+            .padding(.bottom, store.platform == .phone ? 64 : 16)
+            .animation(.default, value: store.toast?.id)
         }
+        .modifier(RegistersUndo(store: store))
+        .alert($store.scope(state: \.undoAlert, action: \.undoAlert))
         .task { await store.send(.task).finish() }
         .sheet(item: $store.scope(state: \.quickAdd, action: \.quickAdd)) { store in
             NavigationStack { QuickAddView(store: store) }
@@ -254,4 +266,48 @@ private struct SyncBannerView: View {
         .padding(.horizontal)
         .accessibilityElement(children: .combine)
     }
+}
+
+/// The last change with Undo, for a few seconds after it's made.
+private struct UndoToast: View {
+    var message: String
+    var undo: () -> Void
+
+    var body: some View {
+        HStack {
+            Text(message).lineLimit(2)
+            Spacer()
+            Button("Undo", action: undo).bold()
+        }
+        .font(.callout)
+        .padding()
+        .background(.thinMaterial, in: .rect(cornerRadius: 12))
+        .padding(.horizontal)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+}
+
+/// Puts the last change in the window's undo manager, so Edit › Undo, ⌘Z
+/// and shaking the iPhone revert it. Text fields keep their own undo while
+/// they're being edited.
+private struct RegistersUndo: ViewModifier {
+    var store: StoreOf<RootFeature>
+    @Environment(\.undoManager) private var undoManager
+
+    func body(content: Content) -> some View {
+        content.onChange(of: store.lastChange?.id, initial: true) { _, id in
+            guard let undoManager else { return }
+            undoManager.removeAllActions(withTarget: UndoTarget.shared)
+            guard let id, let message = store.lastChange?.message else { return }
+            undoManager.registerUndo(withTarget: UndoTarget.shared) { _ in
+                MainActor.assumeIsolated { _ = store.send(.undoTapped(id)) }
+            }
+            undoManager.setActionName(message)
+        }
+    }
+}
+
+/// The object Lifr's undo actions are registered on.
+private final class UndoTarget: Sendable {
+    static let shared = UndoTarget()
 }
