@@ -47,9 +47,17 @@ package enum AssistantPrompt {
         }
         text += """
             To answer questions about their tasks, use the tools: findTasks to search, getTask for one task's \
-            details and overview for what's due, overdue or stalled. Answer from what the tools return; if they \
-            return nothing, say so.
+            details, overview for what's due, overdue or stalled, and recentActivity for what changed lately. \
+            Answer from what the tools return; if they return nothing, say so.
             """
+        if request.writes != nil {
+            text += """
+
+                To change existing tasks when the person asks, use updateTasks and addComment; they save at \
+                once and the person can undo them. Use revert to undo changes. Say in "message" what you \
+                changed. New tasks, Projects and Avenues always go in "plan" for the person to add.
+                """
+        }
         return text
     }
 

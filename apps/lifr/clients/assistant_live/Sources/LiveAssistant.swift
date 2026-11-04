@@ -47,10 +47,16 @@ extension AssistantClient {
                         continuation.finish(throwing: AssistantError.unavailable(availability))
                         return
                     }
-                    let tools = request.tools
+                    let tools = request.tools()
                     do {
+                        var available: [any Tool] = [
+                            try FindTasks(tools), try GetTask(tools), try Overview(tools), try RecentActivity(tools),
+                        ]
+                        if request.writes != nil {
+                            available += [try UpdateTasks(tools), try AddComment(tools), try Revert(tools)]
+                        }
                         let session = LanguageModelSession(
-                            tools: [try FindTasks(tools), try GetTask(tools), try Overview(tools)],
+                            tools: available,
                             instructions: AssistantPrompt.instructions(request))
                         let schema = try GenerationSchema(root: Schema.turn, dependencies: [])
                         let stream = session.streamResponse(to: AssistantPrompt.prompt(request), schema: schema)
@@ -188,6 +194,16 @@ extension AssistantClient {
     }
 
     @available(iOS 26, macOS 26, *)
+    private func strings(_ arguments: GeneratedContent, _ key: String) -> [String] {
+        guard case .structure(let properties, _) = arguments.kind, let value = properties[key],
+            case .array(let items) = value.kind
+        else { return [] }
+        return items.compactMap { item in
+            if case .string(let text) = item.kind { text } else { nil }
+        }
+    }
+
+    @available(iOS 26, macOS 26, *)
     private struct FindTasks: Tool {
         let tools: AssistantTools
         let name = "findTasks"
@@ -250,6 +266,96 @@ extension AssistantClient {
 
         func call(arguments: GeneratedContent) async throws -> String {
             tools.overview()
+        }
+    }
+
+    @available(iOS 26, macOS 26, *)
+    private struct RecentActivity: Tool {
+        let tools: AssistantTools
+        let name = "recentActivity"
+        let description = "The newest changes: when, who, what. Each has a ref for revert."
+        let parameters: GenerationSchema
+
+        init(_ tools: AssistantTools) throws {
+            self.tools = tools
+            parameters = try schema("RecentActivity", [])
+        }
+
+        func call(arguments: GeneratedContent) async throws -> String {
+            tools.recentActivity()
+        }
+    }
+
+    @available(iOS 26, macOS 26, *)
+    private struct UpdateTasks: Tool {
+        let tools: AssistantTools
+        let name = "updateTasks"
+        let description = "Change existing tasks now: status, priority, due date or title. The person can undo it."
+        let parameters: GenerationSchema
+
+        init(_ tools: AssistantTools) throws {
+            self.tools = tools
+            parameters = try schema(
+                "UpdateTasks",
+                [
+                    .init(
+                        name: "codes", description: "Task codes from findTasks, such as HOME-0003.",
+                        schema: Schema.list(Schema.text)),
+                    Schema.optional(
+                        "status", "The new status.",
+                        DynamicGenerationSchema(name: "NewStatus", anyOf: ["todo", "in_progress", "done", "wont_do"])),
+                    Schema.optional("priority", "The new priority.", Schema.priority),
+                    Schema.optional("due", "The new due date, such as friday or +3d, or none to clear it."),
+                    Schema.optional("title", "A new title, for one task only."),
+                ])
+        }
+
+        func call(arguments: GeneratedContent) async throws -> String {
+            await tools.updateTasks(
+                codes: strings(arguments, "codes"), status: string(arguments, "status"),
+                priority: string(arguments, "priority"), due: string(arguments, "due"),
+                title: string(arguments, "title"))
+        }
+    }
+
+    @available(iOS 26, macOS 26, *)
+    private struct AddComment: Tool {
+        let tools: AssistantTools
+        let name = "addComment"
+        let description = "Add a comment to a task now. The person can undo it."
+        let parameters: GenerationSchema
+
+        init(_ tools: AssistantTools) throws {
+            self.tools = tools
+            parameters = try schema(
+                "AddComment",
+                [
+                    .init(name: "code", description: "Such as HOME-0003.", schema: Schema.text),
+                    .init(name: "text", description: "The comment.", schema: Schema.text),
+                ])
+        }
+
+        func call(arguments: GeneratedContent) async throws -> String {
+            await tools.addComment(code: string(arguments, "code") ?? "", text: string(arguments, "text") ?? "")
+        }
+    }
+
+    @available(iOS 26, macOS 26, *)
+    private struct Revert: Tool {
+        let tools: AssistantTools
+        let name = "revert"
+        let description = "Undo changes: a ref from recentActivity, last for the newest, or conversation for all yours."
+        let parameters: GenerationSchema
+
+        init(_ tools: AssistantTools) throws {
+            self.tools = tools
+            parameters = try schema(
+                "Revert",
+                [.init(name: "ref", description: "A ref, last, or conversation.", schema: Schema.text)])
+        }
+
+        func call(arguments: GeneratedContent) async throws -> String {
+            await tools.revert(ref: string(arguments, "ref") ?? "")
         }
     }
 #endif

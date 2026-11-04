@@ -1,19 +1,30 @@
+import ComposableArchitecture
 import Foundation
 import LifrCore
 
-/// What the assistant can look up, as short text for a model with a small
-/// context: one line per task, at most `limit` of them.
-package struct AssistantTools: Hashable, Sendable {
+/// What the assistant can look up and change, as short text for a model
+/// with a small context: one line per task, at most `limit` of them. One
+/// set of tools serves one answer, and sees its own changes.
+package final class AssistantTools: Sendable {
     package static let limit = 15
 
-    package var workspace: Workspace
-    package var now: Date
-    package var timeZone: TimeZone
+    private let current: LockIsolated<Workspace>
+    package let now: Date
+    package let timeZone: TimeZone
+    /// How to save changes; without it the tools only read.
+    let writes: AssistantWrites?
 
-    package init(workspace: Workspace, now: Date, timeZone: TimeZone) {
-        self.workspace = workspace
+    package init(workspace: Workspace, now: Date, timeZone: TimeZone, writes: AssistantWrites? = nil) {
+        current = LockIsolated(workspace)
         self.now = now
         self.timeZone = timeZone
+        self.writes = writes
+    }
+
+    /// The records, with the changes these tools saved.
+    package var workspace: Workspace {
+        get { current.value }
+        set { current.setValue(newValue) }
     }
 
     /// The status names the assistant reads and writes.
@@ -22,7 +33,7 @@ package struct AssistantTools: Hashable, Sendable {
         .wontDo: "wont_do",
     ]
 
-    private var today: CalendarDate { CalendarDate(now, in: timeZone) }
+    var today: CalendarDate { CalendarDate(now, in: timeZone) }
 
     /// Tasks whose title or details have every word, in `avenue` (a KEY),
     /// with `status`, due by `dueBy`. Without a status, only open tasks.
@@ -99,6 +110,7 @@ package struct AssistantTools: Hashable, Sendable {
     /// Open tasks per Avenue, then what's overdue, due today, due this week
     /// and procrastinated.
     package func overview() -> String {
+        let (workspace, today, now) = (workspace, today, now)
         let open = workspace.tasks.values.filter { task in
             task.deletedAt == nil && task.isOpen && workspace.avenues[task.avenueID]?.archivedAt == nil
         }
@@ -122,7 +134,7 @@ package struct AssistantTools: Hashable, Sendable {
         return text
     }
 
-    private func lines(_ tasks: [LifrTask]) -> String {
+    func lines(_ tasks: [LifrTask]) -> String {
         var text = tasks.prefix(Self.limit).map(line).joined(separator: "\n")
         if tasks.count > Self.limit { text += "\n(\(tasks.count - Self.limit) more; search with more words)" }
         return text

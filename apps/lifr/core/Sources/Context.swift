@@ -65,7 +65,7 @@ package struct Change: Hashable, Sendable {
 
     /// Adds what `other` changed to this change. A task keeps the state it
     /// had before the first of them.
-    mutating func merge(_ other: Change) {
+    package mutating func merge(_ other: Change) {
         for (id, task) in other.previous where previous[id] == nil {
             previous[id] = task
         }

@@ -80,10 +80,13 @@ package struct AssistantRequest: Hashable, Sendable {
     package var workspace: Workspace
     package var now: Date
     package var timeZone: TimeZone
+    /// How the assistant saves changes it makes. Without it, it only reads
+    /// and drafts plans.
+    package var writes: AssistantWrites?
 
     package init(
         messages: [ChatMessage], draft: Plan? = nil, problem: String? = nil, workspace: Workspace, now: Date,
-        timeZone: TimeZone
+        timeZone: TimeZone, writes: AssistantWrites? = nil
     ) {
         self.messages = messages
         self.draft = draft
@@ -91,11 +94,15 @@ package struct AssistantRequest: Hashable, Sendable {
         self.workspace = workspace
         self.now = now
         self.timeZone = timeZone
+        self.writes = writes
     }
 
     package var today: CalendarDate { CalendarDate(now, in: timeZone) }
     package var lookup: AssistantLookup { AssistantLookup(workspace) }
-    package var tools: AssistantTools { AssistantTools(workspace: workspace, now: now, timeZone: timeZone) }
+    /// Tools for one answer.
+    package func tools() -> AssistantTools {
+        AssistantTools(workspace: workspace, now: now, timeZone: timeZone, writes: writes)
+    }
 }
 
 /// The records the assistant may name: Avenues with their Projects, and
