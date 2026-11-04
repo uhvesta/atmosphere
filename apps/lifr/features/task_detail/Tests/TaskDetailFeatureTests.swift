@@ -202,4 +202,116 @@ final class TaskDetailFeatureTests: XCTestCase {
 
         XCTAssertEqual(store.state.reminders, [])
     }
+
+    func testRenamingSavesTheNewTitle() async {
+        let stretch = records.task("Stretch", in: health)
+        let store = makeStore(stretch)
+
+        await store.send(.binding(.set(\.title, "  Stretch for 10 minutes ")))
+        await store.send(.titleSubmitted)
+        await store.receive(\.delegate.saved)
+
+        XCTAssertEqual(store.state.row.title, "Stretch for 10 minutes")
+    }
+
+    func testAnEmptyTitleIsPutBack() async {
+        let stretch = records.task("Stretch", in: health)
+        let store = makeStore(stretch)
+
+        await store.send(.binding(.set(\.title, "   ")))
+        await store.send(.titleSubmitted)
+
+        XCTAssertEqual(store.state.title, "Stretch")
+    }
+
+    func testEditingTheDescriptionSavesOnlyWhenSaved() async {
+        let stretch = records.task("Stretch", in: health)
+        let store = makeStore(stretch)
+
+        await store.send(.editDetailsTapped)
+        await store.send(.binding(.set(\.detailsDraft, "Hips, then *back*.")))
+        await store.send(.detailsCancelled)
+        XCTAssertEqual(store.state.details, "")
+
+        await store.send(.editDetailsTapped)
+        await store.send(.binding(.set(\.detailsDraft, "Hips, then *back*.")))
+        await store.send(.detailsSaved)
+        await store.receive(\.delegate.saved)
+
+        XCTAssertEqual(store.state.details, "Hips, then *back*.")
+        XCTAssertNil(store.state.detailsDraft)
+    }
+
+    func testRemovingTheDueDateRemovesItsTime() async throws {
+        let stretch = records.task("Stretch", in: health, due: 1, at: "07:00")
+        let store = makeStore(stretch)
+        let friday = try CalendarDate(year: 2026, month: 11, day: 6)
+
+        await store.send(.dueDatePicked(friday))
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.dueDate, friday)
+        XCTAssertEqual(store.state.dueTime, try TimeOfDay("07:00"))
+
+        await store.send(.dueDatePicked(nil))
+        await store.receive(\.delegate.saved)
+        XCTAssertNil(store.state.dueDate)
+        XCTAssertNil(store.state.dueTime)
+    }
+
+    func testMovingToAnotherAvenueTakesTheSubtasksAndLeavesTheProject() async {
+        let fitness = records.project("Fitness", in: health)
+        let home = records.avenue("HOME", "Home")
+        let stretch = records.task("Stretch", in: health, project: fitness)
+        records.task("Hips", in: health, parent: stretch)
+        let store = makeStore(stretch)
+        XCTAssertEqual(store.state.projectChoices.map(\.name), ["Fitness"])
+
+        await store.send(.avenuePicked(home.id))
+        await store.receive(\.delegate.saved)
+
+        XCTAssertEqual(store.state.avenueID, home.id)
+        XCTAssertNil(store.state.projectID)
+        XCTAssertEqual(store.state.row.avenue, "Home")
+        XCTAssertEqual(store.state.subtasks.map(\.avenue), ["Home"])
+    }
+
+    func testLabelsAreToggledAndNewOnesReuseAnExistingName() async {
+        let errands = records.label("errands")
+        let stretch = records.task("Stretch", in: health)
+        let store = makeStore(stretch)
+
+        await store.send(.labelToggled(errands.id))
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.labels, ["errands"])
+
+        await store.send(.binding(.set(\.newLabelName, "Errands")))
+        await store.send(.newLabelSubmitted)
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.labelChoices.count, 1)
+
+        await store.send(.binding(.set(\.newLabelName, "quick")))
+        await store.send(.newLabelSubmitted)
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.labels, ["errands", "quick"])
+
+        await store.send(.labelToggled(errands.id))
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.labels, ["quick"])
+    }
+
+    func testASubtaskOpensInItsOwnDetailAndItsChangesShowInTheParent() async {
+        let stretch = records.task("Stretch", in: health)
+        let hips = records.task("Hips", in: health, parent: stretch)
+        let store = makeStore(stretch)
+
+        await store.send(.subtaskTapped(hips.id))
+        await store.receive(\.subtaskLoaded)
+        XCTAssertEqual(store.state.subtask?.row.title, "Hips")
+
+        await store.send(.subtask(.presented(.statusPicked(.inProgress))))
+        await store.receive(\.subtask.delegate.saved)
+        await store.receive(\.delegate.saved)
+
+        XCTAssertEqual(store.state.subtasks.map(\.status), [.inProgress])
+    }
 }

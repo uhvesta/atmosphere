@@ -6,6 +6,7 @@ import LifrStoreClient
 import LifrUI
 
 /// One task, Task or Sub task: its fields, Sub tasks, comments and history.
+/// Every field can be edited here; a Sub task opens in its own detail.
 /// Status changes run Core's rules: Done or Won't Do with open Sub tasks ask
 /// first, and a Sub task opening under a closed parent offers Undo.
 @Reducer
@@ -17,6 +18,23 @@ package struct TaskDetailFeature {
         package var details: String
         package var project: String?
         package var labels: [String]
+        /// The title as typed; saved on submit.
+        package var title: String
+        /// The description being edited, or `nil` when it's only shown.
+        package var detailsDraft: String?
+        package var startDate: CalendarDate?
+        package var dueDate: CalendarDate?
+        package var dueTime: TimeOfDay?
+        package var avenueID: UUID
+        package var projectID: UUID?
+        package var labelIDs: Set<UUID>
+        /// Where the task can move: open Avenues, and the active Projects of
+        /// the task's Avenue.
+        package var avenueChoices: [Choice]
+        package var projectChoices: [Choice]
+        /// Every label, for the label menu.
+        package var labelChoices: [Choice]
+        package var newLabelName = ""
         package var createdAt: Date
         package var closedAt: Date?
         package var isSubtask: Bool
@@ -27,6 +45,7 @@ package struct TaskDetailFeature {
         package var newSubtaskTitle = ""
         package var newComment = ""
         package var banner: Banner?
+        @Presents package var subtask: TaskDetailFeature.State?
         @Presents package var prompt: ConfirmationDialogState<StatusPrompt>?
         @Presents package var alert: AlertState<Never>?
 
@@ -38,6 +57,24 @@ package struct TaskDetailFeature {
             details = task.details
             project = task.projectID.flatMap { workspace.projects[$0]?.name }
             labels = task.labelIDs.compactMap { workspace.labels[$0]?.name }.sorted()
+            title = task.title
+            startDate = task.startDate
+            dueDate = task.dueDate
+            dueTime = task.dueTime
+            avenueID = task.avenueID
+            projectID = task.projectID
+            labelIDs = task.labelIDs
+            avenueChoices = workspace.avenues.values
+                .filter { $0.archivedAt == nil || $0.id == task.avenueID }
+                .sorted { $0.sortOrder < $1.sortOrder }
+                .map { Choice(id: $0.id, name: $0.name) }
+            projectChoices = workspace.projects.values
+                .filter { $0.avenueID == task.avenueID && ($0.status == .active || $0.id == task.projectID) }
+                .sorted { $0.sortOrder < $1.sortOrder }
+                .map { Choice(id: $0.id, name: $0.name) }
+            labelChoices = workspace.labels.values
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                .map { Choice(id: $0.id, name: $0.name) }
             createdAt = task.createdAt
             closedAt = task.closedAt
             isSubtask = task.isSubtask
@@ -70,7 +107,14 @@ package struct TaskDetailFeature {
             refreshed.showsCommentsOnly = showsCommentsOnly
             refreshed.newSubtaskTitle = newSubtaskTitle
             refreshed.newComment = newComment
+            refreshed.newLabelName = newLabelName
             refreshed.banner = banner
+            // Keep what's being typed over what was saved.
+            if title != row.title { refreshed.title = title }
+            refreshed.detailsDraft = detailsDraft
+            if var subtask, subtask.refresh(from: workspace, now: now, timeZone: timeZone) {
+                refreshed.subtask = subtask
+            }
             self = refreshed
             return true
         }
@@ -80,6 +124,20 @@ package struct TaskDetailFeature {
         case binding(BindingAction<State>)
         case statusPicked(TaskStatus)
         case priorityPicked(Priority)
+        case titleSubmitted
+        case editDetailsTapped
+        case detailsSaved
+        case detailsCancelled
+        case startDatePicked(CalendarDate?)
+        case dueDatePicked(CalendarDate?)
+        case dueTimePicked(TimeOfDay?)
+        case avenuePicked(UUID)
+        case projectPicked(UUID?)
+        case labelToggled(UUID)
+        case newLabelSubmitted
+        case subtaskTapped(UUID)
+        case subtaskLoaded(UUID, Workspace)
+        indirect case subtask(PresentationAction<Action>)
         case subtaskToggled(UUID)
         case addSubtaskSubmitted
         case commentSubmitted
@@ -116,7 +174,77 @@ package struct TaskDetailFeature {
                 return save { [id = state.id] in try await $0.setStatus(status, id) }
 
             case .priorityPicked(let priority):
-                return save { [id = state.id] in try await $0.edit(id, Workspace.TaskEdit(priority: priority)) }
+                return edit(state, Workspace.TaskEdit(priority: priority))
+
+            case .titleSubmitted:
+                let title = state.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard title != state.row.title else { return .none }
+                guard !title.isEmpty else {
+                    state.title = state.row.title
+                    return .none
+                }
+                return edit(state, Workspace.TaskEdit(title: title))
+
+            case .editDetailsTapped:
+                state.detailsDraft = state.details
+                return .none
+
+            case .detailsSaved:
+                guard let draft = state.detailsDraft else { return .none }
+                state.detailsDraft = nil
+                guard draft != state.details else { return .none }
+                return edit(state, Workspace.TaskEdit(details: draft))
+
+            case .detailsCancelled:
+                state.detailsDraft = nil
+                return .none
+
+            case .startDatePicked(let date):
+                return edit(state, Workspace.TaskEdit(startDate: .some(date)))
+
+            case .dueDatePicked(let date):
+                // A time only makes sense with a date.
+                let time: TimeOfDay?? = date == nil ? .some(nil) : nil
+                return edit(state, Workspace.TaskEdit(dueDate: .some(date), dueTime: time))
+
+            case .dueTimePicked(let time):
+                return edit(state, Workspace.TaskEdit(dueTime: .some(time)))
+
+            case .avenuePicked(let avenueID):
+                guard avenueID != state.avenueID else { return .none }
+                return save { [id = state.id] in try await $0.move(id, toAvenue: avenueID, project: nil) }
+
+            case .projectPicked(let projectID):
+                guard projectID != state.projectID else { return .none }
+                return save { [id = state.id, avenueID = state.avenueID] in
+                    try await $0.move(id, toAvenue: avenueID, project: projectID)
+                }
+
+            case .labelToggled(let labelID):
+                var labelIDs = state.labelIDs
+                if labelIDs.remove(labelID) == nil { labelIDs.insert(labelID) }
+                return edit(state, Workspace.TaskEdit(labelIDs: labelIDs))
+
+            case .newLabelSubmitted:
+                let name = state.newLabelName.trimmingCharacters(in: .whitespacesAndNewlines)
+                state.newLabelName = ""
+                guard !name.isEmpty else { return .none }
+                return save { [id = state.id] in try await $0.addLabel(named: name, to: id) }
+
+            case .subtaskTapped(let id):
+                return .run { [store] send in
+                    await send(.subtaskLoaded(id, try await store.load()))
+                } catch: { error, send in
+                    await send(.saved(.failure(error)))
+                }
+
+            case .subtaskLoaded(let id, let workspace):
+                state.subtask = State(id: id, workspace: workspace, now: now, timeZone: timeZone)
+                return .none
+
+            case .subtask(.presented(.delegate(.saved(let workspace)))):
+                _ = state.refresh(from: workspace, now: now, timeZone: timeZone)
+                return .send(.delegate(.saved(workspace)))
 
             case .subtaskToggled(let id):
                 guard let subtask = state.subtasks.first(where: { $0.id == id }) else { return .none }
@@ -197,12 +325,17 @@ package struct TaskDetailFeature {
                 }
                 return .none
 
-            case .binding, .prompt, .alert, .delegate:
+            case .binding, .prompt, .alert, .delegate, .subtask:
                 return .none
             }
         }
+        .ifLet(\.$subtask, action: \.subtask) { TaskDetailFeature() }
         .ifLet(\.$prompt, action: \.prompt)
         .ifLet(\.$alert, action: \.alert)
+    }
+
+    private func edit(_ state: State, _ edit: Workspace.TaskEdit) -> Effect<Action> {
+        save { [id = state.id] in try await $0.edit(id, edit) }
     }
 
     private func save(_ operation: @escaping @Sendable (StoreClient) async throws -> Saved) -> Effect<Action> {
@@ -214,4 +347,10 @@ package struct TaskDetailFeature {
             }
         }
     }
+}
+
+/// Something to pick by name: an Avenue, a Project or a label.
+package struct Choice: Identifiable, Hashable, Sendable {
+    package var id: UUID
+    package var name: String
 }

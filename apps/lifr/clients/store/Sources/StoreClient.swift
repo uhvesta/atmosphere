@@ -67,6 +67,25 @@ extension StoreClient {
         try await save { (workspace, context) throws(LifrError) in try workspace.edit(id, edit, in: context) }
     }
 
+    /// `Workspace.move`: a top-level task and its Sub tasks to another Avenue
+    /// or Project.
+    package func move(_ id: UUID, toAvenue avenueID: UUID, project projectID: UUID?) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            try workspace.move(id, toAvenue: avenueID, project: projectID, in: context)
+        }
+    }
+
+    /// Adds the label called `name` to a task, making the label first when
+    /// there's none by that name in any case.
+    package func addLabel(named name: String, to id: UUID) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            let task = try workspace.task(id)
+            let existing = workspace.labels.values.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+            let label = existing ?? workspace.createLabel(name: name, in: context)
+            return try workspace.edit(id, Workspace.TaskEdit(labelIDs: task.labelIDs.union([label.id])), in: context)
+        }
+    }
+
     package func addComment(_ body: String, to id: UUID) async throws -> Saved {
         try await save { (workspace, context) throws(LifrError) in
             _ = try workspace.addComment(body, to: id, in: context)
