@@ -11,18 +11,37 @@ package struct Actor: Hashable, Codable, Sendable {
     package var device: String
     /// For agents, the approved client's name, such as "Claude Code".
     package var client: String?
+    /// Where the change came from. `nil` for changes made before Lifr
+    /// recorded it.
+    package var surface: Surface?
 
-    package static func user(device: String) -> Actor {
-        Actor(kind: .user, device: device, client: nil)
+    /// Where a change was made.
+    package enum Surface: String, Hashable, Codable, Sendable, CaseIterable {
+        case iPhone = "iphone"
+        case iPad = "ipad"
+        case mac
+        case cli
+        case mcp
+        /// Apple Intelligence, in a conversation.
+        case assistant
     }
 
-    package static func agent(_ client: String, device: String) -> Actor {
-        Actor(kind: .agent, device: device, client: client)
+    package static func user(device: String, surface: Surface? = nil) -> Actor {
+        Actor(kind: .user, device: device, client: nil, surface: surface)
+    }
+
+    package static func agent(_ client: String, device: String, surface: Surface? = nil) -> Actor {
+        Actor(kind: .agent, device: device, client: client, surface: surface)
     }
 
     /// Changes the rules make on their own, such as reopening a parent.
-    package static func system(device: String) -> Actor {
-        Actor(kind: .system, device: device, client: nil)
+    package static func system(device: String, surface: Surface? = nil) -> Actor {
+        Actor(kind: .system, device: device, client: nil, surface: surface)
+    }
+
+    /// The on-device assistant, acting in a conversation.
+    package static func assistant(device: String) -> Actor {
+        .agent("Apple Intelligence", device: device, surface: .assistant)
     }
 }
 

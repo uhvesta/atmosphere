@@ -11,4 +11,5 @@ runSuites([
     ("Reconciliation", reconciliationTests()),
     ("Reverting from history", revertTests()),
     ("Plans", planTests()),
+    ("Journal", journalTests()),
 ])

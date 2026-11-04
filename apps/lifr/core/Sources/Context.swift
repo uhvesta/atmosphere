@@ -23,7 +23,7 @@ package struct Context {
         self.newCode = newCode
     }
 
-    var system: Actor { .system(device: actor.device) }
+    var system: Actor { .system(device: actor.device, surface: actor.surface) }
 }
 
 /// What one operation changed, so a client can show it and undo it.
@@ -48,6 +48,19 @@ package struct Change: Hashable, Sendable {
         case reminder(UUID)
     }
 
+    /// Who the journal credits with the change, when not the context's
+    /// actor: a session sets the approved client here.
+    package var actor: Actor?
+    /// The assistant conversation the change was made in.
+    package var conversation: UUID?
+    /// The journal entries this change reverts.
+    package internal(set) var reverts: [UUID] = []
+    /// What reverting left as it was, and why.
+    package internal(set) var skipped: [SkippedRevert] = []
+    /// The journal entry `perform` wrote for the change, if it changed
+    /// anything.
+    package internal(set) var entry: UUID?
+
     package init() {}
 
     /// Adds what `other` changed to this change. A task keeps the state it
@@ -59,6 +72,10 @@ package struct Change: Hashable, Sendable {
         events += other.events
         reopenedParent = reopenedParent ?? other.reopenedParent
         added += other.added
+        actor = actor ?? other.actor
+        conversation = conversation ?? other.conversation
+        reverts += other.reverts
+        skipped += other.skipped
     }
 
     package var isEmpty: Bool { previous.isEmpty && events.isEmpty }

@@ -12,6 +12,8 @@ package struct Workspace: Hashable, Codable, Sendable {
     package internal(set) var reminders: [UUID: Reminder] = [:]
     /// Append-only.
     package internal(set) var history: [HistoryEvent] = []
+    /// Every operation's changes to the records, oldest first. Append-only.
+    package internal(set) var journal: [JournalEntry] = []
     package var settings = Settings()
 
     /// How long trashed tasks are kept before `purgeTrash` deletes them.
@@ -24,7 +26,7 @@ package struct Workspace: Hashable, Codable, Sendable {
     package init(
         avenues: [Avenue] = [], projects: [Project] = [], tasks: [LifrTask] = [], labels: [Label] = [],
         comments: [Comment] = [], reminders: [Reminder] = [], history: [HistoryEvent] = [],
-        settings: Settings = Settings()
+        journal: [JournalEntry] = [], settings: Settings = Settings()
     ) {
         self.avenues = Dictionary(avenues.map { ($0.id, $0) }) { _, last in last }
         self.projects = Dictionary(projects.map { ($0.id, $0) }) { _, last in last }
@@ -33,6 +35,7 @@ package struct Workspace: Hashable, Codable, Sendable {
         self.comments = Dictionary(comments.map { ($0.id, $0) }) { _, last in last }
         self.reminders = Dictionary(reminders.map { ($0.id, $0) }) { _, last in last }
         self.history = history
+        self.journal = journal
         self.settings = settings
     }
 

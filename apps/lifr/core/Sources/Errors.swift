@@ -3,6 +3,8 @@ import Foundation
 /// The kinds of record a lookup can fail to find.
 package enum Entity: String, Hashable, Codable, Sendable {
     case avenue, project, task, label, comment, reminder
+    /// A journal entry.
+    case change
 }
 
 /// Why Core refused a change. Every client shows `description` as is, so each
