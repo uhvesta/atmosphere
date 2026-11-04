@@ -5,6 +5,7 @@ load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
 swift_library(
     name = "cli_lib",
+    package_name = "lifr",
     srcs = ["main.swift"],
     module_name = "LifrCLI",
     target_compatible_with = ["//bazel/xcode"],
