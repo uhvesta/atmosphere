@@ -1,13 +1,7 @@
-# Test VM for cross-compiled Linux binaries; see tools/cross/matrix.sh.
-# Runs arm64 binaries natively and x86_64 binaries through Rosetta.
+# Test VM for the arm64 Linux binaries that tools/e2e/e2e.sh cross-compiles.
 # The host directory /tmp/monty-oxide-cross is mounted read-only.
-base: template:alpine-3.23
+base: template:debian-13
 vmType: vz
-vmOpts:
-  vz:
-    rosetta:
-      enabled: true
-      binfmt: true
 cpus: 2
 memory: 2GiB
 disk: 8GiB
