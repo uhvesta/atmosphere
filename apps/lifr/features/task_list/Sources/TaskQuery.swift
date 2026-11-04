@@ -30,7 +30,7 @@ package struct TaskQuery: Equatable, Sendable {
 
     package init(
         key: String, empty: Empty,
-        trailingActions: [RowAction] = [.status(.done), .status(.procrastinated), .status(.wontDo)],
+        trailingActions: [RowAction] = [.status(.done), .status(.wontDo), .pickStatus],
         adds: NewTaskDefaults? = NewTaskDefaults(),
         sections: @escaping @Sendable (Workspace, Date, TimeZone) -> [TaskSection]
     ) {
@@ -68,6 +68,8 @@ package enum RowAction: Hashable, Sendable {
     case status(TaskStatus)
     /// Pick a new due date.
     case reschedule
+    /// Pick any status from a list.
+    case pickStatus
 }
 
 /// A titled group of rows.

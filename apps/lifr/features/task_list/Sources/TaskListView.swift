@@ -82,6 +82,7 @@ package struct TaskListPresentations: ViewModifier {
                 RescheduleView(store: store)
             }
             .confirmationDialog($store.scope(state: \.prompt, action: \.prompt))
+            .confirmationDialog($store.scope(state: \.statusPicker, action: \.statusPicker))
             .alert($store.scope(state: \.alert, action: \.alert))
     }
 }
@@ -142,6 +143,7 @@ extension RowAction {
         switch self {
         case .status(let status): status.title
         case .reschedule: "Reschedule"
+        case .pickStatus: "Status"
         }
     }
 
@@ -153,6 +155,7 @@ extension RowAction {
         case .status(.inProgress): .blue
         case .status(.todo): .secondary
         case .reschedule: .indigo
+        case .pickStatus: .purple
         }
     }
 }

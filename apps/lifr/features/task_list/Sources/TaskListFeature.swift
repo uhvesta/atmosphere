@@ -21,6 +21,8 @@ package struct TaskListFeature {
         @Presents package var detail: TaskDetailFeature.State?
         @Presents package var reschedule: RescheduleFeature.State?
         @Presents package var prompt: ConfirmationDialogState<StatusPrompt>?
+        /// Every status, from a row's Status swipe.
+        @Presents package var statusPicker: ConfirmationDialogState<StatusPick>?
         @Presents package var alert: AlertState<Never>?
 
         package init(query: TaskQuery) {
@@ -63,6 +65,7 @@ package struct TaskListFeature {
         case detail(PresentationAction<TaskDetailFeature.Action>)
         case reschedule(PresentationAction<RescheduleFeature.Action>)
         case prompt(PresentationAction<StatusPrompt>)
+        case statusPicker(PresentationAction<StatusPick>)
         case alert(PresentationAction<Never>)
         case delegate(Delegate)
 
@@ -116,6 +119,14 @@ package struct TaskListFeature {
                     id: id, title: row.title, date: now.addingTimeInterval(24 * 60 * 60))
                 return .none
 
+            case .rowAction(let id, .pickStatus):
+                guard let row = state.rows.first(where: { $0.id == id }) else { return .none }
+                state.statusPicker = .statuses(for: row)
+                return .none
+
+            case .statusPicker(.presented(let pick)):
+                return setStatus(pick.status, pick.task)
+
             case .reschedule(.presented(.delegate(.picked(let id, let date)))):
                 return save { try await $0.edit(id, Workspace.TaskEdit(dueDate: .some(date))) }
 
@@ -161,13 +172,14 @@ package struct TaskListFeature {
                 state.show(workspace, now: now, timeZone: timeZone)
                 return .send(.delegate(.saved(workspace)))
 
-            case .detail, .reschedule, .prompt, .alert, .delegate:
+            case .detail, .reschedule, .prompt, .statusPicker, .alert, .delegate:
                 return .none
             }
         }
         .ifLet(\.$detail, action: \.detail) { TaskDetailFeature() }
         .ifLet(\.$reschedule, action: \.reschedule) { RescheduleFeature() }
         .ifLet(\.$prompt, action: \.prompt)
+        .ifLet(\.$statusPicker, action: \.statusPicker)
         .ifLet(\.$alert, action: \.alert)
     }
 
@@ -178,6 +190,33 @@ package struct TaskListFeature {
     private func save(_ operation: @escaping @Sendable (StoreClient) async throws -> Saved) -> Effect<Action> {
         .run { [store] send in
             await send(.saved(Result { try await operation(store) }))
+        }
+    }
+}
+
+/// A status picked for a task from a row's Status swipe.
+package struct StatusPick: Equatable, Sendable {
+    package var task: UUID
+    package var status: TaskStatus
+
+    package init(task: UUID, status: TaskStatus) {
+        self.task = task
+        self.status = status
+    }
+}
+
+extension ConfirmationDialogState where Action == StatusPick {
+    /// Every status but the row's own.
+    static func statuses(for row: TaskRowData) -> Self {
+        ConfirmationDialogState(titleVisibility: .visible) {
+            TextState(row.title)
+        } actions: {
+            for status in TaskStatus.allCases where status != row.status {
+                ButtonState(action: StatusPick(task: row.id, status: status)) { TextState(status.title) }
+            }
+            ButtonState(role: .cancel) { TextState("Cancel") }
+        } message: {
+            TextState("Currently \(row.status.title).")
         }
     }
 }

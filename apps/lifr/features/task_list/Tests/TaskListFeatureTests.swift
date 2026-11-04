@@ -67,6 +67,26 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.sections.map(\.id), ["inProgress"])
     }
 
+    func testTheStatusSwipeOffersEveryOtherStatusAndSetsThePickedOne() async {
+        let stretch = records.task("Stretch", in: health)
+        let store = await load()
+
+        await store.send(.rowAction(stretch.id, .pickStatus))
+        XCTAssertNotNil(store.state.statusPicker)
+
+        await store.send(.statusPicker(.presented(StatusPick(task: stretch.id, status: .procrastinated))))
+        await store.receive(\.delegate.saved)
+        XCTAssertNil(store.state.statusPicker)
+        XCTAssertEqual(store.state.workspace?.tasks[stretch.id]?.status, .procrastinated)
+    }
+
+    func testAddTaskAsksForATaskThatShowsInThisList() async {
+        let store = await load()
+
+        await store.send(.addTaskTapped)
+        await store.receive(\.delegate.addTask, NewTaskDefaults())
+    }
+
     func testDoneWithOpenSubtasksAsksAndCanShowThem() async {
         let review = records.task("Review", in: health)
         records.task("Read", in: health, parent: review)
