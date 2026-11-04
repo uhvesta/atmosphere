@@ -8,7 +8,7 @@ import SwiftUI
 import XCTest
 
 /// Quick Add over the sample records, as of 2026-11-03 10:00 UTC: a new
-/// task, and Sub task mode after adding its parent.
+/// task and Project, and Sub task mode after adding its parent.
 @MainActor
 final class QuickAddSnapshotTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
@@ -33,6 +33,13 @@ final class QuickAddSnapshotTests: XCTestCase {
         return state
     }
 
+    private func project() -> QuickAddFeature.State {
+        var state = state()
+        state.kind = .project
+        state.title = "Garden"
+        return state
+    }
+
     private func screen(_ state: QuickAddFeature.State) -> some View {
         NavigationStack {
             QuickAddView(store: Store(initialState: state) { BindingReducer() })
@@ -50,11 +57,13 @@ final class QuickAddSnapshotTests: XCTestCase {
         let size = CGSize(width: 402, height: 874)
         assertSnapshot(of: screen(state()), as: .accessibilityTree(size: size), named: "new")
         assertSnapshot(of: screen(subtasks()), as: .accessibilityTree(size: size), named: "subtasks")
+        assertSnapshot(of: screen(project()), as: .accessibilityTree(size: size), named: "project")
     }
 
     func testImages() {
         assertScreenImages(of: screen(state()), named: "new")
         assertScreenImages(of: screen(subtasks()), named: "subtasks")
+        assertScreenImages(of: screen(project()), named: "project")
     }
 
     func testEmptyImage() {

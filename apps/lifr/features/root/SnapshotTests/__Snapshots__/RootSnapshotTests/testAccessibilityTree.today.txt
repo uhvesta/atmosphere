@@ -7,4 +7,3 @@
 [header, text] "Today"
 [button] "Water the plants" value: "To Do, Today, HOME-0010"
 [button] "“Review Q4 roadmap” is In Progress again: a Sub task was added on one device while it was closed on another."
-[button] "Add task"

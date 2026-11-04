@@ -4,4 +4,3 @@
 [button] "Call the plumber" value: "To Do, Nov 5, HOME-0014"
 [header, text] "Monday, Nov 9"
 [button] "Renew passport" value: "To Do, Medium priority, Nov 9, HOME-0012"
-[button] "Add task"

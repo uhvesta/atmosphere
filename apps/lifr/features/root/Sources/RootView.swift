@@ -112,11 +112,7 @@ private struct PhoneRootView: View {
 
     private var newTask: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
-            Button {
-                store.send(.newTaskTapped)
-            } label: {
-                Label("New task", systemImage: "plus")
-            }
+            AddMenu(store: store)
         }
     }
 }
@@ -132,12 +128,8 @@ private struct MacRootView: View {
             content
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            store.send(.newTaskTapped)
-                        } label: {
-                            Label("New task", systemImage: "plus")
-                        }
-                        .help("New task (⌘N)")
+                        AddMenu(store: store)
+                            .help("Add a task or Project")
                     }
                 }
         } detail: {
@@ -322,4 +314,19 @@ private struct RegistersUndo: ViewModifier {
 /// The object Lifr's undo actions are registered on.
 private final class UndoTarget: Sendable {
     static let shared = UndoTarget()
+}
+
+/// The + button: a task or a Project, starting in what's on screen. Sub
+/// tasks are added from their task, and Avenues have their own screen.
+private struct AddMenu: View {
+    let store: StoreOf<RootFeature>
+
+    var body: some View {
+        Menu {
+            Button("Task", systemImage: "checklist") { store.send(.newTaskTapped) }
+            Button("Project", systemImage: "folder") { store.send(.newProjectTapped(nil)) }
+        } label: {
+            Label("Add", systemImage: "plus")
+        }
+    }
 }

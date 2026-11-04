@@ -12,8 +12,17 @@ package struct QuickAddView: View {
 
     package var body: some View {
         Form {
+            if store.parent == nil {
+                Section {
+                    Picker("Add", selection: $store.kind) {
+                        ForEach(QuickAddFeature.Kind.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+            }
             Section {
-                TextField(store.parent == nil ? "Title" : "Sub task title", text: $store.title)
+                TextField(fieldTitle, text: $store.title)
                     .focused($titleFocused)
                     .onSubmit { store.send(.addTapped) }
                     .submitLabel(.done)
@@ -31,10 +40,13 @@ package struct QuickAddView: View {
                     Text("Sub tasks of \(parent.name)")
                 }
             } else {
-                fields
+                switch store.kind {
+                case .task: fields
+                case .project: avenueField
+                }
             }
         }
-        .navigationTitle(store.parent == nil ? "New Task" : "Add Sub tasks")
+        .navigationTitle(navigationTitle)
         #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
         #endif
@@ -53,6 +65,32 @@ package struct QuickAddView: View {
             }
         }
         .onAppear { titleFocused = true }
+    }
+
+    private var fieldTitle: LocalizedStringKey {
+        if store.parent != nil { return "Sub task title" }
+        return store.kind == .project ? "Name" : "Title"
+    }
+
+    private var navigationTitle: LocalizedStringKey {
+        if store.parent != nil { return "Add Sub tasks" }
+        switch store.kind {
+        case .task: return "New Task"
+        case .project: return "New Project"
+        }
+    }
+
+    /// The Avenue a new Project goes in.
+    private var avenueField: some View {
+        Section {
+            Picker("Avenue", selection: $store.avenueID) {
+                ForEach(store.avenues) { Text($0.name).tag(Optional($0.id)) }
+            }
+        } footer: {
+            if store.avenues.isEmpty {
+                Text("Add an Avenue first, on the Avenues tab.")
+            }
+        }
     }
 
     @ViewBuilder

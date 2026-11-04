@@ -200,7 +200,7 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
-    func testNewSubtaskAddsToTheOpenTaskOrStartsATaskWithSubtasks() async {
+    func testNewSubtaskNeedsAnOpenTaskAndGoesUnderIt() async {
         let shoes = records.task("Buy running shoes", in: health, due: 0)
         let gait = records.task("Get a gait analysis", in: health, parent: shoes)
         let store = makeStore(.mac)
@@ -208,9 +208,7 @@ final class RootFeatureTests: XCTestCase {
         await store.receive(\.loaded)
 
         await store.send(.newSubtaskTapped)
-        XCTAssertEqual(store.state.quickAdd?.subtaskMode, true)
-        XCTAssertNil(store.state.quickAdd?.parent)
-        await store.send(.quickAdd(.dismiss))
+        XCTAssertNil(store.state.quickAdd)
 
         await store.send(.today(.list(.rowTapped(shoes.id))))
         await store.send(.newSubtaskTapped)
@@ -238,8 +236,7 @@ final class RootFeatureTests: XCTestCase {
         await store.send(.quickAdd(.dismiss))
 
         await store.send(.selected(.scope(.project(races.id))))
-        await store.send(.avenue(.list(.addTaskTapped)))
-        await store.receive(\.avenue.list.delegate.addTask)
+        await store.send(.newTaskTapped)
         XCTAssertEqual(store.state.quickAdd?.avenueID, health.id)
         XCTAssertEqual(store.state.quickAdd?.projectID, races.id)
         XCTAssertEqual(store.state.quickAdd?.due, QuickAddFeature.Due.none)
@@ -252,27 +249,27 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
-    func testSearchAndProcrastinatedOfferNoAddTaskRow() async {
+    func testANewProjectStartsInTheAvenueOnScreenOrTheOneAsked() async {
+        let home = records.avenue("HOME", "Home")
         let store = makeStore(.mac)
         let task = await store.send(.task)
         await store.receive(\.loaded)
 
-        await store.send(.search(.list(.addTaskTapped)))
-        await store.send(.procrastinated(.list(.addTaskTapped)))
-        XCTAssertNil(store.state.quickAdd)
+        await store.send(.selected(.scope(.avenue(home.id))))
+        await store.send(.newProjectTapped(nil))
+        XCTAssertEqual(store.state.quickAdd?.kind, .project)
+        XCTAssertEqual(store.state.quickAdd?.avenueID, home.id)
+        await store.send(.quickAdd(.dismiss))
+
+        await store.send(.newProjectTapped(health.id))
+        XCTAssertEqual(store.state.quickAdd?.avenueID, health.id)
         await task.cancel()
     }
 
-    func testNewProjectFromTheSidebarOpensTheAvenueAndAsksForAName() async {
+    func testNewAvenueFromTheSidebarAsksForOne() async {
         let store = makeStore(.mac)
         let task = await store.send(.task)
         await store.receive(\.loaded)
-
-        await store.send(.newProjectTapped(health.id))
-        await store.receive(\.selected)
-        await store.receive(\.avenue.newProjectTapped)
-        XCTAssertEqual(store.state.selection, .scope(.avenue(health.id)))
-        XCTAssertEqual(store.state.avenue?.newProjectName, "")
 
         await store.send(.newAvenueTapped)
         await store.receive(\.avenues.newAvenueTapped)

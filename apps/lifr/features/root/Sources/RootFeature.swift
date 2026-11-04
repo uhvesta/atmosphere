@@ -166,16 +166,17 @@ package struct RootFeature {
         case apiSwitchFailed(String)
         case sessionEvent(SessionEvent)
         case selected(SidebarItem?)
-        /// ⌘N, or the iPhone's + button.
+        /// ⌘N, or Task in the + menu.
         case newTaskTapped
-        /// ⌘⇧N: a Sub task of the open task, or a new task with Sub tasks.
+        /// ⌘⇧N: Sub tasks of the open task. Does nothing without one.
         case newSubtaskTapped
         /// A sidebar Avenue's or Project's New Task.
         case newTaskInTapped(AvenueScope)
         /// The Mac sidebar's New Avenue.
         case newAvenueTapped
-        /// A sidebar Avenue's New Project: opens the Avenue and asks for a name.
-        case newProjectTapped(UUID)
+        /// Project in the + menu, or a sidebar Avenue's New Project: in that
+        /// Avenue, or the one on screen.
+        case newProjectTapped(UUID?)
         /// A status shortcut, for the open task.
         case statusShortcut(TaskStatus)
         /// The toast's Undo, ⌘Z or a shake, for the change with this ID.
@@ -324,41 +325,28 @@ package struct RootFeature {
                 return .none
 
             case .newTaskTapped:
-                // Into the list on screen, so the task shows where it was added.
-                let adds = state.currentList.flatMap { state[list: $0]?.query.adds } ?? NewTaskDefaults()
-                showQuickAdd(adds, in: &state)
-                return .none
-
-            case .today(.list(.delegate(.addTask(let adds)))),
-                .upcoming(.list(.delegate(.addTask(let adds)))),
-                .avenue(.list(.delegate(.addTask(let adds)))),
-                .board(.list(.delegate(.addTask(let adds)))),
-                .avenues(.avenue(.presented(.list(.delegate(.addTask(let adds)))))):
-                showQuickAdd(adds, in: &state)
+                showQuickAdd(.task, in: &state)
                 return .none
 
             case .newTaskInTapped(let scope):
-                showQuickAdd(NewTaskDefaults(scope: scope.newTaskScope), in: &state)
+                showQuickAdd(.task, NewTaskDefaults(scope: scope.newTaskScope), in: &state)
                 return .none
 
             case .newAvenueTapped:
                 return .send(.avenues(.newAvenueTapped))
 
             case .newProjectTapped(let avenueID):
-                return .concatenate(
-                    .send(.selected(.scope(.avenue(avenueID)))),
-                    .send(.avenue(.newProjectTapped)))
+                showQuickAdd(.project, avenueID.map { NewTaskDefaults(scope: .avenue($0)) }, in: &state)
+                return .none
 
             case .newSubtaskTapped:
-                guard let workspace = state.workspace else { return .none }
+                // Sub tasks go under a task, so only with one open.
+                guard let workspace = state.workspace, let id = state.openTaskID, let task = workspace.tasks[id]
+                else { return .none }
+                // A Sub task can't have Sub tasks: add to its parent.
+                let parent = task.parentID.flatMap { workspace.tasks[$0] } ?? task
                 var quickAdd = QuickAddFeature.State(workspace: workspace, now: now)
-                if let id = state.openTaskID, let task = workspace.tasks[id] {
-                    // A Sub task can't have Sub tasks: add to its parent.
-                    let parent = task.parentID.flatMap { workspace.tasks[$0] } ?? task
-                    quickAdd.parent = QuickAddFeature.Choice(id: parent.id, name: parent.title)
-                } else {
-                    quickAdd.subtaskMode = true
-                }
+                quickAdd.parent = QuickAddFeature.Choice(id: parent.id, name: parent.title)
                 state.quickAdd = quickAdd
                 return .none
 
@@ -459,10 +447,13 @@ package struct RootFeature {
             ])
     }
 
-    /// Quick add, starting in the Avenue or Project and on the day `adds` says.
-    private func showQuickAdd(_ adds: NewTaskDefaults, in state: inout State) {
+    /// Quick Add for `kind`, starting where `adds` says, or in the list on
+    /// screen so what's added shows where it was added.
+    private func showQuickAdd(_ kind: QuickAddFeature.Kind, _ adds: NewTaskDefaults? = nil, in state: inout State) {
         guard let workspace = state.workspace else { return }
+        let adds = adds ?? state.currentList.flatMap { state[list: $0]?.query.adds } ?? NewTaskDefaults()
         var quickAdd = QuickAddFeature.State(workspace: workspace, now: now)
+        quickAdd.kind = kind
         switch adds.scope {
         case .avenue(let id):
             quickAdd.avenueID = id

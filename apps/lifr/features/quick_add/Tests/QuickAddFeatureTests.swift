@@ -99,6 +99,21 @@ final class QuickAddFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.title, "")
     }
 
+    func testAProjectGoesInThePickedAvenue() async throws {
+        _ = (health, home)
+        let store = quickAdd()
+
+        await store.send(.binding(.set(\.kind, .project)))
+        await store.send(.binding(.set(\.avenueID, home.id)))
+        await store.send(.binding(.set(\.title, "Garden")))
+        await store.send(.addTapped)
+        let workspace = try await saved(store)
+
+        XCTAssertEqual(workspace.projects.values.map(\.name), ["Garden"])
+        XCTAssertEqual(workspace.projects.values.first?.avenueID, home.id)
+        XCTAssertTrue(workspace.tasks.isEmpty)
+    }
+
     func testABlankTitleCantBeAdded() async {
         _ = health
         let store = quickAdd()

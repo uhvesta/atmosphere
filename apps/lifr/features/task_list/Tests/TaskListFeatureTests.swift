@@ -80,13 +80,6 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.workspace?.tasks[stretch.id]?.status, .procrastinated)
     }
 
-    func testAddTaskAsksForATaskThatShowsInThisList() async {
-        let store = await load()
-
-        await store.send(.addTaskTapped)
-        await store.receive(\.delegate.addTask, NewTaskDefaults())
-    }
-
     func testDoneWithOpenSubtasksAsksAndCanShowThem() async {
         let review = records.task("Review", in: health)
         records.task("Read", in: health, parent: review)

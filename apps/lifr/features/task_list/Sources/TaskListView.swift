@@ -26,13 +26,6 @@ package struct TaskListView<Header: View>: View {
                     }
                 }
             }
-            if store.query.adds != nil, !store.isEmpty {
-                Button {
-                    store.send(.addTaskTapped)
-                } label: {
-                    Label("Add task", systemImage: "plus.circle.fill")
-                }
-            }
         }
         .overlay {
             if store.workspace != nil, store.isEmpty {
@@ -40,11 +33,6 @@ package struct TaskListView<Header: View>: View {
                     Label(store.query.empty.title, systemImage: store.query.empty.systemImage)
                 } description: {
                     Text(store.query.empty.description)
-                } actions: {
-                    if store.query.adds != nil {
-                        Button("Add task") { store.send(.addTaskTapped) }
-                            .buttonStyle(.borderedProminent)
-                    }
                 }
             }
         }

@@ -18,6 +18,8 @@ package struct RootCommands: Commands {
                 .keyboardShortcut("n")
             Button("New Sub Task") { store.send(.newSubtaskTapped) }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
+            Button("New Project") { store.send(.newProjectTapped(nil)) }
+                .keyboardShortcut("n", modifiers: [.command, .option])
         }
         CommandMenu("Status") {
             ForEach(Array(TaskStatus.shortcuts.enumerated()), id: \.offset) { index, status in

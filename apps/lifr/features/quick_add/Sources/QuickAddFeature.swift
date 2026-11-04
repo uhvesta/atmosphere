@@ -4,11 +4,25 @@ import LifrCore
 import LifrStoreClient
 import LifrTaskDetail
 
-/// Adds a task in a few taps: a title, an Avenue (the last one used), and
-/// optionally a Project, a due day and a priority. In Sub task mode the
-/// first task added stays open and the next ones become its Sub tasks.
+/// Adds a task or a Project in a few taps. A task needs an Avenue (the
+/// last one used) and optionally a Project, a due day and a priority; a
+/// Project needs its Avenue. Sub tasks are added from their task: opened
+/// with `parent`, or in Sub task mode after adding the task, Quick Add
+/// stays open and each title becomes a Sub task of it.
 @Reducer
 package struct QuickAddFeature {
+    /// What Quick Add makes.
+    package enum Kind: String, CaseIterable, Hashable, Sendable {
+        case task, project
+
+        package var title: String {
+            switch self {
+            case .task: String(localized: "Task")
+            case .project: String(localized: "Project")
+            }
+        }
+    }
+
     /// When the new task is due.
     package enum Due: String, CaseIterable, Hashable, Sendable {
         case none, today, tomorrow, pick
@@ -35,6 +49,7 @@ package struct QuickAddFeature {
 
     @ObservableState
     package struct State: Equatable {
+        package var kind = Kind.task
         package var title = ""
         package var avenueID: UUID?
         package var projectID: UUID?
@@ -113,7 +128,14 @@ package struct QuickAddFeature {
             switch action {
             case .addTapped:
                 guard state.canAdd else { return .none }
-                var new = Workspace.NewTask(title: state.title.trimmingCharacters(in: .whitespacesAndNewlines))
+                let title = state.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                state.error = nil
+                if state.parent == nil, state.kind == .project, let avenueID = state.avenueID {
+                    return .run { [store] send in
+                        await send(.added(Result { try await store.createProject(title, in: avenueID) }))
+                    }
+                }
+                var new = Workspace.NewTask(title: title)
                 if let parent = state.parent {
                     new.parentID = parent.id
                 } else {
@@ -122,7 +144,6 @@ package struct QuickAddFeature {
                     new.priority = state.priority
                     new.dueDate = dueDate(state)
                 }
-                state.error = nil
                 return .run { [store, new] send in
                     await send(.added(Result { try await store.createTask(new) }))
                 }
@@ -137,7 +158,7 @@ package struct QuickAddFeature {
                 if let avenueID = state.avenueID {
                     state.$lastAvenue.withLock { $0 = avenueID.uuidString }
                 }
-                if state.subtaskMode, let created {
+                if state.kind == .task, state.subtaskMode, let created {
                     state.parent = Choice(id: created.id, name: created.title)
                     state.title = ""
                     return .send(.delegate(.saved(saved.workspace)))

@@ -176,6 +176,9 @@
     "Add a description" : {
 
     },
+    "Add a task or Project" : {
+
+    },
     "Add a time" : {
 
     },
@@ -894,6 +897,9 @@
 
     },
     "Sync conversations" : {
+
+    },
+    "Task" : {
 
     },
     "Tasks" : {
