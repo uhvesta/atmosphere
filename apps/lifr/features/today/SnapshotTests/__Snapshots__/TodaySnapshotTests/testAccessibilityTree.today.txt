@@ -6,3 +6,4 @@
 [button] "Fix the bike's back brake" value: "Procrastinated, Low priority, Overdue, Oct 29, HOME-0011"
 [header, text] "Today"
 [button] "Water the plants" value: "To Do, Today, HOME-0010"
+[button] "Add task"

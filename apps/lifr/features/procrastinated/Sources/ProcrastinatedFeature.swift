@@ -13,7 +13,8 @@ extension TaskQuery {
         empty: .init(
             "Nothing stalled", systemImage: "tortoise",
             description: "Tasks set to Procrastinated, or In Progress with no activity for a while, show up here."),
-        trailingActions: [.reschedule, .status(.wontDo)]
+        trailingActions: [.reschedule, .status(.wontDo)],
+        adds: nil
     ) { workspace, now, timeZone in
         let stalled = workspace.listedTasks
             .compactMap { task in task.procrastination(now: now, settings: workspace.settings).map { (task, $0) } }

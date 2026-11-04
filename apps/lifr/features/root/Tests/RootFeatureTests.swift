@@ -3,6 +3,7 @@ import Foundation
 import LifrAPI
 import LifrAvenue
 import LifrCore
+import LifrQuickAdd
 import LifrRemindersClient
 import LifrRoot
 import LifrSessionClient
@@ -222,6 +223,60 @@ final class RootFeatureTests: XCTestCase {
         await store.send(.avenue(.list(.rowTapped(gait.id))))
         await store.send(.newSubtaskTapped)
         XCTAssertEqual(store.state.quickAdd?.parent?.id, shoes.id)
+        await task.cancel()
+    }
+
+    func testANewTaskStartsInTheListItWasAddedFrom() async {
+        let races = records.project("Races", in: health)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.selected(.today))
+        await store.send(.newTaskTapped)
+        XCTAssertEqual(store.state.quickAdd?.due, .today)
+        await store.send(.quickAdd(.dismiss))
+
+        await store.send(.selected(.scope(.project(races.id))))
+        await store.send(.avenue(.list(.addTaskTapped)))
+        await store.receive(\.avenue.list.delegate.addTask)
+        XCTAssertEqual(store.state.quickAdd?.avenueID, health.id)
+        XCTAssertEqual(store.state.quickAdd?.projectID, races.id)
+        XCTAssertEqual(store.state.quickAdd?.due, QuickAddFeature.Due.none)
+        await store.send(.quickAdd(.dismiss))
+
+        await store.send(.selected(.upcoming))
+        await store.send(.newTaskInTapped(.avenue(health.id)))
+        XCTAssertEqual(store.state.quickAdd?.avenueID, health.id)
+        XCTAssertNil(store.state.quickAdd?.projectID)
+        await task.cancel()
+    }
+
+    func testSearchAndProcrastinatedOfferNoAddTaskRow() async {
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.search(.list(.addTaskTapped)))
+        await store.send(.procrastinated(.list(.addTaskTapped)))
+        XCTAssertNil(store.state.quickAdd)
+        await task.cancel()
+    }
+
+    func testNewProjectFromTheSidebarOpensTheAvenueAndAsksForAName() async {
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.newProjectTapped(health.id))
+        await store.receive(\.selected)
+        await store.receive(\.avenue.newProjectTapped)
+        XCTAssertEqual(store.state.selection, .scope(.avenue(health.id)))
+        XCTAssertEqual(store.state.avenue?.newProjectName, "")
+
+        await store.send(.newAvenueTapped)
+        await store.receive(\.avenues.newAvenueTapped)
+        XCTAssertNotNil(store.state.avenues.newAvenue)
         await task.cancel()
     }
 

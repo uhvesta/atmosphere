@@ -11,7 +11,8 @@ extension TaskQuery {
         key: "today",
         empty: .init(
             "Nothing due today", systemImage: "sun.max",
-            description: "Tasks due today, and overdue ones, show up here.")
+            description: "Tasks due today, and overdue ones, show up here."),
+        adds: NewTaskDefaults(isDueToday: true)
     ) { workspace, now, timeZone in
         let today = CalendarDate(now, in: timeZone)
         let time = TimeOfDay(now, in: timeZone)

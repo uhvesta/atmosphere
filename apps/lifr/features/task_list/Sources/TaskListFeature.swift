@@ -58,6 +58,8 @@ package struct TaskListFeature {
         case saved(Result<Saved, any Error>)
         case bannerUndoTapped
         case bannerDismissed
+        /// The list's Add task row.
+        case addTaskTapped
         case detail(PresentationAction<TaskDetailFeature.Action>)
         case reschedule(PresentationAction<RescheduleFeature.Action>)
         case prompt(PresentationAction<StatusPrompt>)
@@ -68,6 +70,8 @@ package struct TaskListFeature {
         package enum Delegate {
             /// This list changed the records; other lists should show them.
             case saved(Workspace)
+            /// Add a task that shows in this list; the parent shows the form.
+            case addTask(NewTaskDefaults)
         }
     }
 
@@ -130,6 +134,10 @@ package struct TaskListFeature {
             case .bannerDismissed:
                 state.banner = nil
                 return .none
+
+            case .addTaskTapped:
+                guard let adds = state.query.adds else { return .none }
+                return .send(.delegate(.addTask(adds)))
 
             case .saved(.success(let saved)):
                 state.show(saved.workspace, now: now, timeZone: timeZone)

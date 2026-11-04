@@ -91,7 +91,8 @@ extension TaskQuery {
                     description: "Search titles, details and comments, or filter by status, priority, label and date.")
                 : .init(
                     "No matches", systemImage: "magnifyingglass",
-                    description: "Try other words, or clear some filters.")
+                    description: "Try other words, or clear some filters."),
+            adds: nil
         ) { workspace, now, timeZone in
             guard !filter.isEmpty else { return [] }
             let tasks = workspace.listedTasks.filter { filter.matches($0, in: workspace, now: now, timeZone: timeZone) }

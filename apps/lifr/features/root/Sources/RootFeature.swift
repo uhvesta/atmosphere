@@ -149,6 +149,12 @@ package struct RootFeature {
         case newTaskTapped
         /// ⌘⇧N: a Sub task of the open task, or a new task with Sub tasks.
         case newSubtaskTapped
+        /// A sidebar Avenue's or Project's New Task.
+        case newTaskInTapped(AvenueScope)
+        /// The Mac sidebar's New Avenue.
+        case newAvenueTapped
+        /// A sidebar Avenue's New Project: opens the Avenue and asks for a name.
+        case newProjectTapped(UUID)
         /// A status shortcut, for the open task.
         case statusShortcut(TaskStatus)
         case syncBannerDismissed
@@ -281,9 +287,30 @@ package struct RootFeature {
                 return .none
 
             case .newTaskTapped:
-                guard let workspace = state.workspace else { return .none }
-                state.quickAdd = QuickAddFeature.State(workspace: workspace, now: now)
+                // Into the list on screen, so the task shows where it was added.
+                let adds = state.currentList.flatMap { state[list: $0]?.query.adds } ?? NewTaskDefaults()
+                showQuickAdd(adds, in: &state)
                 return .none
+
+            case .today(.list(.delegate(.addTask(let adds)))),
+                .upcoming(.list(.delegate(.addTask(let adds)))),
+                .avenue(.list(.delegate(.addTask(let adds)))),
+                .board(.list(.delegate(.addTask(let adds)))),
+                .avenues(.avenue(.presented(.list(.delegate(.addTask(let adds)))))):
+                showQuickAdd(adds, in: &state)
+                return .none
+
+            case .newTaskInTapped(let scope):
+                showQuickAdd(NewTaskDefaults(scope: scope.newTaskScope), in: &state)
+                return .none
+
+            case .newAvenueTapped:
+                return .send(.avenues(.newAvenueTapped))
+
+            case .newProjectTapped(let avenueID):
+                return .concatenate(
+                    .send(.selected(.scope(.avenue(avenueID)))),
+                    .send(.avenue(.newProjectTapped)))
 
             case .newSubtaskTapped:
                 guard let workspace = state.workspace else { return .none }
@@ -354,6 +381,25 @@ package struct RootFeature {
                 }
                 .cancellable(id: CancelID.reminders, cancelInFlight: true)
             ])
+    }
+
+    /// Quick add, starting in the Avenue or Project and on the day `adds` says.
+    private func showQuickAdd(_ adds: NewTaskDefaults, in state: inout State) {
+        guard let workspace = state.workspace else { return }
+        var quickAdd = QuickAddFeature.State(workspace: workspace, now: now)
+        switch adds.scope {
+        case .avenue(let id):
+            quickAdd.avenueID = id
+        case .project(let id):
+            if let project = workspace.projects[id] {
+                quickAdd.avenueID = project.avenueID
+                quickAdd.projectID = id
+            }
+        case nil:
+            break
+        }
+        if adds.isDueToday { quickAdd.due = .today }
+        state.quickAdd = quickAdd
     }
 
     private func showNextApproval(_ state: inout State) {

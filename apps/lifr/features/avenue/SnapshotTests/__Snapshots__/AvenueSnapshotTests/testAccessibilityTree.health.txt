@@ -4,3 +4,4 @@
 [button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, 0004"
 [button] "Buy running shoes" value: "To Do, High priority, Nov 4, 0016"
 [button] "Book physio appointment" value: "To Do, Medium priority, Overdue, Nov 1, 0005"
+[button] "Add task"

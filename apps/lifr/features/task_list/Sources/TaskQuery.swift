@@ -23,21 +23,43 @@ package struct TaskQuery: Equatable, Sendable {
     package var empty: Empty
     /// The actions a row offers when swiped left.
     package var trailingActions: [RowAction]
+    /// What a task added from this list starts with, or `nil` when the list
+    /// doesn't offer adding, such as search results.
+    package var adds: NewTaskDefaults?
     package var sections: @Sendable (_ workspace: Workspace, _ now: Date, _ timeZone: TimeZone) -> [TaskSection]
 
     package init(
         key: String, empty: Empty,
         trailingActions: [RowAction] = [.status(.done), .status(.procrastinated), .status(.wontDo)],
+        adds: NewTaskDefaults? = NewTaskDefaults(),
         sections: @escaping @Sendable (Workspace, Date, TimeZone) -> [TaskSection]
     ) {
         self.key = key
         self.empty = empty
         self.trailingActions = trailingActions
+        self.adds = adds
         self.sections = sections
     }
 
     package static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.key == rhs.key && lhs.empty == rhs.empty && lhs.trailingActions == rhs.trailingActions
+            && lhs.adds == rhs.adds
+    }
+}
+
+/// Where a task added from a list goes, so it shows in that list.
+package struct NewTaskDefaults: Hashable, Sendable {
+    package var scope: Scope?
+    package var isDueToday: Bool
+
+    package enum Scope: Hashable, Sendable {
+        case avenue(UUID)
+        case project(UUID)
+    }
+
+    package init(scope: Scope? = nil, isDueToday: Bool = false) {
+        self.scope = scope
+        self.isDueToday = isDueToday
     }
 }
 

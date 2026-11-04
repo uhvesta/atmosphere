@@ -112,6 +112,16 @@ private struct MacRootView: View {
             Sidebar(store: store)
         } content: {
             content
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            store.send(.newTaskTapped)
+                        } label: {
+                            Label("New task", systemImage: "plus")
+                        }
+                        .help("New task (⌘N)")
+                    }
+                }
         } detail: {
             NavigationStack {
                 ContentUnavailableView("No task selected", systemImage: "checklist")
@@ -159,11 +169,24 @@ private struct Sidebar: View {
             lists
             Section("Avenues") {
                 ForEach(store.avenues.avenues) { avenue in
-                    AvenueItems(avenue: avenue)
+                    AvenueItems(avenue: avenue, store: store)
                 }
             }
         }
         .navigationTitle("Lifr")
+        .safeAreaInset(edge: .bottom) {
+            Button {
+                store.send(.newAvenueTapped)
+            } label: {
+                Label("New Avenue", systemImage: "plus")
+            }
+            .buttonStyle(.borderless)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding()
+        }
+        .sheet(item: $store.scope(state: \.avenues.newAvenue, action: \.avenues.newAvenue)) { store in
+            NavigationStack { NewAvenueView(store: store) }
+        }
     }
 
     @ViewBuilder private var lists: some View {
@@ -180,9 +203,11 @@ private struct Sidebar: View {
     }
 }
 
-/// An Avenue in the sidebar, then its Projects.
+/// An Avenue in the sidebar, then its Projects, each with a menu to add
+/// to it.
 private struct AvenueItems: View {
     var avenue: AvenueRow
+    var store: StoreOf<RootFeature>
 
     var body: some View {
         Label {
@@ -192,11 +217,18 @@ private struct AvenueItems: View {
         }
         .badge(avenue.openCount)
         .tag(RootFeature.SidebarItem.scope(.avenue(avenue.id)))
+        .contextMenu {
+            Button("New Task in \(avenue.name)") { store.send(.newTaskInTapped(.avenue(avenue.id))) }
+            Button("New Project…") { store.send(.newProjectTapped(avenue.id)) }
+        }
         ForEach(avenue.projects) { project in
             Text(project.name)
                 .padding(.leading)
                 .badge(project.openCount)
                 .tag(RootFeature.SidebarItem.scope(.project(project.id)))
+                .contextMenu {
+                    Button("New Task in \(project.name)") { store.send(.newTaskInTapped(.project(project.id))) }
+                }
         }
     }
 }

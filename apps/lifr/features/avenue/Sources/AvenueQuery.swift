@@ -22,6 +22,13 @@ package enum Grouping: String, CaseIterable, Hashable, Sendable {
 package enum AvenueScope: Hashable, Sendable {
     case avenue(UUID)
     case project(UUID)
+
+    package var newTaskScope: NewTaskDefaults.Scope {
+        switch self {
+        case .avenue(let id): .avenue(id)
+        case .project(let id): .project(id)
+        }
+    }
 }
 
 extension TaskQuery {
@@ -32,7 +39,8 @@ extension TaskQuery {
             key: "\(scope)-\(grouping.rawValue)",
             empty: .init(
                 "No tasks yet", systemImage: "tray",
-                description: "Add one with + or Quick Add, and pick this Avenue.")
+                description: "Tasks you add here, or move here, show up in this list."),
+            adds: NewTaskDefaults(scope: scope.newTaskScope)
         ) { workspace, now, timeZone in
             let tasks = workspace.listedTasks.filter { task in
                 guard !task.isSubtask else { return false }
