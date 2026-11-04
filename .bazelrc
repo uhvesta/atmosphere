@@ -16,6 +16,14 @@ build:linux --platforms=//bazel/platforms:linux_host
 # Rust can't build proc-macros ("can't find crate for thiserror_impl").
 build:linux --extra_execution_platforms=@platforms//host,//bazel/platforms:linux_host
 
+# Fail if anything reads Xcode or the Command Line Tools: Swift, C/C++, Rust,
+# Go and Zig must all come from Bazel-managed toolchains. Used by CI on macOS.
+build:no_xcode --sandbox_block_path=/Applications
+build:no_xcode --sandbox_block_path=/Library/Developer
+build:no_xcode --sandbox_block_path=/usr/bin/xcrun
+build:no_xcode --sandbox_block_path=/usr/bin/xcode-select
+build:no_xcode --worker_sandboxing
+
 # Cross-compilation targets (see bazel/platforms/BUILD.bazel).
 build:macos_arm64 --platforms=//bazel/platforms:macos_arm64
 build:linux_arm64 --platforms=//bazel/platforms:linux_arm64
