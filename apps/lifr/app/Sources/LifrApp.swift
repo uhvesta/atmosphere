@@ -22,7 +22,9 @@ struct LifrApp: App {
                     if ProcessInfo.processInfo.arguments.contains(Storage.sampleDataArgument) {
                         try? await store.insert(.sample(now: Date(), timeZone: .current))
                     }
-                    await store.reconcileAfterEachImport(as: Storage.actor)
+                    for await update in await Storage.client.updates() {
+                        Storage.today.send(.loaded(.success(update.workspace)))
+                    }
                 }
             case .failure(let error):
                 ContentUnavailableView(
@@ -46,10 +48,11 @@ private enum Storage {
     static let today = Store(initialState: TodayFeature.State()) {
         TodayFeature()
     } withDependencies: {
-        if case .success(let store) = opened {
-            $0.store = .live(store, actor: actor)
-        }
+        $0.store = client
     }
+
+    static let client: StoreClient =
+        if case .success(let store) = opened { .live(store, actor: actor) } else { StoreClient() }
 
     private static var deviceName: String {
         #if os(macOS)

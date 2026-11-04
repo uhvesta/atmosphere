@@ -29,8 +29,7 @@ package actor LiveStore: ModelActor {
     /// Runs `operation` on the records and saves what it changed. Refused
     /// operations throw `LifrError` and change nothing.
     package func save(
-        in context: @Sendable () -> Context,
-        _ operation: @Sendable (inout Workspace, Context) throws(LifrError) -> Change
+        in context: @Sendable () -> Context, _ operation: StoreOperation
     ) throws -> Saved {
         let before = try load()
         var after = before

@@ -16,9 +16,9 @@ final class TaskDetailFeatureTests: XCTestCase {
 
     private func makeStore(_ task: LifrTask) -> TestStoreOf<TaskDetailFeature> {
         var client = StoreClient.inMemory(records.workspace)
-        let setStatus = client.setStatus
-        client.setStatus = { [changes] status, id, cascade in
-            let saved = try await setStatus(status, id, cascade)
+        let save = client.save
+        client.save = { [changes] operation in
+            let saved = try await save(operation)
             changes.withValue { $0.append(saved.change) }
             return saved
         }

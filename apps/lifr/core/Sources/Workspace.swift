@@ -295,7 +295,9 @@ package struct Workspace: Hashable, Codable, Sendable {
 
     /// Any status can move to any other, except:
     ///
-    /// - Done needs every Sub task closed (`openSubtasks`).
+    /// - Done needs every Sub task closed (`openSubtasks`), unless
+    ///   `cascade: true` closes the open ones as Won't Do first ("Won't Do +
+    ///   finish").
     /// - Won't Do with open Sub tasks closes them as Won't Do too, but only
     ///   with `cascade: true` (`wontDoNeedsCascade`), so a client asks first.
     /// - Opening a Sub task under a closed parent moves the parent back to In
@@ -307,10 +309,10 @@ package struct Workspace: Hashable, Codable, Sendable {
         var change = Change()
         guard task.status != status else { return change }
         let open = openSubtasks(of: id).map(\.id)
-        if status == .done, !open.isEmpty { throw .openSubtasks(task: id, open: open) }
+        if status == .done, !open.isEmpty, !cascade { throw .openSubtasks(task: id, open: open) }
         if status == .wontDo, !open.isEmpty, !cascade { throw .wontDoNeedsCascade(task: id, open: open) }
 
-        if status == .wontDo {
+        if status.isClosed {
             for subtask in open {
                 apply(.wontDo, to: subtask, by: context.actor, reason: .closedWithParent, in: context, &change)
             }

@@ -7,33 +7,85 @@ extension StoreClient {
     /// the `date`, `uuid` and `withRandomNumberGenerator` dependencies, so
     /// tests can fix them.
     package static func inMemory(_ workspace: Workspace, actor: Actor = .user(device: "This device")) -> Self {
-        let records = LockIsolated(workspace)
+        inMemorySyncing(workspace, actor: actor).client
+    }
 
-        @Sendable func save(_ operation: (inout Workspace, Context) throws(LifrError) -> Change) throws(LifrError)
-            -> Saved
-        {
-            @Dependency(\.date.now) var now
-            @Dependency(\.uuid) var uuid
-            @Dependency(\.withRandomNumberGenerator) var random
-            let context = Context(
-                actor: actor, now: now, newID: { uuid() },
-                newCode: { random { TaskCode.random(using: &$0) } })
-            var copy = records.value
-            let change = try operation(&copy, context)
-            records.setValue(copy)
-            return Saved(workspace: copy, change: change)
-        }
+    /// `inMemory`, with a way to change the records as a sync import would:
+    /// `sync` applies records from another device, reconciles them, and
+    /// sends the result to `updates`.
+    package static func inMemorySyncing(
+        _ workspace: Workspace, actor: Actor = .user(device: "This device")
+    ) -> (client: Self, sync: InMemorySync) {
+        let records = Records(workspace)
+        let sync = InMemorySync(records: records, device: actor.device)
 
-        return StoreClient(
+        let client = StoreClient(
             load: { records.value },
-            setStatus: { status, id, cascade in
-                try save { (workspace, context) throws(LifrError) in
-                    try workspace.setStatus(status, of: id, cascade: cascade, in: context)
+            save: { operation in
+                @Dependency(\.date.now) var now
+                @Dependency(\.uuid) var uuid
+                @Dependency(\.withRandomNumberGenerator) var random
+                let context = Context(
+                    actor: actor, now: now, newID: { uuid() },
+                    newCode: { random { TaskCode.random(using: &$0) } })
+                return try records.update { (records) throws(LifrError) -> Saved in
+                    var copy = records
+                    let change = try operation(&copy, context)
+                    records = copy
+                    return Saved(workspace: copy, change: change)
                 }
             },
-            undo: { change in
-                try save { workspace, context in workspace.undo(change, in: context) }
-            }
+            updates: { sync.stream() }
         )
+        return (client, sync)
+    }
+}
+
+/// Imports records into an in-memory store, as CloudKit would.
+package final class InMemorySync: Sendable {
+    private let records: Records
+    private let device: String
+    private let continuations = LockIsolated<[AsyncStream<Update>.Continuation]>([])
+
+    fileprivate init(records: Records, device: String) {
+        self.records = records
+        self.device = device
+    }
+
+    fileprivate func stream() -> AsyncStream<Update> {
+        let (stream, continuation) = AsyncStream<Update>.makeStream()
+        continuations.withValue { $0.append(continuation) }
+        return stream
+    }
+
+    /// Runs `body` on the records as another device's changes arriving,
+    /// then reconciles them at `now` and sends the result to `updates`.
+    @discardableResult
+    package func callAsFunction(now: Date, _ body: (inout Workspace) -> Void) -> Update {
+        let update = records.update { records in
+            body(&records)
+            let fixes = records.reconcile(in: Context(actor: .system(device: device), now: now))
+            return Update(workspace: records, fixes: fixes)
+        }
+        for continuation in continuations.value { continuation.yield(update) }
+        return update
+    }
+}
+
+/// The in-memory records. Each update runs alone.
+private final class Records: @unchecked Sendable {
+    private let lock = NSLock()
+    private var workspace: Workspace
+
+    init(_ workspace: Workspace) {
+        self.workspace = workspace
+    }
+
+    var value: Workspace { lock.withLock { workspace } }
+
+    func update<T, E: Error>(_ body: (inout Workspace) throws(E) -> T) throws(E) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body(&workspace)
     }
 }

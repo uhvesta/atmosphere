@@ -14,6 +14,17 @@ func statusTests() -> [TestCase] {
             }
             try expectEqual(fixture.get(parent).status, .todo)
         },
+        TestCase("given open Sub tasks, when the parent moves to Done with cascade, then they close as Won't Do") {
+            let fixture = try Fixture()
+            let parent = try fixture.task("Parent")
+            let first = try fixture.task("First", parent: parent)
+            let second = try fixture.task("Second", parent: parent)
+            let change = try fixture.workspace.setStatus(.done, of: parent.id, cascade: true, in: fixture.context)
+            try expectEqual(fixture.get(parent).status, .done)
+            try expectEqual(fixture.get(first).status, .wontDo)
+            try expectEqual(fixture.get(second).status, .wontDo)
+            try expectEqual(change.events.filter { $0.field == .status }.count, 3)
+        },
         TestCase("given every Sub task closed, when the parent moves to Done, then closedAt is set") {
             let fixture = try Fixture()
             let parent = try fixture.task("Parent")

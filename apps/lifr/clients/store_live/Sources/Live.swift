@@ -32,18 +32,26 @@ extension LiveStore {
     }
 
     /// Reconciles after each change that another process or CloudKit makes
-    /// to the store. Runs until the calling task is cancelled.
-    package func reconcileAfterEachImport(as actor: Actor) async {
-        let logger = Logger(subsystem: "lifr", category: "sync")
-        for await _ in NotificationCenter.default.notifications(named: .NSPersistentStoreRemoteChange)
-            .map({ _ in () })
-        {
-            do {
-                let fixes = try reconcile(in: { Context(actor: .system(device: actor.device), now: Date()) })
-                if !fixes.isEmpty { logger.info("Reconciled \(fixes.count) records after sync") }
-            } catch {
-                logger.error("Reconciling after sync failed: \(error.description, privacy: .public)")
+    /// to the store, and sends the records with what it fixed. Ends when the
+    /// calling task is cancelled.
+    package nonisolated func updates(device: String) -> AsyncStream<Update> {
+        AsyncStream { continuation in
+            let task = Task {
+                let logger = Logger(subsystem: "lifr", category: "sync")
+                for await _ in NotificationCenter.default.notifications(named: .NSPersistentStoreRemoteChange)
+                    .map({ _ in () })
+                {
+                    do {
+                        let fixes = try await reconcile(in: { Context(actor: .system(device: device), now: Date()) })
+                        if !fixes.isEmpty { logger.info("Reconciled \(fixes.count) records after sync") }
+                        continuation.yield(Update(workspace: try await load(), fixes: fixes))
+                    } catch {
+                        logger.error("Reconciling after sync failed: \(String(describing: error), privacy: .public)")
+                    }
+                }
+                continuation.finish()
             }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 }
@@ -65,14 +73,8 @@ extension StoreClient {
 
         return StoreClient(
             load: { try await store.load() },
-            setStatus: { status, id, cascade in
-                try await store.save(in: context()) { (workspace, context) throws(LifrError) in
-                    try workspace.setStatus(status, of: id, cascade: cascade, in: context)
-                }
-            },
-            undo: { change in
-                try await store.save(in: context()) { workspace, context in workspace.undo(change, in: context) }
-            }
+            save: { operation in try await store.save(in: context(), operation) },
+            updates: { store.updates(device: actor.device) }
         )
     }
 }

@@ -36,5 +36,7 @@ package struct Change: Hashable, Sendable {
     /// its Sub tasks is open again. The UI offers to undo the whole change.
     package internal(set) var reopenedParent: UUID?
 
+    package init() {}
+
     package var isEmpty: Bool { previous.isEmpty && events.isEmpty }
 }
