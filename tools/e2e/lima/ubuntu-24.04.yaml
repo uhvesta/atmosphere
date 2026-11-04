@@ -1,0 +1,14 @@
+# Test VM for the arm64 Linux binaries that tools/e2e/e2e.sh cross-compiles.
+# The host directory /tmp/monty-oxide-cross is mounted read-only.
+base: template:ubuntu-24.04
+vmType: vz
+cpus: 2
+memory: 2GiB
+disk: 8GiB
+containerd:
+  system: false
+  user: false
+mounts:
+  - location: /tmp/monty-oxide-cross
+    mountPoint: /tmp/monty-oxide-cross
+    writable: false
