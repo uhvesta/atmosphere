@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+go_library(
+    name = "go_lib",
+    srcs = ["main.go"],
+    cdeps = ["//examples/interop:polyglot"],
+    cgo = True,
+    importpath = "github.com/uhvesta/monty-oxide/examples/interop/go",
+    visibility = ["//visibility:private"],
+)
+
+go_binary(
+    name = "polyglot_go",
+    embed = [":go_lib"],
+    visibility = ["//examples/interop:__pkg__"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
