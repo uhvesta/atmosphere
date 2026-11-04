@@ -20,7 +20,7 @@ impl<'a> GitHub<'a> {
     }
 
     /// `path` under the API root, parsed as JSON.
-    fn api<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
+    pub(crate) fn api<T: DeserializeOwned>(&self, path: &str) -> Result<T, Error> {
         let url = format!("https://api.github.com/{path}");
         let authorization = self.token.as_ref().map(|token| format!("Bearer {token}"));
         let mut headers = vec![("Accept", "application/vnd.github+json")];
@@ -43,20 +43,24 @@ impl<'a> GitHub<'a> {
 
 #[derive(Deserialize)]
 pub(crate) struct Release {
-    tag_name: String,
-    assets: Vec<Asset>,
+    pub(crate) tag_name: String,
+    #[serde(default)]
+    pub(crate) draft: bool,
+    #[serde(default)]
+    pub(crate) prerelease: bool,
+    pub(crate) assets: Vec<Asset>,
 }
 
 #[derive(Deserialize)]
-struct Asset {
-    name: String,
+pub(crate) struct Asset {
+    pub(crate) name: String,
     browser_download_url: String,
     /// `sha256:<hex>`, published for assets uploaded since mid-2025.
     digest: Option<String>,
 }
 
 impl Release {
-    /// Pins the asset whose name matches.
+    /// Pins the one asset whose name matches.
     pub(crate) fn pin(
         &self,
         github: &GitHub,
@@ -64,15 +68,33 @@ impl Release {
         platform: Platform,
         matches: impl Fn(&str) -> bool,
     ) -> Result<Pin, Error> {
-        let asset = self
+        let found: Vec<&Asset> = self
             .assets
             .iter()
-            .find(|asset| matches(&asset.name))
-            .ok_or_else(|| Error::MissingAsset {
-                component: component.to_owned(),
-                tag: self.tag_name.clone(),
-                platform: platform.name(),
-            })?;
+            .filter(|asset| matches(&asset.name))
+            .collect();
+        let asset = match found[..] {
+            [asset] => asset,
+            [] => {
+                return Err(Error::MissingAsset {
+                    component: component.to_owned(),
+                    tag: self.tag_name.clone(),
+                    platform: platform.name(),
+                });
+            }
+            _ => {
+                return Err(Error::AmbiguousAsset {
+                    component: component.to_owned(),
+                    tag: self.tag_name.clone(),
+                    platform: platform.name(),
+                    names: found
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                });
+            }
+        };
         let url = asset.browser_download_url.clone();
         let sha256 = match asset
             .digest

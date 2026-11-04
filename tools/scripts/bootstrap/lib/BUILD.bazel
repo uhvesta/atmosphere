@@ -5,7 +5,10 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 rust_library(
     name = "bootstrap",
     srcs = glob(["src/*.rs"]),
-    visibility = ["//tools/scripts/bootstrap/lock:__pkg__"],
+    visibility = [
+        "//tools/scripts/bootstrap/lock:__pkg__",
+        "//tools/scripts/bootstrap/revup:__pkg__",
+    ],
     deps = [
         "@crates//:serde",
         "@crates//:serde_json",

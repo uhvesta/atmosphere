@@ -1,5 +1,9 @@
 [workspace]
-members = ["tools/scripts/bootstrap/lib", "tools/scripts/bootstrap/lock"]
+members = [
+    "tools/scripts/bootstrap/lib",
+    "tools/scripts/bootstrap/lock",
+    "tools/scripts/bootstrap/revup",
+]
 resolver = "3"
 
 [workspace.package]
@@ -9,10 +13,13 @@ rust-version = "1.98.1"
 [workspace.dependencies]
 bzip2 = "0.6.1"
 clap = { version = "4.6.7", features = ["derive"] }
+flate2 = "1.1.10"
 plist = "1.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 sha2 = "0.11.1"
+tar = "0.4.46"
 thiserror = "2.0.21"
 toml = "1.1.8"
 ureq = "3.5.1"
+zip = { version = "9.3.0", default-features = false, features = ["deflate-flate2"] }

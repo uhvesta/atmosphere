@@ -3,12 +3,22 @@ use std::path::PathBuf;
 
 use crate::download::Wait;
 
+const RELOCK: &str = "`bazel run //tools/scripts/bootstrap/lock`";
+
 /// A failure in the shared bootstrap code. The fields record what went wrong;
 /// the message tells the user what to do about it.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("this tool needs the checkout's location from Bazel; run it with `bazel run {target}`")]
     NotUnderBazel { target: &'static str },
+
+    #[error(
+        "this machine is {os} {arch}; the bootstrap tools support only macOS and Linux on arm64 or x86_64"
+    )]
+    UnsupportedPlatform {
+        os: &'static str,
+        arch: &'static str,
+    },
 
     #[error("could not read {}; check that it exists and is readable", path.display())]
     Read {
@@ -25,7 +35,7 @@ pub enum Error {
     },
 
     #[error(
-        "{} is invalid; it needs exactly the key bazelisk, a quoted version string",
+        "{} is invalid; it needs exactly bazelisk, python, git, gh, revup and uv, each a quoted string",
         path.display()
     )]
     InvalidVersions {
@@ -33,6 +43,9 @@ pub enum Error {
         #[source]
         source: toml::de::Error,
     },
+
+    #[error("line {line} of {} is malformed; regenerate the file with {RELOCK}", path.display())]
+    MalformedLock { path: PathBuf, line: usize },
 
     #[error(
         "the server is rate-limiting requests from this machine ({url}); wait {wait} before retrying, since retrying sooner can extend the limit"
@@ -66,6 +79,20 @@ pub enum Error {
         url: String,
         #[source]
         source: serde_json::Error,
+    },
+
+    #[error(
+        "SHA-256 mismatch for {url}\n  pinned:     {expected}\n  downloaded: {actual}\n\
+         The file is not the one versions.lock pinned. The download may be corrupted, upstream may have \
+         replaced the file, or someone may have tampered with it. Nothing was installed from it.\n\
+         Retry once to rule out a bad download. If it still mismatches, find out why before re-pinning: \
+         check the project's release page or announcements for a re-upload. Only re-pin with {RELOCK} \
+         once you trust the new file, since that accepts whatever is served now."
+    )]
+    HashMismatch {
+        url: String,
+        expected: String,
+        actual: String,
     },
 }
 

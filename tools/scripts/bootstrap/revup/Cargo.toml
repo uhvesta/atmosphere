@@ -1,0 +1,19 @@
+[package]
+name = "bootstrap-revup"
+description = "Installs revup into .tools/revup from tools/scripts/bootstrap/versions.lock."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "revup"
+path = "src/main.rs"
+
+[dependencies]
+bootstrap = { path = "../lib" }
+flate2.workspace = true
+sha2.workspace = true
+tar.workspace = true
+thiserror.workspace = true
+zip.workspace = true

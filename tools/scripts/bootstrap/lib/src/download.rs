@@ -1,13 +1,15 @@
 //! Responses turned into data, and statuses into errors that say what to do.
 
 use std::fmt;
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 
-use crate::{Error, Http};
+use crate::{Error, Http, Pin};
 
 /// The body of `url` parsed as JSON, requested with `headers`.
 pub fn json<T: DeserializeOwned>(
@@ -21,6 +23,10 @@ pub fn json<T: DeserializeOwned>(
     })
 }
 
+pub fn bytes(http: &Http, url: &str) -> Result<Vec<u8>, Error> {
+    body(http, url, &[])
+}
+
 /// SHA-256 of the body, streamed; nothing is written to disk.
 pub fn sha256(http: &Http, url: &str) -> Result<String, Error> {
     copy_hashed(&mut reader(http, url, &[])?, &mut io::sink()).map_err(|error| match error {
@@ -31,7 +37,44 @@ pub fn sha256(http: &Http, url: &str) -> Result<String, Error> {
     })
 }
 
-fn hex(bytes: &[u8]) -> String {
+/// Downloads a pinned file into `cache`, keyed by its hash, and returns
+/// its path. A cached file is used again only if its hash still matches.
+pub fn fetch(http: &Http, pin: &Pin, cache: &Path) -> Result<PathBuf, Error> {
+    let path = cache.join(&pin.sha256).join(pin.file_name());
+    if path.is_file() && sha256_file(&path)? == pin.sha256 {
+        return Ok(path);
+    }
+    let partial = path.with_extension("part");
+    let write_error = |source| Error::Write {
+        path: partial.clone(),
+        source,
+    };
+    fs::create_dir_all(path.parent().unwrap_or(cache)).map_err(write_error)?;
+    let mut file = File::create(&partial).map_err(write_error)?;
+    let actual =
+        copy_hashed(&mut reader(http, &pin.url, &[])?, &mut file).map_err(|error| match error {
+            Copy::Read(source) => Error::Interrupted {
+                url: pin.url.clone(),
+                source,
+            },
+            Copy::Write(source) => write_error(source),
+        })?;
+    if actual != pin.sha256 {
+        let _ = fs::remove_file(&partial);
+        return Err(Error::HashMismatch {
+            url: pin.url.clone(),
+            expected: pin.sha256.clone(),
+            actual,
+        });
+    }
+    fs::rename(&partial, &path).map_err(|source| Error::Write {
+        path: path.clone(),
+        source,
+    })?;
+    Ok(path)
+}
+
+pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -110,6 +153,17 @@ fn check<'a>(
         404 => Err(Error::NotFound { url }),
         status => Err(Error::Status { url, status }),
     }
+}
+
+fn sha256_file(path: &Path) -> Result<String, Error> {
+    let read_error = |source| Error::Read {
+        path: path.to_owned(),
+        source,
+    };
+    let mut file = File::open(path).map_err(read_error)?;
+    copy_hashed(&mut file, &mut io::sink()).map_err(|error| match error {
+        Copy::Read(source) | Copy::Write(source) => read_error(source),
+    })
 }
 
 /// Which side of a copy failed.
