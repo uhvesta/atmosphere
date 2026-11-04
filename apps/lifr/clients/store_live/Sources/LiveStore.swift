@@ -1,0 +1,217 @@
+import Foundation
+import LifrCore
+import LifrStoreClient
+import SwiftData
+
+/// Lifr's records in SwiftData. Every change loads the records into a Core
+/// `Workspace`, runs Core's operation on it, and writes back only the
+/// records that changed, in one save. So the rules live in Core alone.
+package actor LiveStore: ModelActor {
+    // Written out because `@ModelActor` makes these internal.
+    package nonisolated let modelContainer: ModelContainer
+    package nonisolated let modelExecutor: any ModelExecutor
+
+    package init(modelContainer: ModelContainer) {
+        self.modelContainer = modelContainer
+        modelExecutor = DefaultSerialModelExecutor(modelContext: ModelContext(modelContainer))
+    }
+
+    /// Every record. See Mapping.swift for records that are skipped until
+    /// sync brings in what they refer to.
+    package func load() throws(LiveStoreError) -> Workspace {
+        do {
+            return try read(Index(modelContext))
+        } catch {
+            throw .loadFailed(error)
+        }
+    }
+
+    /// Runs `operation` on the records and saves what it changed. Refused
+    /// operations throw `LifrError` and change nothing.
+    package func save(
+        in context: @Sendable () -> Context,
+        _ operation: @Sendable (inout Workspace, Context) throws(LifrError) -> Change
+    ) throws -> Saved {
+        let before = try load()
+        var after = before
+        let change = try operation(&after, context())
+        try write(from: before, to: after)
+        return Saved(workspace: after, change: change)
+    }
+
+    /// Fixes rule violations that sync brought in, as Core's `reconcile`
+    /// does, and saves the fixes with their history. Call it after each
+    /// CloudKit import. Two devices fixing the same records make the same
+    /// changes.
+    package func reconcile(in context: @Sendable () -> Context) throws(LiveStoreError) -> [Fix] {
+        let before = try load()
+        var after = before
+        let fixes = after.reconcile(in: context())
+        if !fixes.isEmpty { try write(from: before, to: after) }
+        return fixes
+    }
+
+    /// Adds every record in `workspace` that isn't stored yet, and changes
+    /// none that are, such as fixtures in tests.
+    package func insert(_ workspace: Workspace) throws(LiveStoreError) {
+        let before = try load()
+        let merged = Workspace(
+            avenues: Array(before.avenues.values) + workspace.avenues.values.filter { before.avenues[$0.id] == nil },
+            projects: Array(before.projects.values)
+                + workspace.projects.values.filter { before.projects[$0.id] == nil },
+            tasks: Array(before.tasks.values) + workspace.tasks.values.filter { before.tasks[$0.id] == nil },
+            labels: Array(before.labels.values) + workspace.labels.values.filter { before.labels[$0.id] == nil },
+            comments: Array(before.comments.values)
+                + workspace.comments.values.filter { before.comments[$0.id] == nil },
+            reminders: Array(before.reminders.values)
+                + workspace.reminders.values.filter { before.reminders[$0.id] == nil },
+            history: before.history
+                + workspace.history.filter { event in
+                    !before.history.contains { $0.id == event.id }
+                },
+            settings: before.settings)
+        try write(from: before, to: merged)
+    }
+
+    // MARK: - Reading
+
+    private func read(_ index: Index) throws -> Workspace {
+        let settings = try modelContext.fetch(
+            FetchDescriptor<StoredSettings>(sortBy: [SortDescriptor(\.createdAt), SortDescriptor(\.id)]))
+        return Workspace(
+            avenues: index.avenues.values.compactMap(\.record),
+            projects: index.projects.values.compactMap(\.record),
+            tasks: index.tasks.values.compactMap(\.record),
+            labels: index.labels.values.map(\.record),
+            comments: index.comments.values.compactMap(\.record),
+            reminders: index.reminders.values.compactMap(\.record),
+            // Each device appends in its own order; sync interleaves them by
+            // time.
+            history: index.history.values.compactMap(\.record)
+                .sorted { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) },
+            settings: settings.first.map { Settings(procrastinatedAfterDays: $0.procrastinatedAfterDays) }
+                ?? Settings())
+    }
+
+    // MARK: - Writing
+
+    private func write(from before: Workspace, to after: Workspace) throws(LiveStoreError) {
+        do {
+            let index = try Index(modelContext)
+            sync(before.avenues, after.avenues, &index.avenues) { $0.write($1) }
+            sync(before.labels, after.labels, &index.labels) { $0.write($1) }
+            sync(before.projects, after.projects, &index.projects) { $0.write($1, in: index) }
+            sync(before.tasks, after.tasks, &index.tasks) { $0.write($1, in: index) }
+            // Parents last: a new Sub task's parent may be new too.
+            for (id, task) in after.tasks where before.tasks[id] != task {
+                index.tasks[id]?.writeParent(task, in: index)
+            }
+            sync(before.comments, after.comments, &index.comments) { $0.write($1, in: index) }
+            sync(before.reminders, after.reminders, &index.reminders) { $0.write($1, in: index) }
+            let previous = Dictionary(before.history.map { ($0.id, $0) }) { first, _ in first }
+            let next = Dictionary(after.history.map { ($0.id, $0) }) { first, _ in first }
+            sync(previous, next, &index.history) { $0.write($1, in: index) }
+            if before.settings != after.settings {
+                try storedSettings().procrastinatedAfterDays = after.settings.procrastinatedAfterDays
+            }
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw .saveFailed(error)
+        }
+    }
+
+    /// Inserts, updates and deletes models so they match `after`.
+    private func sync<Record: Equatable, Model: PersistentModel>(
+        _ before: [UUID: Record], _ after: [UUID: Record], _ models: inout [UUID: Model],
+        _ write: (Model, Record) -> Void
+    ) where Model: Identified {
+        for (id, record) in after where before[id] != record {
+            let model = models[id] ?? Model(id: id)
+            if models[id] == nil {
+                modelContext.insert(model)
+                models[id] = model
+            }
+            write(model, record)
+        }
+        for id in before.keys where after[id] == nil {
+            if let model = models.removeValue(forKey: id) { modelContext.delete(model) }
+        }
+    }
+
+    private func storedSettings() throws -> StoredSettings {
+        let stored = try modelContext.fetch(
+            FetchDescriptor<StoredSettings>(sortBy: [SortDescriptor(\.createdAt), SortDescriptor(\.id)]))
+        if let first = stored.first { return first }
+        let settings = StoredSettings(id: UUID())
+        settings.createdAt = Date()
+        modelContext.insert(settings)
+        return settings
+    }
+}
+
+/// Every stored model by ID.
+final class Index {
+    var avenues: [UUID: StoredAvenue]
+    var projects: [UUID: StoredProject]
+    var tasks: [UUID: StoredTask]
+    var labels: [UUID: StoredLabel]
+    var comments: [UUID: StoredComment]
+    var reminders: [UUID: StoredReminder]
+    var history: [UUID: StoredHistoryEvent]
+
+    init(_ context: ModelContext) throws {
+        avenues = try Self.all(context)
+        projects = try Self.all(context)
+        tasks = try Self.all(context)
+        labels = try Self.all(context)
+        comments = try Self.all(context)
+        reminders = try Self.all(context)
+        history = try Self.all(context)
+    }
+
+    /// Two devices can create the same record only by syncing it, so
+    /// duplicate IDs don't happen; if they do, the first one fetched wins.
+    private static func all<Model: PersistentModel & Identified>(_ context: ModelContext) throws -> [UUID: Model] {
+        Dictionary(try context.fetch(FetchDescriptor<Model>()).map { ($0.id, $0) }) { first, _ in first }
+    }
+}
+
+/// A model with Lifr's own ID, and a way to create one.
+protocol Identified {
+    var id: UUID { get }
+    init(id: UUID)
+}
+
+extension StoredAvenue: Identified {}
+extension StoredProject: Identified {}
+extension StoredTask: Identified {}
+extension StoredLabel: Identified {}
+extension StoredComment: Identified {}
+extension StoredReminder: Identified {}
+extension StoredHistoryEvent: Identified {}
+
+/// Reading or writing the store failed. Core's rules never throw these; they
+/// throw `LifrError`.
+package enum LiveStoreError: Error, LocalizedError, CustomStringConvertible {
+    case openFailed(any Error)
+    case loadFailed(any Error)
+    case saveFailed(any Error)
+
+    package var description: String {
+        switch self {
+        case .openFailed(let error):
+            "Lifr couldn't open its data on this device: \(error). Check that this device has free storage, "
+                + "then reopen Lifr. Don't delete the app to fix this: that also deletes changes that haven't "
+                + "synced to iCloud yet."
+        case .loadFailed(let error):
+            "Lifr couldn't read its data on this device: \(error). Quit and reopen Lifr. Don't delete the app "
+                + "to fix this: that also deletes changes that haven't synced to iCloud yet."
+        case .saveFailed(let error):
+            "Lifr couldn't save the change, so nothing changed: \(error). Check that this device has free "
+                + "storage, then try again."
+        }
+    }
+
+    package var errorDescription: String? { description }
+}

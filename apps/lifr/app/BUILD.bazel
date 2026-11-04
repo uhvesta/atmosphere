@@ -13,6 +13,7 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     deps = [
         "//apps/lifr/clients/store",
+        "//apps/lifr/clients/store_live",
         "//apps/lifr/core",
         "//apps/lifr/features/today",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

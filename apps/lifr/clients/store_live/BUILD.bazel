@@ -1,0 +1,46 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# The store client on SwiftData, synced through CloudKit. Only the app uses
+# it; features depend on //apps/lifr/clients/store.
+swift_library(
+    name = "store_live",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrStoreLive",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/lifr/app:__subpackages__"],
+    deps = [
+        "//apps/lifr/clients/store",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# Runs against an in-memory SwiftData store, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":store_live",
+        "//apps/lifr/clients/store",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -43,6 +43,21 @@ package struct Avenue: Identifiable, Hashable, Codable, Sendable {
     package var agentAccess: AgentAccess
     package var createdAt: Date
     package var archivedAt: Date?
+
+    package init(
+        id: UUID, key: AvenueKey, name: String, color: String, symbol: String, sortOrder: String,
+        agentAccess: AgentAccess, createdAt: Date, archivedAt: Date?
+    ) {
+        self.id = id
+        self.key = key
+        self.name = name
+        self.color = color
+        self.symbol = symbol
+        self.sortOrder = sortOrder
+        self.agentAccess = agentAccess
+        self.createdAt = createdAt
+        self.archivedAt = archivedAt
+    }
 }
 
 package enum ProjectStatus: String, Hashable, Codable, Sendable, CaseIterable {
@@ -60,6 +75,21 @@ package struct Project: Identifiable, Hashable, Codable, Sendable {
     package var sortOrder: String
     package var createdAt: Date
     package var completedAt: Date?
+
+    package init(
+        id: UUID, avenueID: UUID, name: String, details: String, status: ProjectStatus, dueDate: CalendarDate?,
+        sortOrder: String, createdAt: Date, completedAt: Date?
+    ) {
+        self.id = id
+        self.avenueID = avenueID
+        self.name = name
+        self.details = details
+        self.status = status
+        self.dueDate = dueDate
+        self.sortOrder = sortOrder
+        self.createdAt = createdAt
+        self.completedAt = completedAt
+    }
 }
 
 /// A task's stored status. Procrastinated is also derived; see
@@ -108,6 +138,33 @@ package struct LifrTask: Identifiable, Hashable, Codable, Sendable {
 
     package var isSubtask: Bool { parentID != nil }
     package var isOpen: Bool { !status.isClosed }
+
+    package init(
+        id: UUID, code: TaskCode, title: String, details: String, status: TaskStatus, priority: Priority,
+        startDate: CalendarDate?, dueDate: CalendarDate?, dueTime: TimeOfDay?, avenueID: UUID, projectID: UUID?,
+        parentID: UUID?, labelIDs: Set<UUID>, sortOrder: String, createdAt: Date, updatedAt: Date,
+        lastActivityAt: Date, closedAt: Date?, deletedAt: Date?
+    ) {
+        self.id = id
+        self.code = code
+        self.title = title
+        self.details = details
+        self.status = status
+        self.priority = priority
+        self.startDate = startDate
+        self.dueDate = dueDate
+        self.dueTime = dueTime
+        self.avenueID = avenueID
+        self.projectID = projectID
+        self.parentID = parentID
+        self.labelIDs = labelIDs
+        self.sortOrder = sortOrder
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.lastActivityAt = lastActivityAt
+        self.closedAt = closedAt
+        self.deletedAt = deletedAt
+    }
 }
 
 /// A free-form tag shared by every Avenue.
@@ -116,6 +173,13 @@ package struct Label: Identifiable, Hashable, Codable, Sendable {
     package var name: String
     package var color: String
     package var createdAt: Date
+
+    package init(id: UUID, name: String, color: String, createdAt: Date) {
+        self.id = id
+        self.name = name
+        self.color = color
+        self.createdAt = createdAt
+    }
 }
 
 package struct Comment: Identifiable, Hashable, Codable, Sendable {
@@ -128,6 +192,18 @@ package struct Comment: Identifiable, Hashable, Codable, Sendable {
     package var editedAt: Date?
     /// Deleted comments stay as a "comment deleted" marker.
     package var deletedAt: Date?
+
+    package init(
+        id: UUID, taskID: UUID, body: String, author: Actor, createdAt: Date, editedAt: Date?, deletedAt: Date?
+    ) {
+        self.id = id
+        self.taskID = taskID
+        self.body = body
+        self.author = author
+        self.createdAt = createdAt
+        self.editedAt = editedAt
+        self.deletedAt = deletedAt
+    }
 }
 
 /// A local notification. Each device schedules its own from these records.
@@ -141,6 +217,12 @@ package struct Reminder: Identifiable, Hashable, Codable, Sendable {
     package var id: UUID
     package var taskID: UUID
     package var trigger: Trigger
+
+    package init(id: UUID, taskID: UUID, trigger: Trigger) {
+        self.id = id
+        self.taskID = taskID
+        self.trigger = trigger
+    }
 }
 
 /// One synced record of preferences.
@@ -192,4 +274,19 @@ package struct HistoryEvent: Identifiable, Hashable, Codable, Sendable {
     package var newValue: String?
     package var reason: Reason?
     package var createdAt: Date
+
+    package init(
+        id: UUID, taskID: UUID, actor: Actor, kind: Kind, field: Field?, oldValue: String?, newValue: String?,
+        reason: Reason?, createdAt: Date
+    ) {
+        self.id = id
+        self.taskID = taskID
+        self.actor = actor
+        self.kind = kind
+        self.field = field
+        self.oldValue = oldValue
+        self.newValue = newValue
+        self.reason = reason
+        self.createdAt = createdAt
+    }
 }

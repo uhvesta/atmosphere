@@ -19,6 +19,23 @@ package struct Workspace: Hashable, Codable, Sendable {
 
     package init() {}
 
+    /// Records loaded from storage, as they are. They may break a rule if
+    /// sync brought them in from another device; call `reconcile` after.
+    package init(
+        avenues: [Avenue] = [], projects: [Project] = [], tasks: [LifrTask] = [], labels: [Label] = [],
+        comments: [Comment] = [], reminders: [Reminder] = [], history: [HistoryEvent] = [],
+        settings: Settings = Settings()
+    ) {
+        self.avenues = Dictionary(avenues.map { ($0.id, $0) }) { _, last in last }
+        self.projects = Dictionary(projects.map { ($0.id, $0) }) { _, last in last }
+        self.tasks = Dictionary(tasks.map { ($0.id, $0) }) { _, last in last }
+        self.labels = Dictionary(labels.map { ($0.id, $0) }) { _, last in last }
+        self.comments = Dictionary(comments.map { ($0.id, $0) }) { _, last in last }
+        self.reminders = Dictionary(reminders.map { ($0.id, $0) }) { _, last in last }
+        self.history = history
+        self.settings = settings
+    }
+
     // MARK: - Lookups
 
     package func task(_ id: UUID) throws(LifrError) -> LifrTask {
