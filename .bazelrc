@@ -49,3 +49,9 @@ build:xcode --@apple_support//platforms:ios_arm64_platform=//bazel/xcode:ios_arm
 build:xcode --@apple_support//platforms:ios_sim_arm64_platform=//bazel/xcode:ios_sim_arm64
 build:xcode --macos_cpus=arm64
 build:xcode --ios_multi_cpus=sim_arm64
+# Builds started from the generated Lifr.xcodeproj (//apps/lifr:xcodeproj).
+# rules_xcodeproj's own tools (rsync with lz4 and xxhash) define the same
+# xxhash symbols twice, which ld64.lld rejects, so build host tools with
+# Xcode too.
+common:rules_xcodeproj --config=xcode
+common:rules_xcodeproj --host_platform=//bazel/xcode:macos_arm64

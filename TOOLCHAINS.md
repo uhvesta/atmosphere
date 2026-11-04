@@ -125,7 +125,12 @@ with [`rules_apple`](https://github.com/bazelbuild/rules_apple):
 
 ```sh
 bazel build --config=xcode //apps/lifr/...
+bazel run //apps/lifr:xcodeproj   # generates apps/lifr/Lifr.xcodeproj
 ```
+
+Builds from the generated project use `--config=rules_xcodeproj`, which also
+builds host tools with Xcode. `rules_xcodeproj`'s rsync links lz4 and xxhash,
+which define the same symbols, and `ld64.lld` rejects that.
 
 ## Rust
 

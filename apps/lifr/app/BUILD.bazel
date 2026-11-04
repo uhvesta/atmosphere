@@ -21,6 +21,8 @@ ios_application(
     infoplists = ["Info.plist"],
     minimum_os_version = "18.0",
     target_compatible_with = ["//bazel/xcode"],
+    # For the generated Xcode project (//apps/lifr:xcodeproj).
+    visibility = ["@rules_xcodeproj//xcodeproj:generated"],
     deps = [":app_lib"],
 )
 
@@ -34,6 +36,8 @@ macos_application(
     infoplists = ["Info.plist"],
     minimum_os_version = "15.0",
     target_compatible_with = ["//bazel/xcode"],
+    # For the generated Xcode project (//apps/lifr:xcodeproj).
+    visibility = ["@rules_xcodeproj//xcodeproj:generated"],
     deps = [":app_lib"],
 )
 

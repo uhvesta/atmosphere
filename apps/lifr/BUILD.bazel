@@ -1,0 +1,24 @@
+load("@rules_xcodeproj//xcodeproj:defs.bzl", "top_level_target", "xcodeproj")
+
+# Generates Lifr.xcodeproj for previews, the debugger and Instruments:
+# `bazel run //apps/lifr:xcodeproj`. Xcode builds through Bazel with
+# `--config=rules_xcodeproj`, which .bazelrc points at `--config=xcode`.
+xcodeproj(
+    name = "xcodeproj",
+    project_name = "Lifr",
+    tags = ["manual"],
+    top_level_targets = [
+        top_level_target(
+            "//apps/lifr/app:ios",
+            target_environments = ["simulator"],
+        ),
+        "//apps/lifr/app:macos",
+        "//apps/lifr/cli:lifr",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
