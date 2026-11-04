@@ -43,9 +43,9 @@ extension TaskRowData.Due {
     package func text(_ locale: Locale) -> String {
         func at(_ time: TimeOfDay?) -> String { time.map { " \($0)" } ?? "" }
         return switch self {
-        case let .overdue(date, time): "Overdue, \(date.formatted(locale))\(at(time))"
-        case let .today(time): "Today\(at(time))"
-        case let .later(date, time): "\(date.formatted(locale))\(at(time))"
+        case .overdue(let date, let time): "Overdue, \(date.formatted(locale))\(at(time))"
+        case .today(let time): "Today\(at(time))"
+        case .later(let date, let time): "\(date.formatted(locale))\(at(time))"
         }
     }
 

@@ -18,8 +18,9 @@ func wireTests() -> [TestCase] {
         },
         TestCase("given a valid line, then the response answers the same id") {
             let fixture = try Fixture()
-            let response = fixture.call(line: #"{"jsonrpc": "2.0", "id": 3, "method": "list_avenues"}"#,
-                                        grant: fixture.agent)
+            let response = fixture.call(
+                line: #"{"jsonrpc": "2.0", "id": 3, "method": "list_avenues"}"#,
+                grant: fixture.agent)
             try expectEqual(response.id, 3)
             try expect(response.error == nil, "list_avenues succeeds")
         },
@@ -31,8 +32,9 @@ func wireTests() -> [TestCase] {
         TestCase("given whole and fractional numbers, then they round-trip as written") {
             let value: JSONValue = ["count": 3, "ratio": .number(0.5), "nested": [true, .null, "x"]]
             let data = try Wire.encoder.encode(value)
-            try expectEqual(String(decoding: data, as: UTF8.self),
-                            #"{"count":3,"nested":[true,null,"x"],"ratio":0.5}"#)
+            try expectEqual(
+                String(bytes: data, encoding: .utf8),
+                #"{"count":3,"nested":[true,null,"x"],"ratio":0.5}"#)
             try expectEqual(try Wire.decoder.decode(JSONValue.self, from: data), value)
         },
     ]

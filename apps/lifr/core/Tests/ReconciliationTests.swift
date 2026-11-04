@@ -13,9 +13,11 @@ private func sync(_ phone: Fixture, _ mac: Fixture) {
     let toMac = newer(phone.workspace, than: mac.workspace)
     let toPhone = newer(mac.workspace, than: phone.workspace)
     let phoneAvenues = Array(phone.workspace.avenues.values)
-    phone.workspace.applySynced(tasks: toPhone, avenues: mac.workspace.avenues.values.filter {
-        phone.workspace.avenues[$0.id] == nil
-    })
+    phone.workspace.applySynced(
+        tasks: toPhone,
+        avenues: mac.workspace.avenues.values.filter {
+            phone.workspace.avenues[$0.id] == nil
+        })
     mac.workspace.applySynced(tasks: toMac, avenues: phoneAvenues.filter { mac.workspace.avenues[$0.id] == nil })
 }
 
@@ -68,12 +70,14 @@ func reconciliationTests() -> [TestCase] {
             let phoneFixes = phone.workspace.reconcile(in: phone.context)
             let macFixes = mac.workspace.reconcile(in: mac.context)
             try expectEqual(phoneFixes, macFixes)
-            try expectEqual(phone.workspace.tasks, mac.workspace.tasks.mapValues { task in
-                var task = task
-                task.updatedAt = phone.workspace.tasks[task.id]!.updatedAt
-                task.lastActivityAt = phone.workspace.tasks[task.id]!.lastActivityAt
-                return task
-            })
+            try expectEqual(
+                phone.workspace.tasks,
+                mac.workspace.tasks.mapValues { task in
+                    var task = task
+                    task.updatedAt = phone.workspace.tasks[task.id]!.updatedAt
+                    task.lastActivityAt = phone.workspace.tasks[task.id]!.lastActivityAt
+                    return task
+                })
             try expectEqual(phone.workspace.avenues, mac.workspace.avenues)
         },
         TestCase("given two Avenues with the same key, then the newer one gets a numeric suffix to rename") {

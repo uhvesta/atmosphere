@@ -1,0 +1,24 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
+
+# Runs a linter once and writes the human and SARIF reports, for the Swift
+# lint aspects in //bazel/lint:swift.bzl.
+swift_binary(
+    name = "runner",
+    srcs = ["LintRunner.swift"],
+    module_name = "LintRunner",
+    visibility = ["//bazel/lint:__pkg__"],
+)
+
+sh_test(
+    name = "runner_test",
+    srcs = ["lint_runner_test.sh"],
+    args = ["$(rootpath :runner)"],
+    data = [":runner"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

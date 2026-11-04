@@ -74,8 +74,10 @@ package enum SearchTasks {
         package var includeClosed: Bool?
         package var limit: Int?
 
-        package init(query: String? = nil, avenue: String? = nil, project: UUID? = nil,
-                    statuses: [TaskStatus]? = nil, includeClosed: Bool? = nil, limit: Int? = nil) {
+        package init(
+            query: String? = nil, avenue: String? = nil, project: UUID? = nil,
+            statuses: [TaskStatus]? = nil, includeClosed: Bool? = nil, limit: Int? = nil
+        ) {
             self.query = query
             self.avenue = avenue
             self.project = project
@@ -232,8 +234,10 @@ package enum MoveTask {
         /// Promote a Sub task to a top-level task.
         package var topLevel: Bool?
 
-        package init(task: String, avenue: String? = nil, project: UUID? = nil, parent: String? = nil,
-                    topLevel: Bool? = nil) {
+        package init(
+            task: String, avenue: String? = nil, project: UUID? = nil, parent: String? = nil,
+            topLevel: Bool? = nil
+        ) {
             self.task = task
             self.avenue = avenue
             self.project = project

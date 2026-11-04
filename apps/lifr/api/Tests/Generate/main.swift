@@ -29,8 +29,10 @@ struct MethodExample: Encodable {
 }
 
 /// One request against a fresh fixture, as an agent unless `grant` says otherwise.
-func example(_ method: String, _ params: JSONValue = [:], grant: (Fixture) -> Grant? = { $0.agent },
-             confirm: @escaping (Confirmation) -> Bool = { _ in true }) throws -> Example {
+func example(
+    _ method: String, _ params: JSONValue = [:], grant: (Fixture) -> Grant? = { $0.agent },
+    confirm: @escaping (Confirmation) -> Bool = { _ in true }
+) throws -> Example {
     let fixture = try Fixture()
     let (request, response) = fixture.call(method, params, grant: grant(fixture), confirm: confirm)
     return Example(request: try JSONValue(request), response: response)
@@ -48,8 +50,12 @@ let methodExamples: [APIMethod: Example] = [
     .listProjects: try example("list_projects", ["avenue": "HEALTH"]),
     .searchTasks: try example("search_tasks", ["query": "run", "avenue": "HEALTH"]),
     .getTask: try example("get_task", ["task": "HEALTH-7001"]),
-    .createTask: try example("create_task", ["title": "Stretch after runs", "parent": "HEALTH-7001",
-                                             "priority": "low", "labels": ["running"]]),
+    .createTask: try example(
+        "create_task",
+        [
+            "title": "Stretch after runs", "parent": "HEALTH-7001",
+            "priority": "low", "labels": ["running"],
+        ]),
     .updateTask: try example("update_task", ["task": "HEALTH-7004", "dueDate": "2026-11-12", "dueTime": "09:30"]),
     .setStatus: try example("set_status", ["task": "HEALTH-7001", "status": "wontDo", "cascade": true]),
     .moveTask: try example("move_task", ["task": "HEALTH-7004", "parent": "HEALTH-7001"]),
@@ -61,8 +67,9 @@ check(Set(methodExamples.keys) == Set(APIMethod.allCases), "every method needs a
 let methods = APIMethod.allCases.map { method in
     let example = methodExamples[method]!
     check(example.response.error == nil, "\(method.rawValue)'s example failed: \(example.response.error!.message)")
-    return MethodExample(method: method.rawValue, scope: method.scope, request: example.request,
-                         response: example.response)
+    return MethodExample(
+        method: method.rawValue, scope: method.scope, request: example.request,
+        response: example.response)
 }
 
 let errorExamples: [APIErrorCode: Example] = [
@@ -74,21 +81,29 @@ let errorExamples: [APIErrorCode: Example] = [
     // The CLI answers these two itself, before reaching the app.
     .apiDisabled: Example(response: .failure(id: 1, .apiDisabled)),
     .appNotRunning: Example(response: .failure(id: 1, .appNotRunning)),
-    .notAuthorized: try example("add_comment", ["task": "7004", "body": "Booked for Friday."],
-                                grant: { $0.readOnlyAgent }),
+    .notAuthorized: try example(
+        "add_comment", ["task": "7004", "body": "Booked for Friday."],
+        grant: { $0.readOnlyAgent }),
     .notFound: try example("get_task", ["task": "FINANCE-7006"]),
     .openSubtasks: try example("set_status", ["task": "HEALTH-7001", "status": "done"]),
     .confirmationRequired: try example("set_status", ["task": "HEALTH-7001", "status": "wontDo"]),
     .confirmationDenied: try example("trash_task", ["task": "7004"], confirm: { _ in false }),
     .ruleViolation: try example("update_task", ["task": "7004", "dueTime": "09:30"]),
-    .internalError: Example(response: .failure(id: 1, APIError(.internalError,
-        "Lifr hit an unexpected error: (the error). Nothing changed. Retry, and report it if it keeps happening."))),
+    .internalError: Example(
+        response: .failure(
+            id: 1,
+            APIError(
+                .internalError,
+                "Lifr hit an unexpected error: (the error). Nothing changed. Retry, and report it if it keeps "
+                    + "happening."
+            ))),
 ]
 check(Set(errorExamples.keys) == Set(APIErrorCode.allCases), "every error code needs an example")
 var errors: [String: Example] = [:]
 for (code, example) in errorExamples {
-    check(example.response.error?.data.code == code,
-          "the \(code.rawValue) example answered \(example.response.error?.data.code.rawValue ?? "success")")
+    check(
+        example.response.error?.data.code == code,
+        "the \(code.rawValue) example answered \(example.response.error?.data.code.rawValue ?? "success")")
     errors[code.rawValue] = example
 }
 

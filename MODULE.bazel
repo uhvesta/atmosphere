@@ -10,6 +10,7 @@ bazel_dep(name = "aspect_rules_lint_rust", version = "0.0.3")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
 bazel_dep(name = "rules_shell", version = "0.8.0")
 bazel_dep(name = "rules_swift", version = "4.2.2")
+bazel_dep(name = "swiftlint", version = "0.65.1", repo_name = "SwiftLint")
 bazel_dep(name = "rules_zig", version = "0.17.0")
 bazel_dep(name = "rules_python", version = "2.4.0-rc1")
 bazel_dep(name = "platforms", version = "1.1.0")
@@ -101,13 +102,25 @@ use_repo(swift, "swift_toolchains")
 
 register_toolchains("@swift_toolchains//:all")
 
+# SwiftLint from source, for the lint aspect in //bazel/lint:swift.bzl. Its
+# version and the hashes of its dependencies are pinned by the registry and
+# MODULE.bazel.lock. swift-format needs no dependency: it ships in the
+# swift.org release, and @swift_toolchains registers it as a toolchain.
+register_toolchains("//bazel/toolchains/swift:swiftlint_toolchain")
+
 # The rules_swift worker runs every compile through /usr/bin/xcrun on macOS,
 # which needs Xcode or the Command Line Tools. The patch skips xcrun when the
 # toolchain sets RULES_SWIFT_NO_XCRUN, as @swift_toolchains does.
+# swift_compiler_plugin renames `main` and aliases it back with --defsym, which
+# ld64.lld lacks; the second patch makes it honor swift.no_entry_point_rename
+# like swift_binary, so SwiftLint's macro plugin links without Xcode.
 single_version_override(
     module_name = "rules_swift",
     patch_strip = 1,
-    patches = ["//bazel/toolchains/swift:rules_swift_no_xcrun.patch"],
+    patches = [
+        "//bazel/toolchains/swift:rules_swift_no_xcrun.patch",
+        "//bazel/toolchains/swift:rules_swift_plugin_entry_point.patch",
+    ],
 )
 
 # MARK: - Swift packages

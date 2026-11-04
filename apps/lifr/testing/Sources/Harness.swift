@@ -24,21 +24,27 @@ struct Failure: Error, CustomStringConvertible {
     var description: String { "\(file):\(line): \(message)" }
 }
 
-package func expect(_ condition: Bool, _ message: @autoclosure () -> String = "expectation failed",
-                    file: StaticString = #filePath, line: UInt = #line) throws {
+package func expect(
+    _ condition: Bool, _ message: @autoclosure () -> String = "expectation failed",
+    file: StaticString = #filePath, line: UInt = #line
+) throws {
     if !condition { throw Failure(message: message(), file: file, line: line) }
 }
 
-package func expectEqual<T: Equatable>(_ actual: T, _ expected: T,
-                                       file: StaticString = #filePath, line: UInt = #line) throws {
+package func expectEqual<T: Equatable>(
+    _ actual: T, _ expected: T,
+    file: StaticString = #filePath, line: UInt = #line
+) throws {
     if actual != expected {
         throw Failure(message: "got \(actual), expected \(expected)", file: file, line: line)
     }
 }
 
 /// Checks that `body` throws `expected`.
-package func expectError<E: Error & Equatable, T>(_ expected: E, file: StaticString = #filePath, line: UInt = #line,
-                                                  _ body: () throws -> T) throws {
+package func expectError<E: Error & Equatable, T>(
+    _ expected: E, file: StaticString = #filePath, line: UInt = #line,
+    _ body: () throws -> T
+) throws {
     let value: T
     do {
         value = try body()

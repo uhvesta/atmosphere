@@ -1,0 +1,57 @@
+--- a/swift/swift_compiler_plugin.bzl
++++ b/swift/swift_compiler_plugin.bzl
+@@ -28,6 +28,7 @@
+ load(
+     "//swift/internal:feature_names.bzl",
+     "SWIFT_FEATURE_ADD_TARGET_NAME_TO_OUTPUT",
++    "SWIFT_FEATURE_NO_ENTRY_POINT_RENAME",
+ )
+ load("//swift/internal:features.bzl", "is_feature_enabled")
+ load(
+@@ -81,6 +82,13 @@
+         module_name = derive_swift_module_name(ctx.label)
+     entry_point_name = entry_point_function_name(module_name)
+ 
++    # Like swift_binary, keep `main` when the toolchain's linker can't alias
++    # the renamed entry point back to it.
++    keep_main = is_feature_enabled(
++        feature_configuration = feature_configuration,
++        feature_name = SWIFT_FEATURE_NO_ENTRY_POINT_RENAME,
++    )
++
+     compile_result = compile(
+         actions = ctx.actions,
+         additional_inputs = ctx.files.swiftc_inputs,
+@@ -93,6 +101,7 @@
+             # Compiler plugins always define a `CompilerPlugin`-conforming type
+             # that is attributed with `@main`.
+             "-parse-as-library",
++        ] + ([] if keep_main else [
+             # Use a custom entry point name so that the macro can also be linked
+             # into another process (like a test executable) without having its
+             # main function collide.
+@@ -100,7 +109,7 @@
+             "-entry-point-function-name",
+             "-Xfrontend",
+             entry_point_name,
+-        ],
++        ]),
+         c_copts = c_copts,
+         defines = ctx.attr.defines,
+         local_defines = ctx.attr.local_defines,
+@@ -158,13 +167,13 @@
+             ctx,
+             ctx.attr.linkopts,
+             ctx.attr.swiftc_inputs,
+-        ) + ctx.fragments.cpp.linkopts + (
++        ) + ctx.fragments.cpp.linkopts + ([] if keep_main else (
+             # When linking the plugin binary, make sure we use the correct entry
+             # point name.
+             toolchains.swift.entry_point_linkopts_provider(
+                 entry_point_name = entry_point_name,
+             ).linkopts
+-        ),
++        )),
+         variables_extension = variables_extension,
+     )
+ 

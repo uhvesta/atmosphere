@@ -105,6 +105,40 @@ The rules_swift worker runs every compile through `/usr/bin/xcrun` on macOS.
 `bazel/toolchains/swift/rules_swift_no_xcrun.patch` lets a toolchain opt out, and
 `@swift_toolchains` does.
 
+### Formatting and linting
+
+`bazel run //:format` runs `swift-format format --in-place` over every
+`.swift` file, along with the other formatters. `bazel build //...` runs two
+aspects from `//bazel/lint:swift.bzl` on every target that provides
+`SwiftInfo` in this repository, and fails on any finding:
+
+- `swift-format lint --strict`, configured by `.swift-format`.
+- `swiftlint lint --strict`, configured by `.swiftlint.yml`. Its rules that
+  disagree with `swift-format` are turned off there, along with the size
+  and complexity limits, which review judges instead.
+
+Both tools are toolchains (`//bazel/toolchains/swift:tools.bzl`).
+`swift-format` is the binary in the swift.org release that
+`@swift_toolchains` selects. `SwiftLint` builds from source, from the
+`swiftlint` module in the Bazel Central Registry, with the same Swift
+toolchains. It runs with `--disable-sourcekit`, because `SourceKit` comes
+with Xcode, so the few rules that need it are skipped. Point either aspect at
+another config with `--//bazel/lint:swift_format_config=<label>` or
+`--//bazel/lint:swiftlint_config=<label>`, and skip a target with the
+`no-lint` tag.
+
+With `--config=xcode` the aspects also check the Xcode apps' targets.
+
+Each aspect runs one action per target through `//bazel/lint/runner`, a
+small Swift CLI. It runs the tool once, keeps its output as the report for
+people, and writes a SARIF report parsed from the same output.
+
+`SwiftLint` has a macro plugin, and `swift_compiler_plugin` links it with
+`--defsym`, which `ld64.lld` lacks.
+`bazel/toolchains/swift/rules_swift_plugin_entry_point.patch` makes the rule
+honor `swift.no_entry_point_rename` as `swift_binary` does, and
+`@swift_toolchains` turns that on for macOS.
+
 ## Xcode apps
 
 Apps that need the iOS SDK, SwiftUI and SwiftData, Apple's Swift macro

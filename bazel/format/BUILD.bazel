@@ -1,5 +1,6 @@
 load("@aspect_rules_lint//format:defs.bzl", "format_multirun", "format_test")
 load("@rust_metadata//:edition.bzl", "RUST_EDITION")
+load("//bazel/toolchains/swift:tools.bzl", "swift_format_binary")
 
 filegroup(
     name = "starlark",
@@ -42,6 +43,15 @@ format_multirun(
         "-ci",
     ],
     starlark = "@buildifier//:buildifier",
+    swift = ":swift-format",
+    swift_check_args = [
+        "lint",
+        "--strict",
+    ],
+    swift_fix_args = [
+        "format",
+        "--in-place",
+    ],
     visibility = ["//:__pkg__"],
 )
 
@@ -72,6 +82,15 @@ format_test(
         "-ci",
     ],
     starlark = "@buildifier//:buildifier",
+    swift = ":swift-format",
+    swift_check_args = [
+        "lint",
+        "--strict",
+    ],
     tags = ["local"],
     workspace = "//:MODULE.bazel",
 )
+
+# swift-format from the Swift release @swift_toolchains builds with. It reads
+# //:.swift-format, the same config the lint aspect in //bazel/lint uses.
+swift_format_binary(name = "swift-format")

@@ -1,4 +1,4 @@
-build:lint --aspects=//bazel/lint:linters.bzl%buildifier,//bazel/lint:linters.bzl%clippy,//bazel/lint:linters.bzl%shellcheck,//bazel/lint:linters.bzl%vale
+build:lint --aspects=//bazel/lint:linters.bzl%buildifier,//bazel/lint:linters.bzl%clippy,//bazel/lint:linters.bzl%shellcheck,//bazel/lint:linters.bzl%swift_format,//bazel/lint:linters.bzl%swiftlint,//bazel/lint:linters.bzl%vale
 build:lint --@aspect_rules_lint//lint:fail_on_violation
 
 # always lint

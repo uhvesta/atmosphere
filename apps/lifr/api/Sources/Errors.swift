@@ -56,14 +56,21 @@ package struct APIError: Error, Hashable, Codable, Sendable, CustomStringConvert
 
     package static func versionMismatch(client: Int, app: Int) -> APIError {
         let newer = client > app ? "the Lifr app" : "lifr"
-        return APIError(.versionMismatch,
-                        "lifr speaks protocol \(client) and the app speaks \(app). Update \(newer) so both come from the same Lifr version; the CLI inside Lifr.app always matches the app.")
+        return APIError(
+            .versionMismatch,
+            "lifr speaks protocol \(client) and the app speaks \(app). Update \(newer) so both come from the same "
+                + "Lifr version; the CLI inside Lifr.app always matches the app."
+        )
     }
 
-    package static let appNotRunning = APIError(.appNotRunning,
-        "The Lifr app didn't start within 10 seconds. Open Lifr on this Mac, or turn on Launch at login in Settings, then retry.")
+    package static let appNotRunning = APIError(
+        .appNotRunning,
+        "The Lifr app didn't start within 10 seconds. Open Lifr on this Mac, or turn on Launch at login in Settings, "
+            + "then retry."
+    )
 
-    package static let apiDisabled = APIError(.apiDisabled,
+    package static let apiDisabled = APIError(
+        .apiDisabled,
         "The local API is turned off. Turn it on from Lifr's menu bar item, then retry.")
 
     package static func notAuthorized(_ reason: String) -> APIError {
@@ -71,15 +78,19 @@ package struct APIError: Error, Hashable, Codable, Sendable, CustomStringConvert
     }
 
     package static func methodNotFound(_ method: String) -> APIError {
-        APIError(.methodNotFound,
-                 "\"\(method)\" isn't a Lifr method. Update lifr if it's older than the app; `lifr --help` lists the commands.")
+        APIError(
+            .methodNotFound,
+            "\"\(method)\" isn't a Lifr method. Update lifr if it's older than the app; `lifr --help` lists the "
+                + "commands."
+        )
     }
 
     package static func invalidParams(_ method: String, _ detail: String) -> APIError {
         APIError(.invalidParams, "Invalid params for \(method): \(detail)")
     }
 
-    package static let confirmationDenied = APIError(.confirmationDenied,
+    package static let confirmationDenied = APIError(
+        .confirmationDenied,
         "The change was declined in the Lifr app. Nothing changed; ask the person before trying again.")
 }
 

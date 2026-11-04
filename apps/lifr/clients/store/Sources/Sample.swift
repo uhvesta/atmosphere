@@ -1,6 +1,9 @@
 import Foundation
 import LifrCore
 
+// The sample's values are fixed, so a failing `try` is a bug in the sample.
+// swiftlint:disable force_try
+
 extension Workspace {
     /// A few Avenues with tasks due around `now`, for previews, snapshot
     /// tests and the app until it stores records. The same `now` gives the
@@ -78,3 +81,4 @@ package struct RecordsBuilder {
             newCode: { try! TaskCode(String(format: "%04d", code)) })
     }
 }
+// swiftlint:enable force_try

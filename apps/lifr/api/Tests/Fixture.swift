@@ -8,15 +8,18 @@ final class Sequences {
     private var codes = 0
 
     func context(_ actor: Actor, at now: Date) -> Context {
-        Context(actor: actor, now: now,
-                newID: { [self] in
-                    ids += 1
-                    return UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", ids))!
-                },
-                newCode: { [self] in
-                    codes += 1
-                    return try! TaskCode(String(format: "%04d", 7000 + codes))
-                })
+        Context(
+            actor: actor, now: now,
+            newID: { [self] in
+                ids += 1
+                return UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", ids))!
+            },
+            newCode: { [self] in
+                codes += 1
+                // A malformed code is a bug in the fixture.
+                // swiftlint:disable:next force_try
+                return try! TaskCode(String(format: "%04d", 7000 + codes))
+            })
     }
 }
 
@@ -39,8 +42,9 @@ final class Fixture {
     var agent: Grant { Grant(client: "Claude Code", scopes: [.read, .write], expiresAt: now + Self.week) }
     var readOnlyAgent: Grant { Grant(client: "Claude Code", scopes: [.read], expiresAt: now + Self.week) }
     var terminal: Grant {
-        Grant(client: "Terminal", scopes: [.read, .write], expiresAt: now + Unlock.idleTimeout,
-              isTerminalSession: true)
+        Grant(
+            client: "Terminal", scopes: [.read, .write], expiresAt: now + Unlock.idleTimeout,
+            isTerminalSession: true)
     }
 
     init() throws {
@@ -72,8 +76,9 @@ final class Fixture {
         review.dueDate = try CalendarDate("2026-11-20")
         try create(review)
         try create(Workspace.NewTask(title: "File taxes", avenueID: finance.id))
-        _ = try workspace.addComment("Start with 3 runs a week.", to: planID,
-                                     in: sequences.context(.user(device: device), at: started))
+        _ = try workspace.addComment(
+            "Start with 3 runs a week.", to: planID,
+            in: sequences.context(.user(device: device), at: started))
     }
 
     @discardableResult
@@ -87,8 +92,10 @@ final class Fixture {
 
     /// Sends one request as `grant`, against this fixture's workspace.
     @discardableResult
-    func call(_ method: String, _ params: JSONValue = [:], grant: Grant?,
-              confirm: @escaping (Confirmation) -> Bool = { _ in true }) -> (request: RPCRequest, response: RPCResponse) {
+    func call(
+        _ method: String, _ params: JSONValue = [:], grant: Grant?,
+        confirm: @escaping (Confirmation) -> Bool = { _ in true }
+    ) -> (request: RPCRequest, response: RPCResponse) {
         requests += 1
         let request = RPCRequest(id: requests, method: method, params: params)
         return (request, handler(grant, confirm).handle(request, in: &workspace))

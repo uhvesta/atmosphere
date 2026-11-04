@@ -72,20 +72,20 @@ package struct TodayFeature {
                     }
                 }
 
-            case let .loaded(.success(workspace)):
+            case .loaded(.success(let workspace)):
                 state.show(workspace, now: now, timeZone: timeZone)
                 return .none
 
-            case let .loaded(.failure(error)):
+            case .loaded(.failure(let error)):
                 state.alert = .failed("Couldn't load your tasks", error)
                 return .none
 
-            case let .rowTapped(id):
+            case .rowTapped(let id):
                 guard let workspace = state.workspace else { return .none }
                 state.detail = TaskDetailFeature.State(id: id, workspace: workspace, now: now, timeZone: timeZone)
                 return .none
 
-            case let .toggled(id):
+            case .toggled(let id):
                 guard let row = (state.overdue + state.dueToday).first(where: { $0.id == id }) else { return .none }
                 let status: TaskStatus = row.status.isClosed ? .todo : .done
                 return .run { [store] send in
@@ -96,15 +96,15 @@ package struct TodayFeature {
                     }
                 }
 
-            case let .saved(.success(saved)):
+            case .saved(.success(let saved)):
                 state.show(saved.workspace, now: now, timeZone: timeZone)
                 return .none
 
-            case let .saved(.failure(error)):
+            case .saved(.failure(let error)):
                 state.alert = .failed("Couldn't change the task", error)
                 return .none
 
-            case let .detail(.presented(.delegate(.saved(workspace)))):
+            case .detail(.presented(.delegate(.saved(let workspace)))):
                 state.show(workspace, now: now, timeZone: timeZone)
                 return .none
 

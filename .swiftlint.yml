@@ -1,0 +1,39 @@
+# SwiftLint config, read by the swiftlint aspect in //bazel/lint:swift.bzl.
+# swift-format (.swift-format) owns layout, so SwiftLint keeps its default
+# rules minus the ones that disagree with swift-format's output.
+
+disabled_rules:
+  # swift-format adds a trailing comma to multi-line collection literals
+  # (multiElementCollectionTrailingCommas); this rule forbids them.
+  - trailing_comma
+  # swift-format indents wrapped parameters by one level instead of lining
+  # them up under the first one.
+  - vertical_parameter_alignment
+  # Needs SourceKit, which comes with Xcode, so the aspect runs SwiftLint with
+  # --disable-sourcekit. swift-format already places `else` and `catch`.
+  - statement_position
+  # swift-format puts the brace of a declaration or statement whose header
+  # wraps on its own line.
+  - opening_brace
+  # Size and complexity limits. Splitting a function or type to fit a count
+  # doesn't make it clearer; review judges these.
+  - cyclomatic_complexity
+  - file_length
+  - function_body_length
+  - function_parameter_count
+  - large_tuple
+  - type_body_length
+
+# TCA nests a feature's Alert and Delegate actions in its Action enum.
+nesting:
+  type_level: 2
+
+# Two-letter argument labels and cases read as prepositions: `at`, `to`.
+identifier_name:
+  min_length: 2
+
+# Matches swift-format's lineLength. swift-format can't shorten every line
+# (long string literals, URLs in comments), so SwiftLint still checks it.
+line_length:
+  warning: 120
+  ignores_urls: true

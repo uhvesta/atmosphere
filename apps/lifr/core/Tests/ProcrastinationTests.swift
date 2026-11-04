@@ -16,28 +16,36 @@ func procrastinationTests() -> [TestCase] {
             let fixture = try Fixture()
             let task = try fixture.task("Stretch", status: .inProgress)
             fixture.advance(days: 7)
-            try expectEqual(fixture.get(task).procrastination(now: fixture.now, settings: fixture.workspace.settings), nil)
+            try expectEqual(
+                fixture.get(task).procrastination(now: fixture.now, settings: fixture.workspace.settings), nil)
         },
         TestCase("given To Do with no activity for a month, then it isn't Procrastinated") {
             let fixture = try Fixture()
             let task = try fixture.task("Stretch")
             fixture.advance(days: 30)
-            try expectEqual(fixture.get(task).effectiveStatus(now: fixture.now, settings: fixture.workspace.settings), .todo)
+            try expectEqual(
+                fixture.get(task).effectiveStatus(now: fixture.now, settings: fixture.workspace.settings), .todo)
         },
         TestCase("given a 3-day threshold in Settings, then 4 idle days are Procrastinated") {
             let fixture = try Fixture()
             fixture.workspace.settings.procrastinatedAfterDays = 3
             let task = try fixture.task("Stretch", status: .inProgress)
             fixture.advance(days: 4)
-            try expectEqual(fixture.get(task).procrastination(now: fixture.now, settings: fixture.workspace.settings), .inactive(days: 4))
+            try expectEqual(
+                fixture.get(task).procrastination(now: fixture.now, settings: fixture.workspace.settings),
+                .inactive(days: 4))
         },
         TestCase("given Procrastinated set by hand, then it says so and stays without activity rules") {
             let fixture = try Fixture()
             let task = try fixture.task("Stretch")
             _ = try fixture.workspace.setStatus(.procrastinated, of: task.id, in: fixture.context)
-            try expectEqual(fixture.get(task).procrastination(now: fixture.now, settings: fixture.workspace.settings), .setByHand)
+            try expectEqual(
+                fixture.get(task).procrastination(now: fixture.now, settings: fixture.workspace.settings), .setByHand)
         },
-        TestCase("given an idle In Progress task, when a comment, edit or Sub task change happens, then it's no longer Procrastinated") {
+        TestCase(
+            "given an idle In Progress task, when a comment, edit or Sub task change happens, then it's no longer "
+                + "Procrastinated"
+        ) {
             let fixture = try Fixture()
             let settings = fixture.workspace.settings
             let commented = try fixture.task("Commented", status: .inProgress)

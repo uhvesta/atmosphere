@@ -14,10 +14,13 @@ func ruleTests() -> [TestCase] {
         },
         TestCase("given open Sub tasks, then Won't Do needs cascade, and with it closes them too") {
             let fixture = try Fixture()
-            try expectEqual(fixture.call("set_status", ["task": "7001", "status": "wontDo"], grant: fixture.agent)
-                .response.code, .confirmationRequired)
-            let result = try fixture.call("set_status", ["task": "7001", "status": "wontDo", "cascade": true],
-                                          grant: fixture.agent).response.value(ChangeResult.self)
+            try expectEqual(
+                fixture.call("set_status", ["task": "7001", "status": "wontDo"], grant: fixture.agent)
+                    .response.code, .confirmationRequired)
+            let result = try fixture.call(
+                "set_status", ["task": "7001", "status": "wontDo", "cascade": true],
+                grant: fixture.agent
+            ).response.value(ChangeResult.self)
             try expectEqual(result.task.status, .wontDo)
             try expectEqual(result.alsoChanged.map(\.code).sorted(), ["HEALTH-7002", "HEALTH-7003"])
             try expectEqual(try fixture.task("7002").status, .wontDo)
@@ -28,8 +31,10 @@ func ruleTests() -> [TestCase] {
                 _ = try fixture.call("set_status", ["task": .string(code), "status": "done"], grant: fixture.agent)
                     .response.value(ChangeResult.self)
             }
-            let result = try fixture.call("create_task", ["title": "Cool down", "parent": "7001"],
-                                          grant: fixture.agent).response.value(ChangeResult.self)
+            let result = try fixture.call(
+                "create_task", ["title": "Cool down", "parent": "7001"],
+                grant: fixture.agent
+            ).response.value(ChangeResult.self)
             try expectEqual(result.reopenedParent, "HEALTH-7001")
             try expectEqual(try fixture.task("7001").status, .inProgress)
         },
@@ -49,8 +54,9 @@ func ruleTests() -> [TestCase] {
         },
         TestCase("given a task, then a Sub task can't move to another Avenue on its own") {
             let fixture = try Fixture()
-            try expectEqual(fixture.call("move_task", ["task": "7002", "avenue": "HEALTH"], grant: fixture.agent)
-                .response.code, .ruleViolation)
+            try expectEqual(
+                fixture.call("move_task", ["task": "7002", "avenue": "HEALTH"], grant: fixture.agent)
+                    .response.code, .ruleViolation)
         },
     ]
 }

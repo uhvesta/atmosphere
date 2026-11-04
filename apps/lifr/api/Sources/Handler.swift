@@ -44,22 +44,35 @@ package struct Handler {
         } catch let error as LifrError {
             return .failure(id: request.id, apiError(error, workspace))
         } catch {
-            return .failure(id: request.id, APIError(.internalError,
-                "Lifr hit an unexpected error: \(error). Nothing changed. Retry, and report it if it keeps happening."))
+            return .failure(
+                id: request.id,
+                APIError(
+                    .internalError,
+                    "Lifr hit an unexpected error: \(error). Nothing changed. Retry, and report it if it keeps "
+                        + "happening."
+                ))
         }
     }
 
     /// Answers a line of JSON from the socket, including ones that don't parse.
     package func handle(line: Data, in workspace: inout Workspace) -> RPCResponse {
         guard let value = try? Wire.decoder.decode(JSONValue.self, from: line) else {
-            return .failure(id: nil, APIError(.parseError,
-                "The request isn't valid JSON. Send one JSON-RPC 2.0 object per line."))
+            return .failure(
+                id: nil,
+                APIError(
+                    .parseError,
+                    "The request isn't valid JSON. Send one JSON-RPC 2.0 object per line."))
         }
         guard let request = try? value.decode(RPCRequest.self), request.jsonrpc == "2.0" else {
             var id: Int?
-            if case let .object(fields) = value, case let .number(number)? = fields["id"] { id = Int(exactly: number) }
-            return .failure(id: id, APIError(.invalidRequest,
-                "The request isn't a JSON-RPC 2.0 request. It needs \"jsonrpc\": \"2.0\", an integer \"id\" and a \"method\"."))
+            if case .object(let fields) = value, case .number(let number)? = fields["id"] { id = Int(exactly: number) }
+            return .failure(
+                id: id,
+                APIError(
+                    .invalidRequest,
+                    "The request isn't a JSON-RPC 2.0 request. It needs \"jsonrpc\": \"2.0\", an integer \"id\" and "
+                        + "a \"method\"."
+                ))
         }
         return handle(request, in: &workspace)
     }
@@ -74,8 +87,9 @@ package struct Handler {
             guard hello.protocolVersion == LifrProtocol.version else {
                 throw APIError.versionMismatch(client: hello.protocolVersion, app: LifrProtocol.version)
             }
-            return Hello.Result(protocolVersion: LifrProtocol.version,
-                                scopes: grant.map { $0.scopes.sorted() } ?? [], expiresAt: grant?.expiresAt)
+            return Hello.Result(
+                protocolVersion: LifrProtocol.version,
+                scopes: grant.map { $0.scopes.sorted() } ?? [], expiresAt: grant?.expiresAt)
 
         case .unlock:
             guard confirm(.unlock) else { throw APIError.confirmationDenied }
@@ -83,8 +97,9 @@ package struct Handler {
 
         case .listAvenues:
             return visibleAvenues(workspace).map {
-                AvenueSummary(key: $0.key.rawValue, name: $0.name, agentAccess: $0.agentAccess,
-                              needsRename: $0.key.needsRename)
+                AvenueSummary(
+                    key: $0.key.rawValue, name: $0.name, agentAccess: $0.agentAccess,
+                    needsRename: $0.key.needsRename)
             }
 
         case .listProjects:
@@ -94,8 +109,11 @@ package struct Handler {
             return workspace.projects.values
                 .filter { ids.contains($0.avenueID) && (list.includeClosed == true || $0.status == .active) }
                 .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
-                .map { ProjectSummary(id: $0.id, avenue: workspace.avenues[$0.avenueID]!.key.rawValue,
-                                      name: $0.name, status: $0.status, dueDate: $0.dueDate) }
+                .map {
+                    ProjectSummary(
+                        id: $0.id, avenue: workspace.avenues[$0.avenueID]!.key.rawValue,
+                        name: $0.name, status: $0.status, dueDate: $0.dueDate)
+                }
 
         case .searchTasks:
             return try search(decode(params, for: method), workspace)
@@ -112,7 +130,8 @@ package struct Handler {
                 new.parentID = parent.id
             } else {
                 guard let key = create.avenue else {
-                    throw APIError.invalidParams(method.rawValue, "give \"avenue\" (a key such as HEALTH), or \"parent\" for a Sub task.")
+                    throw APIError.invalidParams(
+                        method.rawValue, "give \"avenue\" (a key such as HEALTH), or \"parent\" for a Sub task.")
                 }
                 new.avenueID = try avenue(key: key, workspace, writing: true).id
                 new.projectID = create.project
@@ -154,7 +173,8 @@ package struct Handler {
             let target = try task(move.task, workspace, writing: true)
             let destinations = [move.avenue != nil, move.parent != nil, move.topLevel == true].filter { $0 }.count
             guard destinations == 1 else {
-                throw APIError.invalidParams(method.rawValue,
+                throw APIError.invalidParams(
+                    method.rawValue,
                     "give exactly one of \"avenue\" (with an optional \"project\"), \"parent\", or \"topLevel\": true.")
             }
             let change: Change
@@ -177,7 +197,8 @@ package struct Handler {
             let target = try task(add.task, workspace, writing: true)
             try confirmWrite(method, task: add.task)
             let comment = try workspace.addComment(add.body, to: target.id, in: context)
-            return AddComment.Result(id: comment.id, task: workspace.displayCode(of: target), createdAt: comment.createdAt)
+            return AddComment.Result(
+                id: comment.id, task: workspace.displayCode(of: target), createdAt: comment.createdAt)
 
         case .trashTask:
             let ref: TaskRef.Params = try decode(params, for: method)
@@ -193,11 +214,12 @@ package struct Handler {
             func sorted<T: Identifiable>(_ records: [UUID: T]) -> [T] where T.ID == UUID {
                 records.values.sorted { $0.id.uuidString < $1.id.uuidString }
             }
-            return Export(protocolVersion: LifrProtocol.version, avenues: sorted(workspace.avenues),
-                          projects: sorted(workspace.projects), tasks: sorted(workspace.tasks),
-                          labels: sorted(workspace.labels), comments: sorted(workspace.comments),
-                          reminders: sorted(workspace.reminders), history: workspace.history,
-                          settings: workspace.settings)
+            return Export(
+                protocolVersion: LifrProtocol.version, avenues: sorted(workspace.avenues),
+                projects: sorted(workspace.projects), tasks: sorted(workspace.tasks),
+                labels: sorted(workspace.labels), comments: sorted(workspace.comments),
+                reminders: sorted(workspace.reminders), history: workspace.history,
+                settings: workspace.settings)
         }
     }
 
@@ -208,21 +230,31 @@ package struct Handler {
     private func authorize(_ method: APIMethod) throws {
         if method == .export, grant?.isTerminalSession != true {
             throw APIError.notAuthorized(
-                "Only a terminal session can export. Run `lifr unlock` in your terminal, approve with Touch ID, then run `lifr export` again.")
+                "Only a terminal session can export. Run `lifr unlock` in your terminal, approve with Touch ID, then "
+                    + "run `lifr export` again."
+            )
         }
         guard let scope = method.scope else { return }
         guard let grant else {
             throw APIError.notAuthorized(
-                "This app isn't approved to use Lifr. Approve it in the sheet the Lifr app shows on this Mac, or run `lifr unlock` in a terminal.")
+                "This app isn't approved to use Lifr. Approve it in the sheet the Lifr app shows on this Mac, or run "
+                    + "`lifr unlock` in a terminal."
+            )
         }
         guard grant.expiresAt > context.now else {
-            throw APIError.notAuthorized(grant.isTerminalSession
-                ? "The terminal session ended after 15 idle minutes. Run `lifr unlock` again."
-                : "\(grant.client)'s access expired. Approve it again from the sheet the Lifr app shows, or extend it in Settings > Connected apps.")
+            throw APIError.notAuthorized(
+                grant.isTerminalSession
+                    ? "The terminal session ended after 15 idle minutes. Run `lifr unlock` again."
+                    : "\(grant.client)'s access expired. Approve it again from the sheet the Lifr app shows, or "
+                        + "extend it in Settings > Connected apps."
+            )
         }
         guard grant.scopes.contains(scope) else {
             throw APIError.notAuthorized(
-                "\(grant.client) has \(grant.scopes.contains(.read) ? "read-only" : "no read") access. To let it \(scope == .write ? "make changes" : "read tasks"), open Settings > Connected apps > \(grant.client) and choose Read and write.")
+                "\(grant.client) has \(grant.scopes.contains(.read) ? "read-only" : "no read") access. To let it "
+                    + "\(scope == .write ? "make changes" : "read tasks"), open Settings > Connected apps > "
+                    + "\(grant.client) and choose Read and write."
+            )
         }
     }
 
@@ -247,7 +279,9 @@ package struct Handler {
     private func checkWritable(_ avenue: Avenue) throws {
         guard isAgent, avenue.agentAccess == .readOnly else { return }
         throw APIError.notAuthorized(
-            "\(avenue.name) is read-only for agents. To allow changes, set its agent access to Full in the Avenue's settings.")
+            "\(avenue.name) is read-only for agents. To allow changes, set its agent access to Full in the Avenue's "
+                + "settings."
+        )
     }
 
     /// Hidden and out-of-grant Avenues answer `notFound`, so an agent can't
@@ -271,12 +305,14 @@ package struct Handler {
     }
 
     private func labelIDs(_ names: [String], _ workspace: Workspace) throws -> Set<UUID> {
-        Set(try names.map { name in
-            guard let label = workspace.labels.values.first(where: { $0.name.lowercased() == name.lowercased() }) else {
-                throw LifrError.notFound(.label, name)
-            }
-            return label.id
-        })
+        Set(
+            try names.map { name in
+                guard let label = workspace.labels.values.first(where: { $0.name.lowercased() == name.lowercased() })
+                else {
+                    throw LifrError.notFound(.label, name)
+                }
+                return label.id
+            })
     }
 
     private func decode<T: Decodable>(_ params: JSONValue, for method: APIMethod) throws -> T {
@@ -287,14 +323,20 @@ package struct Handler {
         } catch let DecodingError.keyNotFound(key, _) {
             throw APIError.invalidParams(method.rawValue, "\"\(key.stringValue)\" is required.")
         } catch let DecodingError.typeMismatch(_, context), let DecodingError.valueNotFound(_, context) {
-            throw APIError.invalidParams(method.rawValue,
-                "\"\(context.codingPath.map(\.stringValue).joined(separator: "."))\" has the wrong type. `lifr mcp` lists each tool's schema.")
+            throw APIError.invalidParams(
+                method.rawValue,
+                "\"\(context.codingPath.map(\.stringValue).joined(separator: "."))\" has the wrong type. `lifr mcp` "
+                    + "lists each tool's schema."
+            )
         } catch let DecodingError.dataCorrupted(context) {
             if let error = context.underlyingError as? LifrError {
                 throw APIError.invalidParams(method.rawValue, error.description)
             }
-            throw APIError.invalidParams(method.rawValue,
-                "\"\(context.codingPath.map(\.stringValue).joined(separator: "."))\" isn't a valid value. \(context.debugDescription)")
+            throw APIError.invalidParams(
+                method.rawValue,
+                "\"\(context.codingPath.map(\.stringValue).joined(separator: "."))\" isn't a valid value. "
+                    + "\(context.debugDescription)"
+            )
         }
     }
 
@@ -312,8 +354,11 @@ package struct Handler {
                 if let avenueID, task.avenueID != avenueID { return false }
                 if let project = params.project, task.projectID != project { return false }
                 let status = task.effectiveStatus(now: context.now, settings: workspace.settings)
-                if let statuses { guard statuses.contains(status) else { return false } }
-                else if params.includeClosed != true, status.isClosed { return false }
+                if let statuses {
+                    guard statuses.contains(status) else { return false }
+                } else if params.includeClosed != true, status.isClosed {
+                    return false
+                }
                 let text = (task.title + "\n" + task.details).lowercased()
                 return words.allSatisfy { text.contains($0) }
             }
@@ -323,11 +368,12 @@ package struct Handler {
     }
 
     private func summary(_ task: LifrTask, _ workspace: Workspace) -> TaskSummary {
-        let procrastination: String? = switch task.procrastination(now: context.now, settings: workspace.settings) {
-        case .setByHand: "setByHand"
-        case let .inactive(days): "inactive \(days) days"
-        case nil: nil
-        }
+        let procrastination: String? =
+            switch task.procrastination(now: context.now, settings: workspace.settings) {
+            case .setByHand: "setByHand"
+            case .inactive(let days): "inactive \(days) days"
+            case nil: nil
+            }
         return TaskSummary(
             code: workspace.displayCode(of: task), title: task.title,
             status: task.effectiveStatus(now: context.now, settings: workspace.settings),
@@ -344,21 +390,24 @@ package struct Handler {
             ActorSummary(kind: actor.kind, device: actor.device, client: actor.client)
         }
         let comments = workspace.comments.values.filter { $0.taskID == task.id }.map {
-            TimelineEntry(kind: .comment, at: $0.createdAt, actor: actor($0.author),
-                          body: $0.deletedAt == nil ? $0.body : nil, commentID: $0.id)
+            TimelineEntry(
+                kind: .comment, at: $0.createdAt, actor: actor($0.author),
+                body: $0.deletedAt == nil ? $0.body : nil, commentID: $0.id)
         }
         let history = workspace.history.filter { $0.taskID == task.id }.map {
-            TimelineEntry(kind: .history, at: $0.createdAt, actor: actor($0.actor), event: $0.kind,
-                          field: $0.field, oldValue: $0.oldValue, newValue: $0.newValue, reason: $0.reason)
+            TimelineEntry(
+                kind: .history, at: $0.createdAt, actor: actor($0.actor), event: $0.kind,
+                field: $0.field, oldValue: $0.oldValue, newValue: $0.newValue, reason: $0.reason)
         }
         // Stable for equal times: history before comments, each in its own order.
         let timeline = (history + comments).enumerated()
             .sorted { ($0.element.at, $0.offset) < ($1.element.at, $1.offset) }
             .map(\.element)
-        return TaskDetail(task: summary(task, workspace), details: task.details, createdAt: task.createdAt,
-                          closedAt: task.closedAt,
-                          subtasks: workspace.subtasks(of: task.id).map { summary($0, workspace) },
-                          timeline: timeline)
+        return TaskDetail(
+            task: summary(task, workspace), details: task.details, createdAt: task.createdAt,
+            closedAt: task.closedAt,
+            subtasks: workspace.subtasks(of: task.id).map { summary($0, workspace) },
+            timeline: timeline)
     }
 
     private func result(of change: Change, for id: UUID, _ workspace: Workspace) -> ChangeResult {
@@ -379,11 +428,11 @@ package struct Handler {
             ids.compactMap { workspace.tasks[$0] }.map { workspace.displayCode(of: $0) }
         }
         switch error {
-        case let .openSubtasks(_, open):
+        case .openSubtasks(_, let open):
             return APIError(.openSubtasks, error.description, tasks: codes(open))
-        case let .wontDoNeedsCascade(_, open):
+        case .wontDoNeedsCascade(_, let open):
             return APIError(.confirmationRequired, error.description, tasks: codes(open))
-        case let .projectHasOpenTasks(_, open):
+        case .projectHasOpenTasks(_, let open):
             return APIError(.ruleViolation, error.description, tasks: codes(open))
         case .notFound:
             return APIError(.notFound, error.description)

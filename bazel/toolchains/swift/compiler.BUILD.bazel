@@ -1,6 +1,8 @@
 # BUILD file for a swift.org compiler repository (one per build host).
 # The toolchain lives under toolchain/usr.
 
+load("@bazel_skylib//rules:native_binary.bzl", "native_binary")
+
 package(default_visibility = ["//visibility:public"])
 
 exports_files(glob(["toolchain/usr/bin/*"]))
@@ -18,8 +20,22 @@ filegroup(
         ],
         allow_empty = True,
         exclude = [
+            "toolchain/usr/bin/swift-format",
             "toolchain/usr/lib/swift/embedded/**",
             "toolchain/usr/lib/swift/pm/**",
         ],
+    ),
+)
+
+# swift-format, run by the hub's :swift-format alias. On macOS it links only
+# the OS's Swift runtime; on Linux it loads the runtime shipped next to it
+# (../lib/swift/linux), so those libraries come along as runfiles.
+native_binary(
+    name = "swift_format",
+    src = "toolchain/usr/bin/swift-format",
+    out = "swift-format",
+    data = glob(
+        ["toolchain/usr/lib/swift/linux/*.so*"],
+        allow_empty = True,
     ),
 )

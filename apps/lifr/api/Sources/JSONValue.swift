@@ -30,16 +30,16 @@ package enum JSONValue: Hashable, Sendable, Codable {
         var container = encoder.singleValueContainer()
         switch self {
         case .null: try container.encodeNil()
-        case let .bool(value): try container.encode(value)
-        case let .number(value):
+        case .bool(let value): try container.encode(value)
+        case .number(let value):
             if value.rounded() == value, abs(value) < 1e15 {
                 try container.encode(Int64(value))
             } else {
                 try container.encode(value)
             }
-        case let .string(value): try container.encode(value)
-        case let .array(value): try container.encode(value)
-        case let .object(value): try container.encode(value)
+        case .string(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
+        case .object(let value): try container.encode(value)
         }
     }
 

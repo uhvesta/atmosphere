@@ -269,8 +269,9 @@ package struct Workspace: Hashable, Codable, Sendable {
         guard fields.contains(where: { $0.1 != $0.2 }) else { return change }
         update(id, in: context, &change) { $0 = task }
         for (field, oldValue, newValue) in fields where oldValue != newValue {
-            record(.fieldChanged, on: id, field: field, oldValue: oldValue, newValue: newValue,
-                   by: context.actor, in: context, &change)
+            record(
+                .fieldChanged, on: id, field: field, oldValue: oldValue, newValue: newValue,
+                by: context.actor, in: context, &change)
         }
         return change
     }
@@ -340,16 +341,19 @@ package struct Workspace: Hashable, Codable, Sendable {
 
         let oldParent = task.parentID
         update(id, in: context, &change) { $0.parentID = parentID }
-        record(.fieldChanged, on: id, field: .parent,
-               oldValue: oldParent.flatMap { tasks[$0]?.code.rawValue },
-               newValue: parent?.code.rawValue, by: context.actor, in: context, &change)
+        record(
+            .fieldChanged, on: id, field: .parent,
+            oldValue: oldParent.flatMap { tasks[$0]?.code.rawValue },
+            newValue: parent?.code.rawValue, by: context.actor, in: context, &change)
         if let oldParent {
             touch(oldParent, in: context, &change)
-            record(.subtaskRemoved, on: oldParent, newValue: task.code.rawValue, by: context.actor, in: context, &change)
+            record(
+                .subtaskRemoved, on: oldParent, newValue: task.code.rawValue, by: context.actor, in: context, &change)
         }
         if let parent {
-            place(id, avenue: parent.avenueID, project: parent.projectID, by: context.actor,
-                  reason: .movedWithParent, in: context, &change)
+            place(
+                id, avenue: parent.avenueID, project: parent.projectID, by: context.actor,
+                reason: .movedWithParent, in: context, &change)
             touch(parent.id, in: context, &change)
             record(.subtaskAdded, on: parent.id, newValue: task.code.rawValue, by: context.actor, in: context, &change)
             if task.isOpen { reopenIfClosed(parent.id, in: context, &change) }
@@ -370,9 +374,10 @@ package struct Workspace: Hashable, Codable, Sendable {
             }
             tasks[id] = previous
             if let current, current.status != previous.status {
-                record(.fieldChanged, on: id, field: .status, oldValue: current.status.rawValue,
-                       newValue: previous.status.rawValue, reason: .undo, by: context.actor,
-                       in: context, &undone)
+                record(
+                    .fieldChanged, on: id, field: .status, oldValue: current.status.rawValue,
+                    newValue: previous.status.rawValue, reason: .undo, by: context.actor,
+                    in: context, &undone)
             }
         }
         return undone
@@ -407,9 +412,10 @@ package struct Workspace: Hashable, Codable, Sendable {
     /// Deletes tasks trashed more than `trashRetention` ago, with their
     /// comments, reminders and history.
     package mutating func purgeTrash(now: Date) {
-        let expired = Set(tasks.values.compactMap { task in
-            task.deletedAt.flatMap { now.timeIntervalSince($0) > Self.trashRetention ? task.id : nil }
-        })
+        let expired = Set(
+            tasks.values.compactMap { task in
+                task.deletedAt.flatMap { now.timeIntervalSince($0) > Self.trashRetention ? task.id : nil }
+            })
         let purged = expired.union(tasks.values.filter { $0.parentID.map(expired.contains) ?? false }.map(\.id))
         for id in purged { tasks[id] = nil }
         comments = comments.filter { !purged.contains($0.value.taskID) }
@@ -424,8 +430,9 @@ package struct Workspace: Hashable, Codable, Sendable {
     ) throws(LifrError) -> Comment {
         _ = try liveTask(taskID)
         guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw .emptyComment }
-        let comment = Comment(id: context.newID(), taskID: taskID, body: body, author: context.actor,
-                              createdAt: context.now, editedAt: nil, deletedAt: nil)
+        let comment = Comment(
+            id: context.newID(), taskID: taskID, body: body, author: context.actor,
+            createdAt: context.now, editedAt: nil, deletedAt: nil)
         comments[comment.id] = comment
         var change = Change()
         touch(taskID, in: context, &change)
@@ -443,8 +450,9 @@ package struct Workspace: Hashable, Codable, Sendable {
         comments[id] = comment
         var change = Change()
         touch(comment.taskID, in: context, &change)
-        record(.commentEdited, on: comment.taskID, oldValue: old, newValue: body, by: context.actor,
-               in: context, &change)
+        record(
+            .commentEdited, on: comment.taskID, oldValue: old, newValue: body, by: context.actor,
+            in: context, &change)
     }
 
     package mutating func deleteComment(_ id: UUID, in context: Context) throws(LifrError) {
@@ -461,11 +469,12 @@ package struct Workspace: Hashable, Codable, Sendable {
             throw .notFound(.comment, id.uuidString)
         }
         let author = comment.author
-        let isAuthor = switch actor.kind {
-        case .user: author.kind == .user
-        case .agent: author.kind == .agent && author.client == actor.client
-        case .system: false
-        }
+        let isAuthor =
+            switch actor.kind {
+            case .user: author.kind == .user
+            case .agent: author.kind == .agent && author.client == actor.client
+            case .system: false
+            }
         guard isAuthor else { throw .notCommentAuthor(comment: id) }
         return comment
     }
@@ -529,14 +538,16 @@ package struct Workspace: Hashable, Codable, Sendable {
             task.status = status
             task.closedAt = status.isClosed ? (task.closedAt ?? context.now) : nil
         }
-        record(.fieldChanged, on: id, field: .status, oldValue: old.rawValue, newValue: status.rawValue,
-               reason: reason, by: actor, in: context, &change)
+        record(
+            .fieldChanged, on: id, field: .status, oldValue: old.rawValue, newValue: status.rawValue,
+            reason: reason, by: actor, in: context, &change)
     }
 
     mutating func reopenIfClosed(_ parentID: UUID, in context: Context, _ change: inout Change) {
         guard let parent = tasks[parentID], parent.status.isClosed else { return }
-        apply(.inProgress, to: parentID, by: context.system, reason: .subtaskOpenedUnderClosedParent,
-              in: context, &change)
+        apply(
+            .inProgress, to: parentID, by: context.system, reason: .subtaskOpenedUnderClosedParent,
+            in: context, &change)
         change.reopenedParent = parentID
     }
 
@@ -550,13 +561,15 @@ package struct Workspace: Hashable, Codable, Sendable {
             task.projectID = projectID
         }
         if old.avenueID != avenueID {
-            record(.fieldChanged, on: id, field: .avenue, oldValue: avenues[old.avenueID]?.key.rawValue,
-                   newValue: avenues[avenueID]?.key.rawValue, reason: reason, by: actor, in: context, &change)
+            record(
+                .fieldChanged, on: id, field: .avenue, oldValue: avenues[old.avenueID]?.key.rawValue,
+                newValue: avenues[avenueID]?.key.rawValue, reason: reason, by: actor, in: context, &change)
         }
         if old.projectID != projectID {
-            record(.fieldChanged, on: id, field: .project, oldValue: old.projectID.flatMap { projects[$0]?.name },
-                   newValue: projectID.flatMap { projects[$0]?.name }, reason: reason, by: actor,
-                   in: context, &change)
+            record(
+                .fieldChanged, on: id, field: .project, oldValue: old.projectID.flatMap { projects[$0]?.name },
+                newValue: projectID.flatMap { projects[$0]?.name }, reason: reason, by: actor,
+                in: context, &change)
         }
     }
 

@@ -5,6 +5,7 @@ filegroup(
     srcs = [
         "BUILD.bazel",
         "linters.bzl",
+        "swift.bzl",
     ],
     tags = ["starlark"],
 )
@@ -13,4 +14,17 @@ native_binary(
     name = "vale",
     src = "@vale",
     out = "vale",
+)
+
+# The config files the Swift aspects read, as in rules_rust's rustfmt.toml
+# flag. Point them elsewhere with
+# --//bazel/lint:swift_format_config=//some:.swift-format.
+label_flag(
+    name = "swift_format_config",
+    build_setting_default = "//:.swift-format",
+)
+
+label_flag(
+    name = "swiftlint_config",
+    build_setting_default = "//:.swiftlint.yml",
 )

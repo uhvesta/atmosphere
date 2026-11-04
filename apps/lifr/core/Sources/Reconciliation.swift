@@ -51,19 +51,21 @@ extension Workspace {
             let root = topLevel(from: task.id)
             let newParent = root == task.id ? nil : root
             update(task.id, in: context, &change) { $0.parentID = newParent }
-            record(.fieldChanged, on: task.id, field: .parent, oldValue: tasks[parentID]?.code.rawValue,
-                   newValue: newParent.flatMap { tasks[$0]?.code.rawValue },
-                   reason: .reconciledNestedSubtask, by: system, in: context, &change)
+            record(
+                .fieldChanged, on: task.id, field: .parent, oldValue: tasks[parentID]?.code.rawValue,
+                newValue: newParent.flatMap { tasks[$0]?.code.rawValue },
+                reason: .reconciledNestedSubtask, by: system, in: context, &change)
             fixes.append(.reparented(task: task.id, from: parentID, to: newParent))
         }
 
         // 2. Sub tasks take their parent's Avenue and Project.
         for task in tasks.values.sorted(by: byAge) {
             guard let parent = task.parentID.flatMap({ tasks[$0] }),
-                  task.avenueID != parent.avenueID || task.projectID != parent.projectID
+                task.avenueID != parent.avenueID || task.projectID != parent.projectID
             else { continue }
-            place(task.id, avenue: parent.avenueID, project: parent.projectID, by: system,
-                  reason: .reconciledParentPlacement, in: context, &change)
+            place(
+                task.id, avenue: parent.avenueID, project: parent.projectID, by: system,
+                reason: .reconciledParentPlacement, in: context, &change)
             fixes.append(.alignedWithParent(task: task.id))
         }
 
@@ -89,15 +91,17 @@ extension Workspace {
             }
             used.insert(code)
             update(task.id, in: context, &change) { $0.code = code }
-            record(.fieldChanged, on: task.id, field: .code, oldValue: task.code.rawValue,
-                   newValue: code.rawValue, reason: .reconciledDuplicateCode, by: system,
-                   in: context, &change)
+            record(
+                .fieldChanged, on: task.id, field: .code, oldValue: task.code.rawValue,
+                newValue: code.rawValue, reason: .reconciledDuplicateCode, by: system,
+                in: context, &change)
             fixes.append(.recoded(task: task.id, from: task.code, to: code))
         }
 
         // 5. Avenue keys are unique: the newer Avenue gets a numeric suffix.
         var keys = Set<AvenueKey>()
-        for avenue in avenues.values.sorted(by: { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) }) {
+        for avenue in avenues.values.sorted(by: { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) })
+        {
             guard keys.contains(avenue.key) else {
                 keys.insert(avenue.key)
                 continue

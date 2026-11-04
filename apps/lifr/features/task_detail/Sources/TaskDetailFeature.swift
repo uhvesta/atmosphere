@@ -60,10 +60,10 @@ package struct TaskDetailFeature {
     package var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
-            case let .statusPicked(status):
+            case .statusPicked(let status):
                 return save { [id = state.id] in try await $0.setStatus(status, id, false) }
 
-            case let .subtaskToggled(id):
+            case .subtaskToggled(let id):
                 guard let subtask = state.subtasks.first(where: { $0.id == id }) else { return .none }
                 let status: TaskStatus = subtask.status.isClosed ? .todo : .done
                 return save { try await $0.setStatus(status, id, false) }
@@ -71,10 +71,10 @@ package struct TaskDetailFeature {
             case .alert(.presented(.closeSubtasksToo)):
                 return save { [id = state.id] in try await $0.setStatus(.wontDo, id, true) }
 
-            case let .alert(.presented(.undo(change))):
+            case .alert(.presented(.undo(let change))):
                 return save { try await $0.undo(change) }
 
-            case let .saved(.success(saved)):
+            case .saved(.success(let saved)):
                 guard let refreshed = State(id: state.id, workspace: saved.workspace, now: now, timeZone: timeZone)
                 else { return .send(.delegate(.saved(saved.workspace))) }
                 state = refreshed
@@ -83,11 +83,11 @@ package struct TaskDetailFeature {
                 }
                 return .send(.delegate(.saved(saved.workspace)))
 
-            case let .saved(.failure(LifrError.wontDoNeedsCascade(_, open))):
+            case .saved(.failure(LifrError.wontDoNeedsCascade(_, let open))):
                 state.alert = .closeSubtasksToo(count: open.count)
                 return .none
 
-            case let .saved(.failure(error)):
+            case .saved(.failure(let error)):
                 state.alert = .failed(error)
                 return .none
 

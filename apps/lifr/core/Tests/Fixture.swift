@@ -20,8 +20,9 @@ final class Fixture {
     }
 
     var context: Context {
-        Context(actor: actor, now: now, newID: { [unowned self] in self.nextID() },
-                newCode: { [unowned self] in self.nextCode() })
+        Context(
+            actor: actor, now: now, newID: { [unowned self] in self.nextID() },
+            newCode: { [unowned self] in self.nextCode() })
     }
 
     func nextID() -> UUID {
@@ -31,6 +32,8 @@ final class Fixture {
 
     func nextCode() -> TaskCode {
         codes += 1
+        // A malformed code is a bug in the fixture.
+        // swiftlint:disable:next force_try
         return try! TaskCode(String(format: "%04d", codes))
     }
 
@@ -39,8 +42,10 @@ final class Fixture {
     }
 
     @discardableResult
-    func task(_ title: String, status: TaskStatus = .todo, parent: LifrTask? = nil,
-              project: Project? = nil) throws -> LifrTask {
+    func task(
+        _ title: String, status: TaskStatus = .todo, parent: LifrTask? = nil,
+        project: Project? = nil
+    ) throws -> LifrTask {
         var new = Workspace.NewTask(title: title, avenueID: health.id, projectID: project?.id, parentID: parent?.id)
         new.status = status
         let change = try workspace.createTask(new, in: context)
@@ -65,7 +70,9 @@ final class Fixture {
 
 /// `LifrTesting.expectError` for Core's errors, so cases can be written as
 /// `.openSubtasks(...)`.
-func expectError<T>(_ expected: LifrError, file: StaticString = #filePath, line: UInt = #line,
-                    _ body: () throws -> T) throws {
+func expectError<T>(
+    _ expected: LifrError, file: StaticString = #filePath, line: UInt = #line,
+    _ body: () throws -> T
+) throws {
     try LifrTesting.expectError(expected, file: file, line: line, body)
 }

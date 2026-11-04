@@ -1,8 +1,11 @@
+load(":tools.bzl", "swift_tool_toolchain")
+
 exports_files([
     "compiler.BUILD.bazel",
     "macos_sdk.BUILD.bazel",
     "macos_sdks.json",
     "rules_swift_no_xcrun.patch",
+    "rules_swift_plugin_entry_point.patch",
     "swift_versions.json",
 ])
 
@@ -13,8 +16,35 @@ filegroup(
         "compiler.BUILD.bazel",
         "extensions.bzl",
         "macos_sdk.BUILD.bazel",
+        "tools.bzl",
         "version_test.bzl",
         "versions.bzl",
     ],
     tags = ["starlark"],
+)
+
+# Toolchain types for the Swift source tools; see tools.bzl. Public because
+# @swift_toolchains registers swift-format toolchains of this type, and
+# other modules may register their own.
+toolchain_type(
+    name = "swift_format_toolchain_type",
+    visibility = ["//visibility:public"],
+)
+
+toolchain_type(
+    name = "swiftlint_toolchain_type",
+    visibility = ["//visibility:public"],
+)
+
+# SwiftLint, built from source by the swiftlint module with the Swift
+# toolchains above, so it runs on any host that can build Swift.
+swift_tool_toolchain(
+    name = "swiftlint",
+    tool = "@SwiftLint//:swiftlint",
+)
+
+toolchain(
+    name = "swiftlint_toolchain",
+    toolchain = ":swiftlint",
+    toolchain_type = ":swiftlint_toolchain_type",
 )

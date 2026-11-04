@@ -19,20 +19,31 @@ func requestTests() -> [TestCase] {
             let fixture = try Fixture()
             let before = fixture.workspace
             try expectEqual(fixture.call("get_task", grant: fixture.agent).response.code, .invalidParams)
-            try expectEqual(fixture.call("get_task", ["task": "NOT A CODE"], grant: fixture.agent).response.code,
-                            .invalidParams)
-            try expectEqual(fixture.call("update_task", ["task": "7004", "dueDate": "2026-02-30"],
-                                         grant: fixture.agent).response.code, .invalidParams)
-            try expectEqual(fixture.call("set_status", ["task": "7004", "status": "finished"],
-                                         grant: fixture.agent).response.code, .invalidParams)
-            try expectEqual(fixture.call("create_task", ["title": "No home"], grant: fixture.agent).response.code,
-                            .invalidParams)
+            try expectEqual(
+                fixture.call("get_task", ["task": "NOT A CODE"], grant: fixture.agent).response.code,
+                .invalidParams)
+            try expectEqual(
+                fixture.call(
+                    "update_task", ["task": "7004", "dueDate": "2026-02-30"],
+                    grant: fixture.agent
+                ).response.code, .invalidParams)
+            try expectEqual(
+                fixture.call(
+                    "set_status", ["task": "7004", "status": "finished"],
+                    grant: fixture.agent
+                ).response.code, .invalidParams)
+            try expectEqual(
+                fixture.call("create_task", ["title": "No home"], grant: fixture.agent).response.code,
+                .invalidParams)
             try expectEqual(fixture.workspace, before)
         },
         TestCase("given an unknown label, then the task isn't created") {
             let fixture = try Fixture()
-            try expectEqual(fixture.call("create_task", ["title": "Swim", "avenue": "HEALTH", "labels": ["pool"]],
-                                         grant: fixture.agent).response.code, .notFound)
+            try expectEqual(
+                fixture.call(
+                    "create_task", ["title": "Swim", "avenue": "HEALTH", "labels": ["pool"]],
+                    grant: fixture.agent
+                ).response.code, .notFound)
         },
         TestCase("given move_task, then exactly one destination is required") {
             let fixture = try Fixture()
@@ -59,8 +70,10 @@ func requestTests() -> [TestCase] {
             let open = try fixture.call("search_tasks", ["query": "checkup"], grant: fixture.agent).response
                 .value([TaskSummary].self)
             try expectEqual(open, [])
-            let all = try fixture.call("search_tasks", ["query": "checkup", "includeClosed": true],
-                                       grant: fixture.agent).response.value([TaskSummary].self)
+            let all = try fixture.call(
+                "search_tasks", ["query": "checkup", "includeClosed": true],
+                grant: fixture.agent
+            ).response.value([TaskSummary].self)
             try expectEqual(all.map(\.code), ["HEALTH-7004"])
         },
         TestCase("given get_task, then the timeline has comments and history, oldest first") {
@@ -69,8 +82,9 @@ func requestTests() -> [TestCase] {
                 .value(TaskDetail.self)
             try expectEqual(detail.subtasks.map(\.code), ["HEALTH-7002", "HEALTH-7003"])
             try expectEqual(detail.timeline.map(\.at), detail.timeline.map(\.at).sorted())
-            try expect(detail.timeline.contains { $0.kind == .comment && $0.body == "Start with 3 runs a week." },
-                       "the comment is in the timeline")
+            try expect(
+                detail.timeline.contains { $0.kind == .comment && $0.body == "Start with 3 runs a week." },
+                "the comment is in the timeline")
         },
         TestCase("given the MCP tool list, then it offers every scoped method and nothing else") {
             let tools = MCPTool.all.map(\.name)

@@ -17,8 +17,10 @@ package struct Grant: Hashable, Codable, Sendable {
     /// an agent.
     package var isTerminalSession: Bool
 
-    package init(client: String, scopes: Set<Scope>, avenueIDs: Set<UUID>? = nil, expiresAt: Date,
-                confirmWrites: Bool = false, isTerminalSession: Bool = false) {
+    package init(
+        client: String, scopes: Set<Scope>, avenueIDs: Set<UUID>? = nil, expiresAt: Date,
+        confirmWrites: Bool = false, isTerminalSession: Bool = false
+    ) {
         self.client = client
         self.scopes = scopes
         self.avenueIDs = avenueIDs

@@ -25,6 +25,7 @@ download URLs with --downloader_config instead of overriding them here.
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 load("@llvm//:http_pkg_archive.bzl", "http_pkg_archive")
+load(":tools.bzl", "SWIFT_FORMAT_TOOLCHAIN")
 load(
     ":versions.bzl",
     "DEFAULT_SWIFT_VERSION",
@@ -45,6 +46,7 @@ _COMPILER_BINARIES = [
     "swift",
     "swift-autolink-extract",
     "swift-driver",
+    "swift-format",
     "swift-frontend",
     "swift-plugin-server",
     "swift-symbolgraph-extract",
@@ -170,6 +172,7 @@ _HUB_HEADER = """\
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
 load("@rules_swift//swift/toolchains:swift_toolchain.bzl", "swift_toolchain")
 load("@rules_swift//swift/toolchains:swift_tools.bzl", "swift_tools")
+load("{tools_bzl}", "swift_tool_toolchain")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -319,6 +322,23 @@ toolchain(
 )
 """
 
+# swift-format ships in each release, so each (release, build host) pair
+# also gets a swift-format toolchain; see tools.bzl.
+_SWIFT_FORMAT = """
+swift_tool_toolchain(
+    name = "swift_format_{v_}_{exec}",
+    tool = "@@{compiler}//:swift_format",
+)
+
+toolchain(
+    name = "{v_}_{exec}_swift_format",
+    exec_compatible_with = {exec_constraints},
+    target_settings = [":is_{v_}"],
+    toolchain = ":swift_format_{v_}_{exec}",
+    toolchain_type = "{toolchain_type}",
+)
+"""
+
 def _external(repo):
     return "external/" + repo
 
@@ -331,7 +351,11 @@ def _hub_impl(rctx):
     versions = json.decode(rctx.attr.versions)
     ordered = sorted(versions, key = _version_key)
 
-    content = [_HUB_HEADER.format(default = rctx.attr.default_version, versions = repr(ordered))]
+    content = [_HUB_HEADER.format(
+        default = rctx.attr.default_version,
+        tools_bzl = str(Label(":tools.bzl")),
+        versions = repr(ordered),
+    )]
     for version in ordered:
         repos = versions[version]
         v_ = _underscored(version)
@@ -356,6 +380,8 @@ def _hub_impl(rctx):
                 v_ = v_,
                 version = version,
             )
+
+            content.append(_SWIFT_FORMAT.format(toolchain_type = SWIFT_FORMAT_TOOLCHAIN, **fmt))
 
             # Apple's SDK license only covers Apple hardware, so only macOS
             # hosts build for macOS.

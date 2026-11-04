@@ -33,10 +33,12 @@ func accessTests() -> [TestCase] {
             let found = try fixture.call("search_tasks", ["query": "taxes"], grant: fixture.agent).response
                 .value([TaskSummary].self)
             try expectEqual(found, [])
-            try expectEqual(fixture.call("get_task", ["task": "FINANCE-7006"], grant: fixture.agent).response.code,
-                            .notFound)
-            try expectEqual(fixture.call("list_projects", ["avenue": "FINANCE"], grant: fixture.agent).response.code,
-                            .notFound)
+            try expectEqual(
+                fixture.call("get_task", ["task": "FINANCE-7006"], grant: fixture.agent).response.code,
+                .notFound)
+            try expectEqual(
+                fixture.call("list_projects", ["avenue": "FINANCE"], grant: fixture.agent).response.code,
+                .notFound)
         },
         TestCase("given a hidden Avenue, then a terminal session still sees it") {
             let fixture = try Fixture()
@@ -101,8 +103,9 @@ func accessTests() -> [TestCase] {
         TestCase("given an agent, then export is refused; given a terminal session, it needs Touch ID") {
             let fixture = try Fixture()
             try expectEqual(fixture.call("export", grant: fixture.agent).response.code, .notAuthorized)
-            try expectEqual(fixture.call("export", grant: fixture.terminal) { _ in false }.response.code,
-                            .confirmationDenied)
+            try expectEqual(
+                fixture.call("export", grant: fixture.terminal) { _ in false }.response.code,
+                .confirmationDenied)
             let export = try fixture.call("export", grant: fixture.terminal).response.value(Export.self)
             try expectEqual(export.tasks.count, 6)
         },

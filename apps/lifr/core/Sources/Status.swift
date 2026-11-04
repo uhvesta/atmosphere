@@ -43,7 +43,7 @@ extension LifrTask {
     package static func listOrder(_ lhs: LifrTask, _ rhs: LifrTask) -> Bool {
         if lhs.priority != rhs.priority { return lhs.priority > rhs.priority }
         switch (lhs.dueDate, rhs.dueDate) {
-        case let (left?, right?) where left != right: return left < right
+        case (let left?, let right?) where left != right: return left < right
         case (.some, nil): return true
         case (nil, .some): return false
         default: return (lhs.sortOrder, lhs.id.uuidString) < (rhs.sortOrder, rhs.id.uuidString)

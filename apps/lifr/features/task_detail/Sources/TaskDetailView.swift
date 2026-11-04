@@ -17,7 +17,8 @@ package struct TaskDetailView: View {
             Section {
                 Text(store.row.title)
                     .font(.title2.bold())
-                Picker("Status", selection: Binding(get: { store.row.status }, set: { store.send(.statusPicked($0)) })) {
+                Picker("Status", selection: Binding(get: { store.row.status }, set: { store.send(.statusPicked($0)) }))
+                {
                     ForEach(TaskStatus.allCases, id: \.self) { status in
                         Text(status.title).tag(status)
                     }

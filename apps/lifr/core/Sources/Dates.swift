@@ -9,7 +9,7 @@ package struct CalendarDate: Hashable, Comparable, Codable, Sendable, CustomStri
 
     package init(year: Int, month: Int, day: Int) throws(LifrError) {
         guard (1...9999).contains(year), (1...12).contains(month),
-              (1...Self.days(inMonth: month, year: year)).contains(day)
+            (1...Self.days(inMonth: month, year: year)).contains(day)
         else {
             throw .invalidDate("\(Self.pad(year, 4))-\(Self.pad(month, 2))-\(Self.pad(day, 2))")
         }
@@ -22,8 +22,8 @@ package struct CalendarDate: Hashable, Comparable, Codable, Sendable, CustomStri
     package init(_ string: String) throws(LifrError) {
         let parts = string.split(separator: "-", omittingEmptySubsequences: false)
         guard parts.count == 3, parts[0].count == 4, parts[1].count == 2, parts[2].count == 2,
-              parts.allSatisfy({ $0.allSatisfy(\.isKeyDigit) }),
-              let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2])
+            parts.allSatisfy({ $0.allSatisfy(\.isKeyDigit) }),
+            let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2])
         else { throw .invalidDate(string) }
         do {
             try self.init(year: year, month: month, day: day)
@@ -68,11 +68,12 @@ package struct CalendarDate: Hashable, Comparable, Codable, Sendable, CustomStri
         do {
             try self.init(string)
         } catch {
-            throw DecodingError.dataCorrupted(.init(
-                codingPath: decoder.codingPath,
-                debugDescription: error.description,
-                underlyingError: error
-            ))
+            throw DecodingError.dataCorrupted(
+                .init(
+                    codingPath: decoder.codingPath,
+                    debugDescription: error.description,
+                    underlyingError: error
+                ))
         }
     }
 
@@ -91,8 +92,8 @@ package struct TimeOfDay: Hashable, Comparable, Codable, Sendable, CustomStringC
     package init(_ string: String) throws(LifrError) {
         let parts = string.split(separator: ":", omittingEmptySubsequences: false)
         guard parts.count == 2, parts.allSatisfy({ $0.count == 2 && $0.allSatisfy(\.isKeyDigit) }),
-              let hour = Int(parts[0]), let minute = Int(parts[1]),
-              (0..<24).contains(hour), (0..<60).contains(minute)
+            let hour = Int(parts[0]), let minute = Int(parts[1]),
+            (0..<24).contains(hour), (0..<60).contains(minute)
         else { throw .invalidTime(string) }
         self.hour = hour
         self.minute = minute
@@ -120,11 +121,12 @@ package struct TimeOfDay: Hashable, Comparable, Codable, Sendable, CustomStringC
         do {
             try self.init(string)
         } catch {
-            throw DecodingError.dataCorrupted(.init(
-                codingPath: decoder.codingPath,
-                debugDescription: error.description,
-                underlyingError: error
-            ))
+            throw DecodingError.dataCorrupted(
+                .init(
+                    codingPath: decoder.codingPath,
+                    debugDescription: error.description,
+                    underlyingError: error
+                ))
         }
     }
 

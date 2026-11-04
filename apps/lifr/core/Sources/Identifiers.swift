@@ -34,12 +34,13 @@ package struct AvenueKey: Hashable, Comparable, Codable, Sendable, CustomStringC
         let string = try decoder.singleValueContainer().decode(String.self)
         let letters = string.prefix(while: \.isKeyLetter)
         guard (2...10).contains(string.count), !letters.isEmpty,
-              string.dropFirst(letters.count).allSatisfy(\.isKeyDigit)
+            string.dropFirst(letters.count).allSatisfy(\.isKeyDigit)
         else {
-            throw DecodingError.dataCorrupted(.init(
-                codingPath: decoder.codingPath,
-                debugDescription: LifrError.invalidAvenueKey(string).description
-            ))
+            throw DecodingError.dataCorrupted(
+                .init(
+                    codingPath: decoder.codingPath,
+                    debugDescription: LifrError.invalidAvenueKey(string).description
+                ))
         }
         rawValue = string
     }
@@ -94,9 +95,10 @@ package struct TaskCode: Hashable, Comparable, Codable, Sendable, CustomStringCo
         for byte in withUnsafeBytes(of: UInt64(attempt).littleEndian, Array.init) {
             hash = (hash ^ UInt64(byte)) &* 0x100_0000_01b3
         }
-        return TaskCode(digits: (0..<length).map { index in
-            Int((hash >> (UInt64(index) * 5)) & 31)
-        })
+        return TaskCode(
+            digits: (0..<length).map { index in
+                Int((hash >> (UInt64(index) * 5)) & 31)
+            })
     }
 
     /// The code as people see it, such as HEALTH-7K2Q.
@@ -111,11 +113,12 @@ package struct TaskCode: Hashable, Comparable, Codable, Sendable, CustomStringCo
         do {
             try self.init(string)
         } catch {
-            throw DecodingError.dataCorrupted(.init(
-                codingPath: decoder.codingPath,
-                debugDescription: error.description,
-                underlyingError: error
-            ))
+            throw DecodingError.dataCorrupted(
+                .init(
+                    codingPath: decoder.codingPath,
+                    debugDescription: error.description,
+                    underlyingError: error
+                ))
         }
     }
 
