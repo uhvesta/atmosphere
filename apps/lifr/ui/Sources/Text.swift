@@ -1,16 +1,17 @@
 import Foundation
 import LifrCore
 
-// The words the views show and read out. English only for now.
+// The words the views show and read out, from the app's String Catalog
+// (//apps/lifr/app:strings).
 
 extension TaskStatus {
     package var title: String {
         switch self {
-        case .todo: "To Do"
-        case .inProgress: "In Progress"
-        case .procrastinated: "Procrastinated"
-        case .done: "Done"
-        case .wontDo: "Won't Do"
+        case .todo: String(localized: "To Do")
+        case .inProgress: String(localized: "In Progress")
+        case .procrastinated: String(localized: "Procrastinated")
+        case .done: String(localized: "Done")
+        case .wontDo: String(localized: "Won't Do")
         }
     }
 }
@@ -20,10 +21,10 @@ extension Priority {
     package var title: String? {
         switch self {
         case .none: nil
-        case .low: "Low"
-        case .medium: "Medium"
-        case .high: "High"
-        case .urgent: "Urgent"
+        case .low: String(localized: "Low")
+        case .medium: String(localized: "Medium")
+        case .high: String(localized: "High")
+        case .urgent: String(localized: "Urgent")
         }
     }
 }
@@ -43,8 +44,8 @@ extension TaskRowData.Due {
     package func text(_ locale: Locale) -> String {
         func at(_ time: TimeOfDay?) -> String { time.map { " \($0)" } ?? "" }
         return switch self {
-        case .overdue(let date, let time): "Overdue, \(date.formatted(locale))\(at(time))"
-        case .today(let time): "Today\(at(time))"
+        case .overdue(let date, let time): String(localized: "Overdue, \(date.formatted(locale))\(at(time))")
+        case .today(let time): String(localized: "Today\(at(time))")
         case .later(let date, let time): "\(date.formatted(locale))\(at(time))"
         }
     }

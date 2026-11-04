@@ -20,11 +20,11 @@ package enum ActivityAuthor: Hashable, Sendable {
         switch self {
         case .surface(.iPhone): "iPhone"
         case .surface(.iPad): "iPad"
-        case .surface(.mac): "Mac"
-        case .surface(.cli): "Command line"
+        case .surface(.mac): String(localized: "Mac")
+        case .surface(.cli): String(localized: "Command line")
         case .surface(.mcp): "MCP"
-        case .surface(.assistant): "Apple Intelligence"
-        case .lifr: "Lifr"
+        case .surface(.assistant): String(localized: "Apple Intelligence")
+        case .lifr: String(localized: "Lifr")
         }
     }
 }
@@ -35,10 +35,10 @@ package enum ActivityPeriod: String, Hashable, Sendable, CaseIterable {
 
     package var title: String {
         switch self {
-        case .today: "Today"
-        case .week: "Past 7 days"
-        case .month: "Past 30 days"
-        case .all: "All time"
+        case .today: String(localized: "Today")
+        case .week: String(localized: "Past 7 days")
+        case .month: String(localized: "Past 30 days")
+        case .all: String(localized: "All time")
         }
     }
 
@@ -55,20 +55,20 @@ package enum ActivityPeriod: String, Hashable, Sendable, CaseIterable {
 extension RecordKind {
     package var title: String {
         switch self {
-        case .avenue: "Avenues"
-        case .project: "Projects"
-        case .task: "Tasks"
-        case .label: "Labels"
-        case .comment: "Comments"
-        case .reminder: "Reminders"
-        case .settings: "Settings"
+        case .avenue: String(localized: "Avenues")
+        case .project: String(localized: "Projects")
+        case .task: String(localized: "Tasks")
+        case .label: String(localized: "Labels")
+        case .comment: String(localized: "Comments")
+        case .reminder: String(localized: "Reminders")
+        case .settings: String(localized: "Settings")
         }
     }
 
     fileprivate var noun: String {
         switch self {
-        case .avenue: "Avenue"
-        case .project: "Project"
+        case .avenue: String(localized: "Avenue")
+        case .project: String(localized: "Project")
         case .task: "task"
         case .label: "label"
         case .comment: "comment"
@@ -151,9 +151,11 @@ package struct ActivityFeature {
 
         private func summary(_ entry: JournalEntry) -> String {
             if !entry.reverts.isEmpty {
-                return entry.reverts.count == 1 ? "Reverted a change" : "Reverted \(entry.reverts.count) changes"
+                return entry.reverts.count == 1
+                    ? String(localized: "Reverted a change")
+                    : String(localized: "Reverted \(entry.reverts.count) changes")
             }
-            guard let first = entry.steps.first else { return "No change" }
+            guard let first = entry.steps.first else { return String(localized: "No change") }
             var text = "\(verb(first)) \(first.record.kind.noun)"
             if first.record.kind != .settings { text += " “\(title(first))”" }
             return entry.steps.count == 1 ? text : text + " and \(entry.steps.count - 1) more"
@@ -161,15 +163,15 @@ package struct ActivityFeature {
 
         private func verb(_ step: JournalStep) -> String {
             switch (step.before, step.after) {
-            case (nil, _): return "Added"
-            case (_, nil): return "Removed"
+            case (nil, _): return String(localized: "Added")
+            case (_, nil): return String(localized: "Removed")
             case (.task(let old)?, .task(let new)?):
-                if old.deletedAt == nil, new.deletedAt != nil { return "Trashed" }
-                if old.deletedAt != nil, new.deletedAt == nil { return "Restored" }
-                return "Changed"
+                if old.deletedAt == nil, new.deletedAt != nil { return String(localized: "Trashed") }
+                if old.deletedAt != nil, new.deletedAt == nil { return String(localized: "Restored") }
+                return String(localized: "Changed")
             case (.comment(let old)?, .comment(let new)?) where old.deletedAt == nil && new.deletedAt != nil:
-                return "Deleted"
-            default: return "Changed"
+                return String(localized: "Deleted")
+            default: return String(localized: "Changed")
             }
         }
 
@@ -181,18 +183,19 @@ package struct ActivityFeature {
             case .label(let label): label.name
             case .comment(let comment): workspace.tasks[comment.taskID]?.title ?? "a task"
             case .reminder(let reminder): workspace.tasks[reminder.taskID]?.title ?? "a task"
-            case .settings, nil: "Settings"
+            case .settings, nil: String(localized: "Settings")
             }
         }
 
         private func name(_ step: JournalStep) -> String {
-            step.record.kind == .settings ? "Settings" : title(step)
+            step.record.kind == .settings ? String(localized: "Settings") : title(step)
         }
 
         private func author(_ actor: Actor) -> String {
             let place = ActivityAuthor(actor).title
             switch actor.kind {
-            case .agent where actor.surface != .assistant: return "\(actor.client ?? "An agent") · \(place)"
+            case .agent where actor.surface != .assistant:
+                return String(localized: "\(actor.client ?? String(localized: "An agent")) · \(place)")
             default: return place
             }
         }
@@ -207,7 +210,7 @@ package struct ActivityFeature {
             case .moment(let date): date.formatted(date: .abbreviated, time: .shortened)
             case .taskStatus(let status): status.title
             case .projectStatus(let status): status.rawValue.capitalized
-            case .priority(let priority): priority.title ?? "None"
+            case .priority(let priority): priority.title ?? String(localized: "None")
             case .access(let access): access.title
             case .record(let kind, let id): name(of: kind, id)
             case .records(let kind, let ids): ids.map { name(of: kind, $0) }.sorted().joined(separator: ", ")
@@ -261,14 +264,15 @@ package struct ActivityFeature {
         Reduce { state, action in
             switch action {
             case .revertTapped(let id):
-                state.confirm = confirmation([id], in: state.workspace, title: "Revert this change?")
+                state.confirm = confirmation([id], in: state.workspace, title: String(localized: "Revert this change?"))
                 return .none
 
             case .revertSinceTapped(let id):
                 guard let entry = state.workspace.journal.first(where: { $0.id == id }) else { return .none }
                 let ids = state.workspace.entries(since: entry.at).map(\.id)
                 state.confirm = confirmation(
-                    ids, in: state.workspace, title: "Revert \(ids.count) changes, back to this one?")
+                    ids, in: state.workspace, title: String(localized: "Revert \(ids.count) changes, back to this one?")
+                )
                 return .none
 
             case .confirm(.presented(.revert(let ids))):
@@ -316,15 +320,15 @@ package struct ActivityFeature {
             ButtonState(role: .destructive, action: .revert(ids)) { TextState("Revert") }
             ButtonState(role: .cancel) { TextState("Cancel") }
         } message: {
-            TextState(
-                "The revert is a change of its own, so you can revert it too."
-                    + (kept == 0 ? "" : " " + Self.skipped(kept)))
+            kept == 0
+                ? TextState("The revert is a change of its own, so you can revert it too.")
+                : TextState("The revert is a change of its own, so you can revert it too. \(Self.skipped(kept))")
         }
     }
 
     private static func skipped(_ count: Int) -> String {
         count == 1
-            ? "One field was changed again since, so it stays as it is now."
-            : "\(count) fields were changed again since, so they stay as they are now."
+            ? String(localized: "One field was changed again since, so it stays as it is now.")
+            : String(localized: "\(count) fields were changed again since, so they stay as they are now.")
     }
 }

@@ -11,14 +11,14 @@ extension TaskQuery {
         key: "upcoming",
         empty: .init(
             "Nothing coming up", systemImage: "calendar",
-            description: "Tasks due in the next two weeks show up here, by day.")
+            description: String(localized: "Tasks due in the next two weeks show up here, by day."))
     ) { workspace, now, timeZone in
         let today = CalendarDate(now, in: timeZone)
         let days = (1...14).map { CalendarDate(now + Double($0) * 24 * 60 * 60, in: timeZone) }
         let open = workspace.listedTasks.filter { $0.isOpen && $0.dueDate.map { $0 > today } == true }
         return days.enumerated().map { offset, day in
             TaskSection(
-                id: day.description, title: offset == 0 ? "Tomorrow" : day.weekdayTitle,
+                id: day.description, title: offset == 0 ? String(localized: "Tomorrow") : day.weekdayTitle,
                 rows: workspace.rows(open.filter { $0.dueDate == day }, now: now, timeZone: timeZone))
         }
     }

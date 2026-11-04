@@ -18,9 +18,9 @@ extension Actor {
     /// Who made a change, as the timeline shows it.
     package var displayName: String {
         switch kind {
-        case .user: "You on \(device)"
-        case .agent: "\(client ?? "An agent") (agent)"
-        case .system: "Lifr on \(device)"
+        case .user: String(localized: "You on \(device)")
+        case .agent: String(localized: "\(client ?? String(localized: "An agent")) (agent)")
+        case .system: String(localized: "Lifr on \(device)")
         }
     }
 }
@@ -57,14 +57,14 @@ extension Workspace {
         func status(_ raw: String?) -> String { raw.flatMap(TaskStatus.init(rawValue:))?.title ?? "none" }
         let change: String =
             switch (event.kind, event.field) {
-            case (.created, _): "Created"
+            case (.created, _): String(localized: "Created")
             case (.fieldChanged, .status?): "\(status(event.oldValue)) -> \(status(event.newValue))"
             case (.fieldChanged, let field?):
                 "\(field.rawValue): \(event.oldValue ?? "none") -> \(event.newValue ?? "none")"
-            case (.subtaskAdded, _): "Added Sub task \(subtask(event.newValue))"
-            case (.subtaskRemoved, _): "Removed Sub task \(subtask(event.newValue))"
-            case (.movedToTrash, _): "Moved to the trash"
-            case (.restored, _): "Restored from the trash"
+            case (.subtaskAdded, _): String(localized: "Added Sub task \(subtask(event.newValue))")
+            case (.subtaskRemoved, _): String(localized: "Removed Sub task \(subtask(event.newValue))")
+            case (.movedToTrash, _): String(localized: "Moved to the trash")
+            case (.restored, _): String(localized: "Restored from the trash")
             case (.fieldChanged, nil), (.commentAdded, _), (.commentEdited, _), (.commentDeleted, _):
                 event.kind.rawValue
             }

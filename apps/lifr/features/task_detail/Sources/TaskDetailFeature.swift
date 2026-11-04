@@ -292,8 +292,10 @@ package struct TaskDetailFeature {
                     TextState("Notifications are off")
                 } message: {
                     TextState(
-                        "The reminder is saved and rings on your other devices, but not on this one. "
-                            + "To hear it here, turn on notifications for Lifr in Settings.")
+                        """
+                        The reminder is saved and rings on your other devices, but not on this one. \
+                        To hear it here, turn on notifications for Lifr in Settings.
+                        """)
                 }
                 return .none
 

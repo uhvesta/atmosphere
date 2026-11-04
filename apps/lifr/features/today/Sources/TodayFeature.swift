@@ -11,7 +11,7 @@ extension TaskQuery {
         key: "today",
         empty: .init(
             "Nothing due today", systemImage: "sun.max",
-            description: "Tasks due today, and overdue ones, show up here."),
+            description: String(localized: "Tasks due today, and overdue ones, show up here.")),
         adds: NewTaskDefaults(isDueToday: true)
     ) { workspace, now, timeZone in
         let today = CalendarDate(now, in: timeZone)
@@ -20,8 +20,12 @@ extension TaskQuery {
         let overdue = open.filter { $0.isOverdue(today: today, time: time) }
         let dueToday = open.filter { $0.dueDate == today && !overdue.contains($0) }
         return [
-            TaskSection(id: "overdue", title: "Overdue", rows: workspace.rows(overdue, now: now, timeZone: timeZone)),
-            TaskSection(id: "today", title: "Today", rows: workspace.rows(dueToday, now: now, timeZone: timeZone)),
+            TaskSection(
+                id: "overdue", title: String(localized: "Overdue"),
+                rows: workspace.rows(overdue, now: now, timeZone: timeZone)),
+            TaskSection(
+                id: "today", title: String(localized: "Today"),
+                rows: workspace.rows(dueToday, now: now, timeZone: timeZone)),
         ]
     }
 }

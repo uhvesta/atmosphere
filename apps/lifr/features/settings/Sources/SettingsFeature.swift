@@ -17,9 +17,9 @@ package struct AvenueAccess: Identifiable, Hashable, Sendable {
 extension AgentAccess {
     package var title: String {
         switch self {
-        case .full: "Read and write"
-        case .readOnly: "Read only"
-        case .hidden: "Hidden"
+        case .full: String(localized: "Read and write")
+        case .readOnly: String(localized: "Read only")
+        case .hidden: String(localized: "Hidden")
         }
     }
 }

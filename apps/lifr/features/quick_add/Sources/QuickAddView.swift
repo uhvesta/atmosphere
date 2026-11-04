@@ -81,7 +81,7 @@ package struct QuickAddView: View {
                 DatePicker("Due", selection: $store.pickedDate, displayedComponents: .date)
             }
             Picker("Priority", selection: $store.priority) {
-                ForEach(Priority.allCases, id: \.self) { Text($0.title ?? "None").tag($0) }
+                ForEach(Priority.allCases, id: \.self) { Text($0.title ?? String(localized: "None")).tag($0) }
             }
         }
         Section {

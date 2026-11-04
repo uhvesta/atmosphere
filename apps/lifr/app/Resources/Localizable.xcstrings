@@ -1,0 +1,844 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "#%@" : {
+
+    },
+    "%@ (%lld)" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ (%2$lld)"
+          }
+        }
+      }
+    },
+    "%@ (agent)" : {
+
+    },
+    "%@ Nothing changed." : {
+
+    },
+    "%@ Nothing changed. Send a message and the assistant will fix the draft." : {
+
+    },
+    "%@ is %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ is %2$@"
+          }
+        }
+      }
+    },
+    "%@ is %@ now, because another task was also %@." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ is %2$@ now, because another task was also %3$@."
+          }
+        }
+      }
+    },
+    "%@ is In Progress again: a Sub task was added on one device while it was closed on another." : {
+
+    },
+    "%@ is a task of its own now, because its parents were Sub tasks of each other." : {
+
+    },
+    "%@ moved to its parent's Avenue and Project." : {
+
+    },
+    "%@ moved under %@, because its parent became a Sub task." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ moved under %2$@, because its parent became a Sub task."
+          }
+        }
+      }
+    },
+    "%@ wants to use your tasks through Lifr." : {
+
+    },
+    "%@ · %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ · %2$@"
+          }
+        }
+      }
+    },
+    "%@'s key is %@ now, because another Avenue was also %@. Its tasks' codes changed with it." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@'s key is %2$@ now, because another Avenue was also %3$@. Its tasks' codes changed with it."
+          }
+        }
+      }
+    },
+    "%@, %lld tasks" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, %2$lld tasks"
+          }
+        }
+      }
+    },
+    "%lld" : {
+
+    },
+    "%lld Sub task(s) are still open" : {
+
+    },
+    "%lld fields were changed again since, so they stay as they are now." : {
+
+    },
+    "%lld of %lld Sub tasks closed" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld of %2$lld Sub tasks closed"
+          }
+        }
+      }
+    },
+    "%lld of %lld closed" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld of %2$lld closed"
+          }
+        }
+      }
+    },
+    "%lld open" : {
+
+    },
+    "%lld stalled" : {
+
+    },
+    "%lld/%lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld/%2$lld"
+          }
+        }
+      }
+    },
+    "A closed task can't keep open Sub tasks, so they'll be marked Won't Do too." : {
+
+    },
+    "A task" : {
+
+    },
+    "Access" : {
+
+    },
+    "Activity" : {
+
+    },
+    "Add" : {
+
+    },
+    "Add Sub task" : {
+
+    },
+    "Add Sub tasks" : {
+
+    },
+    "Add Sub tasks next" : {
+
+    },
+    "Add a %@ date" : {
+
+    },
+    "Add a comment" : {
+
+    },
+    "Add a description" : {
+
+    },
+    "Add a time" : {
+
+    },
+    "Add an Avenue first, on the Avenues tab." : {
+
+    },
+    "Add reminder" : {
+
+    },
+    "Add task" : {
+
+    },
+    "Added" : {
+
+    },
+    "Added %@" : {
+
+    },
+    "Added Sub task %@" : {
+
+    },
+    "Adds this task, then keeps Quick Add open for its Sub tasks." : {
+
+    },
+    "Agent access" : {
+
+    },
+    "Agents never see a Hidden Avenue, whatever their grant says." : {
+
+    },
+    "All" : {
+
+    },
+    "All Avenues" : {
+
+    },
+    "All time" : {
+
+    },
+    "An Avenue" : {
+
+    },
+    "An Avenue is an area of life, such as Health or Home. Add one with +." : {
+
+    },
+    "An In Progress task with no activity for longer than this counts as Procrastinated." : {
+
+    },
+    "An agent" : {
+
+    },
+    "Any date" : {
+
+    },
+    "Anyone" : {
+
+    },
+    "Anything" : {
+
+    },
+    "Apple Intelligence" : {
+
+    },
+    "Approve" : {
+
+    },
+    "Approve %@?" : {
+
+    },
+    "Ask about your tasks, change them, or plan what to add." : {
+
+    },
+    "Ask me before each change" : {
+
+    },
+    "Assistant" : {
+
+    },
+    "Avenue" : {
+
+    },
+    "Avenues" : {
+
+    },
+    "Board" : {
+
+    },
+    "Cancel" : {
+
+    },
+    "Changed" : {
+
+    },
+    "Changed %@" : {
+
+    },
+    "Clear filters" : {
+
+    },
+    "Close %lld open Sub task(s) too?" : {
+
+    },
+    "Closed" : {
+
+    },
+    "Command line" : {
+
+    },
+    "Comments" : {
+
+    },
+    "Connected" : {
+
+    },
+    "Connected apps" : {
+
+    },
+    "Conversations" : {
+
+    },
+    "Couldn't change Launch at login" : {
+
+    },
+    "Couldn't change Sync conversations" : {
+
+    },
+    "Couldn't change connected apps" : {
+
+    },
+    "Couldn't change the setting" : {
+
+    },
+    "Couldn't change the task" : {
+
+    },
+    "Couldn't load your Avenues" : {
+
+    },
+    "Couldn't load your settings" : {
+
+    },
+    "Couldn't load your tasks" : {
+
+    },
+    "Couldn't revert" : {
+
+    },
+    "Couldn't save" : {
+
+    },
+    "Couldn't undo" : {
+
+    },
+    "Created" : {
+
+    },
+    "Currently %@." : {
+
+    },
+    "Dates" : {
+
+    },
+    "Delete" : {
+
+    },
+    "Delete All" : {
+
+    },
+    "Delete all conversations?" : {
+
+    },
+    "Deleted" : {
+
+    },
+    "Deny" : {
+
+    },
+    "Description" : {
+
+    },
+    "Discard" : {
+
+    },
+    "Dismiss" : {
+
+    },
+    "Done" : {
+
+    },
+    "Draft" : {
+
+    },
+    "Due" : {
+
+    },
+    "Edit description" : {
+
+    },
+    "Every change, who made it, and from where. Any of them can be reverted." : {
+
+    },
+    "Expires %@" : {
+
+    },
+    "Expires after" : {
+
+    },
+    "Filters" : {
+
+    },
+    "Filters, %lld set" : {
+
+    },
+    "Group by" : {
+
+    },
+    "Hidden" : {
+
+    },
+    "Hidden Avenues aren't listed; agents never see them." : {
+
+    },
+    "High" : {
+
+    },
+    "In 1 hour" : {
+
+    },
+    "In Progress" : {
+
+    },
+    "In Progress for %lld days" : {
+
+    },
+    "In Progress with no activity for %lld days." : {
+
+    },
+    "Install lifr" : {
+
+    },
+    "Installed at" : {
+
+    },
+    "It can always read. Agents can never empty the trash, change Avenues or Settings, or approve apps." : {
+
+    },
+    "Its next request is refused. It can ask again, and you'd approve it anew." : {
+
+    },
+    "Key" : {
+
+    },
+    "Label" : {
+
+    },
+    "Labels" : {
+
+    },
+    "Last used %@" : {
+
+    },
+    "Launch at login" : {
+
+    },
+    "Lifr" : {
+
+    },
+    "Lifr can't open its data" : {
+
+    },
+    "Lifr on %@" : {
+
+    },
+    "Lifr, an app is connected" : {
+
+    },
+    "List" : {
+
+    },
+    "Local API" : {
+
+    },
+    "Low" : {
+
+    },
+    "Mac" : {
+
+    },
+    "Made by" : {
+
+    },
+    "Make changes" : {
+
+    },
+    "Mark All Won't Do" : {
+
+    },
+    "Medium" : {
+
+    },
+    "Message" : {
+
+    },
+    "Move to %@" : {
+
+    },
+    "Moved %@ to the Trash" : {
+
+    },
+    "Moved to the trash" : {
+
+    },
+    "Moving a task moves its Sub tasks with it." : {
+
+    },
+    "Name" : {
+
+    },
+    "Needs a due date" : {
+
+    },
+    "New Avenue" : {
+
+    },
+    "New Avenue %@ (%@)" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "New Avenue %1$@ (%2$@)"
+          }
+        }
+      }
+    },
+    "New Project" : {
+
+    },
+    "New Project %@ in %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "New Project %1$@ in %2$@"
+          }
+        }
+      }
+    },
+    "New Project…" : {
+
+    },
+    "New Sub Task" : {
+
+    },
+    "New Task" : {
+
+    },
+    "New Task in %@" : {
+
+    },
+    "New conversation" : {
+
+    },
+    "New label" : {
+
+    },
+    "New task" : {
+
+    },
+    "New task (⌘N)" : {
+
+    },
+    "Next 7 days" : {
+
+    },
+    "No Avenues" : {
+
+    },
+    "No Project" : {
+
+    },
+    "No apps yet. When an agent first runs lifr, Lifr asks you to approve it." : {
+
+    },
+    "No change" : {
+
+    },
+    "No changes match." : {
+
+    },
+    "No connected apps" : {
+
+    },
+    "No conversations" : {
+
+    },
+    "No due date" : {
+
+    },
+    "No task selected" : {
+
+    },
+    "None" : {
+
+    },
+    "Not used yet" : {
+
+    },
+    "Notifications are off" : {
+
+    },
+    "OK" : {
+
+    },
+    "One field was changed again since, so it stays as it is now." : {
+
+    },
+    "Open" : {
+
+    },
+    "Overdue" : {
+
+    },
+    "Overdue, %@%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Overdue, %1$@%2$@"
+          }
+        }
+      }
+    },
+    "Past 30 days" : {
+
+    },
+    "Past 7 days" : {
+
+    },
+    "Pick" : {
+
+    },
+    "Pick a list" : {
+
+    },
+    "Priority" : {
+
+    },
+    "Procrastinated" : {
+
+    },
+    "Project" : {
+
+    },
+    "Projects" : {
+
+    },
+    "Read and write" : {
+
+    },
+    "Read only" : {
+
+    },
+    "Reminders" : {
+
+    },
+    "Remove" : {
+
+    },
+    "Removed" : {
+
+    },
+    "Removed Sub task %@" : {
+
+    },
+    "Renew" : {
+
+    },
+    "Reschedule" : {
+
+    },
+    "Reschedule…" : {
+
+    },
+    "Restart" : {
+
+    },
+    "Restored" : {
+
+    },
+    "Restored from the trash" : {
+
+    },
+    "Results" : {
+
+    },
+    "Revert" : {
+
+    },
+    "Revert %lld changes, back to this one?" : {
+
+    },
+    "Revert everything since" : {
+
+    },
+    "Revert this change?" : {
+
+    },
+    "Reverted" : {
+
+    },
+    "Reverted %lld changes" : {
+
+    },
+    "Reverted a change" : {
+
+    },
+    "Revoke" : {
+
+    },
+    "Revoke %@?" : {
+
+    },
+    "Save" : {
+
+    },
+    "Search" : {
+
+    },
+    "Send" : {
+
+    },
+    "Send comment" : {
+
+    },
+    "Set to Procrastinated by hand. It stays until you change its status." : {
+
+    },
+    "Settings" : {
+
+    },
+    "Show" : {
+
+    },
+    "Show Them" : {
+
+    },
+    "Show as" : {
+
+    },
+    "Signed as" : {
+
+    },
+    "Some fields were kept" : {
+
+    },
+    "Stalled" : {
+
+    },
+    "Start" : {
+
+    },
+    "Status" : {
+
+    },
+    "Sub task title" : {
+
+    },
+    "Sub tasks" : {
+
+    },
+    "Sub tasks of %@" : {
+
+    },
+    "Sync conversations" : {
+
+    },
+    "Tasks" : {
+
+    },
+    "Tasks due in the next two weeks show up here, by day." : {
+
+    },
+    "Tasks due today, and overdue ones, show up here." : {
+
+    },
+    "Tasks set to Procrastinated, or In Progress with no activity for a while, show up here." : {
+
+    },
+    "Tasks you add here, or move here, show up in their status's column." : {
+
+    },
+    "Tasks you add here, or move here, show up in this list." : {
+
+    },
+    "The assistant couldn't answer" : {
+
+    },
+    "The key starts each task's code, such as HEALTH-7K2Q. Use 2 to 10 letters." : {
+
+    },
+    "The reminder is saved and rings on your other devices, but not on this one. To hear it here, turn on notifications for Lifr in Settings." : {
+
+    },
+    "The revert is a change of its own, so you can revert it too." : {
+
+    },
+    "The revert is a change of its own, so you can revert it too. %@" : {
+
+    },
+    "The task changed again since, here or on another device, and undoing would lose that change. Open the task to change it back by hand." : {
+
+    },
+    "They're deleted on this device and from iCloud. Tasks the assistant added or changed stay." : {
+
+    },
+    "Time" : {
+
+    },
+    "Title" : {
+
+    },
+    "Titles, details and comments" : {
+
+    },
+    "To Do" : {
+
+    },
+    "Today" : {
+
+    },
+    "Today%@" : {
+
+    },
+    "Tomorrow" : {
+
+    },
+    "Tomorrow at 9:00" : {
+
+    },
+    "Trashed" : {
+
+    },
+    "Try other words, or clear some filters." : {
+
+    },
+    "Undo" : {
+
+    },
+    "Upcoming" : {
+
+    },
+    "Urgent" : {
+
+    },
+    "When" : {
+
+    },
+    "Won't Do" : {
+
+    },
+    "Won't Do + Finish" : {
+
+    },
+    "You on %@" : {
+
+    }
+  },
+  "version" : "1.0"
+}

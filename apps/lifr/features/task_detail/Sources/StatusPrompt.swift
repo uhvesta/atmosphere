@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrCore
+import SwiftUI
 
 /// The answers to a status change that needs the person's OK first.
 package enum StatusPrompt: Equatable, Sendable {
@@ -66,7 +67,7 @@ extension ConfirmationDialogState where Action == StatusPrompt {
 
 extension AlertState where Action == Never {
     /// A change failed for a reason the person can't confirm away.
-    package static func failed(_ title: String, _ error: any Error) -> Self {
+    package static func failed(_ title: LocalizedStringKey, _ error: any Error) -> Self {
         AlertState {
             TextState(title)
         } actions: {

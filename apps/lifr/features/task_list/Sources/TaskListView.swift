@@ -142,8 +142,8 @@ extension RowAction {
     var title: String {
         switch self {
         case .status(let status): status.title
-        case .reschedule: "Reschedule"
-        case .pickStatus: "Status"
+        case .reschedule: String(localized: "Reschedule")
+        case .pickStatus: String(localized: "Status")
         }
     }
 

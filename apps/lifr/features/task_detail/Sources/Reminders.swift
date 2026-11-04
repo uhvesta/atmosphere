@@ -28,8 +28,8 @@ package enum ReminderChoice: CaseIterable, Hashable, Sendable {
 
     package var title: String {
         switch self {
-        case .inOneHour: "In 1 hour"
-        case .tomorrowMorning: "Tomorrow at 9:00"
+        case .inOneHour: String(localized: "In 1 hour")
+        case .tomorrowMorning: String(localized: "Tomorrow at 9:00")
         case .hourBeforeDue: "1 hour before due"
         case .dayBeforeDue: "1 day before due"
         }

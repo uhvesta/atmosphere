@@ -13,7 +13,7 @@ extension TaskQuery {
             key: "board-\(scope)",
             empty: .init(
                 "No tasks yet", systemImage: "rectangle.split.3x1",
-                description: "Tasks you add here, or move here, show up in their status's column."),
+                description: String(localized: "Tasks you add here, or move here, show up in their status's column.")),
             adds: NewTaskDefaults(scope: scope.newTaskScope)
         ) { workspace, now, timeZone in
             let tasks = workspace.listedTasks.filter { task in

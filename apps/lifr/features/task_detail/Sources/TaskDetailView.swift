@@ -64,7 +64,7 @@ package struct TaskDetailView: View {
                 "Priority", selection: Binding(get: { store.row.priority }, set: { store.send(.priorityPicked($0)) })
             ) {
                 ForEach(Priority.allCases, id: \.self) { priority in
-                    Text(priority.title ?? "None").tag(priority)
+                    Text(priority.title ?? String(localized: "None")).tag(priority)
                 }
             }
             LabeledContent("Created") { Text(store.createdAt, format: .dateTime.month().day().year()) }

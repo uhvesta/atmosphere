@@ -14,11 +14,11 @@ package struct SearchFilter: Hashable, Sendable {
 
         package var title: String {
             switch self {
-            case .any: "Any date"
-            case .overdue: "Overdue"
-            case .today: "Today"
-            case .nextSevenDays: "Next 7 days"
-            case .none: "No due date"
+            case .any: String(localized: "Any date")
+            case .overdue: String(localized: "Overdue")
+            case .today: String(localized: "Today")
+            case .nextSevenDays: String(localized: "Next 7 days")
+            case .none: String(localized: "No due date")
             }
         }
     }
@@ -95,13 +95,15 @@ extension TaskQuery {
                         "Search titles, details and comments, or filter by Avenue, status, priority, label and date.")
                 : .init(
                     "No matches", systemImage: "magnifyingglass",
-                    description: "Try other words, or clear some filters."),
+                    description: String(localized: "Try other words, or clear some filters.")),
             adds: nil
         ) { workspace, now, timeZone in
             guard !filter.isEmpty else { return [] }
             let tasks = workspace.listedTasks.filter { filter.matches($0, in: workspace, now: now, timeZone: timeZone) }
             return [
-                TaskSection(id: "results", title: "Results", rows: workspace.rows(tasks, now: now, timeZone: timeZone))
+                TaskSection(
+                    id: "results", title: String(localized: "Results"),
+                    rows: workspace.rows(tasks, now: now, timeZone: timeZone))
             ]
         }
     }

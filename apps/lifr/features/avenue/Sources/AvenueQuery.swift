@@ -12,8 +12,8 @@ package enum Grouping: String, CaseIterable, Hashable, Sendable {
 
     package var title: String {
         switch self {
-        case .status: "Status"
-        case .project: "Project"
+        case .status: String(localized: "Status")
+        case .project: String(localized: "Project")
         }
     }
 }
@@ -39,7 +39,7 @@ extension TaskQuery {
             key: "\(scope)-\(grouping.rawValue)",
             empty: .init(
                 "No tasks yet", systemImage: "tray",
-                description: "Tasks you add here, or move here, show up in this list."),
+                description: String(localized: "Tasks you add here, or move here, show up in this list.")),
             adds: NewTaskDefaults(scope: scope.newTaskScope)
         ) { workspace, now, timeZone in
             let tasks = workspace.listedTasks.filter { task in
@@ -74,7 +74,11 @@ extension TaskQuery {
                     TaskSection(
                         id: project.id.uuidString, title: project.name,
                         rows: rows(open.filter { $0.projectID == project.id }))
-                } + [TaskSection(id: "none", title: "No Project", rows: rows(open.filter { $0.projectID == nil }))]
+                } + [
+                    TaskSection(
+                        id: "none", title: String(localized: "No Project"),
+                        rows: rows(open.filter { $0.projectID == nil }))
+                ]
             }
         }
     }

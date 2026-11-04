@@ -32,14 +32,15 @@ package struct LastChange: Equatable, Sendable {
         let title = task.map { "“\($0.title)”" } ?? "A task"
         switch (event?.kind, event?.field) {
         case (.created?, _):
-            message = "Added \(title)"
+            message = String(localized: "Added \(title)")
         case (.fieldChanged?, .status?):
             let status = event?.newValue.flatMap(TaskStatus.init(rawValue:))
-            message = status.map { "\(title) is \($0.title)" } ?? "Changed \(title)"
+            message =
+                status.map { String(localized: "\(title) is \($0.title)") } ?? String(localized: "Changed \(title)")
         case (.movedToTrash?, _):
-            message = "Moved \(title) to the Trash"
+            message = String(localized: "Moved \(title) to the Trash")
         default:
-            message = "Changed \(title)"
+            message = String(localized: "Changed \(title)")
         }
     }
 

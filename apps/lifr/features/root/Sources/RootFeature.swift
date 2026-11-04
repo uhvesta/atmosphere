@@ -42,8 +42,14 @@ package struct RootFeature {
 
     /// How the Mac shows an Avenue or Project.
     package enum Content: String, CaseIterable, Hashable, Sendable {
-        case list = "List"
-        case board = "Board"
+        case list, board
+
+        package var title: String {
+            switch self {
+            case .list: String(localized: "List")
+            case .board: String(localized: "Board")
+            }
+        }
     }
 
     @ObservableState
@@ -372,8 +378,10 @@ package struct RootFeature {
                         ButtonState(role: .cancel) { TextState("OK") }
                     } message: {
                         TextState(
-                            "The task changed again since, here or on another device, and undoing would lose that "
-                                + "change. Open the task to change it back by hand.")
+                            """
+                            The task changed again since, here or on another device, and undoing would lose that \
+                            change. Open the task to change it back by hand.
+                            """)
                     }
                     return .none
                 }

@@ -43,7 +43,7 @@ package struct SearchView: View {
         }
         Menu("Priority") {
             ForEach(Priority.allCases, id: \.self) { priority in
-                Toggle(priority.title ?? "None", isOn: $store.filter.priorities.contains(priority))
+                Toggle(priority.title ?? String(localized: "None"), isOn: $store.filter.priorities.contains(priority))
             }
         }
         if !store.labelNames.isEmpty {

@@ -12,7 +12,8 @@ extension TaskQuery {
         key: "procrastinated",
         empty: .init(
             "Nothing stalled", systemImage: "tortoise",
-            description: "Tasks set to Procrastinated, or In Progress with no activity for a while, show up here."),
+            description: String(
+                localized: "Tasks set to Procrastinated, or In Progress with no activity for a while, show up here.")),
         trailingActions: [.reschedule, .status(.wontDo), .pickStatus],
         adds: nil
     ) { workspace, now, timeZone in
@@ -22,7 +23,8 @@ extension TaskQuery {
         let notes = Dictionary(uniqueKeysWithValues: stalled.map { task, reason in (task.id, reason.note) })
         return [
             TaskSection(
-                id: "stalled", title: "Stalled", rows: workspace.rows(stalled.map(\.0), now: now, timeZone: timeZone),
+                id: "stalled", title: String(localized: "Stalled"),
+                rows: workspace.rows(stalled.map(\.0), now: now, timeZone: timeZone),
                 notes: notes)
         ]
     }
@@ -37,8 +39,8 @@ extension Procrastination {
     /// Why the task is on the list.
     package var note: String {
         switch self {
-        case .setByHand: "Set to Procrastinated by hand. It stays until you change its status."
-        case .inactive(let days): "In Progress with no activity for \(days) days."
+        case .setByHand: String(localized: "Set to Procrastinated by hand. It stays until you change its status.")
+        case .inactive(let days): String(localized: "In Progress with no activity for \(days) days.")
         }
     }
 }

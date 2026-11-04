@@ -50,6 +50,8 @@ build:xcode_toolchains --@apple_support//platforms:macos_arm64_platform=//bazel/
 build:xcode_toolchains --@apple_support//platforms:ios_arm64_platform=//bazel/xcode:ios_arm64
 build:xcode_toolchains --@apple_support//platforms:ios_sim_arm64_platform=//bazel/xcode:ios_sim_arm64
 build:xcode_toolchains --macos_cpus=arm64
+# Writes each Swift file's localizable strings, for //apps/lifr/app:strings.
+build:xcode_toolchains --features=swift.emit_localized_strings
 build:xcode --config=xcode_toolchains
 build:xcode --ios_multi_cpus=sim_arm64
 # Tools these builds run on the build machine also use Xcode: Swift macro

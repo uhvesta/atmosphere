@@ -172,7 +172,7 @@ private struct MacRootView: View {
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     Picker("Show as", selection: $store.content) {
-                        ForEach(RootFeature.Content.allCases, id: \.self) { Text($0.rawValue) }
+                        ForEach(RootFeature.Content.allCases, id: \.self) { Text($0.title) }
                     }
                     .pickerStyle(.segmented)
                 }

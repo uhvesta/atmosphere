@@ -15,10 +15,10 @@ package struct QuickAddFeature {
 
         package var title: String {
             switch self {
-            case .none: "None"
-            case .today: "Today"
-            case .tomorrow: "Tomorrow"
-            case .pick: "Pick"
+            case .none: String(localized: "None")
+            case .today: String(localized: "Today")
+            case .tomorrow: String(localized: "Tomorrow")
+            case .pick: String(localized: "Pick")
             }
         }
     }

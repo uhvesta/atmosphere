@@ -1,8 +1,11 @@
+load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
 load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
 load("@rules_apple//apple:ios.bzl", "ios_application")
 load("@rules_apple//apple:macos.bzl", "macos_application")
 load("@rules_apple//apple:xcarchive.bzl", "xcarchive")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load(":strings.bzl", "lifr_strings")
 
 # The SwiftUI app, shared by iOS and macOS. Needs Xcode: build with
 # `--config=xcode` (see //bazel/xcode).
@@ -43,6 +46,7 @@ ios_application(
         "//apps/lifr:is_signed": ":ios_development",
         "//conditions:default": None,
     }),
+    resources = ["Resources/Localizable.xcstrings"],
     target_compatible_with = ["//bazel/xcode"],
     # For the generated Xcode project (//apps/lifr:xcodeproj).
     visibility = ["@rules_xcodeproj//xcodeproj:generated"],
@@ -69,6 +73,7 @@ macos_application(
         "Info-macOS.plist",
     ],
     minimum_os_version = "15.0",
+    resources = ["Resources/Localizable.xcstrings"],
     target_compatible_with = ["//bazel/xcode"],
     # For the generated Xcode project (//apps/lifr:xcodeproj).
     visibility = ["@rules_xcodeproj//xcodeproj:generated"],
@@ -100,8 +105,37 @@ xcarchive(
     target_compatible_with = ["//bazel/xcode"],
 )
 
+# The words the app shows, in every language it speaks. English is the
+# source: views use their English text as the key, and other code uses
+# String(localized:). Translations go in the catalog.
+lifr_strings(
+    name = "strings",
+    catalog = "Resources/Localizable.xcstrings",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":app_lib"],
+)
+
+diff_test(
+    name = "strings_test",
+    failure_message = "The app's strings changed. Run `bazel run --config=xcode //apps/lifr/app:update_strings`, then translate the new strings in the diff.",
+    file1 = "Resources/Localizable.xcstrings",
+    file2 = ":strings",
+    target_compatible_with = ["//bazel/xcode"],
+)
+
+sh_binary(
+    name = "update_strings",
+    srcs = ["update_strings.sh"],
+    args = ["$(rootpath :strings)"],
+    data = [":strings"],
+    target_compatible_with = ["//bazel/xcode"],
+)
+
 filegroup(
     name = "starlark",
-    srcs = ["BUILD.bazel"],
+    srcs = [
+        "BUILD.bazel",
+        "strings.bzl",
+    ],
     tags = ["starlark"],
 )
