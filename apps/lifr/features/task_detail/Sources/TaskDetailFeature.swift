@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrCore
+import LifrRemindersClient
 import LifrStoreClient
 import LifrUI
 
@@ -20,6 +21,7 @@ package struct TaskDetailFeature {
         package var closedAt: Date?
         package var isSubtask: Bool
         package var subtasks: [TaskRowData]
+        package var reminders: [ReminderRow]
         package var timeline: [TimelineEntry]
         package var showsCommentsOnly = false
         package var newSubtaskTitle = ""
@@ -42,7 +44,16 @@ package struct TaskDetailFeature {
             subtasks = workspace.subtasks(of: id).map {
                 TaskRowData($0, in: workspace, now: now, timeZone: timeZone)
             }
+            reminders = workspace.reminders(of: id, timeZone: timeZone).map { reminder in
+                ReminderRow(reminder, fireAt: reminder.fireDate(for: task, in: timeZone))
+            }
             timeline = workspace.timeline(of: id)
+        }
+
+        /// The reminders the person can add: before the due date only when
+        /// there is one.
+        package var reminderChoices: [ReminderChoice] {
+            row.due == nil ? [.inOneHour, .tomorrowMorning] : ReminderChoice.allCases
         }
 
         /// What the timeline shows: everything, or comments only.
@@ -72,6 +83,10 @@ package struct TaskDetailFeature {
         case subtaskToggled(UUID)
         case addSubtaskSubmitted
         case commentSubmitted
+        case reminderPicked(ReminderChoice)
+        case reminderRemoved(UUID)
+        /// The reminder was saved, but notifications are off on this device.
+        case notificationsOff
         case saved(Result<Saved, any Error>)
         case bannerUndoTapped
         case bannerDismissed
@@ -87,6 +102,7 @@ package struct TaskDetailFeature {
     }
 
     @Dependency(\.store) private var store
+    @Dependency(\.reminders) private var reminders
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
 
@@ -120,6 +136,33 @@ package struct TaskDetailFeature {
                 guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .none }
                 state.newComment = ""
                 return save { [id = state.id] in try await $0.addComment(body, to: id) }
+
+            case .reminderPicked(let choice):
+                let trigger = choice.trigger(now: now, timeZone: timeZone)
+                return .run { [id = state.id, store, reminders] send in
+                    do {
+                        await send(.saved(.success(try await store.addReminder(trigger, to: id))))
+                    } catch {
+                        await send(.saved(.failure(error)))
+                        return
+                    }
+                    if (try? await reminders.requestPermission()) != true {
+                        await send(.notificationsOff)
+                    }
+                }
+
+            case .reminderRemoved(let id):
+                return save { try await $0.removeReminder(id) }
+
+            case .notificationsOff:
+                state.alert = AlertState {
+                    TextState("Notifications are off")
+                } message: {
+                    TextState(
+                        "The reminder is saved and rings on your other devices, but not on this one. "
+                            + "To hear it here, turn on notifications for Lifr in Settings.")
+                }
+                return .none
 
             case .prompt(.presented(let answer)):
                 guard let retry = answer.retry else { return .none }

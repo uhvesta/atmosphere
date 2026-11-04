@@ -7,4 +7,4 @@
 [button] "Read the draft" value: "Done, WORK-0007"
 [button] "Leave comments" value: "To Do, WORK-0008"
 [button] "Send summary to the team" value: "To Do, WORK-0009"
-[header, text] "Activity"
+[header, text] "Reminders"

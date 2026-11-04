@@ -88,6 +88,20 @@ extension StoreClient {
         }
     }
 
+    package func addReminder(_ trigger: Reminder.Trigger, to id: UUID) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            try workspace.addReminder(trigger, to: id, in: context)
+            return Change()
+        }
+    }
+
+    package func removeReminder(_ id: UUID) async throws -> Saved {
+        try await save { (workspace, _) throws(LifrError) in
+            try workspace.removeReminder(id)
+            return Change()
+        }
+    }
+
     /// What agents may do in an Avenue: everything, read only, or not see it.
     package func setAgentAccess(_ access: AgentAccess, ofAvenue id: UUID) async throws -> Saved {
         try await save { (workspace, _) throws(LifrError) in

@@ -1,0 +1,20 @@
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# The reminders client on UserNotifications. Only the app uses it; features
+# depend on //apps/lifr/clients/reminders. The system's notification center
+# needs a bundled app, so this is checked by building, and by hand.
+swift_library(
+    name = "reminders_live",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrRemindersLive",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/lifr/app:__subpackages__"],
+    deps = ["//apps/lifr/clients/reminders"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

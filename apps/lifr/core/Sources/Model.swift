@@ -225,6 +225,26 @@ package struct Reminder: Identifiable, Hashable, Codable, Sendable {
     }
 }
 
+extension Reminder {
+    /// When the reminder fires in `timeZone`: its set time, or this long
+    /// before the due date and time (9:00 when there's no time). `nil` when
+    /// it's before the due date and the task has none.
+    package func fireDate(for task: LifrTask, in timeZone: TimeZone) -> Date? {
+        switch trigger {
+        case .at(let date):
+            return date
+        case .beforeDue(let seconds):
+            guard let due = task.dueDate else { return nil }
+            let (hour, minute) = task.dueTime.map { ($0.hour, $0.minute) } ?? (9, 0)
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = timeZone
+            let components = DateComponents(
+                year: due.year, month: due.month, day: due.day, hour: hour, minute: minute)
+            return calendar.date(from: components).map { $0 - TimeInterval(seconds) }
+        }
+    }
+}
+
 /// One synced record of preferences.
 package struct Settings: Hashable, Codable, Sendable {
     /// In Progress tasks with no activity for longer than this are

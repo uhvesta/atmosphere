@@ -2,7 +2,7 @@ import Foundation
 
 /// The kinds of record a lookup can fail to find.
 package enum Entity: String, Hashable, Codable, Sendable {
-    case avenue, project, task, label, comment
+    case avenue, project, task, label, comment, reminder
 }
 
 /// Why Core refused a change. Every client shows `description` as is, so each
@@ -31,6 +31,7 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
     case emptyComment
     case notCommentAuthor(comment: UUID)
     case inTrash(UUID)
+    case reminderNeedsDueDate(UUID)
 
     package var description: String {
         switch self {
@@ -78,6 +79,8 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
             "Only the comment's author can edit or delete it. Add a new comment instead."
         case .inTrash:
             "This task is in the trash. Restore it before changing it."
+        case .reminderNeedsDueDate:
+            "A reminder before the due date needs a due date. Set one first, or remind at a set time instead."
         }
     }
 }

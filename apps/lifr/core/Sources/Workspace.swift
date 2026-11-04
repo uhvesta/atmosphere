@@ -466,6 +466,34 @@ package struct Workspace: Hashable, Codable, Sendable {
         return comment
     }
 
+    // MARK: - Reminders
+
+    /// Adds a reminder to a task. One before the due date needs the task to
+    /// have one.
+    @discardableResult
+    package mutating func addReminder(
+        _ trigger: Reminder.Trigger, to taskID: UUID, in context: Context
+    ) throws(LifrError) -> Reminder {
+        let task = try liveTask(taskID)
+        if case .beforeDue = trigger, task.dueDate == nil { throw .reminderNeedsDueDate(taskID) }
+        let reminder = Reminder(id: context.newID(), taskID: taskID, trigger: trigger)
+        reminders[reminder.id] = reminder
+        return reminder
+    }
+
+    package mutating func removeReminder(_ id: UUID) throws(LifrError) {
+        guard reminders.removeValue(forKey: id) != nil else { throw .notFound(.reminder, id.uuidString) }
+    }
+
+    /// A task's reminders, soonest first; ones that can't fire last.
+    package func reminders(of taskID: UUID, timeZone: TimeZone) -> [Reminder] {
+        guard let task = tasks[taskID] else { return [] }
+        return reminders.values.filter { $0.taskID == taskID }.sorted {
+            ($0.fireDate(for: task, in: timeZone) ?? .distantFuture, $0.id.uuidString)
+                < ($1.fireDate(for: task, in: timeZone) ?? .distantFuture, $1.id.uuidString)
+        }
+    }
+
     /// People edit their own comments; an agent edits only comments it wrote.
     package mutating func editComment(_ id: UUID, body: String, in context: Context) throws(LifrError) {
         var comment = try ownComment(id, context.actor)

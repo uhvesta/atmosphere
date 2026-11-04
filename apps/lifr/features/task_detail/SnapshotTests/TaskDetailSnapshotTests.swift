@@ -20,6 +20,7 @@ final class TaskDetailSnapshotTests: XCTestCase {
         var createdAt: Date
         var closedAt: Date?
         var subtasks: [TaskRowData]
+        var reminders: [ReminderRow]
         var timeline: [TimelineEntry]
     }
 
@@ -35,6 +36,7 @@ final class TaskDetailSnapshotTests: XCTestCase {
         NavigationStack {
             TaskDetailView(store: Store(initialState: state) { EmptyReducer() })
         }
+        .environment(\.timeZone, .gmt)
     }
 
     func testDisplayData() {
@@ -43,6 +45,7 @@ final class TaskDetailSnapshotTests: XCTestCase {
             of: Display(
                 row: state.row, details: state.details, project: state.project, labels: state.labels,
                 createdAt: state.createdAt, closedAt: state.closedAt, subtasks: state.subtasks,
+                reminders: state.reminders,
                 timeline: state.timeline),
             as: Snapshotting<Any, String>.dump.pullback { $0 }, named: "review")
     }

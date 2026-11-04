@@ -23,6 +23,7 @@ package struct TaskDetailView: View {
             if !store.isSubtask {
                 subtasks
             }
+            reminders
             activity
         }
         .safeAreaInset(edge: .top) {
@@ -88,6 +89,40 @@ package struct TaskDetailView: View {
                     Text("\(progress.closed)/\(progress.total)")
                         .accessibilityLabel("\(progress.closed) of \(progress.total) closed")
                 }
+            }
+        }
+    }
+
+    private var reminders: some View {
+        Section("Reminders") {
+            ForEach(store.reminders) { reminder in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let fireAt = reminder.fireAt {
+                            Text(fireAt, format: .dateTime.weekday().month().day().hour().minute())
+                        } else {
+                            Text("Needs a due date")
+                        }
+                        if let beforeDue = reminder.beforeDue {
+                            Text(beforeDue).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    Button("Remove", systemImage: "xmark.circle.fill") {
+                        store.send(.reminderRemoved(reminder.id))
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+            }
+            Menu {
+                ForEach(store.reminderChoices, id: \.self) { choice in
+                    Button(choice.title) { store.send(.reminderPicked(choice)) }
+                }
+            } label: {
+                Label("Add reminder", systemImage: "bell.badge")
             }
         }
     }

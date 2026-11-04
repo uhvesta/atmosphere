@@ -27,6 +27,7 @@ extension Workspace {
         records.task("Call the plumber", in: home, due: 2)
         let marathon = records.project("Half marathon", in: health)
         records.task("Buy running shoes", in: health, project: marathon, priority: .high, due: 1)
+        records.reminder(.at(now + 2 * 60 * 60), on: review)
         return records.workspace
     }
 }
@@ -82,6 +83,11 @@ package struct RecordsBuilder {
 
     package mutating func comment(_ body: String, on task: LifrTask) {
         _ = try! workspace.addComment(body, to: task.id, in: context())
+    }
+
+    @discardableResult
+    package mutating func reminder(_ trigger: Reminder.Trigger, on task: LifrTask) -> Reminder {
+        try! workspace.addReminder(trigger, to: task.id, in: context())
     }
 
     package mutating func setStatus(_ status: TaskStatus, of task: LifrTask) {

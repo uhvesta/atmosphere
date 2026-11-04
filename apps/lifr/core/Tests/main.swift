@@ -7,5 +7,6 @@ runSuites([
     ("Statuses", statusTests()),
     ("Procrastinated", procrastinationTests()),
     ("Comments and trash", commentAndTrashTests()),
+    ("Reminders", reminderTests()),
     ("Reconciliation", reconciliationTests()),
 ])

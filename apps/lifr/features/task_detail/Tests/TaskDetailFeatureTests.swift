@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrCore
+import LifrRemindersClient
 import LifrStoreClient
 import LifrTaskDetail
 import XCTest
@@ -12,7 +13,9 @@ final class TaskDetailFeatureTests: XCTestCase {
     private lazy var records = RecordsBuilder(now: now, timeZone: .gmt)
     private lazy var health = records.avenue("HEALTH", "Health")
 
-    private func makeStore(_ task: LifrTask) -> TestStoreOf<TaskDetailFeature> {
+    private func makeStore(
+        _ task: LifrTask, reminders: InMemoryReminders = RemindersClient.inMemory()
+    ) -> TestStoreOf<TaskDetailFeature> {
         let client = StoreClient.inMemory(records.workspace)
         let state = TaskDetailFeature.State(id: task.id, workspace: records.workspace, now: now, timeZone: .gmt)!
         let store = TestStore(initialState: state) {
@@ -21,6 +24,7 @@ final class TaskDetailFeatureTests: XCTestCase {
             // A minute passes between changes, as it would for a person.
             let clock = LockIsolated(now)
             $0.store = client
+            $0.reminders = reminders.client
             $0.date = DateGenerator {
                 clock.withValue {
                     $0 += 60
@@ -153,5 +157,49 @@ final class TaskDetailFeatureTests: XCTestCase {
         await store.receive(\.delegate.saved)
 
         XCTAssertEqual(store.state.row.priority, .urgent)
+    }
+
+    func testAddsAReminderBeforeTheDueDate() async {
+        let run = records.task("Long run", in: health, due: 2, at: "07:00")
+        let store = makeStore(run)
+        XCTAssertEqual(store.state.reminderChoices, ReminderChoice.allCases)
+
+        await store.send(.reminderPicked(.dayBeforeDue))
+        await store.receive(\.delegate.saved)
+
+        XCTAssertEqual(store.state.reminders.map(\.fireAt), [ISO8601DateFormatter().date(from: "2026-11-04T07:00:00Z")])
+        XCTAssertEqual(store.state.reminders.map(\.beforeDue), ["1 day before due"])
+        XCTAssertNil(store.state.alert)
+        await store.finish()
+    }
+
+    func testOffersOnlySetTimesWithoutADueDate() {
+        let stretch = records.task("Stretch", in: health)
+        let store = makeStore(stretch)
+        XCTAssertEqual(store.state.reminderChoices, [.inOneHour, .tomorrowMorning])
+    }
+
+    func testSavesTheReminderButSaysWhenNotificationsAreOff() async {
+        let stretch = records.task("Stretch", in: health)
+        let store = makeStore(stretch, reminders: RemindersClient.inMemory(permission: .denied))
+
+        await store.send(.reminderPicked(.tomorrowMorning))
+        await store.receive(\.delegate.saved)
+        await store.receive(\.notificationsOff)
+
+        XCTAssertEqual(store.state.reminders.count, 1)
+        XCTAssertNotNil(store.state.alert)
+    }
+
+    func testRemovesAReminder() async {
+        let stretch = records.task("Stretch", in: health)
+        records.reminder(.at(now + 3600), on: stretch)
+        let store = makeStore(stretch)
+        XCTAssertEqual(store.state.reminders.count, 1)
+
+        await store.send(.reminderRemoved(store.state.reminders[0].id))
+        await store.receive(\.delegate.saved)
+
+        XCTAssertEqual(store.state.reminders, [])
     }
 }
