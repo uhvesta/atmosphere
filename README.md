@@ -15,7 +15,6 @@ Without direnv, run `sh tools/bootstrap/bazelisk.sh` and add `.tools/bin` to `PA
 
 - `bazel build //...` and `bazel test //...` build and test everything.
 - `bazel run //:format` formats the code.
-- `bazel build //:all` lints the code.
 
 For stacked PRs or trees of PRs, `bazel run //tools/bootstrap/revup` installs [revup](https://github.com/Skydio/revup).
 
