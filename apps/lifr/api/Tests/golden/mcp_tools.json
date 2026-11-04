@@ -1,0 +1,359 @@
+[
+  {
+    "description" : "List the Avenues (areas of life, such as HEALTH) you can see, with their keys.",
+    "inputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+
+      },
+      "type" : "object"
+    },
+    "name" : "list_avenues",
+    "scope" : "read"
+  },
+  {
+    "description" : "List Projects, the goals inside an Avenue. Active ones only unless includeClosed is true.",
+    "inputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "avenue" : {
+          "description" : "An Avenue key, such as HEALTH.",
+          "type" : "string"
+        },
+        "includeClosed" : {
+          "description" : "Include completed and archived Projects.",
+          "type" : "boolean"
+        }
+      },
+      "type" : "object"
+    },
+    "name" : "list_projects",
+    "scope" : "read"
+  },
+  {
+    "description" : "Find tasks. Open tasks only unless includeClosed is true or statuses names closed ones.",
+    "inputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "avenue" : {
+          "description" : "An Avenue key, such as HEALTH.",
+          "type" : "string"
+        },
+        "includeClosed" : {
+          "description" : "Include Done and Won't Do tasks.",
+          "type" : "boolean"
+        },
+        "limit" : {
+          "description" : "At most this many tasks. Defaults to 50.",
+          "maximum" : 500,
+          "minimum" : 1,
+          "type" : "integer"
+        },
+        "project" : {
+          "description" : "A Project id from list_projects.",
+          "format" : "uuid",
+          "type" : "string"
+        },
+        "query" : {
+          "description" : "Words that must all appear in the title or details, ignoring case.",
+          "type" : "string"
+        },
+        "statuses" : {
+          "description" : "Match any of these. procrastinated includes tasks idle too long.",
+          "items" : {
+            "description" : "A task status.",
+            "enum" : [
+              "todo",
+              "inProgress",
+              "procrastinated",
+              "done",
+              "wontDo"
+            ],
+            "type" : "string"
+          },
+          "type" : "array"
+        }
+      },
+      "type" : "object"
+    },
+    "name" : "search_tasks",
+    "scope" : "read"
+  },
+  {
+    "description" : "Get a task with its Sub tasks, comments and history.",
+    "inputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "task" : {
+          "description" : "A task code, such as HEALTH-7K2Q or 7K2Q.",
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "task"
+      ],
+      "type" : "object"
+    },
+    "name" : "get_task",
+    "scope" : "read"
+  },
+  {
+    "description" : "Create a task in an Avenue, or a Sub task under a parent task.",
+    "inputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "avenue" : {
+          "description" : "An Avenue key, such as HEALTH.",
+          "type" : "string"
+        },
+        "details" : {
+          "description" : "Markdown notes.",
+          "type" : "string"
+        },
+        "dueDate" : {
+          "description" : "YYYY-MM-DD.",
+          "format" : "date",
+          "type" : "string"
+        },
+        "dueTime" : {
+          "description" : "24-hour HH:MM. Needs a due date.",
+          "pattern" : "^[0-2][0-9]:[0-5][0-9]$",
+          "type" : "string"
+        },
+        "labels" : {
+          "description" : "Label names. Replaces every label on update.",
+          "items" : {
+            "type" : "string"
+          },
+          "type" : "array"
+        },
+        "parent" : {
+          "description" : "Code of the parent task. Makes this a Sub task in the parent's Avenue and Project.",
+          "type" : "string"
+        },
+        "priority" : {
+          "description" : "How urgent the task is.",
+          "enum" : [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "urgent"
+          ],
+          "type" : "string"
+        },
+        "project" : {
+          "description" : "A Project id from list_projects.",
+          "format" : "uuid",
+          "type" : "string"
+        },
+        "startDate" : {
+          "description" : "YYYY-MM-DD.",
+          "format" : "date",
+          "type" : "string"
+        },
+        "status" : {
+          "description" : "A task status.",
+          "enum" : [
+            "todo",
+            "inProgress",
+            "procrastinated",
+            "done",
+            "wontDo"
+          ],
+          "type" : "string"
+        },
+        "title" : {
+          "description" : "1 to 200 characters.",
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "title"
+      ],
+      "type" : "object"
+    },
+    "name" : "create_task",
+    "scope" : "write"
+  },
+  {
+    "description" : "Change a task's title, details, priority, dates or labels.",
+    "inputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "clear" : {
+          "description" : "Fields to unset.",
+          "items" : {
+            "enum" : [
+              "startDate",
+              "dueDate",
+              "dueTime"
+            ]
+          },
+          "type" : "array"
+        },
+        "details" : {
+          "description" : "Markdown notes.",
+          "type" : "string"
+        },
+        "dueDate" : {
+          "description" : "YYYY-MM-DD.",
+          "format" : "date",
+          "type" : "string"
+        },
+        "dueTime" : {
+          "description" : "24-hour HH:MM. Needs a due date.",
+          "pattern" : "^[0-2][0-9]:[0-5][0-9]$",
+          "type" : "string"
+        },
+        "labels" : {
+          "description" : "Label names. Replaces every label on update.",
+          "items" : {
+            "type" : "string"
+          },
+          "type" : "array"
+        },
+        "priority" : {
+          "description" : "How urgent the task is.",
+          "enum" : [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "urgent"
+          ],
+          "type" : "string"
+        },
+        "startDate" : {
+          "description" : "YYYY-MM-DD.",
+          "format" : "date",
+          "type" : "string"
+        },
+        "task" : {
+          "description" : "A task code, such as HEALTH-7K2Q or 7K2Q.",
+          "type" : "string"
+        },
+        "title" : {
+          "description" : "1 to 200 characters.",
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "task"
+      ],
+      "type" : "object"
+    },
+    "name" : "update_task",
+    "scope" : "write"
+  },
+  {
+    "description" : "Set a task's status. Done needs every Sub task closed; Won't Do with open Sub tasks needs cascade: true and closes them too.",
+    "inputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "cascade" : {
+          "description" : "Also mark open Sub tasks Won't Do. Ask the person first.",
+          "type" : "boolean"
+        },
+        "status" : {
+          "description" : "A task status.",
+          "enum" : [
+            "todo",
+            "inProgress",
+            "procrastinated",
+            "done",
+            "wontDo"
+          ],
+          "type" : "string"
+        },
+        "task" : {
+          "description" : "A task code, such as HEALTH-7K2Q or 7K2Q.",
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "task",
+        "status"
+      ],
+      "type" : "object"
+    },
+    "name" : "set_status",
+    "scope" : "write"
+  },
+  {
+    "description" : "Move a task to another Avenue or Project, under a parent task, or out to the top level. Give exactly one of avenue, parent or topLevel.",
+    "inputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "avenue" : {
+          "description" : "An Avenue key, such as HEALTH.",
+          "type" : "string"
+        },
+        "parent" : {
+          "description" : "Code of the new parent task.",
+          "type" : "string"
+        },
+        "project" : {
+          "description" : "A Project id from list_projects.",
+          "format" : "uuid",
+          "type" : "string"
+        },
+        "task" : {
+          "description" : "A task code, such as HEALTH-7K2Q or 7K2Q.",
+          "type" : "string"
+        },
+        "topLevel" : {
+          "description" : "Promote a Sub task to a top-level task.",
+          "type" : "boolean"
+        }
+      },
+      "required" : [
+        "task"
+      ],
+      "type" : "object"
+    },
+    "name" : "move_task",
+    "scope" : "write"
+  },
+  {
+    "description" : "Add a Markdown comment to a task.",
+    "inputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "body" : {
+          "description" : "The comment, in Markdown.",
+          "type" : "string"
+        },
+        "task" : {
+          "description" : "A task code, such as HEALTH-7K2Q or 7K2Q.",
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "task",
+        "body"
+      ],
+      "type" : "object"
+    },
+    "name" : "add_comment",
+    "scope" : "write"
+  },
+  {
+    "description" : "Move a task and its Sub tasks to the trash. The person always confirms this in the Lifr app.",
+    "inputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "task" : {
+          "description" : "A task code, such as HEALTH-7K2Q or 7K2Q.",
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "task"
+      ],
+      "type" : "object"
+    },
+    "name" : "trash_task",
+    "scope" : "write"
+  }
+]

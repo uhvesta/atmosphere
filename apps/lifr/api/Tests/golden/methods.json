@@ -1,0 +1,781 @@
+[
+  {
+    "method" : "hello",
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "hello",
+      "params" : {
+        "client" : "lifr 0.1.0",
+        "protocolVersion" : 1
+      }
+    },
+    "response" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "result" : {
+        "expiresAt" : "2026-11-10T00:00:00Z",
+        "protocolVersion" : 1,
+        "scopes" : [
+          "read",
+          "write"
+        ]
+      }
+    }
+  },
+  {
+    "method" : "unlock",
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "unlock",
+      "params" : {
+
+      }
+    },
+    "response" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "result" : {
+        "expiresAt" : "2026-11-03T00:15:00Z"
+      }
+    }
+  },
+  {
+    "method" : "list_avenues",
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "list_avenues",
+      "params" : {
+
+      }
+    },
+    "response" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "result" : [
+        {
+          "agentAccess" : "full",
+          "key" : "HEALTH",
+          "name" : "Health",
+          "needsRename" : false
+        },
+        {
+          "agentAccess" : "readOnly",
+          "key" : "WORK",
+          "name" : "Work",
+          "needsRename" : false
+        }
+      ]
+    },
+    "scope" : "read"
+  },
+  {
+    "method" : "list_projects",
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "list_projects",
+      "params" : {
+        "avenue" : "HEALTH"
+      }
+    },
+    "response" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "result" : [
+        {
+          "avenue" : "HEALTH",
+          "dueDate" : "2027-04-18",
+          "id" : "00000000-0000-0000-0000-000000000004",
+          "name" : "Half marathon",
+          "status" : "active"
+        }
+      ]
+    },
+    "scope" : "read"
+  },
+  {
+    "method" : "search_tasks",
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "search_tasks",
+      "params" : {
+        "avenue" : "HEALTH",
+        "query" : "run"
+      }
+    },
+    "response" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "result" : [
+        {
+          "avenue" : "HEALTH",
+          "code" : "HEALTH-7002",
+          "dueDate" : "2026-11-08",
+          "labels" : [
+
+          ],
+          "openSubtasks" : 0,
+          "parent" : "HEALTH-7001",
+          "priority" : "none",
+          "project" : "00000000-0000-0000-0000-000000000004",
+          "status" : "todo",
+          "title" : "Long run, 12 km"
+        }
+      ]
+    },
+    "scope" : "read"
+  },
+  {
+    "method" : "get_task",
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "get_task",
+      "params" : {
+        "task" : "HEALTH-7001"
+      }
+    },
+    "response" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "result" : {
+        "createdAt" : "2026-10-20T00:00:00Z",
+        "details" : "",
+        "subtasks" : [
+          {
+            "avenue" : "HEALTH",
+            "code" : "HEALTH-7002",
+            "dueDate" : "2026-11-08",
+            "labels" : [
+
+            ],
+            "openSubtasks" : 0,
+            "parent" : "HEALTH-7001",
+            "priority" : "none",
+            "project" : "00000000-0000-0000-0000-000000000004",
+            "status" : "todo",
+            "title" : "Long run, 12 km"
+          },
+          {
+            "avenue" : "HEALTH",
+            "code" : "HEALTH-7003",
+            "labels" : [
+
+            ],
+            "openSubtasks" : 0,
+            "parent" : "HEALTH-7001",
+            "priority" : "none",
+            "project" : "00000000-0000-0000-0000-000000000004",
+            "status" : "todo",
+            "title" : "Buy shoes"
+          }
+        ],
+        "task" : {
+          "avenue" : "HEALTH",
+          "code" : "HEALTH-7001",
+          "dueDate" : "2026-11-10",
+          "labels" : [
+            "running"
+          ],
+          "openSubtasks" : 2,
+          "priority" : "high",
+          "procrastination" : "inactive 14 days",
+          "project" : "00000000-0000-0000-0000-000000000004",
+          "status" : "procrastinated",
+          "title" : "Training plan"
+        },
+        "timeline" : [
+          {
+            "actor" : {
+              "device" : "Avesta's Mac",
+              "kind" : "user"
+            },
+            "at" : "2026-10-20T00:00:00Z",
+            "event" : "created",
+            "kind" : "history",
+            "newValue" : "7001"
+          },
+          {
+            "actor" : {
+              "device" : "Avesta's Mac",
+              "kind" : "user"
+            },
+            "at" : "2026-10-20T00:00:00Z",
+            "event" : "subtaskAdded",
+            "kind" : "history",
+            "newValue" : "7002"
+          },
+          {
+            "actor" : {
+              "device" : "Avesta's Mac",
+              "kind" : "user"
+            },
+            "at" : "2026-10-20T00:00:00Z",
+            "event" : "subtaskAdded",
+            "kind" : "history",
+            "newValue" : "7003"
+          },
+          {
+            "actor" : {
+              "device" : "Avesta's Mac",
+              "kind" : "user"
+            },
+            "at" : "2026-10-20T00:00:00Z",
+            "event" : "commentAdded",
+            "kind" : "history"
+          },
+          {
+            "actor" : {
+              "device" : "Avesta's Mac",
+              "kind" : "user"
+            },
+            "at" : "2026-10-20T00:00:00Z",
+            "body" : "Start with 3 runs a week.",
+            "commentID" : "00000000-0000-0000-0000-000000000020",
+            "kind" : "comment"
+          }
+        ]
+      }
+    },
+    "scope" : "read"
+  },
+  {
+    "method" : "create_task",
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "create_task",
+      "params" : {
+        "labels" : [
+          "running"
+        ],
+        "parent" : "HEALTH-7001",
+        "priority" : "low",
+        "title" : "Stretch after runs"
+      }
+    },
+    "response" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "result" : {
+        "alsoChanged" : [
+          {
+            "avenue" : "HEALTH",
+            "code" : "HEALTH-7001",
+            "dueDate" : "2026-11-10",
+            "labels" : [
+              "running"
+            ],
+            "openSubtasks" : 3,
+            "priority" : "high",
+            "project" : "00000000-0000-0000-0000-000000000004",
+            "status" : "inProgress",
+            "title" : "Training plan"
+          }
+        ],
+        "task" : {
+          "avenue" : "HEALTH",
+          "code" : "HEALTH-7007",
+          "labels" : [
+            "running"
+          ],
+          "openSubtasks" : 0,
+          "parent" : "HEALTH-7001",
+          "priority" : "low",
+          "project" : "00000000-0000-0000-0000-000000000004",
+          "status" : "todo",
+          "title" : "Stretch after runs"
+        }
+      }
+    },
+    "scope" : "write"
+  },
+  {
+    "method" : "update_task",
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "update_task",
+      "params" : {
+        "dueDate" : "2026-11-12",
+        "dueTime" : "09:30",
+        "task" : "HEALTH-7004"
+      }
+    },
+    "response" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "result" : {
+        "alsoChanged" : [
+
+        ],
+        "task" : {
+          "avenue" : "HEALTH",
+          "code" : "HEALTH-7004",
+          "dueDate" : "2026-11-12",
+          "dueTime" : "09:30",
+          "labels" : [
+
+          ],
+          "openSubtasks" : 0,
+          "priority" : "none",
+          "status" : "todo",
+          "title" : "Book a checkup"
+        }
+      }
+    },
+    "scope" : "write"
+  },
+  {
+    "method" : "set_status",
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "set_status",
+      "params" : {
+        "cascade" : true,
+        "status" : "wontDo",
+        "task" : "HEALTH-7001"
+      }
+    },
+    "response" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "result" : {
+        "alsoChanged" : [
+          {
+            "avenue" : "HEALTH",
+            "code" : "HEALTH-7002",
+            "dueDate" : "2026-11-08",
+            "labels" : [
+
+            ],
+            "openSubtasks" : 0,
+            "parent" : "HEALTH-7001",
+            "priority" : "none",
+            "project" : "00000000-0000-0000-0000-000000000004",
+            "status" : "wontDo",
+            "title" : "Long run, 12 km"
+          },
+          {
+            "avenue" : "HEALTH",
+            "code" : "HEALTH-7003",
+            "labels" : [
+
+            ],
+            "openSubtasks" : 0,
+            "parent" : "HEALTH-7001",
+            "priority" : "none",
+            "project" : "00000000-0000-0000-0000-000000000004",
+            "status" : "wontDo",
+            "title" : "Buy shoes"
+          }
+        ],
+        "task" : {
+          "avenue" : "HEALTH",
+          "code" : "HEALTH-7001",
+          "dueDate" : "2026-11-10",
+          "labels" : [
+            "running"
+          ],
+          "openSubtasks" : 0,
+          "priority" : "high",
+          "project" : "00000000-0000-0000-0000-000000000004",
+          "status" : "wontDo",
+          "title" : "Training plan"
+        }
+      }
+    },
+    "scope" : "write"
+  },
+  {
+    "method" : "move_task",
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "move_task",
+      "params" : {
+        "parent" : "HEALTH-7001",
+        "task" : "HEALTH-7004"
+      }
+    },
+    "response" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "result" : {
+        "alsoChanged" : [
+          {
+            "avenue" : "HEALTH",
+            "code" : "HEALTH-7001",
+            "dueDate" : "2026-11-10",
+            "labels" : [
+              "running"
+            ],
+            "openSubtasks" : 3,
+            "priority" : "high",
+            "project" : "00000000-0000-0000-0000-000000000004",
+            "status" : "inProgress",
+            "title" : "Training plan"
+          }
+        ],
+        "task" : {
+          "avenue" : "HEALTH",
+          "code" : "HEALTH-7004",
+          "labels" : [
+
+          ],
+          "openSubtasks" : 0,
+          "parent" : "HEALTH-7001",
+          "priority" : "none",
+          "project" : "00000000-0000-0000-0000-000000000004",
+          "status" : "todo",
+          "title" : "Book a checkup"
+        }
+      }
+    },
+    "scope" : "write"
+  },
+  {
+    "method" : "add_comment",
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "add_comment",
+      "params" : {
+        "body" : "Done in 1:12, felt **good**.",
+        "task" : "7002"
+      }
+    },
+    "response" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "result" : {
+        "createdAt" : "2026-11-03T00:00:00Z",
+        "id" : "00000000-0000-0000-0000-000000000022",
+        "task" : "HEALTH-7002"
+      }
+    },
+    "scope" : "write"
+  },
+  {
+    "method" : "trash_task",
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "trash_task",
+      "params" : {
+        "task" : "HEALTH-7001"
+      }
+    },
+    "response" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "result" : {
+        "trashed" : [
+          "HEALTH-7001",
+          "HEALTH-7002",
+          "HEALTH-7003"
+        ]
+      }
+    },
+    "scope" : "write"
+  },
+  {
+    "method" : "export",
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "export",
+      "params" : {
+
+      }
+    },
+    "response" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "result" : {
+        "avenues" : [
+          {
+            "agentAccess" : "full",
+            "color" : "blue",
+            "createdAt" : "2026-11-03T00:00:00Z",
+            "id" : "00000000-0000-0000-0000-000000000001",
+            "key" : "HEALTH",
+            "name" : "Health",
+            "sortOrder" : "i",
+            "symbol" : "heart"
+          },
+          {
+            "agentAccess" : "readOnly",
+            "color" : "blue",
+            "createdAt" : "2026-11-03T00:00:00Z",
+            "id" : "00000000-0000-0000-0000-000000000002",
+            "key" : "WORK",
+            "name" : "Work",
+            "sortOrder" : "r",
+            "symbol" : "briefcase"
+          },
+          {
+            "agentAccess" : "hidden",
+            "color" : "blue",
+            "createdAt" : "2026-11-03T00:00:00Z",
+            "id" : "00000000-0000-0000-0000-000000000003",
+            "key" : "FINANCE",
+            "name" : "Finance",
+            "sortOrder" : "v",
+            "symbol" : "banknote"
+          }
+        ],
+        "comments" : [
+          {
+            "author" : {
+              "device" : "Avesta's Mac",
+              "kind" : "user"
+            },
+            "body" : "Start with 3 runs a week.",
+            "createdAt" : "2026-10-20T00:00:00Z",
+            "id" : "00000000-0000-0000-0000-000000000020",
+            "taskID" : "00000000-0000-0000-0000-000000000006"
+          }
+        ],
+        "history" : [
+          {
+            "actor" : {
+              "device" : "Avesta's Mac",
+              "kind" : "user"
+            },
+            "createdAt" : "2026-10-20T00:00:00Z",
+            "id" : "00000000-0000-0000-0000-000000000007",
+            "kind" : "created",
+            "newValue" : "7001",
+            "taskID" : "00000000-0000-0000-0000-000000000006"
+          },
+          {
+            "actor" : {
+              "device" : "Avesta's Mac",
+              "kind" : "user"
+            },
+            "createdAt" : "2026-10-20T00:00:00Z",
+            "id" : "00000000-0000-0000-0000-000000000009",
+            "kind" : "created",
+            "newValue" : "7002",
+            "taskID" : "00000000-0000-0000-0000-000000000008"
+          },
+          {
+            "actor" : {
+              "device" : "Avesta's Mac",
+              "kind" : "user"
+            },
+            "createdAt" : "2026-10-20T00:00:00Z",
+            "id" : "00000000-0000-0000-0000-000000000010",
+            "kind" : "subtaskAdded",
+            "newValue" : "7002",
+            "taskID" : "00000000-0000-0000-0000-000000000006"
+          },
+          {
+            "actor" : {
+              "device" : "Avesta's Mac",
+              "kind" : "user"
+            },
+            "createdAt" : "2026-10-20T00:00:00Z",
+            "id" : "00000000-0000-0000-0000-000000000012",
+            "kind" : "created",
+            "newValue" : "7003",
+            "taskID" : "00000000-0000-0000-0000-000000000011"
+          },
+          {
+            "actor" : {
+              "device" : "Avesta's Mac",
+              "kind" : "user"
+            },
+            "createdAt" : "2026-10-20T00:00:00Z",
+            "id" : "00000000-0000-0000-0000-000000000013",
+            "kind" : "subtaskAdded",
+            "newValue" : "7003",
+            "taskID" : "00000000-0000-0000-0000-000000000006"
+          },
+          {
+            "actor" : {
+              "device" : "Avesta's Mac",
+              "kind" : "user"
+            },
+            "createdAt" : "2026-11-03T00:00:00Z",
+            "id" : "00000000-0000-0000-0000-000000000015",
+            "kind" : "created",
+            "newValue" : "7004",
+            "taskID" : "00000000-0000-0000-0000-000000000014"
+          },
+          {
+            "actor" : {
+              "device" : "Avesta's Mac",
+              "kind" : "user"
+            },
+            "createdAt" : "2026-11-03T00:00:00Z",
+            "id" : "00000000-0000-0000-0000-000000000017",
+            "kind" : "created",
+            "newValue" : "7005",
+            "taskID" : "00000000-0000-0000-0000-000000000016"
+          },
+          {
+            "actor" : {
+              "device" : "Avesta's Mac",
+              "kind" : "user"
+            },
+            "createdAt" : "2026-11-03T00:00:00Z",
+            "id" : "00000000-0000-0000-0000-000000000019",
+            "kind" : "created",
+            "newValue" : "7006",
+            "taskID" : "00000000-0000-0000-0000-000000000018"
+          },
+          {
+            "actor" : {
+              "device" : "Avesta's Mac",
+              "kind" : "user"
+            },
+            "createdAt" : "2026-10-20T00:00:00Z",
+            "id" : "00000000-0000-0000-0000-000000000021",
+            "kind" : "commentAdded",
+            "taskID" : "00000000-0000-0000-0000-000000000006"
+          }
+        ],
+        "labels" : [
+          {
+            "color" : "green",
+            "createdAt" : "2026-11-03T00:00:00Z",
+            "id" : "00000000-0000-0000-0000-000000000005",
+            "name" : "running"
+          }
+        ],
+        "projects" : [
+          {
+            "avenueID" : "00000000-0000-0000-0000-000000000001",
+            "createdAt" : "2026-11-03T00:00:00Z",
+            "details" : "",
+            "dueDate" : "2027-04-18",
+            "id" : "00000000-0000-0000-0000-000000000004",
+            "name" : "Half marathon",
+            "sortOrder" : "i",
+            "status" : "active"
+          }
+        ],
+        "protocolVersion" : 1,
+        "reminders" : [
+
+        ],
+        "settings" : {
+          "procrastinatedAfterDays" : 7
+        },
+        "tasks" : [
+          {
+            "avenueID" : "00000000-0000-0000-0000-000000000001",
+            "code" : "7001",
+            "createdAt" : "2026-10-20T00:00:00Z",
+            "details" : "",
+            "dueDate" : "2026-11-10",
+            "id" : "00000000-0000-0000-0000-000000000006",
+            "labelIDs" : [
+              "00000000-0000-0000-0000-000000000005"
+            ],
+            "lastActivityAt" : "2026-10-20T00:00:00Z",
+            "priority" : "high",
+            "projectID" : "00000000-0000-0000-0000-000000000004",
+            "sortOrder" : "i",
+            "status" : "inProgress",
+            "title" : "Training plan",
+            "updatedAt" : "2026-10-20T00:00:00Z"
+          },
+          {
+            "avenueID" : "00000000-0000-0000-0000-000000000001",
+            "code" : "7002",
+            "createdAt" : "2026-10-20T00:00:00Z",
+            "details" : "",
+            "dueDate" : "2026-11-08",
+            "id" : "00000000-0000-0000-0000-000000000008",
+            "labelIDs" : [
+
+            ],
+            "lastActivityAt" : "2026-10-20T00:00:00Z",
+            "parentID" : "00000000-0000-0000-0000-000000000006",
+            "priority" : "none",
+            "projectID" : "00000000-0000-0000-0000-000000000004",
+            "sortOrder" : "i",
+            "status" : "todo",
+            "title" : "Long run, 12 km",
+            "updatedAt" : "2026-10-20T00:00:00Z"
+          },
+          {
+            "avenueID" : "00000000-0000-0000-0000-000000000001",
+            "code" : "7003",
+            "createdAt" : "2026-10-20T00:00:00Z",
+            "details" : "",
+            "id" : "00000000-0000-0000-0000-000000000011",
+            "labelIDs" : [
+
+            ],
+            "lastActivityAt" : "2026-10-20T00:00:00Z",
+            "parentID" : "00000000-0000-0000-0000-000000000006",
+            "priority" : "none",
+            "projectID" : "00000000-0000-0000-0000-000000000004",
+            "sortOrder" : "r",
+            "status" : "todo",
+            "title" : "Buy shoes",
+            "updatedAt" : "2026-10-20T00:00:00Z"
+          },
+          {
+            "avenueID" : "00000000-0000-0000-0000-000000000001",
+            "code" : "7004",
+            "createdAt" : "2026-11-03T00:00:00Z",
+            "details" : "Ask about knee pain.",
+            "id" : "00000000-0000-0000-0000-000000000014",
+            "labelIDs" : [
+
+            ],
+            "lastActivityAt" : "2026-11-03T00:00:00Z",
+            "priority" : "none",
+            "sortOrder" : "r",
+            "status" : "todo",
+            "title" : "Book a checkup",
+            "updatedAt" : "2026-11-03T00:00:00Z"
+          },
+          {
+            "avenueID" : "00000000-0000-0000-0000-000000000002",
+            "code" : "7005",
+            "createdAt" : "2026-11-03T00:00:00Z",
+            "details" : "",
+            "dueDate" : "2026-11-20",
+            "id" : "00000000-0000-0000-0000-000000000016",
+            "labelIDs" : [
+
+            ],
+            "lastActivityAt" : "2026-11-03T00:00:00Z",
+            "priority" : "none",
+            "sortOrder" : "i",
+            "status" : "todo",
+            "title" : "Quarterly review",
+            "updatedAt" : "2026-11-03T00:00:00Z"
+          },
+          {
+            "avenueID" : "00000000-0000-0000-0000-000000000003",
+            "code" : "7006",
+            "createdAt" : "2026-11-03T00:00:00Z",
+            "details" : "",
+            "id" : "00000000-0000-0000-0000-000000000018",
+            "labelIDs" : [
+
+            ],
+            "lastActivityAt" : "2026-11-03T00:00:00Z",
+            "priority" : "none",
+            "sortOrder" : "i",
+            "status" : "todo",
+            "title" : "File taxes",
+            "updatedAt" : "2026-11-03T00:00:00Z"
+          }
+        ]
+      }
+    }
+  }
+]

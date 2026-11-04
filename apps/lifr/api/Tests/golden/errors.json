@@ -1,0 +1,284 @@
+{
+  "apiDisabled" : {
+    "response" : {
+      "error" : {
+        "code" : -32001,
+        "data" : {
+          "code" : "apiDisabled",
+          "message" : "The local API is turned off. Turn it on from Lifr's menu bar item, then retry."
+        },
+        "message" : "The local API is turned off. Turn it on from Lifr's menu bar item, then retry."
+      },
+      "id" : 1,
+      "jsonrpc" : "2.0"
+    }
+  },
+  "appNotRunning" : {
+    "response" : {
+      "error" : {
+        "code" : -32002,
+        "data" : {
+          "code" : "appNotRunning",
+          "message" : "The Lifr app didn't start within 10 seconds. Open Lifr on this Mac, or turn on Launch at login in Settings, then retry."
+        },
+        "message" : "The Lifr app didn't start within 10 seconds. Open Lifr on this Mac, or turn on Launch at login in Settings, then retry."
+      },
+      "id" : 1,
+      "jsonrpc" : "2.0"
+    }
+  },
+  "confirmationDenied" : {
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "trash_task",
+      "params" : {
+        "task" : "7004"
+      }
+    },
+    "response" : {
+      "error" : {
+        "code" : -32007,
+        "data" : {
+          "code" : "confirmationDenied",
+          "message" : "The change was declined in the Lifr app. Nothing changed; ask the person before trying again."
+        },
+        "message" : "The change was declined in the Lifr app. Nothing changed; ask the person before trying again."
+      },
+      "id" : 1,
+      "jsonrpc" : "2.0"
+    }
+  },
+  "confirmationRequired" : {
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "set_status",
+      "params" : {
+        "status" : "wontDo",
+        "task" : "HEALTH-7001"
+      }
+    },
+    "response" : {
+      "error" : {
+        "code" : -32006,
+        "data" : {
+          "code" : "confirmationRequired",
+          "message" : "Marking this task Won't Do also closes its 2 open Sub task(s) as Won't Do. Confirm to close them all (cascade: true), or close the Sub tasks first.",
+          "tasks" : [
+            "HEALTH-7002",
+            "HEALTH-7003"
+          ]
+        },
+        "message" : "Marking this task Won't Do also closes its 2 open Sub task(s) as Won't Do. Confirm to close them all (cascade: true), or close the Sub tasks first."
+      },
+      "id" : 1,
+      "jsonrpc" : "2.0"
+    }
+  },
+  "internalError" : {
+    "response" : {
+      "error" : {
+        "code" : -32603,
+        "data" : {
+          "code" : "internalError",
+          "message" : "Lifr hit an unexpected error: (the error). Nothing changed. Retry, and report it if it keeps happening."
+        },
+        "message" : "Lifr hit an unexpected error: (the error). Nothing changed. Retry, and report it if it keeps happening."
+      },
+      "id" : 1,
+      "jsonrpc" : "2.0"
+    }
+  },
+  "invalidParams" : {
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "get_task",
+      "params" : {
+
+      }
+    },
+    "response" : {
+      "error" : {
+        "code" : -32602,
+        "data" : {
+          "code" : "invalidParams",
+          "message" : "Invalid params for get_task: \"task\" is required."
+        },
+        "message" : "Invalid params for get_task: \"task\" is required."
+      },
+      "id" : 1,
+      "jsonrpc" : "2.0"
+    }
+  },
+  "invalidRequest" : {
+    "request" : "{\"id\": 7, \"method\": \"list_avenues\"}",
+    "response" : {
+      "error" : {
+        "code" : -32600,
+        "data" : {
+          "code" : "invalidRequest",
+          "message" : "The request isn't a JSON-RPC 2.0 request. It needs \"jsonrpc\": \"2.0\", an integer \"id\" and a \"method\"."
+        },
+        "message" : "The request isn't a JSON-RPC 2.0 request. It needs \"jsonrpc\": \"2.0\", an integer \"id\" and a \"method\"."
+      },
+      "id" : 7,
+      "jsonrpc" : "2.0"
+    }
+  },
+  "methodNotFound" : {
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "delete_everything",
+      "params" : {
+
+      }
+    },
+    "response" : {
+      "error" : {
+        "code" : -32601,
+        "data" : {
+          "code" : "methodNotFound",
+          "message" : "\"delete_everything\" isn't a Lifr method. Update lifr if it's older than the app; `lifr --help` lists the commands."
+        },
+        "message" : "\"delete_everything\" isn't a Lifr method. Update lifr if it's older than the app; `lifr --help` lists the commands."
+      },
+      "id" : 1,
+      "jsonrpc" : "2.0"
+    }
+  },
+  "notAuthorized" : {
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "add_comment",
+      "params" : {
+        "body" : "Booked for Friday.",
+        "task" : "7004"
+      }
+    },
+    "response" : {
+      "error" : {
+        "code" : -32003,
+        "data" : {
+          "code" : "notAuthorized",
+          "message" : "Claude Code has read-only access. To let it make changes, open Settings > Connected apps > Claude Code and choose Read and write."
+        },
+        "message" : "Claude Code has read-only access. To let it make changes, open Settings > Connected apps > Claude Code and choose Read and write."
+      },
+      "id" : 1,
+      "jsonrpc" : "2.0"
+    }
+  },
+  "notFound" : {
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "get_task",
+      "params" : {
+        "task" : "FINANCE-7006"
+      }
+    },
+    "response" : {
+      "error" : {
+        "code" : -32004,
+        "data" : {
+          "code" : "notFound",
+          "message" : "No task matches FINANCE-7006. It may have been deleted or not synced to this device yet."
+        },
+        "message" : "No task matches FINANCE-7006. It may have been deleted or not synced to this device yet."
+      },
+      "id" : 1,
+      "jsonrpc" : "2.0"
+    }
+  },
+  "openSubtasks" : {
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "set_status",
+      "params" : {
+        "status" : "done",
+        "task" : "HEALTH-7001"
+      }
+    },
+    "response" : {
+      "error" : {
+        "code" : -32005,
+        "data" : {
+          "code" : "openSubtasks",
+          "message" : "This task has 2 open Sub task(s). Close them, or mark the task Won't Do to drop them too.",
+          "tasks" : [
+            "HEALTH-7002",
+            "HEALTH-7003"
+          ]
+        },
+        "message" : "This task has 2 open Sub task(s). Close them, or mark the task Won't Do to drop them too."
+      },
+      "id" : 1,
+      "jsonrpc" : "2.0"
+    }
+  },
+  "parseError" : {
+    "request" : "list_avenues",
+    "response" : {
+      "error" : {
+        "code" : -32700,
+        "data" : {
+          "code" : "parseError",
+          "message" : "The request isn't valid JSON. Send one JSON-RPC 2.0 object per line."
+        },
+        "message" : "The request isn't valid JSON. Send one JSON-RPC 2.0 object per line."
+      },
+      "jsonrpc" : "2.0"
+    }
+  },
+  "ruleViolation" : {
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "update_task",
+      "params" : {
+        "dueTime" : "09:30",
+        "task" : "7004"
+      }
+    },
+    "response" : {
+      "error" : {
+        "code" : -32008,
+        "data" : {
+          "code" : "ruleViolation",
+          "message" : "A due time needs a due date. Set the due date too, or clear the time."
+        },
+        "message" : "A due time needs a due date. Set the due date too, or clear the time."
+      },
+      "id" : 1,
+      "jsonrpc" : "2.0"
+    }
+  },
+  "versionMismatch" : {
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "hello",
+      "params" : {
+        "client" : "lifr 0.2.0",
+        "protocolVersion" : 2
+      }
+    },
+    "response" : {
+      "error" : {
+        "code" : -32000,
+        "data" : {
+          "code" : "versionMismatch",
+          "message" : "lifr speaks protocol 2 and the app speaks 1. Update the Lifr app so both come from the same Lifr version; the CLI inside Lifr.app always matches the app."
+        },
+        "message" : "lifr speaks protocol 2 and the app speaks 1. Update the Lifr app so both come from the same Lifr version; the CLI inside Lifr.app always matches the app."
+      },
+      "id" : 1,
+      "jsonrpc" : "2.0"
+    }
+  }
+}
