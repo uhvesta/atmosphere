@@ -3,7 +3,7 @@
 // runs against a fresh `Fixture`, so the output only changes when the
 // protocol or the rules do.
 //
-// Usage: generate <mcp_tools.json> <methods.json> <errors.json>
+// Usage: generate <mcp_tools.json> <methods.json> <errors.json> <plan.toml>
 
 import Foundation
 import LifrAPI
@@ -108,7 +108,7 @@ for (code, example) in errorExamples {
 }
 
 let paths = Array(CommandLine.arguments.dropFirst())
-check(paths.count == 3, "usage: generate <mcp_tools.json> <methods.json> <errors.json>")
+check(paths.count == 4, "usage: generate <mcp_tools.json> <methods.json> <errors.json> <plan.toml>")
 let encoder = Wire.encoder
 encoder.outputFormatting.insert(.prettyPrinted)
 func write(_ value: some Encodable, to path: String) throws {
@@ -119,3 +119,4 @@ func write(_ value: some Encodable, to path: String) throws {
 try write(MCPTool.all, to: paths[0])
 try write(methods, to: paths[1])
 try write(errors, to: paths[2])
+try Data(PlanFile.write(examplePlan).utf8).write(to: URL(fileURLWithPath: paths[3]))

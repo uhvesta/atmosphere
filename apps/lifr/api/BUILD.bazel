@@ -38,7 +38,10 @@ swift_binary(
     name = "handler_tests",
     package_name = "lifr",
     testonly = True,
-    srcs = ["Tests/Fixture.swift"] + glob(["Tests/Handler/*.swift"]),
+    srcs = [
+        "Tests/Fixture.swift",
+        "Tests/PlanExample.swift",
+    ] + glob(["Tests/Handler/*.swift"]),
     copts = [
         "-swift-version",
         "6",
@@ -65,6 +68,7 @@ swift_binary(
     srcs = [
         "Tests/Fixture.swift",
         "Tests/Generate/main.swift",
+        "Tests/PlanExample.swift",
     ],
     copts = [
         "-swift-version",
@@ -77,25 +81,26 @@ swift_binary(
 )
 
 _GOLDEN = [
-    "mcp_tools",
-    "methods",
-    "errors",
+    "mcp_tools.json",
+    "methods.json",
+    "errors.json",
+    "plan.toml",
 ]
 
 run_binary(
     name = "generate",
     testonly = True,
-    outs = ["generated/%s.json" % name for name in _GOLDEN],
-    args = ["$(execpath generated/%s.json)" % name for name in _GOLDEN],
+    outs = ["generated/%s" % name for name in _GOLDEN],
+    args = ["$(execpath generated/%s)" % name for name in _GOLDEN],
     tool = ":generate_golden",
 )
 
 [
     diff_test(
-        name = name + "_golden_test",
+        name = name.replace(".", "_") + "_golden_test",
         failure_message = "The API changed. If that's intended, run `bazel run //apps/lifr/api:update_golden` and review the diff.",
-        file1 = "Tests/golden/%s.json" % name,
-        file2 = "generated/%s.json" % name,
+        file1 = "Tests/golden/%s" % name,
+        file2 = "generated/%s" % name,
     )
     for name in _GOLDEN
 ]

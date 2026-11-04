@@ -5,4 +5,5 @@ runSuites([
     ("Rules", ruleTests()),
     ("Requests", requestTests()),
     ("Wire", wireTests()),
+    ("Plan files", planFileTests()),
 ])

@@ -1,0 +1,62 @@
+# Lifr plan v1
+
+[[avenue]]
+key = "HOME"
+name = "Home"
+color = "green"
+symbol = "house"
+
+[[label]]
+name = "errands"
+color = "orange"
+
+[[project]]
+name = "Move flat"
+avenue = "HOME"
+details = """
+Before the lease ends.
+Keep receipts."""
+due = "2026-12-01"
+
+  [[project.task]]
+  title = "Clean up living room"
+  priority = "medium"
+  due = "friday"
+
+    [[project.task.subtask]]
+    title = "Vacuum"
+
+    [[project.task.subtask]]
+    title = "Wipe \"shelves\""
+    status = "in_progress"
+
+  [[project.task]]
+  title = "Buy new clothes"
+  labels = ["errands"]
+  remind = ["1 day before due"]
+
+    [[project.task.subtask]]
+    title = "Shoes"
+
+    [[project.task.subtask]]
+    title = "Jacket"
+    due = "+2w"
+
+[[task]]
+title = "Book physio"
+in = "HEALTH"
+status = "procrastinated"
+priority = "high"
+start = "tomorrow"
+due = "next monday"
+due_time = "17:30"
+remind = ["tomorrow 08:00"]
+comments = ["Ask about the knee."]
+
+[[task]]
+title = "Ice after runs"
+in = "HEALTH/Half marathon"
+
+[[task]]
+title = "Stretch"
+parent = "HEALTH-7001"
