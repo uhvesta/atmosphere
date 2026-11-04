@@ -1,7 +1,7 @@
 module(name = "monty_oxide")
 
 bazel_dep(name = "rules_rust", version = "0.74.0")
-bazel_dep(name = "rules_cc", version = "0.2.22")
+bazel_dep(name = "rules_cc", version = "0.2.25")
 bazel_dep(name = "rules_go", version = "0.63.0")
 bazel_dep(name = "gazelle", version = "0.54.0")
 bazel_dep(name = "llvm", version = "0.8.18")
@@ -9,6 +9,7 @@ bazel_dep(name = "aspect_rules_lint", version = "2.9.0")
 bazel_dep(name = "aspect_rules_lint_rust", version = "0.0.3")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
 bazel_dep(name = "rules_shell", version = "0.8.0")
+bazel_dep(name = "rules_swift", version = "4.2.2")
 bazel_dep(name = "rules_zig", version = "0.17.0")
 bazel_dep(name = "rules_python", version = "2.4.0-rc1")
 bazel_dep(name = "platforms", version = "1.1.0")
@@ -52,7 +53,9 @@ crate.from_cargo(
     cargo_lockfile = "//:Cargo.lock",
     lockfile = "//:cargo-bazel-lock.json",
     manifests = ["//:Cargo.toml"],
-    # The hosts the bootstrap scripts support, which run the Rust tools.
+    # The hosts the Rust tools run on: the bootstrap hosts and the platforms in
+    # //tools/platforms. rules_rust matches crate selects on OS and CPU only,
+    # so the gnu triples also cover the musl platforms.
     supported_platform_triples = [
         "aarch64-apple-darwin",
         "x86_64-apple-darwin",
@@ -63,6 +66,17 @@ crate.from_cargo(
 use_repo(crate, "crates")
 
 register_toolchains("@rust_toolchains//:all")
+
+# MARK: - Swift
+
+# Hermetic swift.org compilers plus the macOS and Static Linux (musl) SDKs.
+# Override the version from your own MODULE.bazel with
+# swift.toolchain(version = "..."); see //tools/rules/swift:versions.bzl.
+swift = use_extension("//tools/rules/swift:extensions.bzl", "swift")
+swift.toolchain(version = "6.4.2")
+use_repo(swift, "swift_toolchains")
+
+register_toolchains("@swift_toolchains//:all")
 
 # MARK: - Zig
 

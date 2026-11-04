@@ -1,0 +1,25 @@
+# BUILD file for a swift.org compiler repository (one per build host).
+# The toolchain lives under toolchain/usr.
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(glob(["toolchain/usr/bin/*"]))
+
+# Everything swiftc needs to run and to compile: the driver and frontend, the
+# host libraries and macro plugins, the compiler's own stdlib modules, and
+# clang's resource headers used by the clang importer.
+filegroup(
+    name = "compiler_files",
+    srcs = glob(
+        [
+            "toolchain/usr/bin/swift*",
+            "toolchain/usr/lib/clang/**",
+            "toolchain/usr/lib/swift/**",
+        ],
+        allow_empty = True,
+        exclude = [
+            "toolchain/usr/lib/swift/embedded/**",
+            "toolchain/usr/lib/swift/pm/**",
+        ],
+    ),
+)

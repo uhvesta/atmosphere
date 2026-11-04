@@ -27,6 +27,12 @@ pub fn bytes(http: &Http, url: &str) -> Result<Vec<u8>, Error> {
     body(http, url, &[])
 }
 
+/// One byte range of the body of `url`, as an HTTP `Range` value such as
+/// `bytes=0-999` or `bytes=-1000` for the last 1000 bytes.
+pub fn range(http: &Http, url: &str, range: &str) -> Result<Vec<u8>, Error> {
+    body(http, url, &[("Range", range)])
+}
+
 /// SHA-256 of the body, streamed; nothing is written to disk.
 pub fn sha256(http: &Http, url: &str) -> Result<String, Error> {
     copy_hashed(&mut reader(http, url, &[])?, &mut io::sink()).map_err(|error| match error {

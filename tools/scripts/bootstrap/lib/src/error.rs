@@ -52,7 +52,7 @@ pub enum Error {
     )]
     RateLimited { url: String, wait: Wait },
 
-    #[error("{url} does not exist; check the versions in versions.toml")]
+    #[error("{url} does not exist; check that the version it was built from is published")]
     NotFound { url: String },
 
     #[error("{url} answered HTTP {status}; retry later, and check the URL if it keeps failing")]
@@ -96,13 +96,18 @@ pub enum Error {
     },
 }
 
-/// Prints `error` and its causes, then exits with status 1.
-pub fn exit_with(error: &dyn std::error::Error) -> ! {
+/// Prints `error` and its causes to stderr.
+pub fn print_error(error: &dyn std::error::Error) {
     eprintln!("error: {error}");
     let mut source = error.source();
     while let Some(cause) = source {
         eprintln!("  caused by: {cause}");
         source = cause.source();
     }
+}
+
+/// Prints `error` and its causes, then exits with status 1.
+pub fn exit_with(error: &dyn std::error::Error) -> ! {
+    print_error(error);
     std::process::exit(1);
 }
