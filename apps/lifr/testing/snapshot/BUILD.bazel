@@ -1,0 +1,44 @@
+load("@rules_apple//apple/testing/default_runner:ios_xctestrun_runner.bzl", "ios_xctestrun_runner")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load(":defs.bzl", "lifr_snapshot_test")
+
+# Snapshot testing for Lifr's screens: images, and the accessibility tree as
+# text. Use it through lifr_snapshot_test in defs.bzl. iOS only; needs Xcode:
+# run with `--config=xcode`.
+swift_library(
+    name = "snapshot",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrSnapshotTesting",
+    target_compatible_with = [
+        "//bazel/xcode",
+        "@platforms//os:ios",
+    ],
+    visibility = ["//apps/lifr:__subpackages__"],
+    deps = ["@swiftpkg_swift_snapshot_testing//:SnapshotTesting"],
+)
+
+# Every snapshot renders on the same device and OS, so references don't drift
+# between machines.
+ios_xctestrun_runner(
+    name = "iphone_17",
+    device_type = "iPhone 17",
+    os_version = "26.2",
+    visibility = ["//apps/lifr:__subpackages__"],
+)
+
+# Checks that the helper records, verifies, and catches a visual change.
+lifr_snapshot_test(
+    name = "sample_test",
+    srcs = glob(["SnapshotTests/*.swift"]),
+)
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "defs.bzl",
+    ],
+    tags = ["starlark"],
+)

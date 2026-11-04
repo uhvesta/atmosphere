@@ -1,0 +1,2 @@
+# Snapshot images are stored in Git LFS. Run `git lfs install` once per clone.
+apps/**/__Snapshots__/**/*.png filter=lfs diff=lfs merge=lfs -text

@@ -54,5 +54,11 @@ build:xcode --ios_multi_cpus=sim_arm64
 # the -defsym that rules_swift links plugins with, and the duplicate xxhash
 # symbols in rsync's lz4 and xxhash.
 build:xcode --host_platform=//bazel/xcode:macos_arm64
+# Re-records Lifr's snapshot references into the source tree (see
+# apps/lifr/testing/snapshot/defs.bzl). The run fails by design; run the tests
+# again without this config to verify.
+test:record_snapshots --config=xcode
+test:record_snapshots --test_env=LIFR_RECORD_SNAPSHOTS=1
+test:record_snapshots --nocache_test_results
 # Builds started from the generated Lifr.xcodeproj (//apps/lifr:xcodeproj).
 common:rules_xcodeproj --config=xcode

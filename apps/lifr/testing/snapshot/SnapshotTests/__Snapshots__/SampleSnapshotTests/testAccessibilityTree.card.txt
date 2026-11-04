@@ -1,0 +1,2 @@
+[text] "Training plan"
+[button] "Start"

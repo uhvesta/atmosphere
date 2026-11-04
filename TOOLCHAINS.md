@@ -149,6 +149,26 @@ targets that need Xcode. Hosts without Xcode, including Linux, never run it.
 Each package compiles for its own minimum OS, as SwiftPM does, so build them
 through a `rules_apple` target rather than with `--platforms` alone.
 
+### Snapshot tests
+
+Lifr's screens are checked with snapshot tests: `lifr_snapshot_test` in
+`apps/lifr/testing/snapshot/defs.bzl`. They run on one pinned simulator,
+iPhone 17 with iOS 26.2, so every machine renders the same pixels. The
+references in `SnapshotTests/__Snapshots__` are copied into the test bundle.
+
+```sh
+bazel test --config=xcode //apps/lifr/...             # verify
+bazel test --config=record_snapshots //apps/lifr/...  # re-record
+```
+
+Recording writes the new references into the source tree and fails on
+purpose. Review them with `git diff`, then verify again. When a test fails,
+it writes the new rendering under `bazel-testlogs/<package>/<test>/test.outputs`.
+
+The PNG references are stored in Git LFS (see `.gitattributes`). Run
+`git lfs install` once per clone. A reference that Git LFS left as a pointer
+fails its test and says to run `git lfs pull`.
+
 ## Rust
 
 `rules_rust` builds with the toolchain pinned by `rust-version` and links
