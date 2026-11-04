@@ -30,8 +30,8 @@ package struct ChatView: View {
                     Text(replying.isEmpty ? "…" : replying)
                         .foregroundStyle(.secondary)
                 }
-                if let plan = Binding($store.conversation.draft) {
-                    DraftCard(plan: plan, problem: store.problem, canAdd: store.canAdd) {
+                if let draft = store.conversation.draft {
+                    DraftCard(plan: $store.conversation.draft.or(draft), problem: store.problem, canAdd: store.canAdd) {
                         store.send(.addTapped)
                     } discard: {
                         store.send(.discardDraftTapped)
@@ -206,5 +206,17 @@ private struct MessageView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: message.role == .person ? .trailing : .leading)
+    }
+}
+
+extension Binding {
+    /// The value, or `fallback` once it's gone, with writes dropped then,
+    /// while SwiftUI catches up. SwiftUI's own `Binding(_:)` over an
+    /// optional force-unwraps it, which traps if the view reads it once more
+    /// after it's set to nil, as Discard does.
+    fileprivate func or<Wrapped>(_ fallback: Wrapped) -> Binding<Wrapped> where Value == Wrapped? {
+        Binding<Wrapped>(
+            get: { wrappedValue ?? fallback },
+            set: { if wrappedValue != nil { wrappedValue = $0 } })
     }
 }

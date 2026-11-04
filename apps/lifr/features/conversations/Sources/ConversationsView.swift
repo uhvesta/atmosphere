@@ -12,6 +12,60 @@ package struct ConversationsView: View {
     }
 
     package var body: some View {
+        screen
+            .task { await store.send(.task).finish() }
+            .confirmationDialog($store.scope(state: \.confirm, action: \.confirm))
+            .alert($store.scope(state: \.alert, action: \.alert))
+            .sheet(item: $store.scope(state: \.rename, action: \.rename)) { store in
+                RenameView(store: store)
+            }
+    }
+
+    @ViewBuilder private var screen: some View {
+        #if os(macOS)
+            // The Mac shows the list beside the chat, so the archive is a
+            // switch over the list rather than a screen of its own.
+            Group {
+                if store.showsArchive {
+                    ArchivedConversationsView(store: store)
+                } else {
+                    list
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Picker(
+                        "Show",
+                        selection: Binding(get: { store.showsArchive }, set: { store.send(.archiveShown($0)) })
+                    ) {
+                        Text("Conversations").tag(false)
+                        Text("Archived").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                }
+                newButton
+            }
+            .navigationDestination(isPresented: chatShown) { chat }
+        #else
+            list
+                .toolbar {
+                    ToolbarItem(placement: .secondaryAction) {
+                        Button("Archived", systemImage: "archivebox") {
+                            store.send(.archiveShown(true))
+                        }
+                    }
+                    newButton
+                }
+                .navigationDestination(isPresented: chatShown) { chat }
+                .navigationDestination(
+                    isPresented: Binding(get: { store.showsArchive }, set: { store.send(.archiveShown($0)) })
+                ) {
+                    ArchivedConversationsView(store: store)
+                }
+        #endif
+    }
+
+    private var list: some View {
         List {
             ForEach(store.state.sorted) { conversation in
                 Button {
@@ -46,37 +100,27 @@ package struct ConversationsView: View {
             }
         }
         .navigationTitle("Conversations")
-        .task { await store.send(.task).finish() }
-        .confirmationDialog($store.scope(state: \.confirm, action: \.confirm))
-        .alert($store.scope(state: \.alert, action: \.alert))
-        .sheet(item: $store.scope(state: \.rename, action: \.rename)) { store in
-            RenameView(store: store)
-        }
-        .toolbar {
-            ToolbarItem(placement: .secondaryAction) {
-                Button("Archived", systemImage: "archivebox") {
-                    store.send(.archiveShown(true))
-                }
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    store.send(.newTapped)
-                } label: {
-                    Label("New conversation", systemImage: "square.and.pencil")
-                }
+    }
+
+    private var newButton: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                store.send(.newTapped)
+            } label: {
+                Label("New conversation", systemImage: "square.and.pencil")
             }
         }
-        .navigationDestination(
-            isPresented: Binding(get: { store.openID != nil }, set: { if !$0 { store.send(.closed) } })
-        ) {
-            if let id = store.openID, let chat = store.scope(state: \.chats[id: id], action: \.chats[id: id]) {
-                ChatView(store: chat)
-            }
-        }
-        .navigationDestination(
-            isPresented: Binding(get: { store.showsArchive }, set: { store.send(.archiveShown($0)) })
-        ) {
-            ArchivedConversationsView(store: store)
+    }
+
+    private var chatShown: Binding<Bool> {
+        Binding(get: { store.openID != nil }, set: { if !$0 { store.send(.closed) } })
+    }
+
+    /// The open chat, rebuilt for each conversation so a new one starts
+    /// with an empty field at the top.
+    @ViewBuilder private var chat: some View {
+        if let id = store.openID, let chat = store.scope(state: \.chats[id: id], action: \.chats[id: id]) {
+            ChatView(store: chat).id(id)
         }
     }
 }
