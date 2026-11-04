@@ -9,6 +9,7 @@ bazel_dep(name = "aspect_rules_lint", version = "2.9.0")
 bazel_dep(name = "aspect_rules_lint_rust", version = "0.0.3")
 bazel_dep(name = "bazel_skylib", version = "1.9.2")
 bazel_dep(name = "rules_shell", version = "0.8.0")
+bazel_dep(name = "rules_zig", version = "0.17.0")
 bazel_dep(name = "rules_python", version = "2.4.0-rc1")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "toml.bzl", version = "0.5.0")
@@ -62,6 +63,15 @@ crate.from_cargo(
 use_repo(crate, "crates")
 
 register_toolchains("@rust_toolchains//:all")
+
+# MARK: - Zig
+
+# rules_zig downloads the Zig compiler for the build host and cross-compiles
+# with Zig's own libc for each target platform. The root module's first
+# zig.toolchain(...) is the default; override it from your own MODULE.bazel.
+zig = use_extension("@rules_zig//zig:extensions.bzl", "zig")
+zig.toolchain(zig_version = "0.17.0")
+use_repo(zig, "zig_toolchains")
 
 # MARK: - Host tooling
 
