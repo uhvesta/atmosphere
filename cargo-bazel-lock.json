@@ -1,5 +1,5 @@
 {
-  "checksum": "366299ece61fc2038c753b1162ac91708d2279edfc6b37ac458e15965e6081a8",
+  "checksum": "9961f7988f5dc9530946e978f43cdf3742c6f0e423c2368b10f4a14cf2bdbfe1",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -152,7 +152,7 @@
       ],
       "version": "0.12.1"
     },
-    "bootstrap-lock 0.0.0": {
+    "bootstrap 0.0.0": {
       "common_attrs": {
         "deps": [
           {
@@ -178,6 +178,33 @@
           {
             "id": "ureq 3.5.1",
             "target": "ureq"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "bootstrap",
+      "name": "bootstrap",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "bootstrap",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "bootstrap-lock 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
           }
         ],
         "edition": "2024"
@@ -3098,6 +3125,7 @@
   ],
   "direct_dev_deps": [],
   "workspace_members": {
+    "bootstrap 0.0.0": "tools/scripts/bootstrap/lib",
     "bootstrap-lock 0.0.0": "tools/scripts/bootstrap/lock"
   }
 }

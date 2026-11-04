@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "bootstrap-lock"
+name = "bootstrap"
 version = "0.0.0"
 dependencies = [
  "serde",
@@ -33,6 +33,15 @@ dependencies = [
  "thiserror",
  "toml",
  "ureq",
+]
+
+[[package]]
+name = "bootstrap-lock"
+version = "0.0.0"
+dependencies = [
+ "bootstrap",
+ "serde",
+ "thiserror",
 ]
 
 [[package]]
