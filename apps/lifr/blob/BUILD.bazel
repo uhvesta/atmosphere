@@ -1,0 +1,49 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# How Lifr writes the blobs it persists: a header that says how the bytes
+# are encoded and compressed, then the payload. Plain Swift on zstd's C
+# library, so it builds with the hermetic toolchains too.
+swift_library(
+    name = "blob",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    copts = [
+        "-swift-version",
+        "6",
+    ],
+    module_name = "LifrBlob",
+    visibility = ["//apps/lifr/clients/store_live:__pkg__"],
+    # zstd from the BCR; its own module map names it `libzstd`.
+    deps = ["@zstd"],
+)
+
+# Given/then tests, run with //apps/lifr/testing's harness.
+swift_binary(
+    name = "blob_tests",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    copts = [
+        "-swift-version",
+        "6",
+    ],
+    deps = [
+        ":blob",
+        "//apps/lifr/testing",
+    ],
+)
+
+sh_test(
+    name = "blob_test",
+    srcs = ["//apps/lifr/testing:run_tests.sh"],
+    args = ["$(rootpath :blob_tests)"],
+    data = [":blob_tests"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
