@@ -339,7 +339,7 @@
             }
             let asked = OSAllocatedUnfairLock<Confirmation?>(initialState: nil)
             var copy = loaded
-            let surface = request.surface ?? .cli
+            let surface = request.surface
             let first = Handler(
                 grant: grant, context: context(surface),
                 confirm: { confirmation in

@@ -35,7 +35,8 @@ final class ScheduledRemindersTests: XCTestCase {
         let trashed = records.task("Trashed", in: health)
         records.reminder(.at(now + 60), on: trashed)
         var workspace = records.workspace
-        _ = try? workspace.moveToTrash(trashed.id, in: Context(actor: .user(device: "Test"), now: now))
+        _ = try? workspace.moveToTrash(
+            trashed.id, in: Context(actor: .user(device: "Test", surface: .iPhone), now: now))
 
         XCTAssertEqual(workspace.scheduledReminders(now: now, timeZone: .gmt), [])
     }

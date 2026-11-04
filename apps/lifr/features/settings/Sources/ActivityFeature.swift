@@ -8,18 +8,12 @@ package enum ActivityAuthor: Hashable, Sendable {
     case surface(Actor.Surface)
     /// Lifr's own fixes, such as reopening a parent after a sync.
     case lifr
-    /// Changes saved before Lifr recorded where they came from.
-    case unknown
 
     package init(_ actor: Actor) {
-        if let surface = actor.surface {
-            self = .surface(surface)
-        } else {
-            self = actor.kind == .system ? .lifr : .unknown
-        }
+        self = actor.kind == .system ? .lifr : .surface(actor.surface)
     }
 
-    package static let all: [ActivityAuthor] = Actor.Surface.allCases.map(Self.surface) + [.lifr, .unknown]
+    package static let all: [ActivityAuthor] = Actor.Surface.allCases.map(Self.surface) + [.lifr]
 
     package var title: String {
         switch self {
@@ -30,7 +24,6 @@ package enum ActivityAuthor: Hashable, Sendable {
         case .surface(.mcp): "MCP"
         case .surface(.assistant): "Apple Intelligence"
         case .lifr: "Lifr"
-        case .unknown: "Earlier"
         }
     }
 }
@@ -198,7 +191,6 @@ package struct ActivityFeature {
             let place = ActivityAuthor(actor).title
             switch actor.kind {
             case .agent where actor.surface != .assistant: return "\(actor.client ?? "An agent") · \(place)"
-            case .user where actor.surface == nil: return actor.device
             default: return place
             }
         }
@@ -311,7 +303,7 @@ package struct ActivityFeature {
         -> ConfirmationDialogState<Confirm>
     {
         var copy = workspace
-        let preview = try? copy.revert(ids, in: Context(actor: .system(device: ""), now: now))
+        let preview = try? copy.revert(ids, in: Context(actor: .system(device: "", surface: .iPhone), now: now))
         let kept = preview?.skipped.count ?? 0
         return ConfirmationDialogState(titleVisibility: .visible) {
             TextState(title)

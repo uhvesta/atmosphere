@@ -30,7 +30,7 @@ package struct Grant: Hashable, Codable, Sendable {
     }
 
     /// Who history and comments say made the change.
-    package func actor(device: String, surface: Actor.Surface?) -> Actor {
+    package func actor(device: String, surface: Actor.Surface) -> Actor {
         isTerminalSession ? .user(device: device, surface: surface) : .agent(client, device: device, surface: surface)
     }
 }

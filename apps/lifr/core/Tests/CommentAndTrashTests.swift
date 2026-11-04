@@ -8,7 +8,7 @@ func commentAndTrashTests() -> [TestCase] {
             let fixture = try Fixture()
             let task = try fixture.task("Task")
             let comment = try fixture.workspace.addComment("Mine", to: task.id, in: fixture.context)
-            fixture.actor = .agent("Claude Code", device: "Mac")
+            fixture.actor = .agent("Claude Code", device: "Mac", surface: .mcp)
             try expectError(.notCommentAuthor(comment: comment.id)) {
                 try fixture.workspace.editComment(comment.id, body: "Changed", in: fixture.context)
             }
@@ -19,11 +19,11 @@ func commentAndTrashTests() -> [TestCase] {
         TestCase("given a comment by an agent, then only that agent can edit it") {
             let fixture = try Fixture()
             let task = try fixture.task("Task")
-            fixture.actor = .agent("Claude Code", device: "Mac")
+            fixture.actor = .agent("Claude Code", device: "Mac", surface: .mcp)
             let comment = try fixture.workspace.addComment("Agent's", to: task.id, in: fixture.context)
             try fixture.workspace.editComment(comment.id, body: "Edited", in: fixture.context)
             try expectEqual(fixture.workspace.comments[comment.id]?.body, "Edited")
-            fixture.actor = .agent("Other agent", device: "Mac")
+            fixture.actor = .agent("Other agent", device: "Mac", surface: .mcp)
             try expectError(.notCommentAuthor(comment: comment.id)) {
                 try fixture.workspace.deleteComment(comment.id, in: fixture.context)
             }

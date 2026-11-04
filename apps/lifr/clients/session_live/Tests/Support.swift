@@ -34,7 +34,7 @@ final class Harness: Sendable {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         // The server saves from its own tasks, which don't inherit a test's
         // dependencies, so the store sets them for each change.
-        let inner = StoreClient.inMemory(Workspace(), actor: .user(device: "Test Mac"))
+        let inner = StoreClient.inMemory(Workspace(), actor: .user(device: "Test Mac", surface: .mac))
         let now = now
         store = StoreClient(
             load: inner.load,
@@ -120,12 +120,12 @@ final class TestClient: @unchecked Sendable {
     deinit { Darwin.close(socket) }
 
     /// Sends `method` and waits for its response.
-    func call(_ method: APIMethod, _ params: JSONValue = [:], surface: Actor.Surface? = nil) throws -> RPCResponse {
+    func call(_ method: APIMethod, _ params: JSONValue = [:], surface: Actor.Surface = .cli) throws -> RPCResponse {
         try send(method, params, surface: surface)
         return try XCTUnwrap(receive())
     }
 
-    func send(_ method: APIMethod, _ params: JSONValue = [:], surface: Actor.Surface? = nil) throws {
+    func send(_ method: APIMethod, _ params: JSONValue = [:], surface: Actor.Surface = .cli) throws {
         let line = try Wire.line(
             RPCRequest(id: nextID, method: method.rawValue, params: params, surface: surface))
         nextID += 1

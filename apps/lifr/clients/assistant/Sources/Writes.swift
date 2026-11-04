@@ -201,7 +201,7 @@ extension AssistantTools {
 
     private func who(_ entry: JournalEntry) -> String {
         let actor = entry.actor
-        let place = actor.surface.map(\.rawValue) ?? "unknown"
+        let place = actor.surface.rawValue
         switch actor.kind {
         case .user: return "the person on \(place)"
         case .agent where actor.surface == .assistant: return "you"

@@ -53,8 +53,10 @@ final class RootFlowTests: XCTestCase {
     /// 1. Capture on iPhone, finish on Mac.
     func testCaptureOnIPhoneFinishOnMac() async throws {
         let marathon = records.project("Half marathon", in: health)
-        let (phoneClient, _) = StoreClient.inMemorySyncing(records.workspace, actor: .user(device: "iPhone"))
-        let (macClient, macSync) = StoreClient.inMemorySyncing(records.workspace, actor: .user(device: "Mac"))
+        let (phoneClient, _) = StoreClient.inMemorySyncing(
+            records.workspace, actor: .user(device: "iPhone", surface: .iPhone))
+        let (macClient, macSync) = StoreClient.inMemorySyncing(
+            records.workspace, actor: .user(device: "Mac", surface: .mac))
         let (phone, phoneTask) = await app(.phone, phoneClient)
         let (mac, macTask) = await app(.mac, macClient)
 
@@ -237,7 +239,7 @@ final class RootFlowTests: XCTestCase {
 
         cli(now: now) { workspace in
             _ = try? workspace.setStatus(
-                .inProgress, of: run.id, in: Context(actor: .agent("lifr", device: "Mac"), now: now))
+                .inProgress, of: run.id, in: Context(actor: .agent("lifr", device: "Mac", surface: .cli), now: now))
         }
         await mac.receive(\.updated)
 
@@ -255,7 +257,8 @@ final class RootFlowTests: XCTestCase {
         let socks = mac.task("Buy socks", in: health, parent: shoes)
         records.setStatus(.done, of: pairs)
         records.setStatus(.done, of: shoes)
-        let (client, sync) = StoreClient.inMemorySyncing(records.workspace, actor: .user(device: "iPhone"))
+        let (client, sync) = StoreClient.inMemorySyncing(
+            records.workspace, actor: .user(device: "iPhone", surface: .iPhone))
         let (phone, task) = await app(.phone, client)
         XCTAssertEqual(phone.state.workspace?.tasks[shoes.id]?.status, .done)
 

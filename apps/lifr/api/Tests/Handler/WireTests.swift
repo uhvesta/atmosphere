@@ -19,7 +19,7 @@ func wireTests() -> [TestCase] {
         TestCase("given a valid line, then the response answers the same id") {
             let fixture = try Fixture()
             let response = fixture.call(
-                line: #"{"jsonrpc": "2.0", "id": 3, "method": "list_avenues"}"#,
+                line: #"{"jsonrpc": "2.0", "id": 3, "method": "list_avenues", "surface": "cli"}"#,
                 grant: fixture.agent)
             try expectEqual(response.id, 3)
             try expect(response.error == nil, "list_avenues succeeds")

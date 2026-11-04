@@ -9,15 +9,26 @@ import LifrCore
 // status this version doesn't know, is skipped the same way.
 
 extension Actor {
-    /// An unknown surface, from a newer version, reads as unknown.
+    /// A missing surface, or one from a newer version, reads as a change
+    /// made on a device like this one.
     static func stored(kind: String, device: String, client: String?, surface: String?) -> Actor? {
-        let surface = surface.flatMap(Surface.init(rawValue:))
+        let surface = surface.flatMap(Surface.init(rawValue:)) ?? .thisDevice
         return switch Kind(rawValue: kind) {
         case .user: .user(device: device, surface: surface)
         case .agent: .agent(client ?? "", device: device, surface: surface)
         case .system: .system(device: device, surface: surface)
         case nil: nil
         }
+    }
+}
+
+extension Actor.Surface {
+    fileprivate static var thisDevice: Self {
+        #if os(macOS)
+            .mac
+        #else
+            .iPhone
+        #endif
     }
 }
 
@@ -130,7 +141,7 @@ extension StoredComment {
         authorKind = comment.author.kind.rawValue
         authorDevice = comment.author.device
         authorClient = comment.author.client
-        authorSurface = comment.author.surface?.rawValue
+        authorSurface = comment.author.surface.rawValue
         createdAt = comment.createdAt
         editedAt = comment.editedAt
         deletedAt = comment.deletedAt
@@ -181,7 +192,7 @@ extension StoredHistoryEvent {
         actorKind = event.actor.kind.rawValue
         actorDevice = event.actor.device
         actorClient = event.actor.client
-        actorSurface = event.actor.surface?.rawValue
+        actorSurface = event.actor.surface.rawValue
         kind = event.kind.rawValue
         field = event.field?.rawValue
         oldValue = event.oldValue
@@ -211,7 +222,7 @@ extension StoredJournalEntry {
         actorKind = entry.actor.kind.rawValue
         actorDevice = entry.actor.device
         actorClient = entry.actor.client
-        actorSurface = entry.actor.surface?.rawValue
+        actorSurface = entry.actor.surface.rawValue
         conversation = entry.conversation
         reverts = entry.reverts.isEmpty ? nil : try encoder.encode(entry.reverts)
         steps = try encoder.encode(entry.steps)

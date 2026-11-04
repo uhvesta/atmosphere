@@ -76,7 +76,7 @@ final class ActivityFeatureTests: XCTestCase {
         XCTAssertNil(store.state.alert)
         let rows = store.state.rows(now: now, calendar: .current)
         XCTAssertEqual(rows.first?.summary, "Reverted a change")
-        XCTAssertEqual(rows.first?.author, "This device")
+        XCTAssertEqual(rows.first?.author, "iPhone")
         XCTAssertEqual(rows.dropFirst().first?.isReverted, true)
     }
 

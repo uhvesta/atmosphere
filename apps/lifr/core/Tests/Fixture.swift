@@ -7,7 +7,7 @@ import LifrTesting
 final class Fixture {
     var workspace = Workspace()
     var now = Date(timeIntervalSince1970: 1_793_664_000)  // 2026-11-03T00:00:00Z
-    var actor = Actor.user(device: "iPhone")
+    var actor = Actor.user(device: "iPhone", surface: .iPhone)
     private var ids = 0
     private var codes = 0
     let health: Avenue
@@ -58,7 +58,7 @@ final class Fixture {
     init(copying other: Fixture, device: String) {
         workspace = other.workspace
         now = other.now
-        actor = .user(device: device)
+        actor = .user(device: device, surface: .mac)
         ids = other.ids + 1000
         codes = other.codes
         health = other.health

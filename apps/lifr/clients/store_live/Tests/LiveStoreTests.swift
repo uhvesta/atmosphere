@@ -14,7 +14,7 @@ final class LiveStoreTests: XCTestCase {
     private func context(device: String = "Test", after seconds: TimeInterval = 0) -> @Sendable () -> Context {
         let now = now.addingTimeInterval(seconds)
         return {
-            Context(actor: .user(device: device), now: now)
+            Context(actor: .user(device: device, surface: .mac), now: now)
         }
     }
 
@@ -54,7 +54,7 @@ final class LiveStoreTests: XCTestCase {
             $0.date.now = now
             $0.uuid = .incrementing
         } operation: {
-            StoreClient.live(LiveStore(modelContainer: container), actor: .user(device: "Test"))
+            StoreClient.live(LiveStore(modelContainer: container), actor: .user(device: "Test", surface: .mac))
         }
         let plants = try task("Water the plants", in: try await client.load())
 

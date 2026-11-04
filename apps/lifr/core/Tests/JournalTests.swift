@@ -191,10 +191,6 @@ func journalTests() -> [TestCase] {
             try expectError(.notFound(.change, id.uuidString)) { try fixture.revert([id]) }
             try expectEqual(fixture.workspace, before)
         },
-        TestCase("given an actor from before surfaces were recorded, when it's decoded, then its surface is unknown") {
-            let json = Data(#"{"kind":"user","device":"iPhone"}"#.utf8)
-            try expectEqual(try JSONDecoder().decode(Actor.self, from: json), .user(device: "iPhone"))
-        },
     ]
 }
 

@@ -6,7 +6,9 @@ extension StoreClient {
     /// Keeps the records in memory, starting from `workspace`. Changes use
     /// the `date`, `uuid` and `withRandomNumberGenerator` dependencies, so
     /// tests can fix them.
-    package static func inMemory(_ workspace: Workspace, actor: Actor = .user(device: "This device")) -> Self {
+    package static func inMemory(_ workspace: Workspace, actor: Actor = .user(device: "This device", surface: .iPhone))
+        -> Self
+    {
         inMemorySyncing(workspace, actor: actor).client
     }
 
@@ -14,10 +16,10 @@ extension StoreClient {
     /// `sync` applies records from another device, reconciles them, and
     /// sends the result to `updates`.
     package static func inMemorySyncing(
-        _ workspace: Workspace, actor: Actor = .user(device: "This device")
+        _ workspace: Workspace, actor: Actor = .user(device: "This device", surface: .iPhone)
     ) -> (client: Self, sync: InMemorySync) {
         let records = Records(workspace)
-        let sync = InMemorySync(records: records, device: actor.device)
+        let sync = InMemorySync(records: records, actor: actor)
 
         let client = StoreClient(
             load: { records.value },
@@ -44,12 +46,12 @@ extension StoreClient {
 /// Imports records into an in-memory store, as CloudKit would.
 package final class InMemorySync: Sendable {
     private let records: Records
-    private let device: String
+    private let actor: Actor
     private let continuations = LockIsolated<[AsyncStream<Update>.Continuation]>([])
 
-    fileprivate init(records: Records, device: String) {
+    fileprivate init(records: Records, actor: Actor) {
         self.records = records
-        self.device = device
+        self.actor = actor
     }
 
     fileprivate func stream() -> AsyncStream<Update> {
@@ -65,7 +67,8 @@ package final class InMemorySync: Sendable {
         let update = records.update { records in
             body(&records)
             var fixes: [Fix] = []
-            records.perform(in: Context(actor: .system(device: device), now: now)) { records, context in
+            let context = Context(actor: .system(device: actor.device, surface: actor.surface), now: now)
+            records.perform(in: context) { records, context in
                 fixes = records.reconcile(in: context)
                 return Change()
             }

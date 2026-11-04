@@ -34,7 +34,8 @@
       "method" : "trash_task",
       "params" : {
         "task" : "7004"
-      }
+      },
+      "surface" : "cli"
     },
     "response" : {
       "error" : {
@@ -57,7 +58,8 @@
       "params" : {
         "status" : "wontDo",
         "task" : "HEALTH-7001"
-      }
+      },
+      "surface" : "cli"
     },
     "response" : {
       "error" : {
@@ -97,7 +99,8 @@
       "method" : "get_task",
       "params" : {
 
-      }
+      },
+      "surface" : "cli"
     },
     "response" : {
       "error" : {
@@ -134,7 +137,8 @@
       "method" : "delete_everything",
       "params" : {
 
-      }
+      },
+      "surface" : "cli"
     },
     "response" : {
       "error" : {
@@ -157,7 +161,8 @@
       "params" : {
         "body" : "Booked for Friday.",
         "task" : "7004"
-      }
+      },
+      "surface" : "cli"
     },
     "response" : {
       "error" : {
@@ -179,7 +184,8 @@
       "method" : "get_task",
       "params" : {
         "task" : "FINANCE-7006"
-      }
+      },
+      "surface" : "cli"
     },
     "response" : {
       "error" : {
@@ -202,7 +208,8 @@
       "params" : {
         "status" : "done",
         "task" : "HEALTH-7001"
-      }
+      },
+      "surface" : "cli"
     },
     "response" : {
       "error" : {
@@ -243,7 +250,8 @@
       "params" : {
         "dueTime" : "09:30",
         "task" : "7004"
-      }
+      },
+      "surface" : "cli"
     },
     "response" : {
       "error" : {
@@ -266,7 +274,8 @@
       "params" : {
         "client" : "lifr 0.2.0",
         "protocolVersion" : 2
-      }
+      },
+      "surface" : "cli"
     },
     "response" : {
       "error" : {

@@ -34,7 +34,7 @@ extension LiveStore {
     /// Reconciles after each change that another process or CloudKit makes
     /// to the store, and sends the records with what it fixed. Ends when the
     /// calling task is cancelled.
-    package nonisolated func updates(device: String) -> AsyncStream<Update> {
+    package nonisolated func updates(as actor: Actor) -> AsyncStream<Update> {
         AsyncStream { continuation in
             let task = Task {
                 let logger = Logger(subsystem: "lifr", category: "sync")
@@ -42,7 +42,9 @@ extension LiveStore {
                     .map({ _ in () })
                 {
                     do {
-                        let fixes = try await reconcile(in: { Context(actor: .system(device: device), now: Date()) })
+                        let fixes = try await reconcile(in: {
+                            Context(actor: .system(device: actor.device, surface: actor.surface), now: Date())
+                        })
                         if !fixes.isEmpty { logger.info("Reconciled \(fixes.count) records after sync") }
                         continuation.yield(Update(workspace: try await load(), fixes: fixes))
                     } catch {
@@ -74,7 +76,7 @@ extension StoreClient {
         return StoreClient(
             load: { try await store.load() },
             save: { operation in try await store.save(in: context(), operation) },
-            updates: { store.updates(device: actor.device) }
+            updates: { store.updates(as: actor) }
         )
     }
 }

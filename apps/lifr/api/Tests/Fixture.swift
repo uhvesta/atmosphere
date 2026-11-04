@@ -48,7 +48,7 @@ final class Fixture {
     }
 
     init() throws {
-        let person = sequences.context(.user(device: device), at: now)
+        let person = sequences.context(.user(device: device, surface: .cli), at: now)
         let health = try workspace.createAvenue(key: "HEALTH", name: "Health", symbol: "heart", in: person)
         let work = try workspace.createAvenue(key: "WORK", name: "Work", symbol: "briefcase", in: person)
         let finance = try workspace.createAvenue(key: "FINANCE", name: "Finance", symbol: "banknote", in: person)
@@ -78,12 +78,13 @@ final class Fixture {
         try create(Workspace.NewTask(title: "File taxes", avenueID: finance.id))
         _ = try workspace.addComment(
             "Start with 3 runs a week.", to: planID,
-            in: sequences.context(.user(device: device), at: started))
+            in: sequences.context(.user(device: device, surface: .cli), at: started))
     }
 
     @discardableResult
     private func create(_ new: Workspace.NewTask, at time: Date? = nil) throws -> UUID {
-        let change = try workspace.createTask(new, in: sequences.context(.user(device: device), at: time ?? now))
+        let change = try workspace.createTask(
+            new, in: sequences.context(.user(device: device, surface: .cli), at: time ?? now))
         return change.previous.first { $0.value == nil }!.key
     }
 
@@ -97,7 +98,7 @@ final class Fixture {
         confirm: @escaping (Confirmation) -> Bool = { _ in true }
     ) -> (request: RPCRequest, response: RPCResponse) {
         requests += 1
-        let request = RPCRequest(id: requests, method: method, params: params)
+        let request = RPCRequest(id: requests, method: method, params: params, surface: .cli)
         return (request, handler(grant, confirm).handle(request, in: &workspace))
     }
 
@@ -106,6 +107,7 @@ final class Fixture {
     }
 
     private func handler(_ grant: Grant?, _ confirm: @escaping (Confirmation) -> Bool) -> Handler {
-        Handler(grant: grant, context: sequences.context(.user(device: device), at: now), confirm: confirm)
+        Handler(
+            grant: grant, context: sequences.context(.user(device: device, surface: .cli), at: now), confirm: confirm)
     }
 }

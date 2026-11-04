@@ -11,9 +11,8 @@ package struct Actor: Hashable, Codable, Sendable {
     package var device: String
     /// For agents, the approved client's name, such as "Claude Code".
     package var client: String?
-    /// Where the change came from. `nil` for changes made before Lifr
-    /// recorded it.
-    package var surface: Surface?
+    /// Where the change came from.
+    package var surface: Surface
 
     /// Where a change was made.
     package enum Surface: String, Hashable, Codable, Sendable, CaseIterable {
@@ -26,16 +25,16 @@ package struct Actor: Hashable, Codable, Sendable {
         case assistant
     }
 
-    package static func user(device: String, surface: Surface? = nil) -> Actor {
+    package static func user(device: String, surface: Surface) -> Actor {
         Actor(kind: .user, device: device, client: nil, surface: surface)
     }
 
-    package static func agent(_ client: String, device: String, surface: Surface? = nil) -> Actor {
+    package static func agent(_ client: String, device: String, surface: Surface) -> Actor {
         Actor(kind: .agent, device: device, client: client, surface: surface)
     }
 
     /// Changes the rules make on their own, such as reopening a parent.
-    package static func system(device: String, surface: Surface? = nil) -> Actor {
+    package static func system(device: String, surface: Surface) -> Actor {
         Actor(kind: .system, device: device, client: nil, surface: surface)
     }
 

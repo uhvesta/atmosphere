@@ -91,14 +91,14 @@ func accessTests() -> [TestCase] {
             _ = try fixture.call("add_comment", ["task": "7004", "body": "Booked."], grant: fixture.agent).response
                 .value(AddComment.Result.self)
             let author = fixture.workspace.comments.values.first { $0.body == "Booked." }?.author
-            try expectEqual(author, .agent("Claude Code", device: fixture.device))
+            try expectEqual(author, .agent("Claude Code", device: fixture.device, surface: .cli))
         },
         TestCase("given a terminal session, then changes are recorded as the person") {
             let fixture = try Fixture()
             _ = try fixture.call("add_comment", ["task": "7004", "body": "Booked."], grant: fixture.terminal).response
                 .value(AddComment.Result.self)
             let author = fixture.workspace.comments.values.first { $0.body == "Booked." }?.author
-            try expectEqual(author, .user(device: fixture.device))
+            try expectEqual(author, .user(device: fixture.device, surface: .cli))
         },
         TestCase("given an agent, then export is refused; given a terminal session, it needs Touch ID") {
             let fixture = try Fixture()
