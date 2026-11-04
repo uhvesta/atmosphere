@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import Foundation
+import LifrBlob
 import LifrCore
 import LifrStoreClient
 import SwiftData
@@ -96,6 +97,31 @@ final class LiveStoreTests: XCTestCase {
         XCTAssertEqual(reverted.workspace.tasks[plants.id]?.priority, plants.priority)
         let journal = try await store.load().journal
         XCTAssertEqual(journal.last?.reverts, [entry])
+    }
+
+    func testAJournalWrittenAsPlainJSONStillLoads() async throws {
+        let container = try LiveStore.inMemory()
+        try await LiveStore(modelContainer: container).insert(.sample(now: now, timeZone: .gmt))
+        let store = LiveStore(modelContainer: container)
+        let plants = try task("Water the plants", in: try await store.load())
+        let mac = Actor.user(device: "Test", surface: .mac)
+        let now = now
+        let saved = try await store.save(
+            in: { Context(actor: mac, now: now) },
+            { (workspace, context) throws(LifrError) in
+                try workspace.edit(plants.id, .init(title: "Water the ferns"), in: context)
+            })
+
+        let context = ModelContext(container)
+        for record in try context.fetch(FetchDescriptor<StoredJournalEntry>()) {
+            let steps = try XCTUnwrap(record.steps)
+            XCTAssertNotEqual(try Blob.format(of: steps), .legacy)
+            record.steps = try JSONEncoder().encode(try Blob.decode([JournalStep].self, from: steps))
+        }
+        try context.save()
+
+        let reopened = try await LiveStore(modelContainer: container).load()
+        XCTAssertEqual(reopened.journal, saved.workspace.journal)
     }
 
     func testARefusedChangeSavesNothing() async throws {

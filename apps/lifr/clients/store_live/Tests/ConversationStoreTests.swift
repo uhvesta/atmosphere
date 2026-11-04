@@ -1,5 +1,6 @@
 import Foundation
 import LifrAssistantClient
+import LifrBlob
 import LifrCore
 import SwiftData
 import XCTest
@@ -39,6 +40,26 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertEqual(loaded, [chat])
         XCTAssertEqual(try synced.count(), 0)
         XCTAssertEqual(try local.count(), 1)
+    }
+
+    func testAConversationSavedAsPlainJSONStillLoadsAndIsRewrittenAsABlob() async throws {
+        let (store, _, local) = try store()
+        let chat = conversation("Plan the week", plan: Plan(tasks: [.init(title: "Shop", place: "HOME")]))
+        let context = ModelContext(local.container)
+        let old = StoredConversation(id: chat.id)
+        old.updatedAt = chat.updatedAt
+        old.conversation = try JSONEncoder().encode(chat)
+        context.insert(old)
+        try context.save()
+
+        let loaded = try await store.load()
+        XCTAssertEqual(loaded, [chat])
+
+        try await store.save(chat)
+        let stored = try XCTUnwrap(try local.conversations().first?.conversation)
+        XCTAssertNotEqual(try Blob.format(of: stored), .legacy)
+        let reloaded = try await store.load()
+        XCTAssertEqual(reloaded, [chat])
     }
 
     func testTurningSyncingOnMovesConversationsAndOffKeepsACopy() async throws {
@@ -130,6 +151,10 @@ struct ModelContainerProbe {
 
     func count() throws -> Int {
         try ModelContext(container).fetchCount(FetchDescriptor<StoredConversation>())
+    }
+
+    func conversations() throws -> [StoredConversation] {
+        try ModelContext(container).fetch(FetchDescriptor<StoredConversation>())
     }
 
     func skillCount() throws -> Int {

@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrAssistantClient
+import LifrBlob
 import OSLog
 import SwiftData
 
@@ -85,7 +86,7 @@ package actor ConversationStore {
         // the rest.
         return stored.compactMap { record in
             do {
-                return try JSONDecoder().decode(Conversation.self, from: record.conversation ?? Data())
+                return try Blob.decode(Conversation.self, from: record.conversation ?? Data())
             } catch {
                 Logger(subsystem: "lifr", category: "conversations")
                     .error("Skipped conversation \(record.id, privacy: .public): \(String(describing: error))")
@@ -172,7 +173,7 @@ package actor ConversationStore {
         }
         let skills = stored.compactMap { record -> Skill? in
             do {
-                return try JSONDecoder().decode(Skill.self, from: record.skill ?? Data())
+                return try Blob.decode(Skill.self, from: record.skill ?? Data())
             } catch {
                 Logger(subsystem: "lifr", category: "conversations")
                     .error("Skipped skill \(record.id, privacy: .public): \(String(describing: error))")
@@ -186,7 +187,7 @@ package actor ConversationStore {
     package func saveSkill(_ skill: Skill, now: Date = .now) throws(ConversationStoreError) {
         do {
             let context = ModelContext(current)
-            try Self.upsert(id: skill.id, updatedAt: now, data: JSONEncoder().encode(skill), in: context)
+            try Self.upsert(id: skill.id, updatedAt: now, data: Blob.encode(skill), in: context)
             try context.save()
         } catch {
             throw .skillSaveFailed(error)
@@ -219,7 +220,6 @@ package actor ConversationStore {
 
     /// Adds or replaces each conversation; a newer copy already there wins.
     private static func upsert(_ conversations: [Conversation], in context: ModelContext) throws {
-        let encoder = JSONEncoder()
         for conversation in conversations {
             let id = conversation.id
             let existing = try context.fetch(FetchDescriptor<StoredConversation>(predicate: #Predicate { $0.id == id }))
@@ -227,7 +227,7 @@ package actor ConversationStore {
             existing.forEach(context.delete)
             let record = StoredConversation(id: id)
             record.updatedAt = conversation.updatedAt
-            record.conversation = try encoder.encode(conversation)
+            record.conversation = try Blob.encode(conversation)
             context.insert(record)
         }
     }

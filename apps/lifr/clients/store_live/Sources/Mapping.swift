@@ -1,4 +1,5 @@
 import Foundation
+import LifrBlob
 import LifrCore
 
 // Converting between the stored models and Core's records.
@@ -206,25 +207,23 @@ extension StoredJournalEntry {
     /// `nil` for an entry this version can't read, such as one a newer
     /// version wrote with a kind of record it doesn't know.
     var record: JournalEntry? {
-        let decoder = JSONDecoder()
         guard
             let actor = Actor.stored(kind: actorKind, device: actorDevice, client: actorClient, surface: actorSurface),
-            let steps, let decoded = try? decoder.decode([JournalStep].self, from: steps)
+            let steps, let decoded = try? Blob.decode([JournalStep].self, from: steps)
         else { return nil }
-        let reverts = reverts.flatMap { try? decoder.decode([UUID].self, from: $0) } ?? []
+        let reverts = reverts.flatMap { try? Blob.decode([UUID].self, from: $0) } ?? []
         return JournalEntry(
             id: id, actor: actor, at: at, conversation: conversation, reverts: reverts, steps: decoded)
     }
 
     func write(_ entry: JournalEntry) throws {
-        let encoder = JSONEncoder()
         at = entry.at
         actorKind = entry.actor.kind.rawValue
         actorDevice = entry.actor.device
         actorClient = entry.actor.client
         actorSurface = entry.actor.surface.rawValue
         conversation = entry.conversation
-        reverts = entry.reverts.isEmpty ? nil : try encoder.encode(entry.reverts)
-        steps = try encoder.encode(entry.steps)
+        reverts = entry.reverts.isEmpty ? nil : try Blob.encode(entry.reverts)
+        steps = try Blob.encode(entry.steps)
     }
 }
