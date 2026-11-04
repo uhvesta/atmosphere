@@ -213,6 +213,13 @@ package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible 
     case tooLong
     /// The model declined, such as for content it won't write about.
     case declined
+    /// The model is busy with another request, or iOS is limiting it while
+    /// Lifr is in the background.
+    case busy
+    /// The Simulator couldn't reach the Mac's model. It forwards requests
+    /// to macOS, which only works when the Simulator runtime and macOS
+    /// are the same version.
+    case simulatorHost(String)
     /// Anything else the model reported.
     case failed(String)
 
@@ -224,6 +231,12 @@ package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible 
             "This conversation is too long for the on-device model. Start a new conversation; the draft comes along."
         case .declined:
             "The assistant can't help with that. Rephrase the request, or edit the draft by hand."
+        case .busy:
+            "The assistant is busy. Lifr tries again when it's back on screen; or send the message again in a moment."
+        case .simulatorHost(let detail):
+            "The Simulator couldn't use this Mac's Apple Intelligence (\(detail)). This usually means the Simulator "
+                + "runtime and macOS are different versions: update Xcode and its iOS Simulator to match macOS, or "
+                + "run Lifr on a device or as the Mac app."
         case .failed(let detail):
             "The assistant stopped: \(detail). Send the message again."
         }

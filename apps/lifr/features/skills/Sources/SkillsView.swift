@@ -25,7 +25,7 @@ package struct SkillsView: View {
                     toggle(skill)
                         .contentShape(.rect)
                         .onTapGesture { store.send(.editTapped(skill.id)) }
-                        .swipeActions {
+                        .swipeActions(allowsFullSwipe: false) {
                             Button("Delete", role: .destructive) { store.send(.deleteTapped([skill.id])) }
                         }
                         .contextMenu {

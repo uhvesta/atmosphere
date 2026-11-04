@@ -110,11 +110,18 @@ extension AssistantClient {
             }
         }
 
+        #if targetEnvironment(simulator)
+            private static let onSimulator = true
+        #else
+            private static let onSimulator = false
+        #endif
+
         private static func assistantError(_ error: LanguageModelSession.GenerationError) -> AssistantError {
             switch error {
             case .exceededContextWindowSize: .tooLong
             case .guardrailViolation, .refusal: .declined
-            default: .failed(error.localizedDescription)
+            case .rateLimited, .concurrentRequests: .busy
+            default: onSimulator ? .simulatorHost(error.localizedDescription) : .failed(error.localizedDescription)
             }
         }
 

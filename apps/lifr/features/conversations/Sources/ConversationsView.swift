@@ -21,7 +21,7 @@ package struct ConversationsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .swipeActions {
+                .swipeActions(allowsFullSwipe: false) {
                     Button("Delete", systemImage: "trash", role: .destructive) {
                         store.send(.deleteTapped(conversation.id))
                     }

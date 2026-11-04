@@ -114,7 +114,7 @@ package struct TaskListRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityHint(note ?? "")
         .accessibilityAction { store.send(.rowTapped(row.id)) }
-        .swipeActions(edge: .leading) {
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
             if row.status != .inProgress {
                 Button(row.status == .procrastinated ? "Restart" : "Start") {
                     store.send(.rowAction(row.id, .status(.inProgress)))
@@ -122,7 +122,7 @@ package struct TaskListRow: View {
                 .tint(.blue)
             }
         }
-        .swipeActions(edge: .trailing) {
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             ForEach(store.query.trailingActions.filter { $0 != .status(row.status) }, id: \.self) { action in
                 Button(action.title) { store.send(.rowAction(row.id, action)) }
                     .tint(action.tint)

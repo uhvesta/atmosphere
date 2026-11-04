@@ -32,7 +32,7 @@ package struct ActivityView: View {
                 ForEach(rows) { row in
                     ActivityRowView(row: row)
                         .contextMenu { actions(row) }
-                        .swipeActions { actions(row) }
+                        .swipeActions(allowsFullSwipe: false) { actions(row) }
                 }
             }
         }
