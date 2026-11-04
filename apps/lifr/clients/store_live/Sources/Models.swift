@@ -24,7 +24,7 @@ import SwiftData
 let models: [any PersistentModel.Type] = [
     StoredAvenue.self, StoredProject.self, StoredTask.self, StoredLabel.self, StoredComment.self,
     StoredReminder.self, StoredHistoryEvent.self, StoredSettings.self, StoredJournalEntry.self,
-    StoredConversation.self,
+    StoredConversation.self, StoredSkill.self,
 ]
 
 @Model
@@ -192,4 +192,17 @@ final class StoredConversation {
     @Attribute(.allowsCloudEncryption) var conversation: Data?
 
     init(id: UUID) { self.id = id }
+}
+
+/// A skill of the person's, or whether a built-in skill is on, stored with
+/// conversations so it syncs when they do.
+@Model
+final class StoredSkill {
+    /// `Skill.id`, such as "user:weekly-review".
+    var id = ""
+    var updatedAt = Date.distantPast
+    /// `Skill` as JSON.
+    @Attribute(.allowsCloudEncryption) var skill: Data?
+
+    init(id: String) { self.id = id }
 }

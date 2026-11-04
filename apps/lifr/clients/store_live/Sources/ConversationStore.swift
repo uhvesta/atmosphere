@@ -9,6 +9,8 @@ package enum ConversationStoreError: Error, CustomStringConvertible {
     case openFailed(any Error)
     case readFailed(any Error)
     case saveFailed(any Error)
+    case skillsReadFailed(any Error)
+    case skillSaveFailed(any Error)
 
     package var description: String {
         switch self {
@@ -21,12 +23,19 @@ package enum ConversationStoreError: Error, CustomStringConvertible {
         case .saveFailed(let error):
             "Couldn't save the conversation (\(error.localizedDescription)). Nothing was changed. "
                 + "Try again; if storage is full, free some up first."
+        case .skillsReadFailed(let error):
+            "Couldn't read your skills (\(error.localizedDescription)). The built-in skills still work. "
+                + "Reopen Lifr and try again."
+        case .skillSaveFailed(let error):
+            "Couldn't save the skill (\(error.localizedDescription)). Nothing was changed. "
+                + "Try again; if storage is full, free some up first."
         }
     }
 }
 
-/// Conversations on SwiftData: in a local-only store, or in the synced Lifr
-/// store when the person turns syncing on. The choice is kept per device.
+/// Conversations and skills on SwiftData: in a local-only store, or in the
+/// synced Lifr store when the person turns syncing on. The choice is kept
+/// per device.
 package actor ConversationStore {
     private let synced: ModelContainer
     private let local: ModelContainer
@@ -50,7 +59,7 @@ package actor ConversationStore {
         try container(ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none))
     }
 
-    private static let schema = Schema([StoredConversation.self])
+    private static let schema = Schema([StoredConversation.self, StoredSkill.self])
 
     private static func container(_ configuration: ModelConfiguration) throws(ConversationStoreError) -> ModelContainer
     {
@@ -120,24 +129,92 @@ package actor ConversationStore {
         }
     }
 
-    /// On: moves local conversations into the synced store. Off: copies the
-    /// synced ones here and leaves them in iCloud.
+    /// On: moves local conversations and skills into the synced store. Off:
+    /// copies the synced ones here and leaves them in iCloud.
     package func setSyncing(_ on: Bool) throws(ConversationStoreError) {
         guard on != isSyncing else { return }
         let conversations = try load()
+        let skills: [StoredSkill]
+        do {
+            skills = try ModelContext(current).fetch(FetchDescriptor<StoredSkill>())
+        } catch {
+            throw .skillsReadFailed(error)
+        }
         do {
             let target = ModelContext(on ? synced : local)
             try Self.upsert(conversations, in: target)
+            for skill in skills {
+                try Self.upsert(id: skill.id, updatedAt: skill.updatedAt, data: skill.skill, in: target)
+            }
             try target.save()
             if on {
                 let source = ModelContext(local)
                 try source.delete(model: StoredConversation.self)
+                try source.delete(model: StoredSkill.self)
                 try source.save()
             }
         } catch {
             throw .saveFailed(error)
         }
         defaults.set(on, forKey: Self.syncingKey)
+    }
+
+    // MARK: - Skills
+
+    /// The built-in skills, then the person's. A stored skill that doesn't
+    /// decode is skipped.
+    package func loadSkills() throws(ConversationStoreError) -> [Skill] {
+        let stored: [StoredSkill]
+        do {
+            stored = try ModelContext(current).fetch(FetchDescriptor<StoredSkill>())
+        } catch {
+            throw .skillsReadFailed(error)
+        }
+        let skills = stored.compactMap { record -> Skill? in
+            do {
+                return try JSONDecoder().decode(Skill.self, from: record.skill ?? Data())
+            } catch {
+                Logger(subsystem: "lifr", category: "conversations")
+                    .error("Skipped skill \(record.id, privacy: .public): \(String(describing: error))")
+                return nil
+            }
+        }
+        return Skill.merged(stored: skills)
+    }
+
+    /// Adds or replaces the skill, as of `now`.
+    package func saveSkill(_ skill: Skill, now: Date = .now) throws(ConversationStoreError) {
+        do {
+            let context = ModelContext(current)
+            try Self.upsert(id: skill.id, updatedAt: now, data: JSONEncoder().encode(skill), in: context)
+            try context.save()
+        } catch {
+            throw .skillSaveFailed(error)
+        }
+    }
+
+    /// Deletes from both stores, so a skill goes from iCloud too.
+    package func deleteSkills(_ ids: [String]) throws(ConversationStoreError) {
+        do {
+            for container in [local, synced] {
+                let context = ModelContext(container)
+                try context.delete(model: StoredSkill.self, where: #Predicate { ids.contains($0.id) })
+                try context.save()
+            }
+        } catch {
+            throw .skillSaveFailed(error)
+        }
+    }
+
+    /// Adds or replaces a stored skill; a newer copy already there wins.
+    private static func upsert(id: String, updatedAt: Date, data: Data?, in context: ModelContext) throws {
+        let existing = try context.fetch(FetchDescriptor<StoredSkill>(predicate: #Predicate { $0.id == id }))
+        if let newest = existing.map(\.updatedAt).max(), newest > updatedAt { return }
+        existing.forEach(context.delete)
+        let record = StoredSkill(id: id)
+        record.updatedAt = updatedAt
+        record.skill = data
+        context.insert(record)
     }
 
     /// Adds or replaces each conversation; a newer copy already there wins.
@@ -175,5 +252,19 @@ extension ConversationsClient {
         ConversationsClient(
             load: { throw error }, save: { _ in throw error }, delete: { _ in throw error },
             deleteAll: { throw error }, isSyncing: { false }, setSyncing: { _ in throw error })
+    }
+}
+
+extension SkillsClient {
+    package static func live(_ store: ConversationStore) -> Self {
+        SkillsClient(
+            load: { try await store.loadSkills() },
+            save: { try await store.saveSkill($0) },
+            delete: { try await store.deleteSkills($0) })
+    }
+
+    /// Fails every call with `error`, for when the stores didn't open.
+    package static func failing(_ error: ConversationStoreError) -> Self {
+        SkillsClient(load: { throw error }, save: { _ in throw error }, delete: { _ in throw error })
     }
 }

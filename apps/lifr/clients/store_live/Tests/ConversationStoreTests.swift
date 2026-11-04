@@ -77,6 +77,49 @@ final class ConversationStoreTests: XCTestCase {
         try await store.deleteAll()
         XCTAssertEqual(try local.count(), 0)
     }
+
+    private func skill(_ name: String) throws -> Skill {
+        try XCTUnwrap(
+            Skill(userNamed: name, summary: "", instructions: "Be brief.", tools: [.findTasks], draftsPlans: false))
+    }
+
+    func testKeepsSkillsAndBuiltInSwitchesWithConversations() async throws {
+        let (store, _, _) = try store()
+        let mine = try skill("Weekly")
+        var undo = Skill.undo
+        undo.isOn = false
+
+        try await store.saveSkill(mine)
+        try await store.saveSkill(undo)
+
+        let loaded = try await store.loadSkills()
+        XCTAssertEqual(loaded.map(\.id), Skill.builtIn.map(\.id) + [mine.id])
+        XCTAssertEqual(loaded.last, mine)
+        XCTAssertEqual(loaded.first { $0.id == "undo" }?.isOn, false)
+    }
+
+    func testSkillsMoveWithSyncingAndDeleteFromBothStores() async throws {
+        let (store, synced, local) = try store()
+        let mine = try skill("Weekly")
+        try await store.saveSkill(mine, now: now)
+
+        try await store.setSyncing(true)
+        XCTAssertEqual(try synced.skillCount(), 1)
+        XCTAssertEqual(try local.skillCount(), 0)
+        var edited = mine
+        edited.instructions = "Be briefer."
+        try await store.saveSkill(edited, now: now.addingTimeInterval(60))
+
+        try await store.setSyncing(false)
+        let afterOff = try await store.loadSkills()
+        XCTAssertEqual(afterOff.last, edited)
+
+        try await store.deleteSkills([mine.id])
+        XCTAssertEqual(try synced.skillCount(), 0)
+        XCTAssertEqual(try local.skillCount(), 0)
+        let afterDelete = try await store.loadSkills()
+        XCTAssertEqual(afterDelete.map(\.id), Skill.builtIn.map(\.id))
+    }
 }
 
 /// Counts the conversations a container holds.
@@ -87,5 +130,9 @@ struct ModelContainerProbe {
 
     func count() throws -> Int {
         try ModelContext(container).fetchCount(FetchDescriptor<StoredConversation>())
+    }
+
+    func skillCount() throws -> Int {
+        try ModelContext(container).fetchCount(FetchDescriptor<StoredSkill>())
     }
 }
