@@ -1,6 +1,6 @@
-# monty-oxide
+# atmosphere
 
-monty-oxide is an example of a polyglot, monorepo-style codebase that builds its own opinionated development tools from first principles. Planned, not done: an example CI scheduler and setup, an example remote build execution (RBE) implementation, a Linux sandbox tool, its own linters, and possibly its own version control.
+atmosphere is an example of a polyglot, monorepo-style codebase that builds its own opinionated development tools from first principles. Planned, not done: an example CI scheduler and setup, an example remote build execution (RBE) implementation, a Linux sandbox tool, its own linters, and possibly its own version control.
 
 ## Bootstrap
 
