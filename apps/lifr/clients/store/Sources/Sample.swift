@@ -62,16 +62,26 @@ package struct RecordsBuilder {
     package mutating func task(
         _ title: String, in avenue: Avenue, project: Project? = nil, parent: LifrTask? = nil,
         status: TaskStatus = .todo,
-        priority: Priority = .none, due days: Int? = nil, at time: String? = nil, idle: Int = 0
+        priority: Priority = .none, due days: Int? = nil, at time: String? = nil, idle: Int = 0,
+        labels: [Label] = []
     ) -> LifrTask {
         var new = Workspace.NewTask(title: title, avenueID: avenue.id, parentID: parent?.id)
         new.projectID = project?.id
+        new.labelIDs = Set(labels.map(\.id))
         new.status = status
         new.priority = priority
         new.dueDate = days.map { CalendarDate(now + Double($0) * 24 * 60 * 60, in: timeZone) }
         new.dueTime = time.map { try! TimeOfDay($0) }
         let change = try! workspace.createTask(new, in: context(at: now - Double(idle) * 24 * 60 * 60))
         return workspace.tasks[change.previous.first { $0.value == nil }!.key]!
+    }
+
+    package mutating func label(_ name: String) -> Label {
+        workspace.createLabel(name: name, in: context())
+    }
+
+    package mutating func comment(_ body: String, on task: LifrTask) {
+        _ = try! workspace.addComment(body, to: task.id, in: context())
     }
 
     package mutating func setStatus(_ status: TaskStatus, of task: LifrTask) {
