@@ -61,6 +61,14 @@ enum Output {
             return text
         case .addComment:
             return "Commented on \(try result.decode(AddComment.Result.self).task).\n"
+        case .addPlan:
+            let added = try result.decode(AddPlan.Result.self)
+            var text = ""
+            if !added.avenues.isEmpty { text += "New Avenues: \(added.avenues.joined(separator: ", ")).\n" }
+            if !added.labels.isEmpty { text += "New labels: \(added.labels.joined(separator: ", ")).\n" }
+            for project in added.projects { text += "New Project in \(project.avenue): \(project.name).\n" }
+            if !added.tasks.isEmpty { text += "Added \(added.tasks.count) task(s):\n" + table(added.tasks) }
+            return text
         case .trashTask:
             let trash = try result.decode(TrashTask.Result.self)
             return "Moved to the trash: \(trash.trashed.joined(separator: ", ")). Restore them in the Lifr app.\n"

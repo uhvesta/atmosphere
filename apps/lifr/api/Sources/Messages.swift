@@ -266,6 +266,32 @@ package enum AddComment {
     }
 }
 
+package enum AddPlan {
+    package struct Params: Hashable, Codable, Sendable {
+        /// The plan as TOML, starting with "# Lifr plan v1".
+        package var plan: String
+        /// An IANA time zone, such as Europe/London, for relative dates like
+        /// "tomorrow". Defaults to the app's.
+        package var timeZone: String?
+
+        package init(plan: String, timeZone: String? = nil) {
+            self.plan = plan
+            self.timeZone = timeZone
+        }
+    }
+
+    /// What the plan added, each in the plan's order.
+    package struct Result: Hashable, Codable, Sendable {
+        /// Avenue keys.
+        package var avenues: [String]
+        /// Label names, only for labels that didn't exist yet.
+        package var labels: [String]
+        package var projects: [ProjectSummary]
+        /// Tasks and Sub tasks.
+        package var tasks: [TaskSummary]
+    }
+}
+
 package enum TrashTask {
     package struct Result: Hashable, Codable, Sendable {
         /// The task and the Sub tasks trashed with it.

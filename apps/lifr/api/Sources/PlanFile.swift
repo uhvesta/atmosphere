@@ -11,6 +11,23 @@ import LifrCore
 package enum PlanFile {
     package static let firstLine = "# Lifr plan v1"
 
+    /// The tables and fields, for agents writing a plan.
+    package static let guide = """
+        \(firstLine)
+        [[avenue]]               key, name, color, symbol
+        [[label]]                name, color
+        [[project]]              name, avenue (key), details, due
+          [[project.task]]       task fields
+            [[project.task.subtask]]
+        [[task]]                 task fields, plus in = "KEY" or "KEY/Project name", or parent = "TASK-CODE"
+          [[task.subtask]]       task fields
+
+        Task fields: title (required), details, status (todo, in_progress, procrastinated, done, wont_do),
+        priority (none, low, medium, high, urgent), start, due, due_time ("HH:MM"), labels, remind, comments.
+        Dates: YYYY-MM-DD, today, tomorrow, a weekday, next friday, +3d, +2w, +1m.
+        remind: "1 day before due", "2 hours before due", or a date with a time, such as "tomorrow 09:00".
+        """
+
     // MARK: - Writing
 
     /// The plan as TOML, the same each time for the same plan. Fields left

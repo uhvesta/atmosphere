@@ -10,6 +10,8 @@ package enum Command: Hashable, Sendable {
     case mcp
     /// One request to the app.
     case request(APIMethod, JSONValue)
+    /// `lifr add --plan FILE`: the plan in FILE, or standard input for -.
+    case addPlan(file: String)
 }
 
 /// A command line `lifr` can't run. `message` says what to type instead.
@@ -78,6 +80,13 @@ package struct Invocation: Hashable, Sendable {
             .request(.getTask, ["task": .string(try words.required("a task code, such as HEALTH-7K2Q"))])
         },
         "add": { words throws(UsageError) in
+            if let file = try words.option("--plan") {
+                if let extra = words.rest().first {
+                    throw UsageError(
+                        "lifr add --plan takes only the file, not \"\(extra)\". Put every task in the plan.")
+                }
+                return .addPlan(file: file)
+            }
             var params = try taskFields(&words)
             params["avenue"] = try words.option("--avenue").map(JSONValue.string)
             params["parent"] = try words.option("--parent").map(JSONValue.string)

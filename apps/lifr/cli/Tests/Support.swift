@@ -11,6 +11,8 @@ final class FixtureConnection: Connection {
     var confirm: (Confirmation) -> Bool = { _ in true }
     /// The params of each request, in order.
     private(set) var requests: [JSONValue] = []
+    /// Files `lifr` can read, by path.
+    var files: [String: String] = [:]
 
     init(grant: (Fixture) -> Grant? = { $0.agent }) throws {
         fixture = try Fixture()
@@ -40,7 +42,11 @@ extension FixtureConnection {
         var error = ""
         let cli = CLI(
             connect: { self }, standardOutput: { output += $0 }, standardError: { error += $0 },
-            timeZone: TimeZone(identifier: "UTC")!)
+            timeZone: TimeZone(identifier: "UTC")!,
+            readFile: { path in
+                guard let text = self.files[path] else { throw CocoaError(.fileReadNoSuchFile) }
+                return text
+            })
         let status = cli.run(arguments)
         return Run(status: status, output: output, error: error)
     }

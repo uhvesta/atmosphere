@@ -60,6 +60,29 @@ let methodExamples: [APIMethod: Example] = [
     .setStatus: try example("set_status", ["task": "HEALTH-7001", "status": "wontDo", "cascade": true]),
     .moveTask: try example("move_task", ["task": "HEALTH-7004", "parent": "HEALTH-7001"]),
     .addComment: try example("add_comment", ["task": "7002", "body": "Done in 1:12, felt **good**."]),
+    .addPlan: try example(
+        "add_plan",
+        [
+            "plan": .string(
+                """
+                # Lifr plan v1
+
+                [[task]]
+                title = "Clean up living room"
+                in = "HEALTH"
+                due = "tomorrow"
+
+                  [[task.subtask]]
+                  title = "Vacuum"
+
+                [[task]]
+                title = "Ice after runs"
+                in = "HEALTH/Half marathon"
+                labels = ["running"]
+
+                """),
+            "timeZone": "GMT",
+        ]),
     .trashTask: try example("trash_task", ["task": "HEALTH-7001"]),
     .export: try example("export", grant: { $0.terminal }),
 ]

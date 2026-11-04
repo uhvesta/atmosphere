@@ -29,6 +29,7 @@ final class GoldenTests: XCTestCase {
             "move_task": ["move", "HEALTH-7004", "--parent", "HEALTH-7001"],
             "add_comment": ["comment", "7002", "Done in 1:12, felt **good**."],
             "trash_task": ["trash", "HEALTH-7001"],
+            "add_plan": ["add", "--plan", "plan.toml"],
             "export": ["export"],
         ]
         let examples = try golden("methods").array
@@ -39,6 +40,7 @@ final class GoldenTests: XCTestCase {
         for example in examples {
             guard case .string(let method)? = example["method"], let arguments = commands[method] else { continue }
             let connection = try FixtureConnection(grant: grant(for: method))
+            if case .string(let plan)? = example["request"]?["params"]?["plan"] { connection.files["plan.toml"] = plan }
             let run = connection.run(arguments + ["--json"])
 
             XCTAssertEqual(run.status, 0, "\(method): \(run.output)")

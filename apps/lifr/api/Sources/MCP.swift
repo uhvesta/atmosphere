@@ -108,6 +108,18 @@ package struct MCPTool: Hashable, Codable, Sendable {
                 "Add a Markdown comment to a task.",
                 object(["task": taskCode, "body": string("The comment, in Markdown.")], required: ["task", "body"])
             )
+        case .addPlan:
+            return (
+                "Add several records at once from a TOML plan, all or nothing: new Avenues, labels, Projects with "
+                    + "their tasks, and tasks with Sub tasks. Show the plan to the person before adding it. "
+                    + "A table belongs to the nearest parent table above it.\n\n" + PlanFile.guide,
+                object(
+                    [
+                        "plan": string("The plan as TOML, starting with \"\(PlanFile.firstLine)\"."),
+                        "timeZone": string("IANA time zone for relative dates, such as Europe/London."),
+                    ],
+                    required: ["plan"])
+            )
         case .trashTask:
             return (
                 "Move a task and its Sub tasks to the trash. The person always confirms this in the Lifr app.",

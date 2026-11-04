@@ -339,6 +339,28 @@
     "scope" : "write"
   },
   {
+    "description" : "Add several records at once from a TOML plan, all or nothing: new Avenues, labels, Projects with their tasks, and tasks with Sub tasks. Show the plan to the person before adding it. A table belongs to the nearest parent table above it.\n\n# Lifr plan v1\n[[avenue]]               key, name, color, symbol\n[[label]]                name, color\n[[project]]              name, avenue (key), details, due\n  [[project.task]]       task fields\n    [[project.task.subtask]]\n[[task]]                 task fields, plus in = \"KEY\" or \"KEY/Project name\", or parent = \"TASK-CODE\"\n  [[task.subtask]]       task fields\n\nTask fields: title (required), details, status (todo, in_progress, procrastinated, done, wont_do),\npriority (none, low, medium, high, urgent), start, due, due_time (\"HH:MM\"), labels, remind, comments.\nDates: YYYY-MM-DD, today, tomorrow, a weekday, next friday, +3d, +2w, +1m.\nremind: \"1 day before due\", \"2 hours before due\", or a date with a time, such as \"tomorrow 09:00\".",
+    "inputSchema" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "plan" : {
+          "description" : "The plan as TOML, starting with \"# Lifr plan v1\".",
+          "type" : "string"
+        },
+        "timeZone" : {
+          "description" : "IANA time zone for relative dates, such as Europe/London.",
+          "type" : "string"
+        }
+      },
+      "required" : [
+        "plan"
+      ],
+      "type" : "object"
+    },
+    "name" : "add_plan",
+    "scope" : "write"
+  },
+  {
     "description" : "Move a task and its Sub tasks to the trash. The person always confirms this in the Lifr app.",
     "inputSchema" : {
       "additionalProperties" : false,

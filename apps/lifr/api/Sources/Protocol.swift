@@ -31,6 +31,8 @@ package enum APIMethod: String, Hashable, Codable, Sendable, CaseIterable {
     case setStatus = "set_status"
     case moveTask = "move_task"
     case addComment = "add_comment"
+    /// Avenues, labels, Projects, tasks and Sub tasks from a TOML plan, all or nothing.
+    case addPlan = "add_plan"
     /// Always confirmed in the app, even when the grant doesn't confirm writes.
     case trashTask = "trash_task"
     /// Every record as JSON, for backups. Needs Touch ID; never offered to agents.
@@ -42,7 +44,7 @@ package enum APIMethod: String, Hashable, Codable, Sendable, CaseIterable {
         switch self {
         case .hello, .unlock, .export: nil
         case .listAvenues, .listProjects, .searchTasks, .getTask: .read
-        case .createTask, .updateTask, .setStatus, .moveTask, .addComment, .trashTask: .write
+        case .createTask, .updateTask, .setStatus, .moveTask, .addComment, .addPlan, .trashTask: .write
         }
     }
 }

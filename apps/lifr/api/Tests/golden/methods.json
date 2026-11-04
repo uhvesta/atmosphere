@@ -462,6 +462,72 @@
     "scope" : "write"
   },
   {
+    "method" : "add_plan",
+    "request" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "method" : "add_plan",
+      "params" : {
+        "plan" : "# Lifr plan v1\n\n[[task]]\ntitle = \"Clean up living room\"\nin = \"HEALTH\"\ndue = \"tomorrow\"\n\n  [[task.subtask]]\n  title = \"Vacuum\"\n\n[[task]]\ntitle = \"Ice after runs\"\nin = \"HEALTH/Half marathon\"\nlabels = [\"running\"]\n",
+        "timeZone" : "GMT"
+      }
+    },
+    "response" : {
+      "id" : 1,
+      "jsonrpc" : "2.0",
+      "result" : {
+        "avenues" : [
+
+        ],
+        "labels" : [
+
+        ],
+        "projects" : [
+
+        ],
+        "tasks" : [
+          {
+            "avenue" : "HEALTH",
+            "code" : "HEALTH-7007",
+            "dueDate" : "2026-11-04",
+            "labels" : [
+
+            ],
+            "openSubtasks" : 1,
+            "priority" : "none",
+            "status" : "todo",
+            "title" : "Clean up living room"
+          },
+          {
+            "avenue" : "HEALTH",
+            "code" : "HEALTH-7008",
+            "labels" : [
+
+            ],
+            "openSubtasks" : 0,
+            "parent" : "HEALTH-7007",
+            "priority" : "none",
+            "status" : "todo",
+            "title" : "Vacuum"
+          },
+          {
+            "avenue" : "HEALTH",
+            "code" : "HEALTH-7009",
+            "labels" : [
+              "running"
+            ],
+            "openSubtasks" : 0,
+            "priority" : "none",
+            "project" : "00000000-0000-0000-0000-000000000004",
+            "status" : "todo",
+            "title" : "Ice after runs"
+          }
+        ]
+      }
+    },
+    "scope" : "write"
+  },
+  {
     "method" : "trash_task",
     "request" : {
       "id" : 1,

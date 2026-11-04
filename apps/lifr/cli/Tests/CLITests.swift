@@ -124,6 +124,48 @@ final class CLITests: XCTestCase {
     }
     // swiftlint:enable line_length
 
+    func testAddingAPlanListsWhatWasAdded() throws {
+        let connection = try FixtureConnection()
+        connection.files["move.toml"] = """
+            # Lifr plan v1
+            [[project]]
+            name = "Spring race"
+            avenue = "HEALTH"
+              [[project.task]]
+              title = "Pick a race"
+                [[project.task.subtask]]
+                title = "Compare dates"
+            """
+        assertInlineSnapshot(of: describe(connection.run("add", "--plan", "move.toml")), as: .lines) {
+            """
+            exit 0
+            New Project in HEALTH: Spring race.
+            Added 2 task(s):
+            HEALTH-7007  To Do  Pick a race  (1 open Sub task)
+            HEALTH-7008  To Do  Compare dates
+
+            """
+        }
+    }
+
+    func testAPlanThatCantBeReadIsRefusedWithoutAskingTheApp() throws {
+        let connection = try FixtureConnection()
+        connection.files["bad.toml"] = "[[task]]\ntitel = \"A\""
+        let run = connection.run("add", "--plan", "bad.toml")
+        XCTAssertEqual(run.status, 1)
+        XCTAssertEqual(connection.requests, [])
+    }
+
+    func testAMissingPlanFileIsAUsageError() throws {
+        let connection = try FixtureConnection()
+        XCTAssertEqual(connection.run("add", "--plan", "nowhere.toml").status, 2)
+        XCTAssertEqual(connection.requests, [])
+    }
+
+    func testAPlanWithATitleTooIsAUsageError() throws {
+        XCTAssertEqual(try FixtureConnection().run("add", "Buy", "--plan", "move.toml").status, 2)
+    }
+
     private func describe(_ run: Run) -> String {
         var text = "exit \(run.status)\n"
         if !run.output.isEmpty { text += run.output }

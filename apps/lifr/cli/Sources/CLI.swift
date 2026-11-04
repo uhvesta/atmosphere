@@ -11,21 +11,25 @@ package struct CLI {
     package var standardError: (String) -> Void
     /// The next line of standard input, for `lifr mcp`.
     package var readLine: () -> String?
-    /// For times in output meant for people.
+    /// For times in output meant for people, and relative dates in plans.
     package var timeZone: TimeZone
+    /// The text of a file, for `lifr add --plan`.
+    package var readFile: (String) throws -> String
 
     package init(
         connect: @escaping () throws(APIError) -> any Connection,
         standardOutput: @escaping (String) -> Void,
         standardError: @escaping (String) -> Void,
         readLine: @escaping () -> String? = { nil },
-        timeZone: TimeZone = .current
+        timeZone: TimeZone = .current,
+        readFile: @escaping (String) throws -> String = { try String(contentsOfFile: $0, encoding: .utf8) }
     ) {
         self.connect = connect
         self.standardOutput = standardOutput
         self.standardError = standardError
         self.readLine = readLine
         self.timeZone = timeZone
+        self.readFile = readFile
     }
 
     /// Exit statuses: 0 for success, 1 when the app refused or failed the
@@ -52,29 +56,58 @@ package struct CLI {
             }
             return 0
         case .request(let method, let params):
-            do throws(APIError) {
-                let result = try connect().call(method, params)
+            return send(method, params, json: invocation.json)
+        case .addPlan(let file):
+            let text: String
+            if file == "-" {
+                var lines: [String] = []
+                while let line = readLine() { lines.append(line) }
+                text = lines.joined(separator: "\n")
+            } else {
                 do {
-                    standardOutput(
-                        invocation.json
-                            ? try Output.json(result) : try Output.text(for: method, result, timeZone: timeZone))
+                    text = try readFile(file)
                 } catch {
-                    throw APIError(
-                        .internalError,
-                        "The Lifr app answered in a shape lifr doesn't know: \(error). Update Lifr so the CLI and "
-                            + "app match, or use --json.")
+                    standardError(
+                        "lifr: Can't read the plan \(file): \(error.localizedDescription) Check the path, or pass - "
+                            + "to read the plan from standard input.\n")
+                    return 2
                 }
-                return 0
+            }
+            // Checked here too, so a typo is reported without the app.
+            do {
+                _ = try PlanFile.read(text)
             } catch {
-                if invocation.json {
-                    standardOutput((try? Output.json(["error": RPCError(error)])) ?? "")
-                } else {
-                    var message = "lifr: \(error.message)\n"
-                    if let tasks = error.tasks { message += "Tasks: \(tasks.joined(separator: ", "))\n" }
-                    standardError(message)
-                }
+                standardError("lifr: The plan in \(file) can't be read. \(error.description)\nNothing was added.\n")
                 return 1
             }
+            return send(
+                .addPlan, ["plan": .string(text), "timeZone": .string(timeZone.identifier)], json: invocation.json)
+        }
+    }
+
+    private func send(_ method: APIMethod, _ params: JSONValue, json: Bool) -> Int32 {
+        do throws(APIError) {
+            let result = try connect().call(method, params)
+            do {
+                standardOutput(
+                    json
+                        ? try Output.json(result) : try Output.text(for: method, result, timeZone: timeZone))
+            } catch {
+                throw APIError(
+                    .internalError,
+                    "The Lifr app answered in a shape lifr doesn't know: \(error). Update Lifr so the CLI and "
+                        + "app match, or use --json.")
+            }
+            return 0
+        } catch {
+            if json {
+                standardOutput((try? Output.json(["error": RPCError(error)])) ?? "")
+            } else {
+                var message = "lifr: \(error.message)\n"
+                if let tasks = error.tasks { message += "Tasks: \(tasks.joined(separator: ", "))\n" }
+                standardError(message)
+            }
+            return 1
         }
     }
 
@@ -92,6 +125,8 @@ package struct CLI {
 
         Changing:
           add TITLE (--avenue KEY | --parent TASK) [--project ID] [--status STATUS] [FIELDS]
+          add --plan FILE                        Avenues, Projects, tasks and Sub tasks from a TOML plan, all or
+                                                 nothing. FILE - reads standard input. lifr mcp describes the format.
           edit TASK [--title TITLE] [FIELDS] [--clear start|due|time]...
           status TASK STATUS [--cascade]         STATUS is todo, in-progress, procrastinated, done or wont-do.
                                                  --cascade closes open Sub tasks with Won't Do.

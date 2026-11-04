@@ -24,10 +24,16 @@ package struct Handler {
     package var context: Context
     /// Asks the person; `true` when they approve.
     package var confirm: (Confirmation) -> Bool
+    /// For relative dates in plans, when the request doesn't name a zone.
+    package var timeZone: TimeZone
 
-    package init(grant: Grant?, context: Context, confirm: @escaping (Confirmation) -> Bool) {
+    package init(
+        grant: Grant?, context: Context, timeZone: TimeZone = .current,
+        confirm: @escaping (Confirmation) -> Bool
+    ) {
         self.grant = grant
         self.context = context
+        self.timeZone = timeZone
         self.confirm = confirm
         if let grant { self.context.actor = grant.actor(device: context.actor.device) }
     }
@@ -200,6 +206,26 @@ package struct Handler {
             return AddComment.Result(
                 id: comment.id, task: workspace.displayCode(of: target), createdAt: comment.createdAt)
 
+        case .addPlan:
+            let add: AddPlan.Params = try decode(params, for: method)
+            let plan: Plan
+            do {
+                plan = try PlanFile.read(add.plan)
+            } catch {
+                throw APIError.invalidParams(method.rawValue, "the plan can't be read. \(error.description)")
+            }
+            var zone = timeZone
+            if let name = add.timeZone {
+                guard let named = TimeZone(identifier: name) else {
+                    throw APIError.invalidParams(
+                        method.rawValue, "\"\(name)\" isn't a time zone. Use an IANA name such as Europe/London.")
+                }
+                zone = named
+            }
+            try checkAccess(plan, workspace)
+            try confirmWrite(method, task: nil)
+            return added(try workspace.apply(plan, timeZone: zone, in: context), workspace)
+
         case .trashTask:
             let ref: TaskRef.Params = try decode(params, for: method)
             let target = try task(ref.task, workspace, writing: true)
@@ -261,6 +287,33 @@ package struct Handler {
     private func confirmWrite(_ method: APIMethod, task: String?) throws {
         guard grant?.confirmWrites == true else { return }
         guard confirm(.write(method, task: task)) else { throw APIError.confirmationDenied }
+    }
+
+    /// Refuses a plan that places anything where this caller can't write,
+    /// before Core sees it, so an agent learns nothing about hidden Avenues
+    /// from Core's suggestions.
+    private func checkAccess(_ plan: Plan, _ workspace: Workspace) throws {
+        guard isAgent else { return }
+        if !plan.avenues.isEmpty, grant?.avenueIDs != nil {
+            throw APIError.notAuthorized(
+                "\(grant?.client ?? "This app") may only use some Avenues, so it can't create new ones. Ask the "
+                    + "person to create the Avenue in Lifr, or to allow every Avenue in Settings > Connected apps.")
+        }
+        let newKeys = Set(plan.avenues.map { $0.key.uppercased() })
+        func place(_ text: String) throws {
+            let key = String(text.split(separator: "/", maxSplits: 1).first ?? "").trimmingCharacters(in: .whitespaces)
+            guard !newKeys.contains(key.uppercased()) else { return }
+            _ = try avenue(key: key.uppercased(), workspace, writing: true)
+        }
+        func check(_ task: Plan.TaskDraft) throws {
+            if let text = task.place { try place(text) }
+            if let code = task.parent { _ = try self.task(code, workspace, writing: true) }
+        }
+        for project in plan.projects {
+            try place(project.avenue)
+            try project.tasks.forEach(check)
+        }
+        try plan.tasks.forEach(check)
     }
 
     /// Avenues this caller may see, in sidebar order. Hidden ones never show
@@ -419,6 +472,26 @@ package struct Handler {
             task: summary(workspace.tasks[id]!, workspace),
             alsoChanged: others.map { summary($0, workspace) },
             reopenedParent: change.reopenedParent.flatMap { workspace.tasks[$0] }.map { workspace.displayCode(of: $0) })
+    }
+
+    private func added(_ change: Change, _ workspace: Workspace) -> AddPlan.Result {
+        var result = AddPlan.Result(avenues: [], labels: [], projects: [], tasks: [])
+        for record in change.added {
+            switch record {
+            case .avenue(let id): workspace.avenues[id].map { result.avenues.append($0.key.rawValue) }
+            case .label(let id): workspace.labels[id].map { result.labels.append($0.name) }
+            case .project(let id):
+                if let project = workspace.projects[id] {
+                    result.projects.append(
+                        ProjectSummary(
+                            id: project.id, avenue: workspace.avenues[project.avenueID]?.key.rawValue ?? "",
+                            name: project.name, status: project.status, dueDate: project.dueDate))
+                }
+            case .task(let id): workspace.tasks[id].map { result.tasks.append(summary($0, workspace)) }
+            case .comment, .reminder: break
+            }
+        }
+        return result
     }
 
     // MARK: - Errors
