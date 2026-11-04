@@ -120,6 +120,13 @@ toolchain builds their Swift. Targets that need Xcode set
 `target_compatible_with = ["//bazel/xcode"]`, so without the config, as with
 `bazel build //...` and `--config=no_xcode`, Bazel skips them.
 
+Lifr (`apps/lifr`) builds its iOS app, macOS app and `lifr` command this way,
+with [`rules_apple`](https://github.com/bazelbuild/rules_apple):
+
+```sh
+bazel build --config=xcode //apps/lifr/...
+```
+
 ## Rust
 
 `rules_rust` builds with the toolchain pinned by `rust-version` and links

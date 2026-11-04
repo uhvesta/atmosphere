@@ -1,0 +1,27 @@
+load("@rules_apple//apple:macos.bzl", "macos_command_line_application")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# The `lifr` command. The Mac app embeds it in Contents/Helpers.
+
+swift_library(
+    name = "cli_lib",
+    srcs = ["main.swift"],
+    module_name = "LifrCLI",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = ["//apps/lifr/core"],
+)
+
+macos_command_line_application(
+    name = "lifr",
+    bundle_id = "com.example.lifr.cli",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/lifr/app:__pkg__"],
+    deps = [":cli_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
