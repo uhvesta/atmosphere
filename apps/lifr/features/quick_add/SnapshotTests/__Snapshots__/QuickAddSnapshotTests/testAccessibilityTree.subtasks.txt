@@ -1,0 +1,4 @@
+[button] "Done"
+[header, text] "Sub tasks of Race day"
+[text] "Pin the bib"
+[text] "Charge the watch"

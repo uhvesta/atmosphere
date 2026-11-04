@@ -1,0 +1,116 @@
+import ComposableArchitecture
+import Foundation
+import LifrCore
+import LifrQuickAdd
+import LifrStoreClient
+import XCTest
+
+@MainActor
+final class QuickAddFeatureTests: XCTestCase {
+    /// 2026-11-03 10:00 UTC, a Tuesday.
+    private let now = Date(timeIntervalSince1970: 1_793_700_000)
+    private lazy var records = RecordsBuilder(now: now, timeZone: .gmt)
+    private lazy var health = records.avenue("HEALTH", "Health")
+    private lazy var home = records.avenue("HOME", "Home")
+
+    private func quickAdd() -> TestStoreOf<QuickAddFeature> {
+        let store = withDependencies {
+            $0.defaultAppStorage = UserDefaults(suiteName: "QuickAddFeatureTests-\(UUID())")!
+        } operation: {
+            TestStore(initialState: QuickAddFeature.State(workspace: records.workspace, now: now)) {
+                QuickAddFeature()
+            } withDependencies: { [now, records] in
+                $0.store = .inMemory(records.workspace)
+                $0.date.now = now
+                $0.timeZone = .gmt
+                $0.uuid = .incrementing
+                $0.withRandomNumberGenerator = WithRandomNumberGenerator(SystemRandomNumberGenerator())
+            }
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    func testAddsATaskDueTomorrowAndRemembersTheAvenue() async throws {
+        _ = (health, home)
+        let store = quickAdd()
+
+        await store.send(.binding(.set(\.avenueID, home.id)))
+        await store.send(.binding(.set(\.title, " Call the plumber ")))
+        await store.send(.binding(.set(\.due, .tomorrow)))
+        await store.send(.binding(.set(\.priority, .high)))
+        await store.send(.addTapped)
+        let workspace = try await saved(store)
+
+        let task = try XCTUnwrap(workspace.tasks.values.first)
+        XCTAssertEqual(task.title, "Call the plumber")
+        XCTAssertEqual(task.avenueID, home.id)
+        XCTAssertEqual(task.priority, .high)
+        XCTAssertEqual(task.dueDate?.description, "2026-11-04")
+        XCTAssertEqual(store.state.lastAvenue, home.id.uuidString)
+    }
+
+    func testDefaultsToTheLastAvenueUsed() async throws {
+        _ = (health, home)
+        let first = quickAdd()
+        XCTAssertEqual(first.state.avenueID, health.id)
+
+        await first.send(.binding(.set(\.avenueID, home.id)))
+        await first.send(.binding(.set(\.title, "Water the plants")))
+        await first.send(.addTapped)
+        _ = try await saved(first)
+
+        let next = withDependencies {
+            $0.defaultAppStorage = first.dependencies.defaultAppStorage
+        } operation: {
+            QuickAddFeature.State(workspace: records.workspace, now: now)
+        }
+        XCTAssertEqual(next.avenueID, home.id)
+    }
+
+    func testChangingTheAvenueClearsAProjectFromAnother() async {
+        let marathon = records.project("Half marathon", in: health)
+        _ = home
+        let store = quickAdd()
+
+        await store.send(.binding(.set(\.projectID, marathon.id)))
+        await store.send(.binding(.set(\.avenueID, home.id)))
+
+        XCTAssertNil(store.state.projectID)
+    }
+
+    func testSubtaskModeAddsTheTaskThenItsSubtasks() async throws {
+        _ = health
+        let store = quickAdd()
+
+        await store.send(.binding(.set(\.subtaskMode, true)))
+        await store.send(.binding(.set(\.title, "Race day")))
+        await store.send(.addTapped)
+        _ = try await saved(store)
+        XCTAssertEqual(store.state.parent?.name, "Race day")
+
+        await store.send(.binding(.set(\.title, "Pin the bib")))
+        await store.send(.addTapped)
+        let workspace = try await saved(store)
+
+        let parent = try XCTUnwrap(store.state.parent)
+        XCTAssertEqual(workspace.subtasks(of: parent.id).map(\.title), ["Pin the bib"])
+        XCTAssertEqual(store.state.addedSubtasks, ["Pin the bib"])
+        XCTAssertEqual(store.state.title, "")
+    }
+
+    func testABlankTitleCantBeAdded() async {
+        _ = health
+        let store = quickAdd()
+
+        await store.send(.binding(.set(\.title, "   ")))
+
+        XCTAssertFalse(store.state.canAdd)
+    }
+
+    /// The records the last add saved.
+    private func saved(_ store: TestStoreOf<QuickAddFeature>) async throws -> Workspace {
+        await store.receive(\.added.success)
+        return try await store.dependencies.store.load()
+    }
+}
