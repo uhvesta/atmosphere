@@ -9,7 +9,7 @@ monty-oxide is an example of a polyglot, monorepo-style codebase that builds its
 
 Everything else (toolchains, linters, and formatting tools) is fetched hermetically by Bazel.
 
-Without direnv, run `sh tools/bootstrap/bazelisk.sh` and add `.tools/bin` to `PATH`.
+Without direnv, run `sh tools/bootstrap/bazelisk.sh`, then add `.tools/bin` to `PATH` or run `.tools/bin/bazel` directly.
 
 ## Contributing
 
