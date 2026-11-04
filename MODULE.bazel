@@ -150,5 +150,11 @@ register_toolchains("//bazel/toolchains/zig:all")
 
 # MARK: - Host tooling
 
+provisioning_profile_repository = use_extension(
+    "@rules_apple//apple:apple.bzl",
+    "provisioning_profile_repository_extension",
+)
+use_repo(provisioning_profile_repository, "local_provisioning_profiles")
+
 host_tools = use_extension("//bazel/host_tools:extensions.bzl", "host_tools")
 use_repo(host_tools, "buildifier", "lima", "rumdl", "shfmt", "starpls", "vale")

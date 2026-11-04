@@ -44,21 +44,37 @@ build:linux_x86_64_gnu --no@rules_go//go/config:static
 # Apps that need Xcode (see bazel/xcode/BUILD.bazel). rules_apple transitions
 # to the platforms these flags name; the //bazel/xcode variants select Xcode's
 # toolchains. Without this config those apps are skipped.
-build:xcode --@apple_support//platforms:macos_arm64_platform=//bazel/xcode:macos_arm64
-build:xcode --@apple_support//platforms:ios_arm64_platform=//bazel/xcode:ios_arm64
-build:xcode --@apple_support//platforms:ios_sim_arm64_platform=//bazel/xcode:ios_sim_arm64
-build:xcode --macos_cpus=arm64
+# xcode builds iPhone apps for the simulator; xcode_toolchains is the rest,
+# for configs that build for devices instead.
+build:xcode_toolchains --@apple_support//platforms:macos_arm64_platform=//bazel/xcode:macos_arm64
+build:xcode_toolchains --@apple_support//platforms:ios_arm64_platform=//bazel/xcode:ios_arm64
+build:xcode_toolchains --@apple_support//platforms:ios_sim_arm64_platform=//bazel/xcode:ios_sim_arm64
+build:xcode_toolchains --macos_cpus=arm64
+build:xcode --config=xcode_toolchains
 build:xcode --ios_multi_cpus=sim_arm64
 # Tools these builds run on the build machine also use Xcode: Swift macro
 # plugins (swift-syntax) and rules_xcodeproj's rsync. @llvm's ld64.lld rejects
 # the -defsym that rules_swift links plugins with, and the duplicate xxhash
 # symbols in rsync's lz4 and xxhash.
-build:xcode --host_platform=//bazel/xcode:macos_arm64
+build:xcode_toolchains --host_platform=//bazel/xcode:macos_arm64
 # Re-records Lifr's snapshot references into the source tree (see
 # apps/lifr/testing/snapshot/defs.bzl). The run fails by design; run the tests
 # again without this config to verify.
 test:record_snapshots --config=xcode
 test:record_snapshots --test_env=LIFR_RECORD_SNAPSHOTS=1
 test:record_snapshots --nocache_test_results
+# Lifr signed for its team (see apps/lifr/BUILD.bazel): the Mac app and
+# `lifr` with Developer ID, and the iPhone app for devices with the team's
+# development profile. Each needs its certificate in the login keychain.
+build:lifr_mac_release --config=xcode
+build:lifr_mac_release --//apps/lifr:signed
+build:lifr_mac_release --@rules_apple//apple/build_settings:signing_certificate_name="Developer ID Application"
+build:lifr_mac_release --apple_generate_dsym
+build:lifr_mac_release --compilation_mode=opt
+build:lifr_ios_device --config=xcode_toolchains
+build:lifr_ios_device --//apps/lifr:signed
+build:lifr_ios_device --ios_multi_cpus=arm64
+build:lifr_ios_device --apple_generate_dsym
+build:lifr_ios_device --compilation_mode=opt
 # Builds started from the generated Lifr.xcodeproj (//apps/lifr:xcodeproj).
 common:rules_xcodeproj --config=xcode

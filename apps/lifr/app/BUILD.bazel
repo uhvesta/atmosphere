@@ -1,5 +1,7 @@
+load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
 load("@rules_apple//apple:ios.bzl", "ios_application")
 load("@rules_apple//apple:macos.bzl", "macos_application")
+load("@rules_apple//apple:xcarchive.bzl", "xcarchive")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
 # The SwiftUI app, shared by iOS and macOS. Needs Xcode: build with
@@ -26,11 +28,19 @@ swift_library(
 
 ios_application(
     name = "ios",
-    bundle_id = "com.example.lifr",
+    app_icons = glob(["Resources/iOS.xcassets/**"]),
+    bundle_id = "com.avestabarzegar.lifr",
     bundle_name = "Lifr",
     families = ["iphone"],
-    infoplists = ["Info.plist"],
+    infoplists = [
+        "Info.plist",
+        "Info-iOS.plist",
+    ],
     minimum_os_version = "18.0",
+    provisioning_profile = select({
+        "//apps/lifr:is_signed": ":ios_development",
+        "//conditions:default": None,
+    }),
     target_compatible_with = ["//bazel/xcode"],
     # For the generated Xcode project (//apps/lifr:xcodeproj).
     visibility = ["@rules_xcodeproj//xcodeproj:generated"],
@@ -42,14 +52,50 @@ macos_application(
     # Helpers, not MacOS: on a case-insensitive disk the CLI, `lifr`, would
     # collide with the app's executable, `Lifr`.
     additional_contents = {"//apps/lifr/cli:lifr": "Helpers"},
-    bundle_id = "com.example.lifr",
+    app_icons = glob(["Resources/Mac.xcassets/**"]),
+    bundle_id = "com.avestabarzegar.lifr",
     bundle_name = "Lifr",
-    infoplists = ["Info.plist"],
+    # The hardened runtime: no injected libraries, no unsigned code.
+    codesignopts = ["--options=runtime"],
+    # The App Group whose container holds the local API's socket.
+    entitlements = select({
+        "//apps/lifr:is_signed": "macos.entitlements",
+        "//conditions:default": None,
+    }),
+    infoplists = [
+        "Info.plist",
+        "Info-macOS.plist",
+    ],
     minimum_os_version = "15.0",
     target_compatible_with = ["//bazel/xcode"],
     # For the generated Xcode project (//apps/lifr:xcodeproj).
     visibility = ["@rules_xcodeproj//xcodeproj:generated"],
     deps = [":app_lib"],
+)
+
+# The team's development profile for the iPhone app. iCloud needs an
+# explicit App ID's profile instead; see the M10 notes in the spec.
+local_provisioning_profile(
+    name = "ios_development",
+    profile_name = "iOS Team Provisioning Profile: *",
+    team_id = "7H66Q22DJD",
+)
+
+# Archives for Xcode's Organizer, with dSYMs. Build them signed:
+#   bazel build --config=lifr_mac_release //apps/lifr/app:macos_archive
+#   bazel build --config=lifr_ios_device //apps/lifr/app:ios_archive
+xcarchive(
+    name = "ios_archive",
+    bundle = ":ios",
+    tags = ["manual"],
+    target_compatible_with = ["//bazel/xcode"],
+)
+
+xcarchive(
+    name = "macos_archive",
+    bundle = ":macos",
+    tags = ["manual"],
+    target_compatible_with = ["//bazel/xcode"],
 )
 
 filegroup(

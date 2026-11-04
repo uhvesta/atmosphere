@@ -28,9 +28,25 @@ swift_library(
     ],
 )
 
+filegroup(
+    name = "entitlements",
+    srcs = ["lifr.entitlements"],
+)
+
 macos_command_line_application(
     name = "lifr",
-    bundle_id = "com.example.lifr.cli",
+    bundle_id = "com.avestabarzegar.lifr.cli",
+    # The app's App Group, to reach the socket in its container. The rule
+    # has no entitlements attribute, so they go to codesign directly.
+    codesign_inputs = [":entitlements"],
+    # The hardened runtime: no injected libraries, no unsigned code.
+    codesignopts = ["--options=runtime"] + select({
+        "//apps/lifr:is_signed": [
+            "--entitlements",
+            "apps/lifr/cli/lifr.entitlements",
+        ],
+        "//conditions:default": [],
+    }),
     minimum_os_version = "15.0",
     target_compatible_with = ["//bazel/xcode"],
     visibility = [

@@ -137,7 +137,7 @@ package final class SocketConnection: Connection {
         if let app = bundlingApp() {
             process.arguments = ["-g", "-j", app.path]
         } else {
-            process.arguments = ["-g", "-j", "-b", "com.example.lifr"]
+            process.arguments = ["-g", "-j", "-b", "com.avestabarzegar.lifr"]
         }
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
