@@ -44,7 +44,7 @@ final class ActivityFeatureTests: XCTestCase {
         XCTAssertEqual(rows.map(\.author), ["Claude Code · MCP", "Mac"])
         XCTAssertEqual(
             rows[1].changes.map { [$0.record, $0.field, $0.before, $0.after] },
-            [["Run 5 km", "Priority", "none", "high"], ["Run 5 km", "Title", "Run", "Run 5 km"]])
+            [["Run 5 km", "Title", "Run", "Run 5 km"], ["Run 5 km", "Priority", "None", "High"]])
     }
 
     func testFiltersByAuthorRecordAndDate() async throws {

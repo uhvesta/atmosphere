@@ -38,8 +38,8 @@ func journalTests() -> [TestCase] {
             try expectEqual(
                 entry.steps[0].fields,
                 [
-                    FieldChange(name: "priority", before: "none", after: "high"),
-                    FieldChange(name: "title", before: "Run", after: "Run 5 km"),
+                    FieldChange(field: .title, before: .text("Run"), after: .text("Run 5 km")),
+                    FieldChange(field: .priority, before: .priority(.none), after: .priority(.high)),
                 ])
         },
         TestCase("given a change that names its actor, when it's performed, then the entry credits that actor") {
@@ -98,7 +98,7 @@ func journalTests() -> [TestCase] {
             let revert = try fixture.revert([first.entry])
             try expectEqual(fixture.get(task).title, "Run 10 km")
             try expectEqual(fixture.get(task).priority, .none)
-            let skipped = SkippedRevert(record: RecordID(.task, task.id), field: "title", reason: .changedSince)
+            let skipped = SkippedRevert(record: RecordID(.task, task.id), field: .title, reason: .changedSince)
             try expectEqual(revert.skipped, [skipped])
         },
         TestCase("given a task that was added, when that's reverted, then the task is in the trash") {
@@ -164,7 +164,7 @@ func journalTests() -> [TestCase] {
             let revert = try fixture.revert(entries.map(\.id))
             try expectEqual(fixture.get(task).priority, .none)
             try expectEqual(fixture.get(task).title, "Run 5 km slowly")
-            try expectEqual(revert.skipped.map(\.field), ["title"])
+            try expectEqual(revert.skipped.map(\.field), [.title])
         },
         TestCase("given changes over two days, when everything since the second is reverted, then the first stays") {
             let fixture = try Fixture()

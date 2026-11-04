@@ -39,25 +39,24 @@ package struct JournalStep: Hashable, Codable, Sendable {
 
     package var record: RecordID { after?.id ?? before?.id ?? .settings }
 
-    /// The fields that differ, by their names in Core's records, without the
-    /// times every change bumps.
+    /// The fields that differ, in the order people see them.
     package var fields: [FieldChange] {
-        let old = before.map(Fields.init) ?? Fields()
-        let new = after.map(Fields.init) ?? Fields()
-        return Set(old.values.keys).union(new.values.keys).sorted().compactMap { name in
-            guard !Fields.bumped.contains(name), !Fields.same(old[name], new[name]) else { return nil }
-            return FieldChange(name: name, before: Fields.text(old[name]), after: Fields.text(new[name]))
+        let old = before?.fieldValues ?? [:]
+        let new = after?.fieldValues ?? [:]
+        return RecordValue.fields(of: record.kind).compactMap { field in
+            old[field] == new[field] ? nil : FieldChange(field: field, before: old[field], after: new[field])
         }
     }
 }
 
-/// A field of a record before and after, as text.
+/// A field of a record before and after. A value is nil when the field
+/// was empty, or the record wasn't there.
 package struct FieldChange: Hashable, Sendable {
-    package var name: String
-    package var before: String?
-    package var after: String?
-    package init(name: String, before: String?, after: String?) {
-        self.name = name
+    package var field: Field
+    package var before: FieldValue?
+    package var after: FieldValue?
+    package init(field: Field, before: FieldValue?, after: FieldValue?) {
+        self.field = field
         self.before = before
         self.after = after
     }
@@ -116,9 +115,9 @@ package struct SkippedRevert: Hashable, Sendable {
 
     package var record: RecordID
     /// The field, when only one was skipped.
-    package var field: String?
+    package var field: Field?
     package var reason: Reason
-    package init(record: RecordID, field: String?, reason: Reason) {
+    package init(record: RecordID, field: Field?, reason: Reason) {
         self.record = record
         self.field = field
         self.reason = reason
@@ -258,9 +257,7 @@ extension Workspace {
         case (_?, _, nil):
             change.skipped.append(SkippedRevert(record: record, field: nil, reason: .gone))
         case (let before?, let after, let current?):
-            let merged = Self.merge(
-                current: current, from: after.map(Fields.init) ?? Fields(), to: Fields(before), record: record,
-                &change)
+            let merged = Self.merge(current: current, from: after, to: before, record: record, &change)
             if let merged { set(record, to: merged) }
         }
     }
@@ -311,21 +308,20 @@ extension Workspace {
     /// `current` with each field that went from `from` to `to` put back to
     /// `to`, unless it has changed since. `nil` when nothing changes.
     private static func merge(
-        current: RecordValue, from: Fields, to: Fields, record: RecordID, _ change: inout Change
+        current: RecordValue, from: RecordValue?, to: RecordValue, record: RecordID, _ change: inout Change
     ) -> RecordValue? {
-        var fields = Fields(current)
-        var changed = false
-        for name in Set(from.values.keys).union(to.values.keys).sorted() where !Fields.bumped.contains(name) {
-            guard !Fields.same(from[name], to[name]) else { continue }
-            if Fields.same(fields[name], to[name]) { continue }
-            guard Fields.same(fields[name], from[name]) else {
-                change.skipped.append(SkippedRevert(record: record, field: name, reason: .changedSince))
+        let old = from?.fieldValues ?? [:]
+        let new = to.fieldValues
+        let now = current.fieldValues
+        var merged = current
+        for field in RecordValue.fields(of: record.kind) where old[field] != new[field] && now[field] != new[field] {
+            guard now[field] == old[field] else {
+                change.skipped.append(SkippedRevert(record: record, field: field, reason: .changedSince))
                 continue
             }
-            fields.values[name] = to[name]
-            changed = true
+            merged = merged.copying(field, from: to)
         }
-        return changed ? fields.record(like: current) : nil
+        return merged == current ? nil : merged
     }
 
     /// Bumps a reverted task's activity and writes its history, so the
@@ -362,100 +358,6 @@ extension Workspace {
             record(
                 .fieldChanged, on: new.id, field: field, oldValue: oldValue, newValue: newValue, reason: .undo,
                 by: context.actor, in: context, &change)
-        }
-    }
-}
-
-// MARK: - Fields
-
-/// A record's fields as JSON values, for comparing and merging any kind of
-/// record the same way.
-private struct Fields {
-    /// Every change sets these, so they never count as changed.
-    static let bumped: Set<String> = ["updatedAt", "lastActivityAt"]
-
-    var values: [String: Any] = [:]
-
-    init() {}
-
-    init(_ value: RecordValue) {
-        values = (try? Self.object(value)) ?? [:]
-    }
-
-    subscript(name: String) -> Any? {
-        values[name]
-    }
-
-    func record(like value: RecordValue) -> RecordValue? {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .custom { decoder in
-            let text = try decoder.singleValueContainer().decode(String.self)
-            guard let seconds = Double(text) else {
-                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: text))
-            }
-            return Date(timeIntervalSinceReferenceDate: seconds)
-        }
-        guard let data = try? JSONSerialization.data(withJSONObject: values) else { return nil }
-        return switch value {
-        case .avenue: (try? decoder.decode(Avenue.self, from: data)).map(RecordValue.avenue)
-        case .project: (try? decoder.decode(Project.self, from: data)).map(RecordValue.project)
-        case .task: (try? decoder.decode(LifrTask.self, from: data)).map(RecordValue.task)
-        case .label: (try? decoder.decode(Label.self, from: data)).map(RecordValue.label)
-        case .comment: (try? decoder.decode(Comment.self, from: data)).map(RecordValue.comment)
-        case .reminder: (try? decoder.decode(Reminder.self, from: data)).map(RecordValue.reminder)
-        case .settings: (try? decoder.decode(Settings.self, from: data)).map(RecordValue.settings)
-        }
-    }
-
-    private static func object(_ value: RecordValue) throws -> [String: Any] {
-        let encoder = JSONEncoder()
-        // Text, so dates come back exactly.
-        encoder.dateEncodingStrategy = .custom { date, encoder in
-            var container = encoder.singleValueContainer()
-            try container.encode(String(date.timeIntervalSinceReferenceDate))
-        }
-        let data =
-            switch value {
-            case .avenue(let record): try encoder.encode(record)
-            case .project(let record): try encoder.encode(record)
-            case .task(let record): try encoder.encode(record)
-            case .label(let record): try encoder.encode(record)
-            case .comment(let record): try encoder.encode(record)
-            case .reminder(let record): try encoder.encode(record)
-            case .settings(let record): try encoder.encode(record)
-            }
-        return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-    }
-
-    /// Equal JSON values. A missing field is null, and lists compare in any
-    /// order, since some are sets.
-    static func same(_ lhs: Any?, _ rhs: Any?) -> Bool {
-        normalized(lhs) == normalized(rhs)
-    }
-
-    /// A field as text for people: lists joined with commas, other
-    /// structures as JSON. `nil` for null.
-    static func text(_ value: Any?) -> String? {
-        switch value {
-        case nil, is NSNull: nil
-        case let string as String: string
-        case let list as [Any]: list.compactMap { text($0) }.sorted().joined(separator: ", ")
-        case let number as NSNumber: number.stringValue
-        case let value?:
-            (try? JSONSerialization.data(withJSONObject: value, options: .sortedKeys))
-                .flatMap { String(data: $0, encoding: .utf8) }
-        }
-    }
-
-    private static func normalized(_ value: Any?) -> String {
-        switch value {
-        case nil, is NSNull: "null"
-        case let list as [Any]: "[" + list.map { normalized($0) }.sorted().joined(separator: ",") + "]"
-        case let object as [String: Any]:
-            "{" + object.keys.sorted().map { "\($0):\(normalized(object[$0]))" }.joined(separator: ",") + "}"
-        case let string as String: "s" + string
-        case let number as NSNumber: "n" + number.stringValue
-        default: "?"
         }
     }
 }

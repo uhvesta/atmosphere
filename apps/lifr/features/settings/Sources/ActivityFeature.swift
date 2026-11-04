@@ -2,6 +2,7 @@ import ComposableArchitecture
 import Foundation
 import LifrCore
 import LifrStoreClient
+import LifrUI
 
 /// Who made a change, as the Activity log groups them.
 package enum ActivityAuthor: Hashable, Sendable {
@@ -135,17 +136,18 @@ package struct ActivityFeature {
                 id: entry.id, summary: summary(entry), author: author(entry.actor), at: entry.at,
                 changes: entry.steps.flatMap { step in
                     let record = name(step)
-                    return step.fields.filter { !Self.hidden.contains($0.name) }.map { field in
+                    return step.fields.filter { !Self.hidden.contains($0.field) }.map { change in
                         ActivityRow.Change(
-                            record: record, field: Self.title(of: field.name), before: value(field.name, field.before),
-                            after: value(field.name, field.after))
+                            record: record, field: change.field.title, before: change.before.map(text),
+                            after: change.after.map(text))
                     }
                 },
                 isReverted: isReverted, isRevert: !entry.reverts.isEmpty)
         }
 
-        /// Fields people don't need to see.
-        private static let hidden: Set<String> = ["id", "sortOrder", "createdAt", "taskID"]
+        /// Fields people don't need to see: the order, and the task a
+        /// comment or reminder is on, which the row already names.
+        private static let hidden: Set<Field> = [.sortOrder, .task]
 
         private func summary(_ entry: JournalEntry) -> String {
             if !entry.reverts.isEmpty {
@@ -195,35 +197,38 @@ package struct ActivityFeature {
             }
         }
 
-        /// "dueDate" → "Due date", "avenueID" → "Avenue".
-        private static func title(of field: String) -> String {
-            var name = field
-            for suffix in ["IDs", "ID"] where name.hasSuffix(suffix) {
-                name = String(name.dropLast(suffix.count)) + (suffix == "IDs" ? "s" : "")
-                break
+        /// A value as people read it: records by name, times as dates.
+        private func text(_ value: FieldValue) -> String {
+            switch value {
+            case .text(let text): text
+            case .number(let number): String(number)
+            case .day(let day): day.description
+            case .time(let time): time.description
+            case .moment(let date): date.formatted(date: .abbreviated, time: .shortened)
+            case .taskStatus(let status): status.title
+            case .projectStatus(let status): status.rawValue.capitalized
+            case .priority(let priority): priority.title ?? "None"
+            case .access(let access): access.title
+            case .record(let kind, let id): name(of: kind, id)
+            case .records(let kind, let ids): ids.map { name(of: kind, $0) }.sorted().joined(separator: ", ")
+            case .actor(let actor): author(actor)
+            case .trigger(.at(let date)): date.formatted(date: .abbreviated, time: .shortened)
+            case .trigger(.beforeDue(let seconds)):
+                Duration.seconds(seconds).formatted(.units(allowed: [.days, .hours, .minutes], width: .wide))
+                    + " before due"
             }
-            if name.hasSuffix("At") { name = String(name.dropLast(2)) }
-            let words = name.reduce(into: "") { text, character in
-                text += character.isUppercase ? " " + character.lowercased() : String(character)
-            }
-            return words.prefix(1).uppercased() + words.dropFirst()
         }
 
-        /// IDs as names, and times as dates.
-        private func value(_ field: String, _ text: String?) -> String? {
-            guard let text else { return nil }
-            if field.hasSuffix("At"), let seconds = Double(text) {
-                return Date(timeIntervalSinceReferenceDate: seconds).formatted(date: .abbreviated, time: .shortened)
-            }
-            guard field.hasSuffix("ID") || field.hasSuffix("IDs") else { return text }
-            return text.split(separator: ", ").map { part in
-                guard let id = UUID(uuidString: String(part)) else { return String(part) }
-                if let avenue = workspace.avenues[id] { return avenue.name }
-                if let project = workspace.projects[id] { return project.name }
-                if let label = workspace.labels[id] { return label.name }
-                if let task = workspace.tasks[id] { return task.title }
-                return "something removed"
-            }.joined(separator: ", ")
+        private func name(of kind: RecordKind, _ id: UUID) -> String {
+            let name: String? =
+                switch kind {
+                case .avenue: workspace.avenues[id]?.name
+                case .project: workspace.projects[id]?.name
+                case .task: workspace.tasks[id]?.title
+                case .label: workspace.labels[id]?.name
+                case .comment, .reminder, .settings: nil
+                }
+            return name ?? "something removed"
         }
     }
 

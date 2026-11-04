@@ -219,7 +219,7 @@ extension AssistantTools {
             if case .task(let task)? = step.after ?? step.before {
                 name += " \(workspace.displayCode(of: task)) \"\(task.title)\""
             }
-            let fields = step.fields.map(\.name).filter { !["id", "createdAt", "sortOrder"].contains($0) }
+            let fields = step.fields.map(\.field).filter { !$0.isInternal }.map { $0.title.lowercased() }
             return "\(verb) \(name)"
                 + (verb == "changed" && !fields.isEmpty ? ": " + fields.joined(separator: ", ") : "")
         }.joined(separator: "; ") + (entry.steps.count > 3 ? "; and \(entry.steps.count - 3) more" : "")
