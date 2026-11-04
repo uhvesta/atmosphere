@@ -65,6 +65,15 @@ crate.from_cargo(
 )
 use_repo(crate, "crates")
 
+# rules_rust's build script runner drops AR when it is libtool, as @llvm's is
+# on macOS, so cc-rs falls back to /usr/bin/ar, which needs Xcode or the
+# Command Line Tools. The patch passes it through; cc-rs drives libtool.
+single_version_override(
+    module_name = "rules_rust",
+    patch_strip = 1,
+    patches = ["//bazel/toolchains/rust:rules_rust_libtool_ar.patch"],
+)
+
 # musl first: the glibc toolchains leave libc unconstrained, so they would
 # otherwise also match the musl platforms.
 register_toolchains(
