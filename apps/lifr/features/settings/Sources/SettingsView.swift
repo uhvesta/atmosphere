@@ -24,6 +24,11 @@ package struct SettingsView: View {
             } footer: {
                 Text("An In Progress task with no activity for longer than this counts as Procrastinated.")
             }
+            Section {
+                Button("Activity") { store.send(.activityTapped) }
+            } footer: {
+                Text("Every change, who made it, and from where. Any of them can be reverted.")
+            }
             if store.showsAgents {
                 avenueAccess
                 connectedApps
@@ -31,6 +36,9 @@ package struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .navigationDestination(item: $store.scope(state: \.activity, action: \.activity)) { store in
+            ActivityView(store: store)
+        }
         .task { await store.send(.task).finish() }
         .confirmationDialog($store.scope(state: \.revoke, action: \.revoke))
         .alert($store.scope(state: \.alert, action: \.alert))

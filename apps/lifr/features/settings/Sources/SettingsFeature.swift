@@ -42,6 +42,9 @@ package struct SettingsFeature {
         package var apps: [ConnectedApp] = []
         package var cli = CLIInstallation.notInstalled
         package var launchesAtLogin = false
+        /// Kept so the Activity log opens on what's shown.
+        package var workspace = Workspace()
+        @Presents package var activity: ActivityFeature.State?
         @Presents package var revoke: ConfirmationDialogState<Revoke>?
         @Presents package var alert: AlertState<Never>?
 
@@ -50,6 +53,8 @@ package struct SettingsFeature {
         }
 
         package mutating func show(_ workspace: Workspace) {
+            self.workspace = workspace
+            activity?.workspace = workspace
             procrastinatedAfterDays = workspace.settings.procrastinatedAfterDays
             avenues = workspace.avenues.values
                 .filter { $0.archivedAt == nil }
@@ -76,6 +81,8 @@ package struct SettingsFeature {
         case renewTapped(String)
         case revokeTapped(String)
         case installCLITapped
+        case activityTapped
+        case activity(PresentationAction<ActivityFeature.Action>)
         case loginItemFailed(any Error)
         case saved(Result<Saved, any Error>)
         case sessionChanged(Result<Void, any Error>)
@@ -198,6 +205,14 @@ package struct SettingsFeature {
                     }
                 }
 
+            case .activityTapped:
+                state.activity = ActivityFeature.State(workspace: state.workspace)
+                return .none
+
+            case .activity(.presented(.delegate(.saved(let workspace)))):
+                state.show(workspace)
+                return .send(.delegate(.saved(workspace)))
+
             case .saved(.success(let saved)):
                 state.show(saved.workspace)
                 return .send(.delegate(.saved(saved.workspace)))
@@ -214,10 +229,11 @@ package struct SettingsFeature {
                 state.alert = .failed("Couldn't change connected apps", error)
                 return .none
 
-            case .sessionChanged(.success), .revoke, .alert, .delegate:
+            case .sessionChanged(.success), .activity, .revoke, .alert, .delegate:
                 return .none
             }
         }
+        .ifLet(\.$activity, action: \.activity) { ActivityFeature() }
         .ifLet(\.$revoke, action: \.revoke)
         .ifLet(\.$alert, action: \.alert)
     }

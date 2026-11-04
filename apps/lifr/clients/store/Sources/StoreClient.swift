@@ -64,6 +64,12 @@ extension StoreClient {
         try await save { (workspace, context) throws(LifrError) in try workspace.revert(eventID, in: context) }
     }
 
+    /// `Workspace.revert(_:in:)`: puts back what journal entries changed, as
+    /// one new entry.
+    package func revert(entries ids: [UUID]) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in try workspace.revert(ids, in: context) }
+    }
+
     package func createTask(_ new: Workspace.NewTask) async throws -> Saved {
         try await save { (workspace, context) throws(LifrError) in try workspace.createTask(new, in: context) }
     }

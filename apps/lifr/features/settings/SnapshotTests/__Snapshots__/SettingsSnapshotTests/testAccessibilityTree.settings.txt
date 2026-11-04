@@ -1,5 +1,7 @@
 [header, text] "Procrastinated"
 [text] "An In Progress task with no activity for longer than this counts as Procrastinated."
+[button] "Activity"
+[text] "Every change, who made it, and from where. Any of them can be reverted."
 [header, text] "Agent access"
 [text] "Agents never see a Hidden Avenue, whatever their grant says."
 [header, text] "Connected apps"
@@ -10,5 +12,3 @@
 [text] "Expires Dec 3, 2026"
 [button] "Renew"
 [header, text] "Command line"
-[text] "Installed at, /usr/local/bin/lifr"
-[text] "Then connect Claude Code with: claude mcp add lifr -- lifr mcp"
