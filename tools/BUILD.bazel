@@ -9,6 +9,11 @@ exports_files(
     visibility = ["//:__pkg__"],
 )
 
+exports_files(
+    ["scripts/cross/matrix.sh"],
+    visibility = ["//tools/cross:__pkg__"],
+)
+
 py_binary(
     name = "install_devtools",
     srcs = ["scripts/ide/install_devtools.py"],

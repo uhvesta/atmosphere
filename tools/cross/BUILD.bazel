@@ -1,0 +1,18 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+# bazel run //tools/cross:matrix -- --help
+sh_binary(
+    name = "matrix",
+    srcs = ["//tools:scripts/cross/matrix.sh"],
+    args = ["$(rlocationpath @lima//:bin/limactl)"],
+    data = [
+        "@lima//:bin/limactl",
+        "@lima//:runtime",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
