@@ -1,0 +1,20 @@
+# Test VM for cross-compiled Linux binaries; see tools/scripts/cross/matrix.sh.
+# Runs arm64 binaries natively and x86_64 binaries through Rosetta.
+# The host directory /tmp/monty-oxide-cross is mounted read-only.
+base: template:alpine-3.23
+vmType: vz
+vmOpts:
+  vz:
+    rosetta:
+      enabled: true
+      binfmt: true
+cpus: 2
+memory: 2GiB
+disk: 8GiB
+containerd:
+  system: false
+  user: false
+mounts:
+  - location: /tmp/monty-oxide-cross
+    mountPoint: /tmp/monty-oxide-cross
+    writable: false
