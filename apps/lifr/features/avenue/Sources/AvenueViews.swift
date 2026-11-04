@@ -149,7 +149,7 @@ package struct NewAvenueView: View {
 
 extension Color {
     /// An Avenue's color, stored by name.
-    init(avenue name: String) {
+    package init(avenue name: String) {
         self =
             switch name {
             case "red": .red

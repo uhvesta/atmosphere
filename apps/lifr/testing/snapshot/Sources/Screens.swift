@@ -30,15 +30,16 @@ package enum ScreenImage: String, CaseIterable, Sendable {
 }
 
 /// Checks `view` against one reference per `ScreenImage`, named
-/// `<name>-<image>`.
+/// `<name>-<image>`, for each of `images`.
 @MainActor
 package func assertScreenImages(
-    of view: @autoclosure () -> some View, named name: String,
+    of view: @autoclosure () -> some View, named name: String, images: [ScreenImage] = ScreenImage.allCases,
     file: StaticString = #filePath, testName: String = #function, line: UInt = #line
 ) {
-    for image in ScreenImage.allCases {
+    for image in images {
         assertSnapshot(
-            of: view(), as: .image(layout: .device(config: image.config), traits: image.traits),
+            of: view(),
+            as: .image(layout: .device(config: image.config), traits: image.traits),
             named: "\(name)-\(image.rawValue)", file: file, testName: testName, line: line)
     }
 }

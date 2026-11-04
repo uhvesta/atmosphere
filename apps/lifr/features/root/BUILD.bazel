@@ -1,0 +1,85 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("//apps/lifr/testing/snapshot:defs.bzl", "lifr_snapshot_test")
+
+_DEPS = [
+    "//apps/lifr/api",
+    "//apps/lifr/clients/reminders",
+    "//apps/lifr/clients/session",
+    "//apps/lifr/clients/store",
+    "//apps/lifr/core",
+    "//apps/lifr/features/avenue",
+    "//apps/lifr/features/board",
+    "//apps/lifr/features/procrastinated",
+    "//apps/lifr/features/quick_add",
+    "//apps/lifr/features/search",
+    "//apps/lifr/features/settings",
+    "//apps/lifr/features/task_detail",
+    "//apps/lifr/features/task_list",
+    "//apps/lifr/features/today",
+    "//apps/lifr/features/upcoming",
+    "//apps/lifr/ui",
+    "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+]
+
+# The app's screens together: the iPhone's tabs or the Mac's sidebar, quick
+# add, the sync banner, the approval sheet, the Mac's commands and menu bar.
+swift_library(
+    name = "root",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrRoot",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/lifr/app:__subpackages__"],
+    deps = _DEPS,
+)
+
+# TestStore tests, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":root"] + _DEPS,
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+# The spec's UX flows, end to end through the root store.
+swift_library(
+    name = "flow_tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["FlowTests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":root"] + _DEPS,
+)
+
+macos_unit_test(
+    name = "flow_tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":flow_tests_lib"],
+)
+
+# Display data, accessibility tree and images, on the pinned simulator.
+lifr_snapshot_test(
+    name = "snapshot_test",
+    srcs = glob(["SnapshotTests/*.swift"]),
+    deps = [
+        ":root",
+        "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
+    ] + _DEPS,
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
