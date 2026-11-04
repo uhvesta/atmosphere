@@ -40,3 +40,12 @@ build:linux_x86_64 --@rules_go//go/config:static
 build:macos_arm64 --no@rules_go//go/config:static
 build:linux_arm64_gnu --no@rules_go//go/config:static
 build:linux_x86_64_gnu --no@rules_go//go/config:static
+
+# Apps that need Xcode (see bazel/xcode/BUILD.bazel). rules_apple transitions
+# to the platforms these flags name; the //bazel/xcode variants select Xcode's
+# toolchains. Without this config those apps are skipped.
+build:xcode --@apple_support//platforms:macos_arm64_platform=//bazel/xcode:macos_arm64
+build:xcode --@apple_support//platforms:ios_arm64_platform=//bazel/xcode:ios_arm64
+build:xcode --@apple_support//platforms:ios_sim_arm64_platform=//bazel/xcode:ios_sim_arm64
+build:xcode --macos_cpus=arm64
+build:xcode --ios_multi_cpus=sim_arm64

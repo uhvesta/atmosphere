@@ -1,0 +1,74 @@
+# Xcode platforms, for apps that need Apple's SDKs and tools. Everything else
+# builds with the hermetic toolchains and never reads Xcode.
+#
+# `--config=xcode` (see .bazelrc) points rules_apple's platform flags at the
+# platforms below, so rules_apple's transitions land on a platform that
+# carries `:xcode`:
+#
+# - The C/C++ toolchains below, registered before @llvm, compile and link
+#   with Xcode's clang through apple_support.
+# - The hermetic Swift toolchains require `:hermetic`, so rules_swift's Xcode
+#   toolchain builds the Swift code.
+#
+# Targets that need Xcode set `target_compatible_with = ["//bazel/xcode"]`.
+# Without `--config=xcode` they are skipped, so `bazel build //...` and
+# `--config=no_xcode` keep working on machines without Xcode.
+
+load("@apple_support//configs:platforms.bzl", "APPLE_PLATFORMS_CONSTRAINTS")
+
+constraint_setting(
+    name = "toolchains",
+    default_constraint_value = ":hermetic",
+)
+
+# Every platform that doesn't opt into Xcode.
+constraint_value(
+    name = "hermetic",
+    constraint_setting = ":toolchains",
+    visibility = ["//visibility:public"],
+)
+
+constraint_value(
+    name = "xcode",
+    constraint_setting = ":toolchains",
+    visibility = ["//visibility:public"],
+)
+
+# The `:xcode` variants of the Apple platforms rules_apple transitions to,
+# named like apple_support's platform flags, with the key apple_support uses
+# for each one's constraints.
+_PLATFORMS = {
+    "ios_arm64": "ios_arm64",
+    "ios_sim_arm64": "ios_sim_arm64",
+    "macos_arm64": "darwin_arm64",
+}
+
+[
+    platform(
+        name = name,
+        constraint_values = [":xcode"],
+        parents = ["@apple_support//platforms:" + apple],
+    )
+    for name, apple in _PLATFORMS.items()
+]
+
+# apple_support's Xcode C/C++ toolchain, only for the platforms above.
+[
+    toolchain(
+        name = "cc_" + name,
+        exec_compatible_with = [
+            "@platforms//os:macos",
+            "@platforms//cpu:aarch64",
+        ],
+        target_compatible_with = APPLE_PLATFORMS_CONSTRAINTS[apple] + [":xcode"],
+        toolchain = "@apple_support//toolchain",
+        toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+    )
+    for name, apple in _PLATFORMS.items()
+]
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

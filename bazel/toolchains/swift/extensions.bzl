@@ -32,6 +32,10 @@ load(
     "MACOS_SDK_FRAMEWORKS",
 )
 
+# Apps that need Xcode build for platforms without this constraint value, so
+# rules_swift's Xcode toolchain builds them instead (see //bazel/xcode).
+_HERMETIC = Label("//bazel/xcode:hermetic")
+
 _DOWNLOAD = "https://download.swift.org/swift-{v}-release"
 
 # The compiler binaries swift_tools and the driver need. Everything else in
@@ -252,6 +256,7 @@ toolchain(
     target_compatible_with = [
         "@platforms//os:macos",
         "@platforms//cpu:aarch64",
+        "{hermetic}",
     ],
     target_settings = [":is_{v_}"],
     toolchain = ":swift_{v_}_{exec}_to_macos_arm64",
@@ -306,6 +311,7 @@ toolchain(
         "@platforms//os:linux",
         "@platforms//cpu:{arch}",
         "@llvm//constraints/libc:musl",
+        "{hermetic}",
     ],
     target_settings = [":is_{v_}"],
     toolchain = ":swift_{v_}_{exec}_to_linux_{arch}_musl",
@@ -342,6 +348,7 @@ def _hub_impl(rctx):
             compiler = canonical[compiler]
             fmt = dict(
                 compiler = compiler,
+                hermetic = str(_HERMETIC),
                 exec = exec,
                 exec_constraints = repr(constraints),
                 static_sdk = static_sdk,

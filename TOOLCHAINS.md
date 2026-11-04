@@ -105,6 +105,21 @@ The rules_swift worker runs every compile through `/usr/bin/xcrun` on macOS.
 `bazel/toolchains/swift/rules_swift_no_xcrun.patch` lets a toolchain opt out, and
 `@swift_toolchains` does.
 
+## Xcode apps
+
+Apps that need the iOS SDK, SwiftUI and SwiftData, Apple's Swift macro
+plugins or code signing are the one exception to the rule above: only Xcode
+provides those. They build with Xcode's toolchains, on the platforms in
+`//bazel/xcode`.
+
+`--config=xcode` points `rules_apple`'s platform flags at `//bazel/xcode`'s
+platforms, which carry the `//bazel/xcode` constraint. apple_support's C/C++
+toolchain is registered for them before `@llvm`, and the `@swift_toolchains`
+toolchains require `//bazel/xcode:hermetic`, so `rules_swift`'s Xcode
+toolchain builds their Swift. Targets that need Xcode set
+`target_compatible_with = ["//bazel/xcode"]`, so without the config, as with
+`bazel build //...` and `--config=no_xcode`, Bazel skips them.
+
 ## Rust
 
 `rules_rust` builds with the toolchain pinned by `rust-version` and links
