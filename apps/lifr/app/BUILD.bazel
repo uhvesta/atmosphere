@@ -11,7 +11,12 @@ swift_library(
     srcs = glob(["Sources/*.swift"]),
     module_name = "LifrApp",
     target_compatible_with = ["//bazel/xcode"],
-    deps = ["//apps/lifr/core"],
+    deps = [
+        "//apps/lifr/clients/store",
+        "//apps/lifr/core",
+        "//apps/lifr/features/today",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
 )
 
 ios_application(

@@ -1,31 +1,23 @@
+import ComposableArchitecture
 import LifrCore
+import LifrStoreClient
+import LifrToday
 import SwiftUI
 
 @main
 struct LifrApp: App {
+    /// Sample records in memory until the app stores its own.
+    @MainActor static let store = Store(initialState: TodayFeature.State()) {
+        TodayFeature()
+    } withDependencies: {
+        $0.store = .inMemory(.sample(now: Date(), timeZone: .current))
+    }
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            NavigationStack {
+                TodayView(store: Self.store)
+            }
         }
     }
-}
-
-struct ContentView: View {
-    var body: some View {
-        Text(Greeting.hello(from: client))
-            .font(.title)
-            .padding()
-    }
-
-    private var client: String {
-        #if os(iOS)
-        "iOS"
-        #else
-        "macOS"
-        #endif
-    }
-}
-
-#Preview {
-    ContentView()
 }

@@ -1,0 +1,27 @@
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# The store client: how features read and change Lifr's records. This package
+# has the definition, an in-memory version for tests and previews, and sample
+# data. The SwiftData version is //apps/lifr/clients/store_live, which
+# features never depend on.
+swift_library(
+    name = "store",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrStoreClient",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/lifr/app:__subpackages__",
+        "//apps/lifr/features:__subpackages__",
+    ],
+    deps = [
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -1,0 +1,50 @@
+▿ Display
+  - details: ""
+  - project: Optional<String>.none
+  ▿ row: TaskRowData
+    - avenue: "Work"
+    - code: "WORK-0006"
+    ▿ due: Optional<Due>
+      ▿ some: Due
+        ▿ overdue: (2 elements)
+          ▿ .0: 2026-11-02
+            - year: 2026
+            - month: 11
+            - day: 2
+          - .1: Optional<TimeOfDay>.none
+    - id: 00000000-0000-0000-0000-000000000601
+    - priority: Priority.urgent
+    - status: TaskStatus.inProgress
+    ▿ subtasks: Optional<Progress>
+      ▿ some: Progress
+        - closed: 1
+        - total: 3
+    - title: "Review Q4 roadmap"
+  ▿ subtasks: 3 elements
+    ▿ TaskRowData
+      - avenue: "Work"
+      - code: "WORK-0007"
+      - due: Optional<Due>.none
+      - id: 00000000-0000-0000-0000-000000000701
+      - priority: Priority.none
+      - status: TaskStatus.done
+      - subtasks: Optional<Progress>.none
+      - title: "Read the draft"
+    ▿ TaskRowData
+      - avenue: "Work"
+      - code: "WORK-0008"
+      - due: Optional<Due>.none
+      - id: 00000000-0000-0000-0000-000000000801
+      - priority: Priority.none
+      - status: TaskStatus.todo
+      - subtasks: Optional<Progress>.none
+      - title: "Leave comments"
+    ▿ TaskRowData
+      - avenue: "Work"
+      - code: "WORK-0009"
+      - due: Optional<Due>.none
+      - id: 00000000-0000-0000-0000-000000000901
+      - priority: Priority.none
+      - status: TaskStatus.todo
+      - subtasks: Optional<Progress>.none
+      - title: "Send summary to the team"
