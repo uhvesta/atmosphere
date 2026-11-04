@@ -179,4 +179,19 @@ final class AssistantTests: XCTestCase {
         XCTAssertEqual(replies, [AssistantReply(text: AssistantReply.example.text), AssistantReply.example])
         XCTAssertEqual(client.availability(), .available)
     }
+
+    func testASuggestedTitleIsItsFirstLineWithoutQuotesOrALabel() {
+        XCTAssertEqual(AssistantPrompt.title(from: "Title: \"Weekly plan.\"\nMore"), "Weekly plan")
+        XCTAssertEqual(AssistantPrompt.title(from: "  “Race day”  "), "Race day")
+        XCTAssertNil(AssistantPrompt.title(from: "\"\""))
+        XCTAssertEqual(AssistantPrompt.title(from: String(repeating: "a", count: 60))?.count, 40)
+    }
+
+    func testAConversationSavedBeforeNamesHasNone() throws {
+        let old = Data(#"{"id":"\#(UUID())","createdAt":0}"#.utf8)
+        let decoded = try JSONDecoder().decode(Conversation.self, from: old)
+        XCTAssertNil(decoded.name)
+        XCTAssertFalse(decoded.isNamedByHand)
+        XCTAssertEqual(decoded.title, "New conversation")
+    }
 }

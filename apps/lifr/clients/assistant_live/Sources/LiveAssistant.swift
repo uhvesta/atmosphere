@@ -16,7 +16,8 @@ extension AssistantClient {
                 return AssistantClient(
                     availability: { OnDeviceModel.availability },
                     reply: { request in OnDeviceModel.reply(to: request) },
-                    draftSkill: { description in try await OnDeviceModel.draftSkill(description) })
+                    draftSkill: { description in try await OnDeviceModel.draftSkill(description) },
+                    suggestTitle: { messages in try await OnDeviceModel.suggestTitle(messages) })
             }
         #endif
         return AssistantClient(
@@ -24,7 +25,8 @@ extension AssistantClient {
             reply: { _ in
                 AsyncThrowingStream { $0.finish(throwing: AssistantError.unavailable(.systemTooOld)) }
             },
-            draftSkill: { _ in throw AssistantError.unavailable(.systemTooOld) })
+            draftSkill: { _ in throw AssistantError.unavailable(.systemTooOld) },
+            suggestTitle: { _ in throw AssistantError.unavailable(.systemTooOld) })
     }
 }
 
@@ -101,6 +103,25 @@ extension AssistantClient {
                     throw AssistantError.failed("it didn't write any instructions")
                 }
                 return draft
+            } catch let error as LanguageModelSession.GenerationError {
+                throw assistantError(error)
+            } catch let error as AssistantError {
+                throw error
+            } catch {
+                throw AssistantError.failed(error.localizedDescription)
+            }
+        }
+
+        static func suggestTitle(_ messages: [ChatMessage]) async throws -> String {
+            let availability = Self.availability
+            guard availability == .available else { throw AssistantError.unavailable(availability) }
+            do {
+                let session = LanguageModelSession(instructions: AssistantPrompt.titleInstructions)
+                let response = try await session.respond(to: AssistantPrompt.titlePrompt(messages))
+                guard let title = AssistantPrompt.title(from: response.content) else {
+                    throw AssistantError.failed("it didn't suggest a title")
+                }
+                return title
             } catch let error as LanguageModelSession.GenerationError {
                 throw assistantError(error)
             } catch let error as AssistantError {

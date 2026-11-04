@@ -25,8 +25,10 @@ package struct ConversationsView: View {
                 }
                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                     ArchiveButton(id: conversation.id, store: store).tint(.indigo)
+                    RenameButton(id: conversation.id, store: store).tint(.gray)
                 }
                 .contextMenu {
+                    RenameButton(id: conversation.id, store: store)
                     SyncButton(conversation: conversation, store: store)
                     ArchiveButton(id: conversation.id, store: store)
                 }
@@ -47,6 +49,9 @@ package struct ConversationsView: View {
         .task { await store.send(.task).finish() }
         .confirmationDialog($store.scope(state: \.confirm, action: \.confirm))
         .alert($store.scope(state: \.alert, action: \.alert))
+        .sheet(item: $store.scope(state: \.rename, action: \.rename)) { store in
+            RenameView(store: store)
+        }
         .toolbar {
             ToolbarItem(placement: .secondaryAction) {
                 Button("Archived", systemImage: "archivebox") {
@@ -153,6 +158,15 @@ private struct SyncButton: View {
         } else {
             Button("Sync", systemImage: "icloud") { store.send(.syncTapped(conversation.id)) }
         }
+    }
+}
+
+private struct RenameButton: View {
+    var id: UUID
+    var store: StoreOf<ConversationsFeature>
+
+    var body: some View {
+        Button("Rename", systemImage: "pencil") { store.send(.renameTapped(id)) }
     }
 }
 

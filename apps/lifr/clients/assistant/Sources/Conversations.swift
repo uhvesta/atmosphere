@@ -17,14 +17,21 @@ package struct Conversation: Identifiable, Hashable, Codable, Sendable {
     package var archivedAt: Date?
     /// Whether it's kept in iCloud. Conversations start on this device.
     package var isSynced = false
+    /// The title the person or the assistant gave it; nil for the first
+    /// message.
+    package var name: String?
+    /// Whether the person gave it its name, which the assistant then never
+    /// replaces.
+    package var isNamedByHand = false
 
     package init(id: UUID, createdAt: Date) {
         self.id = id
         self.createdAt = createdAt
     }
 
-    /// The person's first message, cut short.
+    /// Its name, or else the person's first message, cut short.
     package var title: String {
+        if let name, !name.isEmpty { return name }
         guard let first = messages.first(where: { $0.role == .person && !$0.text.isEmpty })?.text else {
             return "New conversation"
         }
@@ -38,11 +45,11 @@ package struct Conversation: Identifiable, Hashable, Codable, Sendable {
 
 extension Conversation {
     private enum CodingKeys: String, CodingKey {
-        case id, messages, draft, changes, added, createdAt, archivedAt, isSynced
+        case id, messages, draft, changes, added, createdAt, archivedAt, isSynced, name, isNamedByHand
     }
 
-    /// Conversations saved before archiving and per-conversation syncing
-    /// read as in the main list and on this device.
+    /// Conversations saved before archiving, per-conversation syncing and
+    /// names read as in the main list, on this device and unnamed.
     package init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -53,6 +60,24 @@ extension Conversation {
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         archivedAt = try container.decodeIfPresent(Date.self, forKey: .archivedAt)
         isSynced = try container.decodeIfPresent(Bool.self, forKey: .isSynced) ?? false
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        isNamedByHand = try container.decodeIfPresent(Bool.self, forKey: .isNamedByHand) ?? false
+    }
+
+    /// Names it as the person typed it; an empty name goes back to the
+    /// first message and lets the assistant name it again.
+    package mutating func rename(_ text: String) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        name = text.isEmpty ? nil : text
+        isNamedByHand = !text.isEmpty
+    }
+}
+
+extension SharedKey where Self == AppStorageKey<Bool>.Default {
+    /// Whether the assistant names each new conversation after its first
+    /// reply. Off unless the person turns it on.
+    package static var namesConversations: Self {
+        Self[.appStorage("lifrNamesConversations"), default: false]
     }
 }
 

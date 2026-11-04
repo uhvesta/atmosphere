@@ -402,4 +402,91 @@ final class ChatFeatureTests: XCTestCase {
         let tasks = try await store.dependencies.store.load().tasks.count
         XCTAssertEqual(tasks, workspace.tasks.count)
     }
+
+    func testRenamingKeepsTheNameAndAnEmptyOneGoesBackToTheFirstMessage() async throws {
+        let first = chat("Plan the week")
+        let kept = ConversationsClient.inMemory([first])
+        let store = list(kept)
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        await store.send(.renameTapped(first.id))
+        await store.send(.rename(.presented(.binding(.set(\.name, "  Week plan ")))))
+        await store.send(.rename(.presented(.saveTapped)))
+        await store.receive(\.rename.presented.delegate.renamed)
+        await store.finish()
+        XCTAssertNil(store.state.rename)
+        var saved = try await kept.load()
+        XCTAssertEqual(saved.first?.title, "Week plan")
+        XCTAssertEqual(saved.first?.isNamedByHand, true)
+
+        await store.send(.renameTapped(first.id))
+        XCTAssertEqual(store.state.rename?.name, "Week plan")
+        await store.send(.rename(.presented(.binding(.set(\.name, "")))))
+        await store.send(.rename(.presented(.saveTapped)))
+        await store.skipReceivedActions()
+        await store.finish()
+        saved = try await kept.load()
+        XCTAssertEqual(saved.first?.title, "Plan the week")
+        XCTAssertEqual(saved.first?.isNamedByHand, false)
+    }
+
+    func testTheRenameSheetFillsInTheAssistantsSuggestionOrSaysWhyNot() async {
+        let store = TestStore(initialState: RenameFeature.State(chat("Plan the week"))) {
+            RenameFeature()
+        } withDependencies: {
+            $0.assistant.suggestTitle = { _ in "Weekly plan" }
+        }
+        store.exhaustivity = .off
+        await store.send(.suggestTapped)
+        await store.receive(\.suggested.success)
+        XCTAssertEqual(store.state.name, "Weekly plan")
+
+        store.dependencies.assistant.suggestTitle = { _ in throw AssistantError.busy }
+        await store.send(.suggestTapped)
+        await store.receive(\.suggested.failure)
+        XCTAssertEqual(store.state.name, "Weekly plan")
+        XCTAssertNotNil(store.state.problem)
+        XCTAssertFalse(store.state.suggesting)
+    }
+
+    func testTheAssistantNamesANewConversationOnlyWhenTurnedOn() async throws {
+        let store = list(.inMemory())
+        await store.send(.newTapped)
+        let id = try XCTUnwrap(store.state.openID)
+        await store.send(.chats(.element(id: id, action: .binding(.set(\.input, "Plan the week")))))
+        await store.send(.chats(.element(id: id, action: .sendTapped)))
+        await store.skipReceivedActions()
+        await store.finish()
+        XCTAssertEqual(store.state.conversations[id: id]?.title, "Plan the week")
+
+        let on = try XCTUnwrap(store.state.chats[id: id]).$namesConversations
+        on.withLock { $0 = true }
+        await store.send(.newTapped)
+        let named = try XCTUnwrap(store.state.openID)
+        await store.send(.chats(.element(id: named, action: .binding(.set(\.input, "Plan the week")))))
+        await store.send(.chats(.element(id: named, action: .sendTapped)))
+        await store.skipReceivedActions()
+        await store.finish()
+        XCTAssertEqual(store.state.conversations[id: named]?.title, "Planning the week")
+        XCTAssertEqual(store.state.conversations[id: named]?.isNamedByHand, false)
+    }
+
+    func testTheAssistantNeverRenamesAConversationNamedByHand() async throws {
+        let store = list(.inMemory())
+        await store.send(.newTapped)
+        let id = try XCTUnwrap(store.state.openID)
+        try XCTUnwrap(store.state.chats[id: id]).$namesConversations.withLock { $0 = true }
+        await store.send(.chats(.element(id: id, action: .renameTapped)))
+        await store.skipReceivedActions()
+        await store.send(.rename(.presented(.binding(.set(\.name, "Mine")))))
+        await store.send(.rename(.presented(.saveTapped)))
+        await store.skipReceivedActions()
+
+        await store.send(.chats(.element(id: id, action: .binding(.set(\.input, "Plan the week")))))
+        await store.send(.chats(.element(id: id, action: .sendTapped)))
+        await store.skipReceivedActions()
+        await store.finish()
+        XCTAssertEqual(store.state.conversations[id: id]?.title, "Mine")
+    }
 }

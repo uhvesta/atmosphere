@@ -17,6 +17,8 @@ package struct AssistantClient: Sendable {
     /// A skill written from the person's description of it, for them to
     /// review before saving.
     package var draftSkill: @Sendable (_ description: String) async throws -> SkillDraft
+    /// A short title for a conversation with these messages.
+    package var suggestTitle: @Sendable (_ messages: [ChatMessage]) async throws -> String
 }
 
 /// Each reply as it's written, the last one complete.
@@ -275,7 +277,8 @@ extension AssistantClient {
                     continuation.finish()
                 }
             },
-            draftSkill: { _ in .example })
+            draftSkill: { _ in .example },
+            suggestTitle: { _ in "Planning the week" })
     }
 }
 

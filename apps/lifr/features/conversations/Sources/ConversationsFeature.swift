@@ -21,6 +21,7 @@ package struct ConversationsFeature {
         package var openID: UUID?
         /// Whether the archive is on screen.
         package var showsArchive = false
+        @Presents package var rename: RenameFeature.State?
         @Presents package var confirm: ConfirmationDialogState<Confirm>?
         @Presents package var alert: AlertState<Never>?
 
@@ -104,6 +105,8 @@ package struct ConversationsFeature {
         case archiveTapped(UUID)
         case unarchiveTapped(UUID)
         case archiveShown(Bool)
+        case renameTapped(UUID)
+        case rename(PresentationAction<RenameFeature.Action>)
         /// Asks before deleting an archived conversation for good.
         case deleteTapped(UUID)
         /// Asks before deleting every archived conversation.
@@ -176,6 +179,24 @@ package struct ConversationsFeature {
                 guard let conversation = state.update(id, { $0.archivedAt = nil }) else { return .none }
                 return save(conversation)
 
+            case .renameTapped(let id), .chats(.element(let id, .delegate(.rename))):
+                guard let conversation = state.conversations[id: id] ?? state.chats[id: id]?.conversation else {
+                    return .none
+                }
+                state.rename = RenameFeature.State(conversation)
+                return .none
+
+            case .rename(.presented(.delegate(.renamed(let id, let name)))):
+                state.rename = nil
+                if state.conversations[id: id] == nil {
+                    // A new chat isn't kept until it has a message; name its
+                    // copy, which is kept with that message.
+                    state.chats[id: id]?.conversation.rename(name)
+                    return .none
+                }
+                guard let conversation = state.update(id, { $0.rename(name) }) else { return .none }
+                return save(conversation)
+
             case .archiveShown(let shown):
                 state.showsArchive = shown
                 return .none
@@ -221,11 +242,12 @@ package struct ConversationsFeature {
                 state.show(workspace)
                 return .send(.delegate(.saved(workspace)))
 
-            case .chats, .confirm, .alert, .delegate:
+            case .chats, .rename, .confirm, .alert, .delegate:
                 return .none
             }
         }
         .forEach(\.chats, action: \.chats) { ChatFeature() }
+        .ifLet(\.$rename, action: \.rename) { RenameFeature() }
         .ifLet(\.$confirm, action: \.confirm)
         .ifLet(\.$alert, action: \.alert)
         // Keep each change to a chat, on screen or not. A chat with no

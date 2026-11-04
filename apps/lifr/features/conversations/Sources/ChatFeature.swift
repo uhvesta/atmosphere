@@ -24,6 +24,9 @@ package struct ChatFeature {
         package var waiting: AssistantRequest?
         /// Whether the changes of the last reply are still being looked up.
         package var reloading = false
+        /// Whether the assistant is naming the conversation.
+        package var naming = false
+        @Shared(.namesConversations) package var namesConversations
         /// Why the draft can't be added as it is now, checked on every
         /// change, and sent with the next message.
         package var problem: String?
@@ -47,7 +50,7 @@ package struct ChatFeature {
         /// Whether a reply is being written, waits to be sent again, is
         /// being finished, or failed with an alert not yet seen: the chat is
         /// kept until it isn't.
-        package var isWorking: Bool { replying != nil || waiting != nil || reloading || alert != nil }
+        package var isWorking: Bool { replying != nil || waiting != nil || reloading || naming || alert != nil }
 
         package var canAdd: Bool { conversation.draft != nil && problem == nil }
 
@@ -83,6 +86,9 @@ package struct ChatFeature {
         case replied(AssistantReply)
         case replyFailed(any Error)
         case reloaded(messageID: UUID, Result<Workspace, any Error>)
+        case named(Result<String, any Error>)
+        /// The title was tapped, to rename the conversation.
+        case renameTapped
         case undoTapped(messageID: UUID)
         case discardDraftTapped
         case addTapped
@@ -93,6 +99,7 @@ package struct ChatFeature {
         @CasePathable
         package enum Delegate {
             case saved(Workspace)
+            case rename
         }
     }
 
@@ -184,9 +191,28 @@ package struct ChatFeature {
                     state.conversation.draft = plan
                     check(&state)
                 }
-                return .run { [store] send in
+                let reload: Effect<Action> = .run { [store] send in
                     await send(.reloaded(messageID: id, Result { try await store.load() }))
                 }
+                guard state.namesConversations, !state.conversation.isNamedByHand, state.conversation.name == nil
+                else { return reload }
+                state.naming = true
+                let messages = state.conversation.messages
+                return .merge(
+                    reload,
+                    .run { [assistant] send in
+                        await send(.named(Result { try await assistant.suggestTitle(messages) }))
+                    })
+
+            case .named(let result):
+                state.naming = false
+                // A failed name leaves the first message as the title.
+                guard case .success(let name) = result, !state.conversation.isNamedByHand else { return .none }
+                state.conversation.name = name
+                return .none
+
+            case .renameTapped:
+                return .send(.delegate(.rename))
 
             case .replyFailed(let error as AssistantError) where error == .busy:
                 // Keep what's written so far, and send again on `resume`.

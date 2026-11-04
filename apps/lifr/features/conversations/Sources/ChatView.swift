@@ -60,6 +60,9 @@ package struct ChatView: View {
             }
         }
         .navigationTitle(store.conversation.title)
+        .toolbarTitleMenu {
+            Button("Rename", systemImage: "pencil") { store.send(.renameTapped) }
+        }
         .task { await store.send(.task).finish() }
         .alert($store.scope(state: \.alert, action: \.alert))
     }

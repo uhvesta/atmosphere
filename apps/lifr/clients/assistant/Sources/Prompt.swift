@@ -132,6 +132,29 @@ package enum AssistantPrompt {
         - "draftsPlans": true only if the skill adds new tasks, Projects or Avenues.
         """
 
+    package static let titleInstructions = """
+        You name conversations between a person and the assistant of Lifr, a task app. Answer with only a \
+        title of two to five words saying what the conversation is about: no quotes, no punctuation at the \
+        end, and no words like "conversation" or "chat".
+        """
+
+    /// The start of the conversation, for the model to name.
+    package static func titlePrompt(_ messages: [ChatMessage]) -> String {
+        messages.prefix(4).map { "\($0.role == .person ? "Person" : "Assistant"): \($0.text.prefix(500))" }
+            .joined(separator: "\n")
+    }
+
+    /// The model's answer as a title: its first line, without quotes,
+    /// a "Title:" label or a final full stop, cut to 40 characters. Nil
+    /// when nothing is left.
+    package static func title(from answer: String) -> String? {
+        var line = answer.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        if line.lowercased().hasPrefix("title:") { line = String(line.dropFirst(6)) }
+        line = line.trimmingCharacters(in: .whitespaces.union(CharacterSet(charactersIn: "\"'“”‘’*.")))
+        guard !line.isEmpty else { return nil }
+        return line.count > 40 ? String(line.prefix(39)) + "…" : line
+    }
+
     /// The skill in the model's answer, or nil when it has no instructions.
     package static func skillDraft(from answer: JSONValue) -> SkillDraft? {
         guard let instructions = answer["instructions"]?.text else { return nil }
