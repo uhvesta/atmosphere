@@ -12,6 +12,8 @@ package struct Conversation: Identifiable, Hashable, Codable, Sendable {
     package var changes: [UUID: [UUID]] = [:]
     /// The journal entries of plans added from the draft card.
     package var added: [UUID] = []
+    /// The skills attached as pills, in the order they were attached.
+    package var skills: [AttachedSkill] = []
     package var createdAt: Date
 
     package init(id: UUID, createdAt: Date) {
@@ -26,6 +28,30 @@ package struct Conversation: Identifiable, Hashable, Codable, Sendable {
     }
 
     package var updatedAt: Date { messages.last?.at ?? createdAt }
+
+    /// The attached skills that still exist and are on, with their notes.
+    package func uses(of skills: [Skill]) -> [SkillUse] {
+        let byID = Dictionary(skills.map { ($0.id, $0) }) { $1 }
+        return self.skills.compactMap { attached in
+            byID[attached.id].flatMap { $0.isOn ? SkillUse($0, note: attached.note) : nil }
+        }
+    }
+}
+
+extension Conversation {
+    private enum CodingKeys: String, CodingKey { case id, messages, draft, changes, added, skills, createdAt }
+
+    /// Conversations saved before skills existed have none.
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        messages = try container.decode([ChatMessage].self, forKey: .messages)
+        draft = try container.decodeIfPresent(Plan.self, forKey: .draft)
+        changes = try container.decode([UUID: [UUID]].self, forKey: .changes)
+        added = try container.decode([UUID].self, forKey: .added)
+        skills = try container.decodeIfPresent([AttachedSkill].self, forKey: .skills) ?? []
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+    }
 }
 
 /// Keeps conversations on this device, or in iCloud when the person turns

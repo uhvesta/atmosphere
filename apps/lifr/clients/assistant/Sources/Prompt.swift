@@ -45,18 +45,34 @@ package enum AssistantPrompt {
         if !lookup.labels.isEmpty {
             text += "Labels: " + lookup.labels.joined(separator: ", ") + "\n"
         }
-        text += """
-            To answer questions about their tasks, use the tools: findTasks to search, getTask for one task's \
-            details, overview for what's due, overdue or stalled, and recentActivity for what changed lately. \
-            Answer from what the tools return; if they return nothing, say so.
-            """
-        if request.writes != nil {
-            text += """
-
-                To change existing tasks when the person asks, use updateTasks and addComment; they save at \
-                once and the person can undo them. Use revert to undo changes. Say in "message" what you \
-                changed. New tasks, Projects and Avenues always go in "plan" for the person to add.
-                """
+        let tools = request.allowedTools
+        let reads = AssistantTool.allCases.filter { !$0.writes && tools.contains($0) }
+        if !reads.isEmpty {
+            text +=
+                "To answer questions about their tasks, use the tools: "
+                + reads.map(\.use).joined(separator: ", ")
+                + ". Answer from what the tools return; if they return nothing, say so."
+        }
+        let writes = AssistantTool.allCases.filter { $0.writes && tools.contains($0) }
+        if !writes.isEmpty {
+            text +=
+                "\n\nTo change existing tasks when the person asks, use "
+                + writes.map(\.use).joined(separator: ", ")
+                + ". They save at once and the person can undo them. Say in \"message\" what you changed."
+            if request.draftsPlans {
+                text += " New tasks, Projects and Avenues always go in \"plan\" for the person to add."
+            }
+        }
+        if !request.draftsPlans {
+            text += "\n\nDon't propose a plan in this conversation: always leave \"plan\" out."
+        }
+        if !request.skills.isEmpty {
+            text += "\n\nThe person attached these skills. Follow them:"
+            for use in request.skills {
+                text += "\n- \(use.skill.title): \(use.skill.instructions)"
+                let note = use.note.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !note.isEmpty { text += "\n  Their note: \(note)" }
+            }
         }
         return text
     }
@@ -103,9 +119,11 @@ package enum AssistantPrompt {
 
     /// The structured answer as far as it's written. Fields the model hasn't
     /// reached are missing; tasks without a title yet are left out.
-    package static func reply(from answer: JSONValue, isComplete: Bool) -> AssistantReply {
+    /// Without `draftsPlans`, any plan the model writes anyway is dropped.
+    package static func reply(from answer: JSONValue, isComplete: Bool, draftsPlans: Bool = true) -> AssistantReply {
         AssistantReply(
-            text: answer["message"]?.text ?? "", plan: answer["plan"].flatMap(plan), isComplete: isComplete)
+            text: answer["message"]?.text ?? "", plan: draftsPlans ? answer["plan"].flatMap(plan) : nil,
+            isComplete: isComplete)
     }
 
     private static func plan(_ value: JSONValue) -> Plan? {
@@ -141,6 +159,21 @@ package enum AssistantPrompt {
             task.parent = value["parent"]?.text
         }
         return task
+    }
+}
+
+extension AssistantTool {
+    /// How the instructions describe the tool.
+    fileprivate var use: String {
+        switch self {
+        case .findTasks: "findTasks to search"
+        case .getTask: "getTask for one task's details"
+        case .overview: "overview for what's due, overdue or stalled"
+        case .recentActivity: "recentActivity for what changed lately"
+        case .updateTasks: "updateTasks to change tasks"
+        case .addComment: "addComment to comment on a task"
+        case .revert: "revert to undo changes"
+        }
     }
 }
 

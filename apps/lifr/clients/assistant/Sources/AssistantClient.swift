@@ -83,10 +83,13 @@ package struct AssistantRequest: Hashable, Sendable {
     /// How the assistant saves changes it makes. Without it, it only reads
     /// and drafts plans.
     package var writes: AssistantWrites?
+    /// The skills attached to the conversation, with the person's notes.
+    /// Without any, the assistant does what every built-in skill does.
+    package var skills: [SkillUse]
 
     package init(
         messages: [ChatMessage], draft: Plan? = nil, problem: String? = nil, workspace: Workspace, now: Date,
-        timeZone: TimeZone, writes: AssistantWrites? = nil
+        timeZone: TimeZone, writes: AssistantWrites? = nil, skills: [SkillUse] = []
     ) {
         self.messages = messages
         self.draft = draft
@@ -95,7 +98,20 @@ package struct AssistantRequest: Hashable, Sendable {
         self.now = now
         self.timeZone = timeZone
         self.writes = writes
+        self.skills = skills
     }
+
+    /// The tools the attached skills allow, or every tool without any.
+    /// Tools that save changes need `writes`.
+    package var allowedTools: Set<AssistantTool> {
+        let tools =
+            skills.isEmpty ? Set(AssistantTool.allCases) : skills.reduce(into: []) { $0.formUnion($1.skill.tools) }
+        return writes == nil ? tools.filter { !$0.writes } : tools
+    }
+
+    /// Whether the assistant may propose a plan: without skills, or when
+    /// an attached one drafts plans.
+    package var draftsPlans: Bool { skills.isEmpty || skills.contains(where: \.skill.draftsPlans) }
 
     package var today: CalendarDate { CalendarDate(now, in: timeZone) }
     package var lookup: AssistantLookup { AssistantLookup(workspace) }

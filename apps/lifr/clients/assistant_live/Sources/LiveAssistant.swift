@@ -49,12 +49,19 @@ extension AssistantClient {
                     }
                     let tools = request.tools()
                     do {
-                        var available: [any Tool] = [
-                            try FindTasks(tools), try GetTask(tools), try Overview(tools), try RecentActivity(tools),
-                        ]
-                        if request.writes != nil {
-                            available += [try UpdateTasks(tools), try AddComment(tools), try Revert(tools)]
-                        }
+                        let available: [any Tool] = try AssistantTool.allCases
+                            .filter(request.allowedTools.contains)
+                            .map { tool -> any Tool in
+                                switch tool {
+                                case .findTasks: try FindTasks(tools)
+                                case .getTask: try GetTask(tools)
+                                case .overview: try Overview(tools)
+                                case .recentActivity: try RecentActivity(tools)
+                                case .updateTasks: try UpdateTasks(tools)
+                                case .addComment: try AddComment(tools)
+                                case .revert: try Revert(tools)
+                                }
+                            }
                         let session = LanguageModelSession(
                             tools: available,
                             instructions: AssistantPrompt.instructions(request))
@@ -62,7 +69,8 @@ extension AssistantClient {
                         let stream = session.streamResponse(to: AssistantPrompt.prompt(request), schema: schema)
                         var last = AssistantReply(text: "")
                         for try await snapshot in stream {
-                            last = AssistantPrompt.reply(from: json(snapshot.rawContent), isComplete: false)
+                            last = AssistantPrompt.reply(
+                                from: json(snapshot.rawContent), isComplete: false, draftsPlans: request.draftsPlans)
                             continuation.yield(last)
                         }
                         last.isComplete = true

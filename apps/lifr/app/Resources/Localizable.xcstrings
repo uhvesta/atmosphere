@@ -224,6 +224,9 @@
     "An agent" : {
 
     },
+    "Answer questions about your tasks." : {
+
+    },
     "Any date" : {
 
     },
@@ -273,6 +276,9 @@
 
     },
     "Changed %@" : {
+
+    },
+    "Clean up titles, priorities, dates and labels." : {
 
     },
     "Clear filters" : {
@@ -467,6 +473,9 @@
     "Local API" : {
 
     },
+    "Look back at what's done, overdue and stalled." : {
+
+    },
     "Low" : {
 
     },
@@ -641,6 +650,9 @@
     "Pick a list" : {
 
     },
+    "Plan new tasks, Projects and Avenues." : {
+
+    },
     "Priority" : {
 
     },
@@ -654,6 +666,9 @@
 
     },
     "Projects" : {
+
+    },
+    "Put back recent changes." : {
 
     },
     "Read and write" : {
