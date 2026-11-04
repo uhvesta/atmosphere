@@ -29,6 +29,18 @@ package struct SettingsView: View {
             } footer: {
                 Text("Every change, who made it, and from where. Any of them can be reverted.")
             }
+            Section {
+                Toggle(
+                    "Sync conversations",
+                    isOn: Binding(
+                        get: { store.syncsConversations }, set: { store.send(.syncConversationsToggled($0)) }))
+            } header: {
+                Text("Assistant")
+            } footer: {
+                Text(
+                    "Keeps conversations with the assistant on your other devices through iCloud, encrypted end to "
+                        + "end. Turning it off keeps a copy here; copies in iCloud stay until you delete them.")
+            }
             if store.showsAgents {
                 avenueAccess
                 connectedApps

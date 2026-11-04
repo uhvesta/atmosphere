@@ -21,6 +21,16 @@ package struct ConversationsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .swipeActions {
+                    Button("Delete", systemImage: "trash", role: .destructive) {
+                        store.send(.deleteTapped(conversation.id))
+                    }
+                }
+                .contextMenu {
+                    Button("Delete", systemImage: "trash", role: .destructive) {
+                        store.send(.deleteTapped(conversation.id))
+                    }
+                }
             }
         }
         .overlay {
@@ -35,7 +45,16 @@ package struct ConversationsView: View {
             }
         }
         .navigationTitle("Conversations")
+        .task { await store.send(.task).finish() }
+        .confirmationDialog($store.scope(state: \.confirm, action: \.confirm))
+        .alert($store.scope(state: \.alert, action: \.alert))
         .toolbar {
+            ToolbarItem(placement: .secondaryAction) {
+                Button("Delete All", systemImage: "trash", role: .destructive) {
+                    store.send(.deleteAllTapped)
+                }
+                .disabled(store.conversations.isEmpty)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     store.send(.newTapped)

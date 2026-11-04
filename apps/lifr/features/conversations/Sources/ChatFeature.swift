@@ -4,32 +4,6 @@ import LifrAssistantClient
 import LifrCore
 import LifrStoreClient
 
-/// One conversation with the assistant.
-package struct Conversation: Identifiable, Hashable, Sendable {
-    package var id: UUID
-    package var messages: [ChatMessage] = []
-    /// The plan on the draft card.
-    package var draft: Plan?
-    /// The journal entries each assistant message saved, for its Undo.
-    package var changes: [UUID: [UUID]] = [:]
-    /// The journal entries of plans added from the draft card.
-    package var added: [UUID] = []
-    package var createdAt: Date
-
-    package init(id: UUID, createdAt: Date) {
-        self.id = id
-        self.createdAt = createdAt
-    }
-
-    /// The person's first message, cut short.
-    package var title: String {
-        guard let first = messages.first(where: { $0.role == .person })?.text else { return "New conversation" }
-        return first.count > 40 ? String(first.prefix(39)) + "…" : first
-    }
-
-    package var updatedAt: Date { messages.last?.at ?? createdAt }
-}
-
 /// A chat with the assistant: it answers questions, changes tasks when
 /// asked (each reply that did has Undo), and drafts plans on a card the
 /// person adds.

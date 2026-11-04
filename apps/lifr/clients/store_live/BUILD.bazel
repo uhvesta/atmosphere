@@ -11,6 +11,7 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     visibility = ["//apps/lifr/app:__subpackages__"],
     deps = [
+        "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
@@ -26,6 +27,7 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     deps = [
         ":store_live",
+        "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

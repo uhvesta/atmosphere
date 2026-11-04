@@ -24,6 +24,7 @@ import SwiftData
 let models: [any PersistentModel.Type] = [
     StoredAvenue.self, StoredProject.self, StoredTask.self, StoredLabel.self, StoredComment.self,
     StoredReminder.self, StoredHistoryEvent.self, StoredSettings.self, StoredJournalEntry.self,
+    StoredConversation.self,
 ]
 
 @Model
@@ -176,6 +177,19 @@ final class StoredJournalEntry {
     var reverts: Data?
     /// `[JournalStep]` as JSON.
     @Attribute(.allowsCloudEncryption) var steps: Data?
+
+    init(id: UUID) { self.id = id }
+}
+
+/// A conversation with the assistant, kept whole: it's only read and
+/// written as one. In the Lifr store when the person syncs conversations,
+/// otherwise in the local-only Conversations store.
+@Model
+final class StoredConversation {
+    var id = UUID()
+    var updatedAt = Date.distantPast
+    /// `Conversation` as JSON.
+    @Attribute(.allowsCloudEncryption) var conversation: Data?
 
     init(id: UUID) { self.id = id }
 }

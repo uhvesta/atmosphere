@@ -69,6 +69,7 @@ private enum Storage {
         $0.store = client
         $0.reminders = .live()
         $0.assistant = .live()
+        $0.conversations = conversations
         $0.session = session
     }
 
@@ -82,6 +83,17 @@ private enum Storage {
         #else
             return InMemorySession().client
         #endif
+    }()
+
+    /// Conversations with the assistant: next to the records, in a store
+    /// that never syncs until the person turns Sync conversations on.
+    private static let conversations: ConversationsClient = {
+        do {
+            let store = try opened.get()
+            return .live(ConversationStore(synced: store.modelContainer, local: try ConversationStore.localOnDisk()))
+        } catch {
+            return .failing(.openFailed(error))
+        }
     }()
 
     static let client: StoreClient =

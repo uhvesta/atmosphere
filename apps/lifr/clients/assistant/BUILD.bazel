@@ -6,6 +6,8 @@ load("@rules_swift//swift:swift_library.bzl", "swift_library")
 # the prompt, the lookup tools and a scripted version for tests and
 # previews. The live one, on Apple's on-device model, is
 # //apps/lifr/clients/assistant_live, which features never depend on.
+# Conversations are kept by ConversationsClient, whose live version is in
+# //apps/lifr/clients/store_live.
 swift_library(
     name = "assistant",
     package_name = "lifr",
@@ -15,6 +17,7 @@ swift_library(
     visibility = [
         "//apps/lifr/app:__subpackages__",
         "//apps/lifr/clients/assistant_live:__pkg__",
+        "//apps/lifr/clients/store_live:__pkg__",
         "//apps/lifr/features:__subpackages__",
     ],
     deps = [

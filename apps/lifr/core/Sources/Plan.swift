@@ -4,7 +4,7 @@ import Foundation
 /// new Avenues, labels and Projects, and tasks with their Sub tasks. Names,
 /// keys, codes and dates are kept as written; `Workspace.apply` looks them
 /// up and works them out, so a plan reads the same however it was made.
-package struct Plan: Hashable, Sendable {
+package struct Plan: Hashable, Codable, Sendable {
     package var avenues: [AvenueDraft]
     package var labels: [LabelDraft]
     package var projects: [ProjectDraft]
@@ -21,7 +21,7 @@ package struct Plan: Hashable, Sendable {
         self.tasks = tasks
     }
 
-    package struct AvenueDraft: Hashable, Sendable {
+    package struct AvenueDraft: Hashable, Codable, Sendable {
         package var key: String
         package var name: String
         package var color: String
@@ -37,7 +37,7 @@ package struct Plan: Hashable, Sendable {
 
     /// A label to create with a color. Tasks may also name labels that
     /// aren't listed here; those are created gray when nothing matches.
-    package struct LabelDraft: Hashable, Sendable {
+    package struct LabelDraft: Hashable, Codable, Sendable {
         package var name: String
         package var color: String
 
@@ -47,7 +47,7 @@ package struct Plan: Hashable, Sendable {
         }
     }
 
-    package struct ProjectDraft: Hashable, Sendable {
+    package struct ProjectDraft: Hashable, Codable, Sendable {
         package var name: String
         /// The key of an existing Avenue or one of the plan's new ones.
         package var avenue: String
@@ -67,7 +67,7 @@ package struct Plan: Hashable, Sendable {
 
     /// A Task, or a Sub task when it's in another draft's `subtasks` or has
     /// a `parent`.
-    package struct TaskDraft: Hashable, Sendable {
+    package struct TaskDraft: Hashable, Codable, Sendable {
         package var title: String
         package var details: String
         package var status: TaskStatus

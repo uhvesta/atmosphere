@@ -107,20 +107,27 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello"])
     }
 
-    func testTheListKeepsChatsThatHaveMessages() async throws {
+    private func list(_ kept: ConversationsClient) -> TestStoreOf<ConversationsFeature> {
         let (workspace, _) = home()
         let store = TestStore(initialState: ConversationsFeature.State()) {
             ConversationsFeature()
         } withDependencies: { [now] in
             $0.store = .inMemory(workspace)
+            $0.conversations = kept
             $0.assistant = .scripted([AssistantReply(text: "Hi.", isComplete: true)])
             $0.date.now = now
             $0.timeZone = .gmt
             $0.uuid = .incrementing
-            $0.withRandomNumberGenerator = WithRandomNumberGenerator(SystemRandomNumberGenerator())
         }
         store.exhaustivity = .off
+        return store
+    }
 
+    func testTheListKeepsChatsThatHaveMessages() async throws {
+        let kept = ConversationsClient.inMemory()
+        let store = list(kept)
+
+        await store.send(.task)
         await store.send(.newTapped)
         XCTAssertTrue(store.state.conversations.isEmpty)
         await store.send(.chat(.presented(.task)))
@@ -128,5 +135,41 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.chat(.presented(.sendTapped)))
         await store.skipReceivedActions()
         XCTAssertEqual(store.state.conversations.map(\.title), ["Hello"])
+        let saved = try await kept.load()
+        XCTAssertEqual(saved.map(\.messages.count), [2])
+
+        let reopened = list(kept)
+        await reopened.send(.task)
+        await reopened.skipReceivedActions()
+        XCTAssertEqual(reopened.state.conversations.map(\.title), ["Hello"])
+    }
+
+    func testDeletingConversationsKeepsTheTasks() async throws {
+        let (workspace, _) = home()
+        func chat(_ text: String) -> Conversation {
+            var conversation = Conversation(id: UUID(), createdAt: now)
+            conversation.messages = [ChatMessage(id: UUID(), role: .person, text: text, at: now)]
+            return conversation
+        }
+        let first = chat("First")
+        let second = chat("Second")
+        let kept = ConversationsClient.inMemory([first, second])
+        let store = list(kept)
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        await store.send(.deleteTapped(first.id))
+        await store.finish()
+        var saved = try await kept.load()
+        XCTAssertEqual(saved.map(\.id), [second.id])
+
+        await store.send(.deleteAllTapped)
+        await store.send(.confirm(.presented(.deleteAll)))
+        await store.finish()
+        saved = try await kept.load()
+        XCTAssertTrue(saved.isEmpty)
+        XCTAssertTrue(store.state.conversations.isEmpty)
+        let tasks = try await store.dependencies.store.load().tasks.count
+        XCTAssertEqual(tasks, workspace.tasks.count)
     }
 }

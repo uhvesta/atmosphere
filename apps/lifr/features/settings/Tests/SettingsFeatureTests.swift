@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrAPI
+import LifrAssistantClient
 import LifrCore
 import LifrSessionClient
 import LifrSettings
@@ -20,6 +21,7 @@ final class SettingsFeatureTests: XCTestCase {
         let store = TestStore(initialState: SettingsFeature.State(showsAgents: true)) {
             SettingsFeature()
         } withDependencies: { [now, records] in
+            $0.conversations = .inMemory()
             $0.store = .inMemory(records.workspace)
             $0.session = session.client
             $0.date.now = now
@@ -42,6 +44,31 @@ final class SettingsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.apps.map(\.name), ["Claude Code"])
         XCTAssertEqual(store.state.cli, .notInstalled)
         await store.skipInFlightEffects()
+    }
+
+    func testSyncsConversationsOrSaysWhyNot() async {
+        let kept = ConversationsClient.inMemory()
+        let store = TestStore(initialState: SettingsFeature.State(showsAgents: false)) {
+            SettingsFeature()
+        } withDependencies: { [records] in
+            $0.store = .inMemory(records.workspace)
+            $0.conversations = kept
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        XCTAssertFalse(store.state.syncsConversations)
+
+        await store.send(.syncConversationsToggled(true))
+        await store.finish()
+        XCTAssertTrue(kept.isSyncing())
+
+        var failing = kept
+        failing.setSyncing = { _ in throw CancellationError() }
+        store.dependencies.conversations = failing
+        await store.send(.syncConversationsToggled(false))
+        await store.receive(\.syncConversationsFailed)
+        XCTAssertTrue(store.state.syncsConversations)
+        XCTAssertNotNil(store.state.alert)
     }
 
     func testChangesWhenTasksCountAsProcrastinated() async {
@@ -131,6 +158,7 @@ final class SettingsFeatureTests: XCTestCase {
         let store = TestStore(initialState: SettingsFeature.State(showsAgents: false)) {
             SettingsFeature()
         } withDependencies: { [records] in
+            $0.conversations = .inMemory()
             $0.store = .inMemory(records.workspace)
         }
         store.exhaustivity = .off
