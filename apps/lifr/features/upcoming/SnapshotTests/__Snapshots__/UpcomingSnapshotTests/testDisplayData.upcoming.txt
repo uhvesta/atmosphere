@@ -1,4 +1,25 @@
-▿ 2 elements
+▿ 3 elements
+  ▿ TaskSection
+    - id: "2026-11-04"
+    - notes: 0 key/value pairs
+    ▿ rows: 1 element
+      ▿ TaskRowData
+        - avenue: "Health"
+        - code: "HEALTH-0016"
+        ▿ due: Optional<Due>
+          ▿ some: Due
+            ▿ later: (2 elements)
+              ▿ .0: 2026-11-04
+                - year: 2026
+                - month: 11
+                - day: 4
+              - .1: Optional<TimeOfDay>.none
+        - id: 00000000-0000-0000-0000-000000001601
+        - priority: Priority.high
+        - status: TaskStatus.todo
+        - subtasks: Optional<Progress>.none
+        - title: "Buy running shoes"
+    - title: "Tomorrow"
   ▿ TaskSection
     - id: "2026-11-05"
     - notes: 0 key/value pairs

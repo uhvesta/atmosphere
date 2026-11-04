@@ -74,6 +74,20 @@ extension StoreClient {
         }
     }
 
+    package func createAvenue(key: String, name: String) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            try workspace.createAvenue(key: key, name: name, in: context)
+            return Change()
+        }
+    }
+
+    package func createProject(_ name: String, in avenueID: UUID) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            try workspace.createProject(name: name, inAvenue: avenueID, in: context)
+            return Change()
+        }
+    }
+
     package func setSettings(_ settings: Settings) async throws -> Saved {
         try await save { workspace, _ in
             workspace.settings = settings

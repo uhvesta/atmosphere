@@ -1,0 +1,71 @@
+▿ 2 elements
+  ▿ TaskSection
+    - id: "00000000-0000-0000-0000-000000001501"
+    - notes: 0 key/value pairs
+    ▿ rows: 1 element
+      ▿ TaskRowData
+        - avenue: "Health"
+        - code: "0016"
+        ▿ due: Optional<Due>
+          ▿ some: Due
+            ▿ later: (2 elements)
+              ▿ .0: 2026-11-04
+                - year: 2026
+                - month: 11
+                - day: 4
+              - .1: Optional<TimeOfDay>.none
+        - id: 00000000-0000-0000-0000-000000001601
+        - priority: Priority.high
+        - status: TaskStatus.todo
+        - subtasks: Optional<Progress>.none
+        - title: "Buy running shoes"
+    - title: "Half marathon"
+  ▿ TaskSection
+    - id: "none"
+    - notes: 0 key/value pairs
+    ▿ rows: 3 elements
+      ▿ TaskRowData
+        - avenue: "Health"
+        - code: "0004"
+        ▿ due: Optional<Due>
+          ▿ some: Due
+            ▿ overdue: (2 elements)
+              ▿ .0: 2026-11-03
+                - year: 2026
+                - month: 11
+                - day: 3
+              ▿ .1: Optional<TimeOfDay>
+                ▿ some: 07:00
+                  - hour: 7
+                  - minute: 0
+        - id: 00000000-0000-0000-0000-000000000401
+        - priority: Priority.high
+        - status: TaskStatus.todo
+        - subtasks: Optional<Progress>.none
+        - title: "Long run, 10 km"
+      ▿ TaskRowData
+        - avenue: "Health"
+        - code: "0005"
+        ▿ due: Optional<Due>
+          ▿ some: Due
+            ▿ overdue: (2 elements)
+              ▿ .0: 2026-11-01
+                - year: 2026
+                - month: 11
+                - day: 1
+              - .1: Optional<TimeOfDay>.none
+        - id: 00000000-0000-0000-0000-000000000501
+        - priority: Priority.medium
+        - status: TaskStatus.todo
+        - subtasks: Optional<Progress>.none
+        - title: "Book physio appointment"
+      ▿ TaskRowData
+        - avenue: "Health"
+        - code: "0013"
+        - due: Optional<Due>.none
+        - id: 00000000-0000-0000-0000-000000001301
+        - priority: Priority.none
+        - status: TaskStatus.procrastinated
+        - subtasks: Optional<Progress>.none
+        - title: "Plan long runs"
+    - title: "No Project"

@@ -1,0 +1,29 @@
+▿ 3 elements
+  ▿ AvenueRow
+    - color: "green"
+    - id: 00000000-0000-0000-0000-000000000101
+    - key: "HEALTH"
+    - name: "Health"
+    - openCount: 4
+    ▿ projects: 1 element
+      ▿ ProjectRow
+        - id: 00000000-0000-0000-0000-000000001501
+        - name: "Half marathon"
+        - openCount: 1
+    - symbol: "heart"
+  ▿ AvenueRow
+    - color: "blue"
+    - id: 00000000-0000-0000-0000-000000000201
+    - key: "WORK"
+    - name: "Work"
+    - openCount: 1
+    - projects: 0 elements
+    - symbol: "briefcase"
+  ▿ AvenueRow
+    - color: "orange"
+    - id: 00000000-0000-0000-0000-000000000301
+    - key: "HOME"
+    - name: "Home"
+    - openCount: 4
+    - projects: 0 elements
+    - symbol: "house"

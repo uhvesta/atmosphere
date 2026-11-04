@@ -25,6 +25,8 @@ extension Workspace {
         records.task("Renew passport", in: home, priority: .medium, due: 6)
         records.task("Plan long runs", in: health, status: .inProgress, idle: 12)
         records.task("Call the plumber", in: home, due: 2)
+        let marathon = records.project("Half marathon", in: health)
+        records.task("Buy running shoes", in: health, project: marathon, priority: .high, due: 1)
         return records.workspace
     }
 }
@@ -49,15 +51,21 @@ package struct RecordsBuilder {
         try! workspace.createAvenue(key: key, name: name, color: color, symbol: symbol, in: context())
     }
 
+    package mutating func project(_ name: String, in avenue: Avenue) -> Project {
+        try! workspace.createProject(name: name, inAvenue: avenue.id, in: context())
+    }
+
     /// `due` counts days from `now`'s day: 0 is today, -1 yesterday.
     /// `idle` makes the task that many days before `now`, with no activity
     /// since.
     @discardableResult
     package mutating func task(
-        _ title: String, in avenue: Avenue, parent: LifrTask? = nil, status: TaskStatus = .todo,
+        _ title: String, in avenue: Avenue, project: Project? = nil, parent: LifrTask? = nil,
+        status: TaskStatus = .todo,
         priority: Priority = .none, due days: Int? = nil, at time: String? = nil, idle: Int = 0
     ) -> LifrTask {
         var new = Workspace.NewTask(title: title, avenueID: avenue.id, parentID: parent?.id)
+        new.projectID = project?.id
         new.status = status
         new.priority = priority
         new.dueDate = days.map { CalendarDate(now + Double($0) * 24 * 60 * 60, in: timeZone) }
