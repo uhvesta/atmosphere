@@ -1,13 +1,14 @@
 import Foundation
 import LifrAPI
 import LifrCore
+import LifrModelsClient
 
-/// What the on-device model is told, and how its structured answer becomes
-/// a reply. Kept apart from FoundationModels so it can be tested anywhere.
+/// What the model is told, and how its structured answer becomes a reply.
+/// Kept apart from every runtime so it can be tested anywhere.
 package enum AssistantPrompt {
     /// The most characters of conversation sent with each message at full
-    /// size. The on-device model has about 4,000 tokens for everything, so
-    /// older messages are left out; the draft carries what was agreed.
+    /// size. Apple's on-device model has about 4,000 tokens for everything,
+    /// so older messages are left out; the draft carries what was agreed.
     package static let historyBudget = 1_500
 
     /// How much of the request goes to the model. Lifr starts with the
@@ -35,10 +36,6 @@ package enum AssistantPrompt {
         package var toolResultBudget: Int { self == .full ? 1_200 : 600 }
     }
 
-    /// The tokens the on-device model reads and writes in all, and what's
-    /// kept for its answer and the tools' results.
-    package static let contextWindow = 4_096
-    package static let reservedForAnswer = 1_100
     /// Each tool's description and parameters, and the answer's schema, as
     /// the model sees them.
     package static let tokensPerTool = 130
@@ -56,10 +53,11 @@ package enum AssistantPrompt {
             + tools(request, size: size).count * tokensPerTool + (size.schemaInPrompt ? schemaTokens : 0)
     }
 
-    /// The sizes to try, largest first: from the largest whose estimate
-    /// leaves room for the answer. Empty when not even the smallest fits.
-    package static func sizes(_ request: AssistantRequest) -> [Size] {
-        let room = contextWindow - reservedForAnswer
+    /// The sizes to try with a model that has `budget`, largest first: from
+    /// the largest whose estimate leaves room for the answer. Empty when not
+    /// even the smallest fits.
+    package static func sizes(_ request: AssistantRequest, budget: ContextBudget) -> [Size] {
+        let room = budget.room
         guard let first = Size.allCases.first(where: { estimatedTokens(request, size: $0) <= room }) else {
             return []
         }

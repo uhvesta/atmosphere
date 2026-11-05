@@ -1,0 +1,29 @@
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# The models Lifr can run: the runtime every model answers through, each
+# model's context budget, and a scripted runtime for tests and previews.
+# The live runtimes are in //apps/lifr/clients/models_live, which features
+# never depend on.
+swift_library(
+    name = "models",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrModelsClient",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/lifr/app:__subpackages__",
+        "//apps/lifr/clients/assistant:__pkg__",
+        "//apps/lifr/clients/assistant_live:__pkg__",
+        "//apps/lifr/clients/models_live:__pkg__",
+    ],
+    deps = [
+        "//apps/lifr/api",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

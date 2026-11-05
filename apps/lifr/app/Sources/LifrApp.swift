@@ -3,6 +3,7 @@ import LifrAPI
 import LifrAssistantClient
 import LifrAssistantLive
 import LifrCore
+import LifrModelsLive
 import LifrRemindersClient
 import LifrRemindersLive
 import LifrRoot
@@ -76,7 +77,7 @@ private enum Storage {
     } withDependencies: {
         $0.store = client
         $0.reminders = .live()
-        $0.assistant = .live()
+        $0.assistant = .live(runtime: { AppleRuntime() })
         $0.conversations = chats.conversations
         $0.skills = chats.skills
         $0.guidance = .onDisk()

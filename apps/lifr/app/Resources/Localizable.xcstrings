@@ -1,9 +1,6 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    " before due" : {
-
-    },
     "#%@" : {
 
     },
@@ -24,9 +21,6 @@
 
     },
     "%@ Nothing changed. Send a message and the assistant will fix the draft." : {
-
-    },
-    "%@ deleted it, and it was changed here." : {
 
     },
     "%@ is %@" : {
@@ -104,16 +98,6 @@
     "%@, 1 task" : {
 
     },
-    "%@: %@" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "%1$@: %2$@"
-          }
-        }
-      }
-    },
     "%lld" : {
 
     },
@@ -121,9 +105,6 @@
 
     },
     "%lld Sub tasks are still open" : {
-
-    },
-    "%lld changes need review" : {
 
     },
     "%lld fields were changed again since, so they stay as they are now." : {
@@ -135,16 +116,6 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "%1$lld of %2$lld Sub tasks closed"
-          }
-        }
-      }
-    },
-    "%lld of %lld characters" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "%1$lld of %2$lld characters"
           }
         }
       }
@@ -179,9 +150,6 @@
       }
     },
     "1 Sub task is still open" : {
-
-    },
-    "1 change needs review" : {
 
     },
     "1 task" : {
@@ -402,9 +370,6 @@
     "Command line" : {
 
     },
-    "Comment" : {
-
-    },
     "Comment on tasks" : {
 
     },
@@ -436,9 +401,6 @@
 
     },
     "Couldn't change the task" : {
-
-    },
-    "Couldn't keep the instructions on this device (%@). The assistant uses the ones from before. Check that this device has free storage, then try again." : {
 
     },
     "Couldn't load your Avenues" : {
@@ -501,9 +463,6 @@
     "Description" : {
 
     },
-    "Didn't finish" : {
-
-    },
     "Discard" : {
 
     },
@@ -549,9 +508,6 @@
     "Every change, who made it, and from where. Any of them can be reverted." : {
 
     },
-    "Every version you save is kept on this device only. Tap one to use it again." : {
-
-    },
     "Expires %@" : {
 
     },
@@ -585,12 +541,6 @@
     "High" : {
 
     },
-    "History" : {
-
-    },
-    "How the assistant should behave" : {
-
-    },
     "In 1 hour" : {
 
     },
@@ -601,9 +551,6 @@
 
     },
     "In Progress with no activity for %lld days." : {
-
-    },
-    "In use" : {
 
     },
     "Install lifr" : {
@@ -618,9 +565,6 @@
     "It can always read. Agents can never empty the trash, change Avenues or Settings, or approve apps." : {
 
     },
-    "It was deleted here, and %@ changed it." : {
-
-    },
     "It's deleted here and from iCloud, and can't be undone. Tasks it changed stay." : {
 
     },
@@ -628,12 +572,6 @@
 
     },
     "KEY" : {
-
-    },
-    "Keep" : {
-
-    },
-    "Keep it?" : {
 
     },
     "Key" : {
@@ -646,9 +584,6 @@
 
     },
     "Last used %@" : {
-
-    },
-    "Later" : {
 
     },
     "Launch at login" : {
@@ -664,9 +599,6 @@
 
     },
     "Lifr on %@" : {
-
-    },
-    "Lifr's default" : {
 
     },
     "Lifr, an app is connected" : {
@@ -842,9 +774,6 @@
     "None" : {
 
     },
-    "Not synced yet" : {
-
-    },
     "Not used yet" : {
 
     },
@@ -897,9 +826,6 @@
     "Picks another skill" : {
 
     },
-    "Place" : {
-
-    },
     "Plan my week" : {
 
     },
@@ -934,9 +860,6 @@
 
     },
     "Redraft" : {
-
-    },
-    "Reminder" : {
 
     },
     "Reminders" : {
@@ -1000,12 +923,6 @@
 
     },
     "Reverted a change" : {
-
-    },
-    "Review" : {
-
-    },
-    "Review Changes" : {
 
     },
     "Revoke" : {
@@ -1098,19 +1015,10 @@
     "Sync" : {
 
     },
-    "Sync Now" : {
-
-    },
     "Sync conversations" : {
 
     },
     "Synced" : {
-
-    },
-    "Synced %@" : {
-
-    },
-    "Syncing…" : {
 
     },
     "Task" : {
@@ -1146,16 +1054,6 @@
     "The first message" : {
 
     },
-    "The instructions are %lld characters; the most is %lld, so the assistant still has room for your records. Shorten them, then save." : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "The instructions are %1$lld characters; the most is %2$lld, so the assistant still has room for your records. Shorten them, then save."
-          }
-        }
-      }
-    },
     "The key starts each task's code, such as HEALTH-7K2Q. Use 2 to 10 letters." : {
 
     },
@@ -1177,25 +1075,13 @@
     "The task changed again since, here or on another device, and undoing would lose that change. Open the task to change it back by hand." : {
 
     },
-    "These changed here and on another device in ways that can't both stand. Choose what to keep; you can undo it like any change." : {
-
-    },
-    "These changed on %@ and another device in ways that can't both stand. Choose what to keep; you can undo it like any change." : {
-
-    },
     "They're deleted on this device and from iCloud. Tasks the assistant added or changed stay." : {
 
     },
     "Thinking…" : {
 
     },
-    "This Mac" : {
-
-    },
     "This can't be undone. Tasks the assistant added or changed stay." : {
-
-    },
-    "This iPhone" : {
 
     },
     "Time" : {
@@ -1285,9 +1171,6 @@
     "Won't Do + Finish" : {
 
     },
-    "Write how the assistant should behave, or use Lifr's default." : {
-
-    },
     "Writes a note for this skill" : {
 
     },
@@ -1304,18 +1187,6 @@
 
     },
     "Yours" : {
-
-    },
-    "another device" : {
-
-    },
-    "iCloud isn't available right now" : {
-
-    },
-    "iCloud lost the records twice" : {
-
-    },
-    "something removed" : {
 
     }
   },

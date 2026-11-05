@@ -1,6 +1,7 @@
 import Foundation
 import LifrAssistantClient
 import LifrCore
+import LifrModelsClient
 import LifrStoreClient
 import XCTest
 
@@ -20,18 +21,19 @@ final class AssistantBudgetTests: XCTestCase {
     }
 
     func testAShortConversationStartsAtFullSize() {
-        XCTAssertEqual(AssistantPrompt.sizes(request(["Plan my week"])), [.full, .smaller, .smallest])
+        XCTAssertEqual(
+            AssistantPrompt.sizes(request(["Plan my week"]), budget: .appleOnDevice), [.full, .smaller, .smallest])
     }
 
     func testAsTheDraftGrowsLessIsSentAndWhatsSentFits() {
-        let room = AssistantPrompt.contextWindow - AssistantPrompt.reservedForAnswer
+        let room = ContextBudget.appleOnDevice.room
         let earlier = String(repeating: "word ", count: 50)
         var firsts: [AssistantPrompt.Size?] = []
         for count in 0...200 {
             let tasks = (0..<count).map { Plan.TaskDraft(title: "Task \($0) with a fairly long title", place: "HOME") }
             let request = request(
                 [earlier, earlier, "Add these"], draft: tasks.isEmpty ? nil : Plan(tasks: tasks))
-            let sizes = AssistantPrompt.sizes(request)
+            let sizes = AssistantPrompt.sizes(request, budget: .appleOnDevice)
             if let first = sizes.first {
                 XCTAssertLessThanOrEqual(AssistantPrompt.estimatedTokens(request, size: first), room)
                 XCTAssertEqual(sizes, AssistantPrompt.Size.allCases.filter { $0 >= first })
@@ -45,10 +47,20 @@ final class AssistantBudgetTests: XCTestCase {
         XCTAssertEqual(firsts, [.full, .smaller, .smallest, nil])
     }
 
+    func testAModelWithALargerWindowSendsMoreBeforeShrinking() {
+        let tasks = (0..<60).map { Plan.TaskDraft(title: "Task \($0) with a fairly long title", place: "HOME") }
+        let request = request(["Add these"], draft: Plan(tasks: tasks))
+        let larger = ContextBudget(window: 32_768, reservedForAnswer: 2_048)
+
+        XCTAssertNotEqual(AssistantPrompt.sizes(request, budget: .appleOnDevice).first, .full)
+        XCTAssertEqual(AssistantPrompt.sizes(request, budget: larger), [.full, .smaller, .smallest])
+    }
+
     func testADraftTooBigForAnySizeFitsNone() {
         let tasks = (1...300).map { Plan.TaskDraft(title: "Task number \($0) with a long title", place: "HOME") }
 
-        XCTAssertEqual(AssistantPrompt.sizes(request(["Add these"], draft: Plan(tasks: tasks))), [])
+        XCTAssertEqual(
+            AssistantPrompt.sizes(request(["Add these"], draft: Plan(tasks: tasks)), budget: .appleOnDevice), [])
     }
 
     func testTheSmallestSizeSendsOnlyTheLastMessage() {

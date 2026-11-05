@@ -1,23 +1,47 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
-# The assistant client on Apple's on-device model (Foundation Models, iOS
-# and macOS 26). Only the app uses it; features depend on
-# //apps/lifr/clients/assistant. The framework is weakly linked so the app
-# still runs on iOS 18 and macOS 15, where the assistant says it needs an
-# update. The model needs Apple Intelligence, so this is checked by
-# building, and by hand.
+# The assistant client on the person's chosen model: what it asks the model
+# and how it retries, the same for every runtime (see
+# //apps/lifr/clients/models). Only the app uses it; features depend on
+# //apps/lifr/clients/assistant.
 swift_library(
     name = "assistant_live",
     package_name = "lifr",
     srcs = glob(["Sources/*.swift"]),
-    linkopts = ["-Wl,-weak_framework,FoundationModels"],
     module_name = "LifrAssistantLive",
     target_compatible_with = ["//bazel/xcode"],
     visibility = ["//apps/lifr/app:__subpackages__"],
     deps = [
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/models",
     ],
+)
+
+# Runs against a scripted model, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":assistant_live",
+        "//apps/lifr/api",
+        "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/models",
+        "//apps/lifr/clients/store",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
 )
 
 filegroup(

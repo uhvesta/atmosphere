@@ -22,6 +22,7 @@ swift_library(
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/assistant_live",
+        "//apps/lifr/clients/models_live",
         "//apps/lifr/clients/reminders",
         "//apps/lifr/clients/reminders_live",
         "//apps/lifr/clients/session",

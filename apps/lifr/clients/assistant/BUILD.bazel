@@ -4,7 +4,7 @@ load("@rules_swift//swift:swift_library.bzl", "swift_library")
 # The assistant client: a conversation with a model that drafts plans and
 # answers questions about the records. This package has the definition,
 # the prompt, the lookup tools and a scripted version for tests and
-# previews. The live one, on Apple's on-device model, is
+# previews. The live one, on the person's chosen model, is
 # //apps/lifr/clients/assistant_live, which features never depend on.
 # Conversations are kept by ConversationsClient, whose live version is in
 # //apps/lifr/clients/store_live.
@@ -22,6 +22,7 @@ swift_library(
     ],
     deps = [
         "//apps/lifr/api",
+        "//apps/lifr/clients/models",
         "//apps/lifr/core",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
@@ -36,6 +37,7 @@ swift_library(
     deps = [
         ":assistant",
         "//apps/lifr/api",
+        "//apps/lifr/clients/models",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
