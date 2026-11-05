@@ -357,7 +357,7 @@ extension Workspace {
 
     /// The candidate nearest `text` by edit distance, if it's close enough
     /// to be a likely typo.
-    static func closest(to text: String, in candidates: [String]) -> String? {
+    package static func closest(to text: String, in candidates: [String]) -> String? {
         let wanted = Array(text.lowercased())
         let scored = candidates.map { candidate in (candidate, editDistance(wanted, Array(candidate.lowercased()))) }
         guard let best = scored.min(by: { ($0.1, $0.0) < ($1.1, $1.0) }) else { return nil }

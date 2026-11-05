@@ -1,6 +1,7 @@
 import Foundation
 import LifrAPI
 import LifrAssistantClient
+import LifrCore
 import LifrModelsClient
 
 extension AssistantClient {
@@ -139,16 +140,50 @@ enum LiveAssistant {
         _ continuation: AssistantReplies.Continuation
     ) async throws {
         let allowed = AssistantPrompt.tools(request, size: size)
+        let changeable = AssistantPrompt.changeable(request)
+        let draftTitles = AssistantPrompt.draftTitles(request)
+        let asksForPlan = request.draftsPlans && AssistantPrompt.asksForPlan(request)
+        let asksToAdd = AssistantPrompt.asksToAdd(request)
         let turn = ModelTurn(
             instructions: AssistantPrompt.instructions(request, size: size),
             prompt: AssistantPrompt.prompt(request, size: size),
-            tools: AssistantTool.allCases.filter(allowed.contains).map { $0.definition(tools) },
-            schema: Shapes.turn, schemaInPrompt: size.schemaInPrompt, attachments: request.attachments)
+            tools: AssistantTool.allCases.filter(allowed.contains).compactMap { $0.definition(tools) },
+            schema: Shapes.turn(
+                changes: changeable.map(\.code), places: request.lookup.places.flatMap(\.choices),
+                draftTitles: draftTitles, mustChange: AssistantPrompt.asksForChange(request),
+                mustChangeDraft: asksForPlan && !asksToAdd,
+                mustPlan: asksForPlan && (draftTitles.isEmpty || asksToAdd)),
+            schemaInPrompt: size.schemaInPrompt,
+            attachments: request.attachments)
         let draftsPlans = request.draftsPlans
         let answer = try await model.respond(to: turn) { partial in
             continuation.yield(AssistantPrompt.reply(from: partial, isComplete: false, draftsPlans: draftsPlans))
         }
-        continuation.yield(AssistantPrompt.reply(from: answer, isComplete: true, draftsPlans: draftsPlans))
+        var changed: [LifrTask] = []
+        var refused: [TaskChangeError] = []
+        let codes = Set(changeable.map(\.code))
+        if !codes.isEmpty {
+            for var change in AssistantPrompt.changes(from: answer) where codes.contains(change.code) {
+                if let old = changeable.first(where: { $0.code == change.code })?.title {
+                    change.title = AssistantPrompt.renamed(old, to: change.title, request)
+                }
+                do {
+                    changed.append(try await tools.change(change))
+                } catch {
+                    refused.append(error)
+                }
+            }
+        }
+        var reply = AssistantPrompt.reply(from: answer, isComplete: true, draftsPlans: draftsPlans)
+        reply.plan = reply.plan.map {
+            AssistantPrompt.withoutRestatedGoals(AssistantPrompt.withAskedProjects($0, request), request)
+        }
+        if let draft = request.draft, !draftTitles.isEmpty {
+            reply.plan = AssistantPrompt.followUp(
+                reply.plan, changes: AssistantPrompt.draftChanges(from: answer, titles: draftTitles, request),
+                to: draft)
+        }
+        continuation.yield(AssistantPrompt.reply(reply, changed: changed, refused: refused))
         continuation.finish()
     }
 

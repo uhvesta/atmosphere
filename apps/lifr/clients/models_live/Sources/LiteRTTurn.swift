@@ -74,7 +74,7 @@ enum LiteRTTurn {
     }
 
     private static func answering(
-        _ turn: ModelTurn, answer: JSONValue?, chat: any LiteRTChat, journal: Journal,
+        _ turn: ModelTurn, answer: JSONSchema.Node?, chat: any LiteRTChat, journal: Journal,
         partial: @escaping @Sendable (JSONValue) -> Void
     ) async throws(ModelRuntimeError) -> JSONValue {
         guard turn.tools.isEmpty else {
@@ -88,7 +88,7 @@ enum LiteRTTurn {
             await chat.send(turn.prompt, attachments: turn.attachments, format: JSONSchema.text(answer)) { _ in })
     }
 
-    private static func withTools(_ turn: ModelTurn, answer: JSONValue?, chat: any LiteRTChat, journal: Journal)
+    private static func withTools(_ turn: ModelTurn, answer: JSONSchema.Node?, chat: any LiteRTChat, journal: Journal)
         async throws(ModelRuntimeError) -> JSONValue
     {
         let calling = JSONSchema.text(step(tools: turn.tools, answer: answer))
@@ -156,15 +156,16 @@ enum LiteRTTurn {
 
     /// The schema of one answer when the turn has tools: a call to one of
     /// `tools`, or the answer.
-    static func step(tools: [ModelTool], answer: JSONValue?) -> JSONValue {
+    static func step(tools: [ModelTool], answer: JSONSchema.Node?) -> JSONSchema.Node {
         var choices = tools.map { tool in
             JSONSchema.object([
-                ("tool", .object(["const": .string(tool.name)])),
+                ("tool", .value(["const": .string(tool.name)])),
                 ("arguments", JSONSchema.value(.object(name: tool.name, tool.parameters))),
             ])
         }
-        choices.append(JSONSchema.object([("answer", answer ?? .object(["type": .string("string")]))]))
-        return choices.count == 1 ? choices[0] : .object(["anyOf": .array(choices)])
+        choices.append(JSONSchema.object([("answer", answer ?? .value(["type": "string"]))]))
+        if choices.count == 1, let only = choices.first { return only }
+        return .object([.init(name: "anyOf", node: .array(choices))])
     }
 
     private static func parse(_ text: String) throws(ModelRuntimeError) -> JSONValue {
@@ -193,21 +194,45 @@ enum LiteRTTurn {
 }
 
 /// The JSON Schema LiteRT-LM holds an answer to, for a `ModelSchema`.
+/// The decoder writes an object's properties in the order the schema
+/// lists them, so objects keep the order they're declared in: a task's
+/// title and place come before the fields that are only sometimes filled.
 enum JSONSchema {
-    static func value(_ schema: ModelSchema) -> JSONValue {
+    /// JSON whose objects keep their keys in order.
+    indirect enum Node: Equatable, Sendable {
+        case value(JSONValue)
+        case array([Node])
+        case object([Field])
+
+        struct Field: Equatable, Sendable {
+            var name: String
+            var node: Node
+        }
+
+        /// The same JSON, without the order.
+        var json: JSONValue {
+            switch self {
+            case .value(let value): value
+            case .array(let items): .array(items.map(\.json))
+            case .object(let fields):
+                .object(Dictionary(fields.map { ($0.name, $0.node.json) }, uniquingKeysWith: { first, _ in first }))
+            }
+        }
+    }
+
+    static func value(_ schema: ModelSchema) -> Node {
         switch schema {
-        case .string: .object(["type": .string("string")])
-        case .bool: .object(["type": .string("boolean")])
-        case .choice(_, let choices):
-            .object(["type": .string("string"), "enum": .array(choices.map(JSONValue.string))])
-        case .array(let item): .object(["type": .string("array"), "items": value(item)])
+        case .string: .value(["type": "string"])
+        case .bool: .value(["type": "boolean"])
+        case .choice(_, let choices): .value(["type": "string", "enum": .array(choices.map(JSONValue.string))])
+        case .array(let item):
+            .object([.init(name: "type", node: .value("array")), .init(name: "items", node: value(item))])
         case .object(_, let properties):
             object(
                 properties.map { property in
                     var field = value(property.schema)
-                    if case .object(var keys) = field, !property.description.isEmpty {
-                        keys["description"] = .string(property.description)
-                        field = .object(keys)
+                    if !property.description.isEmpty {
+                        field = described(field, property.description)
                     }
                     return (property.name, field)
                 },
@@ -215,17 +240,41 @@ enum JSONSchema {
         }
     }
 
-    /// An object with `fields`, all required unless `required` says which.
-    static func object(_ fields: [(String, JSONValue)], required: [String]? = nil) -> JSONValue {
-        .object([
-            "type": .string("object"),
-            "properties": .object(Dictionary(fields, uniquingKeysWith: { first, _ in first })),
-            "required": .array((required ?? fields.map(\.0)).map(JSONValue.string)),
-            "additionalProperties": .bool(false),
+    private static func described(_ node: Node, _ description: String) -> Node {
+        switch node {
+        case .value(.object(var keys)):
+            keys["description"] = .string(description)
+            return .value(.object(keys))
+        case .object(let fields):
+            return .object(fields + [.init(name: "description", node: .value(.string(description)))])
+        case .value, .array:
+            return node
+        }
+    }
+
+    /// An object with `fields` in order, all required unless `required`
+    /// says which.
+    static func object(_ fields: [(String, Node)], required: [String]? = nil) -> Node {
+        var seen = Set<String>()
+        let properties = fields.filter { seen.insert($0.0).inserted }.map { Node.Field(name: $0.0, node: $0.1) }
+        return .object([
+            .init(name: "type", node: .value("object")),
+            .init(name: "properties", node: .object(properties)),
+            .init(name: "required", node: .value(.array((required ?? fields.map(\.0)).map(JSONValue.string)))),
+            .init(name: "additionalProperties", node: .value(.bool(false))),
         ])
     }
 
-    static func text(_ value: JSONValue) -> String {
+    static func text(_ node: Node) -> String {
+        switch node {
+        case .value(let value): encoded(value)
+        case .array(let items): "[" + items.map(text).joined(separator: ",") + "]"
+        case .object(let fields):
+            "{" + fields.map { encoded(.string($0.name)) + ":" + text($0.node) }.joined(separator: ",") + "}"
+        }
+    }
+
+    private static func encoded(_ value: JSONValue) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         guard let data = try? encoder.encode(value), let text = String(bytes: data, encoding: .utf8) else {

@@ -110,7 +110,7 @@ final class AssistantTests: XCTestCase {
     func testThePlainTextFallbackOffersNoToolsAndNoPlan() {
         let home = records.avenue("HOME", "Home")
         let request = AssistantRequest(
-            messages: [ChatMessage(id: UUID(), role: .person, text: "Add laundry", at: now)],
+            messages: [ChatMessage(id: UUID(), role: .person, text: "What's left at home?", at: now)],
             workspace: records.workspace, now: now, timeZone: .gmt)
 
         let instructions = AssistantPrompt.plainInstructions(request)

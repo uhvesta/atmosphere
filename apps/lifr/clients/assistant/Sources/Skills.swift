@@ -80,7 +80,7 @@ package struct Skill: Identifiable, Hashable, Codable, Sendable {
         id: "tidy", summary: String(localized: "Clean up titles, priorities, dates and labels."),
         instructions: """
             Help tidy existing tasks: clearer titles, missing priorities and due dates, consistent labels. \
-            Say what you'd change first, and change it with updateTasks once the person agrees.
+            Say what you'd change first, and put it in "changes" once the person agrees.
             """,
         tools: [.findTasks, .getTask, .overview, .updateTasks], draftsPlans: false)
 

@@ -1,5 +1,7 @@
 import ComposableArchitecture
+import LifrAPI
 import LifrAssistantClient
+import LifrAssistantLive
 import LifrBugReport
 import LifrCore
 import LifrGlance
@@ -36,7 +38,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
 
     private func app(
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
-        inputs: Set<ModelInput> = [], lock: LockClient = .always()
+        inputs: Set<ModelInput> = [], lock: LockClient = .always(), assistant: AssistantClient? = nil
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
         let ids = LockIsolated(1000)
@@ -49,7 +51,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
             $0.session = InMemorySession().client
             $0.reminders = RemindersClient.inMemory().client
             $0.sync = sync
-            $0.assistant = .scripted(replies, inputs: inputs)
+            $0.assistant = assistant ?? .scripted(replies, inputs: inputs)
             $0.attachments = .inMemory()
             $0.recorder = .scripted(RecorderClient.Recording(data: Data([1]), seconds: 6))
             // The assistant never stalls in a flow.
@@ -245,7 +247,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
                     text: "I added Reading, and a run to start with.",
                     plan: Plan(
                         avenues: [fitness, .init(key: "READ", name: "Reading", color: "purple", symbol: "book")],
-                        tasks: [.init(title: "Go for a run", place: "FITNESS")]),
+                        tasks: [.init(title: "Go for a run", place: "SPORTS")]),
                     isComplete: true),
             ])
         store.tab = .conversations
@@ -277,6 +279,178 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.tap("Add")
         await flow.step("second-added")
         XCTAssertNotNil(store.workspace?.avenues.values.first { $0.key.rawValue == "READ" }, "Reading wasn't added")
+        flow.finish()
+    }
+
+    /// The assistant as the app has it, on a model that gives these
+    /// `answers` in turn: what Gemma 4 E2B answered on a device, so what
+    /// Lifr does with them runs as it does there.
+    private func gemma(_ answers: [JSONValue]) -> AssistantClient {
+        let model = ScriptedRuntime(
+            budget: ContextBudget(window: 32_768, reservedForAnswer: 2_048),
+            steps: answers.map { ScriptedRuntime.answer($0) })
+        let titles = ScriptedRuntime(steps: [ScriptedRuntime.answer("Groceries")])
+        return .live(runtime: { $0 == .assistant ? model : titles })
+    }
+
+    private func send(_ text: String, in id: Conversation.ID, of store: StoreOf<RootFeature>) {
+        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, text))))))
+        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
+    }
+
+    private func draftTitles(_ id: Conversation.ID, in store: StoreOf<RootFeature>) -> [String] {
+        store.conversations.chats[id: id]?.conversation.draft?.tasks.map(\.title) ?? []
+    }
+
+    /// Adding to a draft, then changing and removing one of its tasks. The
+    /// model writes the draft's task again with the new one, and changes
+    /// it by number with a priority of none it wasn't asked for.
+    func testAssistantFollowUpEdits() async throws {
+        let (store, flow) = app(
+            "assistant-follow-up-edits",
+            assistant: gemma([
+                [
+                    "plan": ["tasks": [["title": "buy milk", "place": "HOME"]]],
+                    "message": "I added a task to buy milk in HOME.",
+                ],
+                [
+                    "draftChanges": [["task": "1", "moveTo": "HOME", "rename": "", "priority": "none"]],
+                    "plan": [
+                        "tasks": [["title": "buy milk", "place": "HOME"], ["title": "buy eggs", "place": "HOME"]]
+                    ],
+                    "message": "I added a task to buy eggs in HOME.",
+                ],
+                [
+                    "draftChanges": [["task": "2", "due": "Friday", "priority": "none", "remove": false]],
+                    "message": "I moved buy eggs to Friday.",
+                ],
+                [
+                    "draftChanges": [["task": "2", "remove": true, "priority": "none"]],
+                    "message": "I took buy eggs out of the plan.",
+                ],
+            ]))
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        await flow.step("new-chat", image: false)
+        send("Add a task to buy milk, in HOME", in: id, of: store)
+        await flow.step("first-draft", image: false)
+
+        send("Also add buy eggs", in: id, of: store)
+        await flow.step("also-added")
+        XCTAssertEqual(draftTitles(id, in: store), ["buy milk", "buy eggs"])
+
+        send("Change that to Friday", in: id, of: store)
+        await flow.step("changed")
+        let draft = store.conversations.chats[id: id]?.conversation.draft
+        XCTAssertEqual(draft?.tasks.map(\.due), [nil, "Friday"])
+        XCTAssertEqual(draft?.tasks.map(\.priority), [Priority.none, .none])
+
+        send("Remove the second one", in: id, of: store)
+        await flow.step("removed")
+        XCTAssertEqual(draftTitles(id, in: store), ["buy milk"])
+        flow.tap("Add")
+        await flow.step("added", image: false)
+        XCTAssertEqual(store.workspace?.tasks.values.filter { $0.title == "buy milk" }.count, 1)
+        flow.finish()
+    }
+
+    /// Drafts the model gets a little wrong, which Lifr puts right before
+    /// they show: a new Project that's there already with a task restating
+    /// its goal and blank dates, then a new Avenue whose task's steps have
+    /// one twice and a due date of none.
+    func testAssistantRepairsDrafts() async throws {
+        let (store, flow) = app(
+            "assistant-repairs",
+            assistant: gemma([
+                [
+                    "message": "I added Stretch after every run to your Half marathon project.",
+                    "plan": [
+                        "avenues": [],
+                        "projects": [
+                            [
+                                "name": "Half marathon", "avenue": "HEALTH", "due": "",
+                                "details": "Goal is to complete a half marathon.",
+                            ]
+                        ],
+                        "tasks": [
+                            [
+                                "title": "Stretch after every run", "priority": "none", "due": "",
+                                "place": "HEALTH/Half marathon",
+                            ],
+                            [
+                                "title": "Run half marathon", "priority": "none", "due": "",
+                                "place": "HEALTH/Half marathon",
+                            ],
+                        ],
+                    ],
+                ],
+                [
+                    "plan": [
+                        "avenues": [["key": "GARDEN", "name": "Garden"]],
+                        "tasks": [
+                            [
+                                "title": "Plant tomatoes", "place": "Garden/plant_tomatoes",
+                                "subtasks": [
+                                    ["title": "Buy seedlings", "due": "none"], ["title": "Dig the bed"],
+                                    ["title": "buy seedlings"],
+                                ],
+                            ]
+                        ],
+                    ],
+                    "message": "Here's a Garden Avenue with a task to plant tomatoes.",
+                ],
+            ]))
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        await flow.step("new-chat", image: false)
+        send("Add a task to stretch after every run to my Half marathon project", in: id, of: store)
+        await flow.step("project-draft")
+        let chat = try XCTUnwrap(store.conversations.chats[id: id])
+        XCTAssertEqual(chat.conversation.draft?.tasks.map(\.title), ["Stretch after every run"])
+        XCTAssertEqual(chat.conversation.draft?.projects, [])
+        XCTAssertNil(chat.problem)
+        flow.tap("Add")
+        await flow.step("project-added", image: false)
+
+        send("Make a Garden Avenue with a task to plant tomatoes: buy seedlings, dig the bed", in: id, of: store)
+        await flow.step("garden-draft")
+        let garden = try XCTUnwrap(store.conversations.chats[id: id])
+        XCTAssertEqual(garden.conversation.draft?.tasks.map(\.place), ["GARDEN"])
+        XCTAssertEqual(
+            garden.conversation.draft?.tasks.first?.subtasks.map(\.title), ["Buy seedlings", "Dig the bed"])
+        XCTAssertNil(garden.problem)
+        flow.tap("Add")
+        await flow.step("garden-added", image: false)
+        XCTAssertNotNil(store.workspace?.avenues.values.first { $0.key.rawValue == "GARDEN" }, "Garden wasn't added")
+        flow.finish()
+    }
+
+    /// Renaming a task, where the model writes the old title back as the
+    /// new one and a status it already has: the task gets the quoted title.
+    func testAssistantRenamesATask() async throws {
+        let workspace = Workspace.sample(now: now, timeZone: .gmt)
+        let plumber = try XCTUnwrap(workspace.tasks.values.first { $0.title == "Call the plumber" })
+        let code = JSONValue.string(workspace.displayCode(of: plumber))
+        let (store, flow) = app(
+            "assistant-rename", workspace: workspace,
+            assistant: gemma([
+                [
+                    "changes": [["code": code, "status": "todo", "rename": "Call the plumber"]],
+                    "message": "I renamed the task to Call the electrician.",
+                ]
+            ]))
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        // Once the chat has the records, so it knows the task.
+        await flow.step("new-chat", image: false)
+        send("Rename “Call the plumber” to “Call the electrician”", in: id, of: store)
+        await flow.step("renamed")
+        let titles = store.workspace?.tasks.values.map(\.title) ?? []
+        XCTAssertTrue(titles.contains("Call the electrician"))
+        XCTAssertFalse(titles.contains("Call the plumber"))
         flow.finish()
     }
 

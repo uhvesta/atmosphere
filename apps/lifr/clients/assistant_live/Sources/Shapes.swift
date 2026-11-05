@@ -1,8 +1,8 @@
 import LifrAssistantClient
 import LifrModelsClient
 
-/// The shape of each answer, in the order the model writes it: the message
-/// first, so it shows while the plan is still coming.
+/// The shape of each answer, in the order the model writes it: what it
+/// does first, then the message, so the message says what it did.
 enum Shapes {
     static func optional(_ name: String, _ description: String, _ schema: ModelSchema = .string) -> ModelProperty {
         ModelProperty(name, description, schema, optional: true)
@@ -10,26 +10,73 @@ enum Shapes {
 
     static let priority = ModelSchema.choice(name: "Priority", ["none", "low", "medium", "high", "urgent"])
 
-    static func task(sub: Bool) -> ModelSchema {
+    /// A task's fields in the order the model writes them: what it is and
+    /// where it goes first, then what the person may have said about it.
+    /// A top-level task may be added under one of the existing tasks with
+    /// these `parents` codes.
+    static func task(sub: Bool, parents: [String] = []) -> ModelSchema {
         var properties = [ModelProperty("title", "What to do, short.")]
         if !sub {
-            properties += [
-                optional("place", "An Avenue KEY, or KEY/Project name, from the list."),
-                optional("parent", "The code of an existing task to add this under, from findTasks."),
-            ]
+            properties.append(ModelProperty("place", "An Avenue KEY, or KEY/Project name, from the list."))
+            if !parents.isEmpty {
+                properties.append(
+                    optional(
+                        "parent", "Only to add it as a Sub task of one of these existing tasks.",
+                        .choice(name: "Parent", parents)))
+            }
         }
         properties += [
+            optional("priority", "Only if the person said how important it is, such as urgent.", priority),
+            optional("due", "Only if the person said when, as they said it: friday, next monday, tomorrow, +3d."),
+            optional("dueTime", "HH:MM, 24-hour, only if the person said a time."),
             optional("details", "Notes, only if the person gave some."),
-            optional("priority", "Only if the person said how important it is.", priority),
-            optional("due", "When it's due: YYYY-MM-DD, today, tomorrow, friday, next friday, +3d, +2w or +1m."),
-            optional("dueTime", "HH:MM, 24-hour, only with a due date."),
-            optional("labels", "Label names.", .array(.string)),
-            optional("remind", "Reminders: 1h before, 1d before, or YYYY-MM-DD HH:MM.", .array(.string)),
+            optional("labels", "Label names, only if the person named some.", .array(.string)),
+            optional("remind", "Only if the person asked: 1h before, 1d before, or YYYY-MM-DD HH:MM.", .array(.string)),
         ]
         if !sub {
-            properties.append(optional("subtasks", "Steps of this task, one level deep.", .array(task(sub: true))))
+            properties.append(optional("subtasks", "The steps of this task the person named.", .array(task(sub: true))))
         }
         return .object(name: sub ? "SubTask" : "Task", properties)
+    }
+
+    /// A change to one of the existing tasks with these `codes`, which
+    /// may move it to one of `places`. Only the fields to change are
+    /// given, the most asked for first.
+    static func change(codes: [String], places: [String]) -> ModelSchema {
+        .object(
+            name: "Change",
+            [
+                ModelProperty("code", "The existing task's code.", .choice(name: "TaskCode", codes)),
+                optional(
+                    "status", "Only to finish, start or reopen it: done when finished.",
+                    .choice(name: "NewStatus", ["todo", "in_progress", "done", "wont_do"])),
+                optional(
+                    "due", "Only to reschedule, push or postpone it: the new date as the person said it, or none."),
+                optional("priority", "Only to change how important it is.", priority),
+                optional("moveTo", "Only to move it to another Avenue or Project.", .choice(name: "Place", places)),
+                optional("rename", "Only to rename it: the new title."),
+            ])
+    }
+
+    /// A change to one of the current plan's `count` tasks, which aren't
+    /// saved yet, given by its number: a choice of titles with spaces is
+    /// more than the model's grammar can follow. Only the fields to change
+    /// are given.
+    static func draftChange(count: Int, places: [String]) -> ModelSchema {
+        var properties = [
+            ModelProperty(
+                "task", "The number of the plan's task, from the list.",
+                .choice(name: "DraftTask", (0..<count).map { String($0 + 1) })),
+            optional("remove", "Only to take it out of the plan: true.", .bool),
+            optional("due", "Only to change when it's due: the new date as the person said it, or none."),
+            optional("priority", "Only to change how important it is.", priority),
+        ]
+        if !places.isEmpty {
+            properties.append(
+                optional("moveTo", "Only to put it in another Avenue or Project.", .choice(name: "Place", places)))
+        }
+        properties.append(optional("rename", "Only to rename it: the new title."))
+        return .object(name: "DraftChange", properties)
     }
 
     static let project = ModelSchema.object(
@@ -49,13 +96,17 @@ enum Shapes {
             ModelProperty("name", "Its name, such as Health."),
         ])
 
-    static let plan = ModelSchema.object(
-        name: "Plan",
-        [
-            optional("avenues", "New Avenues, only when the person agreed to one.", .array(avenue)),
-            optional("projects", "New Projects.", .array(project)),
-            optional("tasks", "New top-level tasks.", .array(task(sub: false))),
-        ])
+    /// New things to add, whose top-level tasks may go under the existing
+    /// tasks with `parents` codes.
+    static func plan(parents: [String] = []) -> ModelSchema {
+        .object(
+            name: "Plan",
+            [
+                optional("avenues", "New Avenues, only when the person agreed to one.", .array(avenue)),
+                optional("projects", "New Projects, only when the person asked for one.", .array(project)),
+                optional("tasks", "New top-level tasks.", .array(task(sub: false, parents: parents))),
+            ])
+    }
 
     static let skill = ModelSchema.object(
         name: "Skill",
@@ -69,10 +120,48 @@ enum Shapes {
             ModelProperty("draftsPlans", "Whether it adds new tasks, Projects or Avenues.", .bool),
         ])
 
-    static let turn = ModelSchema.object(
-        name: "Turn",
-        [
-            ModelProperty("message", "What you say to the person, one to three sentences."),
-            optional("plan", "The whole plan to add, when there is one.", plan),
-        ])
+    /// The answer to a message: the changes made to the existing tasks
+    /// with `codes`, the plan of new things, then what to say about them.
+    /// A change may move a task to one of `places`. The answer must have
+    /// changes with `mustChange`, and a plan with `mustPlan`: left to
+    /// choose, a small model leaves them out and only talks. The plan's
+    /// tasks may go under the `codes` tasks.
+    /// With `draftTitles`, the answer may change the current plan's tasks
+    /// with those titles, and must with `mustChangeDraft`; its plan then
+    /// has only what's new.
+    static func turn(
+        changes codes: [String], places: [String] = [], draftTitles: [String] = [],
+        mustChange: Bool = false, mustChangeDraft: Bool = false, mustPlan: Bool = false
+    ) -> ModelSchema {
+        var properties: [ModelProperty] = []
+        if !codes.isEmpty {
+            properties.append(
+                ModelProperty(
+                    "changes", "Changes to these existing tasks the person asked for.",
+                    .array(change(codes: codes, places: places)),
+                    optional: !mustChange))
+        }
+        if !draftTitles.isEmpty {
+            properties.append(
+                ModelProperty(
+                    "draftChanges", "Changes to the current plan's tasks the person asked for.",
+                    .array(draftChange(count: draftTitles.count, places: places)),
+                    optional: !mustChangeDraft))
+        }
+        let planDescription =
+            draftTitles.isEmpty
+            ? "The whole plan of new things to add, when there is one."
+            : "Only the new things to add to the current plan, when the person asked for more."
+        properties += [
+            ModelProperty("plan", planDescription, plan(parents: codes), optional: !mustPlan),
+            ModelProperty(
+                "message", "What you say to the person about the changes and plan, in one to three sentences."),
+        ]
+        return .object(name: "Turn", properties)
+    }
+}
+
+extension AssistantLookup.Place {
+    /// What a move to this Avenue or one of its Projects is written as.
+    var choices: [String] { [key] + projects.map { key + "/" + $0 } }
 }

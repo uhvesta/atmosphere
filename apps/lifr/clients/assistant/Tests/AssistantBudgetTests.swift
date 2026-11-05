@@ -48,7 +48,7 @@ final class AssistantBudgetTests: XCTestCase {
     }
 
     func testAModelWithALargerWindowSendsMoreBeforeShrinking() {
-        let tasks = (0..<60).map { Plan.TaskDraft(title: "Task \($0) with a fairly long title", place: "HOME") }
+        let tasks = (0..<250).map { Plan.TaskDraft(title: "Task \($0) with a fairly long title", place: "HOME") }
         let request = request(["Add these"], draft: Plan(tasks: tasks))
         let larger = ContextBudget(window: 32_768, reservedForAnswer: 2_048)
 
@@ -73,7 +73,8 @@ final class AssistantBudgetTests: XCTestCase {
 
     func testFullSizeSendsEveryAllowedTool() {
         XCTAssertEqual(
-            AssistantPrompt.tools(request(["What's due?"]), size: .full), Set(AssistantTool.allCases))
+            AssistantPrompt.tools(request(["What's due?"]), size: .full),
+            Set(AssistantTool.allCases).subtracting([.updateTasks]), "its changes are in the answer")
     }
 
     func testSmallerSizesSendTheToolsTheMessageNeeds() {
@@ -81,7 +82,6 @@ final class AssistantBudgetTests: XCTestCase {
         XCTAssertEqual(question, [.findTasks, .getTask, .overview])
 
         let change = AssistantPrompt.tools(request(["Mark HOME-0003 done"]), size: .smaller)
-        XCTAssertTrue(change.contains(.updateTasks))
         XCTAssertFalse(change.contains(.revert))
 
         let undo = AssistantPrompt.tools(request(["Undo that"]), size: .smallest)

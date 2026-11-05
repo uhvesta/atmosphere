@@ -24,82 +24,173 @@ package struct AssistantWrites: Sendable, Hashable {
     package func hash(into hasher: inout Hasher) { hasher.combine(conversation) }
 }
 
+/// A change to one existing task, as the assistant's answer gives it.
+/// Fields left nil stay as they are.
+package struct TaskChange: Hashable, Sendable {
+    /// Such as HOME-0003.
+    package var code: String
+    package var title: String?
+    /// An Avenue key, or "KEY/Project name", to move the task to.
+    package var place: String?
+    /// todo, in_progress, done or wont_do.
+    package var status: String?
+    package var priority: String?
+    /// A date as `CalendarDate.resolving` reads it, or "none" to clear it.
+    package var due: String?
+
+    package init(
+        code: String, title: String? = nil, place: String? = nil, status: String? = nil, priority: String? = nil,
+        due: String? = nil
+    ) {
+        self.code = code
+        self.title = title
+        self.place = place
+        self.status = status
+        self.priority = priority
+        self.due = due
+    }
+}
+
+/// Why a change the assistant wrote wasn't made. Nothing of that change
+/// is saved.
+package enum TaskChangeError: Error, Hashable, Sendable, CustomStringConvertible {
+    case noTask(code: String)
+    case unknownStatus(String)
+    case unknownPriority(String)
+    case invalidDate(String)
+    case unknownAvenue(key: String, suggestion: String?)
+    case unknownProject(name: String, avenue: String, suggestion: String?)
+    /// Sub tasks stay with their parent.
+    case subtaskMoves(code: String)
+    case nothingToChange(code: String)
+    /// The conversation can't change anything, such as with a skill that
+    /// only reads.
+    case readOnly
+    /// A Core rule refused the change.
+    case refused(code: String, LifrError)
+    /// Saving failed, for a reason outside Lifr's rules.
+    case notSaved(code: String, reason: String)
+
+    package var description: String {
+        switch self {
+        case .noTask(let code):
+            "There's no task \(code), so it wasn't changed. Ask again with the task's title."
+        case .unknownStatus(let status):
+            "“\(status)” isn't a status Lifr can set. Ask for to do, in progress, done or won't do."
+        case .unknownPriority(let priority):
+            "“\(priority)” isn't a priority. Ask for none, low, medium, high or urgent."
+        case .invalidDate(let text):
+            "“\(text)” isn't a date Lifr reads, so the due date wasn't changed. " + Plan.dateHelp
+        case .unknownAvenue(let key, let suggestion):
+            "There's no Avenue \(key), so the task wasn't moved."
+                + (suggestion.map { " Did you mean \($0)?" } ?? " Ask again with one from the sidebar.")
+        case .unknownProject(let name, let avenue, let suggestion):
+            "\(avenue) has no Project “\(name)”, so the task wasn't moved."
+                + (suggestion.map { " Did you mean “\($0)”?" } ?? " Ask again with one of its Projects.")
+        case .subtaskMoves(let code):
+            "\(code) is a Sub task, so it moves with its parent. Move the parent task instead."
+        case .nothingToChange(let code):
+            "The change to \(code) didn't say what to change."
+        case .readOnly:
+            "Nothing can be changed in this conversation. Change the task yourself, or ask without the skill."
+        case .refused(let code, let error):
+            "\(code) wasn't changed: \(error)"
+        case .notSaved(let code, let reason):
+            "\(code) wasn't changed because saving failed: \(reason) Try again; if it keeps failing, restart Lifr."
+        }
+    }
+}
+
 extension AssistantTools {
     /// The statuses the assistant can set. Procrastinated isn't one: Lifr
     /// works it out from activity.
     private static let settable: [String: TaskStatus] = [
-        "todo": .todo, "in_progress": .inProgress, "done": .done, "wont_do": .wontDo,
+        "todo": .todo, "to_do": .todo, "in_progress": .inProgress, "done": .done, "wont_do": .wontDo,
     ]
 
-    /// Sets the same fields on each task in `codes`. A title is only for one
-    /// task. `due` is a date, or "none" to clear it. Won't Do also closes
-    /// open Sub tasks. Nothing changes if any task or value is wrong.
-    package func updateTasks(
-        codes: [String], status: String?, priority: String?, due: String?, title: String?
-    ) async -> String {
-        let codes = codes.map { $0.trimmingCharacters(in: .whitespaces).uppercased() }.filter { !$0.isEmpty }
-        guard !codes.isEmpty else { return "Name at least one task code. Use findTasks to look codes up." }
-        var tasks: [LifrTask] = []
-        for code in codes {
-            guard let task = try? workspace.task(code: code), task.deletedAt == nil else {
-                return "There's no task \(code). Use findTasks to look up its code. Nothing changed."
+    /// Makes `change` to its task, all of it or none, and returns the task
+    /// after it. Fields that say what the task already has change nothing.
+    /// Won't Do also closes open Sub tasks; a move takes the Sub tasks along.
+    package func change(_ change: TaskChange) async throws(TaskChangeError) -> LifrTask {
+        let code = change.code.trimmingCharacters(in: .whitespaces).uppercased()
+        guard let task = try? workspace.task(code: code), task.deletedAt == nil else { throw .noTask(code: code) }
+        let shown = workspace.displayCode(of: task)
+        let newStatus = try change.status.nonEmpty.map { (status) throws(TaskChangeError) in
+            guard let match = Self.settable[status.lowercased().replacingOccurrences(of: " ", with: "_")] else {
+                throw .unknownStatus(status)
             }
-            tasks.append(task)
+            return match
+        }.flatMap { $0 == task.status ? nil : $0 }
+        let newPriority = try change.priority.nonEmpty.map { (priority) throws(TaskChangeError) in
+            guard let match = Priority(rawValue: priority.lowercased()) else { throw .unknownPriority(priority) }
+            return match
+        }.flatMap { $0 == task.priority ? nil : $0 }
+        let newDue = try change.due.nonEmpty.map { (due) throws(TaskChangeError) -> CalendarDate? in
+            if due.lowercased() == "none" { return nil }
+            guard let date = CalendarDate.resolving(due, today: today) else { throw .invalidDate(due) }
+            return date
+        }.flatMap { $0 == task.dueDate ? nil : $0 }
+        let newTitle = change.title.nonEmpty.flatMap { $0 == task.title ? nil : $0 }
+        let newPlace = try change.place.nonEmpty
+            .map { (place) throws(TaskChangeError) in try self.place(place, of: task) }
+            .flatMap { $0.avenue == task.avenueID && $0.project == task.projectID ? nil : $0 }
+        if newPlace != nil, task.isSubtask { throw .subtaskMoves(code: shown) }
+        guard newStatus != nil || newPriority != nil || newDue != nil || newTitle != nil || newPlace != nil else {
+            let given = [change.title, change.place, change.status, change.priority, change.due]
+            if given.contains(where: { $0.nonEmpty != nil }) { return task }
+            throw .nothingToChange(code: shown)
         }
-        let newStatus: TaskStatus?
-        if let status = status.nonEmpty {
-            guard let match = Self.settable[status] else {
-                return "You can't set the status \(status). Use one of: "
-                    + Self.settable.keys.sorted().joined(separator: ", ") + ". Nothing changed."
+        let id = task.id
+        try await apply(code: shown) { workspace, context throws(LifrError) in
+            var saved = Change()
+            if newTitle != nil || newPriority != nil || newDue != nil {
+                let edit = Workspace.TaskEdit(title: newTitle, priority: newPriority, dueDate: newDue)
+                saved.merge(try workspace.edit(id, edit, in: context))
             }
-            newStatus = match
-        } else {
-            newStatus = nil
-        }
-        let newPriority: Priority?
-        if let priority = priority.nonEmpty {
-            guard let match = Priority(rawValue: priority) else {
-                return "There's no priority \(priority). Use none, low, medium, high or urgent. Nothing changed."
+            if let newPlace {
+                saved.merge(try workspace.move(id, toAvenue: newPlace.avenue, project: newPlace.project, in: context))
             }
-            newPriority = match
-        } else {
-            newPriority = nil
-        }
-        let newDue: CalendarDate??
-        if let due = due.nonEmpty {
-            if due == "none" {
-                newDue = .some(nil)
-            } else if let date = CalendarDate.resolving(due, today: today) {
-                newDue = date
-            } else {
-                return "\(due) isn't a date. Use YYYY-MM-DD, today, tomorrow, a weekday, +3d, +2w, +1m or none. "
-                    + "Nothing changed."
+            if let newStatus {
+                saved.merge(try workspace.setStatus(newStatus, of: id, cascade: newStatus == .wontDo, in: context))
             }
-        } else {
-            newDue = nil
+            return saved
         }
-        let newTitle = title.nonEmpty
-        if newTitle != nil, tasks.count > 1 { return "A new title is for one task at a time. Nothing changed." }
-        guard newStatus != nil || newPriority != nil || newDue != nil || newTitle != nil else {
-            return "Say what to change: status, priority, due or title."
+        return workspace.tasks[id] ?? task
+    }
+
+    /// The Avenue and Project "KEY" or "KEY/Project name" names, in any
+    /// case, or by the Avenue's name. "KEY/" and the `task`'s own title,
+    /// which a model writes for a move, is the Avenue.
+    private func place(_ text: String, of task: LifrTask) throws(TaskChangeError) -> (avenue: UUID, project: UUID?) {
+        let parts = text.split(separator: "/", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+        let wanted = parts.first ?? ""
+        let avenues = workspace.avenues.values.filter { $0.archivedAt == nil }
+        guard
+            let avenue = avenues.first(where: { $0.key.rawValue.caseInsensitiveCompare(wanted) == .orderedSame })
+                ?? avenues.first(where: { $0.name.caseInsensitiveCompare(wanted) == .orderedSame })
+        else {
+            throw .unknownAvenue(
+                key: wanted, suggestion: Workspace.closest(to: wanted.uppercased(), in: avenues.map(\.key.rawValue)))
         }
-        let ids = tasks.map(\.id)
-        let saved = await apply { workspace, context throws(LifrError) in
-            var change = Change()
-            for id in ids {
-                if newTitle != nil || newPriority != nil || newDue != nil {
-                    let edit = Workspace.TaskEdit(title: newTitle, priority: newPriority, dueDate: newDue)
-                    change.merge(try workspace.edit(id, edit, in: context))
-                }
-                if let newStatus {
-                    change.merge(try workspace.setStatus(newStatus, of: id, cascade: newStatus == .wontDo, in: context))
-                }
-            }
-            return change
+        guard parts.count == 2 else { return (avenue.id, nil) }
+        let projects = workspace.projects.values.filter { $0.avenueID == avenue.id && $0.status == .active }
+        guard let project = projects.first(where: { $0.name.caseInsensitiveCompare(parts[1]) == .orderedSame }) else {
+            if parts[1].caseInsensitiveCompare(task.title) == .orderedSame { return (avenue.id, nil) }
+            throw .unknownProject(
+                name: parts[1], avenue: avenue.key.rawValue,
+                suggestion: Workspace.closest(to: parts[1], in: projects.map(\.name)))
         }
-        guard case .success = saved else { return saved.message }
-        let updated = ids.compactMap { workspace.tasks[$0] }
-        return "Saved. The person can undo it. Now:\n" + lines(updated)
+        return (avenue.id, project.id)
+    }
+
+    /// Saves `operation` for the change to `code`, as `TaskChangeError`.
+    private func apply(code: String, _ operation: @escaping AssistantOperation) async throws(TaskChangeError) {
+        switch await apply(operation) {
+        case .success: return
+        case .readOnly: throw .readOnly
+        case .refused(let error): throw .refused(code: code, error)
+        case .failed(let reason): throw .notSaved(code: code, reason: reason)
+        }
     }
 
     /// Adds a comment to the task with `code`.
@@ -163,9 +254,7 @@ extension AssistantTools {
 
     /// Saves `operation` as the assistant, in this conversation.
     private func apply(_ operation: @escaping AssistantOperation) async -> SaveResult {
-        guard let writes else {
-            return .failure("You can't change anything here. Suggest the change and the person can make it.")
-        }
+        guard let writes else { return .readOnly }
         let conversation = writes.conversation
         do {
             workspace = try await writes.save { workspace, context throws(LifrError) in
@@ -178,18 +267,26 @@ extension AssistantTools {
             }
             return .success
         } catch let error as LifrError {
-            return .failure("\(error) Nothing changed.")
+            return .refused(error)
         } catch {
-            return .failure("Saving failed: \(error.localizedDescription) Nothing changed.")
+            return .failed(error.localizedDescription)
         }
     }
 
     private enum SaveResult {
         case success
-        case failure(String)
+        case readOnly
+        case refused(LifrError)
+        case failed(String)
 
+        /// What the model is told when a tool's save didn't happen.
         var message: String {
-            if case .failure(let message) = self { message } else { "" }
+            switch self {
+            case .success: ""
+            case .readOnly: "You can't change anything here. Suggest the change and the person can make it."
+            case .refused(let error): "\(error) Nothing changed."
+            case .failed(let reason): "Saving failed: \(reason) Nothing changed."
+            }
         }
     }
 

@@ -50,9 +50,13 @@ package enum AssistantPrompt {
     /// The estimated tokens of `request` at `size`, before the answer.
     package static func estimatedTokens(_ request: AssistantRequest, size: Size) -> Int {
         estimatedTokens(instructions(request, size: size)) + estimatedTokens(prompt(request, size: size))
-            + tools(request, size: size).count * tokensPerTool + (size.schemaInPrompt ? schemaTokens : 0)
+            + tools(request, size: size).count * tokensPerTool
+            + (size.schemaInPrompt ? schemaTokens + (request.changesTasks ? changesSchemaTokens : 0) : 0)
             + attachedTokens(request)
     }
+
+    /// The schema of `changes`, when the answer has them.
+    package static let changesSchemaTokens = 150
 
     /// What the model reads for the photos and recordings sent with the new
     /// message: none when none of their files are on this device.
@@ -74,18 +78,22 @@ package enum AssistantPrompt {
 
     /// The tools sent at `size`: every allowed one at full size, or with a
     /// skill; otherwise the reading tools, and the others only when the
-    /// last message asks for what they do.
+    /// last message asks for what they do. A message that asks to add
+    /// something or change a task gets no reading tools at any size: a
+    /// small model calls them anyway, and loses its way.
+    /// updateTasks isn't a tool the model calls: its changes come in the
+    /// answer, as `changes`.
     package static func tools(_ request: AssistantRequest, size: Size) -> Set<AssistantTool> {
-        let allowed = request.allowedTools
-        guard size != .full, request.skill == nil else { return allowed }
-        let words = Set(
-            (request.messages.last?.text ?? "").lowercased()
-                .split { !$0.isLetter && $0 != "'" }.map(String.init))
+        let allowed = request.allowedTools.subtracting([.updateTasks])
+        guard request.skill == nil else { return allowed }
+        let reads = !asksForChange(request) && !asksForPlan(request)
+        guard size != .full || !reads else { return allowed }
+        let words = lastWords(request)
         let picked = AssistantTool.allCases.filter { tool in
             switch tool {
-            case .findTasks, .getTask, .overview: true
+            case .findTasks, .getTask, .overview: reads
             case .recentActivity, .revert: !words.isDisjoint(with: undoWords)
-            case .updateTasks: !words.isDisjoint(with: changeWords)
+            case .updateTasks: false
             case .addComment: !words.isDisjoint(with: commentWords)
             }
         }
@@ -95,21 +103,87 @@ package enum AssistantPrompt {
     private static let undoWords: Set<String> = [
         "undo", "revert", "back", "changed", "change", "changes", "activity", "recent", "happened", "did",
     ]
-    private static let changeWords: Set<String> = [
-        "mark", "done", "finish", "finished", "complete", "completed", "close", "reopen", "start", "started",
-        "move", "set", "change", "rename", "priority", "urgent", "postpone", "reschedule", "push", "delay",
-        "won't", "wont", "cancel", "drop", "update",
-    ]
     private static let commentWords: Set<String> = ["comment", "note", "notes", "remark"]
 
     package static func instructions(_ request: AssistantRequest, size: Size = .full) -> String {
         instructions(
             request, tools: tools(request, size: size), draftsPlans: request.draftsPlans,
-            listsLabels: size.listsLabels)
+            changesTasks: !changeable(request).isEmpty, listsLabels: size.listsLabels)
+    }
+
+    /// The existing tasks the model may change in this answer: those the
+    /// last message may mean, when the person lets it change tasks. With
+    /// none, the answer has no changes, so the model can't change a task
+    /// by a code it made up.
+    package static func changeable(_ request: AssistantRequest) -> [AssistantLookup.OpenTask] {
+        request.changesTasks ? meantTasks(request) : []
+    }
+
+    /// Whether the last message asks to change a task the prompt lists,
+    /// such as "mark it done" or "move … to WORK". Then the answer must
+    /// have a change, and the reading tools aren't sent: the list has the
+    /// codes, and a search only takes the model off course.
+    package static func asksForChange(_ request: AssistantRequest) -> Bool {
+        !changeable(request).isEmpty && !lastWords(request).isDisjoint(with: changeWords)
+    }
+
+    private static let changeWords: Set<String> = [
+        "rename", "call", "move", "put", "mark", "done", "finish", "finished", "complete", "completed", "tick",
+        "push", "reschedule", "postpone", "delay", "change", "due", "priority", "urgent", "reopen", "won't",
+    ]
+
+    /// Whether the last message asks to add something or change the plan,
+    /// such as "add…", "also…" or "remove the second one", rather than
+    /// asking a question.
+    package static func asksForPlan(_ request: AssistantRequest) -> Bool {
+        let text = request.messages.last?.text ?? ""
+        guard !text.contains("?") else { return false }
+        let words = text.lowercased().split { !$0.isLetter && $0 != "'" }.map(String.init)
+        return words.first.map(planWords.contains) == true || words.contains("add")
+    }
+
+    private static let planWords: Set<String> = [
+        "add", "also", "make", "create", "plus", "remove", "delete", "drop", "change", "set", "and", "then",
+        "actually", "instead", "new",
+    ]
+
+    /// `plan` with each new Project the person didn't ask for made a task,
+    /// its tasks the Sub tasks: a small model makes a Project of a task
+    /// with steps. Projects are kept with a skill, when a message of the
+    /// person's says project or goal, or when the draft has them already.
+    package static func withAskedProjects(_ plan: Plan, _ request: AssistantRequest) -> Plan {
+        guard request.skill == nil else { return plan }
+        let asked = request.messages.contains { message in
+            message.role == .person && !Set(words(message.text)).isDisjoint(with: ["project", "goal"])
+        }
+        guard !asked else { return plan }
+        let drafted = Set((request.draft?.projects ?? []).map { $0.name.lowercased() })
+        var plan = plan
+        let unasked = plan.projects.filter { !drafted.contains($0.name.lowercased()) }
+        plan.projects.removeAll { !drafted.contains($0.name.lowercased()) }
+        plan.tasks += unasked.map { project in
+            var task = Plan.TaskDraft(title: project.name)
+            task.place = project.avenue
+            task.details = project.details
+            task.due = project.due
+            task.subtasks = project.tasks.map { subtask in
+                var subtask = subtask
+                subtask.subtasks = []
+                return subtask
+            }
+            return task
+        }
+        return plan
+    }
+
+    /// The last message's words, in lower case.
+    static func lastWords(_ request: AssistantRequest) -> Set<String> {
+        Set((request.messages.last?.text ?? "").lowercased().split { !$0.isLetter && $0 != "'" }.map(String.init))
     }
 
     private static func instructions(
-        _ request: AssistantRequest, tools: Set<AssistantTool>, draftsPlans: Bool, listsLabels: Bool = true
+        _ request: AssistantRequest, tools: Set<AssistantTool>, draftsPlans: Bool, changesTasks: Bool,
+        listsLabels: Bool = true
     ) -> String {
         let lookup = request.lookup
         let today = request.today
@@ -121,16 +195,19 @@ package enum AssistantPrompt {
             - Projects are goals inside an Avenue, with their own tasks.
             - Tasks can have Sub tasks, one level deep.
 
-            Rules for the plan:
-            - Put each top-level task somewhere: "place" is an Avenue KEY or "KEY/Project name" from the list \
-            below, or "parent" is the code of an existing task to add it under.
-            - Tasks inside a new Project need no place.
+            Rules for the plan, which only adds new things:
+            - Give each top-level task a "place": an Avenue KEY or "KEY/Project name" from the list below. Use \
+            the one the person names; when they name none, the one that fits best. To add a Sub task to an \
+            existing task the prompt lists, give "parent", its code.
+            - Steps of a new task go in its "subtasks". Only make a Project when the person asks for one.
             - Only add an Avenue when none below fits and the person agrees.
-            - Dates are YYYY-MM-DD, today, tomorrow, a weekday such as friday, next friday, +3d, +2w or +1m.
-            - Leave out anything the person didn't ask for. Never invent dates.
-            - When the person changes their mind, return the whole updated plan.
-            - The plan has only what's new: leave out the Avenues, Projects and labels listed below, such as \
-            those the person added earlier in this chat.
+            - Only fill in what the person said: no dates, priorities, reminders, labels, details or extra tasks \
+            they didn't ask for.
+            - For dates, write what the person said, such as friday, next monday, tomorrow, today, +3d or \
+            +2w. Only write YYYY-MM-DD for a date the person gave as one.
+            \(followUpRule(request))
+            - Leave out the Avenues, Projects and labels listed below, such as those the person added earlier \
+            in this chat.
             - Leave "plan" out while you are still asking questions.
 
             Today is \(today), a \(weekday(today)).
@@ -153,12 +230,22 @@ package enum AssistantPrompt {
                 + reads.map(\.use).joined(separator: ", ")
                 + ". Answer from what the tools return; if they return nothing, say so."
         }
+        if changesTasks {
+            text +=
+                "\n\nTo change tasks that already exist, such as to rename, move, finish, reopen or reschedule "
+                + "them, put each in \"changes\" with its code, from the existing tasks the prompt lists. Never put "
+                + "an existing task in \"plan\": that would add it a second time. Tasks in the current plan "
+                + "aren't saved yet: change those in \"\(draftTitles(request).isEmpty ? "plan" : "draftChanges")\". "
+                + "Changes save at once and the person can undo them."
+        }
         let writes = AssistantTool.allCases.filter { $0.writes && tools.contains($0) }
         if !writes.isEmpty {
             text +=
-                "\n\nTo change existing tasks when the person asks, use "
-                + writes.map(\.use).joined(separator: ", ")
-                + ". They save at once and the person can undo them. Say in \"message\" what you changed."
+                "\n\nAlso, when the person asks, use " + writes.map(\.use).joined(separator: ", ")
+                + ". They save at once and the person can undo them."
+        }
+        if changesTasks || !writes.isEmpty {
+            text += " Say in \"message\" what you changed."
             if draftsPlans {
                 text += " New tasks, Projects and Avenues always go in \"plan\" for the person to add."
             }
@@ -178,7 +265,7 @@ package enum AssistantPrompt {
     /// structured answer couldn't be read: the same, without tools or a
     /// plan.
     package static func plainInstructions(_ request: AssistantRequest) -> String {
-        instructions(request, tools: [], draftsPlans: false, listsLabels: false)
+        instructions(request, tools: [], draftsPlans: false, changesTasks: false, listsLabels: false)
             + "\n\nAnswer in one to three plain sentences, with no lists or formatting. If the person asked for "
             + "new tasks, say what you'd add and ask them to send the message again for a plan."
     }
@@ -196,14 +283,74 @@ package enum AssistantPrompt {
             case (.assistant, _): "You: " + said
             }
         }.joined(separator: "\n")
+        let meant = meantTasks(request)
+        if !meant.isEmpty {
+            text +=
+                "\n\nExisting tasks the last message may mean:\n"
+                + meant.map { "- \($0.code) \"\($0.title)\" in \($0.place)" }.joined(separator: "\n")
+            if asksForChange(request) {
+                text += "\nIt asks to change one of them: put that in \"changes\"."
+            }
+        }
         if let draft = request.draft, !draft.isEmpty {
-            text += "\n\nThe current plan, with any edits by the person:\n" + PlanFile.write(draft)
+            text += "\n\nThe current plan, with any edits by the person:\n"
+            text +=
+                draftTitles(request).isEmpty
+                ? PlanFile.write(draft)
+                : draftList(draft)
+                    + "\nThese are in the plan already: never write them in \"plan\" again. Put only what the last "
+                    + "message adds in \"plan\", and changes to these in \"draftChanges\" by number."
         }
         if let problem = request.problem {
             text += "\nIt can't be added yet: \(problem)\nFix that in your plan."
         }
+        // Repeated after the plan, so a small model answers it and not the
+        // message the plan came from.
+        if !draftTitles(request).isEmpty, let last = request.messages.last?.text {
+            return text + "\n\nAnswer the person's last message: “\(last)”"
+        }
         return text + "\n\nAnswer the person's last message."
     }
+
+    /// The most tasks `meantTasks` lists.
+    package static let meantTasksLimit = 8
+
+    /// The open top-level tasks the last message may be about: those more
+    /// than half of whose words it has, most words first. So the model has
+    /// their codes to change them without looking them up.
+    package static func meantTasks(_ request: AssistantRequest) -> [AssistantLookup.OpenTask] {
+        let said = Set(words(request.messages.last?.text ?? ""))
+        guard !said.isEmpty else { return [] }
+        let scored = request.lookup.tasks.compactMap { task -> (AssistantLookup.OpenTask, Int)? in
+            let own = Set(words(task.title))
+            let shared = own.intersection(said).count
+            return !own.isEmpty && shared * 2 > own.count ? (task, shared) : nil
+        }
+        return scored.enumerated()
+            .sorted { ($0.element.1, -$0.offset) > ($1.element.1, -$1.offset) }
+            .prefix(meantTasksLimit).map(\.element.0)
+    }
+
+    /// The words of `text` that say what it's about, each without an
+    /// ending such as -s, -ed or -ing, so "watered the plants" and "Water
+    /// the plant" share theirs.
+    private static func words(_ text: String) -> [String] {
+        text.lowercased().split { !$0.isLetter && !$0.isNumber }.compactMap { word in
+            var word = String(word)
+            guard word.count > 2, !stopWords.contains(word) else { return nil }
+            for ending in ["ing", "ed", "s"] where word.hasSuffix(ending) && word.count > ending.count + 2 {
+                word.removeLast(ending.count)
+                break
+            }
+            return word
+        }
+    }
+
+    private static let stopWords: Set<String> = [
+        "the", "and", "for", "with", "from", "into", "onto", "that", "this", "these", "those", "task", "tasks",
+        "add", "please", "can", "you", "my", "our", "your", "its", "it's", "mark", "set", "change", "move",
+        "rename", "push", "next", "all", "one", "new", "now", "today", "tomorrow",
+    ]
 
     /// A message's text, with what was sent with it: the new message's
     /// photos and recordings are `attached` for the model to read; earlier
@@ -300,6 +447,38 @@ package enum AssistantPrompt {
             isComplete: isComplete)
     }
 
+    /// The changes to existing tasks in the model's whole answer, without
+    /// those with no code. Only the first change to each task is kept: a
+    /// later one restates the task as it was.
+    package static func changes(from answer: JSONValue) -> [TaskChange] {
+        var seen: Set<String> = []
+        return (answer["changes"]?.items ?? []).compactMap { change in
+            guard let code = change["code"]?.text, seen.insert(code.uppercased()).inserted else { return nil }
+            return TaskChange(
+                code: code, title: change["rename"]?.text, place: change["moveTo"]?.text,
+                status: change["status"]?.text, priority: change["priority"]?.text, due: change["due"]?.text)
+        }
+    }
+
+    /// `reply` after its changes were made: tasks the plan would add a
+    /// second time, with the title of a task just `changed`, left out;
+    /// and what was `refused` said after the model's message.
+    package static func reply(
+        _ reply: AssistantReply, changed: [LifrTask], refused: [TaskChangeError]
+    ) -> AssistantReply {
+        var reply = reply
+        if var plan = reply.plan, !changed.isEmpty {
+            let titles = changed.map { $0.title.lowercased() }
+            plan.tasks.removeAll { titles.contains($0.title.lowercased()) }
+            reply.plan = plan.isEmpty ? nil : plan
+        }
+        if !refused.isEmpty {
+            let notes = refused.map(\.description).joined(separator: " ")
+            reply.text = reply.text.isEmpty ? notes : reply.text + "\n\n" + notes
+        }
+        return reply
+    }
+
     private static func plan(_ value: JSONValue) -> Plan? {
         var plan = Plan()
         plan.avenues =
@@ -351,19 +530,25 @@ extension AssistantTool {
     }
 }
 
+/// Reading the model's answers.
 extension JSONValue {
-    fileprivate subscript(key: String) -> JSONValue? {
+    subscript(key: String) -> JSONValue? {
         guard case .object(let fields) = self, let value = fields[key], value != .null else { return nil }
         return value
     }
 
-    fileprivate var text: String? {
+    /// The string, trimmed; nil when it's blank or not a string.
+    var text: String? {
         guard case .string(let text) = self else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    fileprivate var items: [JSONValue] {
+    var items: [JSONValue] {
         if case .array(let items) = self { items } else { [] }
+    }
+
+    var bool: Bool? {
+        if case .bool(let value) = self { value } else { nil }
     }
 }

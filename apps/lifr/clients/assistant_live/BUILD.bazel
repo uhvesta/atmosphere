@@ -19,6 +19,7 @@ swift_library(
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/models",
+        "//apps/lifr/core",
     ],
 )
 

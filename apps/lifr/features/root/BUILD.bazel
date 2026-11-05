@@ -98,6 +98,7 @@ lifr_snapshot_test(
     deps = [
         ":root",
         "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/assistant_live",
         "//apps/lifr/clients/models",
         "//apps/lifr/features/shortcuts",
         "//apps/lifr/widgets:views",

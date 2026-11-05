@@ -312,7 +312,7 @@ final class ChatFeatureTests: XCTestCase {
         let (workspace, rent) = home()
         let code = workspace.displayCode(of: rent)
         let store = chat(workspace) { request in
-            _ = await request.tools().updateTasks(codes: [code], status: "done", priority: nil, due: nil, title: nil)
+            _ = try? await request.tools().change(TaskChange(code: code, status: "done"))
             return AssistantReply(text: "Marked it done.", isComplete: true)
         }
 
@@ -407,7 +407,7 @@ final class ChatFeatureTests: XCTestCase {
         let clock = TestClock()
         let code = workspace.displayCode(of: rent)
         let store = chat(workspace, clock: clock) { request in
-            _ = await request.tools().updateTasks(codes: [code], status: "done", priority: nil, due: nil, title: nil)
+            _ = try? await request.tools().change(TaskChange(code: code, status: "done"))
             try await Task.sleep(for: .seconds(3_600))
             return AssistantReply(text: "Late.", isComplete: true)
         }

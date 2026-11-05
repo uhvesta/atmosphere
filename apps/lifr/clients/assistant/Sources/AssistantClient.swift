@@ -170,6 +170,10 @@ package struct AssistantRequest: Hashable, Sendable {
         return writes == nil ? tools.filter { !$0.writes } : tools
     }
 
+    /// Whether the assistant may change existing tasks, in its answer's
+    /// `changes`.
+    package var changesTasks: Bool { allowedTools.contains(.updateTasks) }
+
     /// Whether the assistant may propose a plan: without a skill, or when
     /// the skill drafts plans.
     package var draftsPlans: Bool { skill?.draftsPlans ?? true }

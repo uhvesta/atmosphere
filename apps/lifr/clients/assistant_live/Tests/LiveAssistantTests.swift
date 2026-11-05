@@ -133,18 +133,19 @@ final class LiveAssistantTests: XCTestCase {
         let store = StoreClient.inMemory(records.workspace, actor: .user(device: "iPhone", surface: .iPhone))
         let model = ScriptedRuntime(steps: [
             ScriptedRuntime.call(
-                "updateTasks", ["codes": [.string(code)], "status": "done"],
+                "addComment", ["code": .string(code), "text": "Paid"],
                 then: ScriptedRuntime.fail(.decodingFailure)),
             ScriptedRuntime.answer(turn),
         ])
 
         let (_, error) = await replies(
-            .live(runtime: { _ in model }), request("Mark rent done", workspace: records.workspace, writes: store))
+            .live(runtime: { _ in model }),
+            request("Note that rent is paid", workspace: records.workspace, writes: store))
 
         XCTAssertEqual(error, .unreadable(saved: true))
         XCTAssertEqual(model.turns.count, 1)
         let saved = try await store.load()
-        XCTAssertEqual(saved.tasks[rent.id]?.status, .done)
+        XCTAssertEqual(saved.comments.values.map(\.body), ["Paid"])
     }
 
     func testAnInterruptedAnswerSaysWhetherItSavedChanges() async {
@@ -156,13 +157,14 @@ final class LiveAssistantTests: XCTestCase {
         let unsaved = ScriptedRuntime(steps: [ScriptedRuntime.fail(.interrupted(.memory))])
         let saved = ScriptedRuntime(steps: [
             ScriptedRuntime.call(
-                "updateTasks", ["codes": [.string(code)], "status": "done"],
+                "addComment", ["code": .string(code), "text": "Paid"],
                 then: ScriptedRuntime.fail(.interrupted(.background)))
         ])
 
         let (_, before) = await replies(.live(runtime: { _ in unsaved }), request("Plan the garden"))
         let (_, after) = await replies(
-            .live(runtime: { _ in saved }), request("Mark rent done", workspace: records.workspace, writes: store))
+            .live(runtime: { _ in saved }),
+            request("Note that rent is paid", workspace: records.workspace, writes: store))
 
         XCTAssertEqual(before, .interrupted(.memory, saved: false))
         XCTAssertEqual(after, .interrupted(.background, saved: true))
@@ -188,20 +190,21 @@ final class LiveAssistantTests: XCTestCase {
         let store = StoreClient.inMemory(records.workspace, actor: .user(device: "iPhone", surface: .iPhone))
         let model = ScriptedRuntime(steps: [
             ScriptedRuntime.call(
-                "updateTasks", ["codes": [.string(code)], "status": "done"],
+                "addComment", ["code": .string(code), "text": "Paid"],
                 then: ScriptedRuntime.fail(.exceededContext)),
             ScriptedRuntime.answer(turn),
         ])
 
         let (_, error) = await replies(
-            .live(runtime: { _ in model }), request("Mark rent done", workspace: records.workspace, writes: store))
+            .live(runtime: { _ in model }),
+            request("Note that rent is paid", workspace: records.workspace, writes: store))
 
         XCTAssertEqual(error, .tooLong(saved: true))
         XCTAssertEqual(model.turns.count, 1)
     }
 
     func testAModelWithALargerWindowGetsTheFullRequest() async {
-        let tasks = (0..<120).map { Plan.TaskDraft(title: "Task \($0) with a fairly long title", place: "HOME") }
+        let tasks = (0..<400).map { Plan.TaskDraft(title: "Task \($0) with a fairly long title", place: "HOME") }
         var request = request("Add these")
         request.draft = Plan(tasks: tasks)
         let small = ScriptedRuntime(steps: [ScriptedRuntime.answer(turn)])
@@ -213,6 +216,132 @@ final class LiveAssistantTests: XCTestCase {
 
         XCTAssertEqual(large.turns.first?.prompt, AssistantPrompt.prompt(request, size: .full))
         XCTAssertNotEqual(small.turns.first?.prompt, AssistantPrompt.prompt(request, size: .full))
+    }
+
+    private func homeStore() -> (RecordsBuilder, LifrTask, LifrTask, StoreClient) {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let home = records.avenue("HOME", "Home")
+        records.avenue("WORK", "Work")
+        let rent = records.task("Pay rent", in: home)
+        let passport = records.task("Renew passport", in: home)
+        let store = StoreClient.inMemory(records.workspace, actor: .user(device: "iPhone", surface: .iPhone))
+        return (records, rent, passport, store)
+    }
+
+    func testTheAnswersChangesAreSavedAndTheirTasksLeftOutOfThePlan() async throws {
+        let (records, rent, passport, store) = homeStore()
+        let model = ScriptedRuntime(steps: [
+            ScriptedRuntime.answer([
+                "message": "Moved it and marked rent done.",
+                "changes": [
+                    ["code": .string(records.workspace.displayCode(of: passport)), "moveTo": "WORK"],
+                    ["code": .string(records.workspace.displayCode(of: rent)), "status": "done"],
+                ],
+                "plan": ["tasks": [["title": "Renew passport", "place": "WORK"]]],
+            ])
+        ])
+
+        let (replies, error) = await replies(
+            .live(runtime: { _ in model }),
+            request("Move Renew passport to WORK and pay rent is done", workspace: records.workspace, writes: store))
+
+        XCTAssertNil(error)
+        XCTAssertNil(replies.last?.plan, "the moved task would be added again")
+        XCTAssertEqual(replies.last?.text, "Moved it and marked rent done.")
+        let saved = try await store.load()
+        XCTAssertEqual(saved.tasks[passport.id].flatMap { saved.avenues[$0.avenueID]?.key.rawValue }, "WORK")
+        XCTAssertEqual(saved.tasks[rent.id]?.status, .done)
+        XCTAssertNotNil(model.turns.first?.prompt.range(of: records.workspace.displayCode(of: passport)))
+    }
+
+    func testARenameToTheOldTitleIsToTheQuotedOne() async throws {
+        let (records, rent, _, store) = homeStore()
+        let model = ScriptedRuntime(steps: [
+            ScriptedRuntime.answer([
+                "message": "Renamed it.",
+                "changes": [["code": .string(records.workspace.displayCode(of: rent)), "rename": "Pay rent"]],
+            ])
+        ])
+
+        let (_, error) = await replies(
+            .live(runtime: { _ in model }),
+            request("Rename “Pay rent” to “Pay the rent”", workspace: records.workspace, writes: store))
+
+        XCTAssertNil(error)
+        let saved = try await store.load()
+        XCTAssertEqual(saved.tasks[rent.id]?.title, "Pay the rent")
+    }
+
+    func testAChangeLifrCantMakeIsSaidAfterTheMessage() async throws {
+        let (records, rent, _, store) = homeStore()
+        let model = ScriptedRuntime(steps: [
+            ScriptedRuntime.answer([
+                "message": "Moved it.",
+                "changes": [["code": .string(records.workspace.displayCode(of: rent)), "moveTo": "GARDEN"]],
+            ])
+        ])
+
+        let (replies, _) = await replies(
+            .live(runtime: { _ in model }),
+            request("Move pay rent to garden", workspace: records.workspace, writes: store))
+
+        let text = try XCTUnwrap(replies.last?.text)
+        XCTAssertTrue(text.hasPrefix("Moved it."))
+        XCTAssertTrue(text.contains(TaskChangeError.unknownAvenue(key: "GARDEN", suggestion: nil).description))
+        let journal = try await store.load().journal
+        XCTAssertEqual(journal, [])
+    }
+
+    func testWithoutWritesTheAnswerHasNoChanges() async throws {
+        let (records, rent, _, store) = homeStore()
+        let model = ScriptedRuntime(steps: [
+            ScriptedRuntime.answer([
+                "message": "Done.",
+                "changes": [["code": .string(records.workspace.displayCode(of: rent)), "status": "done"]],
+            ])
+        ])
+
+        _ = await replies(.live(runtime: { _ in model }), request("Mark rent done", workspace: records.workspace))
+
+        let saved = try await store.load()
+        XCTAssertEqual(saved.tasks[rent.id]?.status, .todo)
+    }
+
+    func testOnlyTheTasksTheMessageMeansCanBeChanged() async throws {
+        let (records, rent, passport, store) = homeStore()
+        let model = ScriptedRuntime(steps: [
+            ScriptedRuntime.answer([
+                "message": "Done.",
+                "changes": [["code": .string(records.workspace.displayCode(of: passport)), "status": "done"]],
+            ])
+        ])
+
+        _ = await replies(
+            .live(runtime: { _ in model }), request("Pay rent is done", workspace: records.workspace, writes: store))
+
+        let codes = model.turns.first.map { Self.changeCodes(in: $0.schema) }
+        XCTAssertEqual(codes, [records.workspace.displayCode(of: rent)])
+        let saved = try await store.load()
+        XCTAssertEqual(saved.tasks[passport.id]?.status, .todo, "a change to a task the message didn't mean")
+    }
+
+    func testWithoutAMeantTaskTheAnswerHasNoChanges() async throws {
+        let (records, _, _, store) = homeStore()
+        let model = ScriptedRuntime(steps: [ScriptedRuntime.answer(["message": "Added."])])
+
+        _ = await replies(
+            .live(runtime: { _ in model }), request("Add buy eggs", workspace: records.workspace, writes: store))
+
+        XCTAssertEqual(model.turns.first.map { Self.changeCodes(in: $0.schema) }, [])
+    }
+
+    /// The task codes a turn's schema lets the model change.
+    private static func changeCodes(in schema: ModelSchema?) -> [String] {
+        guard case .object(_, let properties)? = schema,
+            case .array(.object(_, let fields))? = properties.first(where: { $0.name == "changes" })?.schema,
+            case .choice(_, let codes)? = fields.first(where: { $0.name == "code" })?.schema
+        else { return [] }
+        return codes
     }
 
     func testAToolTheModelCallsReadsTheRecords() async {

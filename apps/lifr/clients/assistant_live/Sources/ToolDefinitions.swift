@@ -3,8 +3,9 @@ import LifrAssistantClient
 import LifrModelsClient
 
 extension AssistantTool {
-    /// The tool as a model sees it, running on `tools`.
-    func definition(_ tools: AssistantTools) -> ModelTool {
+    /// The tool as a model sees it, running on `tools`. Nil for updateTasks,
+    /// whose changes come in the answer.
+    func definition(_ tools: AssistantTools) -> ModelTool? {
         switch self {
         case .findTasks:
             ModelTool(
@@ -48,24 +49,8 @@ extension AssistantTool {
                 tools.capped(tools.recentActivity())
             }
         case .updateTasks:
-            ModelTool(
-                name: "updateTasks",
-                description: "Change existing tasks now: status, priority, due date or title. The person can undo it.",
-                parameters: [
-                    ModelProperty("codes", "Task codes from findTasks, such as HOME-0003.", .array(.string)),
-                    Shapes.optional(
-                        "status", "The new status.",
-                        .choice(name: "NewStatus", ["todo", "in_progress", "done", "wont_do"])),
-                    Shapes.optional("priority", "The new priority.", Shapes.priority),
-                    Shapes.optional("due", "The new due date, such as friday or +3d, or none to clear it."),
-                    Shapes.optional("title", "A new title, for one task only."),
-                ]
-            ) { arguments in
-                await tools.updateTasks(
-                    codes: arguments.strings("codes"), status: arguments.string("status"),
-                    priority: arguments.string("priority"), due: arguments.string("due"),
-                    title: arguments.string("title"))
-            }
+            // Changes come in the answer's `changes` instead.
+            nil
         case .addComment:
             ModelTool(
                 name: "addComment", description: "Add a comment to a task now. The person can undo it.",
@@ -97,10 +82,4 @@ extension JSONValue {
     }
 
     /// The strings in the array field `key` of an object.
-    fileprivate func strings(_ key: String) -> [String] {
-        guard case .object(let fields) = self, case .array(let items)? = fields[key] else { return [] }
-        return items.compactMap { item in
-            if case .string(let text) = item { text } else { nil }
-        }
-    }
 }

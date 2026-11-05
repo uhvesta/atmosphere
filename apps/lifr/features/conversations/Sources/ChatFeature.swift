@@ -324,9 +324,13 @@ package struct ChatFeature {
                 let id = uuid()
                 state.conversation.messages.append(ChatMessage(id: id, role: .assistant, text: reply.text, at: now))
                 if let plan = reply.plan {
-                    // A model often repeats what this chat already added.
-                    let new = plan.leavingOut(state.workspace)
-                    state.conversation.draft = new.isEmpty ? nil : new
+                    // A model often repeats what this chat already added,
+                    // and makes small mistakes Lifr can put right. A plan
+                    // of only what's there already leaves the draft as it
+                    // was, as no plan does; an empty plan, such as after
+                    // every task was removed, clears it.
+                    let new = plan.leavingOut(state.workspace).repaired(for: state.workspace)
+                    if !new.isEmpty || plan.isEmpty { state.conversation.draft = new.isEmpty ? nil : new }
                     check(&state)
                 }
                 let reload: Effect<Action> = .run { [store] send in

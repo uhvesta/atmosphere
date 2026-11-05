@@ -78,7 +78,7 @@ final class LiteRTTurnTests: XCTestCase {
         XCTAssertEqual(answer, .object(["text": .string("Done")]))
         let format = try XCTUnwrap(chat.sent.value.first?.format)
         let schema = try JSONDecoder().decode(JSONValue.self, from: Data(format.utf8))
-        XCTAssertEqual(schema, JSONSchema.value(reply))
+        XCTAssertEqual(schema, JSONSchema.value(reply).json)
     }
 
     func testAToolCallRunsTheToolAndSendsBackItsResult() async throws {
@@ -179,6 +179,26 @@ final class LiteRTTurnTests: XCTestCase {
         XCTAssertTrue(instructions.contains("revert"))
     }
 
+    /// The decoder writes properties in the schema's order, so a task's
+    /// title comes before the fields that depend on it.
+    func testPropertiesKeepTheirOrder() throws {
+        let schema = ModelSchema.object(
+            name: "Task",
+            [
+                ModelProperty("title", ""), ModelProperty("place", ""),
+                ModelProperty("due", "", optional: true), ModelProperty("details", "", optional: true),
+            ])
+
+        let text = JSONSchema.text(JSONSchema.value(schema))
+
+        let positions = try ["\"title\":", "\"place\":", "\"due\":", "\"details\":"].map { name in
+            try XCTUnwrap(text.range(of: name)?.lowerBound, "no \(name)")
+        }
+        XCTAssertEqual(positions, positions.sorted())
+        let decoded = try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8))
+        XCTAssertEqual(decoded, JSONSchema.value(schema).json)
+    }
+
     func testOptionalFieldsArentRequired() {
         let schema = ModelSchema.object(
             name: "Find",
@@ -187,7 +207,7 @@ final class LiteRTTurnTests: XCTestCase {
                 ModelProperty("status", "", .choice(name: "Status", ["todo", "done"]), optional: true),
             ])
 
-        guard case .object(let fields) = JSONSchema.value(schema) else { return XCTFail("not an object") }
+        guard case .object(let fields) = JSONSchema.value(schema).json else { return XCTFail("not an object") }
 
         XCTAssertEqual(fields["required"], .array([.string("words")]))
         guard case .object(let properties)? = fields["properties"], case .object(let status)? = properties["status"]
