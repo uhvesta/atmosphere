@@ -60,7 +60,7 @@ extension TaskRowData {
         if let priority = priority.title { parts.append("\(priority) priority") }
         if let due { parts.append(due.text(locale)) }
         if let subtasks { parts.append("\(subtasks.closed) of \(subtasks.total) Sub tasks closed") }
-        parts.append(code)
+        parts.append(fullCode)
         return parts.joined(separator: ", ")
     }
 }

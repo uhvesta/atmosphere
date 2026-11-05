@@ -66,13 +66,13 @@
         "code" : -32006,
         "data" : {
           "code" : "confirmationRequired",
-          "message" : "Marking this task Won't Do also closes its 2 open Sub task(s) as Won't Do. Confirm to close them all (cascade: true), or close the Sub tasks first.",
+          "message" : "Marking this task Won't Do also closes its 2 open Sub tasks as Won't Do. Confirm to close them all (cascade: true), or close the Sub tasks first.",
           "tasks" : [
             "HEALTH-7002",
             "HEALTH-7003"
           ]
         },
-        "message" : "Marking this task Won't Do also closes its 2 open Sub task(s) as Won't Do. Confirm to close them all (cascade: true), or close the Sub tasks first."
+        "message" : "Marking this task Won't Do also closes its 2 open Sub tasks as Won't Do. Confirm to close them all (cascade: true), or close the Sub tasks first."
       },
       "id" : 1,
       "jsonrpc" : "2.0"
@@ -216,13 +216,13 @@
         "code" : -32005,
         "data" : {
           "code" : "openSubtasks",
-          "message" : "This task has 2 open Sub task(s). Close them, or mark the task Won't Do to drop them too.",
+          "message" : "This task has 2 open Sub tasks. Close them, or mark the task Won't Do to drop them too.",
           "tasks" : [
             "HEALTH-7002",
             "HEALTH-7003"
           ]
         },
-        "message" : "This task has 2 open Sub task(s). Close them, or mark the task Won't Do to drop them too."
+        "message" : "This task has 2 open Sub tasks. Close them, or mark the task Won't Do to drop them too."
       },
       "id" : 1,
       "jsonrpc" : "2.0"

@@ -10,10 +10,19 @@ import SwiftUI
 package struct TaskListView<Header: View>: View {
     @Bindable package var store: StoreOf<TaskListFeature>
     private let header: Header
+    private var emptyAction: (title: LocalizedStringKey, perform: () -> Void)?
 
     package init(store: StoreOf<TaskListFeature>, @ViewBuilder header: () -> Header) {
         self.store = store
         self.header = header()
+    }
+
+    /// A button under the empty list's message, such as Clear Filters, or
+    /// none when `title` is nil.
+    package func emptyAction(_ title: LocalizedStringKey?, perform: @escaping () -> Void) -> Self {
+        var view = self
+        view.emptyAction = title.map { ($0, perform) }
+        return view
     }
 
     package var body: some View {
@@ -33,6 +42,10 @@ package struct TaskListView<Header: View>: View {
                     Label(store.query.empty.title, systemImage: store.query.empty.systemImage)
                 } description: {
                     Text(store.query.empty.description)
+                } actions: {
+                    if let emptyAction {
+                        Button(emptyAction.title, action: emptyAction.perform)
+                    }
                 }
             }
         }
@@ -70,7 +83,7 @@ package struct TaskListPresentations: ViewModifier {
                 RescheduleView(store: store)
                     .sheetLayout()
             }
-            .confirmationDialog($store.scope(state: \.prompt, action: \.prompt))
+            .alert($store.scope(state: \.prompt, action: \.prompt))
             .confirmationDialog($store.scope(state: \.statusPicker, action: \.statusPicker))
             .alert($store.scope(state: \.alert, action: \.alert))
     }

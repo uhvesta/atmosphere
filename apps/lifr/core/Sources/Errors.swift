@@ -75,13 +75,14 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
         case .cannotParentToItself:
             "A task can't be its own parent. Pick a different task."
         case .openSubtasks(_, let open):
-            "This task has \(open.count) open Sub task(s). Close them, or mark the task Won't Do to drop them too."
+            "This task has \(counted(open.count, "open Sub task", "open Sub tasks")). Close them, or mark the "
+                + "task Won't Do to drop them too."
         case .wontDoNeedsCascade(_, let open):
-            "Marking this task Won't Do also closes its \(open.count) open Sub task(s) as Won't Do. Confirm to close "
-                + "them all (cascade: true), or close the Sub tasks first."
+            "Marking this task Won't Do also closes its \(counted(open.count, "open Sub task", "open Sub tasks")) as "
+                + "Won't Do. Confirm to close them all (cascade: true), or close the Sub tasks first."
         case .projectHasOpenTasks(_, let open):
-            "This Project still has \(open.count) open task(s). Close them before completing it, or archive the "
-                + "Project instead."
+            "This Project still has \(counted(open.count, "open task", "open tasks")). Close them before "
+                + "completing it, or archive the Project instead."
         case .emptyComment:
             "A comment can't be empty. Write something, or delete the comment."
         case .notCommentAuthor:
@@ -136,4 +137,9 @@ extension PlanProblem: CustomStringConvertible {
             error.description
         }
     }
+}
+
+/// `count` with the noun that fits it: "1 open task", "2 open tasks".
+package func counted(_ count: Int, _ one: String, _ many: String) -> String {
+    "\(count) \(count == 1 ? one : many)"
 }

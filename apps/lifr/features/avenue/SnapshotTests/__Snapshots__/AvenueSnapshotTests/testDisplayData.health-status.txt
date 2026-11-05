@@ -7,6 +7,7 @@
         - avenue: "Health"
         - code: "0013"
         - due: Optional<Due>.none
+        - fullCode: "HEALTH-0013"
         - id: 00000000-0000-0000-0000-000000001301
         - priority: Priority.none
         - status: TaskStatus.procrastinated
@@ -31,6 +32,7 @@
                 ▿ some: 07:00
                   - hour: 7
                   - minute: 0
+        - fullCode: "HEALTH-0004"
         - id: 00000000-0000-0000-0000-000000000401
         - priority: Priority.high
         - status: TaskStatus.todo
@@ -47,6 +49,7 @@
                 - month: 11
                 - day: 4
               - .1: Optional<TimeOfDay>.none
+        - fullCode: "HEALTH-0016"
         - id: 00000000-0000-0000-0000-000000001601
         - priority: Priority.high
         - status: TaskStatus.todo
@@ -63,6 +66,7 @@
                 - month: 11
                 - day: 1
               - .1: Optional<TimeOfDay>.none
+        - fullCode: "HEALTH-0005"
         - id: 00000000-0000-0000-0000-000000000501
         - priority: Priority.medium
         - status: TaskStatus.todo

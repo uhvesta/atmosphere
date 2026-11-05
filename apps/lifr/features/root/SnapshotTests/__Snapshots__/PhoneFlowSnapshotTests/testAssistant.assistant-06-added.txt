@@ -2,7 +2,7 @@
 [button] "Tidy my weekend, Actions Menu"
 [text] "Tidy my weekend"
 [text] "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
-[text] "Added “Clean up living room”"
+[text] "Added 2 tasks to Home"
 [button] "Undo"
 [button] "Use a Skill"
 [button, notEnabled] "Send"

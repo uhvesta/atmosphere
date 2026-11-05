@@ -134,14 +134,15 @@ final class SearchFeatureTests: XCTestCase {
     func testMatchesDueDates() async {
         records.task("Overdue", in: health, due: -1)
         records.task("Today", in: health, due: 0)
+        records.task("Earlier today", in: health, due: 0, at: "07:00")
         records.task("Someday", in: health)
 
         let store = await load()
         await store.send(.binding(.set(\.filter.due, .overdue)))
-        XCTAssertEqual(titles(store), ["Overdue"])
+        XCTAssertEqual(Set(titles(store)), ["Overdue", "Earlier today"])
 
         await store.send(.binding(.set(\.filter.due, .today)))
-        XCTAssertEqual(titles(store), ["Today"])
+        XCTAssertEqual(Set(titles(store)), ["Today", "Earlier today"])
 
         await store.send(.binding(.set(\.filter.due, SearchFilter.Due.none)))
         XCTAssertEqual(titles(store), ["Someday"])

@@ -43,9 +43,18 @@ private struct BoardColumn: View {
                 .font(.caption.bold())
                 .foregroundStyle(.secondary)
                 .accessibilityAddTraits(.isHeader)
-                .accessibilityLabel("\(column.title), \(column.rows.count) tasks")
+                .accessibilityLabel(
+                    column.rows.count == 1
+                        ? Text("\(column.title), 1 task") : Text("\(column.title), \(column.rows.count) tasks"))
             ForEach(column.rows) { row in
                 BoardCard(row: row, note: column.notes[row.id], store: store)
+            }
+            if status == .todo {
+                Button("Add Task", systemImage: "plus") { store.send(.addTapped) }
+                    .buttonStyle(.borderless)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
             }
             Spacer(minLength: 40)
         }

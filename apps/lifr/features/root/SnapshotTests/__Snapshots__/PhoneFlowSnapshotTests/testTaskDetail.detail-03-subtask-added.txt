@@ -1,6 +1,6 @@
 [button] "Today" id: BackButton
 [header] "WORK-0006"
-[element] "" value: "Review Q4 roadmap"
+[element] "Title" value: "Review Q4 roadmap"
 [button] "Status, In Progress"
 [button] "Priority, Urgent"
 [text] "Created, Nov 3, 2026"
@@ -12,7 +12,8 @@
 [button] "Remove due date"
 [button] "Add a time"
 [button] "Add a start date"
-[text] "Added “Book a room”"
+[text] "Added “Book a room” to “Review Q4 roadmap”"
+[text] "Overdue"
 [button] "Undo"
 [button] "Avenue, Work"
 [button] "Search"
@@ -21,4 +22,3 @@
 [button] "Avenues"
 [button] "Assistant"
 [button] "Project, None"
-[text] "Moving a task moves its Sub tasks with it."

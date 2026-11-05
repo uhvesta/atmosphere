@@ -83,6 +83,9 @@ package struct BoardFeature {
         case list(TaskListFeature.Action)
         /// A card was dropped on a column.
         case dropped(UUID, on: TaskStatus)
+        /// Add Task, under the To Do column: the app's quick add opens for
+        /// this Avenue or Project.
+        case addTapped
     }
 
     package init() {}
@@ -96,7 +99,7 @@ package struct BoardFeature {
                 guard column?.id != status.rawValue else { return .none }
                 return .send(.list(.rowAction(id, .status(status))))
 
-            case .list:
+            case .list, .addTapped:
                 return .none
             }
         }

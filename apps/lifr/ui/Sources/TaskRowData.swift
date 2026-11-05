@@ -17,8 +17,11 @@ package struct TaskRowData: Identifiable, Hashable, Sendable {
     }
 
     package var id: UUID
-    /// The display code, such as HEALTH-7K2Q.
+    /// The code shown, such as HEALTH-7K2Q, or 7K2Q where the Avenue is
+    /// plain from the screen.
     package var code: String
+    /// The whole code, which VoiceOver reads wherever the row is.
+    package let fullCode: String
     package var title: String
     /// The effective status, so derived Procrastinated shows.
     package var status: TaskStatus
@@ -31,6 +34,7 @@ package struct TaskRowData: Identifiable, Hashable, Sendable {
         let today = CalendarDate(now, in: timeZone)
         id = task.id
         code = workspace.displayCode(of: task)
+        fullCode = code
         title = task.title
         status = task.effectiveStatus(now: now, settings: workspace.settings)
         priority = task.priority

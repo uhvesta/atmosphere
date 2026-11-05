@@ -28,8 +28,10 @@ package struct RootView: View {
             case .mac: MacRootView(store: store)
             }
         }
-        .overlay(alignment: .bottom) {
-            // Above the tab bar, clear of every screen's own controls.
+        .overlay(alignment: store.platform == .phone ? .bottom : .top) {
+            // On iPhone above the tab bar, clear of every screen's own
+            // controls. On the Mac under the toolbar, small enough to leave
+            // the sidebar and the chat's composer free.
             VStack(spacing: 8) {
                 if let toast = store.toast {
                     UndoToast(message: toast.message) { store.send(.undoTapped(toast.id)) }
@@ -42,7 +44,8 @@ package struct RootView: View {
                     SyncBannerView(banner: banner) { store.send(.syncBannerDismissed) }
                 }
             }
-            .padding(.bottom, store.platform == .phone ? 64 : 16)
+            .frame(maxWidth: store.platform == .phone ? .infinity : 440)
+            .padding(store.platform == .phone ? .bottom : .top, store.platform == .phone ? 64 : 60)
             .animation(.default, value: store.toast?.id)
         }
         .onChange(of: scenePhase) { _, phase in
@@ -150,10 +153,9 @@ private struct MacRootView: View {
             } detail: {
                 NavigationStack {
                     if store.selection == .conversations {
-                        ContentUnavailableView(
-                            "No conversation selected", systemImage: "bubble.left.and.text.bubble.right")
+                        NothingSelected("No conversation selected", systemImage: "bubble.left.and.text.bubble.right")
                     } else {
-                        ContentUnavailableView("No task selected", systemImage: "checklist")
+                        NothingSelected("No task selected", systemImage: "checklist")
                     }
                 }
                 .navigationSplitViewColumnWidth(min: 360, ideal: 480)
@@ -278,7 +280,7 @@ private struct AvenueItems: View {
             Button("New Project…") { store.send(.newProjectTapped(avenue.id)) }
         }
         ForEach(avenue.projects) { project in
-            Text(project.name)
+            Label(project.name, systemImage: "folder")
                 .padding(.leading)
                 .badge(project.openCount)
                 .tag(RootFeature.SidebarItem.scope(.project(project.id)))
@@ -368,5 +370,26 @@ private struct AddMenu: View {
         } label: {
             Label("Add", systemImage: "plus")
         }
+    }
+}
+
+/// The empty detail column on the Mac: quieter than a list with nothing in
+/// it, since there's nothing wrong, only nothing picked yet.
+private struct NothingSelected: View {
+    let title: LocalizedStringKey
+    let systemImage: String
+
+    init(_ title: LocalizedStringKey, systemImage: String) {
+        self.title = title
+        self.systemImage = systemImage
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: systemImage).font(.title).accessibilityHidden(true)
+            Text(title).font(.title3)
+        }
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

@@ -43,7 +43,7 @@ package struct TaskDetailView: View {
         .onChange(of: titleFocused) { _, focused in
             if !focused { store.send(.titleSubmitted) }
         }
-        .confirmationDialog($store.scope(state: \.prompt, action: \.prompt))
+        .alert($store.scope(state: \.prompt, action: \.prompt))
         .alert($store.scope(state: \.alert, action: \.alert))
     }
 
@@ -51,6 +51,7 @@ package struct TaskDetailView: View {
     private var fields: some View {
         Section {
             TextField("Title", text: $store.title, axis: .vertical)
+                .accessibilityLabel("Title")
                 .font(.title2.bold())
                 .focused($titleFocused)
                 .onSubmit { store.send(.titleSubmitted) }
@@ -100,7 +101,7 @@ package struct TaskDetailView: View {
 
     @ViewBuilder
     private var dates: some View {
-        Section("Dates") {
+        Section {
             dateRow("Due", store.dueDate) { store.send(.dueDatePicked($0)) }
             if let due = store.dueDate {
                 if let time = store.dueTime {
@@ -120,6 +121,12 @@ package struct TaskDetailView: View {
                 }
             }
             dateRow("Start", store.startDate) { store.send(.startDatePicked($0)) }
+        } header: {
+            Text("Dates")
+        } footer: {
+            if store.row.due?.isOverdue == true {
+                Label("Overdue", systemImage: "exclamationmark.circle").foregroundStyle(.red)
+            }
         }
     }
 

@@ -1,5 +1,5 @@
 [Window/StandardWindow] "Conversations"
-  [StaticText] "" value: "Added “Clean up living room”"
+  [StaticText] "" value: "Added 2 tasks to Home"
   [Button] "Undo"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""

@@ -18,8 +18,7 @@ package struct TodayView: View {
                         store.send(.procrastinatedTapped)
                     } label: {
                         LabeledContent {
-                            Text("\(store.procrastinatedCount)")
-                                .monospacedDigit()
+                            stalled.monospacedDigit()
                         } label: {
                             Label("Procrastinated", systemImage: "tortoise")
                         }
@@ -27,7 +26,7 @@ package struct TodayView: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Procrastinated")
                     .accessibilityAddTraits(.isButton)
-                    .accessibilityValue("\(store.procrastinatedCount) stalled")
+                    .accessibilityValue(stalled)
                 }
             }
         }
@@ -35,6 +34,11 @@ package struct TodayView: View {
         .navigationDestination(item: $store.scope(state: \.procrastinated, action: \.procrastinated)) { store in
             ProcrastinatedView(store: store)
         }
+    }
+
+    /// "2 stalled", next to Procrastinated.
+    private var stalled: Text {
+        Text("\(store.procrastinatedCount) stalled")
     }
 }
 

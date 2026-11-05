@@ -95,6 +95,9 @@
         }
       }
     },
+    "%@, 1 task" : {
+
+    },
     "%lld" : {
 
     },
@@ -167,6 +170,9 @@
     "Add Sub tasks next" : {
 
     },
+    "Add Task" : {
+
+    },
     "Add a %@ date" : {
 
     },
@@ -199,6 +205,29 @@
     },
     "Added %@" : {
 
+    },
+    "Added %@ to %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Added %1$@ to %2$@"
+          }
+        }
+      }
+    },
+    "Added %lld tasks" : {
+
+    },
+    "Added %lld tasks to %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Added %1$lld tasks to %2$@"
+          }
+        }
+      }
     },
     "Added Sub task %@" : {
 
@@ -306,6 +335,9 @@
 
     },
     "Clean up titles, priorities, dates and labels." : {
+
+    },
+    "Clear Filters" : {
 
     },
     "Clear filters" : {
@@ -1040,7 +1072,13 @@
     "Trashed" : {
 
     },
+    "Try Again" : {
+
+    },
     "Try other words, or clear some filters." : {
+
+    },
+    "Try other words, or clear the filters." : {
 
     },
     "Turn skills on in Manage Skills." : {

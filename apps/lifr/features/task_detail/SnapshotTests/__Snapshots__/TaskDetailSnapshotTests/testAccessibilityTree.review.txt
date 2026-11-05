@@ -6,4 +6,4 @@
 [button] "Remove due date"
 [button] "Add a time"
 [button] "Add a start date"
-[text] "Moving a task moves its Sub tasks with it."
+[text] "Overdue"

@@ -30,7 +30,12 @@ package struct ChatFeature {
         /// Why the draft can't be added as it is now, checked on every
         /// change, and sent with the next message.
         package var problem: String?
-        @Presents package var alert: AlertState<Never>?
+        /// The day the draft's dates are read from, such as "saturday".
+        package var today: CalendarDate?
+        @Presents package var alert: AlertState<Action.Alert>?
+        /// The request of a reply that failed in a way sending it again can
+        /// fix, for the alert's Try Again.
+        package var failed: AssistantRequest?
         /// Every skill, on or off. The built-ins until the person's load.
         package var skills = Skill.builtIn
         /// The ID of the skill picked for the next message.
@@ -93,8 +98,12 @@ package struct ChatFeature {
         case discardDraftTapped
         case addTapped
         case saved(Result<Saved, any Error>)
-        case alert(PresentationAction<Never>)
+        case alert(PresentationAction<Alert>)
         case delegate(Delegate)
+
+        package enum Alert: Equatable {
+            case tryAgain
+        }
 
         @CasePathable
         package enum Delegate {
@@ -121,6 +130,7 @@ package struct ChatFeature {
             switch action {
             case .task:
                 state.availability = assistant.availability()
+                state.today = CalendarDate(now, in: timeZone)
                 return .run { [skillsClient] send in
                     // Without the person's skills, the built-ins still work.
                     if let skills = try? await skillsClient.load() { await send(.skillsLoaded(skills)) }
@@ -220,12 +230,32 @@ package struct ChatFeature {
 
             case .replyFailed(let error):
                 state.replying = nil
+                // Sending again can't help a request that's too long or
+                // declined, or one whose changes are saved already.
+                let retries = (error as? AssistantError).map { $0 == .unreadable(saved: false) || $0.isFailure } ?? true
+                state.failed = retries ? state.waiting : nil
                 state.waiting = nil
                 state.alert = AlertState {
                     TextState("The assistant couldn't answer")
+                } actions: {
+                    if retries {
+                        ButtonState(action: .tryAgain) { TextState("Try Again") }
+                        ButtonState(role: .cancel) { TextState("Cancel") }
+                    } else {
+                        ButtonState(role: .cancel) { TextState("OK") }
+                    }
                 } message: {
                     TextState(String(describing: error))
                 }
+                return .none
+
+            case .alert(.presented(.tryAgain)):
+                guard let request = state.failed else { return .none }
+                state.failed = nil
+                return reply(request, in: &state)
+
+            case .alert(.dismiss):
+                state.failed = nil
                 return .none
 
             case .reloaded(let messageID, .success(let workspace)):

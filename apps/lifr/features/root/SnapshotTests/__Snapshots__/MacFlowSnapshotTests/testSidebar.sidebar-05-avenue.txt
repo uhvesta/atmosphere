@@ -30,15 +30,15 @@
     [Row/OutlineRow] ""
       [Heading] "Procrastinated"
     [Row/OutlineRow] ""
-      [Button] "Plan long runs" value: "Procrastinated, 0013" id: 0013
+      [Button] "Plan long runs" value: "Procrastinated, HEALTH-0013" id: 0013
     [Row/OutlineRow] ""
       [Heading] "To Do"
     [Row/OutlineRow] ""
-      [Button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, 0004" id: 0004
+      [Button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004" id: 0004
     [Row/OutlineRow] ""
-      [Button] "Buy running shoes" value: "To Do, High priority, Nov 4, 0016" id: 0016
+      [Button] "Buy running shoes" value: "To Do, High priority, Nov 4, HEALTH-0016" id: 0016
     [Row/OutlineRow] ""
-      [Button] "Book physio appointment" value: "To Do, Medium priority, Overdue, Nov 1, 0005" id: 0005
+      [Button] "Book physio appointment" value: "To Do, Medium priority, Overdue, Nov 1, HEALTH-0005" id: 0005
   [StaticText] "" value: "No task selected"
   [Toolbar] ""
     [Button] "Hide Sidebar"

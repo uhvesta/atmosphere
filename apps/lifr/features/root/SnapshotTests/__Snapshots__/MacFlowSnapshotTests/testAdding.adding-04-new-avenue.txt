@@ -1,5 +1,5 @@
 [Window/StandardWindow] "Today"
-  [StaticText] "" value: "Added “Paint the fence”"
+  [StaticText] "" value: "Added “Paint the fence” to Health"
   [Button] "Undo"
   [Outline] "Sidebar"
     [Row/OutlineRow, selected] ""
@@ -30,13 +30,13 @@
     [Row/OutlineRow] ""
       [Heading] "Overdue"
     [Row/OutlineRow] ""
-      [Button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 3 Sub tasks closed, WORK-0006" id: WORK-0006
-    [Row/OutlineRow] ""
-      [Button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004" id: HEALTH-0004
+      [Button] "Fix the bike's back brake" value: "Procrastinated, Low priority, Overdue, Oct 29, HOME-0011" id: HOME-0011
     [Row/OutlineRow] ""
       [Button] "Book physio appointment" value: "To Do, Medium priority, Overdue, Nov 1, HEALTH-0005" id: HEALTH-0005
     [Row/OutlineRow] ""
-      [Button] "Fix the bike's back brake" value: "Procrastinated, Low priority, Overdue, Oct 29, HOME-0011" id: HOME-0011
+      [Button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 3 Sub tasks closed, WORK-0006" id: WORK-0006
+    [Row/OutlineRow] ""
+      [Button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004" id: HEALTH-0004
     [Row/OutlineRow] ""
       [Heading] "Today"
     [Row/OutlineRow] ""
@@ -54,9 +54,9 @@
   [Sheet] ""
     [StaticText] "" value: "New Avenue"
     [StaticText] "" value: "Name"
-    [TextField] ""
+    [TextField] "Name"
     [StaticText] "" value: "Key"
-    [TextField] ""
+    [TextField] "Key"
     [StaticText] "" value: "The key starts each task's code, such as HEALTH-7K2Q. Use 2 to 10 letters."
     [Button] "Cancel"
     [Button, disabled] "Add"

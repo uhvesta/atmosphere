@@ -6,6 +6,40 @@
       - notes: 0 key/value pairs
       ▿ rows: 4 elements
         ▿ TaskRowData
+          - avenue: "Home"
+          - code: "HOME-0011"
+          ▿ due: Optional<Due>
+            ▿ some: Due
+              ▿ overdue: (2 elements)
+                ▿ .0: 2026-10-29
+                  - year: 2026
+                  - month: 10
+                  - day: 29
+                - .1: Optional<TimeOfDay>.none
+          - fullCode: "HOME-0011"
+          - id: 00000000-0000-0000-0000-000000001101
+          - priority: Priority.low
+          - status: TaskStatus.procrastinated
+          - subtasks: Optional<Progress>.none
+          - title: "Fix the bike\'s back brake"
+        ▿ TaskRowData
+          - avenue: "Health"
+          - code: "HEALTH-0005"
+          ▿ due: Optional<Due>
+            ▿ some: Due
+              ▿ overdue: (2 elements)
+                ▿ .0: 2026-11-01
+                  - year: 2026
+                  - month: 11
+                  - day: 1
+                - .1: Optional<TimeOfDay>.none
+          - fullCode: "HEALTH-0005"
+          - id: 00000000-0000-0000-0000-000000000501
+          - priority: Priority.medium
+          - status: TaskStatus.todo
+          - subtasks: Optional<Progress>.none
+          - title: "Book physio appointment"
+        ▿ TaskRowData
           - avenue: "Work"
           - code: "WORK-0006"
           ▿ due: Optional<Due>
@@ -16,6 +50,7 @@
                   - month: 11
                   - day: 2
                 - .1: Optional<TimeOfDay>.none
+          - fullCode: "WORK-0006"
           - id: 00000000-0000-0000-0000-000000000601
           - priority: Priority.urgent
           - status: TaskStatus.inProgress
@@ -38,43 +73,12 @@
                   ▿ some: 07:00
                     - hour: 7
                     - minute: 0
+          - fullCode: "HEALTH-0004"
           - id: 00000000-0000-0000-0000-000000000401
           - priority: Priority.high
           - status: TaskStatus.todo
           - subtasks: Optional<Progress>.none
           - title: "Long run, 10 km"
-        ▿ TaskRowData
-          - avenue: "Health"
-          - code: "HEALTH-0005"
-          ▿ due: Optional<Due>
-            ▿ some: Due
-              ▿ overdue: (2 elements)
-                ▿ .0: 2026-11-01
-                  - year: 2026
-                  - month: 11
-                  - day: 1
-                - .1: Optional<TimeOfDay>.none
-          - id: 00000000-0000-0000-0000-000000000501
-          - priority: Priority.medium
-          - status: TaskStatus.todo
-          - subtasks: Optional<Progress>.none
-          - title: "Book physio appointment"
-        ▿ TaskRowData
-          - avenue: "Home"
-          - code: "HOME-0011"
-          ▿ due: Optional<Due>
-            ▿ some: Due
-              ▿ overdue: (2 elements)
-                ▿ .0: 2026-10-29
-                  - year: 2026
-                  - month: 10
-                  - day: 29
-                - .1: Optional<TimeOfDay>.none
-          - id: 00000000-0000-0000-0000-000000001101
-          - priority: Priority.low
-          - status: TaskStatus.procrastinated
-          - subtasks: Optional<Progress>.none
-          - title: "Fix the bike\'s back brake"
       - title: "Overdue"
     ▿ TaskSection
       - id: "today"
@@ -86,6 +90,7 @@
           ▿ due: Optional<Due>
             ▿ some: Due
               - today: Optional<TimeOfDay>.none
+          - fullCode: "HOME-0010"
           - id: 00000000-0000-0000-0000-000000001001
           - priority: Priority.none
           - status: TaskStatus.todo

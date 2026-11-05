@@ -154,7 +154,7 @@ package struct RecordsBuilder {
         let code = codes
         var next = 0
         return Context(
-            actor: .user(device: "Sample", surface: .iPhone), now: time ?? now,
+            actor: .user(device: "iPhone", surface: .iPhone), now: time ?? now,
             newID: {
                 next += 1
                 return UUID(sequence: id + next)

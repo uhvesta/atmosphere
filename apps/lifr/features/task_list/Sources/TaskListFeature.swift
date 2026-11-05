@@ -20,7 +20,7 @@ package struct TaskListFeature {
         package var banner: Banner?
         @Presents package var detail: TaskDetailFeature.State?
         @Presents package var reschedule: RescheduleFeature.State?
-        @Presents package var prompt: ConfirmationDialogState<StatusPrompt>?
+        @Presents package var prompt: AlertState<StatusPrompt>?
         /// Every status, from a row's Status swipe.
         @Presents package var statusPicker: ConfirmationDialogState<StatusPick>?
         @Presents package var alert: AlertState<Never>?
@@ -151,7 +151,7 @@ package struct TaskListFeature {
 
             case .saved(.failure(let error)):
                 let workspace = state.workspace
-                if let prompt = ConfirmationDialogState.forRefusal(
+                if let prompt = AlertState.forRefusal(
                     error, canShow: true, title: { workspace?.tasks[$0]?.title })
                 {
                     state.prompt = prompt

@@ -17,7 +17,19 @@ extension TaskQuery {
         let today = CalendarDate(now, in: timeZone)
         let time = TimeOfDay(now, in: timeZone)
         let open = workspace.listedTasks.filter(\.isOpen)
+        // The longest overdue first: by day, then time, a task due at no
+        // time of day coming first on its day.
         let overdue = open.filter { $0.isOverdue(today: today, time: time) }
+            .sorted { first, second in
+                guard first.dueDate == second.dueDate else {
+                    return (first.dueDate ?? today) < (second.dueDate ?? today)
+                }
+                switch (first.dueTime, second.dueTime) {
+                case (let first?, let second?): return first < second
+                case (nil, _?): return true
+                default: return false
+                }
+            }
         let dueToday = open.filter { $0.dueDate == today && !overdue.contains($0) }
         return [
             TaskSection(

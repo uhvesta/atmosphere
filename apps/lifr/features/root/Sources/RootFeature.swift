@@ -417,6 +417,10 @@ package struct RootFeature {
                 .quickAdd(.presented(.delegate(.saved(let workspace)))):
                 return show(workspace, in: &state)
 
+            case .board(.addTapped):
+                guard let scope = state.board?.scope else { return .none }
+                return .send(.newTaskInTapped(scope))
+
             case .binding, .remindersScheduled, .today, .upcoming, .procrastinated, .avenues, .search, .avenue, .board,
                 .conversations, .settings, .quickAdd, .approval, .undoAlert:
                 return .none

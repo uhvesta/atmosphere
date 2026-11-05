@@ -54,6 +54,17 @@ final class TodayFeatureTests: XCTestCase {
         XCTAssertEqual(titles(store, "today"), ["After now"])
     }
 
+    func testTheLongestOverdueComesFirst() async {
+        records.task("Yesterday", in: health, priority: .urgent, due: -1)
+        records.task("This morning", in: health, priority: .urgent, due: 0, at: "08:00")
+        records.task("Last week", in: health, priority: .low, due: -7)
+        records.task("Yesterday at noon", in: health, priority: .urgent, due: -1, at: "12:00")
+
+        let store = await load()
+
+        XCTAssertEqual(titles(store, "overdue"), ["Last week", "Yesterday", "Yesterday at noon", "This morning"])
+    }
+
     func testHigherPriorityComesFirst() async {
         records.task("Low", in: health, priority: .low, due: 0)
         records.task("Urgent", in: health, priority: .urgent, due: 0)

@@ -25,6 +25,9 @@ struct LifrApp: App {
                 // Room for the sidebar, a list and a task side by side.
                 .defaultSize(width: 1180, height: 760)
                 .commands { RootCommands(store: Storage.root) }
+            Settings {
+                MacSettingsView(store: Storage.root)
+            }
             MenuBarExtra {
                 MenuBarContent(store: Storage.root)
             } label: {

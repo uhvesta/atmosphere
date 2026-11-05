@@ -73,7 +73,7 @@ final class CLITests: XCTestCase {
             """
             exit 1
             stderr:
-            lifr: This task has 2 open Sub task(s). Close them, or mark the task Won't Do to drop them too.
+            lifr: This task has 2 open Sub tasks. Close them, or mark the task Won't Do to drop them too.
             Tasks: HEALTH-7002, HEALTH-7003
 
             """
@@ -140,7 +140,7 @@ final class CLITests: XCTestCase {
             """
             exit 0
             New Project in HEALTH: Spring race.
-            Added 2 task(s):
+            Added 2 tasks:
             HEALTH-7007  To Do  Pick a race  (1 open Sub task)
             HEALTH-7008  To Do  Compare dates
 

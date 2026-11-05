@@ -8,7 +8,7 @@
 [text] "Tidy my weekend"
 [button] "Suggest with Apple Intelligence"
 [text] "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
-[text] "Added “Clean up living room”"
+[text] "Added 2 tasks to Home"
 [button] "Undo"
 [button] "Use a Skill"
 [button, notEnabled] "Send"

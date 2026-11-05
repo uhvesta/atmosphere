@@ -32,7 +32,10 @@ package struct ChatView: View {
                         .foregroundStyle(.secondary)
                 }
                 if let draft = store.conversation.draft {
-                    DraftCard(plan: $store.conversation.draft.or(draft), problem: store.problem, canAdd: store.canAdd) {
+                    DraftCard(
+                        plan: $store.conversation.draft.or(draft), workspace: store.workspace, today: store.today,
+                        problem: store.problem, canAdd: store.canAdd
+                    ) {
                         store.send(.addTapped)
                     } discard: {
                         store.send(.discardDraftTapped)
@@ -174,16 +177,21 @@ private struct SkillFinder: View {
             .frame(width: 340, height: 420)
         #else
             NavigationStack {
+                // The search field and Manage Skills sit above the list:
+                // at the bottom they'd float over its last rows.
                 list
-                    .safeAreaInset(edge: .bottom) {
-                        Button("Manage Skills…") { store.send(.manageSkillsTapped) }
-                            .padding()
-                    }
-                    .searchable(text: $store.skillQuery, prompt: Text("Find a skill"))
+                    .searchable(
+                        text: $store.skillQuery, placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: Text("Find a skill")
+                    )
                     .navigationTitle("Skills")
+                    .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
                             Button("Cancel") { store.findsSkill = false }
+                        }
+                        ToolbarItem(placement: .primaryAction) {
+                            Button("Manage Skills…") { store.send(.manageSkillsTapped) }
                         }
                     }
             }

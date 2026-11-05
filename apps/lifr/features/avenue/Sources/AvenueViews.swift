@@ -108,6 +108,7 @@ package struct AvenueView: View {
         ) {
             TextField("Name", text: Binding(get: { store.newProjectName ?? "" }, set: { store.newProjectName = $0 }))
             Button("Add") { store.send(.newProjectSubmitted) }
+                .disabled((store.newProjectName ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) { store.send(.newProjectCancelled) }
         }
     }
@@ -125,7 +126,9 @@ package struct NewAvenueView: View {
         Form {
             Section {
                 TextField("Name", text: $store.name)
+                    .accessibilityLabel("Name")
                 TextField("Key", text: $store.key)
+                    .accessibilityLabel("Key")
                     .autocorrectionDisabled()
                     #if os(iOS)
                         .textInputAutocapitalization(.characters)

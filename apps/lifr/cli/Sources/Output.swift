@@ -66,7 +66,9 @@ enum Output {
             if !added.avenues.isEmpty { text += "New Avenues: \(added.avenues.joined(separator: ", ")).\n" }
             if !added.labels.isEmpty { text += "New labels: \(added.labels.joined(separator: ", ")).\n" }
             for project in added.projects { text += "New Project in \(project.avenue): \(project.name).\n" }
-            if !added.tasks.isEmpty { text += "Added \(added.tasks.count) task(s):\n" + table(added.tasks) }
+            if !added.tasks.isEmpty {
+                text += "Added \(counted(added.tasks.count, "task", "tasks")):\n" + table(added.tasks)
+            }
             return text
         case .trashTask:
             let trash = try result.decode(TrashTask.Result.self)

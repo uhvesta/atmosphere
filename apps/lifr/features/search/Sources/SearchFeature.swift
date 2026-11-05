@@ -65,7 +65,7 @@ package struct SearchFilter: Hashable, Sendable {
         let today = CalendarDate(now, in: timeZone)
         switch due {
         case .any: break
-        case .overdue: guard let date = task.dueDate, date < today else { return false }
+        case .overdue: guard task.isOverdue(today: today, time: TimeOfDay(now, in: timeZone)) else { return false }
         case .today: guard task.dueDate == today else { return false }
         case .nextSevenDays:
             let last = CalendarDate(now + 7 * 24 * 60 * 60, in: timeZone)
@@ -95,7 +95,7 @@ extension TaskQuery {
                         "Search titles, details and comments, or filter by Avenue, status, priority, label and date.")
                 : .init(
                     "No matches", systemImage: "magnifyingglass",
-                    description: String(localized: "Try other words, or clear some filters.")),
+                    description: String(localized: "Try other words, or clear the filters.")),
             adds: nil
         ) { workspace, now, timeZone in
             guard !filter.isEmpty else { return [] }

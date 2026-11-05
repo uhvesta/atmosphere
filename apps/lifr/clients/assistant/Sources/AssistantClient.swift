@@ -228,6 +228,13 @@ package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible 
     /// Anything else the model reported.
     case failed(String)
 
+    /// Whether the model stopped for a reason of its own, which may not
+    /// happen again.
+    package var isFailure: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+
     package var description: String {
         switch self {
         case .unavailable(let availability):

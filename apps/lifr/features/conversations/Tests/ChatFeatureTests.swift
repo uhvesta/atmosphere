@@ -143,6 +143,38 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello"])
     }
 
+    func testTryAgainSendsAnUnreadableReplysMessageAgain() async throws {
+        let (workspace, _) = home()
+        let attempts = LockIsolated(0)
+        let store = chat(workspace) { _ in
+            let attempt = attempts.withValue {
+                $0 += 1
+                return $0
+            }
+            if attempt == 1 { throw AssistantError.unreadable(saved: false) }
+            return AssistantReply(text: "Done.", isComplete: true)
+        }
+
+        await send("Hello", in: store)
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertNotNil(store.state.failed)
+
+        await store.send(.alert(.presented(.tryAgain)))
+        await store.skipReceivedActions()
+        XCTAssertNil(store.state.alert)
+        XCTAssertNil(store.state.failed)
+        XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Done."])
+    }
+
+    func testChangesSavedBeforeAnUnreadableReplyAreNotMadeAgain() async throws {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in throw AssistantError.unreadable(saved: true) }
+
+        await send("Hello", in: store)
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertNil(store.state.failed)
+    }
+
     func testABusyReplyKeepsItsTextAndIsSentAgainOnResume() async throws {
         let (workspace, _) = home()
         let attempts = LockIsolated(0)

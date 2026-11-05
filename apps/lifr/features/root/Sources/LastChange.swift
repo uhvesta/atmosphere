@@ -32,7 +32,25 @@ package struct LastChange: Equatable, Sendable {
         let title = task.map { "“\($0.title)”" } ?? "A task"
         switch (event?.kind, event?.field) {
         case (.created?, _):
-            message = String(localized: "Added \(title)")
+            // A plan adds several tasks at once; its Sub tasks go with them.
+            let created = Set(change.events.filter { $0.kind == .created }.map(\.taskID))
+            let added = created.compactMap { workspace.tasks[$0] }
+                .filter { task in task.parentID.map { !created.contains($0) } ?? true }
+            // Where they went, when that's one place: a Project, a parent
+            // task or an Avenue.
+            let places = Set(
+                added.map { task in
+                    task.parentID.flatMap { workspace.tasks[$0].map { "“\($0.title)”" } }
+                        ?? task.projectID.flatMap { workspace.projects[$0]?.name }
+                        ?? workspace.avenues[task.avenueID]?.name
+                })
+            let place = places.count == 1 ? places.first ?? nil : nil
+            switch (added.count > 1, place) {
+            case (true, let place?): message = String(localized: "Added \(added.count) tasks to \(place)")
+            case (true, nil): message = String(localized: "Added \(added.count) tasks")
+            case (false, let place?): message = String(localized: "Added \(title) to \(place)")
+            case (false, nil): message = String(localized: "Added \(title)")
+            }
         case (.fieldChanged?, .status?):
             let status = event?.newValue.flatMap(TaskStatus.init(rawValue:))
             message =

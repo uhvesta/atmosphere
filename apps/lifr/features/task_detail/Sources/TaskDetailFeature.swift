@@ -46,7 +46,7 @@ package struct TaskDetailFeature {
         package var newComment = ""
         package var banner: Banner?
         @Presents package var subtask: TaskDetailFeature.State?
-        @Presents package var prompt: ConfirmationDialogState<StatusPrompt>?
+        @Presents package var prompt: AlertState<StatusPrompt>?
         @Presents package var alert: AlertState<Never>?
 
         /// `nil` when the task isn't in `workspace` or is in the trash.
@@ -323,7 +323,7 @@ package struct TaskDetailFeature {
 
             case .saved(.failure(let error)):
                 let subtasks = state.subtasks
-                if let prompt = ConfirmationDialogState.forRefusal(
+                if let prompt = AlertState.forRefusal(
                     error, canShow: false, title: { id in subtasks.first { $0.id == id }?.title })
                 {
                     state.prompt = prompt

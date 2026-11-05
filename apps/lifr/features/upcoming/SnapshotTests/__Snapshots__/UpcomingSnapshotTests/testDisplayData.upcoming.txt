@@ -14,6 +14,7 @@
                 - month: 11
                 - day: 4
               - .1: Optional<TimeOfDay>.none
+        - fullCode: "HEALTH-0016"
         - id: 00000000-0000-0000-0000-000000001601
         - priority: Priority.high
         - status: TaskStatus.todo
@@ -35,6 +36,7 @@
                 - month: 11
                 - day: 5
               - .1: Optional<TimeOfDay>.none
+        - fullCode: "HOME-0014"
         - id: 00000000-0000-0000-0000-000000001401
         - priority: Priority.none
         - status: TaskStatus.todo
@@ -56,6 +58,7 @@
                 - month: 11
                 - day: 9
               - .1: Optional<TimeOfDay>.none
+        - fullCode: "HOME-0012"
         - id: 00000000-0000-0000-0000-000000001201
         - priority: Priority.medium
         - status: TaskStatus.todo

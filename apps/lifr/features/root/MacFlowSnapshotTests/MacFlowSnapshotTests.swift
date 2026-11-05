@@ -18,7 +18,8 @@ final class MacFlowSnapshotTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
 
     private func app(
-        _ name: String, replies: [AssistantReply] = [.example], session: InMemorySession = InMemorySession()
+        _ name: String, replies: [AssistantReply] = [.example], session: InMemorySession = InMemorySession(),
+        settings: Bool = false
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         let workspace = Workspace.sample(now: now, timeZone: .gmt)
         let ids = LockIsolated(1000)
@@ -41,7 +42,12 @@ final class MacFlowSnapshotTests: XCTestCase {
                 }
             }
         }
-        let flow = FlowRecorder(name, RootView(store: store).environment(\.timeZone, .gmt))
+        let flow =
+            settings
+            ? FlowRecorder(
+                name, MacSettingsView(store: store).environment(\.timeZone, .gmt),
+                size: CGSize(width: 620, height: 680))
+            : FlowRecorder(name, RootView(store: store).environment(\.timeZone, .gmt))
         store.send(.task)
         return (store, flow)
     }
@@ -144,6 +150,15 @@ final class MacFlowSnapshotTests: XCTestCase {
         store.send(
             .conversations(.chats(.element(id: id, action: .replyFailed(AssistantError.unreadable(saved: false))))))
         await flow.step("unreadable")
+        flow.finish()
+    }
+
+    /// The Settings window, from ⌘,: Settings, then Activity.
+    func testSettings() async {
+        let (store, flow) = app("settings", settings: true)
+        await flow.step("settings")
+        store.send(.settings(.activityTapped))
+        await flow.step("activity")
         flow.finish()
     }
 

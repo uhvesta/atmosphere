@@ -286,6 +286,21 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testAddTaskOnABoardAddsToItsAvenue() async {
+        let home = records.avenue("HOME", "Home")
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.selected(.scope(.avenue(home.id))))
+        await store.send(.binding(.set(\.content, .board)))
+        await store.send(.board(.addTapped))
+        await store.receive(\.newTaskInTapped)
+        XCTAssertEqual(store.state.quickAdd?.kind, .task)
+        XCTAssertEqual(store.state.quickAdd?.avenueID, home.id)
+        await task.cancel()
+    }
+
     func testNewAvenueFromTheSidebarAsksForOne() async {
         let store = makeStore(.mac)
         let task = await store.send(.task)

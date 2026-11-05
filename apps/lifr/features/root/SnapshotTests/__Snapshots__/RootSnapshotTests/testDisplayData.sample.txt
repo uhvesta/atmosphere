@@ -1,10 +1,10 @@
 ▿ (6 elements)
   - tab: Tab.today
   ▿ today: 5 elements
+    - "Fix the bike\'s back brake"
+    - "Book physio appointment"
     - "Review Q4 roadmap"
     - "Long run, 10 km"
-    - "Book physio appointment"
-    - "Fix the bike\'s back brake"
     - "Water the plants"
   - procrastinated: 2
   ▿ upcoming: 3 elements

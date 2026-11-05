@@ -17,6 +17,7 @@ package struct SearchView: View {
                 chips
             }
         }
+        .emptyAction(store.filter.filterCount == 0 ? nil : "Clear Filters") { store.send(.clearFiltersTapped) }
         .searchable(text: $store.filter.text, prompt: "Titles, details and comments")
         .navigationTitle("Search")
         .toolbar {
