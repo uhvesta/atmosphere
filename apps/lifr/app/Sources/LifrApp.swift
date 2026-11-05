@@ -3,6 +3,7 @@ import LifrAPI
 import LifrAssistantClient
 import LifrAssistantLive
 import LifrCore
+import LifrModelsClient
 import LifrModelsLive
 import LifrRemindersClient
 import LifrRemindersLive
@@ -78,6 +79,7 @@ private enum Storage {
         $0.store = client
         $0.reminders = .live()
         $0.assistant = .live(runtime: { AppleRuntime() })
+        $0.models = models.client
         $0.conversations = chats.conversations
         $0.skills = chats.skills
         $0.guidance = .onDisk()
@@ -89,6 +91,9 @@ private enum Storage {
     /// when this build has a container.
     private static let sync = SyncClient.live(
         container: LifrIdentity.iCloudContainer, store: client, device: deviceName)
+
+    /// The models downloaded to this device.
+    private static let models = ModelLibrary.live()
 
     /// On the Mac, the local API that `lifr` connects to. The iPhone has no
     /// CLI, so no app can connect there.

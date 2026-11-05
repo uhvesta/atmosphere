@@ -1,9 +1,11 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
 # The models Lifr can run: the runtime every model answers through, each
-# model's context budget, and a scripted runtime for tests and previews.
-# The live runtimes are in //apps/lifr/clients/models_live, which features
-# never depend on.
+# model's context budget, the catalog, Hugging Face links and hashes, and the
+# library of downloaded models. In-memory and scripted versions are here for
+# tests and previews. The live runtimes and downloads are in
+# //apps/lifr/clients/models_live, which features never depend on.
 swift_library(
     name = "models",
     package_name = "lifr",
@@ -20,6 +22,23 @@ swift_library(
         "//apps/lifr/api",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
+)
+
+# Links, hashes and the catalog, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":models"],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
 )
 
 filegroup(

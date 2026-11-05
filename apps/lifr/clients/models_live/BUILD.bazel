@@ -1,10 +1,13 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
-# The models Lifr runs on the device. Apple's on-device model goes through
-# Foundation Models (iOS and macOS 26), weakly linked so the app still runs
-# on iOS 18 and macOS 15, where it says the system is too old. The model
-# needs Apple Intelligence, so this is checked by building, and by hand.
-# Only the app uses it; features depend on //apps/lifr/clients/models.
+# The models Lifr runs on the device, and the downloads. Apple's on-device
+# model goes through Foundation Models (iOS and macOS 26), weakly linked so
+# the app still runs on iOS 18 and macOS 15, where it says the system is too
+# old; it needs Apple Intelligence, so it's checked by building, and by hand.
+# Downloads come only from Hugging Face, are checked against their hashes and
+# go to Application Support. Only the app uses this; features depend on
+# //apps/lifr/clients/models.
 swift_library(
     name = "models_live",
     package_name = "lifr",
@@ -16,7 +19,29 @@ swift_library(
     deps = [
         "//apps/lifr/api",
         "//apps/lifr/clients/models",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
+)
+
+# Downloads against a stub of Hugging Face, into a temporary folder, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":models_live",
+        "//apps/lifr/clients/models",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
 )
 
 filegroup(
