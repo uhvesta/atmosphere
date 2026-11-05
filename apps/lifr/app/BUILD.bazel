@@ -19,6 +19,7 @@ swift_library(
     module_name = "LifrApp",
     target_compatible_with = ["//bazel/xcode"],
     deps = [
+        "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/assistant_live",
         "//apps/lifr/clients/reminders",
@@ -27,6 +28,8 @@ swift_library(
         "//apps/lifr/clients/session_live",
         "//apps/lifr/clients/store",
         "//apps/lifr/clients/store_live",
+        "//apps/lifr/clients/sync",
+        "//apps/lifr/clients/sync_live",
         "//apps/lifr/core",
         "//apps/lifr/features/root",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

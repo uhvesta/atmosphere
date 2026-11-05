@@ -6,6 +6,7 @@ import LifrRoot
 import LifrSessionClient
 import LifrSnapshotTesting
 import LifrStoreClient
+import LifrSyncClient
 import SwiftUI
 import XCTest
 
@@ -18,10 +19,11 @@ final class MacFlowSnapshotTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
 
     private func app(
-        _ name: String, replies: [AssistantReply] = [.example], session: InMemorySession = InMemorySession(),
+        _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
+        session: InMemorySession = InMemorySession(),
         settings: Bool = false
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
-        let workspace = Workspace.sample(now: now, timeZone: .gmt)
+        let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
         let ids = LockIsolated(1000)
         let store = Store(initialState: RootFeature.State(platform: .mac)) {
             RootFeature()
@@ -29,6 +31,7 @@ final class MacFlowSnapshotTests: XCTestCase {
             $0.store = .inMemory(workspace, actor: .user(device: "Mac", surface: .mac))
             $0.session = session.client
             $0.reminders = RemindersClient.inMemory().client
+            $0.sync = sync
             $0.assistant = .scripted(replies)
             // The assistant never stalls in a flow.
             $0.continuousClock = TestClock()
@@ -171,6 +174,8 @@ final class MacFlowSnapshotTests: XCTestCase {
     func testSettings() async {
         let (store, flow) = app("settings", settings: true)
         await flow.step("settings")
+        store.send(.syncChanged(SyncState(status: .failed(.noAccount))))
+        await flow.step("sync-failed")
         store.send(.settings(.activityTapped))
         await flow.step("activity")
         flow.finish()
@@ -186,6 +191,25 @@ final class MacFlowSnapshotTests: XCTestCase {
                 id: UUID(1), identity: "com.anthropic.claude-code", client: "Claude Code", method: .searchTasks,
                 requestedAt: now))
         await flow.step("approval")
+        flow.finish()
+    }
+
+    /// Two records changed on this device and the Mac in ways that couldn't
+    /// merge: the banner on the sidebar, the review, a choice, then Later.
+    func testSyncReview() async throws {
+        let sample = Review.sample(now: now, timeZone: .gmt)
+        let state = SyncState(lastSynced: now, review: sample.items)
+        let sync = SyncClient(
+            states: { AsyncStream { $0.yield(state) } }, sync: { state }, resolve: { _ in state }, changed: {})
+        let (store, flow) = app("sync-review", workspace: sample.workspace, sync: sync)
+        store.send(.syncChanged(state))
+        await flow.step("banner")
+        store.send(.syncReviewTapped)
+        await flow.step("review")
+        store.send(.syncReview(.presented(.chose(sample.items[0].id, .avenue, .theirs))))
+        await flow.step("chosen")
+        store.send(.syncReview(.presented(.laterTapped)))
+        await flow.step("later")
         flow.finish()
     }
 }

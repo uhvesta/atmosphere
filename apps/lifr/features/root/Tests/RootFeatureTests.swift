@@ -8,6 +8,8 @@ import LifrRemindersClient
 import LifrRoot
 import LifrSessionClient
 import LifrStoreClient
+import LifrSyncClient
+import LifrSyncReview
 import XCTest
 
 @MainActor
@@ -25,7 +27,8 @@ final class RootFeatureTests: XCTestCase {
         _ platform: RootFeature.Platform,
         store client: StoreClient? = nil,
         session: InMemorySession = InMemorySession(),
-        reminders: InMemoryReminders = RemindersClient.inMemory()
+        reminders: InMemoryReminders = RemindersClient.inMemory(),
+        sync: SyncClient = .off
     ) -> TestStoreOf<RootFeature> {
         let client = client ?? .inMemory(records.workspace)
         let store = TestStore(initialState: RootFeature.State(platform: platform)) {
@@ -34,6 +37,8 @@ final class RootFeatureTests: XCTestCase {
             $0.store = client
             if platform == .mac { $0.session = session.client }
             $0.reminders = reminders.client
+            $0.sync = sync
+            $0.continuousClock = TestClock()
             $0.date.now = now
             $0.timeZone = .gmt
             $0.uuid = .incrementing
@@ -389,5 +394,83 @@ final class RootFeatureTests: XCTestCase {
         await store.receive(\.today.delegate.saved)
         XCTAssertEqual(store.state.workspace?.tasks[run.id]?.status, .inProgress)
         await task.cancel()
+    }
+
+    // MARK: Sync
+
+    /// A sync client that counts its syncs and reports `review`.
+    private func counting(_ syncs: LockIsolated<Int>, review: [Review.Item] = []) -> SyncClient {
+        let state = SyncState(lastSynced: now, review: review)
+        return SyncClient(
+            states: { AsyncStream { $0.yield(state) } },
+            sync: {
+                syncs.withValue { $0 += 1 }
+                return state
+            },
+            resolve: { [now] _ in SyncState(lastSynced: now) },
+            changed: { syncs.withValue { $0 += 100 } })
+    }
+
+    func testLaunchSyncsAndShowsWhatWaitsForReview() async {
+        let syncs = LockIsolated(0)
+        let review = Review.sample(now: now, timeZone: .gmt).items
+        let store = makeStore(.phone, sync: counting(syncs, review: review))
+        let task = await store.send(.task)
+        await store.receive(\.syncChanged)
+        XCTAssertEqual(store.state.sync.review, review)
+        XCTAssertEqual(store.state.settings.sync.review, review)
+        await store.skipReceivedActions()
+        XCTAssertEqual(syncs.value, 1)
+        await task.cancel()
+    }
+
+    func testComingToTheFrontSyncs() async {
+        let syncs = LockIsolated(0)
+        let store = makeStore(.phone, sync: counting(syncs))
+        await store.send(.foregrounded)
+        await store.finish()
+        XCTAssertEqual(syncs.value, 1)
+    }
+
+    func testSyncNowOnTheMacSyncs() async {
+        let syncs = LockIsolated(0)
+        let store = makeStore(.mac, sync: counting(syncs))
+        await store.send(.syncNowTapped)
+        await store.finish()
+        XCTAssertEqual(syncs.value, 1)
+    }
+
+    func testAChangeMadeHereTellsSync() async throws {
+        let syncs = LockIsolated(0)
+        let run = records.task("Run", in: health, due: 0)
+        let store = makeStore(.phone, sync: counting(syncs))
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.today(.list(.toggled(run.id))))
+        await store.receive(\.today.delegate.saved)
+        await store.skipReceivedActions()
+        await task.cancel()
+        XCTAssertGreaterThanOrEqual(syncs.value, 100)
+    }
+
+    func testReviewOpensTheSheetAndDoneClosesIt() async {
+        let syncs = LockIsolated(0)
+        let review = Review.sample(now: now, timeZone: .gmt).items
+        let store = makeStore(.mac, sync: counting(syncs, review: review))
+        await store.send(.syncChanged(SyncState(review: review)))
+        await store.send(.syncReviewTapped) {
+            $0.syncReview = SyncReviewFeature.State(items: review, workspace: Workspace(), thisDevice: "This Mac")
+        }
+        await store.send(.syncReview(.presented(.doneTapped)))
+        await store.receive(\.syncReview.presented.resolved)
+        await store.receive(\.syncReview.presented.delegate.finished) {
+            $0.syncReview = nil
+        }
+    }
+
+    func testReviewWithNothingHeldOpensNothing() async {
+        let store = makeStore(.phone)
+        await store.send(.syncReviewTapped)
+        XCTAssertNil(store.state.syncReview)
     }
 }

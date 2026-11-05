@@ -1,0 +1,52 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# The sync client: merging records with other devices, holding what can't
+# merge for review, and sending the rest. This package has the definition,
+# the merge bookkeeping and an in-memory cloud that two in-memory stores
+# share, for tests and flow snapshots. The CloudKit one is
+# //apps/lifr/clients/sync_live, which features never depend on.
+swift_library(
+    name = "sync",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrSyncClient",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/lifr/app:__subpackages__",
+        "//apps/lifr/clients/sync_live:__pkg__",
+        "//apps/lifr/features:__subpackages__",
+    ],
+    deps = [
+        "//apps/lifr/clients/store",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":sync",
+        "//apps/lifr/clients/store",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

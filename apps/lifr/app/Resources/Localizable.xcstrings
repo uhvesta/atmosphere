@@ -1,6 +1,9 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    " before due" : {
+
+    },
     "#%@" : {
 
     },
@@ -21,6 +24,9 @@
 
     },
     "%@ Nothing changed. Send a message and the assistant will fix the draft." : {
+
+    },
+    "%@ deleted it, and it was changed here." : {
 
     },
     "%@ is %@" : {
@@ -98,10 +104,26 @@
     "%@, 1 task" : {
 
     },
+    "%@: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@: %2$@"
+          }
+        }
+      }
+    },
     "%lld" : {
 
     },
     "%lld Sub task(s) are still open" : {
+
+    },
+    "%lld Sub tasks are still open" : {
+
+    },
+    "%lld changes need review" : {
 
     },
     "%lld fields were changed again since, so they stay as they are now." : {
@@ -133,6 +155,9 @@
     "%lld stalled" : {
 
     },
+    "%lld tasks" : {
+
+    },
     "%lld/%lld" : {
       "localizations" : {
         "en" : {
@@ -142,6 +167,15 @@
           }
         }
       }
+    },
+    "1 Sub task is still open" : {
+
+    },
+    "1 change needs review" : {
+
+    },
+    "1 task" : {
+
     },
     "A closed task can't keep open Sub tasks, so they'll be marked Won't Do too." : {
 
@@ -346,10 +380,19 @@
     "Close %lld open Sub task(s) too?" : {
 
     },
+    "Close its %lld open Sub tasks too?" : {
+
+    },
+    "Close its open Sub task too?" : {
+
+    },
     "Closed" : {
 
     },
     "Command line" : {
+
+    },
+    "Comment" : {
 
     },
     "Comment on tasks" : {
@@ -445,6 +488,9 @@
     "Description" : {
 
     },
+    "Didn't finish" : {
+
+    },
     "Discard" : {
 
     },
@@ -473,6 +519,9 @@
 
     },
     "Edit" : {
+
+    },
+    "Edit Draft" : {
 
     },
     "Edit Skill" : {
@@ -544,6 +593,9 @@
     "It can always read. Agents can never empty the trash, change Avenues or Settings, or approve apps." : {
 
     },
+    "It was deleted here, and %@ changed it." : {
+
+    },
     "It's deleted here and from iCloud, and can't be undone. Tasks it changed stay." : {
 
     },
@@ -551,6 +603,12 @@
 
     },
     "KEY" : {
+
+    },
+    "Keep" : {
+
+    },
+    "Keep it?" : {
 
     },
     "Key" : {
@@ -563,6 +621,9 @@
 
     },
     "Last used %@" : {
+
+    },
+    "Later" : {
 
     },
     "Launch at login" : {
@@ -649,6 +710,9 @@
     "New Avenue" : {
 
     },
+    "New Avenue %@" : {
+
+    },
     "New Avenue %@ (%@)" : {
       "localizations" : {
         "en" : {
@@ -660,6 +724,9 @@
       }
     },
     "New Project" : {
+
+    },
+    "New Project %@" : {
 
     },
     "New Project %@ in %@" : {
@@ -691,6 +758,9 @@
 
     },
     "New label" : {
+
+    },
+    "New label %@" : {
 
     },
     "New task" : {
@@ -742,6 +812,9 @@
 
     },
     "None" : {
+
+    },
+    "Not synced yet" : {
 
     },
     "Not used yet" : {
@@ -796,6 +869,12 @@
     "Picks another skill" : {
 
     },
+    "Place" : {
+
+    },
+    "Plan my week" : {
+
+    },
     "Plan new tasks, Projects and Avenues." : {
 
     },
@@ -827,6 +906,9 @@
 
     },
     "Redraft" : {
+
+    },
+    "Reminder" : {
 
     },
     "Reminders" : {
@@ -890,6 +972,12 @@
 
     },
     "Reverted a change" : {
+
+    },
+    "Review" : {
+
+    },
+    "Review Changes" : {
 
     },
     "Revoke" : {
@@ -982,10 +1070,19 @@
     "Sync" : {
 
     },
+    "Sync Now" : {
+
+    },
     "Sync conversations" : {
 
     },
     "Synced" : {
+
+    },
+    "Synced %@" : {
+
+    },
+    "Syncing…" : {
 
     },
     "Task" : {
@@ -1042,10 +1139,25 @@
     "The task changed again since, here or on another device, and undoing would lose that change. Open the task to change it back by hand." : {
 
     },
+    "These changed here and on another device in ways that can't both stand. Choose what to keep; you can undo it like any change." : {
+
+    },
+    "These changed on %@ and another device in ways that can't both stand. Choose what to keep; you can undo it like any change." : {
+
+    },
     "They're deleted on this device and from iCloud. Tasks the assistant added or changed stay." : {
 
     },
+    "Thinking…" : {
+
+    },
+    "This Mac" : {
+
+    },
     "This can't be undone. Tasks the assistant added or changed stay." : {
+
+    },
+    "This iPhone" : {
 
     },
     "Time" : {
@@ -1111,6 +1223,9 @@
     "Weekly review" : {
 
     },
+    "What did I finish this week?" : {
+
+    },
     "What it's for, in a line" : {
 
     },
@@ -1118,6 +1233,9 @@
 
     },
     "What the assistant does while this skill is attached." : {
+
+    },
+    "What's overdue?" : {
 
     },
     "When" : {
@@ -1145,6 +1263,18 @@
 
     },
     "Yours" : {
+
+    },
+    "another device" : {
+
+    },
+    "iCloud isn't available right now" : {
+
+    },
+    "iCloud lost the records twice" : {
+
+    },
+    "something removed" : {
 
     }
   },

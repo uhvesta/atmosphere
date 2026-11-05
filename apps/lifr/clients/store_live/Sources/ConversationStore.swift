@@ -35,16 +35,56 @@ package enum ConversationStoreError: Error, CustomStringConvertible {
 }
 
 /// Conversations and skills on SwiftData. Each conversation is kept in a
-/// local-only store, or in the synced Lifr store once the person syncs it.
-/// Skills are always in the synced store.
+/// local-only store, or in the synced store once the person syncs it.
+/// Skills are always in the synced store. The synced store is its own,
+/// mirrored by SwiftData; the records sync another way, through a merge.
 package actor ConversationStore {
     private let synced: ModelContainer
     private let local: ModelContainer
 
-    /// `synced` is the Lifr container; `local` never syncs.
+    /// `synced` syncs through iCloud; `local` never does.
     package init(synced: ModelContainer, local: ModelContainer) {
         self.synced = synced
         self.local = local
+    }
+
+    /// The stores on disk, with what an earlier Lifr kept in `records`,
+    /// the Lifr container, moved into the synced one.
+    package static func onDisk(movingFrom records: ModelContainer) throws(ConversationStoreError) -> ConversationStore {
+        let synced = try container(ModelConfiguration("Shared", schema: schema, cloudKitDatabase: .automatic))
+        try move(from: records, to: synced)
+        return ConversationStore(synced: synced, local: try localOnDisk())
+    }
+
+    /// Moves every conversation and skill from `source` into `target`; a
+    /// newer copy already in `target` wins.
+    package static func move(from source: ModelContainer, to target: ModelContainer) throws(ConversationStoreError) {
+        do {
+            let from = ModelContext(source)
+            let conversations = try from.fetch(FetchDescriptor<StoredConversation>())
+            let skills = try from.fetch(FetchDescriptor<StoredSkill>())
+            guard !conversations.isEmpty || !skills.isEmpty else { return }
+            let to = ModelContext(target)
+            for stored in conversations {
+                let id = stored.id
+                let existing = try to.fetch(FetchDescriptor<StoredConversation>(predicate: #Predicate { $0.id == id }))
+                if let newest = existing.map(\.updatedAt).max(), newest > stored.updatedAt { continue }
+                existing.forEach(to.delete)
+                let record = StoredConversation(id: id)
+                record.updatedAt = stored.updatedAt
+                record.conversation = stored.conversation
+                to.insert(record)
+            }
+            for skill in skills {
+                try upsert(id: skill.id, updatedAt: skill.updatedAt, data: skill.skill, in: to)
+            }
+            try to.save()
+            try from.delete(model: StoredConversation.self)
+            try from.delete(model: StoredSkill.self)
+            try from.save()
+        } catch {
+            throw .openFailed(error)
+        }
     }
 
     /// The local container, on disk as Conversations.store next to Lifr.store.

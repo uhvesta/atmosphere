@@ -12,6 +12,8 @@ import LifrSearch
 import LifrSessionClient
 import LifrSettings
 import LifrStoreClient
+import LifrSyncClient
+import LifrSyncReview
 import LifrTaskDetail
 import LifrTaskList
 import LifrToday
@@ -74,6 +76,8 @@ package struct RootFeature {
         package var isSettingsShown = false
         /// What the last sync fixed, until dismissed.
         package var syncBanner: SyncBanner?
+        /// Where sync is, and what waits for review.
+        package var sync = SyncState()
         /// Apps with a grant; the menu bar shows a dot while one is connected.
         package var apps: [ConnectedApp] = []
         /// Apps asking while another's approval sheet is up.
@@ -84,6 +88,7 @@ package struct RootFeature {
         package var apiSwitchError: String?
         @Presents package var quickAdd: QuickAddFeature.State?
         @Presents package var approval: ApprovalFeature.State?
+        @Presents package var syncReview: SyncReviewFeature.State?
         /// Why Undo couldn't revert the last change.
         @Presents package var undoAlert: AlertState<Never>?
         @Shared(.lastChange) package var lastChange
@@ -102,6 +107,11 @@ package struct RootFeature {
         }
 
         package var hasConnectedApp: Bool { apps.contains(where: \.isConnected) }
+
+        /// This device, as the review names it.
+        package var thisDevice: String {
+            platform == .phone ? String(localized: "This iPhone") : String(localized: "This Mac")
+        }
 
         /// The list the person is looking at, which keyboard shortcuts act on.
         package var currentList: ListSlot? {
@@ -185,6 +195,14 @@ package struct RootFeature {
         case toastExpired(UUID)
         case undoAlert(PresentationAction<Never>)
         case syncBannerDismissed
+        case syncChanged(SyncState)
+        /// The app came to the front: sync what changed meanwhile.
+        case foregrounded
+        /// The Mac's File › Sync Now.
+        case syncNowTapped
+        /// The banner's Review.
+        case syncReviewTapped
+        case syncReview(PresentationAction<SyncReviewFeature.Action>)
         /// This device's notifications match the records again.
         case remindersScheduled
         /// The approval sheet closed: show the next app's, if one is waiting.
@@ -204,8 +222,14 @@ package struct RootFeature {
 
     private enum CancelID { case reminders }
 
+    /// How often sync runs while the app is open, for what other devices
+    /// sent.
+    static let syncInterval = Duration.seconds(15 * 60)
+
     @Dependency(\.store) private var store
     @Dependency(\.session) private var session
+    @Dependency(\.sync) private var sync
+    @Dependency(\.continuousClock) private var clock
     @Dependency(\.reminders) private var reminders
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
@@ -215,7 +239,7 @@ package struct RootFeature {
     package var body: some ReducerOf<Self> {
         CombineReducers { screens }
             .transformDependency(\.self) { dependencies in
-                dependencies.store = dependencies.store.recordingChanges(
+                dependencies.store = dependencies.store.telling(dependencies.sync).recordingChanges(
                     into: Shared(.lastChange), uuid: dependencies.uuid)
             }
     }
@@ -237,6 +261,13 @@ package struct RootFeature {
                     .run { [store] send in await send(.loaded(Result { try await store.load() })) },
                     .run { [store] send in
                         for await update in await store.updates() { await send(.updated(update)) }
+                    },
+                    .run { [sync] send in
+                        for await state in await sync.states() { await send(.syncChanged(state)) }
+                    },
+                    .run { [sync, clock] _ in
+                        _ = await sync.sync()
+                        for await _ in clock.timer(interval: Self.syncInterval) { _ = await sync.sync() }
                     },
                 ]
                 if state.platform == .mac {
@@ -405,6 +436,31 @@ package struct RootFeature {
                 state.syncBanner = nil
                 return .none
 
+            case .syncChanged(let sync):
+                state.sync = sync
+                state.settings.sync = sync
+                guard state.syncReview != nil else { return .none }
+                return .send(.syncReview(.presented(.show(sync.review, state.workspace ?? Workspace()))))
+
+            case .foregrounded, .syncNowTapped:
+                guard state.sync.status != .syncing else { return .none }
+                return .run { [sync] _ in _ = await sync.sync() }
+
+            case .syncReviewTapped:
+                guard !state.sync.review.isEmpty else { return .none }
+                state.syncReview = SyncReviewFeature.State(
+                    items: state.sync.review, workspace: state.workspace ?? Workspace(),
+                    thisDevice: state.thisDevice)
+                return .none
+
+            case .syncReview(.presented(.delegate(.resolved))):
+                // The choices were saved through sync, not a screen.
+                return .run { [store] send in await send(.loaded(Result { try await store.load() })) }
+
+            case .syncReview(.presented(.delegate(.finished))):
+                state.syncReview = nil
+                return .none
+
             case .today(.delegate(.saved(let workspace))),
                 .upcoming(.list(.delegate(.saved(let workspace)))),
                 .procrastinated(.list(.delegate(.saved(let workspace)))),
@@ -422,7 +478,7 @@ package struct RootFeature {
                 return .send(.newTaskInTapped(scope))
 
             case .binding, .remindersScheduled, .today, .upcoming, .procrastinated, .avenues, .search, .avenue, .board,
-                .conversations, .settings, .quickAdd, .approval, .undoAlert:
+                .conversations, .settings, .quickAdd, .approval, .undoAlert, .syncReview:
                 return .none
             }
         }
@@ -430,6 +486,7 @@ package struct RootFeature {
         .ifLet(\.board, action: \.board) { BoardFeature() }
         .ifLet(\.$quickAdd, action: \.quickAdd) { QuickAddFeature() }
         .ifLet(\.$approval, action: \.approval) { ApprovalFeature() }
+        .ifLet(\.$syncReview, action: \.syncReview) { SyncReviewFeature() }
         .ifLet(\.$undoAlert, action: \.undoAlert)
     }
 

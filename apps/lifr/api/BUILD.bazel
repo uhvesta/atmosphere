@@ -1,7 +1,7 @@
 load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
 load("@bazel_skylib//rules:run_binary.bzl", "run_binary")
 load("@bazel_skylib//rules:write_file.bzl", "write_file")
-load("@lifr_identity//:defs.bzl", "APP_GROUP", "BUNDLE_ID", "CLI_BUNDLE_ID", "TEAM_ID")
+load("@lifr_identity//:defs.bzl", "APP_GROUP", "BUNDLE_ID", "CLI_BUNDLE_ID", "ICLOUD_CONTAINER", "TEAM_ID")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
@@ -25,6 +25,9 @@ write_file(
         "    package static let cliIdentifier = \"%s\"" % CLI_BUNDLE_ID,
         "    /// The Mac app's team-prefixed App Group.",
         "    package static let appGroup = \"%s\"" % APP_GROUP,
+        "    /// The iCloud container that syncs the records; empty when the",
+        "    /// build has none, so they stay on each device.",
+        "    package static let iCloudContainer = \"%s\"" % ICLOUD_CONTAINER,
         "}",
         "",
     ],

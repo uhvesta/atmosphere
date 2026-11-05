@@ -155,6 +155,27 @@ final class ConversationStoreTests: XCTestCase {
         let afterDelete = try await store.loadSkills()
         XCTAssertEqual(afterDelete.map(\.id), Skill.builtIn.map(\.id))
     }
+
+    func testMovesSyncedConversationsAndSkillsOutOfTheRecordsStore() async throws {
+        let records = try LiveStore.inMemory()
+        let shared = try ConversationStore.localInMemory()
+        var chat = conversation("Plan the week")
+        chat.isSynced = true
+        let mine = try skill("Weekly")
+        try await ConversationStore(synced: records, local: try ConversationStore.localInMemory()).save(chat)
+        try await ConversationStore(synced: records, local: try ConversationStore.localInMemory()).saveSkill(mine)
+
+        try ConversationStore.move(from: records, to: shared)
+        try ConversationStore.move(from: records, to: shared)
+
+        XCTAssertEqual(try ModelContainerProbe(records).count(), 0)
+        XCTAssertEqual(try ModelContainerProbe(records).skillCount(), 0)
+        let store = ConversationStore(synced: shared, local: try ConversationStore.localInMemory())
+        let loaded = try await store.load()
+        XCTAssertEqual(loaded, [chat])
+        let skills = try await store.loadSkills()
+        XCTAssertEqual(skills.last, mine)
+    }
 }
 
 /// Counts the conversations a container holds.

@@ -12,4 +12,5 @@ runSuites([
     ("Reverting from history", revertTests()),
     ("Plans", planTests()),
     ("Journal", journalTests()),
+    ("Merging synced records", mergeTests()),
 ])

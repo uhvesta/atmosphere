@@ -2,7 +2,7 @@ import Foundation
 
 /// A rule violation that two offline devices created together, and how
 /// `Workspace.reconcile` fixed it.
-package enum Fix: Hashable, Sendable {
+package enum Fix: Hashable, Codable, Sendable {
     /// The Sub task's parent became a Sub task, so it moved to the top-level
     /// task. `to` is nil when the parents formed a cycle and this task became
     /// top-level.

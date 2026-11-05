@@ -6,6 +6,8 @@ import LifrRemindersClient
 import LifrRoot
 import LifrSessionClient
 import LifrStoreClient
+import LifrSyncClient
+import LifrSyncReview
 import LifrTaskDetail
 import XCTest
 
@@ -19,7 +21,8 @@ final class RootFlowTests: XCTestCase {
     private lazy var health = records.avenue("HEALTH", "Health")
 
     private func app(
-        _ platform: RootFeature.Platform, _ client: StoreClient, session: InMemorySession = InMemorySession()
+        _ platform: RootFeature.Platform, _ client: StoreClient, session: InMemorySession = InMemorySession(),
+        sync: SyncClient = .off
     ) async -> (TestStoreOf<RootFeature>, TestStoreTask) {
         let store = TestStore(initialState: RootFeature.State(platform: platform)) {
             RootFeature()
@@ -29,6 +32,8 @@ final class RootFlowTests: XCTestCase {
             $0.store = client
             $0.session = session.client
             $0.reminders = RemindersClient.inMemory().client
+            $0.sync = sync
+            $0.continuousClock = TestClock()
             $0.date = DateGenerator {
                 clock.withValue {
                     $0 += 60
@@ -273,5 +278,110 @@ final class RootFlowTests: XCTestCase {
         XCTAssertEqual(reopened?.actor.kind, .system)
         XCTAssertEqual(reopened?.reason, .reconciledClosedParent)
         await task.cancel()
+    }
+
+    /// 9. Editing on two devices: what merges merges, what can't waits for
+    /// review, and the choice reaches the other device.
+    func testEditsOnTwoDevicesMergeOrWaitForReview() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let socks = records.task("Buy socks", in: health)
+        let cloud = InMemoryCloud()
+        func device(_ name: String, _ surface: Actor.Surface) -> (StoreClient, SyncClient) {
+            let client = StoreClient.inMemory(records.workspace, actor: .user(device: name, surface: surface))
+            let syncer = Syncer(cloud: cloud.connection(device: name), store: client, storage: .inMemory())
+            // Syncs only when asked, so each step syncs where the test says.
+            return (client, .syncing(syncer, settle: .seconds(60 * 60)))
+        }
+        let (phoneClient, phoneSync) = device("iPhone", .iPhone)
+        let (macClient, macSync) = device("Mac", .mac)
+        let (phone, phoneTask) = await app(.phone, phoneClient, sync: phoneSync)
+        let (mac, macTask) = await app(.mac, macClient, sync: macSync)
+        await synced(phone)
+        await synced(mac)
+
+        // Different fields of one task merge without asking.
+        await phone.send(.today(.list(.toggled(run.id))))
+        await phone.receive(\.today.delegate.saved)
+        try await change(macClient) { (workspace, context) throws(LifrError) in
+            try workspace.edit(run.id, Workspace.TaskEdit(priority: .high), in: context)
+        }
+        await synced(phone)
+        await synced(mac)
+        await synced(phone)
+        XCTAssertEqual(phone.state.workspace?.tasks[run.id]?.priority, .high)
+        XCTAssertEqual(mac.state.workspace?.tasks[run.id]?.status, .done)
+        XCTAssertEqual(mac.state.sync.review, [])
+
+        // The same field changed on both waits for review; Later keeps it.
+        try await change(phoneClient) { (workspace, context) throws(LifrError) in
+            try workspace.edit(socks.id, Workspace.TaskEdit(title: "Buy wool socks"), in: context)
+        }
+        try await change(macClient) { (workspace, context) throws(LifrError) in
+            try workspace.edit(socks.id, Workspace.TaskEdit(title: "Buy running socks"), in: context)
+        }
+        await synced(phone)
+        await synced(mac)
+        XCTAssertEqual(mac.state.sync.review.count, 1)
+        await mac.send(.syncReviewTapped)
+        XCTAssertEqual(mac.state.syncReview?.rows.first?.device, "iPhone")
+        await mac.send(.syncReview(.presented(.laterTapped)))
+        await mac.receive(\.syncReview.presented.delegate.finished)
+        XCTAssertNil(mac.state.syncReview)
+        await synced(mac)
+        XCTAssertEqual(mac.state.sync.review.count, 1)
+
+        // Choosing the iPhone's title sends it everywhere, as one change.
+        await mac.send(.syncReviewTapped)
+        let item = try XCTUnwrap(mac.state.syncReview?.items.first)
+        await mac.send(.syncReview(.presented(.chose(item.id, .title, .theirs))))
+        await mac.send(.syncReview(.presented(.doneTapped)))
+        await mac.receive(\.syncReview.presented.delegate.finished)
+        await synced(mac)
+        await synced(phone)
+        XCTAssertEqual(mac.state.sync.review, [])
+        XCTAssertEqual(mac.state.workspace?.tasks[socks.id]?.title, "Buy wool socks")
+        XCTAssertEqual(phone.state.workspace?.tasks[socks.id]?.title, "Buy wool socks")
+        XCTAssertEqual(phone.state.sync.review, [])
+
+        // Trashed on the iPhone while the Mac edited it: keeping it restores it.
+        try await change(phoneClient) { (workspace, context) throws(LifrError) in
+            try workspace.moveToTrash(socks.id, in: context)
+        }
+        try await change(macClient) { (workspace, context) throws(LifrError) in
+            try workspace.edit(socks.id, Workspace.TaskEdit(priority: .low), in: context)
+        }
+        await synced(phone)
+        await synced(mac)
+        let removed = try XCTUnwrap(mac.state.sync.review.first)
+        XCTAssertEqual(removed.conflict.kind, .removed(by: .theirs))
+        await mac.send(.syncReviewTapped)
+        await mac.send(.syncReview(.presented(.doneTapped)))
+        await mac.receive(\.syncReview.presented.delegate.finished)
+        await synced(mac)
+        await synced(phone)
+        XCTAssertNil(phone.state.workspace?.tasks[socks.id]?.deletedAt)
+        XCTAssertEqual(phone.state.workspace?.tasks[socks.id]?.priority, .low)
+
+        await phoneTask.cancel()
+        await macTask.cancel()
+    }
+
+    /// Sync Now, then waits for the sync to finish.
+    private func synced(_ store: TestStoreOf<RootFeature>) async {
+        await store.send(.syncNowTapped)
+        for _ in 0..<6 {
+            await store.receive(\.syncChanged)
+            if store.state.sync.status != .syncing, store.state.sync.lastSynced != nil { break }
+        }
+    }
+
+    /// Changes the records on a device directly, as another screen would.
+    private func change(_ client: StoreClient, _ operation: @escaping StoreOperation) async throws {
+        _ = try await withDependencies { [now] in
+            $0.date.now = now
+            $0.uuid = UUIDGenerator { UUID() }
+        } operation: {
+            try await client.save(operation)
+        }
     }
 }

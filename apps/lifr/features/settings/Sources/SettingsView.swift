@@ -4,6 +4,7 @@ import LifrAssistantClient
 import LifrCore
 import LifrSessionClient
 import LifrSkills
+import LifrSyncClient
 import SwiftUI
 
 package struct SettingsView: View {
@@ -27,6 +28,7 @@ package struct SettingsView: View {
             } footer: {
                 Text("An In Progress task with no activity for longer than this counts as Procrastinated.")
             }
+            SyncSection(store: store)
             Section {
                 Button("Activity") { store.send(.activityTapped) }
             } footer: {
@@ -251,5 +253,38 @@ extension Binding {
 #Preview {
     NavigationStack {
         SettingsView(store: Store(initialState: SettingsFeature.State(showsAgents: true)) { SettingsFeature() })
+    }
+}
+
+/// Whether sync worked last time, when, and Sync Now.
+private struct SyncSection: View {
+    let store: StoreOf<SettingsFeature>
+
+    var body: some View {
+        Section {
+            LabeledContent("Status", value: status)
+            Button("Sync Now") { store.send(.syncNowTapped) }
+                .disabled(store.sync.status == .syncing)
+        } header: {
+            Text("Sync")
+        } footer: {
+            if case .failed(let error) = store.sync.status {
+                Text(error.description)
+            } else {
+                Text(
+                    "Your records sync with your other devices through iCloud. A change made on two devices "
+                        + "at once that can't be merged waits for you to review it.")
+            }
+        }
+    }
+
+    private var status: String {
+        switch store.sync.status {
+        case .syncing: return String(localized: "Syncing…")
+        case .failed: return String(localized: "Didn't finish")
+        case .idle:
+            guard let last = store.sync.lastSynced else { return String(localized: "Not synced yet") }
+            return String(localized: "Synced \(last.formatted(date: .abbreviated, time: .shortened))")
+        }
     }
 }

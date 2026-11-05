@@ -1,0 +1,28 @@
+▿ 2 elements
+  ▿ SyncReviewRow
+    - device: "Mac"
+    ▿ id: RecordID
+      - id: 00000000-0000-0000-0000-000000000401
+      - kind: RecordKind.task
+    ▿ kind: Kind
+      ▿ fields: 2 elements
+        ▿ Question
+          - field: Field.title
+          - mine: "Buy race gels and salt"
+          - theirs: "Buy energy gels"
+          - title: "Title"
+        ▿ Question
+          - field: Field.avenue
+          - mine: "Health"
+          - theirs: "Home"
+          - title: "Avenue"
+    - title: "Task “Buy race gels and salt”"
+  ▿ SyncReviewRow
+    - device: "Mac"
+    ▿ id: RecordID
+      - id: 00000000-0000-0000-0000-000000000501
+      - kind: RecordKind.task
+    ▿ kind: Kind
+      ▿ removed: (1 element)
+        - by: SyncSide.theirs
+    - title: "Task “Pack the bag”"

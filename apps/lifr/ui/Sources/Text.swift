@@ -64,3 +64,13 @@ extension TaskRowData {
         return parts.joined(separator: ", ")
     }
 }
+
+extension AgentAccess {
+    package var title: String {
+        switch self {
+        case .full: String(localized: "Read and write")
+        case .readOnly: String(localized: "Read only")
+        case .hidden: String(localized: "Hidden")
+        }
+    }
+}

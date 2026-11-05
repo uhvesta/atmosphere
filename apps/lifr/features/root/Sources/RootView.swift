@@ -7,6 +7,7 @@ import LifrProcrastinated
 import LifrQuickAdd
 import LifrSearch
 import LifrSettings
+import LifrSyncReview
 import LifrToday
 import LifrUI
 import LifrUpcoming
@@ -49,7 +50,10 @@ package struct RootView: View {
             .animation(.default, value: store.toast?.id)
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { store.send(.conversations(.resumed)) }
+            if phase == .active {
+                store.send(.conversations(.resumed))
+                store.send(.foregrounded)
+            }
         }
         .modifier(RegistersUndo(store: store))
         .alert($store.scope(state: \.undoAlert, action: \.undoAlert))
@@ -57,6 +61,10 @@ package struct RootView: View {
         .sheet(item: $store.scope(state: \.quickAdd, action: \.quickAdd)) { store in
             NavigationStack { QuickAddView(store: store) }
                 .sheetLayout()
+        }
+        .sheet(item: $store.scope(state: \.syncReview, action: \.syncReview)) { store in
+            NavigationStack { SyncReviewView(store: store) }
+                .interactiveDismissDisabled()
         }
         .sheet(item: $store.scope(state: \.approval, action: \.approval)) { store in
             NavigationStack { ApprovalView(store: store) }
@@ -79,6 +87,7 @@ private struct PhoneRootView: View {
             Tab("Today", systemImage: "sun.max", value: RootFeature.Tab.today) {
                 NavigationStack {
                     TodayView(store: store.scope(state: \.today, action: \.today))
+                        .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
                         .toolbar {
                             ToolbarItem(placement: .navigation) {
                                 Button {
@@ -229,6 +238,7 @@ private struct Sidebar: View {
             }
         }
         .navigationTitle("Lifr")
+        .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
         .safeAreaInset(edge: .bottom) {
             Button {
                 store.send(.newAvenueTapped)
@@ -288,6 +298,40 @@ private struct AvenueItems: View {
                     Button("New Task in \(project.name)") { store.send(.newTaskInTapped(.project(project.id))) }
                 }
         }
+    }
+}
+
+/// Records that couldn't merge, waiting for review, with a button that
+/// opens it. Shown until they're resolved.
+private struct SyncReviewBanner: View {
+    let store: StoreOf<RootFeature>
+
+    var body: some View {
+        if !store.sync.review.isEmpty {
+            Button {
+                store.send(.syncReviewTapped)
+            } label: {
+                HStack(alignment: .firstTextBaseline) {
+                    Image(systemName: "arrow.triangle.2.circlepath").accessibilityHidden(true)
+                    Text(message).frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Review").bold()
+                }
+                .font(.callout)
+                .padding(12)
+                .background(.thinMaterial, in: .rect(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+        }
+    }
+
+    private var message: String {
+        let count = store.sync.review.count
+        return count == 1
+            ? String(localized: "1 change needs review")
+            : String(localized: "\(count) changes need review")
     }
 }
 

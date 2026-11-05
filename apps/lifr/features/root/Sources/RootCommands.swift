@@ -4,7 +4,8 @@ import LifrSettings
 import LifrUI
 import SwiftUI
 
-/// The Task menu: ⌘N, ⌘⇧N, and a shortcut for each status of the open task.
+/// The File menu's new items and Sync Now, and the Status menu: a shortcut
+/// for each status of the open task.
 package struct RootCommands: Commands {
     package var store: StoreOf<RootFeature>
 
@@ -20,6 +21,10 @@ package struct RootCommands: Commands {
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             Button("New Project") { store.send(.newProjectTapped(nil)) }
                 .keyboardShortcut("n", modifiers: [.command, .option])
+        }
+        CommandGroup(after: .saveItem) {
+            Button("Sync Now") { store.send(.syncNowTapped) }
+                .disabled(store.sync.status == .syncing)
         }
         CommandMenu("Status") {
             ForEach(Array(TaskStatus.shortcuts.enumerated()), id: \.offset) { index, status in

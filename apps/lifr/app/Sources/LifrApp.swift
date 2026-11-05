@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import LifrAPI
 import LifrAssistantClient
 import LifrAssistantLive
 import LifrCore
@@ -8,6 +9,8 @@ import LifrRoot
 import LifrSessionClient
 import LifrStoreClient
 import LifrStoreLive
+import LifrSyncClient
+import LifrSyncLive
 import SwiftUI
 
 #if canImport(UIKit)
@@ -77,13 +80,19 @@ private enum Storage {
         $0.conversations = chats.conversations
         $0.skills = chats.skills
         $0.session = session
+        $0.sync = sync
     }
+
+    /// Syncs the records with the person's other devices through iCloud,
+    /// when this build has a container.
+    private static let sync = SyncClient.live(
+        container: LifrIdentity.iCloudContainer, store: client, device: deviceName)
 
     /// On the Mac, the local API that `lifr` connects to. The iPhone has no
     /// CLI, so no app can connect there.
     private static let session: SessionClient = {
         #if os(macOS)
-            let server = SessionServer.live(store: client, device: deviceName)
+            let server = SessionServer.live(store: client.telling(sync), device: deviceName)
             Task { await server.start() }
             return server.client
         #else
@@ -97,7 +106,7 @@ private enum Storage {
     private static let chats: (conversations: ConversationsClient, skills: SkillsClient) = {
         do {
             let store = try opened.get()
-            let chats = ConversationStore(synced: store.modelContainer, local: try ConversationStore.localOnDisk())
+            let chats = try ConversationStore.onDisk(movingFrom: store.modelContainer)
             return (.live(chats), .live(chats))
         } catch {
             return (.failing(.openFailed(error)), .failing(.openFailed(error)))

@@ -1,0 +1,61 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("//apps/lifr/testing/snapshot:defs.bzl", "lifr_snapshot_test")
+
+# The sync review sheet: records two devices changed in ways that couldn't
+# merge, with a choice per field, or Keep and Delete.
+swift_library(
+    name = "sync_review",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrSyncReview",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/lifr/features/root:__pkg__"],
+    deps = [
+        "//apps/lifr/clients/sync",
+        "//apps/lifr/core",
+        "//apps/lifr/ui",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# TestStore tests, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":sync_review",
+        "//apps/lifr/clients/sync",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+# Display data, accessibility tree and images, on the pinned simulator.
+lifr_snapshot_test(
+    name = "snapshot_test",
+    srcs = glob(["SnapshotTests/*.swift"]),
+    deps = [
+        ":sync_review",
+        "//apps/lifr/clients/sync",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+        "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

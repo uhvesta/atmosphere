@@ -1,0 +1,51 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# Sync through CloudKit: a CKSyncEngine in the private database's "Lifr"
+# zone, each item encrypted end to end, and what sync last saw kept in
+# files on this device. Only the app uses it; features depend on
+# //apps/lifr/clients/sync.
+swift_library(
+    name = "sync_live",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrSyncLive",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/lifr/app:__subpackages__"],
+    deps = [
+        "//apps/lifr/clients/store",
+        "//apps/lifr/clients/sync",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# The record encoding, error mapping and files, on macOS. CloudKit itself
+# needs a signed app and an iCloud account, so it's tried by hand.
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":sync_live",
+        "//apps/lifr/clients/store",
+        "//apps/lifr/clients/sync",
+        "//apps/lifr/core",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

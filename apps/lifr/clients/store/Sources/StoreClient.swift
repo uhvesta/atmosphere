@@ -19,6 +19,26 @@ package struct StoreClient: Sendable {
     /// such as a sync import, with what reconciling them fixed. Ends when the
     /// calling task is cancelled.
     package var updates: @Sendable () async -> AsyncStream<Update> = { AsyncStream { $0.finish() } }
+    /// Writes what sync brought in from other devices without a journal
+    /// entry of its own, reconciles the records, and sends the result to
+    /// `updates`.
+    package var importSynced: @Sendable (_ changes: SyncedChanges) async throws -> Update
+}
+
+/// Records, journal entries and history events another device sent.
+package struct SyncedChanges: Hashable, Sendable {
+    /// Each record as it now is, nil when it was removed.
+    package var records: [RecordID: RecordValue?]
+    package var journal: [JournalEntry]
+    package var history: [HistoryEvent]
+
+    package init(records: [RecordID: RecordValue?] = [:], journal: [JournalEntry] = [], history: [HistoryEvent] = []) {
+        self.records = records
+        self.journal = journal
+        self.history = history
+    }
+
+    package var isEmpty: Bool { records.isEmpty && journal.isEmpty && history.isEmpty }
 }
 
 /// The records after a change, and what changed.

@@ -16,6 +16,8 @@ swift_library(
         "//apps/lifr/clients/reminders:__pkg__",
         "//apps/lifr/clients/session_live:__pkg__",
         "//apps/lifr/clients/store_live:__pkg__",
+        "//apps/lifr/clients/sync:__pkg__",
+        "//apps/lifr/clients/sync_live:__pkg__",
         "//apps/lifr/features:__subpackages__",
     ],
     deps = [

@@ -37,7 +37,14 @@ extension StoreClient {
                     return Saved(workspace: copy, change: change)
                 }
             },
-            updates: { sync.stream() }
+            updates: { sync.stream() },
+            importSynced: { changes in
+                @Dependency(\.date.now) var now
+                return sync(now: now) { workspace in
+                    workspace.importSynced(
+                        records: changes.records, journal: changes.journal, history: changes.history)
+                }
+            }
         )
         return (client, sync)
     }

@@ -6,6 +6,7 @@ import LifrCore
 import LifrSessionClient
 import LifrSkills
 import LifrStoreClient
+import LifrSyncClient
 import LifrTaskDetail
 
 /// One Avenue's agent access, as Settings shows it.
@@ -13,16 +14,6 @@ package struct AvenueAccess: Identifiable, Hashable, Sendable {
     package var id: UUID
     package var name: String
     package var access: AgentAccess
-}
-
-extension AgentAccess {
-    package var title: String {
-        switch self {
-        case .full: String(localized: "Read and write")
-        case .readOnly: String(localized: "Read only")
-        case .hidden: String(localized: "Hidden")
-        }
-    }
 }
 
 extension ConnectedApp {
@@ -44,6 +35,8 @@ package struct SettingsFeature {
         package var apps: [ConnectedApp] = []
         package var cli = CLIInstallation.notInstalled
         package var launchesAtLogin = false
+        /// Where sync is. The app passes each change on.
+        package var sync = SyncState()
         /// Kept so the Activity log opens on what's shown.
         package var workspace = Workspace()
         @Presents package var activity: ActivityFeature.State?
@@ -85,6 +78,7 @@ package struct SettingsFeature {
         case revokeTapped(String)
         case installCLITapped
         case activityTapped
+        case syncNowTapped
         case activity(PresentationAction<ActivityFeature.Action>)
         case skillsTapped
         case skills(PresentationAction<SkillsFeature.Action>)
@@ -103,6 +97,7 @@ package struct SettingsFeature {
 
     @Dependency(\.store) private var store
     @Dependency(\.session) private var session
+    @Dependency(\.sync) private var sync
     @Dependency(\.date.now) private var now
 
     package init() {}
@@ -213,6 +208,10 @@ package struct SettingsFeature {
             case .activityTapped:
                 state.activity = ActivityFeature.State(workspace: state.workspace)
                 return .none
+
+            case .syncNowTapped:
+                guard state.sync.status != .syncing else { return .none }
+                return .run { [sync] _ in _ = await sync.sync() }
 
             case .skillsTapped:
                 state.skills = SkillsFeature.State()

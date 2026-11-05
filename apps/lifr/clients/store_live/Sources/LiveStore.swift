@@ -1,3 +1,4 @@
+import ComposableArchitecture
 import Foundation
 import LifrCore
 import LifrStoreClient
@@ -12,6 +13,8 @@ package actor LiveStore: ModelActor {
     package nonisolated let modelExecutor: any ModelExecutor
     /// Journal entries never change, so each is decoded once.
     private var journal: [UUID: JournalEntry] = [:]
+    /// What each sync import in this process changed, for `updates`.
+    nonisolated let imported = Broadcast<Update>()
 
     package init(modelContainer: ModelContainer) {
         self.modelContainer = modelContainer
@@ -53,6 +56,23 @@ package actor LiveStore: ModelActor {
             return Change()
         }
         if !fixes.isEmpty { try write(from: before, to: after) }
+        return fixes
+    }
+
+    /// Writes what sync brought in without a journal entry of its own, then
+    /// reconciles, all in one save. Returns what reconciling fixed.
+    package func importSynced(
+        _ changes: SyncedChanges, in context: @Sendable () -> Context
+    ) throws(LiveStoreError) -> [Fix] {
+        let before = try load()
+        var after = before
+        after.importSynced(records: changes.records, journal: changes.journal, history: changes.history)
+        var fixes: [Fix] = []
+        after.perform(in: context()) { workspace, context in
+            fixes = workspace.reconcile(in: context)
+            return Change()
+        }
+        try write(from: before, to: after)
         return fixes
     }
 
@@ -199,6 +219,23 @@ final class Index {
     /// duplicate IDs don't happen; if they do, the first one fetched wins.
     private static func all<Model: PersistentModel & Identified>(_ context: ModelContext) throws -> [UUID: Model] {
         Dictionary(try context.fetch(FetchDescriptor<Model>()).map { ($0.id, $0) }) { first, _ in first }
+    }
+}
+
+/// Sends each value to every stream made so far.
+final class Broadcast<Value: Sendable>: Sendable {
+    private let continuations = LockIsolated<[UUID: AsyncStream<Value>.Continuation]>([:])
+
+    func stream() -> AsyncStream<Value> {
+        let (stream, continuation) = AsyncStream<Value>.makeStream()
+        let id = UUID()
+        continuations.withValue { $0[id] = continuation }
+        continuation.onTermination = { [continuations] _ in continuations.withValue { $0[id] = nil } }
+        return stream
+    }
+
+    func yield(_ value: Value) {
+        for continuation in continuations.value.values { continuation.yield(value) }
     }
 }
 

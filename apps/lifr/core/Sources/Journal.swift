@@ -183,7 +183,7 @@ extension Workspace {
         }
     }
 
-    private mutating func set(_ record: RecordID, to value: RecordValue?) {
+    mutating func set(_ record: RecordID, to value: RecordValue?) {
         switch (record.kind, value) {
         case (.avenue, .avenue(let avenue)?): avenues[record.id] = avenue
         case (.avenue, nil): avenues[record.id] = nil

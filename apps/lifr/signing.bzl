@@ -1,7 +1,7 @@
 """Entitlements from the signing identity in user.bazelrc (see identity.bzl)."""
 
 load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
-load("@lifr_identity//:defs.bzl", "APP_GROUP", "TEAM_ID")
+load("@lifr_identity//:defs.bzl", "APP_GROUP", "ICLOUD_CONTAINER", "TEAM_ID")
 
 _PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -17,6 +17,16 @@ _APP_GROUP = """\t<key>com.apple.security.application-groups</key>
 \t</array>
 """
 
+_ICLOUD = """\t<key>com.apple.developer.icloud-container-identifiers</key>
+\t<array>
+\t\t<string>{}</string>
+\t</array>
+\t<key>com.apple.developer.icloud-services</key>
+\t<array>
+\t\t<string>CloudKit</string>
+\t</array>
+"""
+
 def _lifr_entitlements_impl(ctx):
     if ctx.attr._signed[BuildSettingInfo].value and not TEAM_ID:
         fail("Signed builds need your Apple team. Add `common --repo_env=LIFR_TEAM_ID=<your team ID>` " +
@@ -25,7 +35,10 @@ def _lifr_entitlements_impl(ctx):
              "developer.apple.com/account. Changing the prefix gives the apps new bundle IDs, so " +
              "an installed Lifr keeps its data under the old one.")
     output = ctx.actions.declare_file(ctx.label.name + ".entitlements")
-    ctx.actions.write(output, _PLIST.format(_APP_GROUP.format(APP_GROUP) if ctx.attr.app_group else ""))
+    keys = _APP_GROUP.format(APP_GROUP) if ctx.attr.app_group else ""
+    if ICLOUD_CONTAINER:
+        keys += _ICLOUD.format(ICLOUD_CONTAINER)
+    ctx.actions.write(output, _PLIST.format(keys))
     return [DefaultInfo(files = depset([output]))]
 
 lifr_entitlements = rule(
@@ -36,5 +49,6 @@ lifr_entitlements = rule(
         ),
         "_signed": attr.label(default = "//apps/lifr:signed"),
     },
-    doc = "Writes `<name>.entitlements`, and stops a signed build that has no team set.",
+    doc = "Writes `<name>.entitlements`, with iCloud when user.bazelrc sets a container, and stops a " +
+          "signed build that has no team set.",
 )

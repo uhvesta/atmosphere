@@ -11,11 +11,11 @@ extension LiveStore {
     package static let schema = Schema(models)
 
     /// The app's container, on disk as Lifr.store in Application Support:
-    /// the app's own container when it's sandboxed. It syncs through
-    /// CloudKit's private database when the app has the iCloud entitlement,
-    /// using its first container; without it, it stays on this device.
+    /// the app's own container when it's sandboxed. SwiftData never syncs
+    /// it: the records sync through LifrSyncLive, which merges what two
+    /// devices changed instead of keeping the last write.
     package static func onDisk() throws(LiveStoreError) -> ModelContainer {
-        try container(ModelConfiguration("Lifr", schema: schema, cloudKitDatabase: .automatic))
+        try container(ModelConfiguration("Lifr", schema: schema, cloudKitDatabase: .none))
     }
 
     /// A container that is never written to disk or synced, for tests.
@@ -31,11 +31,14 @@ extension LiveStore {
         }
     }
 
-    /// Reconciles after each change that another process or CloudKit makes
-    /// to the store, and sends the records with what it fixed. Ends when the
-    /// calling task is cancelled.
+    /// The records after each change that another process makes to the
+    /// store, reconciled, with what reconciling fixed, and after each sync
+    /// import in this one. Ends when the calling task is cancelled.
     package nonisolated func updates(as actor: Actor) -> AsyncStream<Update> {
         AsyncStream { continuation in
+            let imports = Task {
+                for await update in imported.stream() { continuation.yield(update) }
+            }
             let task = Task {
                 let logger = Logger(subsystem: "lifr", category: "sync")
                 for await _ in NotificationCenter.default.notifications(named: .NSPersistentStoreRemoteChange)
@@ -45,15 +48,19 @@ extension LiveStore {
                         let fixes = try await reconcile(in: {
                             Context(actor: .system(device: actor.device, surface: actor.surface), now: Date())
                         })
-                        if !fixes.isEmpty { logger.info("Reconciled \(fixes.count) records after sync") }
+                        if !fixes.isEmpty { logger.info("Reconciled \(fixes.count) records after a change") }
                         continuation.yield(Update(workspace: try await load(), fixes: fixes))
                     } catch {
-                        logger.error("Reconciling after sync failed: \(String(describing: error), privacy: .public)")
+                        logger.error(
+                            "Reconciling after a change failed: \(String(describing: error), privacy: .public)")
                     }
                 }
                 continuation.finish()
             }
-            continuation.onTermination = { _ in task.cancel() }
+            continuation.onTermination = { _ in
+                task.cancel()
+                imports.cancel()
+            }
         }
     }
 }
@@ -76,7 +83,15 @@ extension StoreClient {
         return StoreClient(
             load: { try await store.load() },
             save: { operation in try await store.save(in: context(), operation) },
-            updates: { store.updates(as: actor) }
+            updates: { store.updates(as: actor) },
+            importSynced: { changes in
+                let fixes = try await store.importSynced(changes) {
+                    Context(actor: .system(device: actor.device, surface: actor.surface), now: Date())
+                }
+                let update = Update(workspace: try await store.load(), fixes: fixes)
+                store.imported.yield(update)
+                return update
+            }
         )
     }
 }
