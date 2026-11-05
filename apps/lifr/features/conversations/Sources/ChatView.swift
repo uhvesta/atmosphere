@@ -2,6 +2,7 @@ import ComposableArchitecture
 import LifrAssistantClient
 import LifrCore
 import LifrSkills
+import LifrUI
 import SwiftUI
 
 package struct ChatView: View {
@@ -60,6 +61,7 @@ package struct ChatView: View {
                         }
                     }
             }
+            .sheetLayout(height: 520)
         }
         .navigationTitle(store.conversation.title)
         .toolbarTitleMenu {

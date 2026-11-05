@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import LifrCore
 import LifrTaskList
+import LifrUI
 import SwiftUI
 
 /// Every Avenue with its open task count, and its active Projects under it.
@@ -64,6 +65,7 @@ package struct AvenuesView: View {
         }
         .sheet(item: $store.scope(state: \.newAvenue, action: \.newAvenue)) { store in
             NavigationStack { NewAvenueView(store: store) }
+                .sheetLayout(height: 260)
         }
         .alert($store.scope(state: \.alert, action: \.alert))
     }

@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import LifrAssistantClient
+import LifrUI
 import SwiftUI
 
 /// The conversations not archived. Swipe right to sync one or stop syncing
@@ -18,6 +19,7 @@ package struct ConversationsView: View {
             .alert($store.scope(state: \.alert, action: \.alert))
             .sheet(item: $store.scope(state: \.rename, action: \.rename)) { store in
                 RenameView(store: store)
+                    .sheetLayout(height: 200)
             }
     }
 

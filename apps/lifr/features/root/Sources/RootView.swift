@@ -53,9 +53,11 @@ package struct RootView: View {
         .task { await store.send(.task).finish() }
         .sheet(item: $store.scope(state: \.quickAdd, action: \.quickAdd)) { store in
             NavigationStack { QuickAddView(store: store) }
+                .sheetLayout()
         }
         .sheet(item: $store.scope(state: \.approval, action: \.approval)) { store in
             NavigationStack { ApprovalView(store: store) }
+                .sheetLayout()
                 .interactiveDismissDisabled()
         }
         // The Mac's default Form lays out in columns and doesn't scroll, so a
@@ -130,27 +132,49 @@ private struct MacRootView: View {
     @Bindable var store: StoreOf<RootFeature>
 
     var body: some View {
-        NavigationSplitView {
-            Sidebar(store: store)
-                .navigationSplitViewColumnWidth(min: 180, ideal: 220)
-        } content: {
-            content
-                .navigationSplitViewColumnWidth(min: 320, ideal: 380)
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        AddMenu(store: store)
-                            .help("Add a task or Project")
+        if isBoardShown {
+            // A board needs the window's width for its columns, so it takes
+            // the detail column's place, and a task opens over it.
+            NavigationSplitView {
+                sidebar
+            } detail: {
+                NavigationStack { content.toolbar { addMenu } }
+            }
+        } else {
+            NavigationSplitView {
+                sidebar
+            } content: {
+                content
+                    .navigationSplitViewColumnWidth(min: 320, ideal: 380)
+                    .toolbar { addMenu }
+            } detail: {
+                NavigationStack {
+                    if store.selection == .conversations {
+                        ContentUnavailableView(
+                            "No conversation selected", systemImage: "bubble.left.and.text.bubble.right")
+                    } else {
+                        ContentUnavailableView("No task selected", systemImage: "checklist")
                     }
                 }
-        } detail: {
-            NavigationStack {
-                if store.selection == .conversations {
-                    ContentUnavailableView("No conversation selected", systemImage: "bubble.left.and.text.bubble.right")
-                } else {
-                    ContentUnavailableView("No task selected", systemImage: "checklist")
-                }
+                .navigationSplitViewColumnWidth(min: 360, ideal: 480)
             }
-            .navigationSplitViewColumnWidth(min: 360, ideal: 480)
+        }
+    }
+
+    private var isBoardShown: Bool {
+        guard case .scope = store.selection else { return false }
+        return store.content == .board
+    }
+
+    private var sidebar: some View {
+        Sidebar(store: store)
+            .navigationSplitViewColumnWidth(min: 180, ideal: 220)
+    }
+
+    private var addMenu: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            AddMenu(store: store)
+                .help("Add a task or Project")
         }
     }
 
@@ -215,6 +239,7 @@ private struct Sidebar: View {
         }
         .sheet(item: $store.scope(state: \.avenues.newAvenue, action: \.avenues.newAvenue)) { store in
             NavigationStack { NewAvenueView(store: store) }
+                .sheetLayout(height: 260)
         }
     }
 

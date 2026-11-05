@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import LifrAssistantClient
+import LifrUI
 import SwiftUI
 
 package struct SkillsView: View {
@@ -44,6 +45,7 @@ package struct SkillsView: View {
         .task { await store.send(.task).finish() }
         .sheet(item: $store.scope(state: \.editor, action: \.editor)) { store in
             SkillEditorView(store: store)
+                .sheetLayout(height: 520)
         }
         .alert($store.scope(state: \.alert, action: \.alert))
     }

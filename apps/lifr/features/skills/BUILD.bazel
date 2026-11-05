@@ -16,6 +16,7 @@ swift_library(
     ],
     deps = [
         "//apps/lifr/clients/assistant",
+        "//apps/lifr/ui",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

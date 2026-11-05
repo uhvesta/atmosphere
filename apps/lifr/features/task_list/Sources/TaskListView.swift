@@ -68,6 +68,7 @@ package struct TaskListPresentations: ViewModifier {
             }
             .sheet(item: $store.scope(state: \.reschedule, action: \.reschedule)) { store in
                 RescheduleView(store: store)
+                    .sheetLayout()
             }
             .confirmationDialog($store.scope(state: \.prompt, action: \.prompt))
             .confirmationDialog($store.scope(state: \.statusPicker, action: \.statusPicker))
