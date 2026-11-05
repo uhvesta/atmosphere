@@ -1,5 +1,7 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
+load("@rules_swift//swift:swift_interop_hint.bzl", "swift_interop_hint")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
 # How Lifr writes the blobs it persists: a header that says how the bytes
@@ -12,11 +14,29 @@ swift_library(
     copts = [
         "-swift-version",
         "6",
+        # With Xcode, clang also finds zstd's own module map and warns that
+        # zstd's headers define its configuration macros. They're zstd's
+        # defaults, so the warning is noise.
+        "-Xcc",
+        "-Wno-config-macros",
     ],
     module_name = "LifrBlob",
     visibility = ["//apps/lifr/clients/store_live:__pkg__"],
-    # zstd from the BCR; its own module map names it `libzstd`.
+    deps = [":zstd"],
+)
+
+# zstd from the BCR as the Swift module CZstd. Its own module map isn't an
+# input of sandboxed compiles, so the hermetic toolchains couldn't find it.
+cc_library(
+    name = "zstd",
+    hdrs = ["zstd/zstd_shim.h"],
+    aspect_hints = [":zstd_module"],
     deps = ["@zstd"],
+)
+
+swift_interop_hint(
+    name = "zstd_module",
+    module_name = "CZstd",
 )
 
 # Given/then tests, run with //apps/lifr/testing's harness.

@@ -1,5 +1,5 @@
+import CZstd
 import Foundation
-import libzstd
 
 /// How a blob's value is written before it's compressed.
 package enum BlobEncoding: UInt8, Hashable, Sendable {
