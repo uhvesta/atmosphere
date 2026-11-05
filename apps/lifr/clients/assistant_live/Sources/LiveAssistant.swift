@@ -16,7 +16,8 @@ extension AssistantClient {
             prewarm: {
                 let model = runtime(.assistant)
                 if model.status == .available { model.prewarm() }
-            })
+            },
+            inputs: { runtime(.assistant).inputs })
     }
 }
 
@@ -52,6 +53,7 @@ extension AssistantError {
         case .busy: self = .busy
         case .simulatorHost(let reason): self = .simulatorHost(reason)
         case .interrupted(let reason): self = .interrupted(AssistantInterruption(reason), saved: false)
+        case .unsupportedInput(let kind): self = .cantRead(kind)
         case .decodingFailure, .cancelled, .failed: self = .failed(error.description)
         }
     }
@@ -141,7 +143,7 @@ enum LiveAssistant {
             instructions: AssistantPrompt.instructions(request, size: size),
             prompt: AssistantPrompt.prompt(request, size: size),
             tools: AssistantTool.allCases.filter(allowed.contains).map { $0.definition(tools) },
-            schema: Shapes.turn, schemaInPrompt: size.schemaInPrompt)
+            schema: Shapes.turn, schemaInPrompt: size.schemaInPrompt, attachments: request.attachments)
         let draftsPlans = request.draftsPlans
         let answer = try await model.respond(to: turn) { partial in
             continuation.yield(AssistantPrompt.reply(from: partial, isComplete: false, draftsPlans: draftsPlans))
@@ -158,7 +160,7 @@ enum LiveAssistant {
     ) async throws {
         let turn = ModelTurn(
             instructions: AssistantPrompt.plainInstructions(request),
-            prompt: AssistantPrompt.prompt(request, size: size))
+            prompt: AssistantPrompt.prompt(request, size: size), attachments: request.attachments)
         let answer = try await model.respond(to: turn) { partial in
             continuation.yield(AssistantReply(text: partial.plainText, isComplete: false))
         }

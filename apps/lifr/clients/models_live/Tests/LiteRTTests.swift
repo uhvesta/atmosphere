@@ -11,6 +11,7 @@ final class FakeChat: LiteRTChat, @unchecked Sendable {
     struct Sent: Equatable {
         var message: String
         var format: String?
+        var attachments: [ModelAttachment] = []
     }
 
     let sent = LockIsolated<[Sent]>([])
@@ -28,10 +29,11 @@ final class FakeChat: LiteRTChat, @unchecked Sendable {
         }
     }
 
-    func send(_ message: String, format: String?, partial: @escaping @Sendable (String) -> Void)
-        async throws(ModelRuntimeError) -> String
-    {
-        sent.withValue { $0.append(Sent(message: message, format: format)) }
+    func send(
+        _ message: String, attachments: [ModelAttachment], format: String?,
+        partial: @escaping @Sendable (String) -> Void
+    ) async throws(ModelRuntimeError) -> String {
+        sent.withValue { $0.append(Sent(message: message, format: format, attachments: attachments)) }
         let written = try await reply(message, format)
         partial(written)
         return written
@@ -100,6 +102,22 @@ final class LiteRTTurnTests: XCTestCase {
         XCTAssertEqual(calls.value, [.object(["code": .string("HOME-0001")])])
         XCTAssertEqual(chat.sent.value.count, 2)
         XCTAssertTrue(chat.sent.value[1].message.contains("HOME-0001 Buy milk"))
+    }
+
+    func testPhotosAndRecordingsGoWithThePromptOnly() async throws {
+        let tool = ModelTool(name: "overview", description: "", parameters: []) { _ in "Nothing's due." }
+        let chat = FakeChat([#"{"tool":"overview","arguments":{}}"#, #"{"answer":"A receipt."}"#])
+        let attachments = [
+            ModelAttachment(.image, file: URL(filePath: "/a.jpg")),
+            ModelAttachment(.audio, file: URL(filePath: "/b.wav")),
+        ]
+
+        _ = try await LiteRTTurn.respond(
+            to: ModelTurn(instructions: "", prompt: "What's this?", tools: [tool], attachments: attachments),
+            on: FakeEngine(chat: chat)
+        ) { _ in }
+
+        XCTAssertEqual(chat.sent.value.map(\.attachments), [attachments, []])
     }
 
     func testAPlainAnswerWithToolsIsItsText() async throws {
@@ -328,6 +346,49 @@ final class LiteRTRuntimeTests: XCTestCase {
         XCTAssertEqual(runtime.budget.window, 8_192)
         XCTAssertGreaterThan(runtime.budget.reservedForAnswer, ContextBudget.appleOnDevice.reservedForAnswer)
         XCTAssertGreaterThan(runtime.budget.room, ContextBudget.appleOnDevice.room)
+    }
+
+    func testOnlyAModelThatReadsPhotosGetsThem() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let host = ModelHost(
+            load: { _ throws(ModelRuntimeError) in FakeEngine(chat: FakeChat(["Done"])) },
+            memory: { 16_000_000_000 }, sleep: { _ in try await Task.sleep(for: .seconds(3_600)) })
+        let photo = ModelTurn(
+            instructions: "", prompt: "What's this?",
+            attachments: [ModelAttachment(.image, file: URL(filePath: "/a.jpg"))])
+        for spec in [ModelCatalog.gemma4E2B, ModelCatalog.gemma4E4B] {
+            let directory = root.appending(path: spec.id.directoryName)
+            for file in spec.source?.files ?? [] {
+                let url = directory.appending(path: file.path)
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data().write(to: url)
+            }
+            let runtime = LiteRTRuntime(
+                model: InstalledModel(spec: spec, directory: directory, installedAt: Date()), host: host)
+            do {
+                let answer = try await runtime.respond(to: photo) { _ in }
+                XCTAssertEqual(spec.id, ModelCatalog.gemma4E4B.id, "\(spec.name) read a photo")
+                XCTAssertEqual(answer, .string("Done"))
+            } catch {
+                XCTAssertEqual(spec.id, ModelCatalog.gemma4E2B.id, "\(spec.name) failed: \(error)")
+                XCTAssertEqual(error, .unsupportedInput(.image))
+            }
+        }
+    }
+
+    func testAModelDownloadedBeforeInputsReadsWhatTheCatalogSays() throws {
+        var old = ModelCatalog.gemma4E4B
+        old.inputs = []
+        let manifest = try JSONEncoder().encode(old)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: manifest) as? [String: Any])
+        json["inputs"] = nil
+        let decoded = try JSONDecoder().decode(
+            ModelSpec.self, from: JSONSerialization.data(withJSONObject: json))
+
+        XCTAssertEqual(decoded.inputs, [])
+        XCTAssertEqual(ModelCatalog.entry(for: decoded)?.inputs, [.image, .audio])
     }
 
     func testAPickedModelThatIsntDownloadedSaysSo() throws {

@@ -23,7 +23,7 @@
 [text] "Gemma 4 E4B"
 [button] "Download model"
 [button] "Water the plants" value: "To Do, Today, HOME-0010"
-[text] "Larger and slower · 3.66 GB · Apache 2.0"
+[text] "Reads photos and recordings · 3.66 GB · Apache 2.0"
 [header, text] "From Hugging Face"
 [element] "" value: "Hugging Face link"
 [button] "Search"

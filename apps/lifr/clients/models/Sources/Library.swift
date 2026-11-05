@@ -97,10 +97,12 @@ package struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
     package var memoryBytes: Int64
     /// The license's name, such as Apache 2.0.
     package var license: String
+    /// What it can read besides text.
+    package var inputs: Set<ModelInput>
 
     package init(
         id: ModelID, name: String, summary: String, runtime: RuntimeKind, source: ModelSource?, contextTokens: Int,
-        memoryBytes: Int64, license: String
+        memoryBytes: Int64, license: String, inputs: Set<ModelInput> = []
     ) {
         self.id = id
         self.name = name
@@ -110,6 +112,25 @@ package struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
         self.contextTokens = contextTokens
         self.memoryBytes = memoryBytes
         self.license = license
+        self.inputs = inputs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, summary, runtime, source, contextTokens, memoryBytes, license, inputs
+    }
+
+    /// Reads manifests written before models had inputs as text only.
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(ModelID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        summary = try container.decode(String.self, forKey: .summary)
+        runtime = try container.decode(RuntimeKind.self, forKey: .runtime)
+        source = try container.decodeIfPresent(ModelSource.self, forKey: .source)
+        contextTokens = try container.decode(Int.self, forKey: .contextTokens)
+        memoryBytes = try container.decode(Int64.self, forKey: .memoryBytes)
+        license = try container.decode(String.self, forKey: .license)
+        inputs = try container.decodeIfPresent(Set<ModelInput>.self, forKey: .inputs) ?? []
     }
 
     /// The bytes to download; zero for Apple's model.

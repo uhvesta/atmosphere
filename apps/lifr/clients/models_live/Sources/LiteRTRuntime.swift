@@ -21,6 +21,8 @@ package struct LiteRTRuntime: ModelRuntime {
             reservedForAnswer: max(ContextBudget.appleOnDevice.reservedForAnswer, window * 1_100 / 4_096))
     }
 
+    package var inputs: Set<ModelInput> { model.spec.inputs }
+
     package var status: ModelStatus {
         let files = model.spec.source?.files ?? []
         let present = files.allSatisfy { FileManager.default.fileExists(atPath: model.location(of: $0).path) }
@@ -38,6 +40,7 @@ package struct LiteRTRuntime: ModelRuntime {
     {
         let status = status
         guard status == .available else { throw .unavailable(status) }
+        if let kind = turn.unreadable(by: inputs) { throw .unsupportedInput(kind) }
         return try await host.run(model) { engine async throws(ModelRuntimeError) in
             try await LiteRTTurn.respond(to: turn, on: engine, partial: partial)
         }
@@ -81,6 +84,7 @@ package struct ModelRuntimes: Sendable {
     private struct Missing: ModelRuntime {
         var status: ModelStatus { .notDownloaded }
         var budget: ContextBudget { .appleOnDevice }
+        var inputs: Set<ModelInput> { [] }
         func prewarm() {}
         func respond(to turn: ModelTurn, partial: @escaping @Sendable (JSONValue) -> Void)
             async throws(ModelRuntimeError) -> JSONValue

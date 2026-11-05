@@ -2,6 +2,7 @@ import ComposableArchitecture
 import Foundation
 import LifrAPI
 import LifrCore
+import LifrModelsClient
 
 /// Talks with the person about what to add and drafts it as a `Plan`. The
 /// live version runs Apple's on-device model, so nothing leaves the device.
@@ -22,6 +23,9 @@ package struct AssistantClient: Sendable {
     /// Loads the model ahead of the first message, so the first answer
     /// starts sooner. Does nothing when it's loaded or can't run.
     package var prewarm: @Sendable () -> Void = {}
+    /// What the model picked for the assistant reads besides text, such as
+    /// photos and recordings.
+    package var inputs: @Sendable () -> Set<ModelInput> = { [] }
 }
 
 /// Each reply as it's written, the last one complete.
@@ -77,13 +81,41 @@ package struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
     package var at: Date
     /// The ID of the skill the person picked for this message, if any.
     package var skill: String?
+    /// The photos and recordings the person sent with it.
+    package var attachments: [ChatAttachment]
 
-    package init(id: UUID, role: Role, text: String, at: Date, skill: String? = nil) {
+    package init(
+        id: UUID, role: Role, text: String, at: Date, skill: String? = nil, attachments: [ChatAttachment] = []
+    ) {
         self.id = id
         self.role = role
         self.text = text
         self.at = at
         self.skill = skill
+        self.attachments = attachments
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, role, text, at, skill, attachments }
+
+    /// Reads messages saved before they had attachments as having none.
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        role = try container.decode(Role.self, forKey: .role)
+        text = try container.decode(String.self, forKey: .text)
+        at = try container.decode(Date.self, forKey: .at)
+        skill = try container.decodeIfPresent(String.self, forKey: .skill)
+        attachments = try container.decodeIfPresent([ChatAttachment].self, forKey: .attachments) ?? []
+    }
+
+    package func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(role, forKey: .role)
+        try container.encode(text, forKey: .text)
+        try container.encode(at, forKey: .at)
+        try container.encodeIfPresent(skill, forKey: .skill)
+        if !attachments.isEmpty { try container.encode(attachments, forKey: .attachments) }
     }
 }
 
@@ -110,11 +142,14 @@ package struct AssistantRequest: Hashable, Sendable {
     /// How the person wants the assistant to behave: the opening of its
     /// instructions, before what Lifr adds.
     package var guidance: String
+    /// The files of the photos and recordings sent with the new message,
+    /// those still on this device.
+    package var attachments: [ModelAttachment]
 
     package init(
         messages: [ChatMessage], draft: Plan? = nil, problem: String? = nil, workspace: Workspace, now: Date,
         timeZone: TimeZone, writes: AssistantWrites? = nil, skill: Skill? = nil,
-        guidance: String = Guidance.defaultText
+        guidance: String = Guidance.defaultText, attachments: [ModelAttachment] = []
     ) {
         self.messages = messages
         self.draft = draft
@@ -125,6 +160,7 @@ package struct AssistantRequest: Hashable, Sendable {
         self.writes = writes
         self.skill = skill
         self.guidance = guidance
+        self.attachments = attachments
     }
 
     /// The tools the skill allows, or every tool without one. Tools that
@@ -252,6 +288,8 @@ package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible 
     /// low on memory, or Lifr went to the background. `saved` when it
     /// changed tasks before that.
     case interrupted(AssistantInterruption, saved: Bool)
+    /// The model picked can't read what was sent with the message.
+    case cantRead(ModelInput)
     /// Anything else the model reported.
     case failed(String)
 
@@ -298,6 +336,12 @@ package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible 
         case .interrupted(let reason, saved: true):
             "\(reason.description) It had changed tasks; those changes are saved. Check them in Settings › "
                 + "Activity before sending the message again, or they may be made twice."
+        case .cantRead(.image):
+            "The model picked for the assistant can't read photos. Pick one that can, such as Gemma 4 E4B, in "
+                + "Settings › Models, or remove the photo and send the message again."
+        case .cantRead(.audio):
+            "The model picked for the assistant can't listen to recordings. Pick one that can, such as Gemma 4 "
+                + "E4B, in Settings › Models, or remove the recording and send the message again."
         case .failed(let detail):
             "The assistant stopped: \(detail). Send the message again."
         }
@@ -337,7 +381,9 @@ extension DependencyValues {
 extension AssistantClient {
     /// Answers with `replies` in turn, without a model: for previews and
     /// tests. Each answer streams in two steps, the text and then the plan.
-    package static func scripted(_ replies: [AssistantReply] = [.example]) -> AssistantClient {
+    package static func scripted(
+        _ replies: [AssistantReply] = [.example], inputs: Set<ModelInput> = []
+    ) -> AssistantClient {
         let next = LockIsolated(0)
         return AssistantClient(
             availability: { .available },
@@ -356,7 +402,8 @@ extension AssistantClient {
             },
             draftSkill: { _ in .example },
             suggestTitle: { _ in "Planning the week" },
-            prewarm: {})
+            prewarm: {},
+            inputs: { inputs })
     }
 }
 

@@ -65,6 +65,30 @@ final class LiveAssistantTests: XCTestCase {
         XCTAssertEqual(replies.filter(\.isComplete).count, 1)
     }
 
+    func testAPhotoGoesToAModelThatReadsThem() async {
+        let model = ScriptedRuntime(inputs: [.image], steps: [ScriptedRuntime.answer(turn)])
+        let photo = ModelAttachment(.image, file: URL(filePath: "/tmp/photo.jpg"))
+        var request = request("What's this?")
+        request.attachments = [photo]
+
+        let (_, error) = await replies(.live(runtime: { _ in model }), request)
+
+        XCTAssertNil(error)
+        XCTAssertEqual(model.turns.map(\.attachments), [[photo]])
+        XCTAssertEqual(AssistantClient.live(runtime: { _ in model }).inputs(), [.image])
+    }
+
+    func testARecordingToAModelThatCantListenSaysPickAnother() async {
+        let model = ScriptedRuntime(steps: [ScriptedRuntime.answer(turn)])
+        var request = request("")
+        request.attachments = [ModelAttachment(.audio, file: URL(filePath: "/tmp/note.wav"))]
+
+        let (replies, error) = await replies(.live(runtime: { _ in model }), request)
+
+        XCTAssertEqual(replies, [])
+        XCTAssertEqual(error, .cantRead(.audio))
+    }
+
     func testAnUnreadableAnswerIsAskedForAgain() async {
         let model = ScriptedRuntime(steps: [ScriptedRuntime.fail(.decodingFailure), ScriptedRuntime.answer(turn)])
 

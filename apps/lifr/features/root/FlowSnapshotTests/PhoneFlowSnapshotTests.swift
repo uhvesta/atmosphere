@@ -19,7 +19,8 @@ final class PhoneFlowSnapshotTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
 
     private func app(
-        _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example]
+        _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
+        inputs: Set<ModelInput> = []
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
         let ids = LockIsolated(1000)
@@ -30,7 +31,9 @@ final class PhoneFlowSnapshotTests: XCTestCase {
             $0.session = InMemorySession().client
             $0.reminders = RemindersClient.inMemory().client
             $0.sync = sync
-            $0.assistant = .scripted(replies)
+            $0.assistant = .scripted(replies, inputs: inputs)
+            $0.attachments = .inMemory()
+            $0.recorder = .scripted(RecorderClient.Recording(data: Data([1]), seconds: 6))
             // The assistant never stalls in a flow.
             $0.continuousClock = TestClock()
             $0.conversations = .inMemory()
@@ -177,6 +180,35 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         store.send(.conversations(.archiveTapped(id)))
         store.send(.conversations(.archiveShown(true)))
         await flow.step("archive")
+        flow.finish()
+    }
+
+    /// Asking about a photo and a recording, with a model that reads both:
+    /// attaching each, sending them, the reply, then a model that can't.
+    func testAssistantAttachments() async throws {
+        let (store, flow) = app(
+            "assistant-attachments",
+            replies: [
+                AssistantReply(text: "A Boston fern. Water it when the top of the soil is dry.", isComplete: true)
+            ],
+            inputs: [.image, .audio])
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        await flow.step("new")
+        store.send(.conversations(.chats(.element(id: id, action: .photoPicked(Data([1]))))))
+        await flow.step("photo", image: false)
+        store.send(.conversations(.chats(.element(id: id, action: .recordTapped))))
+        await flow.step("recording")
+        store.send(.conversations(.chats(.element(id: id, action: .recordTapped))))
+        store.send(
+            .conversations(.chats(.element(id: id, action: .binding(.set(\.input, "What plant is this?"))))))
+        await flow.step("attached")
+        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
+        await flow.step("replied")
+        store.send(
+            .conversations(.chats(.element(id: id, action: .replyFailed(AssistantError.cantRead(.audio))))))
+        await flow.step("cant-read")
         flow.finish()
     }
 

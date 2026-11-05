@@ -349,6 +349,9 @@
     "Assistant" : {
 
     },
+    "Attach a Photo" : {
+
+    },
     "Attach skills to a conversation to tell the assistant what to do and which tools it may use." : {
 
     },
@@ -443,6 +446,9 @@
 
     },
     "Couldn't change the task" : {
+
+    },
+    "Couldn't keep the attachment on this device (%@). Check that this device has free storage, then attach it again." : {
 
     },
     "Couldn't keep the instructions on this device (%@). The assistant uses the ones from before. Check that this device has free storage, then try again." : {
@@ -691,6 +697,12 @@
     "Lifr can't open its data" : {
 
     },
+    "Lifr couldn't read that photo. Pick another, or take a screenshot of it and attach that." : {
+
+    },
+    "Lifr isn't allowed to use the microphone. Turn on Lifr in System Settings › Privacy & Security › Microphone, then record again." : {
+
+    },
     "Lifr on %@" : {
 
     },
@@ -879,6 +891,9 @@
     "None" : {
 
     },
+    "Not on this device" : {
+
+    },
     "Not synced yet" : {
 
     },
@@ -925,6 +940,9 @@
     "Pause" : {
 
     },
+    "Photo" : {
+
+    },
     "Pick" : {
 
     },
@@ -968,6 +986,15 @@
 
     },
     "Read only" : {
+
+    },
+    "Record" : {
+
+    },
+    "Recording, %lld s" : {
+
+    },
+    "Recording…" : {
 
     },
     "Redraft" : {
@@ -1117,6 +1144,9 @@
     "Status" : {
 
     },
+    "Stop Recording" : {
+
+    },
     "Stop Syncing" : {
 
     },
@@ -1206,6 +1236,9 @@
       }
     },
     "The key starts each task's code, such as HEALTH-7K2Q. Use 2 to 10 letters." : {
+
+    },
+    "The recording stopped (%@). Record again; if another app is using the microphone, close it first." : {
 
     },
     "The reminder is saved and rings on your other devices, but not on this one. To hear it here, turn on notifications for Lifr in Settings." : {

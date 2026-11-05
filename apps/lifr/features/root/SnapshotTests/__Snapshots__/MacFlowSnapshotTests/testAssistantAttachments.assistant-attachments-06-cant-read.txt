@@ -1,0 +1,52 @@
+[Window/StandardWindow] "Conversations"
+  [Outline] "Sidebar"
+    [Row/OutlineRow] ""
+      [StaticText] "" value: "Today"
+    [Row/OutlineRow] ""
+      [StaticText] "Upcoming" value: "3"
+    [Row/OutlineRow] ""
+      [StaticText] "Procrastinated" value: "2"
+    [Row/OutlineRow] ""
+      [StaticText] "" value: "Search"
+    [Row/OutlineRow, selected] ""
+      [StaticText] "" value: "Assistant"
+    [Row/OutlineRow] ""
+      [Heading] "Avenues"
+    [Row/OutlineRow] ""
+      [StaticText] "Health" value: "4"
+    [Row/OutlineRow] ""
+      [StaticText] "Half marathon" value: "1"
+    [Row/OutlineRow] ""
+      [StaticText] "Work" value: "1"
+    [Row/OutlineRow] ""
+      [StaticText] "Home" value: "4"
+  [Button] "New Avenue"
+  [Outline] ""
+    [Row/OutlineRow] ""
+      [Button] "What plant is this?, Nov 3 at 10:00 AM, A Boston fern. Water it when the top of the soil is dry."
+  [Heading] "What plant is this?"
+  [Button] "Rename" help: "Rename"
+  [Button] "Use a Skill" id: sparkles
+  [Button] "Attach a Photo" id: photo
+  [Button] "Record" id: mic
+  [TextField] ""
+  [Button, disabled] "Send" id: arrow.up.circle.fill
+  [StaticText] "" value: "Photo"
+  [StaticText] "" value: "Recording, 6 s"
+  [StaticText] "" value: "What plant is this?"
+  [StaticText] "" value: "A Boston fern. Water it when the top of the soil is dry."
+  [Toolbar] ""
+    [Button] "Hide Sidebar"
+    [RadioGroup] "Show"
+      [RadioButton/Segment] "Conversations" value: "1"
+      [RadioButton/Segment] "Archived" value: "0"
+    [MenuButton] "Add" help: "Add a task or Project" id: plus
+    [Button] "New conversation"
+  [Button/CloseButton, disabled] ""
+  [Button/ZoomButton] ""
+  [Button/MinimizeButton] ""
+  [StaticText] "" value: "Conversations"
+  [Sheet] "alert" id: _NS:87
+    [StaticText] "" value: "The assistant couldn't answer" id: _NS:74
+    [StaticText] "" value: "The model picked for the assistant can't listen to recordings. Pick one that can, such as Gemma 4 E4B, in Settings › Models, or remove the recording and send the message again." id: _NS:58
+    [Button] "OK" id: action-button-1

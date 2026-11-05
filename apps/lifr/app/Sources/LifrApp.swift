@@ -84,6 +84,8 @@ private enum Storage {
         $0.conversations = chats.conversations
         $0.skills = chats.skills
         $0.guidance = .onDisk()
+        $0.attachments = .onDisk()
+        $0.recorder = .live()
         $0.session = session
         $0.sync = sync
     }

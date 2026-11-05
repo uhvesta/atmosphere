@@ -14,6 +14,7 @@ swift_library(
     deps = [
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/models",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "//apps/lifr/features/skills",
@@ -32,6 +33,7 @@ swift_library(
     deps = [
         ":conversations",
         "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/models",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
@@ -53,6 +55,7 @@ lifr_snapshot_test(
     deps = [
         ":conversations",
         "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/models",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

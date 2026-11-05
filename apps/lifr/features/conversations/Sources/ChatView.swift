@@ -3,6 +3,7 @@ import LifrAssistantClient
 import LifrCore
 import LifrSkills
 import LifrUI
+import PhotosUI
 import SwiftUI
 
 package struct ChatView: View {
@@ -13,6 +14,8 @@ package struct ChatView: View {
     }
 
     @Environment(\.locale) private var locale
+    @State private var photo: PhotosPickerItem?
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     package var body: some View {
         VStack(spacing: 0) {
@@ -84,6 +87,7 @@ package struct ChatView: View {
                 ForEach(store.conversation.messages) { message in
                     MessageView(
                         message: message, skill: store.state.skillTitle(of: message),
+                        elsewhere: store.elsewhere,
                         canUndo: store.conversation.changes[message.id] != nil
                     ) {
                         store.send(.undoTapped(messageID: message.id))
@@ -141,45 +145,153 @@ package struct ChatView: View {
     #endif
 
     /// The message field, with the skill for the next message: a pill once
-    /// one is picked, a button to find one before.
+    /// one is picked, a button to find one before. Above it, what's
+    /// attached to the next message.
     private var composer: some View {
-        HStack {
-            if let skill = store.picked {
-                SkillPill(title: skill.title) {
-                    store.send(.findSkillTapped)
-                } remove: {
-                    store.send(.clearSkillTapped)
+        VStack(alignment: .leading, spacing: 8) {
+            if !store.pending.isEmpty || store.attaching || store.recording {
+                attachments
+            }
+            field
+        }
+    }
+
+    private var attachments: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                if store.recording {
+                    Label("Recording…", systemImage: "record.circle")
+                        .foregroundStyle(.red)
+                        .font(.callout)
+                    Button("Cancel") { store.send(.cancelRecordingTapped) }
+                        .font(.callout)
                 }
-            } else {
-                Button {
-                    store.send(.findSkillTapped)
-                } label: {
-                    Label("Use a Skill", systemImage: "sparkles")
-                        .labelStyle(.iconOnly)
-                        .font(.title2)
+                ForEach(store.pending) { attachment in
+                    AttachmentChip(attachment: attachment, elsewhere: false) {
+                        store.send(.removeAttachmentTapped(attachment.id))
+                    }
+                }
+                if store.attaching {
+                    ProgressView().controlSize(.small)
                 }
             }
-            TextField(
-                "Message", text: $store.input, prompt: store.picked.map { _ in Text("Add details, or just send") },
-                axis: .vertical
-            )
-            .textFieldStyle(.roundedBorder)
-            .onSubmit { store.send(.sendTapped) }
-            Button {
-                store.send(.sendTapped)
-            } label: {
-                Label("Send", systemImage: "arrow.up.circle.fill")
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    /// Buttons to attach a photo or a recording, for a model that reads them.
+    @ViewBuilder private var attachButtons: some View {
+        if store.inputs.contains(.image) {
+            PhotosPicker(selection: $photo, matching: .images, preferredItemEncoding: .compatible) {
+                Label("Attach a Photo", systemImage: "photo")
                     .labelStyle(.iconOnly)
                     .font(.title2)
             }
-            .disabled(!store.canSend)
+            .disabled(store.attaching || store.recording)
+            .onChange(of: photo) { _, item in
+                guard let item else { return }
+                photo = nil
+                Task {
+                    guard let data = try? await item.loadTransferable(type: Data.self) else {
+                        store.send(.attached(.failure(AttachmentError.unreadablePhoto)))
+                        return
+                    }
+                    store.send(.photoPicked(data))
+                }
+            }
         }
+        if store.inputs.contains(.audio) {
+            Button {
+                store.send(.recordTapped)
+            } label: {
+                Label(
+                    store.recording ? "Stop Recording" : "Record",
+                    systemImage: store.recording ? "stop.circle.fill" : "mic"
+                )
+                .labelStyle(.iconOnly)
+                .font(.title2)
+            }
+            .tint(store.recording ? .red : nil)
+            .disabled(store.attaching)
+        }
+    }
+
+    /// At the largest text sizes the message field takes its own row, so
+    /// the buttons can't squeeze it out.
+    @ViewBuilder private var field: some View {
+        if typeSize.isAccessibilitySize, store.picked == nil {
+            VStack(alignment: .leading, spacing: 8) {
+                textField
+                HStack {
+                    skillButton
+                    attachButtons
+                    Spacer()
+                    sendButton
+                }
+            }
+            .modifier(SkillFinderPopover(store: store))
+        } else {
+            HStack {
+                skillButton
+                attachButtons
+                textField
+                sendButton
+            }
+            .modifier(SkillFinderPopover(store: store))
+        }
+    }
+
+    @ViewBuilder private var skillButton: some View {
+        if let skill = store.picked {
+            SkillPill(title: skill.title) {
+                store.send(.findSkillTapped)
+            } remove: {
+                store.send(.clearSkillTapped)
+            }
+        } else {
+            Button {
+                store.send(.findSkillTapped)
+            } label: {
+                Label("Use a Skill", systemImage: "sparkles")
+                    .labelStyle(.iconOnly)
+                    .font(.title2)
+            }
+        }
+    }
+
+    private var textField: some View {
+        TextField(
+            "Message", text: $store.input, prompt: store.picked.map { _ in Text("Add details, or just send") },
+            axis: .vertical
+        )
+        .textFieldStyle(.roundedBorder)
+        .onSubmit { store.send(.sendTapped) }
+    }
+
+    private var sendButton: some View {
+        Button {
+            store.send(.sendTapped)
+        } label: {
+            Label("Send", systemImage: "arrow.up.circle.fill")
+                .labelStyle(.iconOnly)
+                .font(.title2)
+        }
+        .disabled(!store.canSend)
+    }
+}
+
+/// On the Mac the skill finder hangs off the composer, where the button is,
+/// instead of covering the chat.
+private struct SkillFinderPopover: ViewModifier {
+    @Bindable var store: StoreOf<ChatFeature>
+
+    func body(content: Content) -> some View {
         #if os(macOS)
-            // On the Mac the finder hangs off the composer, where the
-            // button is, instead of covering the chat.
-            .popover(isPresented: $store.findsSkill, arrowEdge: .top) {
+            content.popover(isPresented: $store.findsSkill, arrowEdge: .top) {
                 SkillFinder(store: store)
             }
+        #else
+            content
         #endif
     }
 }
@@ -326,9 +438,45 @@ private struct Suggestions: View {
     }
 }
 
+/// A photo or recording: on the next message with a button to remove it,
+/// or on a sent one, saying when its file is on another device.
+private struct AttachmentChip: View {
+    let attachment: ChatAttachment
+    let elsewhere: Bool
+    var remove: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Label(title, systemImage: attachment.kind == .image ? "photo" : "waveform")
+            if elsewhere {
+                Text("Not on this device").foregroundStyle(.secondary)
+            }
+            if let remove {
+                Button("Remove", systemImage: "xmark.circle.fill", action: remove)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .tint(.secondary)
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.secondary.opacity(0.15), in: .capsule)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var title: LocalizedStringKey {
+        switch attachment.kind {
+        case .image: "Photo"
+        case .audio: "Recording, \(attachment.seconds ?? 0) s"
+        }
+    }
+}
+
 private struct MessageView: View {
     let message: ChatMessage
     let skill: String?
+    let elsewhere: Set<UUID>
     let canUndo: Bool
     let undo: () -> Void
 
@@ -338,6 +486,9 @@ private struct MessageView: View {
                 Label(skill, systemImage: "sparkles")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.tint)
+            }
+            ForEach(message.attachments) { attachment in
+                AttachmentChip(attachment: attachment, elsewhere: elsewhere.contains(attachment.id))
             }
             if !message.text.isEmpty {
                 if message.role == .person {

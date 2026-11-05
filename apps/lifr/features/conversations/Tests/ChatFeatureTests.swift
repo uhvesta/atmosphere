@@ -3,6 +3,7 @@ import Foundation
 import LifrAssistantClient
 import LifrConversations
 import LifrCore
+import LifrModelsClient
 import LifrStoreClient
 import XCTest
 
@@ -22,7 +23,8 @@ final class ChatFeatureTests: XCTestCase {
     /// A chat whose assistant answers with `answer`, run with the request.
     private func chat(
         _ workspace: Workspace, clock: TestClock<Duration> = TestClock(),
-        prewarmed: LockIsolated<Int> = LockIsolated(0),
+        prewarmed: LockIsolated<Int> = LockIsolated(0), inputs: Set<ModelInput> = [],
+        attachments: AttachmentsClient = .inMemory(), recorder: RecorderClient = .scripted(),
         answer: @escaping @Sendable (AssistantRequest) async throws -> AssistantReply
     ) -> TestStoreOf<ChatFeature> {
         let store = TestStore(
@@ -36,6 +38,9 @@ final class ChatFeatureTests: XCTestCase {
             $0.guidance = .inMemory()
             $0.assistant.availability = { .available }
             $0.assistant.prewarm = { prewarmed.withValue { $0 += 1 } }
+            $0.assistant.inputs = { inputs }
+            $0.attachments = attachments
+            $0.recorder = recorder
             $0.continuousClock = clock
             $0.assistant.reply = { request in
                 AssistantReplies { continuation in
@@ -63,6 +68,125 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.binding(.set(\.input, text)))
         await store.send(.sendTapped)
         await store.skipReceivedActions(strict: false)
+    }
+
+    func testAPhotoAndARecordingGoWithTheNextMessageToTheModel() async throws {
+        let (workspace, _) = home()
+        let asked = LockIsolated<AssistantRequest?>(nil)
+        let store = chat(workspace, inputs: [.image, .audio]) { request in
+            asked.setValue(request)
+            return AssistantReply(text: "A fern.", isComplete: true)
+        }
+        await store.send(.task)
+
+        await store.send(.photoPicked(Data([1])))
+        await store.skipReceivedActions(strict: false)
+        await store.send(.recordTapped)
+        await store.skipReceivedActions(strict: false)
+        XCTAssertTrue(store.state.recording)
+        XCTAssertFalse(store.state.canSend)
+        await store.send(.recordTapped)
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.pending.map(\.kind), [.image, .audio])
+        XCTAssertEqual(store.state.pending.last?.seconds, 4)
+        XCTAssertTrue(store.state.canSend)
+
+        await store.send(.sendTapped)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.pending, [])
+        let sent = try XCTUnwrap(store.state.conversation.messages.first)
+        XCTAssertEqual(sent.attachments.map(\.kind), [.image, .audio])
+        XCTAssertEqual(asked.value?.attachments.map(\.kind), [.image, .audio])
+        XCTAssertEqual(store.state.conversation.messages.last?.text, "A fern.")
+    }
+
+    func testAModelThatReadsOnlyTextOffersNoAttachments() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.task)
+
+        await store.send(.photoPicked(Data([1])))
+        await store.send(.recordTapped)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.pending, [])
+        XCTAssertFalse(store.state.recording)
+    }
+
+    func testARemovedAttachmentIsntSentOrKept() async throws {
+        let (workspace, _) = home()
+        let attachments = AttachmentsClient.inMemory()
+        let store = chat(workspace, inputs: [.image], attachments: attachments) { _ in
+            AssistantReply(text: "", isComplete: true)
+        }
+        await store.send(.task)
+        await store.send(.photoPicked(Data([1])))
+        await store.skipReceivedActions(strict: false)
+        let photo = try XCTUnwrap(store.state.pending.first)
+
+        await store.send(.removeAttachmentTapped(photo.id))
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.pending, [])
+        XCTAssertFalse(store.state.canSend)
+        XCTAssertNil(attachments.file(photo, conversationID))
+    }
+
+    func testAPhotoThatCantBeReadSaysSoAndAttachesNothing() async {
+        let (workspace, _) = home()
+        let store = chat(workspace, inputs: [.image]) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.task)
+
+        await store.send(.photoPicked(Data()))
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.pending, [])
+        XCTAssertFalse(store.state.attaching)
+        XCTAssertNotNil(store.state.alert)
+    }
+
+    func testWithoutTheMicrophoneNothingIsRecorded() async {
+        let (workspace, _) = home()
+        var recorder = RecorderClient.scripted()
+        recorder.start = { throw AttachmentError.microphoneDenied }
+        let store = chat(workspace, inputs: [.audio], recorder: recorder) { _ in
+            AssistantReply(text: "", isComplete: true)
+        }
+        await store.send(.task)
+
+        await store.send(.recordTapped)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertFalse(store.state.recording)
+        XCTAssertNotNil(store.state.alert)
+    }
+
+    func testACancelledRecordingAttachesNothing() async {
+        let (workspace, _) = home()
+        let store = chat(workspace, inputs: [.audio]) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.task)
+
+        await store.send(.recordTapped)
+        await store.skipReceivedActions(strict: false)
+        await store.send(.cancelRecordingTapped)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertFalse(store.state.recording)
+        XCTAssertEqual(store.state.pending, [])
+    }
+
+    func testAttachmentsSentFromAnotherDeviceAreMarked() async {
+        let (workspace, _) = home()
+        var conversation = Conversation(id: conversationID, createdAt: now)
+        let photo = ChatAttachment(id: UUID(9), kind: .image)
+        conversation.messages = [ChatMessage(id: UUID(8), role: .person, text: "", at: now, attachments: [photo])]
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.binding(.set(\.conversation, conversation)))
+
+        await store.send(.task)
+
+        XCTAssertEqual(store.state.elsewhere, [photo.id])
     }
 
     func testAddingTheDraftSavesItsTasksAndClearsTheCard() async throws {
@@ -381,13 +505,17 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertNil(store.state.picked)
     }
 
-    private func list(_ kept: ConversationsClient) -> TestStoreOf<ConversationsFeature> {
+    private func list(
+        _ kept: ConversationsClient, attachments: AttachmentsClient = .inMemory()
+    ) -> TestStoreOf<ConversationsFeature> {
         let (workspace, _) = home()
         let store = TestStore(initialState: ConversationsFeature.State()) {
             ConversationsFeature()
         } withDependencies: { [now] in
             $0.store = .inMemory(workspace)
             $0.conversations = kept
+            $0.attachments = attachments
+            $0.recorder = .scripted()
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
             $0.assistant = .scripted([AssistantReply(text: "Hi.", isComplete: true)])
@@ -548,7 +676,9 @@ final class ChatFeatureTests: XCTestCase {
         second.archivedAt = now
         let third = chat("Third")
         let kept = ConversationsClient.inMemory([first, second, third])
-        let store = list(kept)
+        let attachments = AttachmentsClient.inMemory()
+        let photo = try await attachments.save(Data([1]), .image, nil, second.id)
+        let store = list(kept, attachments: attachments)
         await store.send(.task)
         await store.skipReceivedActions()
 
@@ -567,6 +697,7 @@ final class ChatFeatureTests: XCTestCase {
         saved = try await kept.load()
         XCTAssertEqual(saved.map(\.id), [third.id])
         XCTAssertEqual(store.state.conversations.map(\.id), [third.id])
+        XCTAssertNil(attachments.file(photo, second.id))
         let tasks = try await store.dependencies.store.load().tasks.count
         XCTAssertEqual(tasks, workspace.tasks.count)
     }

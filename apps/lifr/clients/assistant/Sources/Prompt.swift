@@ -51,6 +51,14 @@ package enum AssistantPrompt {
     package static func estimatedTokens(_ request: AssistantRequest, size: Size) -> Int {
         estimatedTokens(instructions(request, size: size)) + estimatedTokens(prompt(request, size: size))
             + tools(request, size: size).count * tokensPerTool + (size.schemaInPrompt ? schemaTokens : 0)
+            + attachedTokens(request)
+    }
+
+    /// What the model reads for the photos and recordings sent with the new
+    /// message: none when none of their files are on this device.
+    package static func attachedTokens(_ request: AssistantRequest) -> Int {
+        guard !request.attachments.isEmpty else { return 0 }
+        return (request.messages.last?.attachments ?? []).reduce(0) { $0 + $1.estimatedTokens }
     }
 
     /// The sizes to try with a model that has `budget`, largest first: from
@@ -177,11 +185,13 @@ package enum AssistantPrompt {
     package static func prompt(_ request: AssistantRequest, size: Size = .full) -> String {
         let messages = size.keepsEarlier ? request.messages : Array(request.messages.suffix(1))
         var text = "Conversation so far:\n"
-        text += history(messages, budget: size.historyBudget).map { message in
-            switch (message.role, message.skill) {
-            case (.person, let skill?): "Person, with the skill \(skill): " + message.text
-            case (.person, nil): "Person: " + message.text
-            case (.assistant, _): "You: " + message.text
+        let kept = history(messages, budget: size.historyBudget)
+        text += kept.enumerated().map { index, message in
+            let said = said(message, attached: index == kept.count - 1 && !request.attachments.isEmpty)
+            return switch (message.role, message.skill) {
+            case (.person, let skill?): "Person, with the skill \(skill): " + said
+            case (.person, nil): "Person: " + said
+            case (.assistant, _): "You: " + said
             }
         }.joined(separator: "\n")
         if let draft = request.draft, !draft.isEmpty {
@@ -191,6 +201,21 @@ package enum AssistantPrompt {
             text += "\nIt can't be added yet: \(problem)\nFix that in your plan."
         }
         return text + "\n\nAnswer the person's last message."
+    }
+
+    /// A message's text, with what was sent with it: the new message's
+    /// photos and recordings are `attached` for the model to read; earlier
+    /// ones are only named.
+    private static func said(_ message: ChatMessage, attached: Bool) -> String {
+        guard !message.attachments.isEmpty else { return message.text }
+        let photos = message.attachments.count { $0.kind == .image }
+        let recordings = message.attachments.count { $0.kind == .audio }
+        let sent = [
+            photos == 0 ? nil : photos == 1 ? "a photo" : "\(photos) photos",
+            recordings == 0 ? nil : recordings == 1 ? "a recording" : "\(recordings) recordings",
+        ].compactMap(\.self).joined(separator: " and ")
+        let note = attached ? "[sent with \(sent), attached]" : "[sent with \(sent), no longer shown]"
+        return message.text.isEmpty ? note : message.text + " " + note
     }
 
     /// The newest messages that fit `budget` characters, oldest first. The

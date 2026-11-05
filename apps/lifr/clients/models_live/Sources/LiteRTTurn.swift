@@ -11,11 +11,13 @@ package protocol LiteRTEngine: Sendable {
 
 /// One conversation with a loaded LiteRT-LM model.
 package protocol LiteRTChat: Sendable {
-    /// What the model writes back to `message`, held to the JSON schema
-    /// `format` when there is one. `partial` gets the answer as far as it's
-    /// written, each time it grows.
-    func send(_ message: String, format: String?, partial: @escaping @Sendable (String) -> Void)
-        async throws(ModelRuntimeError) -> String
+    /// What the model writes back to `message` and its `attachments`, held
+    /// to the JSON schema `format` when there is one. `partial` gets the
+    /// answer as far as it's written, each time it grows.
+    func send(
+        _ message: String, attachments: [ModelAttachment], format: String?,
+        partial: @escaping @Sendable (String) -> Void
+    ) async throws(ModelRuntimeError) -> String
     /// Stops the answer being written.
     func cancel()
 }
@@ -53,9 +55,11 @@ enum LiteRTTurn {
     ) async throws(ModelRuntimeError) -> JSONValue {
         guard turn.tools.isEmpty else { return try await withTools(turn, answer: answer, chat: chat) }
         guard let answer else {
-            return .string(try await chat.send(turn.prompt, format: nil) { partial(.string($0)) })
+            return .string(
+                try await chat.send(turn.prompt, attachments: turn.attachments, format: nil) { partial(.string($0)) })
         }
-        return try parse(await chat.send(turn.prompt, format: JSONSchema.text(answer)) { _ in })
+        return try parse(
+            await chat.send(turn.prompt, attachments: turn.attachments, format: JSONSchema.text(answer)) { _ in })
     }
 
     private static func withTools(_ turn: ModelTurn, answer: JSONValue?, chat: any LiteRTChat)
@@ -64,9 +68,13 @@ enum LiteRTTurn {
         let calling = JSONSchema.text(step(tools: turn.tools, answer: answer))
         let answering = JSONSchema.text(step(tools: [], answer: answer))
         var message = turn.prompt
+        // The photos and recordings go with the prompt; the conversation
+        // keeps them for the tools' rounds.
+        var attachments = turn.attachments
         for round in 0...toolRounds {
             let format = round == toolRounds ? answering : calling
-            let written = try parse(await chat.send(message, format: format) { _ in })
+            let written = try parse(await chat.send(message, attachments: attachments, format: format) { _ in })
+            attachments = []
             switch try Step(written) {
             case .answer(let value):
                 return answer == nil ? .string(value.text ?? "") : value

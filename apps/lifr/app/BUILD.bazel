@@ -76,10 +76,11 @@ macos_application(
     bundle_name = "Lifr",
     # The hardened runtime: no injected libraries, no unsigned code.
     codesignopts = ["--options=runtime"],
-    # The App Group whose container holds the local API's socket.
+    # The App Group whose container holds the local API's socket, and the
+    # microphone, for recordings sent to the assistant.
     entitlements = select({
         "//apps/lifr:is_signed": ":app_group",
-        "//conditions:default": None,
+        "//conditions:default": ":unsigned_mac",
     }),
     infoplists = [
         "Info.plist",
@@ -96,6 +97,13 @@ macos_application(
 lifr_entitlements(
     name = "app_group",
     app_group = True,
+    microphone = True,
+)
+
+lifr_entitlements(
+    name = "unsigned_mac",
+    icloud = False,
+    microphone = True,
 )
 
 lifr_entitlements(

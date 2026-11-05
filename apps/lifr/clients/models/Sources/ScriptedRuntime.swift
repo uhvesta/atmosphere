@@ -13,15 +13,18 @@ package final class ScriptedRuntime: ModelRuntime {
 
     package let status: ModelStatus
     package let budget: ContextBudget
+    package let inputs: Set<ModelInput>
     private let steps: LockIsolated<[Step]>
     private let received = LockIsolated<[ModelTurn]>([])
     private let prewarms = LockIsolated(0)
 
     package init(
-        status: ModelStatus = .available, budget: ContextBudget = .appleOnDevice, steps: [Step]
+        status: ModelStatus = .available, budget: ContextBudget = .appleOnDevice, inputs: Set<ModelInput> = [],
+        steps: [Step]
     ) {
         self.status = status
         self.budget = budget
+        self.inputs = inputs
         self.steps = LockIsolated(steps)
     }
 
@@ -37,6 +40,7 @@ package final class ScriptedRuntime: ModelRuntime {
     {
         received.withValue { $0.append(turn) }
         guard status == .available else { throw .unavailable(status) }
+        if let kind = turn.unreadable(by: inputs) { throw .unsupportedInput(kind) }
         let step = steps.withValue { steps in steps.isEmpty ? nil : steps.removeFirst() }
         guard let step else { throw .failed("the script has no more answers") }
         return try await step(turn, partial)

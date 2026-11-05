@@ -7,7 +7,7 @@
 [text] "Downloaded"
 [text] "Gemma 4 E4B"
 [button] "Pause"
-[text] "Larger and slower · 3.66 GB · Apache 2.0"
+[text] "Reads photos and recordings · 3.66 GB · Apache 2.0"
 [updatesFrequently] "1.2 GB of 3.66 GB" value: "33%"
 [text] "Qwen3 0.6B"
 [button] "Download model"

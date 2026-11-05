@@ -12,6 +12,9 @@ package struct AppleRuntime: ModelRuntime {
     package init() {}
 
     package var budget: ContextBudget { .appleOnDevice }
+    /// Text only: Apple's on-device model reads no photos or recordings on
+    /// iOS and macOS 26.
+    package var inputs: Set<ModelInput> { [] }
 
     package var status: ModelStatus {
         #if canImport(FoundationModels)
@@ -39,6 +42,7 @@ package struct AppleRuntime: ModelRuntime {
     package func respond(to turn: ModelTurn, partial: @escaping @Sendable (JSONValue) -> Void)
         async throws(ModelRuntimeError) -> JSONValue
     {
+        if let kind = turn.unreadable(by: inputs) { throw .unsupportedInput(kind) }
         #if canImport(FoundationModels)
             if #available(iOS 26, macOS 26, *) {
                 let status = status

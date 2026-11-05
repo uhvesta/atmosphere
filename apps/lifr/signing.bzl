@@ -27,6 +27,11 @@ _ICLOUD = """\t<key>com.apple.developer.icloud-container-identifiers</key>
 \t</array>
 """
 
+# The hardened runtime blocks the microphone without it.
+_MICROPHONE = """\t<key>com.apple.security.device.audio-input</key>
+\t<true/>
+"""
+
 def _lifr_entitlements_impl(ctx):
     if ctx.attr._signed[BuildSettingInfo].value and not TEAM_ID:
         fail("Signed builds need your Apple team. Add `common --repo_env=LIFR_TEAM_ID=<your team ID>` " +
@@ -36,8 +41,10 @@ def _lifr_entitlements_impl(ctx):
              "an installed Lifr keeps its data under the old one.")
     output = ctx.actions.declare_file(ctx.label.name + ".entitlements")
     keys = _APP_GROUP.format(APP_GROUP) if ctx.attr.app_group else ""
-    if ICLOUD_CONTAINER:
+    if ICLOUD_CONTAINER and ctx.attr.icloud:
         keys += _ICLOUD.format(ICLOUD_CONTAINER)
+    if ctx.attr.microphone:
+        keys += _MICROPHONE
     ctx.actions.write(output, _PLIST.format(keys))
     return [DefaultInfo(files = depset([output]))]
 
@@ -46,6 +53,14 @@ lifr_entitlements = rule(
     attrs = {
         "app_group": attr.bool(
             doc = "Whether to grant the Mac App Group whose container holds the local API's socket.",
+        ),
+        "icloud": attr.bool(
+            default = True,
+            doc = "Whether to grant iCloud when user.bazelrc sets a container. An unsigned build can't " +
+                  "have it: macOS won't launch an ad hoc signed app that claims it.",
+        ),
+        "microphone": attr.bool(
+            doc = "Whether to let the Mac app, under the hardened runtime, record from the microphone.",
         ),
         "_signed": attr.label(default = "//apps/lifr:signed"),
     },

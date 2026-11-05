@@ -102,7 +102,9 @@ package final class ModelLibrary: Sendable {
         guard let data = try? Data(contentsOf: file),
             let manifest = try? JSONDecoder().decode(Manifest.self, from: data)
         else { return nil }
-        return InstalledModel(spec: manifest.spec, directory: directory, installedAt: manifest.installedAt)
+        var spec = manifest.spec
+        if let entry = ModelCatalog.entry(for: spec) { spec.inputs.formUnion(entry.inputs) }
+        return InstalledModel(spec: spec, directory: directory, installedAt: manifest.installedAt)
     }
 
     // MARK: Resolving links

@@ -13,7 +13,7 @@
   [Button] "Remove"
   [StaticText] "" value: "Downloaded"
   [StaticText] "" value: "Gemma 4 E4B"
-  [StaticText] "" value: "Larger and slower · 3.66 GB · Apache 2.0"
+  [StaticText] "" value: "Reads photos and recordings · 3.66 GB · Apache 2.0"
   [Button] "Download model"
   [Heading] "From Hugging Face"
   [StaticText] "" value: "Hugging Face link"

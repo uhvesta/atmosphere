@@ -124,6 +124,7 @@ package struct ConversationsFeature {
     }
 
     @Dependency(\.conversations) private var conversations
+    @Dependency(\.attachments) private var attachments
     @Dependency(\.uuid) private var uuid
     @Dependency(\.date.now) private var now
 
@@ -277,8 +278,9 @@ package struct ConversationsFeature {
 
     private func delete(_ ids: [UUID], in state: inout State) -> Effect<Action> {
         state.remove(ids)
-        return .run { [conversations] _ in
+        return .run { [conversations, attachments] _ in
             try await conversations.delete(ids)
+            for id in ids { await attachments.removeAll(id) }
         } catch: { error, send in
             await send(.failed(error))
         }

@@ -2,6 +2,7 @@ import ComposableArchitecture
 import Foundation
 import LifrAssistantClient
 import LifrCore
+import LifrModelsClient
 import LifrSkills
 import LifrStoreClient
 
@@ -46,6 +47,18 @@ package struct ChatFeature {
         @Presents package var manageSkills: SkillsFeature.State?
         /// Whether the draft's editor is open.
         package var editsDraft = false
+        /// What the assistant's model reads besides text: the composer only
+        /// offers to attach what it can read.
+        package var inputs: Set<ModelInput> = []
+        /// Photos and recordings to send with the next message.
+        package var pending: [ChatAttachment] = []
+        /// Whether a photo or recording is being kept for the next message.
+        package var attaching = false
+        /// Whether the microphone is recording for the next message.
+        package var recording = false
+        /// Attachments of this conversation whose files aren't on this
+        /// device, such as those sent from another one.
+        package var elsewhere: Set<UUID> = []
 
         package init(conversation: Conversation, workspace: Workspace) {
             self.conversation = conversation
@@ -73,8 +86,9 @@ package struct ChatFeature {
         }
 
         package var canSend: Bool {
-            availability == .available && replying == nil && waiting == nil
-                && (picked != nil || !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            availability == .available && replying == nil && waiting == nil && !attaching && !recording
+                && (picked != nil || !pending.isEmpty
+                    || !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
 
@@ -91,6 +105,14 @@ package struct ChatFeature {
         /// A suggestion in an empty chat: sent as the person's message.
         case suggestionTapped(String)
         case editDraftTapped
+        /// A photo the person picked, in any format the system reads.
+        case photoPicked(Data)
+        /// Starts recording, or stops and attaches the recording.
+        case recordTapped
+        case cancelRecordingTapped
+        case recordingStarted(Result<Void, any Error>)
+        case attached(Result<ChatAttachment, any Error>)
+        case removeAttachmentTapped(UUID)
         /// Lifr is back on screen: send a stopped reply's request again.
         case resume
         case replied(AssistantReply)
@@ -117,7 +139,7 @@ package struct ChatFeature {
         }
     }
 
-    private enum CancelID { case reply }
+    private enum CancelID { case reply, recording }
 
     /// How long the assistant may write nothing before Lifr stops waiting:
     /// it gives up between one and two of these after the last progress.
@@ -127,6 +149,8 @@ package struct ChatFeature {
     @Dependency(\.store) private var store
     @Dependency(\.skills) private var skillsClient
     @Dependency(\.guidance) private var guidance
+    @Dependency(\.attachments) private var attachments
+    @Dependency(\.recorder) private var recorder
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
     @Dependency(\.uuid) private var uuid
@@ -143,6 +167,11 @@ package struct ChatFeature {
                 state.availability = assistant.availability()
                 state.today = CalendarDate(now, in: timeZone)
                 if state.availability == .available { assistant.prewarm() }
+                state.inputs = assistant.inputs()
+                let conversation = state.conversation.id
+                state.elsewhere = Set(
+                    state.conversation.messages.flatMap(\.attachments)
+                        .filter { attachments.file($0, conversation) == nil }.map(\.id))
                 return .run { [skillsClient] send in
                     // Without the person's skills, the built-ins still work.
                     if let skills = try? await skillsClient.load() { await send(.skillsLoaded(skills)) }
@@ -183,8 +212,11 @@ package struct ChatFeature {
                 state.input = ""
                 let skill = state.picked
                 state.skill = nil
+                let sent = state.pending
+                state.pending = []
+                let conversation = state.conversation.id
                 state.conversation.messages.append(
-                    ChatMessage(id: uuid(), role: .person, text: text, at: now, skill: skill?.id))
+                    ChatMessage(id: uuid(), role: .person, text: text, at: now, skill: skill?.id, attachments: sent))
                 state.replying = ""
                 let request = AssistantRequest(
                     messages: state.conversation.messages, draft: state.conversation.draft, problem: state.problem,
@@ -192,7 +224,10 @@ package struct ChatFeature {
                     writes: AssistantWrites(conversation: state.conversation.id) { [store] operation in
                         try await store.save(operation).workspace
                     },
-                    skill: skill)
+                    skill: skill,
+                    attachments: sent.compactMap { attachment in
+                        attachments.file(attachment, conversation).map { ModelAttachment(attachment.kind, file: $0) }
+                    })
                 return reply(request, in: &state)
 
             case .suggestionTapped(let text):
@@ -204,6 +239,67 @@ package struct ChatFeature {
                 guard state.conversation.draft != nil else { return .none }
                 state.editsDraft = true
                 return .none
+
+            case .photoPicked(let data):
+                guard state.inputs.contains(.image), !state.attaching else { return .none }
+                state.attaching = true
+                let conversation = state.conversation.id
+                return .run { [attachments] send in
+                    await send(.attached(Result { try await attachments.save(data, .image, nil, conversation) }))
+                }
+
+            case .recordTapped where state.recording:
+                state.recording = false
+                state.attaching = true
+                let conversation = state.conversation.id
+                return .merge(
+                    .cancel(id: CancelID.recording),
+                    .run { [attachments, recorder] send in
+                        await send(
+                            .attached(
+                                Result {
+                                    let recording = try await recorder.stop()
+                                    return try await attachments.save(
+                                        recording.data, .audio, recording.seconds, conversation)
+                                }))
+                    })
+
+            case .recordTapped:
+                guard state.inputs.contains(.audio), !state.attaching else { return .none }
+                state.recording = true
+                return .run { [recorder] send in
+                    await send(.recordingStarted(Result { try await recorder.start() }))
+                }
+                .cancellable(id: CancelID.recording)
+
+            case .recordingStarted(.success):
+                return .none
+
+            case .recordingStarted(.failure(let error)):
+                state.recording = false
+                state.alert = Self.attachAlert(error)
+                return .none
+
+            case .cancelRecordingTapped:
+                guard state.recording else { return .none }
+                state.recording = false
+                return .merge(.cancel(id: CancelID.recording), .run { [recorder] _ in await recorder.cancel() })
+
+            case .attached(.success(let attachment)):
+                state.attaching = false
+                state.pending.append(attachment)
+                return .none
+
+            case .attached(.failure(let error)):
+                state.attaching = false
+                state.alert = Self.attachAlert(error)
+                return .none
+
+            case .removeAttachmentTapped(let id):
+                guard let attachment = state.pending.first(where: { $0.id == id }) else { return .none }
+                state.pending.removeAll { $0.id == id }
+                let conversation = state.conversation.id
+                return .run { [attachments] _ in await attachments.remove(attachment, conversation) }
 
             case .resume:
                 guard let request = state.waiting else { return .none }
@@ -428,6 +524,16 @@ package struct ChatFeature {
             }
             try await group.next()
             group.cancelAll()
+        }
+    }
+
+    private static func attachAlert(_ error: any Error) -> AlertState<Action.Alert> {
+        AlertState {
+            TextState("Couldn't attach that")
+        } actions: {
+            ButtonState(role: .cancel) { TextState("OK") }
+        } message: {
+            TextState(String(describing: error))
         }
     }
 

@@ -18,8 +18,14 @@ package struct LiteRTLMEngine: LiteRTEngine {
         guard FileManager.default.fileExists(atPath: path) else { throw .unavailable(.notDownloaded) }
         do {
             let cache = try cacheDirectory(model.id)
+            // Gemma's vision encoder runs on the GPU and its audio encoder
+            // on the CPU, as Google runs them; each loads only for a model
+            // that reads photos or recordings.
             let config = try EngineConfig(
-                modelPath: path, backend: .gpu, maxNumTokens: model.spec.contextTokens, cacheDir: cache.path)
+                modelPath: path, backend: .gpu,
+                visionBackend: model.spec.inputs.contains(.image) ? .gpu : nil,
+                audioBackend: model.spec.inputs.contains(.audio) ? .cpu() : nil,
+                maxNumTokens: model.spec.contextTokens, cacheDir: cache.path)
             let engine = Engine(engineConfig: config)
             try await engine.initialize()
             return LiteRTLMEngine(engine: engine)
@@ -54,13 +60,24 @@ package struct LiteRTLMEngine: LiteRTEngine {
 struct LiteRTLMChat: LiteRTChat {
     let conversation: Conversation
 
-    func send(_ message: String, format: String?, partial: @escaping @Sendable (String) -> Void)
-        async throws(ModelRuntimeError) -> String
-    {
+    func send(
+        _ message: String, attachments: [ModelAttachment], format: String?,
+        partial: @escaping @Sendable (String) -> Void
+    ) async throws(ModelRuntimeError) -> String {
         do {
             let responseFormat = try format.map { try ResponseFormat.json(schema: $0) }
+            // Gemma reads photos and recordings before the words about them.
+            let contents =
+                attachments.map { attachment -> Content in
+                    switch attachment.kind {
+                    case .image: .imageFile(attachment.file.path)
+                    case .audio: .audioFile(attachment.file.path)
+                    }
+                } + [.text(message)]
             var written = ""
-            for try await chunk in conversation.sendMessageStream(Message(message), responseFormat: responseFormat) {
+            for try await chunk in conversation.sendMessageStream(
+                Message(contents: contents), responseFormat: responseFormat)
+            {
                 written += chunk.toString
                 partial(written)
             }

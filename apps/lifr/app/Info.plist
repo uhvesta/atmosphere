@@ -14,6 +14,8 @@
 	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Lifr records what you say for the assistant to hear, when you tap Record in a chat. The recording stays on this device.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Avesta Barzegar</string>
 </dict>
