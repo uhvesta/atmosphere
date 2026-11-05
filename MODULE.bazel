@@ -144,6 +144,13 @@ litert_lm = use_repo_rule("//apps/lifr/clients/models_litert:litert_lm.bzl", "li
 
 litert_lm(name = "litert_lm")
 
+# Gemma 4 E2B, as Lifr's catalog pins it, for the assistant's end-to-end
+# test on a real model. Only that manual test fetches it. See
+# apps/lifr/clients/models_litert/test_model.bzl.
+test_model = use_repo_rule("//apps/lifr/clients/models_litert:test_model.bzl", "test_model")
+
+test_model(name = "lifr_test_model")
+
 # MARK: - Lifr signing
 
 # The team and bundle ID prefix that sign Lifr, from LIFR_TEAM_ID and

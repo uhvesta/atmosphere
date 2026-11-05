@@ -3,15 +3,18 @@ load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
 # The assistant client on the person's chosen model: what it asks the model
 # and how it retries, the same for every runtime (see
-# //apps/lifr/clients/models). Only the app uses it; features depend on
-# //apps/lifr/clients/assistant.
+# //apps/lifr/clients/models). Only the app, and the assistant's end-to-end
+# test, use it; features depend on //apps/lifr/clients/assistant.
 swift_library(
     name = "assistant_live",
     package_name = "lifr",
     srcs = glob(["Sources/*.swift"]),
     module_name = "LifrAssistantLive",
     target_compatible_with = ["//bazel/xcode"],
-    visibility = ["//apps/lifr/app:__subpackages__"],
+    visibility = [
+        "//apps/lifr/app:__subpackages__",
+        "//apps/lifr/features/root:__pkg__",
+    ],
     deps = [
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",

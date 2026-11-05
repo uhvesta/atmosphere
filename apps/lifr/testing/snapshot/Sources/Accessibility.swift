@@ -81,7 +81,9 @@
             if let value = element.accessibilityValue, !value.isEmpty { parts.append("value: \(quoted(value))") }
             if let hint = element.accessibilityHint, !hint.isEmpty { parts.append("hint: \(quoted(hint))") }
             if let identifiable = element as? UIAccessibilityIdentification,
-                let identifier = identifiable.accessibilityIdentifier, !identifier.isEmpty
+                let identifier = identifiable.accessibilityIdentifier, !identifier.isEmpty,
+                // What the app marks as written by the model.
+                identifier != "lifr.model-text"
             {
                 parts.append("id: \(identifier)")
             }

@@ -177,8 +177,8 @@ private struct ConversationRow: View {
     var replying: Bool
 
     /// The last thing said, to tell conversations apart.
-    private var preview: String? {
-        conversation.messages.last { !$0.text.isEmpty }?.text
+    private var preview: ChatMessage? {
+        conversation.messages.last { !$0.text.isEmpty }
     }
 
     var body: some View {
@@ -198,10 +198,11 @@ private struct ConversationRow: View {
                         .font(.subheadline)
                         .foregroundStyle(.tint)
                 } else if let preview {
-                    Text(preview)
+                    Text(preview.text)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
+                        .accessibilityIdentifier(preview.role == .assistant ? ModelText.identifier : "")
                 }
                 if conversation.draft != nil {
                     Label("Draft to review", systemImage: "doc.badge.plus")

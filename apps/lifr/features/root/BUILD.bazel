@@ -1,5 +1,6 @@
 load("@rules_apple//apple:macos.bzl", "macos_unit_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("//apps/lifr/clients/models_litert:test_model.bzl", "GEMMA_4_E2B")
 load("//apps/lifr/testing/snapshot:defs.bzl", "lifr_snapshot_test")
 
 _DEPS = [
@@ -117,6 +118,49 @@ lifr_snapshot_test(
         "//apps/lifr/clients/models",
         "//apps/lifr/features/shortcuts",
         "//apps/lifr/widgets:views",
+        "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
+    ] + _DEPS,
+)
+
+# Where the test's model is, and the SHA-256 Bazel checked it against, for
+# the test to find it and check the catalog pins the same file.
+genrule(
+    name = "test_model_swift",
+    testonly = True,
+    srcs = ["@lifr_test_model//:{}".format(GEMMA_4_E2B.path)],
+    outs = ["TestModel.swift"],
+    cmd = """cat > $@ <<'EOF'
+enum TestModel {{
+    static let runfile = "$(rlocationpath @lifr_test_model//:{path})"
+    static let sha256 = "{sha256}"
+}}
+EOF""".format(
+        path = GEMMA_4_E2B.path,
+        sha256 = GEMMA_4_E2B.sha256,
+    ),
+)
+
+# The assistant on a real model, Gemma 4 E2B on this Mac's GPU, through
+# the live app: a reply, its draft, adding it and undoing that. The model's
+# words differ from one GPU to the next, so the trees leave them out and the
+# test checks what changed instead. Manual: it downloads 2.6 GB, takes
+# minutes, and needs what the Mac flows need. Run it with
+# //apps/lifr/testing/snapshot:run_mac.sh.
+lifr_snapshot_test(
+    name = "model_e2e_test",
+    srcs = glob(["ModelE2ETests/*.swift"]) + [":test_model_swift"],
+    # LiteRT-LM's runtime, which the app copies there itself.
+    additional_contents = {"@litert_lm//:libCLiteRTLM_mac.dylib": "Frameworks"},
+    data = ["@lifr_test_model//:{}".format(GEMMA_4_E2B.path)],
+    mac = True,
+    tags = ["manual"],
+    deps = [
+        ":root",
+        "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/assistant_live",
+        "//apps/lifr/clients/models",
+        "//apps/lifr/clients/models_litert",
+        "//apps/lifr/clients/models_live",
         "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
     ] + _DEPS,
 )

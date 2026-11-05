@@ -12,7 +12,7 @@ visibility("//apps/lifr/...")
 _IOS = ["//bazel/xcode", "@platforms//os:ios"]
 _MACOS = ["//bazel/xcode", "@platforms//os:macos"]
 
-def lifr_snapshot_test(name, srcs, deps = [], hosted = False, mac = False, **kwargs):
+def lifr_snapshot_test(name, srcs, deps = [], data = [], hosted = False, mac = False, **kwargs):
     """Snapshot tests for one package, run on iPhone 17 with iOS 26.2, or the Mac.
 
     References live in `SnapshotTests/__Snapshots__/<test file>/` and are
@@ -24,6 +24,7 @@ def lifr_snapshot_test(name, srcs, deps = [], hosted = False, mac = False, **kwa
       name: the test's name.
       srcs: Swift sources of XCTestCase subclasses.
       deps: what the tests use. LifrSnapshotTesting is added.
+      data: files the tests read at run time, from TEST_SRCDIR.
       hosted: run inside an app, for tests that need a window scene, such as
         flows through presented sheets with `FlowRecorder`. iOS only.
       mac: run on this Mac instead. It needs the terminal's Accessibility
@@ -60,7 +61,7 @@ def lifr_snapshot_test(name, srcs, deps = [], hosted = False, mac = False, **kwa
         name = name,
         # Recording resolves this file's runfiles symlink to find the source
         # tree.
-        data = ["BUILD.bazel"],
+        data = ["BUILD.bazel"] + data,
         env = {
             "LIFR_SNAPSHOTS": "SnapshotTests/__Snapshots__",
             "LIFR_SNAPSHOT_PACKAGE": native.package_name(),

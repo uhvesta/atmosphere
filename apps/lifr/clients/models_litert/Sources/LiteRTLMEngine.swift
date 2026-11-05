@@ -7,10 +7,22 @@ import LiteRTLM
 /// LiteRT-LM's engine for one downloaded model, on the GPU through Metal.
 package struct LiteRTLMEngine: LiteRTEngine {
     let engine: Engine
+    /// Whether each turn takes the likeliest next token, rather than the
+    /// model's own sampling.
+    let greedy: Bool
 
     /// Loads `model`'s `.litertlm` file. LiteRT-LM keeps the GPU's compiled
     /// programs in Caches, so the next load is quicker.
     @Sendable package static func load(_ model: InstalledModel) async throws(ModelRuntimeError) -> any LiteRTEngine {
+        try await load(model, greedy: false)
+    }
+
+    /// Loads `model`, taking the likeliest token at each step with
+    /// `greedy`, so a turn reads the same each time on one Mac. The GPU's
+    /// arithmetic still differs between machines.
+    package static func load(_ model: InstalledModel, greedy: Bool) async throws(ModelRuntimeError)
+        -> any LiteRTEngine
+    {
         guard let file = model.spec.source?.files.first(where: { $0.path.hasSuffix(".litertlm") }) else {
             throw .unavailable(.notDownloaded)
         }
@@ -28,7 +40,7 @@ package struct LiteRTLMEngine: LiteRTEngine {
                 maxNumTokens: model.spec.contextTokens, cacheDir: cache.path)
             let engine = Engine(engineConfig: config)
             try await engine.initialize()
-            return LiteRTLMEngine(engine: engine)
+            return LiteRTLMEngine(engine: engine, greedy: greedy)
         } catch {
             throw runtimeError(error)
         }
@@ -36,10 +48,11 @@ package struct LiteRTLMEngine: LiteRTEngine {
 
     package func chat(instructions: String, constrained: Bool) async throws(ModelRuntimeError) -> any LiteRTChat {
         do {
+            let sampler = greedy ? try SamplerConfig(topK: 1, topP: 1, temperature: 0) : nil
             let conversation = try await engine.createConversation(
                 with: ConversationConfig(
-                    systemMessage: Message(instructions, role: .system), automaticToolCalling: false,
-                    enableResponseFormat: constrained))
+                    systemMessage: Message(instructions, role: .system), samplerConfig: sampler,
+                    automaticToolCalling: false, enableResponseFormat: constrained))
             return LiteRTLMChat(conversation: conversation)
         } catch {
             throw runtimeError(error)

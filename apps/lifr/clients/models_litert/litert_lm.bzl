@@ -54,7 +54,12 @@ package(default_visibility = ["@@//apps/lifr:__subpackages__"])
 
 licenses(["notice"])
 
-exports_files(["LICENSE"])
+# The dylib, for a test bundle to copy into Contents/Frameworks as the app
+# does.
+exports_files([
+    "LICENSE",
+    "libCLiteRTLM_mac.dylib",
+])
 
 swift_library(
     name = "LiteRTLM",

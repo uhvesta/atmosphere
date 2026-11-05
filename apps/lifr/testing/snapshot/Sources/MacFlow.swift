@@ -25,18 +25,24 @@
         /// The longest a step waits for the screen to settle before
         /// failing.
         private let timeout: Duration
+        /// Whether the model's words are left out of the trees.
+        private let redactsModelText: Bool
         private var count = 0
         private static var launched = false
 
         /// Hosts `view` in a window of `size`, the app's default window.
         /// `name` names the flow's references. A step waits at most
-        /// `timeout` for the screen to settle.
+        /// `timeout` for the screen to settle. With `redactsModelText`, each
+        /// run of what a real model wrote is one `‹model text›` line, since
+        /// its words differ from one GPU to the next; a screen still showing
+        /// "Thinking…" or an error doesn't match one that shows a reply.
         package init(
             _ name: String, _ view: some View, size: CGSize = CGSize(width: 1180, height: 760),
-            timeout: Duration = .seconds(5)
+            timeout: Duration = .seconds(5), redactsModelText: Bool = false
         ) {
             self.name = name
             self.timeout = timeout
+            self.redactsModelText = redactsModelText
             let app = NSApplication.shared
             app.setActivationPolicy(.accessory)
             // xctest never launches its app, and an app that hasn't
@@ -166,7 +172,7 @@
                 for window in windows { window.layoutIfNeeded() }
                 // A process's requests to itself are answered on the thread
                 // asking, and SwiftUI answers only on the main one.
-                let lines = MacAccessibilityTree.lines()
+                let lines = MacAccessibilityTree.lines(redactingModelText: redactsModelText)
                 unchanged = lines == last ? unchanged + 1 : 0
                 last = lines
                 if unchanged == 3 {
@@ -208,12 +214,17 @@
             AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         }
 
-        static func lines() -> [String] {
+        /// What the app marks as written by the model. Its marker isn't
+        /// shown.
+        private static let modelText = "lifr.model-text"
+        private static let redacted = "‹model text›"
+
+        static func lines(redactingModelText redacts: Bool = false) -> [String] {
             // The main window first, then its sheets and popovers.
             let windows = (attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? [])
                 .sorted { isMain($0) && !isMain($1) }
             var lines: [String] = []
-            for window in windows { visit(window, depth: 0, into: &lines) }
+            for window in windows { visit(window, depth: 0, redacts: redacts, into: &lines) }
             return lines
         }
 
@@ -221,17 +232,23 @@
             attribute(window, kAXMainAttribute) as? Bool == true
         }
 
-        private static func visit(_ element: AXUIElement, depth: Int, into lines: inout [String]) {
+        private static func visit(_ element: AXUIElement, depth: Int, redacts: Bool, into lines: inout [String]) {
             guard lines.count < 2_000 else { return }
             let role = attribute(element, kAXRoleAttribute) as? String ?? "AXUnknown"
             if skipped.contains(role) { return }
+            if redacts, text(attribute(element, kAXIdentifierAttribute)) == modelText {
+                // However many paragraphs or rows the model wrote, one line.
+                let line = String(repeating: "  ", count: depth) + redacted
+                if lines.last != line { lines.append(line) }
+                return
+            }
             var depth = depth
             if let line = describe(element, role: role) {
                 lines.append(String(repeating: "  ", count: depth) + line)
                 depth += 1
             }
             for child in attribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
-                visit(child, depth: depth, into: &lines)
+                visit(child, depth: depth, redacts: redacts, into: &lines)
             }
         }
 
@@ -251,7 +268,7 @@
             if let title, let label, title != label { parts.append("label: \"\(label)\"") }
             if let value { parts.append("value: \"\(value)\"") }
             if let help = text(attribute(element, kAXHelpAttribute)) { parts.append("help: \"\(help)\"") }
-            if let identifier = text(attribute(element, kAXIdentifierAttribute)) {
+            if let identifier = text(attribute(element, kAXIdentifierAttribute)), identifier != modelText {
                 parts.append("id: \(identifier)")
             }
             return parts.joined(separator: " ")

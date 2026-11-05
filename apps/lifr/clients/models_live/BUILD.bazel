@@ -8,7 +8,8 @@ load("@rules_swift//swift:swift_library.bzl", "swift_library")
 # Downloads come only from Hugging Face, are checked against their hashes and
 # go to Application Support. Downloaded models run through ModelHost, which
 # keeps one loaded; LiteRT-LM itself is in //apps/lifr/clients/models_litert.
-# Only the app uses this; features depend on //apps/lifr/clients/models.
+# Only the app, and the assistant's end-to-end test, use this; features
+# depend on //apps/lifr/clients/models.
 swift_library(
     name = "models_live",
     package_name = "lifr",
@@ -19,6 +20,7 @@ swift_library(
     visibility = [
         "//apps/lifr/app:__subpackages__",
         "//apps/lifr/clients/models_litert:__pkg__",
+        "//apps/lifr/features/root:__pkg__",
     ],
     deps = [
         "//apps/lifr/api",

@@ -31,6 +31,7 @@ struct DraftCard: View {
                 Text(plan.taskCount == 1 ? "1 task" : "\(plan.taskCount) tasks")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                    .accessibilityIdentifier(ModelText.identifier)
             }
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(Array(plan.avenues.enumerated()), id: \.offset) { _, avenue in
@@ -52,6 +53,7 @@ struct DraftCard: View {
                 Label(problem, systemImage: "exclamationmark.triangle")
                     .font(.callout)
                     .foregroundStyle(.red)
+                    .accessibilityIdentifier(ModelText.identifier)
             }
             HStack {
                 Button("Discard", role: .destructive, action: discard)
@@ -115,6 +117,7 @@ private struct Line: View {
             }
         }
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(ModelText.identifier)
     }
 }
 

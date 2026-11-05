@@ -103,6 +103,7 @@ package struct ChatView: View {
                         .accessibilityElement(children: .combine)
                     } else {
                         Text(replying).foregroundStyle(.secondary)
+                            .accessibilityIdentifier(ModelText.identifier)
                     }
                 }
                 if let draft = store.conversation.draft {
@@ -501,6 +502,7 @@ private struct MessageView: View {
                     // The assistant's words read as text, not a bubble.
                     Text(message.text)
                         .textSelection(.enabled)
+                        .accessibilityIdentifier(ModelText.identifier)
                 }
             }
             if canUndo {
@@ -522,4 +524,11 @@ extension Binding {
             get: { wrappedValue ?? fallback },
             set: { if wrappedValue != nil { wrappedValue = $0 } })
     }
+}
+
+/// Marks what the model wrote, such as its replies and its drafts, so a
+/// test on a real model can leave out words that differ from one GPU to the
+/// next. Tests' accessibility trees don't show it.
+enum ModelText {
+    static let identifier = "lifr.model-text"
 }
