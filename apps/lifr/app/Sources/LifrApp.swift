@@ -1,3 +1,4 @@
+import AppIntents
 import ComposableArchitecture
 import LifrAPI
 import LifrAssistantClient
@@ -11,6 +12,7 @@ import LifrRemindersClient
 import LifrRemindersLive
 import LifrRoot
 import LifrSessionClient
+import LifrShortcuts
 import LifrStoreClient
 import LifrStoreLive
 import LifrSyncClient
@@ -26,6 +28,11 @@ import SwiftUI
 
 @main
 struct LifrApp: App {
+    init() {
+        let shortcuts = Storage.shortcuts
+        AppDependencyManager.shared.add { shortcuts }
+    }
+
     var body: some Scene {
         #if os(macOS)
             window
@@ -127,6 +134,20 @@ private enum Storage {
         } catch {
             return (.failing(.openFailed(error)), .failing(.openFailed(error)))
         }
+    }()
+
+    /// What Shortcuts and Siri do in Lifr. Their changes show on the open
+    /// screens as they happen, sync like any other, and are named after
+    /// Shortcuts in Activity.
+    static let shortcuts: Shortcuts = {
+        let store: StoreClient =
+            if case .success(let live) = opened {
+                .live(live, actor: .user(device: deviceName, surface: .shortcuts), announces: true).telling(sync)
+            } else {
+                StoreClient()
+            }
+        return Shortcuts(
+            store: store, locksApp: { Shared(.locksApp).wrappedValue }, now: { Date() }, timeZone: .current)
     }()
 
     static let client: StoreClient =

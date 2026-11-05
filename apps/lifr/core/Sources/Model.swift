@@ -23,6 +23,8 @@ package struct Actor: Hashable, Codable, Sendable {
         case mcp
         /// Apple Intelligence, in a conversation.
         case assistant
+        /// Shortcuts or Siri, through Lifr's App Intents.
+        case shortcuts
     }
 
     package static func user(device: String, surface: Surface) -> Actor {

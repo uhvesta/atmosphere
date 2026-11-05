@@ -13,7 +13,8 @@ package actor LiveStore: ModelActor {
     package nonisolated let modelExecutor: any ModelExecutor
     /// Journal entries never change, so each is decoded once.
     private var journal: [UUID: JournalEntry] = [:]
-    /// What each sync import in this process changed, for `updates`.
+    /// What each sync import in this process changed, and each change an
+    /// announcing client saved, for `updates`.
     nonisolated let imported = Broadcast<Update>()
 
     package init(modelContainer: ModelContainer) {

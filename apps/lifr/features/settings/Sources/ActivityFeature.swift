@@ -24,6 +24,7 @@ package enum ActivityAuthor: Hashable, Sendable {
         case .surface(.cli): String(localized: "Command line")
         case .surface(.mcp): "MCP"
         case .surface(.assistant): String(localized: "Apple Intelligence")
+        case .surface(.shortcuts): String(localized: "Shortcuts")
         case .lifr: String(localized: "Lifr")
         }
     }

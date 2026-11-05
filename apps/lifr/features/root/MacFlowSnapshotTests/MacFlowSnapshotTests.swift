@@ -6,6 +6,7 @@ import LifrModelsClient
 import LifrRemindersClient
 import LifrRoot
 import LifrSessionClient
+import LifrShortcuts
 import LifrSnapshotTesting
 import LifrStoreClient
 import LifrSyncClient
@@ -21,6 +22,8 @@ final class MacFlowSnapshotTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
     /// The time the app thinks it is, which a flow can move on.
     private let time = LockIsolated(Date(timeIntervalSince1970: 1_793_700_000))
+    /// The app's records, for another writer such as Shortcuts.
+    private var records: InMemorySync?
 
     private func app(
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
@@ -30,10 +33,12 @@ final class MacFlowSnapshotTests: XCTestCase {
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
         let ids = LockIsolated(1000)
+        let (client, records) = StoreClient.inMemorySyncing(workspace, actor: .user(device: "Mac", surface: .mac))
+        self.records = records
         let store = Store(initialState: RootFeature.State(platform: .mac)) {
             RootFeature()
         } withDependencies: { [time] in
-            $0.store = .inMemory(workspace, actor: .user(device: "Mac", surface: .mac))
+            $0.store = client
             $0.session = session.client
             $0.reminders = RemindersClient.inMemory().client
             $0.sync = sync
@@ -65,6 +70,28 @@ final class MacFlowSnapshotTests: XCTestCase {
             : FlowRecorder(name, RootView(store: store).environment(\.timeZone, .gmt))
         store.send(.task)
         return (store, flow)
+    }
+
+    /// Runs `body` as Shortcuts or Siri would, on the open app's records,
+    /// at the app's time.
+    private func shortcut<T>(_ body: (Shortcuts) async throws -> T) async throws -> T {
+        let records = try XCTUnwrap(records, "Open the app first")
+        let shortcuts = Shortcuts(
+            store: records.writer(as: .user(device: "Mac", surface: .shortcuts)),
+            locksApp: { Shared(.locksApp).wrappedValue }, now: { [time] in time.value }, timeZone: .gmt)
+        let ids = LockIsolated(5000)
+        return try await withDependencies { [time] in
+            $0.date = DateGenerator { time.value }
+            $0.uuid = UUIDGenerator {
+                ids.withValue {
+                    $0 += 1
+                    return UUID($0)
+                }
+            }
+            $0.withRandomNumberGenerator = WithRandomNumberGenerator(SeededRandomNumberGenerator())
+        } operation: {
+            try await body(shortcuts)
+        }
     }
 
     private func task(_ title: String, in store: StoreOf<RootFeature>) throws -> UUID {
@@ -277,6 +304,33 @@ final class MacFlowSnapshotTests: XCTestCase {
         await flow.step("not-recognised")
         store.send(.unlockTapped)
         await flow.step("unlocked", image: false)
+        flow.finish()
+    }
+
+    /// Shortcuts and Siri while the app is open: a task added there shows on
+    /// Today, one finished there is ticked off, and with the lock on, Siri
+    /// says how many but not what.
+    func testShortcuts() async throws {
+        let (store, flow) = app("shortcuts")
+        let added = try await shortcut { try await $0.add("Buy oat milk", avenue: nil, due: .today) }
+        XCTAssertEqual(added.name, "Buy oat milk")
+        await flow.step("added")
+        let water = try task("Water the plants", in: store)
+        _ = try await shortcut { try await $0.finish(water) }
+        await flow.step("finished")
+
+        @Shared(.locksApp) var locksApp
+        $locksApp.withLock { $0 = true }
+        let today = try await shortcut { try await $0.today() }
+        XCTAssertGreaterThan(today.count, 0)
+        XCTAssertTrue(today.titles.isEmpty)
+        XCTAssertFalse(TodaySummary(today).text.contains("Buy oat milk"))
+        do {
+            _ = try await shortcut { try await $0.finish(water) }
+            XCTFail("Expected the lock to stop it")
+        } catch {
+            XCTAssertEqual(error as? ShortcutError, .locked)
+        }
         flow.finish()
     }
 }

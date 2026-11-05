@@ -36,6 +36,7 @@ swift_library(
         "//apps/lifr/clients/sync_live",
         "//apps/lifr/core",
         "//apps/lifr/features/root",
+        "//apps/lifr/features/shortcuts",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )
@@ -43,6 +44,8 @@ swift_library(
 ios_application(
     name = "ios",
     app_icons = glob(["Resources/iOS.xcassets/**"]),
+    # Add a task, what's on today and finish a task, in Shortcuts and Siri.
+    app_intents = ["//apps/lifr/features/shortcuts"],
     bundle_id = BUNDLE_ID,
     bundle_name = "Lifr",
     # Stops a signed build that has no team in user.bazelrc.
@@ -73,6 +76,7 @@ macos_application(
     # collide with the app's executable, `Lifr`.
     additional_contents = {"//apps/lifr/cli:lifr": "Helpers"},
     app_icons = glob(["Resources/Mac.xcassets/**"]),
+    app_intents = ["//apps/lifr/features/shortcuts"],
     bundle_id = BUNDLE_ID,
     bundle_name = "Lifr",
     # The hardened runtime: no injected libraries, no unsigned code.

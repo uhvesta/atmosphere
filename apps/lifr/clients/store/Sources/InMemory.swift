@@ -23,20 +23,7 @@ extension StoreClient {
 
         let client = StoreClient(
             load: { records.value },
-            save: { operation in
-                @Dependency(\.date.now) var now
-                @Dependency(\.uuid) var uuid
-                @Dependency(\.withRandomNumberGenerator) var random
-                let context = Context(
-                    actor: actor, now: now, newID: { uuid() },
-                    newCode: { random { TaskCode.random(using: &$0) } })
-                return try records.update { (records) throws(LifrError) -> Saved in
-                    var copy = records
-                    let change = try copy.perform(in: context, operation)
-                    records = copy
-                    return Saved(workspace: copy, change: change)
-                }
-            },
+            save: { operation in try records.save(operation, as: actor) },
             updates: { sync.stream() },
             importSynced: { changes in
                 @Dependency(\.date.now) var now
@@ -59,6 +46,22 @@ package final class InMemorySync: Sendable {
     fileprivate init(records: Records, actor: Actor) {
         self.records = records
         self.actor = actor
+    }
+
+    /// Another writer on the same records, such as Shortcuts, making its
+    /// changes as `actor`. The first client's `updates` sends on each change
+    /// it saves, as the live store's does for another process. A writer
+    /// hears no updates and imports nothing from sync.
+    package func writer(as actor: Actor) -> StoreClient {
+        var writer = StoreClient()
+        writer.load = { [records] in records.value }
+        writer.save = { [records, continuations] operation in
+            let saved = try records.save(operation, as: actor)
+            let update = Update(workspace: saved.workspace, fixes: [])
+            for continuation in continuations.value { continuation.yield(update) }
+            return saved
+        }
+        return writer
     }
 
     fileprivate func stream() -> AsyncStream<Update> {
@@ -96,6 +99,23 @@ private final class Records: @unchecked Sendable {
     }
 
     var value: Workspace { lock.withLock { workspace } }
+
+    /// Performs `operation` as `actor`, with the `date`, `uuid` and
+    /// `withRandomNumberGenerator` dependencies.
+    func save(_ operation: StoreOperation, as actor: Actor) throws(LifrError) -> Saved {
+        @Dependency(\.date.now) var now
+        @Dependency(\.uuid) var uuid
+        @Dependency(\.withRandomNumberGenerator) var random
+        let context = Context(
+            actor: actor, now: now, newID: { uuid() },
+            newCode: { random { TaskCode.random(using: &$0) } })
+        return try update { (records) throws(LifrError) -> Saved in
+            var copy = records
+            let change = try copy.perform(in: context, operation)
+            records = copy
+            return Saved(workspace: copy, change: change)
+        }
+    }
 
     func update<T, E: Error>(_ body: (inout Workspace) throws(E) -> T) throws(E) -> T {
         lock.lock()

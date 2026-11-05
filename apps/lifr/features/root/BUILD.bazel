@@ -62,7 +62,10 @@ swift_library(
     testonly = True,
     srcs = glob(["FlowTests/*.swift"]),
     target_compatible_with = ["//bazel/xcode"],
-    deps = [":root"] + _DEPS,
+    deps = [
+        ":root",
+        "//apps/lifr/features/shortcuts",
+    ] + _DEPS,
 )
 
 macos_unit_test(
@@ -92,6 +95,7 @@ lifr_snapshot_test(
         ":root",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/models",
+        "//apps/lifr/features/shortcuts",
         "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
     ] + _DEPS,
 )
@@ -108,6 +112,7 @@ lifr_snapshot_test(
         ":root",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/models",
+        "//apps/lifr/features/shortcuts",
         "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
     ] + _DEPS,
 )

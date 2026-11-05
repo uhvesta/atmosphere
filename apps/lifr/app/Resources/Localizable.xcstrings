@@ -1,7 +1,13 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    " before due" : {
+
+    },
     "#%@" : {
+
+    },
+    "%@" : {
 
     },
     "%@ (%lld)" : {
@@ -166,6 +172,9 @@
         }
       }
     },
+    "%lld of them overdue." : {
+
+    },
     "%lld open" : {
 
     },
@@ -173,6 +182,9 @@
 
     },
     "%lld tasks" : {
+
+    },
+    "%lld tasks are due today." : {
 
     },
     "%lld/%lld" : {
@@ -192,6 +204,9 @@
 
     },
     "1 task" : {
+
+    },
+    "1 task is due today." : {
 
     },
     "A closed task can't keep open Sub tasks, so they'll be marked Won't Do too." : {
@@ -225,6 +240,9 @@
 
     },
     "Add a %@ date" : {
+
+    },
+    "Add a Task" : {
 
     },
     "Add a comment" : {
@@ -267,6 +285,9 @@
         }
       }
     },
+    "Added %@." : {
+
+    },
     "Added %lld tasks" : {
 
     },
@@ -281,6 +302,9 @@
       }
     },
     "Added Sub task %@" : {
+
+    },
+    "Adds a task to Lifr, due today unless you pick otherwise." : {
 
     },
     "Adds this task, then keeps Quick Add open for its Sub tasks." : {
@@ -415,6 +439,9 @@
     "Command line" : {
 
     },
+    "Comment" : {
+
+    },
     "Comment on tasks" : {
 
     },
@@ -431,6 +458,9 @@
 
     },
     "Copy as TOML" : {
+
+    },
+    "Couldn't attach that" : {
 
     },
     "Couldn't change Launch at login" : {
@@ -598,6 +628,12 @@
     "Find a skill" : {
 
     },
+    "Finish a Task" : {
+
+    },
+    "Finished %@." : {
+
+    },
     "From Hugging Face" : {
 
     },
@@ -703,7 +739,19 @@
     "Lifr can't open its data" : {
 
     },
+    "Lifr couldn't confirm the task was added. Open Lifr to check Today before adding it again." : {
+
+    },
     "Lifr couldn't read that photo. Pick another, or take a screenshot of it and attach that." : {
+
+    },
+    "Lifr has no Avenue to add the task to. Open Lifr and add one first." : {
+
+    },
+    "Lifr is locked" : {
+
+    },
+    "Lifr is locked. Open Lifr and unlock it to finish tasks." : {
 
     },
     "Lifr isn't allowed to use the microphone. Turn on Lifr in System Settings › Privacy & Security › Microphone, then record again." : {
@@ -728,6 +776,18 @@
 
     },
     "Lock Lifr when it opens" : {
+
+    },
+    "Lock with Face ID" : {
+
+    },
+    "Lock with Optic ID" : {
+
+    },
+    "Lock with Touch ID" : {
+
+    },
+    "Lock with passcode" : {
 
     },
     "Look back at what's done, overdue and stalled." : {
@@ -755,6 +815,9 @@
 
     },
     "Mark To Do" : {
+
+    },
+    "Marks a task in Lifr as done." : {
 
     },
     "Medium" : {
@@ -888,6 +951,9 @@
     "No conversations" : {
 
     },
+    "No date" : {
+
+    },
     "No due date" : {
 
     },
@@ -915,6 +981,9 @@
     "Note for %@" : {
 
     },
+    "Nothing is due today." : {
+
+    },
     "Notifications are off" : {
 
     },
@@ -925,6 +994,9 @@
 
     },
     "Open" : {
+
+    },
+    "Open Lifr and unlock it to see them." : {
 
     },
     "Opens the filters" : {
@@ -967,6 +1039,9 @@
     "Picks another skill" : {
 
     },
+    "Place" : {
+
+    },
     "Plan my week" : {
 
     },
@@ -974,6 +1049,9 @@
 
     },
     "Priority" : {
+
+    },
+    "Privacy" : {
 
     },
     "Procrastinated" : {
@@ -1010,6 +1088,9 @@
 
     },
     "Redraft" : {
+
+    },
+    "Reminder" : {
 
     },
     "Reminders" : {
@@ -1105,6 +1186,9 @@
     "Save" : {
 
     },
+    "Says how many tasks are due today or overdue, and names them unless Lifr's lock is on." : {
+
+    },
     "Search" : {
 
     },
@@ -1127,6 +1211,9 @@
 
     },
     "Settings" : {
+
+    },
+    "Shortcuts" : {
 
     },
     "Show" : {
@@ -1228,6 +1315,9 @@
     "Tasks you add here, or move here, show up in this list." : {
 
     },
+    "That task isn't in Lifr any more. Pick another." : {
+
+    },
     "The assistant couldn't answer" : {
 
     },
@@ -1272,6 +1362,9 @@
 
     },
     "The task changed again since, here or on another device, and undoing would lose that change. Open the task to change it back by hand." : {
+
+    },
+    "The task needs a title. Say or type what to add." : {
 
     },
     "These changed here and on another device in ways that can't both stand. Choose what to keep; you can undo it like any change." : {
@@ -1346,7 +1439,19 @@
     "Undo changes" : {
 
     },
+    "Unlock" : {
+
+    },
     "Unlock Lifr to see your tasks" : {
+
+    },
+    "Unlock with Face ID" : {
+
+    },
+    "Unlock with Optic ID" : {
+
+    },
+    "Unlock with Touch ID" : {
 
     },
     "Unlocking was cancelled. Tap Unlock to try again." : {
@@ -1370,16 +1475,25 @@
     "What it's for, in a line" : {
 
     },
+    "What should Lifr add?" : {
+
+    },
     "What the assistant does for a message that uses this skill." : {
 
     },
     "What the assistant does while this skill is attached." : {
 
     },
+    "What's on Today" : {
+
+    },
     "What's overdue?" : {
 
     },
     "When" : {
+
+    },
+    "Which task did you finish?" : {
 
     },
     "Won't Do" : {
@@ -1419,6 +1533,9 @@
 
     },
     "iCloud lost the records twice" : {
+
+    },
+    "something removed" : {
 
     },
     "the device didn't say why" : {

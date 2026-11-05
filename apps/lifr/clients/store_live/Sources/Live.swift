@@ -68,7 +68,11 @@ extension LiveStore {
 extension StoreClient {
     /// Keeps the records in `store`. Changes use the `date`, `uuid` and
     /// `withRandomNumberGenerator` dependencies, as `inMemory` does.
-    package static func live(_ store: LiveStore, actor: Actor) -> Self {
+    ///
+    /// A client that `announces` sends the records to every client's
+    /// `updates` after each change it saves: for a writer outside the app's
+    /// screens, such as Shortcuts, so the open screens show its changes.
+    package static func live(_ store: LiveStore, actor: Actor, announces: Bool = false) -> Self {
         @Sendable func context() -> @Sendable () -> Context {
             @Dependency(\.date.now) var now
             @Dependency(\.uuid) var uuid
@@ -82,7 +86,11 @@ extension StoreClient {
 
         return StoreClient(
             load: { try await store.load() },
-            save: { operation in try await store.save(in: context(), operation) },
+            save: { operation in
+                let saved = try await store.save(in: context(), operation)
+                if announces { store.imported.yield(Update(workspace: saved.workspace, fixes: [])) }
+                return saved
+            },
             updates: { store.updates(as: actor) },
             importSynced: { changes in
                 let fixes = try await store.importSynced(changes) {

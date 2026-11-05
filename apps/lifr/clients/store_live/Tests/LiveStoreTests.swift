@@ -71,6 +71,27 @@ final class LiveStoreTests: XCTestCase {
         XCTAssertEqual(reopened, sorted(saved.workspace))
     }
 
+    func testAnAnnouncingClientsChangesReachTheOtherClientsUpdates() async throws {
+        let store = LiveStore(modelContainer: try LiveStore.inMemory())
+        try await store.insert(.sample(now: now, timeZone: .gmt))
+        let app = StoreClient.live(store, actor: .user(device: "Test", surface: .mac))
+        let shortcuts = StoreClient.live(store, actor: .user(device: "Test", surface: .shortcuts), announces: true)
+        let plants = try task("Water the plants", in: try await app.load())
+        let updates = await app.updates()
+
+        _ = try await withDependencies {
+            $0.date.now = now
+            $0.uuid = .incrementing
+        } operation: {
+            try await shortcuts.setStatus(.done, plants.id, false)
+        }
+
+        var iterator = updates.makeAsyncIterator()
+        let update = await iterator.next()
+        XCTAssertEqual(update?.workspace.tasks[plants.id]?.status, .done)
+        XCTAssertEqual(update?.fixes, [])
+    }
+
     func testTheJournalIsKeptAndCanBeRevertedAfterReopening() async throws {
         let container = try LiveStore.inMemory()
         try await LiveStore(modelContainer: container).insert(.sample(now: now, timeZone: .gmt))

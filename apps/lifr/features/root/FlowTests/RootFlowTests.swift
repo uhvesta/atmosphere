@@ -5,6 +5,7 @@ import LifrCore
 import LifrRemindersClient
 import LifrRoot
 import LifrSessionClient
+import LifrShortcuts
 import LifrStoreClient
 import LifrSyncClient
 import LifrSyncReview
@@ -251,6 +252,37 @@ final class RootFlowTests: XCTestCase {
         XCTAssertEqual(mac.state.today.list.rows.first?.status, .inProgress)
         XCTAssertEqual(statusChanges(of: run.id, in: mac.state.workspace).last?.actor.kind, .agent)
         XCTAssertNil(mac.state.syncBanner)
+        await task.cancel()
+    }
+
+    /// Shortcuts or Siri adds a task and finishes another while the app is
+    /// open: each shows on Today as it happens, made by Shortcuts.
+    func testChangesFromShortcutsShowRightAway() async throws {
+        let run = records.task("Long run", in: health, due: 0)
+        let (client, sync) = StoreClient.inMemorySyncing(records.workspace)
+        let (phone, task) = await app(.phone, client)
+        let now = now
+        let shortcuts = Shortcuts(
+            store: sync.writer(as: .user(device: "iPhone", surface: .shortcuts)), locksApp: { false },
+            now: { now }, timeZone: .gmt)
+
+        let added = try await withDependencies {
+            $0.date.now = now
+            $0.uuid = UUIDGenerator { UUID() }
+            $0.withRandomNumberGenerator = WithRandomNumberGenerator(SystemRandomNumberGenerator())
+        } operation: {
+            let added = try await shortcuts.add("Buy oat milk", avenue: nil, due: .today)
+            try await shortcuts.finish(run.id)
+            return added
+        }
+        await phone.receive(\.updated)
+        await phone.receive(\.updated)
+
+        let titles = phone.state.today.list.rows.map(\.title)
+        XCTAssertTrue(titles.contains("Buy oat milk"))
+        XCTAssertEqual(phone.state.workspace?.tasks[run.id]?.status, .done)
+        XCTAssertEqual(phone.state.workspace?.journal.last?.actor.surface, .shortcuts)
+        XCTAssertEqual(phone.state.workspace?.tasks[added.id]?.title, "Buy oat milk")
         await task.cancel()
     }
 
