@@ -11,6 +11,12 @@ package enum AssistantPrompt {
     package static let historyBudget = 4_000
 
     package static func instructions(_ request: AssistantRequest) -> String {
+        instructions(request, tools: request.allowedTools, draftsPlans: request.draftsPlans)
+    }
+
+    private static func instructions(
+        _ request: AssistantRequest, tools: Set<AssistantTool>, draftsPlans: Bool
+    ) -> String {
         let lookup = request.lookup
         let today = request.today
         var text = """
@@ -45,7 +51,6 @@ package enum AssistantPrompt {
         if !lookup.labels.isEmpty {
             text += "Labels: " + lookup.labels.joined(separator: ", ") + "\n"
         }
-        let tools = request.allowedTools
         let reads = AssistantTool.allCases.filter { !$0.writes && tools.contains($0) }
         if !reads.isEmpty {
             text +=
@@ -59,11 +64,11 @@ package enum AssistantPrompt {
                 "\n\nTo change existing tasks when the person asks, use "
                 + writes.map(\.use).joined(separator: ", ")
                 + ". They save at once and the person can undo them. Say in \"message\" what you changed."
-            if request.draftsPlans {
+            if draftsPlans {
                 text += " New tasks, Projects and Avenues always go in \"plan\" for the person to add."
             }
         }
-        if !request.draftsPlans {
+        if !draftsPlans {
             text += "\n\nDon't propose a plan for this message: leave \"plan\" out."
         }
         if let skill = request.skill {
@@ -72,6 +77,15 @@ package enum AssistantPrompt {
                 + skill.instructions
         }
         return text
+    }
+
+    /// The instructions for a plain-text answer, used when the model's
+    /// structured answer couldn't be read: the same, without tools or a
+    /// plan.
+    package static func plainInstructions(_ request: AssistantRequest) -> String {
+        instructions(request, tools: [], draftsPlans: false)
+            + "\n\nAnswer in one to three plain sentences, with no lists or formatting. If the person asked for "
+            + "new tasks, say what you'd add and ask them to send the message again for a plan."
     }
 
     /// The conversation, the draft and its problem, as one prompt.

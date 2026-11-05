@@ -107,6 +107,21 @@ final class AssistantTests: XCTestCase {
         XCTAssertTrue(AssistantPrompt.instructions(request).contains("HOME"))
     }
 
+    func testThePlainTextFallbackOffersNoToolsAndNoPlan() {
+        let home = records.avenue("HOME", "Home")
+        let request = AssistantRequest(
+            messages: [ChatMessage(id: UUID(), role: .person, text: "Add laundry", at: now)],
+            workspace: records.workspace, now: now, timeZone: .gmt)
+
+        let instructions = AssistantPrompt.plainInstructions(request)
+
+        XCTAssertTrue(instructions.contains(home.key.rawValue))
+        for tool in AssistantTool.allCases {
+            XCTAssertFalse(instructions.contains(tool.rawValue), "\(tool) is offered")
+        }
+        XCTAssertTrue(AssistantPrompt.instructions(request).contains(AssistantTool.findTasks.rawValue))
+    }
+
     func testFindTasksMatchesWordsAvenueStatusAndDueDate() {
         let home = records.avenue("HOME", "Home")
         let work = records.avenue("WORK", "Work")

@@ -46,9 +46,11 @@ package struct ChatView: View {
                 .padding()
                 .background(.bar)
         }
-        .sheet(isPresented: $store.findsSkill) {
-            SkillFinder(store: store)
-        }
+        #if os(iOS)
+            .sheet(isPresented: $store.findsSkill) {
+                SkillFinder(store: store)
+            }
+        #endif
         .sheet(item: $store.scope(state: \.manageSkills, action: \.manageSkills)) { store in
             NavigationStack {
                 SkillsView(store: store)
@@ -101,6 +103,13 @@ package struct ChatView: View {
             }
             .disabled(!store.canSend)
         }
+        #if os(macOS)
+            // On the Mac the finder hangs off the composer, where the
+            // button is, instead of covering the chat.
+            .popover(isPresented: $store.findsSkill, arrowEdge: .top) {
+                SkillFinder(store: store)
+            }
+        #endif
     }
 }
 
@@ -145,38 +154,68 @@ private struct SkillFinder: View {
     @Bindable var store: StoreOf<ChatFeature>
 
     var body: some View {
-        NavigationStack {
-            List {
-                ForEach(store.skillChoices) { skill in
-                    Button {
-                        store.send(.pickSkillTapped(skill.id))
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(skill.title)
-                            Text(skill.summary)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+        #if os(macOS)
+            VStack(spacing: 0) {
+                TextField("Find a skill", text: $store.skillQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(10)
+                list
+                Divider()
+                HStack {
+                    Button("Manage Skills…") { store.send(.manageSkillsTapped) }
+                    Spacer()
+                    Button("Cancel") { store.findsSkill = false }
+                        .keyboardShortcut(.cancelAction)
+                }
+                .padding(10)
+            }
+            .frame(width: 340, height: 420)
+        #else
+            NavigationStack {
+                list
+                    .safeAreaInset(edge: .bottom) {
+                        Button("Manage Skills…") { store.send(.manageSkillsTapped) }
+                            .padding()
+                    }
+                    .searchable(text: $store.skillQuery, prompt: Text("Find a skill"))
+                    .navigationTitle("Skills")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { store.findsSkill = false }
                         }
                     }
-                }
-                Section {
-                    Button("Manage Skills…") { store.send(.manageSkillsTapped) }
-                }
             }
-            .overlay {
-                if store.skillChoices.isEmpty, !store.skillQuery.isEmpty {
+            .presentationDetents([.medium, .large])
+        #endif
+    }
+
+    private var list: some View {
+        List(store.skillChoices) { skill in
+            Button {
+                store.send(.pickSkillTapped(skill.id))
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(skill.title)
+                    Text(skill.summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+        }
+        .overlay {
+            if store.skillChoices.isEmpty {
+                if store.skillQuery.isEmpty {
+                    ContentUnavailableView(
+                        "No skills on", systemImage: "sparkles",
+                        description: Text("Turn skills on in Manage Skills."))
+                } else {
                     ContentUnavailableView.search(text: store.skillQuery)
                 }
             }
-            .searchable(text: $store.skillQuery, prompt: Text("Find a skill"))
-            .navigationTitle("Skills")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { store.findsSkill = false }
-                }
-            }
         }
-        .presentationDetents([.medium, .large])
     }
 }
 

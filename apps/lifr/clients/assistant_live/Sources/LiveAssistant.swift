@@ -52,34 +52,28 @@ extension AssistantClient {
                         return
                     }
                     let tools = request.tools()
+                    let before = tools.workspace
                     do {
-                        let available: [any Tool] = try AssistantTool.allCases
-                            .filter(request.allowedTools.contains)
-                            .map { tool -> any Tool in
-                                switch tool {
-                                case .findTasks: try FindTasks(tools)
-                                case .getTask: try GetTask(tools)
-                                case .overview: try Overview(tools)
-                                case .recentActivity: try RecentActivity(tools)
-                                case .updateTasks: try UpdateTasks(tools)
-                                case .addComment: try AddComment(tools)
-                                case .revert: try Revert(tools)
-                                }
+                        // The model sometimes writes an answer that doesn't
+                        // fit the schema. Ask again once, then for plain
+                        // text, unless it already saved changes: asking
+                        // again could make them twice.
+                        for attempt in 1...2 {
+                            do {
+                                try await structured(request, tools, continuation)
+                                return
+                            } catch LanguageModelSession.GenerationError.decodingFailure {
+                                guard tools.workspace == before else { throw AssistantError.unreadable(saved: true) }
+                                if attempt == 2 { break }
                             }
-                        let session = LanguageModelSession(
-                            tools: available,
-                            instructions: AssistantPrompt.instructions(request))
-                        let schema = try GenerationSchema(root: Schema.turn, dependencies: [])
-                        let stream = session.streamResponse(to: AssistantPrompt.prompt(request), schema: schema)
-                        var last = AssistantReply(text: "")
-                        for try await snapshot in stream {
-                            last = AssistantPrompt.reply(
-                                from: json(snapshot.rawContent), isComplete: false, draftsPlans: request.draftsPlans)
-                            continuation.yield(last)
                         }
-                        last.isComplete = true
-                        continuation.yield(last)
-                        continuation.finish()
+                        do {
+                            try await plain(request, continuation)
+                        } catch LanguageModelSession.GenerationError.decodingFailure {
+                            throw AssistantError.unreadable(saved: false)
+                        }
+                    } catch let error as AssistantError {
+                        continuation.finish(throwing: error)
                     } catch let error as LanguageModelSession.GenerationError {
                         continuation.finish(throwing: assistantError(error))
                     } catch is CancellationError {
@@ -90,6 +84,53 @@ extension AssistantClient {
                 }
                 continuation.onTermination = { _ in task.cancel() }
             }
+        }
+
+        /// One answer as a message and maybe a plan, with the tools.
+        private static func structured(
+            _ request: AssistantRequest, _ tools: AssistantTools,
+            _ continuation: AsyncThrowingStream<AssistantReply, any Error>.Continuation
+        ) async throws {
+            let available: [any Tool] = try AssistantTool.allCases
+                .filter(request.allowedTools.contains)
+                .map { tool -> any Tool in
+                    switch tool {
+                    case .findTasks: try FindTasks(tools)
+                    case .getTask: try GetTask(tools)
+                    case .overview: try Overview(tools)
+                    case .recentActivity: try RecentActivity(tools)
+                    case .updateTasks: try UpdateTasks(tools)
+                    case .addComment: try AddComment(tools)
+                    case .revert: try Revert(tools)
+                    }
+                }
+            let session = LanguageModelSession(tools: available, instructions: AssistantPrompt.instructions(request))
+            let schema = try GenerationSchema(root: Schema.turn, dependencies: [])
+            var last = AssistantReply(text: "")
+            for try await snapshot in session.streamResponse(to: AssistantPrompt.prompt(request), schema: schema) {
+                last = AssistantPrompt.reply(
+                    from: json(snapshot.rawContent), isComplete: false, draftsPlans: request.draftsPlans)
+                continuation.yield(last)
+            }
+            last.isComplete = true
+            continuation.yield(last)
+            continuation.finish()
+        }
+
+        /// One answer as plain text, without tools or a plan: what's left
+        /// when the structured answer can't be read.
+        private static func plain(
+            _ request: AssistantRequest, _ continuation: AsyncThrowingStream<AssistantReply, any Error>.Continuation
+        ) async throws {
+            let session = LanguageModelSession(instructions: AssistantPrompt.plainInstructions(request))
+            var last = AssistantReply(text: "")
+            for try await snapshot in session.streamResponse(to: AssistantPrompt.prompt(request)) {
+                last = AssistantReply(text: snapshot.content, isComplete: false)
+                continuation.yield(last)
+            }
+            last.isComplete = true
+            continuation.yield(last)
+            continuation.finish()
         }
 
         static func draftSkill(_ description: String) async throws -> SkillDraft {

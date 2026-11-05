@@ -222,6 +222,9 @@ package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible 
     /// to macOS, which only works when the Simulator runtime and macOS
     /// are the same version.
     case simulatorHost(String)
+    /// The model's answer didn't fit what Lifr asked for, even after
+    /// asking again. `saved` when it changed tasks before that.
+    case unreadable(saved: Bool)
     /// Anything else the model reported.
     case failed(String)
 
@@ -239,6 +242,13 @@ package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible 
             "The Simulator couldn't use this Mac's Apple Intelligence (\(detail)). This usually means the Simulator "
                 + "runtime and macOS are different versions: update Xcode and its iOS Simulator to match macOS, or "
                 + "run Lifr on a device or as the Mac app."
+        case .unreadable(saved: false):
+            "The on-device model wrote answers Lifr couldn't read, twice. Send the message again, or ask for less "
+                + "at once: long plans are the hardest for it."
+        case .unreadable(saved: true):
+            "The assistant changed tasks, then wrote an answer Lifr couldn't read. The changes are saved; undo them "
+                + "or see them in Settings › Activity. Check them before sending the message again, or they may "
+                + "be made twice."
         case .failed(let detail):
             "The assistant stopped: \(detail). Send the message again."
         }

@@ -700,6 +700,9 @@
     "No priority" : {
 
     },
+    "No skills on" : {
+
+    },
     "No task selected" : {
 
     },
@@ -1038,6 +1041,9 @@
 
     },
     "Try other words, or clear some filters." : {
+
+    },
+    "Turn skills on in Manage Skills." : {
 
     },
     "Unarchive" : {
