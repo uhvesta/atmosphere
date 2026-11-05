@@ -1,0 +1,10 @@
+[button] "Today" id: BackButton
+[header] "Procrastinated"
+[header, text] "Stalled"
+[button] "Plan long runs" value: "Procrastinated, HEALTH-0013" hint: "In Progress with no activity for 12 days."
+[button] "Fix the bike's back brake" value: "Procrastinated, Low priority, Overdue, Oct 29, HOME-0011" hint: "Set to Procrastinated by hand. It stays until you change its status."
+[button] "Search"
+[button, selected] "Today"
+[button] "Upcoming"
+[button] "Avenues"
+[button] "Assistant"

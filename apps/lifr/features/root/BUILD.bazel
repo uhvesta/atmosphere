@@ -79,6 +79,34 @@ lifr_snapshot_test(
     ] + _DEPS,
 )
 
+# Each of a person's flows on the iPhone, step by step through the live
+# app: the accessibility tree and an image per step.
+lifr_snapshot_test(
+    name = "flow_snapshot_test",
+    srcs = glob(["FlowSnapshotTests/*.swift"]),
+    hosted = True,
+    deps = [
+        ":root",
+        "//apps/lifr/clients/assistant",
+        "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
+    ] + _DEPS,
+)
+
+# The same flows on the Mac, in windows on this Mac: the accessibility tree
+# and an image of every window per step. Manual, since `bazel test` can't
+# read other windows: run it with //apps/lifr/testing/snapshot:run_mac.sh.
+lifr_snapshot_test(
+    name = "mac_flow_snapshot_test",
+    srcs = glob(["MacFlowSnapshotTests/*.swift"]),
+    mac = True,
+    tags = ["manual"],
+    deps = [
+        ":root",
+        "//apps/lifr/clients/assistant",
+        "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
+    ] + _DEPS,
+)
+
 filegroup(
     name = "starlark",
     srcs = ["BUILD.bazel"],

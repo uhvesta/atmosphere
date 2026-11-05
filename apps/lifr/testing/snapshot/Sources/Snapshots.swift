@@ -97,7 +97,8 @@ package struct SnapshotStore: Sendable {
         guard let failure else { return nil }
         if isRecording {
             return
-                "Recorded \(fileName)/\(name). Review the change with `git diff`, then run the test again without --config=record_snapshots."
+                "Recorded \(fileName)/\(name). Review the change with `git diff`, then run the test again "
+                + "without --config=record_snapshots."
         }
         return """
             \(failure)
@@ -129,11 +130,14 @@ package enum SnapshotSetupError: Error, CustomStringConvertible {
     package var description: String {
         switch self {
         case .notInSnapshotTest:
-            "LIFR_SNAPSHOTS isn't set. Snapshot tests must be built with lifr_snapshot_test from //apps/lifr/testing/snapshot:defs.bzl."
+            "LIFR_SNAPSHOTS isn't set. Snapshot tests must be built with lifr_snapshot_test from "
+                + "//apps/lifr/testing/snapshot:defs.bzl."
         case .noTestBundle:
-            "The test bundle has no resources, so the reference snapshots are missing. Build the test with lifr_snapshot_test."
+            "The test bundle has no resources, so the reference snapshots are missing. Build the test with "
+                + "lifr_snapshot_test."
         case .noSourceTree:
-            "Recording couldn't find the source tree from the test's runfiles. Record with `bazel test --config=record_snapshots <target>` from the workspace, not from Xcode."
+            "Recording couldn't find the source tree from the test's runfiles. Record with "
+                + "`bazel test --config=record_snapshots <target>` from the workspace, not from Xcode."
         }
     }
 }

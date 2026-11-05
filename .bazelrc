@@ -65,6 +65,9 @@ build:xcode_toolchains --host_platform=//bazel/xcode:macos_arm64
 test:record_snapshots --config=xcode
 test:record_snapshots --test_env=LIFR_RECORD_SNAPSHOTS=1
 test:record_snapshots --nocache_test_results
+# Mac snapshot tests run on the host, where the sandbox would throw away the
+# references they write into the source tree.
+test:record_snapshots --strategy=TestRunner=local
 # Lifr signed for its team (see apps/lifr/BUILD.bazel): the Mac app and
 # `lifr` with Developer ID, and the iPhone app for devices with the team's
 # development profile. Each needs its certificate in the login keychain.

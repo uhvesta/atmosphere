@@ -1,0 +1,8 @@
+[button] "Filters, 1 set"
+[header] "Search"
+[button] "Overdue" hint: "Opens the filters"
+[button] "Remove Overdue"
+[text] "No matches"
+[text] "Try other words, or clear some filters."
+[button] "Today" value: "Collapsed" hint: "Activate to Expand the Tab Bar"
+[searchField] "Titles, details and comments" value: "run"

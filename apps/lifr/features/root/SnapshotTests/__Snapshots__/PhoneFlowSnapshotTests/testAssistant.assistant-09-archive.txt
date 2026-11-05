@@ -1,0 +1,12 @@
+[button] "Conversations" id: BackButton
+[button] "Delete All"
+[header] "Archived"
+[text] "Tidy my weekend"
+[text] "Nov 3 at 10:00 AM"
+[text] "Added “Clean up living room”"
+[button] "Undo"
+[button] "Search"
+[button] "Today"
+[button] "Upcoming"
+[button] "Avenues"
+[button, selected] "Assistant"

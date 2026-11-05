@@ -1,0 +1,11 @@
+[button] "Conversations" id: BackButton
+[header] "New conversation"
+[button] "Send"
+[element] "" value: "Add details, or just send"
+[button] "Review" hint: "Picks another skill"
+[button] "Remove Review"
+[button] "Search"
+[button] "Today"
+[button] "Upcoming"
+[button] "Avenues"
+[button, selected] "Assistant"
