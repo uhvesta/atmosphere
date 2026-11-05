@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import LifrAPI
 import LifrAssistantClient
+import LifrBugReport
 import LifrCore
 import LifrLockClient
 import LifrSessionClient
@@ -50,6 +51,11 @@ package struct SettingsView: View {
                         + "them: swipe right on one in Conversations. Instructions stay on this device. Skills sync "
                         + "through iCloud, encrypted end to end.")
             }
+            Section {
+                Button("Bug Reports") { store.send(.bugReportsTapped) }
+            } footer: {
+                Text(bugReportsFooter)
+            }
             if store.showsAgents {
                 avenueAccess
                 connectedApps
@@ -69,9 +75,20 @@ package struct SettingsView: View {
         .navigationDestination(item: $store.scope(state: \.models, action: \.models)) { store in
             ModelsView(store: store)
         }
+        .navigationDestination(item: $store.scope(state: \.bugReports, action: \.bugReports)) { store in
+            BugReportsView(store: store)
+        }
         .task { await store.send(.task).finish() }
         .confirmationDialog($store.scope(state: \.revoke, action: \.revoke))
         .alert($store.scope(state: \.alert, action: \.alert))
+    }
+
+    private var bugReportsFooter: String {
+        #if os(iOS)
+            String(localized: "Reports you saved, encrypted on this iPhone. Shake it to report a bug.")
+        #else
+            String(localized: "Reports you saved, encrypted on this Mac. Choose Help › Report a Bug to make one.")
+        #endif
     }
 
     private var avenueAccess: some View {

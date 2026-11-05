@@ -3,6 +3,7 @@ import Foundation
 import LifrAPI
 import LifrAvenue
 import LifrBoard
+import LifrBugReport
 import LifrConversations
 import LifrCore
 import LifrGlance
@@ -112,6 +113,13 @@ package struct RootFeature {
         package var awayAt: Date?
         /// Why the lock turned itself off.
         @Presents package var lockAlert: AlertState<Never>?
+        /// Whether the steps to a bug are being recorded, which the
+        /// Recording bar shows.
+        package var isRecordingSteps = false
+        /// The iPhone's shake menu: report a bug, record steps, or undo.
+        package var isBugMenuShown = false
+        /// Describing a bug, after a recording or straight from the menu.
+        @Presents package var bugReport: BugReportFeature.State?
         /// Where the person was when Lifr last ran.
         @Shared(.place) package var place
         /// The place to go back to, until the records are in.
@@ -242,6 +250,16 @@ package struct RootFeature {
         case remindersScheduled
         /// The approval sheet closed: show the next app's, if one is waiting.
         case nextApproval
+        /// The iPhone was shaken: the bug menu, or the end of a recording.
+        case shaken
+        /// Report Bug, from the shake menu or Help: describe it now, with
+        /// the steps if they were being recorded.
+        case reportBugTapped
+        /// Record Steps: log what happens until Stop.
+        case recordStepsTapped
+        /// The Recording bar's Stop, Help's Stop Recording, or a shake.
+        case stopRecordingTapped
+        case bugReport(PresentationAction<BugReportFeature.Action>)
         /// Opens the task the person had open when Lifr last ran.
         case reopen(UUID)
         case today(TodayFeature.Action)
@@ -272,6 +290,7 @@ package struct RootFeature {
     @Dependency(\.timeZone) private var timeZone
     @Dependency(\.lock) private var lock
     @Dependency(\.glance) private var glance
+    @Dependency(\.bugRecorder) private var bugRecorder
 
     package init() {}
 
@@ -292,6 +311,7 @@ package struct RootFeature {
                 dependencies.store = dependencies.store.telling(dependencies.sync).recordingChanges(
                     into: Shared(.lastChange), uuid: dependencies.uuid)
             }
+            .recordingBugs()
     }
 
     @ReducerBuilder<State, Action>
@@ -305,6 +325,7 @@ package struct RootFeature {
         Scope(state: \.conversations, action: \.conversations) { ConversationsFeature() }
         Scope(state: \.settings, action: \.settings) { SettingsFeature() }
         Reduce(locking)
+        Reduce(reportingBugs)
         Reduce { (state: inout State, action: Action) -> Effect<Action> in
             // Menus and shortcuts reach the app while it's locked; what they'd
             // show or change waits until it's unlocked.
@@ -570,6 +591,9 @@ package struct RootFeature {
                 guard let scope = state.board?.scope else { return .none }
                 return .send(.newTaskInTapped(scope))
 
+            case .shaken, .reportBugTapped, .recordStepsTapped, .stopRecordingTapped, .bugReport:
+                return .none
+
             case .binding, .remindersScheduled, .today, .upcoming, .procrastinated, .avenues, .search, .avenue, .board,
                 .conversations, .settings, .quickAdd, .approval, .undoAlert, .syncReview, .lockAlert:
                 return .none
@@ -582,6 +606,39 @@ package struct RootFeature {
         .ifLet(\.$syncReview, action: \.syncReview) { SyncReviewFeature() }
         .ifLet(\.$undoAlert, action: \.undoAlert)
         .ifLet(\.$lockAlert, action: \.lockAlert)
+        .ifLet(\.$bugReport, action: \.bugReport) { BugReportFeature() }
+    }
+
+    /// The shake menu, recording the steps to a bug, and describing it.
+    private func reportingBugs(_ state: inout State, _ action: Action) -> Effect<Action> {
+        switch action {
+        case .shaken:
+            if state.isRecordingSteps { return .send(.stopRecordingTapped) }
+            guard !state.isLocked, state.bugReport == nil else { return .none }
+            state.isBugMenuShown = true
+            return .none
+
+        case .reportBugTapped:
+            if state.isRecordingSteps { return .send(.stopRecordingTapped) }
+            guard !state.isLocked, state.bugReport == nil else { return .none }
+            state.bugReport = .new(recording: nil)
+            return .none
+
+        case .recordStepsTapped:
+            guard !state.isLocked, !state.isRecordingSteps, state.bugReport == nil else { return .none }
+            state.isRecordingSteps = true
+            bugRecorder.start(from: state)
+            return .none
+
+        case .stopRecordingTapped:
+            guard state.isRecordingSteps else { return .none }
+            state.isRecordingSteps = false
+            state.bugReport = .new(recording: bugRecorder.stop())
+            return .none
+
+        default:
+            return .none
+        }
     }
 
     /// Away, unlocking and what happens when it fails.
@@ -725,7 +782,7 @@ extension RootFeature.Action {
     fileprivate var isCommand: Bool {
         switch self {
         case .newTaskTapped, .newTaskInTapped, .newAvenueTapped, .newProjectTapped, .newSubtaskTapped,
-            .statusShortcut, .undoTapped, .syncReviewTapped, .apiSwitched:
+            .statusShortcut, .undoTapped, .syncReviewTapped, .apiSwitched, .reportBugTapped, .recordStepsTapped:
             true
         default:
             false

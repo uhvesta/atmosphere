@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import LifrAssistantClient
+import LifrBugReport
 import LifrCore
 import LifrGlance
 import LifrGlanceClient
@@ -29,6 +30,10 @@ final class MacFlowSnapshotTests: XCTestCase {
     private var records: InMemorySync?
     /// What the app last gave the widgets.
     private let widgets = WidgetBoard()
+    /// Saved bug reports, kept from one window to the next.
+    private let bugReports = BugReportsClient.inMemory()
+    /// What the app last put on the clipboard.
+    private let copied = LockIsolated<String?>(nil)
 
     private func app(
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
@@ -42,7 +47,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         self.records = records
         let store = Store(initialState: RootFeature.State(platform: .mac)) {
             RootFeature()
-        } withDependencies: { [time, widgets] in
+        } withDependencies: { [time, widgets, bugReports, copied] in
             $0.store = client
             $0.session = session.client
             $0.reminders = RemindersClient.inMemory().client
@@ -60,6 +65,10 @@ final class MacFlowSnapshotTests: XCTestCase {
             $0.lock = lock
             $0.glance = GlanceClient { [widgets] glance in await widgets.show(glance) }
             $0.timeZone = .gmt
+            $0.bugRecorder = BugRecorder(now: { time.value })
+            $0.bugReports = bugReports
+            $0.deviceInfo = .testValue
+            $0.pasteboard = PasteboardClient { copied.setValue($0) }
             $0.withRandomNumberGenerator = WithRandomNumberGenerator(SeededRandomNumberGenerator())
             $0.uuid = UUIDGenerator {
                 ids.withValue {
@@ -240,6 +249,40 @@ final class MacFlowSnapshotTests: XCTestCase {
             await flow.step(name)
         }
         flow.finish()
+    }
+
+    /// Help › Record Steps, finishing a task while it records, Stop,
+    /// describing the bug, copying it without the task's title, saving it,
+    /// then finding it in Settings › Bug Reports.
+    func testBugReport() async throws {
+        let (store, flow) = app("bug-report")
+        await flow.step("launch", image: false)
+        store.send(.recordStepsTapped)
+        await flow.step("recording")
+        store.send(.selected(.today))
+        let water = try XCTUnwrap(store.workspace?.tasks.values.first { $0.title == "Water the plants" }?.id)
+        store.send(.today(.list(.toggled(water))))
+        await flow.step("acted")
+        store.send(.stopRecordingTapped)
+        await flow.step("describe")
+        XCTAssertEqual(store.bugReport?.report.recording?.steps.isEmpty, false)
+        store.send(.bugReport(.presented(.binding(.set(\.report.happened, "Finishing a task hid the list.")))))
+        store.send(.bugReport(.presented(.binding(.set(\.report.expected, "The list stays.")))))
+        await flow.step("described")
+        store.send(.bugReport(.presented(.copyTapped)))
+        await flow.step("copied", image: false)
+        let text = try XCTUnwrap(copied.value)
+        XCTAssertTrue(text.contains("Finishing a task hid the list."))
+        XCTAssertFalse(text.contains("Water the plants"))
+        store.send(.bugReport(.presented(.saveTapped)))
+        await flow.step("saved", image: false)
+        XCTAssertNil(store.bugReport)
+        flow.finish()
+
+        let (settings, list) = app("bug-report-list", settings: true)
+        settings.send(.settings(.bugReportsTapped))
+        await list.step("list")
+        list.finish()
     }
 
     /// The Settings window, from ⌘,: Settings, then Activity.

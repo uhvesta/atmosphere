@@ -5,8 +5,8 @@ import LifrSettings
 import LifrUI
 import SwiftUI
 
-/// The File menu's new items and Sync Now, and the Status menu: a shortcut
-/// for each status of the open task.
+/// The File menu's new items and Sync Now, the Status menu: a shortcut
+/// for each status of the open task, and Help's bug reports.
 package struct RootCommands: Commands {
     package var store: StoreOf<RootFeature>
 
@@ -26,6 +26,15 @@ package struct RootCommands: Commands {
         CommandGroup(after: .saveItem) {
             Button("Sync Now") { store.send(.syncNowTapped) }
                 .disabled(store.sync.status == .syncing)
+        }
+        CommandGroup(after: .help) {
+            Divider()
+            Button("Report a Bug…") { store.send(.reportBugTapped) }
+            if store.isRecordingSteps {
+                Button("Stop Recording") { store.send(.stopRecordingTapped) }
+            } else {
+                Button("Record Steps") { store.send(.recordStepsTapped) }
+            }
         }
         CommandMenu("Status") {
             ForEach(Array(TaskStatus.shortcuts.enumerated()), id: \.offset) { index, status in

@@ -373,6 +373,9 @@
     "Assistant" : {
 
     },
+    "Assistant model" : {
+
+    },
     "Attach a Photo" : {
 
     },
@@ -392,6 +395,9 @@
 
     },
     "Board" : {
+
+    },
+    "Bug Reports" : {
 
     },
     "Built in" : {
@@ -455,6 +461,12 @@
 
     },
     "Conversations" : {
+
+    },
+    "Copied" : {
+
+    },
+    "Copy" : {
 
     },
     "Copy as TOML" : {
@@ -553,6 +565,9 @@
     "Description" : {
 
     },
+    "Device" : {
+
+    },
     "Didn't finish" : {
 
     },
@@ -590,6 +605,9 @@
 
     },
     "Due" : {
+
+    },
+    "Each piece of text from your tasks and chats becomes a placeholder, and screenshots are left out. What you write above is kept." : {
 
     },
     "Edit" : {
@@ -679,6 +697,9 @@
     "In use" : {
 
     },
+    "Include my text and screenshots" : {
+
+    },
     "Install lifr" : {
 
     },
@@ -736,14 +757,57 @@
     "Lifr" : {
 
     },
+    "Lifr bug report" : {
+
+    },
     "Lifr can't open its data" : {
 
     },
     "Lifr couldn't confirm the task was added. Open Lifr to check Today before adding it again." : {
 
     },
+    "Lifr couldn't delete %@: %@. Try again after restarting Lifr." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Lifr couldn't delete %1$@: %2$@. Try again after restarting Lifr."
+          }
+        }
+      }
+    },
+    "Lifr couldn't get the key that protects bug reports from the Keychain (%@, status %d). Unlock this device and try again. Don't remove Lifr's Keychain items to fix this: reports already saved can't be read without that key." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Lifr couldn't get the key that protects bug reports from the Keychain (%1$@, status %2$d). Unlock this device and try again. Don't remove Lifr's Keychain items to fix this: reports already saved can't be read without that key."
+          }
+        }
+      }
+    },
+    "Lifr couldn't read %@: %@. Unlock this device and try again." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Lifr couldn't read %1$@: %2$@. Unlock this device and try again."
+          }
+        }
+      }
+    },
     "Lifr couldn't read that photo. Pick another, or take a screenshot of it and attach that." : {
 
+    },
+    "Lifr couldn't save the report to %@: %@. Free some space on this device, then save again; until then, Copy or Share keeps it." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Lifr couldn't save the report to %1$@: %2$@. Free some space on this device, then save again; until then, Copy or Share keeps it."
+          }
+        }
+      }
     },
     "Lifr couldn't update the widgets at %@ (%@). They show the last Today they had until the next change saves." : {
       "localizations" : {
@@ -946,6 +1010,9 @@
     "No archived conversations" : {
 
     },
+    "No bug reports. Choose Help › Report a Bug to make one." : {
+
+    },
     "No change" : {
 
     },
@@ -962,6 +1029,9 @@
 
     },
     "No date" : {
+
+    },
+    "No description" : {
 
     },
     "No due date" : {
@@ -1091,6 +1161,18 @@
     "Record" : {
 
     },
+    "Record Steps" : {
+
+    },
+    "Recorded" : {
+
+    },
+    "Recording" : {
+
+    },
+    "Recording steps" : {
+
+    },
     "Recording, %lld s" : {
 
     },
@@ -1131,6 +1213,15 @@
 
     },
     "Replying…" : {
+
+    },
+    "Report a Bug" : {
+
+    },
+    "Report a Bug…" : {
+
+    },
+    "Reports you saved, encrypted on this Mac. Choose Help › Report a Bug to make one." : {
 
     },
     "Reschedule" : {
@@ -1199,6 +1290,9 @@
     "Says how many tasks are due today or overdue, and names them unless Lifr's lock is on." : {
 
     },
+    "Screenshots" : {
+
+    },
     "Search" : {
 
     },
@@ -1221,6 +1315,9 @@
 
     },
     "Settings" : {
+
+    },
+    "Share" : {
 
     },
     "Shortcuts" : {
@@ -1253,6 +1350,12 @@
     "Status" : {
 
     },
+    "Steps" : {
+
+    },
+    "Stop" : {
+
+    },
     "Stop Recording" : {
 
     },
@@ -1260,6 +1363,9 @@
 
     },
     "Stop locking Lifr" : {
+
+    },
+    "Stops recording and describes the bug" : {
 
     },
     "Sub task" : {
@@ -1359,6 +1465,9 @@
     "The reminder is saved and rings on your other devices, but not on this one. To hear it here, turn on notifications for Lifr in Settings." : {
 
     },
+    "The report shows your tasks, chats and screens as they were." : {
+
+    },
     "The revert is a change of its own, so you can revert it too." : {
 
     },
@@ -1370,6 +1479,16 @@
     },
     "The sample has no task with Sub tasks." : {
 
+    },
+    "The saved report %@ can't be read (%@). It may be damaged or from a newer Lifr. Update Lifr, or delete the report if it still can't be opened." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "The saved report %1$@ can't be read (%2$@). It may be damaged or from a newer Lifr. Update Lifr, or delete the report if it still can't be opened."
+          }
+        }
+      }
     },
     "The task changed again since, here or on another device, and undoing would lose that change. Open the task to change it back by hand." : {
 
@@ -1492,6 +1611,12 @@
     "What did I finish this week?" : {
 
     },
+    "What did you expect" : {
+
+    },
+    "What happened" : {
+
+    },
     "What it's for, in a line" : {
 
     },
@@ -1559,6 +1684,9 @@
 
     },
     "the device didn't say why" : {
+
+    },
+    "·" : {
 
     }
   },

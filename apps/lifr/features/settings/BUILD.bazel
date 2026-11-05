@@ -24,6 +24,7 @@ swift_library(
         "//apps/lifr/clients/store",
         "//apps/lifr/clients/sync",
         "//apps/lifr/core",
+        "//apps/lifr/features/bug_report",
         "//apps/lifr/features/skills",
         "//apps/lifr/features/task_detail",
         "//apps/lifr/ui",
@@ -48,6 +49,7 @@ swift_library(
         "//apps/lifr/clients/store",
         "//apps/lifr/clients/sync",
         "//apps/lifr/core",
+        "//apps/lifr/features/bug_report",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )
@@ -73,6 +75,7 @@ lifr_snapshot_test(
         "//apps/lifr/clients/store",
         "//apps/lifr/clients/sync",
         "//apps/lifr/core",
+        "//apps/lifr/features/bug_report",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
         "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
     ],

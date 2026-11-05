@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import LifrAvenue
 import LifrBoard
+import LifrBugReport
 import LifrConversations
 import LifrCore
 import LifrProcrastinated
@@ -44,6 +45,7 @@ package struct RootView: View {
             }
         }
         .alert($store.scope(state: \.lockAlert, action: \.lockAlert))
+        .modifier(ShakeMenu(store: store))
         .task { await store.send(.task).finish() }
     }
 
@@ -59,6 +61,9 @@ package struct RootView: View {
             // controls. On the Mac under the toolbar, small enough to leave
             // the sidebar and the chat's composer free.
             VStack(spacing: 8) {
+                if store.isRecordingSteps {
+                    RecordingBar { store.send(.stopRecordingTapped) }
+                }
                 if let toast = store.toast {
                     UndoToast(message: toast.message) { store.send(.undoTapped(toast.id)) }
                         .task(id: toast.id) {
@@ -79,6 +84,11 @@ package struct RootView: View {
         .sheet(item: $store.scope(state: \.quickAdd, action: \.quickAdd)) { store in
             NavigationStack { QuickAddView(store: store) }
                 .sheetLayout()
+        }
+        .sheet(item: $store.scope(state: \.bugReport, action: \.bugReport)) { store in
+            NavigationStack { BugReportView(store: store) }
+                .sheetLayout()
+                .interactiveDismissDisabled()
         }
         .sheet(item: $store.scope(state: \.syncReview, action: \.syncReview)) { store in
             NavigationStack { SyncReviewView(store: store) }
@@ -395,9 +405,77 @@ private struct UndoToast: View {
     }
 }
 
-/// Puts the last change in the window's undo manager, so Edit › Undo, ⌘Z
-/// and shaking the iPhone revert it. Text fields keep their own undo while
-/// they're being edited.
+/// Shown while the steps to a bug are recorded, with the way to stop.
+private struct RecordingBar: View {
+    var stop: () -> Void
+
+    var body: some View {
+        Button(action: stop) {
+            HStack(spacing: 6) {
+                Circle().fill(.red).frame(width: 8, height: 8).accessibilityHidden(true)
+                Text("Recording")
+                Text("·").accessibilityHidden(true)
+                Text("Stop").bold()
+            }
+            .font(.callout)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.thinMaterial, in: .capsule)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Recording steps")
+        .accessibilityHint("Stops recording and describes the bug")
+    }
+}
+
+/// Shaking the iPhone: Report Bug, Record Steps, the Undo a shake used to
+/// give, or Cancel. While steps are recorded, a shake stops them.
+private struct ShakeMenu: ViewModifier {
+    @Bindable var store: StoreOf<RootFeature>
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+            content
+                .onReceive(NotificationCenter.default.publisher(for: .lifrShaken)) { _ in
+                    store.send(.shaken)
+                }
+                .onAppear {
+                    // The shake is this menu's, not the system's Undo alert.
+                    UIApplication.shared.applicationSupportsShakeToEdit = false
+                }
+                .confirmationDialog("Report a Bug", isPresented: $store.isBugMenuShown, titleVisibility: .hidden) {
+                    Button("Report Bug") { store.send(.reportBugTapped) }
+                    Button("Record Steps") { store.send(.recordStepsTapped) }
+                    if let last = store.lastChange {
+                        Button("Undo \(last.message)") { store.send(.undoTapped(last.id)) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                }
+        #else
+            content
+        #endif
+    }
+}
+
+#if os(iOS)
+    extension Notification.Name {
+        /// The iPhone was shaken.
+        static let lifrShaken = Notification.Name("LifrShaken")
+    }
+
+    extension UIWindow {
+        // Every window passes shakes on, so a shake reaches the menu
+        // whatever is on screen.
+        override open func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
+            if motion == .motionShake { NotificationCenter.default.post(name: .lifrShaken, object: nil) }
+            super.motionEnded(motion, with: event)
+        }
+    }
+#endif
+
+/// Puts the last change in the window's undo manager, so Edit › Undo and ⌘Z
+/// revert it. Text fields keep their own undo while they're being edited.
 private struct RegistersUndo: ViewModifier {
     var store: StoreOf<RootFeature>
     @Environment(\.undoManager) private var undoManager

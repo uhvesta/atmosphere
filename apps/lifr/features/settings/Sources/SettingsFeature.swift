@@ -2,6 +2,7 @@ import ComposableArchitecture
 import Foundation
 import LifrAPI
 import LifrAssistantClient
+import LifrBugReport
 import LifrCore
 import LifrLockClient
 import LifrSessionClient
@@ -49,6 +50,7 @@ package struct SettingsFeature {
         @Presents package var skills: SkillsFeature.State?
         @Presents package var instructions: InstructionsFeature.State?
         @Presents package var models: ModelsFeature.State?
+        @Presents package var bugReports: BugReportsFeature.State?
         @Presents package var revoke: ConfirmationDialogState<Revoke>?
         @Presents package var alert: AlertState<Never>?
 
@@ -97,6 +99,8 @@ package struct SettingsFeature {
         case instructions(PresentationAction<InstructionsFeature.Action>)
         case modelsTapped
         case models(PresentationAction<ModelsFeature.Action>)
+        case bugReportsTapped
+        case bugReports(PresentationAction<BugReportsFeature.Action>)
         case loginItemFailed(any Error)
         case saved(Result<Saved, any Error>)
         case sessionChanged(Result<Void, any Error>)
@@ -119,7 +123,7 @@ package struct SettingsFeature {
     package init() {}
 
     package var body: some ReducerOf<Self> {
-        Reduce { state, action in
+        Reduce { (state: inout State, action: Action) -> Effect<Action> in
             switch action {
             case .task:
                 state.biometry = lock.biometry()
@@ -252,6 +256,10 @@ package struct SettingsFeature {
                 state.models = ModelsFeature.State()
                 return .none
 
+            case .bugReportsTapped:
+                state.bugReports = BugReportsFeature.State()
+                return .none
+
             case .skillsTapped:
                 state.skills = SkillsFeature.State()
                 return .none
@@ -280,7 +288,7 @@ package struct SettingsFeature {
                 state.alert = .failed("Couldn't change connected apps", error)
                 return .none
 
-            case .sessionChanged(.success), .activity, .skills, .instructions, .models, .revoke, .alert,
+            case .sessionChanged(.success), .activity, .skills, .instructions, .models, .bugReports, .revoke, .alert,
                 .delegate:
                 return .none
             }
@@ -289,6 +297,7 @@ package struct SettingsFeature {
         .ifLet(\.$skills, action: \.skills) { SkillsFeature() }
         .ifLet(\.$instructions, action: \.instructions) { InstructionsFeature() }
         .ifLet(\.$models, action: \.models) { ModelsFeature() }
+        .ifLet(\.$bugReports, action: \.bugReports) { BugReportsFeature() }
         .ifLet(\.$revoke, action: \.revoke)
         .ifLet(\.$alert, action: \.alert)
     }

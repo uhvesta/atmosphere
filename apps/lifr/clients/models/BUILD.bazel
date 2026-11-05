@@ -19,6 +19,7 @@ swift_library(
         "//apps/lifr/clients/models_litert:__pkg__",
         "//apps/lifr/clients/models_live:__pkg__",
         "//apps/lifr/clients/store_live:__pkg__",
+        "//apps/lifr/features/bug_report:__pkg__",
         "//apps/lifr/features/conversations:__pkg__",
         "//apps/lifr/features/root:__pkg__",
         "//apps/lifr/features/settings:__pkg__",

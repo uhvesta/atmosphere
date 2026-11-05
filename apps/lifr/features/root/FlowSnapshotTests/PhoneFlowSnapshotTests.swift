@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import LifrAssistantClient
+import LifrBugReport
 import LifrCore
 import LifrGlance
 import LifrGlanceClient
@@ -28,6 +29,10 @@ final class PhoneFlowSnapshotTests: XCTestCase {
     private var records: InMemorySync?
     /// What the app last gave the widgets.
     private let widgets = WidgetBoard()
+    /// Saved bug reports, kept from one window to the next.
+    private let bugReports = BugReportsClient.inMemory()
+    /// What the app last put on the clipboard.
+    private let copied = LockIsolated<String?>(nil)
 
     private func app(
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
@@ -39,7 +44,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         self.records = records
         let store = Store(initialState: RootFeature.State(platform: .phone)) {
             RootFeature()
-        } withDependencies: { [time, widgets] in
+        } withDependencies: { [time, widgets, bugReports, copied] in
             $0.store = client
             $0.session = InMemorySession().client
             $0.reminders = RemindersClient.inMemory().client
@@ -57,6 +62,10 @@ final class PhoneFlowSnapshotTests: XCTestCase {
             $0.lock = lock
             $0.glance = GlanceClient { [widgets] glance in await widgets.show(glance) }
             $0.timeZone = .gmt
+            $0.bugRecorder = BugRecorder(now: { time.value })
+            $0.bugReports = bugReports
+            $0.deviceInfo = .testValue
+            $0.pasteboard = PasteboardClient { copied.setValue($0) }
             $0.withRandomNumberGenerator = WithRandomNumberGenerator(SeededRandomNumberGenerator())
             $0.uuid = UUIDGenerator {
                 ids.withValue {
@@ -319,6 +328,43 @@ final class PhoneFlowSnapshotTests: XCTestCase {
             store.send(.conversations(.chats(.element(id: id, action: .replyFailed(error)))))
             await flow.step(name)
         }
+        flow.finish()
+    }
+
+    /// Shaking to record the steps to a bug: finishing a task while it
+    /// records, shaking again to stop, describing it, copying it without
+    /// the task's title, saving it, then finding it in Settings.
+    func testBugReport() async throws {
+        let (store, flow) = app("bug-report")
+        await flow.step("launch", image: false)
+        store.send(.shaken)
+        XCTAssertTrue(store.isBugMenuShown)
+        store.isBugMenuShown = false
+        store.send(.recordStepsTapped)
+        await flow.step("recording")
+        let water = try task("Water the plants", in: store)
+        store.send(.today(.list(.toggled(water))))
+        await flow.step("acted")
+        store.send(.shaken)
+        await flow.step("describe")
+        XCTAssertFalse(store.isRecordingSteps)
+        XCTAssertEqual(store.bugReport?.report.recording?.steps.isEmpty, false)
+        store.send(.bugReport(.presented(.binding(.set(\.report.happened, "Finishing a task hid the list.")))))
+        store.send(.bugReport(.presented(.binding(.set(\.report.expected, "The list stays.")))))
+        await flow.step("described")
+        store.send(.bugReport(.presented(.copyTapped)))
+        await flow.step("copied", image: false)
+        let text = try XCTUnwrap(copied.value)
+        XCTAssertTrue(text.contains("Finishing a task hid the list."))
+        XCTAssertFalse(text.contains("Water the plants"))
+        store.send(.bugReport(.presented(.saveTapped)))
+        await flow.step("saved", image: false)
+        XCTAssertNil(store.bugReport)
+        store.isSettingsShown = true
+        store.send(.settings(.bugReportsTapped))
+        await flow.step("list")
+        let saved = try await bugReports.load().reports
+        XCTAssertEqual(saved.map(\.happened), ["Finishing a task hid the list."])
         flow.finish()
     }
 
