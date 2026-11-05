@@ -3,7 +3,8 @@ load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("//apps/lifr/testing/snapshot:defs.bzl", "lifr_snapshot_test")
 
 # Settings: when tasks count as Procrastinated, agent access per Avenue,
-# connected apps, and the CLI install. Also the sheet that approves an app.
+# connected apps, the CLI install, and the models each use runs on. Also the
+# sheet that approves an app.
 swift_library(
     name = "settings",
     package_name = "lifr",
@@ -17,6 +18,7 @@ swift_library(
     deps = [
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/models",
         "//apps/lifr/clients/session",
         "//apps/lifr/clients/store",
         "//apps/lifr/clients/sync",
@@ -39,6 +41,7 @@ swift_library(
         ":settings",
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/models",
         "//apps/lifr/clients/session",
         "//apps/lifr/clients/store",
         "//apps/lifr/clients/sync",
@@ -62,6 +65,7 @@ lifr_snapshot_test(
         ":settings",
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/models",
         "//apps/lifr/clients/session",
         "//apps/lifr/clients/store",
         "//apps/lifr/clients/sync",

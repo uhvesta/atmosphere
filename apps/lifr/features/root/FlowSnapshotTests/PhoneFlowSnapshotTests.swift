@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import LifrAssistantClient
 import LifrCore
+import LifrModelsClient
 import LifrRemindersClient
 import LifrRoot
 import LifrSessionClient
@@ -35,6 +36,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
             $0.conversations = .inMemory()
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
+            $0.models = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B]).client
             $0.date = DateGenerator { now }
             $0.timeZone = .gmt
             $0.withRandomNumberGenerator = WithRandomNumberGenerator(SeededRandomNumberGenerator())
@@ -200,7 +202,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
-    /// Settings, its Activity and Skills.
+    /// Settings, its Activity, Models and Skills.
     func testSettings() async {
         let (store, flow) = app("settings")
         store.isSettingsShown = true
@@ -210,6 +212,9 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         store.send(.settings(.activityTapped))
         await flow.step("activity")
         store.send(.settings(.activity(.dismiss)))
+        store.send(.settings(.modelsTapped))
+        await flow.step("models")
+        store.send(.settings(.models(.dismiss)))
         store.send(.settings(.skillsTapped))
         await flow.step("skills")
         store.send(.settings(.skills(.presented(.newTapped))))

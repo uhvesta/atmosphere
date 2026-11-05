@@ -42,6 +42,7 @@ package struct SettingsFeature {
         @Presents package var activity: ActivityFeature.State?
         @Presents package var skills: SkillsFeature.State?
         @Presents package var instructions: InstructionsFeature.State?
+        @Presents package var models: ModelsFeature.State?
         @Presents package var revoke: ConfirmationDialogState<Revoke>?
         @Presents package var alert: AlertState<Never>?
 
@@ -85,6 +86,8 @@ package struct SettingsFeature {
         case skills(PresentationAction<SkillsFeature.Action>)
         case instructionsTapped
         case instructions(PresentationAction<InstructionsFeature.Action>)
+        case modelsTapped
+        case models(PresentationAction<ModelsFeature.Action>)
         case loginItemFailed(any Error)
         case saved(Result<Saved, any Error>)
         case sessionChanged(Result<Void, any Error>)
@@ -216,6 +219,10 @@ package struct SettingsFeature {
                 guard state.sync.status != .syncing else { return .none }
                 return .run { [sync] _ in _ = await sync.sync() }
 
+            case .modelsTapped:
+                state.models = ModelsFeature.State()
+                return .none
+
             case .skillsTapped:
                 state.skills = SkillsFeature.State()
                 return .none
@@ -244,13 +251,15 @@ package struct SettingsFeature {
                 state.alert = .failed("Couldn't change connected apps", error)
                 return .none
 
-            case .sessionChanged(.success), .activity, .skills, .instructions, .revoke, .alert, .delegate:
+            case .sessionChanged(.success), .activity, .skills, .instructions, .models, .revoke, .alert,
+                .delegate:
                 return .none
             }
         }
         .ifLet(\.$activity, action: \.activity) { ActivityFeature() }
         .ifLet(\.$skills, action: \.skills) { SkillsFeature() }
         .ifLet(\.$instructions, action: \.instructions) { InstructionsFeature() }
+        .ifLet(\.$models, action: \.models) { ModelsFeature() }
         .ifLet(\.$revoke, action: \.revoke)
         .ifLet(\.$alert, action: \.alert)
     }

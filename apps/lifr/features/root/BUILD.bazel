@@ -90,6 +90,7 @@ lifr_snapshot_test(
     deps = [
         ":root",
         "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/models",
         "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
     ] + _DEPS,
 )
@@ -105,6 +106,7 @@ lifr_snapshot_test(
     deps = [
         ":root",
         "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/models",
         "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
     ] + _DEPS,
 )

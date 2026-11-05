@@ -1,0 +1,27 @@
+▿ (4 elements)
+  ▿ choices: 2 elements
+    ▿ apple
+      - rawValue: "apple"
+    ▿ gemma-4-e2b
+      - rawValue: "gemma-4-e2b"
+  ▿ downloadable: 3 elements
+    ▿ gemma-4-e2b
+      - rawValue: "gemma-4-e2b"
+    ▿ gemma-4-e4b
+      - rawValue: "gemma-4-e4b"
+    ▿ hf/litert-community/Qwen3-0.6B/Qwen3-0.6B.litertlm
+      - rawValue: "hf/litert-community/Qwen3-0.6B/Qwen3-0.6B.litertlm"
+  ▿ selected: 3 elements
+    ▿ (2 elements)
+      - .0: ModelUse.assistant
+      ▿ .1: apple
+        - rawValue: "apple"
+    ▿ (2 elements)
+      - .0: ModelUse.skills
+      ▿ .1: gemma-4-e2b
+        - rawValue: "gemma-4-e2b"
+    ▿ (2 elements)
+      - .0: ModelUse.titles
+      ▿ .1: apple
+        - rawValue: "apple"
+  - canAdd: false

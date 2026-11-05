@@ -7,6 +7,7 @@
 [button] "Activity"
 [text] "Every change, who made it, and from where. Any of them can be reverted."
 [header, text] "Assistant"
-[button, toggle] "Name conversations with Apple Intelligence" value: "0"
+[button, toggle] "Name conversations" value: "0"
 [button] "Instructions"
+[button] "Models"
 [button] "Skills"

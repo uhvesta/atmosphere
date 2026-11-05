@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import LifrAssistantClient
 import LifrCore
+import LifrModelsClient
 import LifrRemindersClient
 import LifrRoot
 import LifrSessionClient
@@ -38,6 +39,7 @@ final class MacFlowSnapshotTests: XCTestCase {
             $0.conversations = .inMemory()
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
+            $0.models = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B]).client
             $0.date = DateGenerator { now }
             $0.timeZone = .gmt
             $0.withRandomNumberGenerator = WithRandomNumberGenerator(SeededRandomNumberGenerator())
@@ -180,6 +182,9 @@ final class MacFlowSnapshotTests: XCTestCase {
         store.send(.settings(.activityTapped))
         await flow.step("activity")
         store.send(.settings(.activity(.dismiss)))
+        store.send(.settings(.modelsTapped))
+        await flow.step("models")
+        store.send(.settings(.models(.dismiss)))
         store.send(.settings(.instructionsTapped))
         await flow.step("instructions")
         store.send(.settings(.instructions(.presented(.binding(.set(\.draft, "Answer in Spanish."))))))

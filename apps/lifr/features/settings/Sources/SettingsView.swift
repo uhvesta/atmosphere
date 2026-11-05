@@ -35,17 +35,18 @@ package struct SettingsView: View {
                 Text("Every change, who made it, and from where. Any of them can be reverted.")
             }
             Section {
-                Toggle("Name conversations with Apple Intelligence", isOn: Binding($namesConversations))
+                Toggle("Name conversations", isOn: Binding($namesConversations))
                 Button("Instructions") { store.send(.instructionsTapped) }
+                Button("Models") { store.send(.modelsTapped) }
                 Button("Skills") { store.send(.skillsTapped) }
             } header: {
                 Text("Assistant")
             } footer: {
                 Text(
-                    "Names each new conversation after its first reply, on this device. Names you give are kept. "
-                        + "Conversations stay on this device unless you sync them: swipe right on one in "
-                        + "Conversations. Instructions stay on this device. Skills sync through iCloud, "
-                        + "encrypted end to end.")
+                    "Names each new conversation after its first reply, on this device, with the model picked "
+                        + "in Models. Names you give are kept. Conversations stay on this device unless you sync "
+                        + "them: swipe right on one in Conversations. Instructions stay on this device. Skills sync "
+                        + "through iCloud, encrypted end to end.")
             }
             if store.showsAgents {
                 avenueAccess
@@ -62,6 +63,9 @@ package struct SettingsView: View {
         }
         .navigationDestination(item: $store.scope(state: \.instructions, action: \.instructions)) { store in
             InstructionsView(store: store)
+        }
+        .navigationDestination(item: $store.scope(state: \.models, action: \.models)) { store in
+            ModelsView(store: store)
         }
         .task { await store.send(.task).finish() }
         .confirmationDialog($store.scope(state: \.revoke, action: \.revoke))
