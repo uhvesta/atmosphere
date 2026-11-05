@@ -4,17 +4,17 @@ import LifrAssistantClient
 import LifrModelsClient
 
 extension AssistantClient {
-    /// The assistant on the model `runtime` returns, asked again for each
-    /// request so a change of model applies to the next message. Nothing
-    /// leaves the device.
-    package static func live(runtime: @escaping @Sendable () -> any ModelRuntime) -> AssistantClient {
+    /// The assistant on the model `runtime` returns for each use, asked
+    /// again for each request so a change of model applies to the next
+    /// message. Nothing leaves the device.
+    package static func live(runtime: @escaping @Sendable (ModelUse) -> any ModelRuntime) -> AssistantClient {
         AssistantClient(
-            availability: { AssistantAvailability(runtime().status) },
-            reply: { request in LiveAssistant.reply(to: request, on: runtime()) },
-            draftSkill: { description in try await LiveAssistant.draftSkill(description, on: runtime()) },
-            suggestTitle: { messages in try await LiveAssistant.suggestTitle(messages, on: runtime()) },
+            availability: { AssistantAvailability(runtime(.assistant).status) },
+            reply: { request in LiveAssistant.reply(to: request, on: runtime(.assistant)) },
+            draftSkill: { description in try await LiveAssistant.draftSkill(description, on: runtime(.skills)) },
+            suggestTitle: { messages in try await LiveAssistant.suggestTitle(messages, on: runtime(.titles)) },
             prewarm: {
-                let model = runtime()
+                let model = runtime(.assistant)
                 if model.status == .available { model.prewarm() }
             })
     }
@@ -28,6 +28,17 @@ extension AssistantAvailability {
         case .deviceNotEligible: self = .deviceNotEligible
         case .notEnabled: self = .notEnabled
         case .modelNotReady: self = .modelNotReady
+        case .notDownloaded: self = .notDownloaded
+        case .notEnoughMemory: self = .notEnoughMemory
+        }
+    }
+}
+
+extension AssistantInterruption {
+    init(_ reason: ModelInterruption) {
+        switch reason {
+        case .memory: self = .memory
+        case .background: self = .background
         }
     }
 }
@@ -40,6 +51,7 @@ extension AssistantError {
         case .declined: self = .declined
         case .busy: self = .busy
         case .simulatorHost(let reason): self = .simulatorHost(reason)
+        case .interrupted(let reason): self = .interrupted(AssistantInterruption(reason), saved: false)
         case .decodingFailure, .cancelled, .failed: self = .failed(error.description)
         }
     }
@@ -79,6 +91,10 @@ enum LiveAssistant {
                     continuation.finish(throwing: error)
                 } catch ModelRuntimeError.cancelled {
                     continuation.finish()
+                } catch ModelRuntimeError.interrupted(let reason) {
+                    continuation.finish(
+                        throwing: AssistantError.interrupted(
+                            AssistantInterruption(reason), saved: tools.workspace != before))
                 } catch let error as ModelRuntimeError {
                     continuation.finish(throwing: AssistantError(error))
                 } catch is CancellationError {

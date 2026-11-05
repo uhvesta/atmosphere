@@ -16,6 +16,7 @@ swift_library(
         "//apps/lifr/app:__subpackages__",
         "//apps/lifr/clients/assistant:__pkg__",
         "//apps/lifr/clients/assistant_live:__pkg__",
+        "//apps/lifr/clients/models_litert:__pkg__",
         "//apps/lifr/clients/models_live:__pkg__",
     ],
     deps = [

@@ -124,6 +124,19 @@ package enum ModelStatus: Hashable, Sendable {
     case notEnabled
     /// Apple's model is still downloading.
     case modelNotReady
+    /// The model picked isn't on the device: its download didn't finish,
+    /// or it was deleted.
+    case notDownloaded
+    /// The model needs more memory than the system leaves Lifr now.
+    case notEnoughMemory(needed: Int64, available: Int64)
+}
+
+/// Why Lifr stopped a model in the middle of an answer.
+package enum ModelInterruption: Hashable, Sendable {
+    /// The system ran low on memory.
+    case memory
+    /// Lifr went to the background.
+    case background
 }
 
 /// Why a model didn't answer.
@@ -140,6 +153,8 @@ package enum ModelRuntimeError: Error, Hashable, Sendable, CustomStringConvertib
     case busy
     /// The turn was canceled before the model finished.
     case cancelled
+    /// Lifr unloaded the model while it answered.
+    case interrupted(ModelInterruption)
     /// The Simulator couldn't reach the Mac's model.
     case simulatorHost(String)
     /// Anything else the runtime reported.
@@ -159,6 +174,11 @@ package enum ModelRuntimeError: Error, Hashable, Sendable, CustomStringConvertib
             "The model is busy. Wait a moment and send the message again."
         case .cancelled:
             "The answer was stopped before it finished. Send the message again."
+        case .interrupted(.memory):
+            "The device ran low on memory, so Lifr stopped the model. Send the message again; if it keeps "
+                + "happening, close other apps or pick a smaller model."
+        case .interrupted(.background):
+            "Lifr stopped the model when it went to the background. Send the message again."
         case .simulatorHost(let reason):
             "The Simulator couldn't reach the Mac's model (\(reason)). Use a Simulator runtime with the same "
                 + "version as macOS, or a device."

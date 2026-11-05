@@ -137,6 +137,13 @@ swift_deps.from_package(
 )
 use_repo(swift_deps, "swift_package", "swiftpkg_swift_composable_architecture", "swiftpkg_swift_snapshot_testing")
 
+# Google's LiteRT-LM, which runs downloaded models for Lifr: its Swift API
+# and prebuilt runtime, pinned by SHA-256. See
+# apps/lifr/clients/models_litert/litert_lm.bzl.
+litert_lm = use_repo_rule("//apps/lifr/clients/models_litert:litert_lm.bzl", "litert_lm")
+
+litert_lm(name = "litert_lm")
+
 # MARK: - Lifr signing
 
 # The team and bundle ID prefix that sign Lifr, from LIFR_TEAM_ID and

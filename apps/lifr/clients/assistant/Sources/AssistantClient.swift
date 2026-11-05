@@ -38,6 +38,10 @@ package enum AssistantAvailability: Hashable, Sendable, CustomStringConvertible 
     case notEnabled
     /// The model is still downloading.
     case modelNotReady
+    /// The model picked for the assistant isn't on the device.
+    case notDownloaded
+    /// The model picked needs more memory than the device has free.
+    case notEnoughMemory
 
     package var description: String {
         switch self {
@@ -53,6 +57,12 @@ package enum AssistantAvailability: Hashable, Sendable, CustomStringConvertible 
         case .modelNotReady:
             "Apple Intelligence is still downloading. Keep the device on Wi-Fi and power, then try again in a few "
                 + "minutes."
+        case .notDownloaded:
+            "The model picked for the assistant isn't on this device. Download it again in Settings › Models, or "
+                + "pick another model there."
+        case .notEnoughMemory:
+            "The model picked for the assistant needs more memory than this device has free. Close other apps "
+                + "and try again, or pick a smaller model in Settings › Models."
         }
     }
 }
@@ -238,6 +248,10 @@ package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible 
     /// The model's answer didn't fit what Lifr asked for, even after
     /// asking again. `saved` when it changed tasks before that.
     case unreadable(saved: Bool)
+    /// Lifr stopped the model in the middle of the answer: the device ran
+    /// low on memory, or Lifr went to the background. `saved` when it
+    /// changed tasks before that.
+    case interrupted(AssistantInterruption, saved: Bool)
     /// Anything else the model reported.
     case failed(String)
 
@@ -279,8 +293,31 @@ package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible 
             "The assistant changed tasks, then wrote an answer Lifr couldn't read. The changes are saved; undo them "
                 + "or see them in Settings › Activity. Check them before sending the message again, or they may "
                 + "be made twice."
+        case .interrupted(let reason, saved: false):
+            "\(reason.description) Send the message again."
+        case .interrupted(let reason, saved: true):
+            "\(reason.description) It had changed tasks; those changes are saved. Check them in Settings › "
+                + "Activity before sending the message again, or they may be made twice."
         case .failed(let detail):
             "The assistant stopped: \(detail). Send the message again."
+        }
+    }
+}
+
+/// Why Lifr stopped the model in the middle of an answer.
+package enum AssistantInterruption: Hashable, Sendable, CustomStringConvertible {
+    /// The device ran low on memory.
+    case memory
+    /// Lifr went to the background.
+    case background
+
+    package var description: String {
+        switch self {
+        case .memory:
+            "The device ran low on memory, so Lifr stopped the assistant's model. If it keeps happening, close "
+                + "other apps or pick a smaller model in Settings › Models."
+        case .background:
+            "Lifr stopped the assistant's model when it went to the background."
         }
     }
 }
