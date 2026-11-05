@@ -82,6 +82,10 @@ build:lifr_ios_device --//apps/lifr:signed
 build:lifr_ios_device --ios_multi_cpus=arm64
 build:lifr_ios_device --apple_generate_dsym
 build:lifr_ios_device --compilation_mode=opt
+# The iPhone app signed for the App Store, as tools/testflight uploads it:
+# needs the Apple Distribution certificate and the profiles it makes.
+build:lifr_testflight --config=lifr_ios_device
+build:lifr_testflight --//apps/lifr:app_store
 # Builds started from the generated Lifr.xcodeproj (//apps/lifr:xcodeproj).
 common:rules_xcodeproj --config=xcode
 # Settings for this checkout only, such as LIFR_TEAM_ID and LIFR_BUNDLE_PREFIX

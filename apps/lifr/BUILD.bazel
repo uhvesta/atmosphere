@@ -23,6 +23,27 @@ config_setting(
     ],
 )
 
+# Signs the iPhone app and its widgets for the App Store, to upload to
+# TestFlight, with the profiles tools/testflight makes. Set by
+# --config=lifr_testflight in .bazelrc.
+bool_flag(
+    name = "app_store",
+    build_setting_default = False,
+)
+
+# A device build for the App Store: more specific than the device
+# constraint alone, so it wins the profile select().
+config_setting(
+    name = "is_app_store",
+    constraint_values = ["@apple_support//constraints:device"],
+    flag_values = {":app_store": "true"},
+    visibility = [
+        "//apps/lifr/app:__pkg__",
+        "//apps/lifr/widgets:__pkg__",
+        "@rules_apple//apple:__pkg__",
+    ],
+)
+
 # Generates Lifr.xcodeproj for previews, the debugger and Instruments:
 # `bazel run //apps/lifr:xcodeproj`. Xcode builds through Bazel with
 # `--config=rules_xcodeproj`, which .bazelrc points at `--config=xcode`.

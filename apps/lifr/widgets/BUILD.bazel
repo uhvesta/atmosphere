@@ -94,10 +94,13 @@ ios_extension(
     infoplists = ["Extension/Info.plist"],
     minimum_os_version = "18.0",
     provisioning_profile = select({
+        "//apps/lifr:is_app_store": "//apps/lifr/app:ios_widgets_app_store",
         "@apple_support//constraints:device": "//apps/lifr/app:ios_development",
         "//conditions:default": None,
     }),
     target_compatible_with = ["//bazel/xcode"],
+    # The app's build number: the App Store requires they match.
+    version = "//apps/lifr/app:ios_version",
     visibility = ["//apps/lifr/app:__pkg__"],
     deps = [":extension_lib"],
 )

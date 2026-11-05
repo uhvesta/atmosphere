@@ -1,0 +1,39 @@
+load("@lifr_identity//:defs.bzl", "BUNDLE_ID", "TEAM_ID", "WIDGETS_BUNDLE_ID")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
+
+# Uploads the iPhone app to TestFlight from this Mac:
+#   bazel run --config=xcode //apps/lifr/tools/testflight:upload
+# Once, first: store the App Store Connect API key in the login Keychain.
+#   bazel run --config=xcode //apps/lifr/tools/testflight:setup -- <.p8> <Key ID> <Issuer ID>
+
+# The App Store Connect API calls upload.sh makes.
+swift_binary(
+    name = "asc",
+    srcs = ["main.swift"],
+    target_compatible_with = ["//bazel/xcode"],
+)
+
+sh_binary(
+    name = "setup",
+    srcs = ["setup.sh"],
+)
+
+sh_binary(
+    name = "upload",
+    srcs = ["upload.sh"],
+    args = [
+        TEAM_ID or "none",
+        BUNDLE_ID,
+        WIDGETS_BUNDLE_ID,
+        "$(rootpath :asc)",
+    ],
+    data = [":asc"],
+    target_compatible_with = ["//bazel/xcode"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

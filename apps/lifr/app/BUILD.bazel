@@ -3,6 +3,7 @@ load("@lifr_identity//:defs.bzl", "BUNDLE_ID", "IOS_APP_GROUP", "TEAM_ID")
 load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
 load("@rules_apple//apple:ios.bzl", "ios_application")
 load("@rules_apple//apple:macos.bzl", "macos_application")
+load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@rules_apple//apple:xcarchive.bzl", "xcarchive")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
@@ -70,16 +71,34 @@ ios_application(
     ],
     minimum_os_version = "18.0",
     # Any device build, so Xcode can run it on a phone; the simulator
-    # needs none.
+    # needs none. TestFlight uploads use the App Store one.
     provisioning_profile = select({
+        "//apps/lifr:is_app_store": ":ios_app_store",
         "@apple_support//constraints:device": ":ios_development",
         "//conditions:default": None,
     }),
     resources = ["Resources/Localizable.xcstrings"],
     target_compatible_with = ["//bazel/xcode"],
+    version = ":ios_version",
     # For the generated Xcode project (//apps/lifr:xcodeproj).
     visibility = ["@rules_xcodeproj//xcodeproj:generated"],
     deps = [":app_lib"],
+)
+
+# The iPhone build number: 1.0, or the UTC date and time tools/testflight
+# passes with --embed_label=lifr_<YYYYMMDD>_<HHMM>, so each upload is newer
+# than the last.
+apple_bundle_version(
+    name = "ios_version",
+    build_label_pattern = "lifr_{day}_{time}",
+    build_version = "{day}.{time}",
+    capture_groups = {
+        "day": "\\d{1,8}",
+        "time": "\\d{1,4}",
+    },
+    fallback_build_label = "lifr_1_0",
+    short_version_string = "1.0",
+    visibility = ["//apps/lifr/widgets:__pkg__"],
 )
 
 macos_application(
@@ -142,6 +161,21 @@ local_provisioning_profile(
     profile_name = "iOS Team Provisioning Profile: *",
     team_id = TEAM_ID,
     # The widgets' extension signs with it too.
+    visibility = ["//apps/lifr/widgets:__pkg__"],
+)
+
+# The App Store profiles tools/testflight makes and installs, for the
+# iPhone app and its widgets.
+local_provisioning_profile(
+    name = "ios_app_store",
+    profile_name = "Lifr App Store",
+    team_id = TEAM_ID,
+)
+
+local_provisioning_profile(
+    name = "ios_widgets_app_store",
+    profile_name = "Lifr Widgets App Store",
+    team_id = TEAM_ID,
     visibility = ["//apps/lifr/widgets:__pkg__"],
 )
 
