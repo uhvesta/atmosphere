@@ -12,60 +12,17 @@ package struct ChatView: View {
         self.store = store
     }
 
+    @Environment(\.locale) private var locale
+
     package var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                if store.availability != .available {
-                    Text(store.availability.description)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(store.conversation.messages) { message in
-                    MessageView(
-                        message: message, skill: store.state.skillTitle(of: message),
-                        canUndo: store.conversation.changes[message.id] != nil
-                    ) {
-                        store.send(.undoTapped(messageID: message.id))
-                    }
-                }
-                if let replying = store.replying {
-                    Text(replying.isEmpty ? "…" : replying)
-                        .foregroundStyle(.secondary)
-                }
-                if let draft = store.conversation.draft {
-                    DraftCard(
-                        plan: $store.conversation.draft.or(draft), workspace: store.workspace, today: store.today,
-                        problem: store.problem, canAdd: store.canAdd
-                    ) {
-                        store.send(.addTapped)
-                    } discard: {
-                        store.send(.discardDraftTapped)
-                    }
-                }
-            }
-            .padding()
+        VStack(spacing: 0) {
+            #if os(macOS)
+                header
+                Divider()
+            #endif
+            messages
         }
-        .defaultScrollAnchor(.bottom)
-        #if os(macOS)
-            // The Mac shows no title for the third column, so the chat
-            // names itself here, with Rename beside it.
-            .safeAreaInset(edge: .top, spacing: 0) {
-                HStack {
-                    Text(store.conversation.title)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .accessibilityAddTraits(.isHeader)
-                    Spacer()
-                    Button("Rename", systemImage: "pencil") { store.send(.renameTapped) }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .help("Rename")
-                }
-                .padding(.horizontal)
-                .padding(.vertical, 10)
-                .background(.bar)
-            }
-        #endif
-        .safeAreaInset(edge: .bottom) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             composer
                 .padding()
                 .background(.bar)
@@ -86,6 +43,22 @@ package struct ChatView: View {
             }
             .sheetLayout(height: 520)
         }
+        .sheet(isPresented: $store.editsDraft) {
+            if let draft = store.conversation.draft {
+                NavigationStack {
+                    DraftEditor(
+                        plan: $store.conversation.draft.or(draft), meanings: meanings, problem: store.problem
+                    )
+                    .navigationTitle("Edit Draft")
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            DismissButton()
+                        }
+                    }
+                }
+                .sheetLayout(height: 560)
+            }
+        }
         .navigationTitle(store.conversation.title)
         .toolbarTitleMenu {
             Button("Rename", systemImage: "pencil") { store.send(.renameTapped) }
@@ -93,6 +66,79 @@ package struct ChatView: View {
         .task { await store.send(.task).finish() }
         .alert($store.scope(state: \.alert, action: \.alert))
     }
+
+    private var meanings: DraftMeanings {
+        DraftMeanings(workspace: store.workspace, today: store.today, locale: locale)
+    }
+
+    private var messages: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if store.availability != .available {
+                    Label(store.availability.description, systemImage: "exclamationmark.circle")
+                        .foregroundStyle(.secondary)
+                }
+                if store.conversation.messages.isEmpty, store.availability == .available {
+                    Suggestions { store.send(.suggestionTapped($0)) }
+                }
+                ForEach(store.conversation.messages) { message in
+                    MessageView(
+                        message: message, skill: store.state.skillTitle(of: message),
+                        canUndo: store.conversation.changes[message.id] != nil
+                    ) {
+                        store.send(.undoTapped(messageID: message.id))
+                    }
+                }
+                if let replying = store.replying {
+                    if replying.isEmpty {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Thinking…")
+                        }
+                        .foregroundStyle(.secondary)
+                        .accessibilityElement(children: .combine)
+                    } else {
+                        Text(replying).foregroundStyle(.secondary)
+                    }
+                }
+                if let draft = store.conversation.draft {
+                    DraftCard(
+                        plan: draft, meanings: meanings, problem: store.problem, canAdd: store.canAdd
+                    ) {
+                        store.send(.addTapped)
+                    } discard: {
+                        store.send(.discardDraftTapped)
+                    } edit: {
+                        store.send(.editDraftTapped)
+                    }
+                }
+            }
+            .frame(maxWidth: 720)
+            .padding()
+            .frame(maxWidth: .infinity)
+        }
+        .defaultScrollAnchor(.bottom)
+    }
+
+    #if os(macOS)
+        /// The Mac shows no title for the third column, so the chat names
+        /// itself here, with Rename beside it.
+        private var header: some View {
+            HStack {
+                Text(store.conversation.title)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .accessibilityAddTraits(.isHeader)
+                Spacer()
+                Button("Rename", systemImage: "pencil") { store.send(.renameTapped) }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("Rename")
+            }
+            .padding(.horizontal)
+            .padding(.vertical, 10)
+        }
+    #endif
 
     /// The message field, with the skill for the next message: a pill once
     /// one is picked, a button to find one before.
@@ -249,6 +295,37 @@ private struct SkillFinder: View {
     }
 }
 
+/// Ways to start, in a chat with nothing in it yet.
+private struct Suggestions: View {
+    let send: (String) -> Void
+
+    private let suggestions: [(symbol: String, text: String)] = [
+        ("calendar", String(localized: "Plan my week")),
+        ("exclamationmark.circle", String(localized: "What's overdue?")),
+        ("checkmark.circle", String(localized: "What did I finish this week?")),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Ask about your tasks, change them, or plan what to add.")
+                .foregroundStyle(.secondary)
+            ForEach(suggestions, id: \.text) { suggestion in
+                Button {
+                    send(suggestion.text)
+                } label: {
+                    Label(suggestion.text, systemImage: suggestion.symbol)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(.fill.quaternary, in: .rect(cornerRadius: 12))
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
 private struct MessageView: View {
     let message: ChatMessage
     let skill: String?
@@ -263,11 +340,17 @@ private struct MessageView: View {
                     .foregroundStyle(.tint)
             }
             if !message.text.isEmpty {
-                Text(message.text)
-                    .padding(10)
-                    .background(
-                        message.role == .person ? AnyShapeStyle(.tint.opacity(0.2)) : AnyShapeStyle(.fill.tertiary),
-                        in: .rect(cornerRadius: 12))
+                if message.role == .person {
+                    Text(message.text)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.tint.opacity(0.2), in: .rect(cornerRadius: 16))
+                        .frame(maxWidth: 520, alignment: .trailing)
+                } else {
+                    // The assistant's words read as text, not a bubble.
+                    Text(message.text)
+                        .textSelection(.enabled)
+                }
             }
             if canUndo {
                 Button("Undo", action: undo)

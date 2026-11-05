@@ -1,3 +1,4 @@
 .tools
 target
 .claude
+apps/lifr/.build

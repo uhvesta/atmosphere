@@ -76,6 +76,12 @@ package struct ConversationsView: View {
                     ConversationRow(
                         conversation: conversation, replying: store.chats[id: conversation.id]?.replying != nil)
                 }
+                .buttonStyle(.plain)
+                #if os(macOS)
+                    .listRowBackground(
+                        store.openID == conversation.id
+                            ? RoundedRectangle(cornerRadius: 8).fill(.tint.opacity(0.15)) : nil)
+                #endif
                 .swipeActions(edge: .leading, allowsFullSwipe: false) {
                     SyncButton(conversation: conversation, store: store).tint(.blue)
                 }
@@ -170,27 +176,48 @@ private struct ConversationRow: View {
     var conversation: Conversation
     var replying: Bool
 
+    /// The last thing said, to tell conversations apart.
+    private var preview: String? {
+        conversation.messages.last { !$0.text.isEmpty }?.text
+    }
+
     var body: some View {
-        HStack {
-            VStack(alignment: .leading) {
-                Text(conversation.title).lineLimit(1)
-                if replying {
-                    Text("Replying…")
-                        .font(.caption)
-                        .foregroundStyle(.tint)
-                } else {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(conversation.title)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Spacer()
                     Text(conversation.updatedAt, format: .dateTime.month().day().hour().minute())
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if replying {
+                    Text("Replying…")
+                        .font(.subheadline)
+                        .foregroundStyle(.tint)
+                } else if let preview {
+                    Text(preview)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                if conversation.draft != nil {
+                    Label("Draft to review", systemImage: "doc.badge.plus")
+                        .font(.caption)
+                        .foregroundStyle(.tint)
+                }
             }
             if conversation.isSynced {
-                Spacer()
                 Image(systemName: "icloud")
                     .foregroundStyle(.secondary)
                     .accessibilityLabel("Synced")
             }
         }
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(.rect)
     }
 }
 

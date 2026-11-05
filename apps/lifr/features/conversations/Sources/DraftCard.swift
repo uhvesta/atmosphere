@@ -9,91 +9,124 @@ import SwiftUI
     import UIKit
 #endif
 
-/// The plan to add, as rows the person can edit or remove before adding.
-/// Every edit is checked against their records, and Add adds exactly what
-/// the card shows. What a field means is shown under it, such as the day
-/// "saturday" is, or the Avenue "HOME" is.
+/// What the plan adds, to read before adding: each row with what it means,
+/// such as "Sat, Nov 7" for "saturday" or "Home" for "HOME". Edit opens the
+/// plan's fields; Add adds exactly what the card shows.
 struct DraftCard: View {
-    @Binding var plan: Plan
-    let workspace: Workspace
-    let today: CalendarDate?
+    let plan: Plan
+    let meanings: DraftMeanings
     let problem: String?
     let canAdd: Bool
     let add: () -> Void
     let discard: () -> Void
-
-    @Environment(\.locale) private var locale
+    let edit: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Draft").font(.headline)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Draft", systemImage: "doc.badge.plus")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
                 Spacer()
-                Menu {
-                    Button("Copy as TOML", systemImage: "doc.on.doc") { copy(PlanFile.write(plan)) }
-                } label: {
-                    Label("More", systemImage: "ellipsis.circle").labelStyle(.iconOnly)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+                Text(plan.taskCount == 1 ? "1 task" : "\(plan.taskCount) tasks")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
-            ForEach(plan.avenues.indices, id: \.self) { index in
-                let avenue = $plan.avenues.element(index, or: .init(key: "", name: ""))
-                Row(symbol: "square.stack.3d.up") {
-                    TextField("Avenue name", text: avenue.name).accessibilityLabel("Avenue name")
-                    TextField("KEY", text: avenue.key).accessibilityLabel("Key").frame(maxWidth: 100)
-                } remove: {
-                    plan.avenues.remove(at: index)
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(plan.avenues.enumerated()), id: \.offset) { _, avenue in
+                    Line(symbol: "square.stack.3d.up", title: Text("New Avenue \(avenue.name)"), detail: avenue.key)
                 }
+                ForEach(Array(plan.labels.enumerated()), id: \.offset) { _, label in
+                    Line(symbol: "tag", title: Text("New label \(label.name)"), detail: nil)
+                }
+                ForEach(Array(plan.projects.enumerated()), id: \.offset) { _, project in
+                    Line(
+                        symbol: "flag", title: Text("New Project \(project.name)"),
+                        detail: meanings.details(due: project.due, place: project.avenue))
+                    TaskLines(tasks: project.tasks, showsPlace: false, meanings: meanings)
+                        .padding(.leading, 28)
+                }
+                TaskLines(tasks: plan.tasks, showsPlace: true, meanings: meanings)
             }
-            ForEach(plan.labels.indices, id: \.self) { index in
-                Row(symbol: "tag") {
-                    TextField("Label", text: $plan.labels.element(index, or: .init(name: "")).name).accessibilityLabel(
-                        "Label")
-                } remove: {
-                    plan.labels.remove(at: index)
-                }
-            }
-            ForEach(plan.projects.indices, id: \.self) { index in
-                let project = $plan.projects.element(index, or: .init(name: "", avenue: ""))
-                Row(symbol: "flag") {
-                    TextField("Project name", text: project.name).accessibilityLabel("Project name")
-                } remove: {
-                    plan.projects.remove(at: index)
-                }
-                HStack(alignment: .top) {
-                    Meaning(place(project.wrappedValue.avenue)) {
-                        TextField("Avenue", text: project.avenue).accessibilityLabel("Avenue")
-                    }
-                    Meaning(day(project.wrappedValue.due)) {
-                        TextField("Due", text: project.due.orEmpty).accessibilityLabel("Due")
-                    }
-                }
-                .font(.caption)
-                .padding(.leading, 28)
-                Tasks(tasks: project.tasks, showsPlace: false, place: place, day: day).padding(.leading)
-            }
-            Tasks(tasks: $plan.tasks, showsPlace: true, place: place, day: day)
             if let problem {
                 Label(problem, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.red)
             }
             HStack {
                 Button("Discard", role: .destructive, action: discard)
                 Spacer()
+                Button("Edit", action: edit)
+                    .buttonStyle(.bordered)
                 Button("Add", action: add)
                     .buttonStyle(.borderedProminent)
                     .disabled(!canAdd)
             }
         }
-        .textFieldStyle(.roundedBorder)
         .padding()
-        .background(.fill.quaternary, in: .rect(cornerRadius: 12))
+        .background(.background, in: .rect(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.separator))
     }
+}
+
+/// Tasks as lines, each with its Sub tasks under it.
+private struct TaskLines: View {
+    let tasks: [Plan.TaskDraft]
+    let showsPlace: Bool
+    let meanings: DraftMeanings
+
+    var body: some View {
+        ForEach(Array(tasks.enumerated()), id: \.offset) { _, task in
+            Line(
+                symbol: "circle", title: Text(task.title),
+                detail: meanings.details(
+                    due: task.due,
+                    place: showsPlace ? task.parent.map { String(localized: "Under \($0)") } ?? task.place : nil,
+                    priority: task.priority, resolvesPlace: task.parent == nil))
+            ForEach(Array(task.subtasks.enumerated()), id: \.offset) { _, subtask in
+                Line(symbol: "circle", title: Text(subtask.title), detail: nil, small: true)
+                    .padding(.leading, 28)
+            }
+        }
+    }
+}
+
+/// One thing the plan adds: a symbol, its title and what's set on it.
+private struct Line: View {
+    let symbol: String
+    let title: Text
+    let detail: String?
+    var small = false
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: symbol)
+                .imageScale(small ? .small : .medium)
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                title.font(small ? .callout : .body)
+                if let detail {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// What a draft's fields mean in the person's records: the day a due date
+/// is, and the Avenue and Project a place names.
+struct DraftMeanings {
+    let workspace: Workspace
+    let today: CalendarDate?
+    let locale: Locale
 
     /// The Avenue, and Project, `text` names, when it names one.
-    private func place(_ text: String?) -> String? {
+    func place(_ text: String?) -> String? {
         guard let text, !text.isEmpty else { return nil }
         let parts = text.split(separator: "/", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
         guard
@@ -106,13 +139,90 @@ struct DraftCard: View {
     }
 
     /// The day `text` is, such as "Sat, Nov 7" for "saturday".
-    private func day(_ text: String?) -> String? {
+    func day(_ text: String?) -> String? {
         guard let text, !text.isEmpty, let today, let date = CalendarDate.resolving(text, today: today) else {
             return nil
         }
         return date.noonUTC.formatted(
             Date.FormatStyle(locale: locale, calendar: CalendarDate.utcCalendar, timeZone: .gmt)
                 .weekday(.abbreviated).month(.abbreviated).day())
+    }
+
+    /// When it's due, where it goes and how urgent it is, as one line; what
+    /// Lifr can't read is shown as written.
+    func details(
+        due: String?, place: String?, priority: Priority = .none, resolvesPlace: Bool = true
+    ) -> String? {
+        var parts: [String] = []
+        if let due, !due.isEmpty { parts.append(day(due) ?? due) }
+        if let place, !place.isEmpty { parts.append(resolvesPlace ? self.place(place) ?? place : place) }
+        if let title = priority.title { parts.append(title) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+}
+
+/// The plan's fields, to change before adding: every edit is checked against
+/// the person's records, with what each field means shown under it.
+struct DraftEditor: View {
+    @Binding var plan: Plan
+    let meanings: DraftMeanings
+    let problem: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(plan.avenues.indices, id: \.self) { index in
+                    let avenue = $plan.avenues.element(index, or: .init(key: "", name: ""))
+                    Row(symbol: "square.stack.3d.up") {
+                        TextField("Avenue name", text: avenue.name).accessibilityLabel("Avenue name")
+                        TextField("KEY", text: avenue.key).accessibilityLabel("Key").frame(maxWidth: 100)
+                    } remove: {
+                        plan.avenues.remove(at: index)
+                    }
+                }
+                ForEach(plan.labels.indices, id: \.self) { index in
+                    Row(symbol: "tag") {
+                        TextField("Label", text: $plan.labels.element(index, or: .init(name: "")).name)
+                            .accessibilityLabel("Label")
+                    } remove: {
+                        plan.labels.remove(at: index)
+                    }
+                }
+                ForEach(plan.projects.indices, id: \.self) { index in
+                    let project = $plan.projects.element(index, or: .init(name: "", avenue: ""))
+                    Row(symbol: "flag") {
+                        TextField("Project name", text: project.name).accessibilityLabel("Project name")
+                    } remove: {
+                        plan.projects.remove(at: index)
+                    }
+                    HStack(alignment: .top) {
+                        Meaning(meanings.place(project.wrappedValue.avenue)) {
+                            TextField("Avenue", text: project.avenue).accessibilityLabel("Avenue")
+                        }
+                        Meaning(meanings.day(project.wrappedValue.due)) {
+                            TextField("Due", text: project.due.orEmpty).accessibilityLabel("Due")
+                        }
+                    }
+                    .font(.caption)
+                    .padding(.leading, 28)
+                    Tasks(tasks: project.tasks, showsPlace: false, place: meanings.place, day: meanings.day)
+                        .padding(.leading)
+                }
+                Tasks(tasks: $plan.tasks, showsPlace: true, place: meanings.place, day: meanings.day)
+                if let problem {
+                    Label(problem, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            .textFieldStyle(.roundedBorder)
+            .padding()
+        }
+        .toolbar {
+            ToolbarItem(placement: .secondaryAction) {
+                Button("Copy as TOML", systemImage: "doc.on.doc") { copy(PlanFile.write(plan)) }
+            }
+        }
     }
 
     private func copy(_ text: String) {

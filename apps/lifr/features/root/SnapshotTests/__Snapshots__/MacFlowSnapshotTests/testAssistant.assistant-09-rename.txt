@@ -25,7 +25,7 @@
   [Button] "New Avenue"
   [Outline] ""
     [Row/OutlineRow] ""
-      [Button] "Tidy my weekend, Nov 3 at 10:00 AM"
+      [Button] "Tidy my weekend, Nov 3 at 10:00 AM, Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
   [Heading] "Tidy my weekend"
   [Button] "Rename" help: "Rename"
   [Button] "Use a Skill" id: sparkles

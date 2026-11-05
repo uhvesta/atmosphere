@@ -31,6 +31,10 @@
   [Button] "Remove Review" id: xmark.circle.fill
   [TextField] ""
   [Button] "Send" id: arrow.up.circle.fill
+  [StaticText] "" value: "Ask about your tasks, change them, or plan what to add."
+  [Button] "Plan my week"
+  [Button] "What's overdue?"
+  [Button] "What did I finish this week?"
   [Toolbar] ""
     [Button] "Hide Sidebar"
     [RadioGroup] "Show"

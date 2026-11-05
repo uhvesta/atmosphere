@@ -117,6 +117,45 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertNil(store.state.problem)
     }
 
+    func testASuggestionInAnEmptyChatIsSentAsTheMessage() async throws {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "Here's your week.", isComplete: true) }
+        await store.send(.task)
+
+        await store.send(.suggestionTapped("Plan my week"))
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Plan my week", "Here's your week."])
+    }
+
+    func testASuggestionDoesNothingOnceTheChatHasMessages() async throws {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "Done.", isComplete: true) }
+        await send("Hello", in: store)
+
+        await store.send(.suggestionTapped("Plan my week"))
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertFalse(store.state.conversation.messages.contains { $0.text == "Plan my week" })
+    }
+
+    func testEditOpensOnlyWithADraftAndClosesWhenItsAdded() async throws {
+        let (workspace, _) = home()
+        let plan = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])
+        let store = chat(workspace) { _ in AssistantReply(text: "Here's a plan.", plan: plan, isComplete: true) }
+        await store.send(.task)
+        await store.send(.editDraftTapped)
+        XCTAssertFalse(store.state.editsDraft)
+
+        await send("Plan repotting", in: store)
+        await store.send(.editDraftTapped)
+        XCTAssertTrue(store.state.editsDraft)
+
+        await store.send(.addTapped)
+        await store.skipReceivedActions()
+        XCTAssertFalse(store.state.editsDraft)
+    }
+
     func testUndoPutsBackWhatTheAssistantChangedInThatReply() async throws {
         let (workspace, rent) = home()
         let code = workspace.displayCode(of: rent)

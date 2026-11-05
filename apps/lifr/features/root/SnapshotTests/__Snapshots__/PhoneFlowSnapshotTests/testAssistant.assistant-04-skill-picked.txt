@@ -1,5 +1,9 @@
 [button] "Conversations" id: BackButton
 [header] "New conversation"
+[text] "Ask about your tasks, change them, or plan what to add."
+[button] "Plan my week"
+[button] "What's overdue?"
+[button] "What did I finish this week?"
 [button] "Send"
 [element] "" value: "Add details, or just send"
 [button] "Review" hint: "Picks another skill"

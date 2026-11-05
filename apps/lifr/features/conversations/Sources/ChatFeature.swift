@@ -44,6 +44,8 @@ package struct ChatFeature {
         package var findsSkill = false
         package var skillQuery = ""
         @Presents package var manageSkills: SkillsFeature.State?
+        /// Whether the draft's editor is open.
+        package var editsDraft = false
 
         package init(conversation: Conversation, workspace: Workspace) {
             self.conversation = conversation
@@ -86,6 +88,9 @@ package struct ChatFeature {
         case manageSkillsTapped
         case manageSkills(PresentationAction<SkillsFeature.Action>)
         case sendTapped
+        /// A suggestion in an empty chat: sent as the person's message.
+        case suggestionTapped(String)
+        case editDraftTapped
         /// Lifr is back on screen: send a stopped reply's request again.
         case resume
         case replied(AssistantReply)
@@ -188,6 +193,16 @@ package struct ChatFeature {
                     },
                     skill: skill)
                 return reply(request, in: &state)
+
+            case .suggestionTapped(let text):
+                guard state.conversation.messages.isEmpty else { return .none }
+                state.input = text
+                return .send(.sendTapped)
+
+            case .editDraftTapped:
+                guard state.conversation.draft != nil else { return .none }
+                state.editsDraft = true
+                return .none
 
             case .resume:
                 guard let request = state.waiting else { return .none }
@@ -293,11 +308,15 @@ package struct ChatFeature {
             case .discardDraftTapped:
                 state.conversation.draft = nil
                 state.problem = nil
+                state.editsDraft = false
                 return .none
 
             case .binding(\.conversation.draft):
                 // Removing the last row discards the draft.
-                if state.conversation.draft?.isEmpty == true { state.conversation.draft = nil }
+                if state.conversation.draft?.isEmpty == true {
+                    state.conversation.draft = nil
+                    state.editsDraft = false
+                }
                 check(&state)
                 return .none
 
@@ -326,6 +345,7 @@ package struct ChatFeature {
                 } else {
                     // The plan was added.
                     state.conversation.draft = nil
+                    state.editsDraft = false
                     state.problem = nil
                     if let entry = saved.change.entry {
                         state.conversation.added.append(entry)

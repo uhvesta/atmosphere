@@ -30,6 +30,10 @@
   [Button] "Use a Skill" id: sparkles
   [TextField] ""
   [Button, disabled] "Send" id: arrow.up.circle.fill
+  [StaticText] "" value: "Ask about your tasks, change them, or plan what to add."
+  [Button] "Plan my week"
+  [Button] "What's overdue?"
+  [Button] "What did I finish this week?"
   [Popover] ""
     [TextField] ""
     [Outline] ""
