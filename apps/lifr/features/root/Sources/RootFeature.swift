@@ -5,6 +5,8 @@ import LifrAvenue
 import LifrBoard
 import LifrConversations
 import LifrCore
+import LifrGlance
+import LifrGlanceClient
 import LifrLockClient
 import LifrProcrastinated
 import LifrQuickAdd
@@ -243,7 +245,7 @@ package struct RootFeature {
         case approval(PresentationAction<ApprovalFeature.Action>)
     }
 
-    private enum CancelID { case reminders }
+    private enum CancelID { case reminders, glance }
 
     /// How often sync runs while the app is open, for what other devices
     /// sent.
@@ -257,11 +259,16 @@ package struct RootFeature {
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
     @Dependency(\.lock) private var lock
+    @Dependency(\.glance) private var glance
 
     package init() {}
 
     package var body: some ReducerOf<Self> {
         CombineReducers { screens }
+            // The widgets show only counts while the lock is on.
+            .onChange(of: \.locksApp) { _, _ in
+                Reduce { state, _ in writeGlance(state) }
+            }
             .transformDependency(\.self) { dependencies in
                 dependencies.store = dependencies.store.telling(dependencies.sync).recordingChanges(
                     into: Shared(.lastChange), uuid: dependencies.uuid)
@@ -609,6 +616,7 @@ package struct RootFeature {
         let scheduled = workspace.scheduledReminders(now: now, timeZone: timeZone)
         return .merge(
             effects + [
+                writeGlance(state),
                 .run { [reminders] send in
                     // Notifications that are off, or a device that refuses
                     // them, leave the reminders saved and ringing elsewhere;
@@ -616,8 +624,21 @@ package struct RootFeature {
                     try? await reminders.schedule(scheduled)
                     await send(.remindersScheduled)
                 }
-                .cancellable(id: CancelID.reminders, cancelInFlight: true)
+                .cancellable(id: CancelID.reminders, cancelInFlight: true),
             ])
+    }
+
+    /// Gives the widgets Today as `state` has it: the titles, or only how
+    /// many while the lock is on.
+    private func writeGlance(_ state: State) -> Effect<Action> {
+        guard let workspace = state.workspace else { return .none }
+        let rows = TaskQuery.today.sections(workspace, now, timeZone).flatMap(\.rows).map { row in
+            let isOverdue = if case .overdue = row.due { true } else { false }
+            return TodayGlance.Row(id: row.id, title: row.title, code: row.code, isOverdue: isOverdue)
+        }
+        let today = TodayGlance(asOf: now, rows: rows, locked: state.locksApp)
+        return .run { [glance] _ in await glance.write(today) }
+            .cancellable(id: CancelID.glance)
     }
 
     /// Quick Add for `kind`, starting where `adds` says, or in the list on

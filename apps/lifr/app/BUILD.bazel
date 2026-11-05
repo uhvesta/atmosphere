@@ -1,5 +1,5 @@
 load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
-load("@lifr_identity//:defs.bzl", "BUNDLE_ID", "TEAM_ID")
+load("@lifr_identity//:defs.bzl", "BUNDLE_ID", "IOS_APP_GROUP", "TEAM_ID")
 load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
 load("@rules_apple//apple:ios.bzl", "ios_application")
 load("@rules_apple//apple:macos.bzl", "macos_application")
@@ -37,6 +37,8 @@ swift_library(
         "//apps/lifr/core",
         "//apps/lifr/features/root",
         "//apps/lifr/features/shortcuts",
+        "//apps/lifr/widgets:client",
+        "//apps/lifr/widgets:glance",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )
@@ -53,6 +55,14 @@ ios_application(
         "//apps/lifr:is_signed": [":ios_signing_check"],
         "//conditions:default": [],
     }),
+    # The App Group the widgets read Today from, only when user.bazelrc
+    # sets one: it needs an explicit App ID's profile.
+    entitlements = select({
+        "//apps/lifr:is_signed": ":ios_app_group",
+        "//conditions:default": None,
+    }) if IOS_APP_GROUP else None,
+    # Today on the Home Screen.
+    extensions = ["//apps/lifr/widgets:ios"],
     families = ["iphone"],
     infoplists = [
         "Info.plist",
@@ -87,6 +97,8 @@ macos_application(
         "//apps/lifr:is_signed": ":app_group",
         "//conditions:default": ":unsigned_mac",
     }),
+    # Today on the desktop and in Notification Center.
+    extensions = ["//apps/lifr/widgets:macos"],
     infoplists = [
         "Info.plist",
         "Info-macOS.plist",
@@ -115,12 +127,20 @@ lifr_entitlements(
     name = "ios_signing_check",
 )
 
+lifr_entitlements(
+    name = "ios_app_group",
+    icloud = False,
+    ios_app_group = True,
+)
+
 # The team's development profile for the iPhone app. iCloud needs an
 # explicit App ID's profile instead; see the M10 notes in the spec.
 local_provisioning_profile(
     name = "ios_development",
     profile_name = "iOS Team Provisioning Profile: *",
     team_id = TEAM_ID,
+    # The widgets' extension signs with it too.
+    visibility = ["//apps/lifr/widgets:__pkg__"],
 )
 
 # Archives for Xcode's Organizer, with dSYMs. Build them signed:

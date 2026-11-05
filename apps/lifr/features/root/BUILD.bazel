@@ -23,6 +23,8 @@ _DEPS = [
     "//apps/lifr/features/today",
     "//apps/lifr/features/upcoming",
     "//apps/lifr/ui",
+    "//apps/lifr/widgets:client",
+    "//apps/lifr/widgets:glance",
     "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
 ]
 
@@ -96,6 +98,7 @@ lifr_snapshot_test(
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/models",
         "//apps/lifr/features/shortcuts",
+        "//apps/lifr/widgets:views",
         "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
     ] + _DEPS,
 )
@@ -113,6 +116,7 @@ lifr_snapshot_test(
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/models",
         "//apps/lifr/features/shortcuts",
+        "//apps/lifr/widgets:views",
         "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
     ] + _DEPS,
 )

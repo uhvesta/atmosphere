@@ -1,0 +1,177 @@
+load("@bazel_skylib//rules:write_file.bzl", "write_file")
+load("@lifr_identity//:defs.bzl", "APP_GROUP", "IOS_APP_GROUP", "WIDGETS_BUNDLE_ID")
+load("@rules_apple//apple:ios.bzl", "ios_extension")
+load("@rules_apple//apple:macos.bzl", "macos_extension", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("//apps/lifr:signing.bzl", "lifr_entitlements")
+load("//apps/lifr/testing/snapshot:defs.bzl", "lifr_snapshot_test")
+
+# Lifr's widgets: Today's count and first few tasks, on the iPhone's Home
+# Screen and the Mac's desktop. The app writes Today to its App Group after
+# each change and the widgets only read it, so they never open the records.
+
+# The App Group the app and widgets share, from user.bazelrc.
+write_file(
+    name = "widget_group",
+    out = "WidgetGroup.swift",
+    content = [
+        "// Generated from user.bazelrc by //apps/lifr/widgets:widget_group.",
+        "",
+        "/// The App Group the app writes Today to and the widgets read it from.",
+        "package enum WidgetGroup {",
+        "    #if os(macOS)",
+        "        /// The Mac app's team-prefixed App Group.",
+        "        package static let id = \"%s\"" % APP_GROUP,
+        "    #else",
+        "        /// The iPhone App Group; empty when user.bazelrc sets none.",
+        "        package static let id = \"%s\"" % IOS_APP_GROUP,
+        "    #endif",
+        "}",
+        "",
+    ],
+)
+
+# What the widgets show and the file it's kept in. No TCA, so the extension
+# stays small.
+swift_library(
+    name = "glance",
+    package_name = "lifr",
+    srcs = glob(["Glance/Sources/*.swift"]) + [":widget_group"],
+    module_name = "LifrGlance",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/lifr:__subpackages__"],
+)
+
+# How the app writes Today for the widgets.
+swift_library(
+    name = "client",
+    package_name = "lifr",
+    srcs = glob(["Client/Sources/*.swift"]),
+    module_name = "LifrGlanceClient",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/lifr/app:__subpackages__",
+        "//apps/lifr/features/root:__pkg__",
+    ],
+    deps = [
+        ":glance",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+swift_library(
+    name = "views",
+    package_name = "lifr",
+    srcs = glob(["Views/Sources/*.swift"]),
+    module_name = "LifrWidgetViews",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/lifr/features/root:__pkg__"],
+    deps = [":glance"],
+)
+
+swift_library(
+    name = "extension_lib",
+    package_name = "lifr",
+    srcs = glob(["Extension/Sources/*.swift"]),
+    module_name = "LifrWidgets",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":glance",
+        ":views",
+    ],
+)
+
+ios_extension(
+    name = "ios",
+    bundle_id = WIDGETS_BUNDLE_ID,
+    bundle_name = "LifrWidgets",
+    # The iPhone App Group, when user.bazelrc sets one.
+    entitlements = select({
+        "//apps/lifr:is_signed": ":ios_entitlements",
+        "//conditions:default": None,
+    }) if IOS_APP_GROUP else None,
+    families = ["iphone"],
+    infoplists = ["Extension/Info.plist"],
+    minimum_os_version = "18.0",
+    provisioning_profile = select({
+        "//apps/lifr:is_signed": "//apps/lifr/app:ios_development",
+        "//conditions:default": None,
+    }),
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/lifr/app:__pkg__"],
+    deps = [":extension_lib"],
+)
+
+macos_extension(
+    name = "macos",
+    bundle_id = WIDGETS_BUNDLE_ID,
+    bundle_name = "LifrWidgets",
+    codesignopts = ["--options=runtime"],
+    entitlements = select({
+        "//apps/lifr:is_signed": ":mac_entitlements",
+        "//conditions:default": ":unsigned_mac_entitlements",
+    }),
+    infoplists = ["Extension/Info.plist"],
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/lifr/app:__pkg__"],
+    deps = [":extension_lib"],
+)
+
+lifr_entitlements(
+    name = "ios_entitlements",
+    icloud = False,
+    ios_app_group = True,
+)
+
+lifr_entitlements(
+    name = "mac_entitlements",
+    app_group = True,
+    icloud = False,
+    sandbox = True,
+)
+
+# Unsigned, macOS gives the extension no App Group, so the widget asks to
+# open Lifr.
+lifr_entitlements(
+    name = "unsigned_mac_entitlements",
+    icloud = False,
+    sandbox = True,
+)
+
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":client",
+        ":glance",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+# The widget in each size, unlocked, locked, empty and before the app wrote
+# Today, on the pinned simulator.
+lifr_snapshot_test(
+    name = "snapshot_test",
+    srcs = glob(["SnapshotTests/*.swift"]),
+    deps = [
+        ":glance",
+        ":views",
+        "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

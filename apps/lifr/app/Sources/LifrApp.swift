@@ -4,6 +4,8 @@ import LifrAPI
 import LifrAssistantClient
 import LifrAssistantLive
 import LifrCore
+import LifrGlance
+import LifrGlanceClient
 import LifrLiteRT
 import LifrLockClient
 import LifrModelsClient
@@ -97,6 +99,7 @@ private enum Storage {
         $0.session = session
         $0.sync = sync
         $0.lock = .live()
+        $0.glance = .live(file: GlanceFile.shared)
     }
 
     /// Syncs the records with the person's other devices through iCloud,

@@ -1,6 +1,8 @@
 import ComposableArchitecture
 import LifrAssistantClient
 import LifrCore
+import LifrGlance
+import LifrGlanceClient
 import LifrLockClient
 import LifrModelsClient
 import LifrRemindersClient
@@ -10,6 +12,7 @@ import LifrShortcuts
 import LifrSnapshotTesting
 import LifrStoreClient
 import LifrSyncClient
+import LifrWidgetViews
 import SwiftUI
 import XCTest
 
@@ -23,6 +26,8 @@ final class PhoneFlowSnapshotTests: XCTestCase {
     private let time = LockIsolated(Date(timeIntervalSince1970: 1_793_700_000))
     /// The app's records, for another writer such as Shortcuts.
     private var records: InMemorySync?
+    /// What the app last gave the widgets.
+    private let widgets = WidgetBoard()
 
     private func app(
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
@@ -34,7 +39,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         self.records = records
         let store = Store(initialState: RootFeature.State(platform: .phone)) {
             RootFeature()
-        } withDependencies: { [time] in
+        } withDependencies: { [time, widgets] in
             $0.store = client
             $0.session = InMemorySession().client
             $0.reminders = RemindersClient.inMemory().client
@@ -50,6 +55,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
             $0.models = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B]).client
             $0.date = DateGenerator { time.value }
             $0.lock = lock
+            $0.glance = GlanceClient { [widgets] glance in await widgets.show(glance) }
             $0.timeZone = .gmt
             $0.withRandomNumberGenerator = WithRandomNumberGenerator(SeededRandomNumberGenerator())
             $0.uuid = UUIDGenerator {
@@ -361,5 +367,62 @@ final class PhoneFlowSnapshotTests: XCTestCase {
             XCTAssertEqual(error as? ShortcutError, .locked)
         }
         flow.finish()
+    }
+
+    /// The widgets follow Today as it changes in the app and from Shortcuts,
+    /// and show only how many while the lock is on.
+    func testWidgets() async throws {
+        let (store, flow) = app("widgets")
+        let home = FlowRecorder("widgets-home", WidgetBoardView(board: widgets), size: CGSize(width: 402, height: 874))
+        await flow.step("today", image: false)
+        await home.step("today")
+        _ = try await shortcut { try await $0.add("Buy oat milk", avenue: nil, due: .today) }
+        await flow.step("added-by-shortcut", image: false)
+        await home.step("added-by-shortcut")
+        store.send(.settings(.lockToggled(true)))
+        await home.step("locked")
+        XCTAssertEqual(widgets.glance?.rows, [])
+        store.send(.settings(.lockToggled(false)))
+        await home.step("unlocked")
+        home.finish()
+        flow.finish()
+    }
+}
+
+/// What the app last gave the widgets, for a Home Screen that shows them.
+@MainActor @Observable
+private final class WidgetBoard {
+    var glance: TodayGlance?
+
+    nonisolated init() {}
+
+    func show(_ glance: TodayGlance) {
+        self.glance = glance
+    }
+}
+
+/// The Today widget, small and medium, as they'd sit on the Home Screen.
+private struct WidgetBoardView: View {
+    var board: WidgetBoard
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(spacing: 20) {
+                widget(.small, width: 170)
+                Spacer(minLength: 0)
+            }
+            widget(.medium, width: 364)
+            Spacer(minLength: 0)
+        }
+        .padding(19)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(white: 0.85))
+    }
+
+    private func widget(_ size: TodayWidgetView.Size, width: CGFloat) -> some View {
+        TodayWidgetView(glance: board.glance, size: size)
+            .padding(16)
+            .frame(width: width, height: 170)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 22))
     }
 }

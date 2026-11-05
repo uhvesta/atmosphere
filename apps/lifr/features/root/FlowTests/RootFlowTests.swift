@@ -2,6 +2,9 @@ import ComposableArchitecture
 import Foundation
 import LifrAPI
 import LifrCore
+import LifrGlance
+import LifrGlanceClient
+import LifrLockClient
 import LifrRemindersClient
 import LifrRoot
 import LifrSessionClient
@@ -23,7 +26,7 @@ final class RootFlowTests: XCTestCase {
 
     private func app(
         _ platform: RootFeature.Platform, _ client: StoreClient, session: InMemorySession = InMemorySession(),
-        sync: SyncClient = .off
+        sync: SyncClient = .off, glance: GlanceClient = .testValue, lock: LockClient = .testValue
     ) async -> (TestStoreOf<RootFeature>, TestStoreTask) {
         let store = TestStore(initialState: RootFeature.State(platform: platform)) {
             RootFeature()
@@ -34,6 +37,8 @@ final class RootFlowTests: XCTestCase {
             $0.session = session.client
             $0.reminders = RemindersClient.inMemory().client
             $0.sync = sync
+            $0.glance = glance
+            $0.lock = lock
             $0.continuousClock = TestClock()
             $0.date = DateGenerator {
                 clock.withValue {
@@ -283,6 +288,50 @@ final class RootFlowTests: XCTestCase {
         XCTAssertEqual(phone.state.workspace?.tasks[run.id]?.status, .done)
         XCTAssertEqual(phone.state.workspace?.journal.last?.actor.surface, .shortcuts)
         XCTAssertEqual(phone.state.workspace?.tasks[added.id]?.title, "Buy oat milk")
+        await task.cancel()
+    }
+
+    /// The widgets get Today after each change, from the app or from
+    /// Shortcuts, and only how many while the lock is on.
+    func testTheWidgetsFollowTodayAndOnlyCountWhileLocked() async throws {
+        let run = records.task("Long run", in: health, due: 0)
+        let stretch = records.task("Stretch", in: health, due: -1)
+        _ = records.task("Book a physio", in: health, due: 3)
+        let (client, sync) = StoreClient.inMemorySyncing(records.workspace)
+        let (glance, written) = GlanceClient.inMemory()
+        let (phone, task) = await app(.phone, client, glance: glance, lock: .always())
+        await phone.receive(\.remindersScheduled)
+
+        XCTAssertEqual(written.value?.count, 2)
+        XCTAssertEqual(written.value?.overdue, 1)
+        XCTAssertEqual(Set(written.value?.rows.map(\.title) ?? []), ["Long run", "Stretch"])
+        XCTAssertEqual(written.value?.rows.first { $0.id == stretch.id }?.isOverdue, true)
+
+        let now = now
+        let shortcuts = Shortcuts(
+            store: sync.writer(as: .user(device: "iPhone", surface: .shortcuts)), locksApp: { false },
+            now: { now }, timeZone: .gmt)
+        try await withDependencies {
+            $0.date.now = now
+            $0.uuid = UUIDGenerator { UUID() }
+            $0.withRandomNumberGenerator = WithRandomNumberGenerator(SystemRandomNumberGenerator())
+        } operation: {
+            try await shortcuts.finish(run.id)
+        }
+        await phone.receive(\.updated)
+        await phone.receive(\.remindersScheduled)
+        XCTAssertEqual(written.value?.rows.map(\.title), ["Stretch"])
+
+        await phone.send(.settings(.lockToggled(true)))
+        await phone.receive(\.settings.lockConfirmed)
+        XCTAssertEqual(written.value?.isLocked, true)
+        XCTAssertEqual(written.value?.count, 1)
+        XCTAssertEqual(written.value?.rows, [])
+
+        await phone.send(.settings(.lockToggled(false)))
+        await phone.receive(\.settings.lockConfirmed)
+        XCTAssertEqual(written.value?.isLocked, false)
+        XCTAssertEqual(written.value?.rows.map(\.title), ["Stretch"])
         await task.cancel()
     }
 

@@ -17,6 +17,7 @@ config_setting(
     visibility = [
         "//apps/lifr/app:__pkg__",
         "//apps/lifr/cli:__pkg__",
+        "//apps/lifr/widgets:__pkg__",
         "@rules_apple//apple:__pkg__",
     ],
 )

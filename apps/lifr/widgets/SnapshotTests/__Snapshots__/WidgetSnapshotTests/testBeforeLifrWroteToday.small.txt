@@ -1,0 +1,2 @@
+[text] "Today"
+[text] "Open Lifr to see Today here."

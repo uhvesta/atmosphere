@@ -7,6 +7,8 @@ The team and bundle ID prefix aren't checked in. Set them in a gitignored
     common --repo_env=LIFR_BUNDLE_PREFIX=com.yourname
     # Optional: the iCloud container that syncs the records.
     common --repo_env=LIFR_ICLOUD_CONTAINER=iCloud.com.yourname.lifr
+    # Optional: the iPhone App Group that the widgets read Today from.
+    common --repo_env=LIFR_IOS_APP_GROUP=group.com.yourname.lifr
 
 `@lifr_identity//:defs.bzl` holds the values, for the bundle IDs, the App
 Group, the iCloud container, the provisioning profile and the generated
@@ -19,6 +21,7 @@ _TEAM = "LIFR_TEAM_ID"
 _PREFIX = "LIFR_BUNDLE_PREFIX"
 _DEFAULT_PREFIX = "com.example"
 _ICLOUD = "LIFR_ICLOUD_CONTAINER"
+_IOS_GROUP = "LIFR_IOS_APP_GROUP"
 
 def _valid_team(team):
     return len(team) == 10 and team.isalnum() and team.upper() == team
@@ -33,6 +36,9 @@ def _valid_prefix(prefix):
 def _valid_container(container):
     return container.startswith("iCloud.") and _valid_prefix(container[len("iCloud."):])
 
+def _valid_group(group):
+    return group.startswith("group.") and _valid_prefix(group[len("group."):])
+
 def _lifr_identity_impl(repository_ctx):
     team = repository_ctx.getenv(_TEAM, "") or ""
     prefix = repository_ctx.getenv(_PREFIX, "") or _DEFAULT_PREFIX
@@ -43,6 +49,11 @@ def _lifr_identity_impl(repository_ctx):
         fail("{} is \"{}\", which isn't an iCloud container ID. Use the one you made under Identifiers at developer.apple.com/account, starting with iCloud., in user.bazelrc: common --repo_env={}=iCloud.com.yourname.lifr".format(_ICLOUD, icloud, _ICLOUD))
     if icloud and not team:
         fail("{} is set without {}. iCloud needs a signed build: set your team too, or remove {} to keep the records on each device.".format(_ICLOUD, _TEAM, _ICLOUD))
+    ios_group = repository_ctx.getenv(_IOS_GROUP, "") or ""
+    if ios_group and not _valid_group(ios_group):
+        fail("{} is \"{}\", which isn't an App Group ID. Use the one you made under Identifiers at developer.apple.com/account, starting with group., in user.bazelrc: common --repo_env={}=group.com.yourname.lifr".format(_IOS_GROUP, ios_group, _IOS_GROUP))
+    if ios_group and not team:
+        fail("{} is set without {}. An App Group needs a signed build: set your team too, or remove {} and the iPhone widgets will ask the person to open Lifr.".format(_IOS_GROUP, _TEAM, _IOS_GROUP))
     if not _valid_prefix(prefix):
         fail("{} is \"{}\", which isn't a reverse-DNS prefix. Use something like com.yourname in user.bazelrc: common --repo_env={}=com.yourname".format(_PREFIX, prefix, _PREFIX))
     bundle_id = prefix + ".lifr"
@@ -59,11 +70,15 @@ def _lifr_identity_impl(repository_ctx):
         "APP_GROUP = {}".format(repr((team or "UNSIGNED") + "." + bundle_id)),
         "# Empty unless user.bazelrc sets one: the records then stay on each device.",
         "ICLOUD_CONTAINER = {}".format(repr(icloud)),
+        "# Empty unless user.bazelrc sets one: the iPhone widgets then have no data.",
+        "IOS_APP_GROUP = {}".format(repr(ios_group)),
+        "WIDGETS_BUNDLE_ID = {}".format(repr(bundle_id + ".widgets")),
         "",
     ]))
 
 lifr_identity = repository_rule(
     implementation = _lifr_identity_impl,
-    environ = [_TEAM, _PREFIX, _ICLOUD],
-    doc = "Writes @lifr_identity//:defs.bzl from LIFR_TEAM_ID, LIFR_BUNDLE_PREFIX and LIFR_ICLOUD_CONTAINER.",
+    environ = [_TEAM, _PREFIX, _ICLOUD, _IOS_GROUP],
+    doc = "Writes @lifr_identity//:defs.bzl from LIFR_TEAM_ID, LIFR_BUNDLE_PREFIX, LIFR_ICLOUD_CONTAINER and " +
+          "LIFR_IOS_APP_GROUP.",
 )

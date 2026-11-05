@@ -745,6 +745,16 @@
     "Lifr couldn't read that photo. Pick another, or take a screenshot of it and attach that." : {
 
     },
+    "Lifr couldn't update the widgets at %@ (%@). They show the last Today they had until the next change saves." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Lifr couldn't update the widgets at %1$@ (%2$@). They show the last Today they had until the next change saves."
+          }
+        }
+      }
+    },
     "Lifr has no Avenue to add the task to. Open Lifr and add one first." : {
 
     },
@@ -1366,6 +1376,16 @@
     },
     "The task needs a title. Say or type what to add." : {
 
+    },
+    "The widgets couldn't read Today from %@ (%@). Open Lifr to write it again." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "The widgets couldn't read Today from %1$@ (%2$@). Open Lifr to write it again."
+          }
+        }
+      }
     },
     "These changed here and on another device in ways that can't both stand. Choose what to keep; you can undo it like any change." : {
 
