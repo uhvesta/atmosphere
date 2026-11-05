@@ -94,7 +94,7 @@ ios_extension(
     infoplists = ["Extension/Info.plist"],
     minimum_os_version = "18.0",
     provisioning_profile = select({
-        "//apps/lifr:is_signed": "//apps/lifr/app:ios_development",
+        "@apple_support//constraints:device": "//apps/lifr/app:ios_development",
         "//conditions:default": None,
     }),
     target_compatible_with = ["//bazel/xcode"],

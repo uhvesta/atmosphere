@@ -2,8 +2,9 @@ load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@rules_xcodeproj//xcodeproj:defs.bzl", "top_level_target", "xcodeproj")
 
 # Signs the Mac app and `lifr` for the team in user.bazelrc (see identity.bzl),
-# and the iPhone app with its development profile. Set by --config=lifr_mac_release and
-# --config=lifr_ios_device in .bazelrc. Off, the apps are signed ad hoc and
+# and gives the iPhone app its App Group. Any iPhone build for a device uses
+# the team's development profile, set or not. Set by
+# --config=lifr_mac_release and --config=lifr_ios_device in .bazelrc. Off, the apps are signed ad hoc and
 # build anywhere Xcode is installed, but `lifr` can't connect to the app.
 bool_flag(
     name = "signed",
@@ -25,6 +26,8 @@ config_setting(
 # Generates Lifr.xcodeproj for previews, the debugger and Instruments:
 # `bazel run //apps/lifr:xcodeproj`. Xcode builds through Bazel with
 # `--config=rules_xcodeproj`, which .bazelrc points at `--config=xcode`.
+# The iPhone app builds for the simulator or, with the team's development
+# profile, for a connected phone.
 xcodeproj(
     name = "xcodeproj",
     project_name = "Lifr",
@@ -32,7 +35,10 @@ xcodeproj(
     top_level_targets = [
         top_level_target(
             "//apps/lifr/app:ios",
-            target_environments = ["simulator"],
+            target_environments = [
+                "device",
+                "simulator",
+            ],
         ),
         "//apps/lifr/app:macos",
         "//apps/lifr/cli:lifr",
