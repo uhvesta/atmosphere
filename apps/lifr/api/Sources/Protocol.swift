@@ -94,12 +94,12 @@ package struct RPCResponse: Hashable, Codable, Sendable {
 /// Where the app listens, and how the CLI tells it's turned off.
 package enum LocalSocket {
     /// The team that signs the app and `lifr`.
-    package static let team = "7H66Q22DJD"
+    package static let team = LifrIdentity.team
     /// `lifr`'s code-signing identifier. Only it may connect.
-    package static let cliIdentifier = "com.avestabarzegar.lifr.cli"
+    package static let cliIdentifier = LifrIdentity.cliIdentifier
     /// The Mac app's App Group: team-prefixed, so the CLI can reach the
     /// container without a provisioning profile of its own.
-    package static let appGroup = "\(team).com.avestabarzegar.lifr"
+    package static let appGroup = LifrIdentity.appGroup
 
     /// The App Group container, which macOS keeps from other apps.
     package static func container(home: URL) -> URL {

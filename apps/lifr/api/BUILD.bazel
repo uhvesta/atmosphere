@@ -1,9 +1,34 @@
 load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
 load("@bazel_skylib//rules:run_binary.bzl", "run_binary")
+load("@bazel_skylib//rules:write_file.bzl", "write_file")
+load("@lifr_identity//:defs.bzl", "APP_GROUP", "BUNDLE_ID", "CLI_BUNDLE_ID", "TEAM_ID")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# Who signs the app and `lifr`, from user.bazelrc (see
+# //apps/lifr:identity.bzl).
+write_file(
+    name = "identity",
+    out = "Identity.swift",
+    content = [
+        "// Generated from user.bazelrc by //apps/lifr/api:identity.",
+        "",
+        "/// Who signs Lifr: the team and IDs from user.bazelrc.",
+        "package enum LifrIdentity {",
+        "    /// The team that signs the app and `lifr`; empty in ad hoc builds.",
+        "    package static let team = \"%s\"" % TEAM_ID,
+        "    /// The app's bundle ID.",
+        "    package static let bundleID = \"%s\"" % BUNDLE_ID,
+        "    /// `lifr`'s bundle ID and code-signing identifier.",
+        "    package static let cliIdentifier = \"%s\"" % CLI_BUNDLE_ID,
+        "    /// The Mac app's team-prefixed App Group.",
+        "    package static let appGroup = \"%s\"" % APP_GROUP,
+        "}",
+        "",
+    ],
+)
 
 # The local API between `lifr` and the Mac app: JSON-RPC messages, error
 # codes, the MCP tool list, and the handler that runs requests against Core.
@@ -11,7 +36,7 @@ load("@rules_swift//swift:swift_library.bzl", "swift_library")
 swift_library(
     name = "api",
     package_name = "lifr",
-    srcs = glob(["Sources/*.swift"]),
+    srcs = glob(["Sources/*.swift"]) + [":identity"],
     copts = [
         "-swift-version",
         "6",

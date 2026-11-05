@@ -1,5 +1,7 @@
+load("@lifr_identity//:defs.bzl", "CLI_BUNDLE_ID")
 load("@rules_apple//apple:macos.bzl", "macos_command_line_application", "macos_unit_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("//apps/lifr:signing.bzl", "lifr_entitlements")
 
 # The `lifr` command and `lifr mcp`. They talk to the Mac app over its socket;
 # the app embeds this in Contents/Helpers.
@@ -28,14 +30,14 @@ swift_library(
     ],
 )
 
-filegroup(
+lifr_entitlements(
     name = "entitlements",
-    srcs = ["lifr.entitlements"],
+    app_group = True,
 )
 
 macos_command_line_application(
     name = "lifr",
-    bundle_id = "com.avestabarzegar.lifr.cli",
+    bundle_id = CLI_BUNDLE_ID,
     # The app's App Group, to reach the socket in its container. The rule
     # has no entitlements attribute, so they go to codesign directly.
     codesign_inputs = [":entitlements"],
@@ -43,7 +45,7 @@ macos_command_line_application(
     codesignopts = ["--options=runtime"] + select({
         "//apps/lifr:is_signed": [
             "--entitlements",
-            "apps/lifr/cli/lifr.entitlements",
+            "$(BINDIR)/apps/lifr/cli/entitlements.entitlements",
         ],
         "//conditions:default": [],
     }),

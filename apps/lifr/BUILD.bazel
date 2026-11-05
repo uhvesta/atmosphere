@@ -1,8 +1,8 @@
 load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@rules_xcodeproj//xcodeproj:defs.bzl", "top_level_target", "xcodeproj")
 
-# Signs the Mac app and `lifr` for team 7H66Q22DJD, and the iPhone app with
-# its development profile. Set by --config=lifr_mac_release and
+# Signs the Mac app and `lifr` for the team in user.bazelrc (see identity.bzl),
+# and the iPhone app with its development profile. Set by --config=lifr_mac_release and
 # --config=lifr_ios_device in .bazelrc. Off, the apps are signed ad hoc and
 # build anywhere Xcode is installed, but `lifr` can't connect to the app.
 bool_flag(
@@ -40,6 +40,10 @@ xcodeproj(
 
 filegroup(
     name = "starlark",
-    srcs = ["BUILD.bazel"],
+    srcs = [
+        "BUILD.bazel",
+        "identity.bzl",
+        "signing.bzl",
+    ],
     tags = ["starlark"],
 )

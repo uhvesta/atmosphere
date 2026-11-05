@@ -137,6 +137,15 @@ swift_deps.from_package(
 )
 use_repo(swift_deps, "swift_package", "swiftpkg_swift_composable_architecture", "swiftpkg_swift_snapshot_testing")
 
+# MARK: - Lifr signing
+
+# The team and bundle ID prefix that sign Lifr, from LIFR_TEAM_ID and
+# LIFR_BUNDLE_PREFIX in the gitignored user.bazelrc. See
+# apps/lifr/identity.bzl.
+lifr_identity = use_repo_rule("//apps/lifr:identity.bzl", "lifr_identity")
+
+lifr_identity(name = "lifr_identity")
+
 # MARK: - Zig
 
 # rules_zig downloads the Zig compiler for the build host and cross-compiles

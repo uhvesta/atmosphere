@@ -68,9 +68,10 @@ test:record_snapshots --nocache_test_results
 # Mac snapshot tests run on the host, where the sandbox would throw away the
 # references they write into the source tree.
 test:record_snapshots --strategy=TestRunner=local
-# Lifr signed for its team (see apps/lifr/BUILD.bazel): the Mac app and
+# Lifr signed for your team (see apps/lifr/identity.bzl): the Mac app and
 # `lifr` with Developer ID, and the iPhone app for devices with the team's
-# development profile. Each needs its certificate in the login keychain.
+# development profile. Each needs its certificate in the login keychain, and
+# LIFR_TEAM_ID and LIFR_BUNDLE_PREFIX set in user.bazelrc.
 build:lifr_mac_release --config=xcode
 build:lifr_mac_release --//apps/lifr:signed
 build:lifr_mac_release --@rules_apple//apple/build_settings:signing_certificate_name="Developer ID Application"
@@ -83,3 +84,6 @@ build:lifr_ios_device --apple_generate_dsym
 build:lifr_ios_device --compilation_mode=opt
 # Builds started from the generated Lifr.xcodeproj (//apps/lifr:xcodeproj).
 common:rules_xcodeproj --config=xcode
+# Settings for this checkout only, such as LIFR_TEAM_ID and LIFR_BUNDLE_PREFIX
+# for signing Lifr. Gitignored; keep it last so it overrides the above.
+try-import %workspace%/user.bazelrc
