@@ -45,6 +45,26 @@ package struct ChatView: View {
             .padding()
         }
         .defaultScrollAnchor(.bottom)
+        #if os(macOS)
+            // The Mac shows no title for the third column, so the chat
+            // names itself here, with Rename beside it.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                HStack {
+                    Text(store.conversation.title)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .accessibilityAddTraits(.isHeader)
+                    Spacer()
+                    Button("Rename", systemImage: "pencil") { store.send(.renameTapped) }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("Rename")
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 10)
+                .background(.bar)
+            }
+        #endif
         .safeAreaInset(edge: .bottom) {
             composer
                 .padding()

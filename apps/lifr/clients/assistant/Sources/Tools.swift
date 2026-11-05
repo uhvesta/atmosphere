@@ -9,6 +9,7 @@ package final class AssistantTools: Sendable {
     package static let limit = 15
 
     private let current: LockIsolated<Workspace>
+    private let budget = LockIsolated(1_200)
     package let now: Date
     package let timeZone: TimeZone
     /// How to save changes; without it the tools only read.
@@ -25,6 +26,29 @@ package final class AssistantTools: Sendable {
     package var workspace: Workspace {
         get { current.value }
         set { current.setValue(newValue) }
+    }
+
+    /// The most characters of each result `capped` returns.
+    package var resultBudget: Int {
+        get { budget.value }
+        set { budget.setValue(newValue) }
+    }
+
+    /// `result` cut to `resultBudget` at the end of a line, saying the rest
+    /// was left out, so one long answer can't fill the model's context.
+    package func capped(_ result: String) -> String {
+        let limit = resultBudget
+        guard result.count > limit else { return result }
+        let lines = result.split(separator: "\n", omittingEmptySubsequences: false)
+        var kept: [Substring] = []
+        var used = 0
+        for line in lines {
+            guard used + line.count + 1 <= limit - 40 else { break }
+            kept.append(line)
+            used += line.count + 1
+        }
+        if kept.isEmpty, let first = lines.first { kept = [first.prefix(limit - 40)] }
+        return kept.joined(separator: "\n") + "\n(The rest is left out. Search with more words.)"
     }
 
     /// The status names the assistant reads and writes.

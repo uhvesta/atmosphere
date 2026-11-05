@@ -114,6 +114,10 @@ package struct ChatFeature {
 
     private enum CancelID { case reply }
 
+    /// How long the assistant may write nothing before Lifr stops waiting:
+    /// it gives up between one and two of these after the last progress.
+    package static let stallLimit = Duration.seconds(60)
+
     @Dependency(\.assistant) private var assistant
     @Dependency(\.store) private var store
     @Dependency(\.skills) private var skillsClient
@@ -121,6 +125,7 @@ package struct ChatFeature {
     @Dependency(\.timeZone) private var timeZone
     @Dependency(\.uuid) private var uuid
     @Dependency(\.backgroundTime) private var backgroundTime
+    @Dependency(\.continuousClock) private var clock
 
     package init() {}
 
@@ -131,6 +136,7 @@ package struct ChatFeature {
             case .task:
                 state.availability = assistant.availability()
                 state.today = CalendarDate(now, in: timeZone)
+                if state.availability == .available { assistant.prewarm() }
                 return .run { [skillsClient] send in
                     // Without the person's skills, the built-ins still work.
                     if let skills = try? await skillsClient.load() { await send(.skillsLoaded(skills)) }
@@ -231,8 +237,11 @@ package struct ChatFeature {
             case .replyFailed(let error):
                 state.replying = nil
                 // Sending again can't help a request that's too long or
-                // declined, or one whose changes are saved already.
-                let retries = (error as? AssistantError).map { $0 == .unreadable(saved: false) || $0.isFailure } ?? true
+                // declined, and could make saved changes twice.
+                let retries =
+                    (error as? AssistantError).map {
+                        $0 == .unreadable(saved: false) || $0 == .timedOut(saved: false) || $0.isFailure
+                    } ?? true
                 state.failed = retries ? state.waiting : nil
                 state.waiting = nil
                 state.alert = AlertState {
@@ -349,14 +358,52 @@ package struct ChatFeature {
     private func reply(_ request: AssistantRequest, in state: inout State) -> Effect<Action> {
         state.waiting = request
         if state.replying == nil { state.replying = "" }
-        return .run { [assistant, backgroundTime] send in
+        return .run { [assistant, backgroundTime, clock] send in
             try await backgroundTime.run("Assistant reply") {
-                for try await reply in assistant.reply(request) { await send(.replied(reply)) }
+                try await Self.watch(request, assistant: assistant, clock: clock) { await send(.replied($0)) }
             }
         } catch: { error, send in
             await send(.replyFailed(error))
         }
         .cancellable(id: CancelID.reply, cancelInFlight: true)
+    }
+
+    /// Sends each reply to `request`, and stops with `.timedOut` when the
+    /// assistant writes or saves nothing for `stallLimit`.
+    private static func watch(
+        _ request: AssistantRequest, assistant: AssistantClient, clock: any Clock<Duration>,
+        _ each: @escaping @Sendable (AssistantReply) async -> Void
+    ) async throws {
+        let progress = LockIsolated(0)
+        let saved = LockIsolated(false)
+        var request = request
+        if let writes = request.writes {
+            request.writes = AssistantWrites(conversation: writes.conversation) { operation in
+                progress.withValue { $0 += 1 }
+                defer { progress.withValue { $0 += 1 } }
+                let workspace = try await writes.save(operation)
+                saved.setValue(true)
+                return workspace
+            }
+        }
+        try await withThrowingTaskGroup(of: Void.self) { [request] group in
+            group.addTask {
+                for try await reply in assistant.reply(request) {
+                    progress.withValue { $0 += 1 }
+                    await each(reply)
+                }
+            }
+            group.addTask {
+                var seen = -1
+                while progress.value != seen {
+                    seen = progress.value
+                    try await clock.sleep(for: stallLimit)
+                }
+                throw AssistantError.timedOut(saved: saved.value)
+            }
+            try await group.next()
+            group.cancelAll()
+        }
     }
 
     /// Checks the draft against the records as they are now.

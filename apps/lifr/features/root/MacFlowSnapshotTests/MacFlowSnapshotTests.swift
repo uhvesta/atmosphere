@@ -30,6 +30,8 @@ final class MacFlowSnapshotTests: XCTestCase {
             $0.session = session.client
             $0.reminders = RemindersClient.inMemory().client
             $0.assistant = .scripted(replies)
+            // The assistant never stalls in a flow.
+            $0.continuousClock = TestClock()
             $0.conversations = .inMemory()
             $0.skills = .inMemory()
             $0.date = DateGenerator { now }
@@ -150,6 +152,14 @@ final class MacFlowSnapshotTests: XCTestCase {
         store.send(
             .conversations(.chats(.element(id: id, action: .replyFailed(AssistantError.unreadable(saved: false))))))
         await flow.step("unreadable")
+        for (name, error) in [
+            ("timed-out", AssistantError.timedOut(saved: false)), ("too-long", AssistantError.tooLong(saved: false)),
+        ] {
+            store.send(.conversations(.chats(.element(id: id, action: .alert(.dismiss)))))
+            await flow.step("dismissed", image: false)
+            store.send(.conversations(.chats(.element(id: id, action: .replyFailed(error)))))
+            await flow.step(name)
+        }
         flow.finish()
     }
 

@@ -17,7 +17,8 @@ extension AssistantClient {
                     availability: { OnDeviceModel.availability },
                     reply: { request in OnDeviceModel.reply(to: request) },
                     draftSkill: { description in try await OnDeviceModel.draftSkill(description) },
-                    suggestTitle: { messages in try await OnDeviceModel.suggestTitle(messages) })
+                    suggestTitle: { messages in try await OnDeviceModel.suggestTitle(messages) },
+                    prewarm: { OnDeviceModel.prewarm() })
             }
         #endif
         return AssistantClient(
@@ -26,7 +27,8 @@ extension AssistantClient {
                 AsyncThrowingStream { $0.finish(throwing: AssistantError.unavailable(.systemTooOld)) }
             },
             draftSkill: { _ in throw AssistantError.unavailable(.systemTooOld) },
-            suggestTitle: { _ in throw AssistantError.unavailable(.systemTooOld) })
+            suggestTitle: { _ in throw AssistantError.unavailable(.systemTooOld) },
+            prewarm: {})
     }
 }
 
@@ -54,23 +56,21 @@ extension AssistantClient {
                     let tools = request.tools()
                     let before = tools.workspace
                     do {
-                        // The model sometimes writes an answer that doesn't
-                        // fit the schema. Ask again once, then for plain
-                        // text, unless it already saved changes: asking
-                        // again could make them twice.
-                        for attempt in 1...2 {
+                        // Start with as much as the estimate says fits, and
+                        // send less each time the model says it's too long,
+                        // unless it already saved changes: sending again
+                        // could make them twice.
+                        let sizes = AssistantPrompt.sizes(request)
+                        guard let smallest = sizes.last else { throw AssistantError.tooLong(saved: false) }
+                        for size in sizes {
                             do {
-                                try await structured(request, tools, continuation)
+                                try await answer(
+                                    request, size, tools, saved: { tools.workspace != before }, continuation)
                                 return
-                            } catch LanguageModelSession.GenerationError.decodingFailure {
-                                guard tools.workspace == before else { throw AssistantError.unreadable(saved: true) }
-                                if attempt == 2 { break }
+                            } catch LanguageModelSession.GenerationError.exceededContextWindowSize {
+                                let saved = tools.workspace != before
+                                if saved || size == smallest { throw AssistantError.tooLong(saved: saved) }
                             }
-                        }
-                        do {
-                            try await plain(request, continuation)
-                        } catch LanguageModelSession.GenerationError.decodingFailure {
-                            throw AssistantError.unreadable(saved: false)
                         }
                     } catch let error as AssistantError {
                         continuation.finish(throwing: error)
@@ -86,13 +86,43 @@ extension AssistantClient {
             }
         }
 
+        /// Loads the model, so the first answer starts sooner.
+        static func prewarm() {
+            guard availability == .available else { return }
+            LanguageModelSession().prewarm()
+        }
+
+        /// One answer at `size`. The model sometimes writes an answer that
+        /// doesn't fit the schema: ask again once, then for plain text,
+        /// unless it already saved changes.
+        private static func answer(
+            _ request: AssistantRequest, _ size: AssistantPrompt.Size, _ tools: AssistantTools, saved: () -> Bool,
+            _ continuation: AsyncThrowingStream<AssistantReply, any Error>.Continuation
+        ) async throws {
+            tools.resultBudget = size.toolResultBudget
+            for attempt in 1...2 {
+                do {
+                    try await structured(request, size, tools, continuation)
+                    return
+                } catch LanguageModelSession.GenerationError.decodingFailure {
+                    guard !saved() else { throw AssistantError.unreadable(saved: true) }
+                    if attempt == 2 { break }
+                }
+            }
+            do {
+                try await plain(request, size, continuation)
+            } catch LanguageModelSession.GenerationError.decodingFailure {
+                throw AssistantError.unreadable(saved: false)
+            }
+        }
+
         /// One answer as a message and maybe a plan, with the tools.
         private static func structured(
-            _ request: AssistantRequest, _ tools: AssistantTools,
+            _ request: AssistantRequest, _ size: AssistantPrompt.Size, _ tools: AssistantTools,
             _ continuation: AsyncThrowingStream<AssistantReply, any Error>.Continuation
         ) async throws {
             let available: [any Tool] = try AssistantTool.allCases
-                .filter(request.allowedTools.contains)
+                .filter(AssistantPrompt.tools(request, size: size).contains)
                 .map { tool -> any Tool in
                     switch tool {
                     case .findTasks: try FindTasks(tools)
@@ -104,10 +134,14 @@ extension AssistantClient {
                     case .revert: try Revert(tools)
                     }
                 }
-            let session = LanguageModelSession(tools: available, instructions: AssistantPrompt.instructions(request))
+            let session = LanguageModelSession(
+                tools: available, instructions: AssistantPrompt.instructions(request, size: size))
             let schema = try GenerationSchema(root: Schema.turn, dependencies: [])
             var last = AssistantReply(text: "")
-            for try await snapshot in session.streamResponse(to: AssistantPrompt.prompt(request), schema: schema) {
+            let stream = session.streamResponse(
+                to: AssistantPrompt.prompt(request, size: size), schema: schema,
+                includeSchemaInPrompt: size.schemaInPrompt)
+            for try await snapshot in stream {
                 last = AssistantPrompt.reply(
                     from: json(snapshot.rawContent), isComplete: false, draftsPlans: request.draftsPlans)
                 continuation.yield(last)
@@ -120,11 +154,12 @@ extension AssistantClient {
         /// One answer as plain text, without tools or a plan: what's left
         /// when the structured answer can't be read.
         private static func plain(
-            _ request: AssistantRequest, _ continuation: AsyncThrowingStream<AssistantReply, any Error>.Continuation
+            _ request: AssistantRequest, _ size: AssistantPrompt.Size,
+            _ continuation: AsyncThrowingStream<AssistantReply, any Error>.Continuation
         ) async throws {
             let session = LanguageModelSession(instructions: AssistantPrompt.plainInstructions(request))
             var last = AssistantReply(text: "")
-            for try await snapshot in session.streamResponse(to: AssistantPrompt.prompt(request)) {
+            for try await snapshot in session.streamResponse(to: AssistantPrompt.prompt(request, size: size)) {
                 last = AssistantReply(text: snapshot.content, isComplete: false)
                 continuation.yield(last)
             }
@@ -180,7 +215,7 @@ extension AssistantClient {
 
         private static func assistantError(_ error: LanguageModelSession.GenerationError) -> AssistantError {
             switch error {
-            case .exceededContextWindowSize: .tooLong
+            case .exceededContextWindowSize: .tooLong(saved: false)
             case .guardrailViolation, .refusal: .declined
             case .rateLimited, .concurrentRequests: .busy
             default: onSimulator ? .simulatorHost(error.localizedDescription) : .failed(error.localizedDescription)
@@ -343,9 +378,10 @@ extension AssistantClient {
         }
 
         func call(arguments: GeneratedContent) async throws -> String {
-            tools.findTasks(
-                words: string(arguments, "words") ?? "", avenue: string(arguments, "avenue"),
-                status: string(arguments, "status"), dueBy: string(arguments, "dueBy"))
+            tools.capped(
+                tools.findTasks(
+                    words: string(arguments, "words") ?? "", avenue: string(arguments, "avenue"),
+                    status: string(arguments, "status"), dueBy: string(arguments, "dueBy")))
         }
     }
 
@@ -363,7 +399,7 @@ extension AssistantClient {
         }
 
         func call(arguments: GeneratedContent) async throws -> String {
-            tools.getTask(code: string(arguments, "code") ?? "")
+            tools.capped(tools.getTask(code: string(arguments, "code") ?? ""))
         }
     }
 
@@ -380,7 +416,7 @@ extension AssistantClient {
         }
 
         func call(arguments: GeneratedContent) async throws -> String {
-            tools.overview()
+            tools.capped(tools.overview())
         }
     }
 
@@ -397,7 +433,7 @@ extension AssistantClient {
         }
 
         func call(arguments: GeneratedContent) async throws -> String {
-            tools.recentActivity()
+            tools.capped(tools.recentActivity())
         }
     }
 

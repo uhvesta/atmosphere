@@ -24,6 +24,8 @@
   [Outline] ""
     [Row/OutlineRow] ""
       [Button] "Tidy my weekend, Nov 3 at 10:00 AM"
+  [Heading] "Tidy my weekend"
+  [Button] "Rename" help: "Rename"
   [Button] "Use a Skill" id: sparkles
   [TextField] ""
   [Button, disabled] "Send" id: arrow.up.circle.fill

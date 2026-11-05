@@ -19,6 +19,9 @@ package struct AssistantClient: Sendable {
     package var draftSkill: @Sendable (_ description: String) async throws -> SkillDraft
     /// A short title for a conversation with these messages.
     package var suggestTitle: @Sendable (_ messages: [ChatMessage]) async throws -> String
+    /// Loads the model ahead of the first message, so the first answer
+    /// starts sooner. Does nothing when it's loaded or can't run.
+    package var prewarm: @Sendable () -> Void = {}
 }
 
 /// Each reply as it's written, the last one complete.
@@ -211,8 +214,13 @@ package struct AssistantReply: Hashable, Sendable {
 /// Why the assistant couldn't answer.
 package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible {
     case unavailable(AssistantAvailability)
-    /// The conversation no longer fits the model.
-    case tooLong
+    /// The last message, the draft and the instructions don't fit the
+    /// model, even with older messages, labels and tools left out. `saved`
+    /// when it changed tasks before running out of room.
+    case tooLong(saved: Bool)
+    /// The model wrote nothing for a minute or more, and Lifr stopped
+    /// waiting. `saved` when it changed tasks before that.
+    case timedOut(saved: Bool)
     /// The model declined, such as for content it won't write about.
     case declined
     /// The model is busy with another request, or iOS is limiting it while
@@ -239,8 +247,18 @@ package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible 
         switch self {
         case .unavailable(let availability):
             availability.description
-        case .tooLong:
-            "This conversation is too long for the on-device model. Start a new conversation; the draft comes along."
+        case .tooLong(saved: true):
+            "The assistant changed tasks, then ran out of room in the on-device model. The changes are saved; undo "
+                + "them or see them in Settings › Activity. Ask for the rest in a shorter message."
+        case .tooLong(saved: false):
+            "Your message and the draft are more than the on-device model can read at once, even with older "
+                + "messages left out. Shorten the message, ask for less at once, or remove rows from the draft."
+        case .timedOut(saved: false):
+            "The assistant stopped answering, so Lifr stopped waiting. Send the message again; if it keeps "
+                + "happening, ask for less at once."
+        case .timedOut(saved: true):
+            "The assistant changed tasks, then stopped answering. The changes are saved; undo them or see them in "
+                + "Settings › Activity. Check them before sending the message again, or they may be made twice."
         case .declined:
             "The assistant can't help with that. Rephrase the request, or edit the draft by hand."
         case .busy:
@@ -295,7 +313,8 @@ extension AssistantClient {
                 }
             },
             draftSkill: { _ in .example },
-            suggestTitle: { _ in "Planning the week" })
+            suggestTitle: { _ in "Planning the week" },
+            prewarm: {})
     }
 }
 

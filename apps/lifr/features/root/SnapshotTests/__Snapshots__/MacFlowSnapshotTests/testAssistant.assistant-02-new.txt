@@ -25,6 +25,8 @@
   [StaticText] "" value: "Ask about your tasks, change them, or plan what to add."
   [Button] "New conversation"
   [Outline] ""
+  [Heading] "New conversation"
+  [Button] "Rename" help: "Rename"
   [Button] "Use a Skill" id: sparkles
   [TextField] ""
   [Button, disabled] "Send" id: arrow.up.circle.fill

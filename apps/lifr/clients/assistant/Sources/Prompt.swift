@@ -5,17 +5,105 @@ import LifrCore
 /// What the on-device model is told, and how its structured answer becomes
 /// a reply. Kept apart from FoundationModels so it can be tested anywhere.
 package enum AssistantPrompt {
-    /// The most characters of conversation sent with each message. The
-    /// on-device model has about 4,000 tokens for everything, so older
-    /// messages are left out; the draft carries what was agreed.
-    package static let historyBudget = 4_000
+    /// The most characters of conversation sent with each message at full
+    /// size. The on-device model has about 4,000 tokens for everything, so
+    /// older messages are left out; the draft carries what was agreed.
+    package static let historyBudget = 1_500
 
-    package static func instructions(_ request: AssistantRequest) -> String {
-        instructions(request, tools: request.allowedTools, draftsPlans: request.draftsPlans)
+    /// How much of the request goes to the model. Lifr starts with the
+    /// largest that fits its estimate, and when the model still says it's
+    /// too long, tries the next.
+    package enum Size: CaseIterable, Comparable, Sendable {
+        /// Every allowed tool, 1,500 characters of conversation, the labels,
+        /// and the answer's shape spelled out in the prompt.
+        case full
+        /// The tools the last message needs, 600 characters of
+        /// conversation, no labels, and the answer's shape only enforced.
+        case smaller
+        /// As `smaller`, with only the last message, cut to 600 characters.
+        case smallest
+
+        /// The most characters of conversation.
+        package var historyBudget: Int { self == .full ? AssistantPrompt.historyBudget : 600 }
+        /// Whether messages before the last are sent.
+        package var keepsEarlier: Bool { self != .smallest }
+        package var listsLabels: Bool { self == .full }
+        /// Whether the answer's schema is written into the prompt as well
+        /// as enforced.
+        package var schemaInPrompt: Bool { self == .full }
+        /// The most characters of each tool's result.
+        package var toolResultBudget: Int { self == .full ? 1_200 : 600 }
+    }
+
+    /// The tokens the on-device model reads and writes in all, and what's
+    /// kept for its answer and the tools' results.
+    package static let contextWindow = 4_096
+    package static let reservedForAnswer = 1_100
+    /// Each tool's description and parameters, and the answer's schema, as
+    /// the model sees them.
+    package static let tokensPerTool = 130
+    package static let schemaTokens = 550
+
+    /// A cautious count of the tokens in `text`: one per three bytes. The
+    /// on-device model's own count needs a newer SDK.
+    package static func estimatedTokens(_ text: String) -> Int {
+        (text.utf8.count + 2) / 3
+    }
+
+    /// The estimated tokens of `request` at `size`, before the answer.
+    package static func estimatedTokens(_ request: AssistantRequest, size: Size) -> Int {
+        estimatedTokens(instructions(request, size: size)) + estimatedTokens(prompt(request, size: size))
+            + tools(request, size: size).count * tokensPerTool + (size.schemaInPrompt ? schemaTokens : 0)
+    }
+
+    /// The sizes to try, largest first: from the largest whose estimate
+    /// leaves room for the answer. Empty when not even the smallest fits.
+    package static func sizes(_ request: AssistantRequest) -> [Size] {
+        let room = contextWindow - reservedForAnswer
+        guard let first = Size.allCases.first(where: { estimatedTokens(request, size: $0) <= room }) else {
+            return []
+        }
+        return Size.allCases.filter { $0 >= first }
+    }
+
+    /// The tools sent at `size`: every allowed one at full size, or with a
+    /// skill; otherwise the reading tools, and the others only when the
+    /// last message asks for what they do.
+    package static func tools(_ request: AssistantRequest, size: Size) -> Set<AssistantTool> {
+        let allowed = request.allowedTools
+        guard size != .full, request.skill == nil else { return allowed }
+        let words = Set(
+            (request.messages.last?.text ?? "").lowercased()
+                .split { !$0.isLetter && $0 != "'" }.map(String.init))
+        let picked = AssistantTool.allCases.filter { tool in
+            switch tool {
+            case .findTasks, .getTask, .overview: true
+            case .recentActivity, .revert: !words.isDisjoint(with: undoWords)
+            case .updateTasks: !words.isDisjoint(with: changeWords)
+            case .addComment: !words.isDisjoint(with: commentWords)
+            }
+        }
+        return allowed.intersection(picked)
+    }
+
+    private static let undoWords: Set<String> = [
+        "undo", "revert", "back", "changed", "change", "changes", "activity", "recent", "happened", "did",
+    ]
+    private static let changeWords: Set<String> = [
+        "mark", "done", "finish", "finished", "complete", "completed", "close", "reopen", "start", "started",
+        "move", "set", "change", "rename", "priority", "urgent", "postpone", "reschedule", "push", "delay",
+        "won't", "wont", "cancel", "drop", "update",
+    ]
+    private static let commentWords: Set<String> = ["comment", "note", "notes", "remark"]
+
+    package static func instructions(_ request: AssistantRequest, size: Size = .full) -> String {
+        instructions(
+            request, tools: tools(request, size: size), draftsPlans: request.draftsPlans,
+            listsLabels: size.listsLabels)
     }
 
     private static func instructions(
-        _ request: AssistantRequest, tools: Set<AssistantTool>, draftsPlans: Bool
+        _ request: AssistantRequest, tools: Set<AssistantTool>, draftsPlans: Bool, listsLabels: Bool = true
     ) -> String {
         let lookup = request.lookup
         let today = request.today
@@ -48,7 +136,7 @@ package enum AssistantPrompt {
                 "- \(place.key) (\(place.name))"
                     + (place.projects.isEmpty ? "" : ": " + place.projects.map { "\"\($0)\"" }.joined(separator: ", "))
             }.joined(separator: "\n") + "\n"
-        if !lookup.labels.isEmpty {
+        if listsLabels, !lookup.labels.isEmpty {
             text += "Labels: " + lookup.labels.joined(separator: ", ") + "\n"
         }
         let reads = AssistantTool.allCases.filter { !$0.writes && tools.contains($0) }
@@ -83,15 +171,16 @@ package enum AssistantPrompt {
     /// structured answer couldn't be read: the same, without tools or a
     /// plan.
     package static func plainInstructions(_ request: AssistantRequest) -> String {
-        instructions(request, tools: [], draftsPlans: false)
+        instructions(request, tools: [], draftsPlans: false, listsLabels: false)
             + "\n\nAnswer in one to three plain sentences, with no lists or formatting. If the person asked for "
             + "new tasks, say what you'd add and ask them to send the message again for a plan."
     }
 
     /// The conversation, the draft and its problem, as one prompt.
-    package static func prompt(_ request: AssistantRequest) -> String {
+    package static func prompt(_ request: AssistantRequest, size: Size = .full) -> String {
+        let messages = size.keepsEarlier ? request.messages : Array(request.messages.suffix(1))
         var text = "Conversation so far:\n"
-        text += history(request.messages).map { message in
+        text += history(messages, budget: size.historyBudget).map { message in
             switch (message.role, message.skill) {
             case (.person, let skill?): "Person, with the skill \(skill): " + message.text
             case (.person, nil): "Person: " + message.text
@@ -107,16 +196,17 @@ package enum AssistantPrompt {
         return text + "\n\nAnswer the person's last message."
     }
 
-    /// The newest messages that fit `historyBudget`, oldest first. The last
-    /// message is always kept, cut from the front when it's too long by itself.
-    package static func history(_ messages: [ChatMessage]) -> [ChatMessage] {
+    /// The newest messages that fit `budget` characters, oldest first. The
+    /// last message is always kept, cut from the front when it's too long
+    /// by itself.
+    package static func history(_ messages: [ChatMessage], budget: Int = historyBudget) -> [ChatMessage] {
         guard var last = messages.last else { return [] }
-        if last.text.count > historyBudget { last.text = String(last.text.suffix(historyBudget)) }
+        if last.text.count > budget { last.text = String(last.text.suffix(budget)) }
         var kept = [last]
         var used = last.text.count
         for message in messages.dropLast().reversed() {
             used += message.text.count
-            guard used <= historyBudget else { break }
+            guard used <= budget else { break }
             kept.append(message)
         }
         return kept.reversed()

@@ -25,6 +25,8 @@
   [StaticText] "" value: "Ask about your tasks, change them, or plan what to add."
   [Button] "New conversation"
   [Outline] ""
+  [Heading] "New conversation"
+  [Button] "Rename" help: "Rename"
   [Button] "Review" help: "Picks another skill"
   [Button] "Remove Review" id: xmark.circle.fill
   [TextField] ""

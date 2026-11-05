@@ -21,7 +21,8 @@ final class ChatFeatureTests: XCTestCase {
 
     /// A chat whose assistant answers with `answer`, run with the request.
     private func chat(
-        _ workspace: Workspace,
+        _ workspace: Workspace, clock: TestClock<Duration> = TestClock(),
+        prewarmed: LockIsolated<Int> = LockIsolated(0),
         answer: @escaping @Sendable (AssistantRequest) async throws -> AssistantReply
     ) -> TestStoreOf<ChatFeature> {
         let store = TestStore(
@@ -33,6 +34,8 @@ final class ChatFeatureTests: XCTestCase {
             $0.store = .inMemory(workspace, actor: .user(device: "iPhone", surface: .iPhone))
             $0.skills = .inMemory()
             $0.assistant.availability = { .available }
+            $0.assistant.prewarm = { prewarmed.withValue { $0 += 1 } }
+            $0.continuousClock = clock
             $0.assistant.reply = { request in
                 AssistantReplies { continuation in
                     Task {
@@ -58,7 +61,7 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.task)
         await store.send(.binding(.set(\.input, text)))
         await store.send(.sendTapped)
-        await store.skipReceivedActions()
+        await store.skipReceivedActions(strict: false)
     }
 
     func testAddingTheDraftSavesItsTasksAndClearsTheCard() async throws {
@@ -135,7 +138,7 @@ final class ChatFeatureTests: XCTestCase {
 
     func testAFailedReplyKeepsTheMessageAndSaysWhy() async throws {
         let (workspace, _) = home()
-        let store = chat(workspace) { _ in throw AssistantError.tooLong }
+        let store = chat(workspace) { _ in throw AssistantError.tooLong(saved: false) }
 
         await send("Hello", in: store)
         XCTAssertNil(store.state.replying)
@@ -173,6 +176,78 @@ final class ChatFeatureTests: XCTestCase {
         await send("Hello", in: store)
         XCTAssertNotNil(store.state.alert)
         XCTAssertNil(store.state.failed)
+    }
+
+    func testOpeningTheChatLoadsTheModel() async {
+        let (workspace, _) = home()
+        let prewarmed = LockIsolated(0)
+        let store = chat(workspace, prewarmed: prewarmed) { _ in AssistantReply(text: "", isComplete: true) }
+
+        await store.send(.task)
+
+        XCTAssertEqual(prewarmed.value, 1)
+    }
+
+    func testAReplyThatStallsTimesOutAndCanBeTriedAgain() async throws {
+        let (workspace, _) = home()
+        let clock = TestClock()
+        let store = chat(workspace, clock: clock) { _ in
+            try await Task.sleep(for: .seconds(3_600))
+            return AssistantReply(text: "Late.", isComplete: true)
+        }
+
+        await send("Hello", in: store)
+        XCTAssertNil(store.state.alert)
+
+        await clock.advance(by: ChatFeature.stallLimit * 2)
+        await store.receive(\.replyFailed)
+        XCTAssertNil(store.state.replying)
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertNotNil(store.state.failed)
+        await store.send(.alert(.dismiss))
+    }
+
+    func testAReplyThatStallsAfterSavingIsNotTriedAgain() async throws {
+        let (workspace, rent) = home()
+        let clock = TestClock()
+        let code = workspace.displayCode(of: rent)
+        let store = chat(workspace, clock: clock) { request in
+            _ = await request.tools().updateTasks(codes: [code], status: "done", priority: nil, due: nil, title: nil)
+            try await Task.sleep(for: .seconds(3_600))
+            return AssistantReply(text: "Late.", isComplete: true)
+        }
+
+        await send("Finish rent", in: store)
+        await clock.advance(by: ChatFeature.stallLimit * 2)
+        await store.receive(\.replyFailed)
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertNil(store.state.failed)
+        await store.send(.alert(.dismiss))
+    }
+
+    func testAReplyThatKeepsWritingDoesntTimeOut() async throws {
+        let (workspace, _) = home()
+        let clock = TestClock()
+        let store = chat(workspace, clock: clock) { _ in AssistantReply(text: "", isComplete: false) }
+        store.dependencies.assistant.reply = { _ in
+            AssistantReplies { continuation in
+                Task {
+                    for step in 1...3 {
+                        try await clock.sleep(for: ChatFeature.stallLimit / 2)
+                        continuation.yield(AssistantReply(text: "Part \(step)"))
+                    }
+                    continuation.yield(AssistantReply(text: "Done.", isComplete: true))
+                    continuation.finish()
+                }
+            }
+        }
+
+        await send("Hello", in: store)
+        for _ in 1...3 { await clock.advance(by: ChatFeature.stallLimit / 2) }
+        await store.skipReceivedActions()
+
+        XCTAssertNil(store.state.alert)
+        XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Done."])
     }
 
     func testABusyReplyKeepsItsTextAndIsSentAgainOnResume() async throws {
@@ -256,6 +331,7 @@ final class ChatFeatureTests: XCTestCase {
             $0.conversations = kept
             $0.skills = .inMemory()
             $0.assistant = .scripted([AssistantReply(text: "Hi.", isComplete: true)])
+            $0.continuousClock = TestClock()
             $0.date.now = now
             $0.timeZone = .gmt
             $0.uuid = .incrementing
