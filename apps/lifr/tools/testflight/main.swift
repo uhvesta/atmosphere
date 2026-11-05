@@ -14,7 +14,7 @@ enum Failure: Error, CustomStringConvertible {
     case key(String)
     case request(method: String, path: String, status: Int, body: String)
     case transport(path: String, reason: String)
-    case missingApp(bundleID: String)
+    case missingApp(bundleID: String, found: [String])
     case unexpected(String)
 
     var description: String {
@@ -50,11 +50,14 @@ enum Failure: Error, CustomStringConvertible {
             }
         case .transport(let path, let reason):
             "Couldn't reach App Store Connect for \(path): \(reason). Check the connection and run it again."
-        case .missingApp(let bundleID):
+        case .missingApp(let bundleID, let found):
             """
             There's no app for \(bundleID) in App Store Connect yet. Make it yourself under Apps › + › \
             New App: iOS, bundle ID \(bundleID), any name and SKU. Then run this again.
             """
+                + (found.isEmpty
+                    ? " The API key sees no apps at all: check its team and that its role can see apps."
+                    : " The apps the API key sees are for " + found.joined(separator: ", ") + ".")
         case .unexpected(let what):
             "App Store Connect answered unexpectedly: \(what)."
         }
@@ -164,9 +167,13 @@ func run(_ arguments: [String]) async throws(Failure) {
     let api = API(key: try Key.fromStandardInput())
     switch (command, arguments.count) {
     case ("app", 2):
-        let apps = try await api.list("/v1/apps?filter[bundleId]=\(query(arguments[1]))")
+        // Like the bundle ID filter, the app filter can miss: match exactly
+        // over all of them.
+        let apps = try await api.list("/v1/apps?limit=200")
         guard let id = apps.first(where: { attributes($0)["bundleId"] as? String == arguments[1] })?["id"] as? String
-        else { throw .missingApp(bundleID: arguments[1]) }
+        else {
+            throw .missingApp(bundleID: arguments[1], found: apps.compactMap { attributes($0)["bundleId"] as? String })
+        }
         print(id)
 
     case ("register", 3):

@@ -108,7 +108,11 @@ mkdir -m 700 "$scratch/private_keys"
 { key | tail -n +3; } >"$scratch/private_keys/AuthKey_$(key | sed -n 1p).p8"
 chmod 600 "$scratch/private_keys/"*
 # altool looks for the key in ./private_keys.
+# altool exits 0 even when Apple refuses the build, so read what it says.
 (cd "$scratch" && xcrun altool --upload-app --type ios --file "$ipa" \
-  --apiKey "$(key | sed -n 1p)" --apiIssuer "$(key | sed -n 2p)")
+  --apiKey "$(key | sed -n 1p)" --apiIssuer "$(key | sed -n 2p)" 2>&1) | tee "$scratch/altool.log"
 rm -rf "$scratch/private_keys"
+if grep -q "Failed to upload" "$scratch/altool.log" || ! grep -qi "UPLOAD SUCCEEDED\|No errors uploading" "$scratch/altool.log"; then
+  fail "Apple refused build $build; its reasons are above. Fix those and run this again."
+fi
 echo "Uploaded build $build. TestFlight shows it on your iPhone once Apple has processed it, usually within 15 minutes."

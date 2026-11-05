@@ -91,7 +91,10 @@ ios_extension(
         "//conditions:default": None,
     }) if IOS_APP_GROUP else None,
     families = ["iphone"],
-    infoplists = ["Extension/Info.plist"],
+    infoplists = [
+        "Extension/Info.plist",
+        "Extension/Info-iOS.plist",
+    ],
     minimum_os_version = "18.0",
     provisioning_profile = select({
         "//apps/lifr:is_app_store": "//apps/lifr/app:ios_widgets_app_store",
