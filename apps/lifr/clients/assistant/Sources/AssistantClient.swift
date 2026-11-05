@@ -97,10 +97,14 @@ package struct AssistantRequest: Hashable, Sendable {
     /// The skill the person picked for this message. Without one, the
     /// assistant may do what any built-in skill does.
     package var skill: Skill?
+    /// How the person wants the assistant to behave: the opening of its
+    /// instructions, before what Lifr adds.
+    package var guidance: String
 
     package init(
         messages: [ChatMessage], draft: Plan? = nil, problem: String? = nil, workspace: Workspace, now: Date,
-        timeZone: TimeZone, writes: AssistantWrites? = nil, skill: Skill? = nil
+        timeZone: TimeZone, writes: AssistantWrites? = nil, skill: Skill? = nil,
+        guidance: String = Guidance.defaultText
     ) {
         self.messages = messages
         self.draft = draft
@@ -110,6 +114,7 @@ package struct AssistantRequest: Hashable, Sendable {
         self.timeZone = timeZone
         self.writes = writes
         self.skill = skill
+        self.guidance = guidance
     }
 
     /// The tools the skill allows, or every tool without one. Tools that

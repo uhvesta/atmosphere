@@ -34,6 +34,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
             $0.continuousClock = TestClock()
             $0.conversations = .inMemory()
             $0.skills = .inMemory()
+            $0.guidance = .inMemory()
             $0.date = DateGenerator { now }
             $0.timeZone = .gmt
             $0.withRandomNumberGenerator = WithRandomNumberGenerator(SeededRandomNumberGenerator())
@@ -213,6 +214,14 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         await flow.step("skills")
         store.send(.settings(.skills(.presented(.newTapped))))
         await flow.step("new-skill")
+        store.send(.settings(.skills(.dismiss)))
+        store.send(.settings(.instructionsTapped))
+        await flow.step("instructions")
+        store.send(.settings(.instructions(.presented(.binding(.set(\.draft, "Answer in Spanish."))))))
+        store.send(.settings(.instructions(.presented(.saveTapped))))
+        await flow.step("instructions-saved")
+        store.send(.settings(.instructions(.presented(.useTapped(nil)))))
+        await flow.step("instructions-default")
         flow.finish()
     }
 

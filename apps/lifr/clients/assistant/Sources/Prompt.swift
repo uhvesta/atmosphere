@@ -108,8 +108,7 @@ package enum AssistantPrompt {
         let lookup = request.lookup
         let today = request.today
         var text = """
-            You help the person plan what to add to Lifr, their task manager. Ask short questions when you need \
-            to, then propose a plan. Keep "message" to one to three sentences; the plan shows the details.
+            \(request.guidance)
 
             Records:
             - Avenues are areas of life, with a KEY such as HEALTH.

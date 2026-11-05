@@ -37,6 +37,7 @@ final class MacFlowSnapshotTests: XCTestCase {
             $0.continuousClock = TestClock()
             $0.conversations = .inMemory()
             $0.skills = .inMemory()
+            $0.guidance = .inMemory()
             $0.date = DateGenerator { now }
             $0.timeZone = .gmt
             $0.withRandomNumberGenerator = WithRandomNumberGenerator(SeededRandomNumberGenerator())
@@ -178,6 +179,14 @@ final class MacFlowSnapshotTests: XCTestCase {
         await flow.step("sync-failed")
         store.send(.settings(.activityTapped))
         await flow.step("activity")
+        store.send(.settings(.activity(.dismiss)))
+        store.send(.settings(.instructionsTapped))
+        await flow.step("instructions")
+        store.send(.settings(.instructions(.presented(.binding(.set(\.draft, "Answer in Spanish."))))))
+        store.send(.settings(.instructions(.presented(.saveTapped))))
+        await flow.step("instructions-saved")
+        store.send(.settings(.instructions(.presented(.useTapped(nil)))))
+        await flow.step("instructions-default")
         flow.finish()
     }
 

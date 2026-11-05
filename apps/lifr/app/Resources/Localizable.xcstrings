@@ -139,6 +139,16 @@
         }
       }
     },
+    "%lld of %lld characters" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld of %2$lld characters"
+          }
+        }
+      }
+    },
     "%lld of %lld closed" : {
       "localizations" : {
         "en" : {
@@ -428,6 +438,9 @@
     "Couldn't change the task" : {
 
     },
+    "Couldn't keep the instructions on this device (%@). The assistant uses the ones from before. Check that this device has free storage, then try again." : {
+
+    },
     "Couldn't load your Avenues" : {
 
     },
@@ -536,6 +549,9 @@
     "Every change, who made it, and from where. Any of them can be reverted." : {
 
     },
+    "Every version you save is kept on this device only. Tap one to use it again." : {
+
+    },
     "Expires %@" : {
 
     },
@@ -569,6 +585,12 @@
     "High" : {
 
     },
+    "History" : {
+
+    },
+    "How the assistant should behave" : {
+
+    },
     "In 1 hour" : {
 
     },
@@ -579,6 +601,9 @@
 
     },
     "In Progress with no activity for %lld days." : {
+
+    },
+    "In use" : {
 
     },
     "Install lifr" : {
@@ -639,6 +664,9 @@
 
     },
     "Lifr on %@" : {
+
+    },
+    "Lifr's default" : {
 
     },
     "Lifr, an app is connected" : {
@@ -1118,6 +1146,16 @@
     "The first message" : {
 
     },
+    "The instructions are %lld characters; the most is %lld, so the assistant still has room for your records. Shorten them, then save." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "The instructions are %1$lld characters; the most is %2$lld, so the assistant still has room for your records. Shorten them, then save."
+          }
+        }
+      }
+    },
     "The key starts each task's code, such as HEALTH-7K2Q. Use 2 to 10 letters." : {
 
     },
@@ -1245,6 +1283,9 @@
 
     },
     "Won't Do + Finish" : {
+
+    },
+    "Write how the assistant should behave, or use Lifr's default." : {
 
     },
     "Writes a note for this skill" : {

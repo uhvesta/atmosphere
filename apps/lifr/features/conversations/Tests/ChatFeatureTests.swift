@@ -33,6 +33,7 @@ final class ChatFeatureTests: XCTestCase {
         } withDependencies: { [now] in
             $0.store = .inMemory(workspace, actor: .user(device: "iPhone", surface: .iPhone))
             $0.skills = .inMemory()
+            $0.guidance = .inMemory()
             $0.assistant.availability = { .available }
             $0.assistant.prewarm = { prewarmed.withValue { $0 += 1 } }
             $0.continuousClock = clock
@@ -313,6 +314,25 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Done."])
     }
 
+    func testTheAssistantIsToldThePersonsInstructions() async throws {
+        let (workspace, _) = home()
+        let told = LockIsolated<[String]>([])
+        let store = chat(workspace) { request in
+            told.withValue { $0.append(request.guidance) }
+            return AssistantReply(text: "Arr.", isComplete: true)
+        }
+        await send("Hello", in: store)
+
+        var guidance = Guidance()
+        try guidance.save("Answer like a pirate.", id: UUID(), at: now)
+        store.dependencies.guidance = .inMemory(guidance)
+        await store.send(.binding(.set(\.input, "Hello again")))
+        await store.send(.sendTapped)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(told.value, [Guidance.defaultText, "Answer like a pirate."])
+    }
+
     func testThePickedSkillGoesWithOneMessageOnly() async throws {
         let (workspace, _) = home()
         let sent = LockIsolated<[Skill?]>([])
@@ -369,6 +389,7 @@ final class ChatFeatureTests: XCTestCase {
             $0.store = .inMemory(workspace)
             $0.conversations = kept
             $0.skills = .inMemory()
+            $0.guidance = .inMemory()
             $0.assistant = .scripted([AssistantReply(text: "Hi.", isComplete: true)])
             $0.continuousClock = TestClock()
             $0.date.now = now

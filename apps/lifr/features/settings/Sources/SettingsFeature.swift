@@ -41,6 +41,7 @@ package struct SettingsFeature {
         package var workspace = Workspace()
         @Presents package var activity: ActivityFeature.State?
         @Presents package var skills: SkillsFeature.State?
+        @Presents package var instructions: InstructionsFeature.State?
         @Presents package var revoke: ConfirmationDialogState<Revoke>?
         @Presents package var alert: AlertState<Never>?
 
@@ -82,6 +83,8 @@ package struct SettingsFeature {
         case activity(PresentationAction<ActivityFeature.Action>)
         case skillsTapped
         case skills(PresentationAction<SkillsFeature.Action>)
+        case instructionsTapped
+        case instructions(PresentationAction<InstructionsFeature.Action>)
         case loginItemFailed(any Error)
         case saved(Result<Saved, any Error>)
         case sessionChanged(Result<Void, any Error>)
@@ -217,6 +220,10 @@ package struct SettingsFeature {
                 state.skills = SkillsFeature.State()
                 return .none
 
+            case .instructionsTapped:
+                state.instructions = InstructionsFeature.State()
+                return .none
+
             case .activity(.presented(.delegate(.saved(let workspace)))):
                 state.show(workspace)
                 return .send(.delegate(.saved(workspace)))
@@ -237,12 +244,13 @@ package struct SettingsFeature {
                 state.alert = .failed("Couldn't change connected apps", error)
                 return .none
 
-            case .sessionChanged(.success), .activity, .skills, .revoke, .alert, .delegate:
+            case .sessionChanged(.success), .activity, .skills, .instructions, .revoke, .alert, .delegate:
                 return .none
             }
         }
         .ifLet(\.$activity, action: \.activity) { ActivityFeature() }
         .ifLet(\.$skills, action: \.skills) { SkillsFeature() }
+        .ifLet(\.$instructions, action: \.instructions) { InstructionsFeature() }
         .ifLet(\.$revoke, action: \.revoke)
         .ifLet(\.$alert, action: \.alert)
     }

@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import LifrAPI
+import LifrAssistantClient
 import LifrCore
 import LifrSessionClient
 import LifrSettings
@@ -35,6 +36,22 @@ final class SettingsSnapshotTests: XCTestCase {
             workspace: .sample(now: now, timeZone: .gmt))
     }
 
+    /// Two saved versions, the older one in use.
+    private var instructions: InstructionsFeature.State {
+        var guidance = Guidance()
+        try? guidance.save("Keep answers short. Ask before adding more than five tasks.", id: UUID(1), at: now - 86400)
+        try? guidance.save("Answer in Spanish.", id: UUID(2), at: now - 3600)
+        guidance.use(UUID(1))
+        return InstructionsFeature.State(guidance: guidance, isLoaded: true)
+    }
+
+    private func instructionsScreen() -> some View {
+        NavigationStack {
+            InstructionsView(store: Store(initialState: instructions) { EmptyReducer() })
+        }
+        .environment(\.timeZone, .gmt)
+    }
+
     private func settingsScreen() -> some View {
         NavigationStack {
             SettingsView(store: Store(initialState: settings) { EmptyReducer() })
@@ -61,6 +78,10 @@ final class SettingsSnapshotTests: XCTestCase {
         assertSnapshot(
             of: (avenues: approval.avenues, canApprove: approval.canApprove, grant: approval.grant(now: now)),
             as: Snapshotting<Any, String>.dump.pullback { $0 }, named: "approval")
+        let instructions = instructions
+        assertSnapshot(
+            of: (guidance: instructions.guidance, draft: instructions.draft, canSave: instructions.canSave),
+            as: Snapshotting<Any, String>.dump.pullback { $0 }, named: "instructions")
     }
 
     func testAccessibilityTree() {
@@ -68,10 +89,14 @@ final class SettingsSnapshotTests: XCTestCase {
             of: settingsScreen(), as: .accessibilityTree(size: CGSize(width: 402, height: 874)), named: "settings")
         assertSnapshot(
             of: approvalScreen(), as: .accessibilityTree(size: CGSize(width: 402, height: 874)), named: "approval")
+        assertSnapshot(
+            of: instructionsScreen(), as: .accessibilityTree(size: CGSize(width: 402, height: 874)),
+            named: "instructions")
     }
 
     func testImages() {
         assertScreenImages(of: settingsScreen(), named: "settings")
         assertScreenImages(of: approvalScreen(), named: "approval")
+        assertScreenImages(of: instructionsScreen(), named: "instructions")
     }
 }

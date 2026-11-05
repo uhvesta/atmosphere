@@ -126,6 +126,7 @@ package struct ChatFeature {
     @Dependency(\.assistant) private var assistant
     @Dependency(\.store) private var store
     @Dependency(\.skills) private var skillsClient
+    @Dependency(\.guidance) private var guidance
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
     @Dependency(\.uuid) private var uuid
@@ -378,8 +379,12 @@ package struct ChatFeature {
     private func reply(_ request: AssistantRequest, in state: inout State) -> Effect<Action> {
         state.waiting = request
         if state.replying == nil { state.replying = "" }
-        return .run { [assistant, backgroundTime, clock] send in
-            try await backgroundTime.run("Assistant reply") {
+        return .run { [assistant, backgroundTime, clock, guidance] send in
+            var request = request
+            // The default when the person's can't be read; the
+            // Instructions screen says why.
+            request.guidance = (try? await guidance.load().text) ?? Guidance.defaultText
+            try await backgroundTime.run("Assistant reply") { [request] in
                 try await Self.watch(request, assistant: assistant, clock: clock) { await send(.replied($0)) }
             }
         } catch: { error, send in

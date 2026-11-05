@@ -36,6 +36,7 @@ package struct SettingsView: View {
             }
             Section {
                 Toggle("Name conversations with Apple Intelligence", isOn: Binding($namesConversations))
+                Button("Instructions") { store.send(.instructionsTapped) }
                 Button("Skills") { store.send(.skillsTapped) }
             } header: {
                 Text("Assistant")
@@ -43,7 +44,8 @@ package struct SettingsView: View {
                 Text(
                     "Names each new conversation after its first reply, on this device. Names you give are kept. "
                         + "Conversations stay on this device unless you sync them: swipe right on one in "
-                        + "Conversations. Skills sync through iCloud, encrypted end to end.")
+                        + "Conversations. Instructions stay on this device. Skills sync through iCloud, "
+                        + "encrypted end to end.")
             }
             if store.showsAgents {
                 avenueAccess
@@ -57,6 +59,9 @@ package struct SettingsView: View {
         }
         .navigationDestination(item: $store.scope(state: \.skills, action: \.skills)) { store in
             SkillsView(store: store)
+        }
+        .navigationDestination(item: $store.scope(state: \.instructions, action: \.instructions)) { store in
+            InstructionsView(store: store)
         }
         .task { await store.send(.task).finish() }
         .confirmationDialog($store.scope(state: \.revoke, action: \.revoke))

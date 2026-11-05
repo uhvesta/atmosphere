@@ -28,5 +28,5 @@
 [button] "Upcoming"
 [button] "Avenues"
 [button] "Assistant"
+[button] "Instructions"
 [button] "Skills"
-[text] "Names each new conversation after its first reply, on this device. Names you give are kept. Conversations stay on this device unless you sync them: swipe right on one in Conversations. Skills sync through iCloud, encrypted end to end."
