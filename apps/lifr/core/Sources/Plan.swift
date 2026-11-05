@@ -116,6 +116,21 @@ package struct Plan: Hashable, Codable, Sendable {
         avenues.isEmpty && labels.isEmpty && projects.isEmpty && tasks.isEmpty
     }
 
+    /// The plan without what `workspace` already has: an Avenue with the
+    /// same key and name, and a label with the same name. Tasks that name
+    /// such an Avenue's key go in the one that's there.
+    package func leavingOut(_ workspace: Workspace) -> Plan {
+        var plan = self
+        plan.avenues.removeAll { draft in
+            workspace.avenues.values.contains {
+                $0.key.rawValue.caseInsensitiveCompare(draft.key) == .orderedSame
+                    && $0.name.caseInsensitiveCompare(draft.name) == .orderedSame
+            }
+        }
+        plan.labels.removeAll { workspace.label(named: $0.name) != nil }
+        return plan
+    }
+
     /// How many tasks and Sub tasks the plan adds.
     package var taskCount: Int {
         (projects.flatMap(\.tasks) + tasks).reduce(0) { $0 + 1 + $1.subtasks.count }

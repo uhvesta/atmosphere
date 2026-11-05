@@ -220,6 +220,57 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Adding an Avenue from a chat, then asking for more in the same chat.
+    /// The model's next draft repeats the Avenue just added and puts a task
+    /// in an Avenue that isn't there. The draft leaves out what's already
+    /// added, and removing the bad row in the editor lets the rest be added.
+    func testAssistantFollowUpDraft() async throws {
+        let fitness = Plan.AvenueDraft(key: "FIT", name: "Fitness", color: "green", symbol: "figure.run")
+        let (store, flow) = app(
+            "assistant-follow-up",
+            replies: [
+                AssistantReply(
+                    text: "Here's a Fitness Avenue. Tap Add to make it.", plan: Plan(avenues: [fitness]),
+                    isComplete: true),
+                AssistantReply(
+                    text: "I added Reading, and a run to start with.",
+                    plan: Plan(
+                        avenues: [fitness, .init(key: "READ", name: "Reading", color: "purple", symbol: "book")],
+                        tasks: [.init(title: "Go for a run", place: "FITNESS")]),
+                    isComplete: true),
+            ])
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "Add a Fitness Avenue"))))))
+        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
+        await flow.step("first-draft")
+        flow.tap("Add")
+        await flow.step("first-added", image: false)
+        XCTAssertNotNil(store.workspace?.avenues.values.first { $0.key.rawValue == "FIT" }, "Fitness wasn't added")
+
+        store.send(
+            .conversations(.chats(.element(id: id, action: .binding(.set(\.input, "Now add a Reading Avenue"))))))
+        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
+        await flow.step("second-draft")
+        let draft = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.draft)
+        XCTAssertEqual(draft.avenues.map(\.key), ["READ"], "The draft still has the Avenue that was added")
+
+        flow.tap("Edit")
+        await flow.step("edit-second-draft")
+        // The Reading row's Remove, then the run's.
+        flow.tap("Remove", occurrence: 1)
+        await flow.step("bad-row-removed")
+        let chat = try XCTUnwrap(store.conversations.chats[id: id])
+        XCTAssertNil(chat.problem, "Removing the row the problem was about left the problem")
+        XCTAssertTrue(chat.canAdd)
+        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.editsDraft, false))))))
+        flow.tap("Add")
+        await flow.step("second-added")
+        XCTAssertNotNil(store.workspace?.avenues.values.first { $0.key.rawValue == "READ" }, "Reading wasn't added")
+        flow.finish()
+    }
+
     /// Asking about a photo and a recording, with a model that reads both:
     /// attaching each, sending them, the reply, then a model that can't.
     func testAssistantAttachments() async throws {

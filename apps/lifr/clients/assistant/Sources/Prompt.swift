@@ -129,6 +129,8 @@ package enum AssistantPrompt {
             - Dates are YYYY-MM-DD, today, tomorrow, a weekday such as friday, next friday, +3d, +2w or +1m.
             - Leave out anything the person didn't ask for. Never invent dates.
             - When the person changes their mind, return the whole updated plan.
+            - The plan has only what's new: leave out the Avenues, Projects and labels listed below, such as \
+            those the person added earlier in this chat.
             - Leave "plan" out while you are still asking questions.
 
             Today is \(today), a \(weekday(today)).

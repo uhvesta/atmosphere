@@ -62,6 +62,26 @@
                 testName: testName, line: line)
         }
 
+        /// Activates the `occurrence`th element labelled `label`, in reading
+        /// order, as VoiceOver does with a double tap, so the step goes
+        /// through the screen's own controls and bindings.
+        package func tap(
+            _ label: String, occurrence: Int = 0, file: StaticString = #filePath, line: UInt = #line
+        ) {
+            window.layoutIfNeeded()
+            let matches = AccessibilityTree.readingOrder(AccessibilityTree.elements(in: window))
+                .filter { $0.accessibilityLabel == label }
+            guard matches.indices.contains(occurrence) else {
+                XCTFail(
+                    "There's no \"\(label)\" number \(occurrence + 1) on the screen; there are \(matches.count). "
+                        + "Check the step before shows it.", file: file, line: line)
+                return
+            }
+            if !matches[occurrence].accessibilityActivate() {
+                XCTFail("\"\(label)\" didn't respond to a tap.", file: file, line: line)
+            }
+        }
+
         /// Ends the flow, taking the screen down.
         package func finish() {
             window.isHidden = true

@@ -22,6 +22,22 @@ func planTests() -> [TestCase] {
             try expectEqual(titles(fixture.workspace.subtasks(of: room.id)), ["Vacuum", "Dust"])
             try expectEqual(titles(fixture.workspace.subtasks(of: clothes.id)), ["Jacket"])
         },
+        TestCase("given a plan repeating an Avenue that's there, when left out, then only the new one stays") {
+            let fixture = try Fixture()
+            let health = try fixture.workspace.avenues.values.first { $0.key.rawValue == "HEALTH" }.unwrap()
+            let plan = Plan(
+                avenues: [.init(key: "health", name: health.name.uppercased()), .init(key: "READ", name: "Reading")],
+                tasks: [.init(title: "Run", place: "HEALTH")])
+            let left = plan.leavingOut(fixture.workspace)
+            try expectEqual(left.avenues.map(\.key), ["READ"])
+            try expectEqual(left.tasks, plan.tasks)
+            _ = try fixture.workspace.apply(left, timeZone: gmt, in: fixture.context)
+        },
+        TestCase("given a plan reusing a key with another name, when left out, then it stays to be fixed") {
+            let fixture = try Fixture()
+            let plan = Plan(avenues: [.init(key: "HEALTH", name: "Fitness")])
+            try expectEqual(plan.leavingOut(fixture.workspace), plan)
+        },
         TestCase("given a new Avenue and a Project in it, when applied, then the tasks are in that Project") {
             let fixture = try Fixture()
             let plan = Plan(

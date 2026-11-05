@@ -216,14 +216,14 @@ final class ChatFeatureTests: XCTestCase {
 
         var typo = plan
         typo.tasks[0].place = "HOEM"
-        await store.send(.binding(.set(\.conversation.draft, typo)))
+        await edit(typo, in: store)
         XCTAssertNotNil(store.state.problem)
         await store.send(.addTapped)
         XCTAssertFalse(store.state.workspace.tasks.values.contains { $0.title == "Buy soil" })
 
         var edited = plan
         edited.tasks[0].title = "Buy potting soil"
-        await store.send(.binding(.set(\.conversation.draft, edited)))
+        await edit(edited, in: store)
         XCTAssertNil(store.state.problem)
         await store.send(.addTapped)
         await store.skipReceivedActions()
@@ -237,9 +237,36 @@ final class ChatFeatureTests: XCTestCase {
         let store = chat(workspace) { _ in AssistantReply(text: "Here's a plan.", plan: plan, isComplete: true) }
         await send("Plan repotting", in: store)
 
-        await store.send(.binding(.set(\.conversation.draft, Plan())))
+        await edit(Plan(), in: store)
         XCTAssertNil(store.state.conversation.draft)
         XCTAssertNil(store.state.problem)
+    }
+
+    func testADraftLeavesOutAnAvenueThisChatAlreadyAdded() async throws {
+        let (workspace, _) = home()
+        let reading = Plan.AvenueDraft(key: "READ", name: "Reading")
+        let replies = LockIsolated([
+            Plan(avenues: [reading]),
+            Plan(avenues: [reading, .init(key: "COOK", name: "Cooking")]),
+        ])
+        let store = chat(workspace) { _ in
+            let plan = replies.withValue { $0.removeFirst() }
+            return AssistantReply(text: "Here's a plan.", plan: plan, isComplete: true)
+        }
+        await send("Add a Reading Avenue", in: store)
+        await store.send(.addTapped)
+        await store.skipReceivedActions()
+        await send("And a Cooking one", in: store)
+        XCTAssertEqual(store.state.conversation.draft?.avenues.map(\.key), ["COOK"])
+        XCTAssertTrue(store.state.canAdd)
+    }
+
+    /// Changes the draft as the editor does: its fields write the whole
+    /// conversation.
+    private func edit(_ plan: Plan, in store: TestStoreOf<ChatFeature>) async {
+        var conversation = store.state.conversation
+        conversation.draft = plan
+        await store.send(.binding(.set(\.conversation, conversation)))
     }
 
     func testASuggestionInAnEmptyChatIsSentAsTheMessage() async throws {

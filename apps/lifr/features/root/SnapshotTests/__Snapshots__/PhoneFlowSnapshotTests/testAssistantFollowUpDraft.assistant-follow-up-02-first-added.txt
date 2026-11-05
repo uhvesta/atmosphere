@@ -1,0 +1,12 @@
+[button] "Conversations" id: BackButton
+[header] "Add a Fitness Avenue"
+[text] "Add a Fitness Avenue"
+[text] "Here's a Fitness Avenue. Tap Add to make it."
+[button] "Use a Skill"
+[button, notEnabled] "Send"
+[element] "" value: "Message"
+[button] "Search"
+[button] "Today"
+[button] "Upcoming"
+[button] "Avenues"
+[button, selected] "Assistant"

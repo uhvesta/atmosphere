@@ -321,7 +321,9 @@ package struct ChatFeature {
                 let id = uuid()
                 state.conversation.messages.append(ChatMessage(id: id, role: .assistant, text: reply.text, at: now))
                 if let plan = reply.plan {
-                    state.conversation.draft = plan
+                    // A model often repeats what this chat already added.
+                    let new = plan.leavingOut(state.workspace)
+                    state.conversation.draft = new.isEmpty ? nil : new
                     check(&state)
                 }
                 let reload: Effect<Action> = .run { [store] send in
@@ -415,7 +417,8 @@ package struct ChatFeature {
                 state.editsDraft = false
                 return .none
 
-            case .binding(\.conversation.draft):
+            case .binding(\.conversation.draft), .binding(\.conversation):
+                // The editor's fields change the conversation they're in.
                 // Removing the last row discards the draft.
                 if state.conversation.draft?.isEmpty == true {
                     state.conversation.draft = nil
