@@ -3,6 +3,7 @@ import Foundation
 import LifrAPI
 import LifrAssistantClient
 import LifrCore
+import LifrLockClient
 import LifrSessionClient
 import LifrSkills
 import LifrStoreClient
@@ -35,6 +36,11 @@ package struct SettingsFeature {
         package var apps: [ConnectedApp] = []
         package var cli = CLIInstallation.notInstalled
         package var launchesAtLogin = false
+        /// What the lock confirms with on this device.
+        package var biometry = Biometry.faceID
+        /// Whether Lifr locks when it opens. Changed only once the person
+        /// confirms it's them.
+        @Shared(.locksApp) package var locksApp
         /// Where sync is. The app passes each change on.
         package var sync = SyncState()
         /// Kept so the Activity log opens on what's shown.
@@ -72,6 +78,9 @@ package struct SettingsFeature {
         case cliLoaded(CLIInstallation)
         case launchAtLoginLoaded(Bool)
         case launchAtLoginToggled(Bool)
+        /// The lock's switch: asks the person to confirm before it changes.
+        case lockToggled(Bool)
+        case lockConfirmed(Bool, Result<Void, any Error>)
         case event(SessionEvent)
         case procrastinatedDaysChanged(Int)
         case agentAccessPicked(UUID, AgentAccess)
@@ -105,6 +114,7 @@ package struct SettingsFeature {
     @Dependency(\.session) private var session
     @Dependency(\.sync) private var sync
     @Dependency(\.date.now) private var now
+    @Dependency(\.lock) private var lock
 
     package init() {}
 
@@ -112,6 +122,7 @@ package struct SettingsFeature {
         Reduce { state, action in
             switch action {
             case .task:
+                state.biometry = lock.biometry()
                 let loadStore: Effect<Action> = .run { [store] send in
                     await send(.loaded(Result { try await store.load() }))
                 }
@@ -154,6 +165,24 @@ package struct SettingsFeature {
                         await send(.loginItemFailed(error))
                     }
                 }
+
+            case .lockToggled(let on):
+                guard on != state.locksApp else { return .none }
+                let reason =
+                    on
+                    ? String(localized: "Lock Lifr when it opens") : String(localized: "Stop locking Lifr")
+                return .run { [lock] send in
+                    await send(.lockConfirmed(on, Result { try await lock.authenticate(reason) }))
+                }
+
+            case .lockConfirmed(let on, .success):
+                state.$locksApp.withLock { $0 = on }
+                return .none
+
+            case .lockConfirmed(_, .failure(let error)):
+                guard (error as? LockError) != .cancelled else { return .none }
+                state.alert = .failed("Couldn't change the lock", error)
+                return .none
 
             case .loginItemFailed(let error):
                 state.alert = .failed("Couldn't change Launch at login", error)

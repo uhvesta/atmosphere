@@ -1,0 +1,2 @@
+[text] "Lifr is locked"
+[button] "Unlock with Face ID"

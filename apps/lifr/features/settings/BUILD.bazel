@@ -18,6 +18,7 @@ swift_library(
     deps = [
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/lock",
         "//apps/lifr/clients/models",
         "//apps/lifr/clients/session",
         "//apps/lifr/clients/store",
@@ -41,6 +42,7 @@ swift_library(
         ":settings",
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/lock",
         "//apps/lifr/clients/models",
         "//apps/lifr/clients/session",
         "//apps/lifr/clients/store",
@@ -65,6 +67,7 @@ lifr_snapshot_test(
         ":settings",
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/lock",
         "//apps/lifr/clients/models",
         "//apps/lifr/clients/session",
         "//apps/lifr/clients/store",

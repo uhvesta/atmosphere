@@ -1,0 +1,7 @@
+[Window/StandardWindow] "Today"
+  [StaticText] "" value: "Lifr is locked"
+  [Button] "Unlock with Touch ID"
+  [Button/CloseButton] ""
+  [Button/ZoomButton] ""
+  [Button/MinimizeButton] ""
+  [StaticText] "" value: "Today"

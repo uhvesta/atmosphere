@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import LifrAssistantClient
 import LifrCore
+import LifrLockClient
 import LifrModelsClient
 import LifrRemindersClient
 import LifrRoot
@@ -17,16 +18,18 @@ import XCTest
 @MainActor
 final class PhoneFlowSnapshotTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
+    /// The time the app thinks it is, which a flow can move on.
+    private let time = LockIsolated(Date(timeIntervalSince1970: 1_793_700_000))
 
     private func app(
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
-        inputs: Set<ModelInput> = []
+        inputs: Set<ModelInput> = [], lock: LockClient = .always()
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
         let ids = LockIsolated(1000)
         let store = Store(initialState: RootFeature.State(platform: .phone)) {
             RootFeature()
-        } withDependencies: { [now] in
+        } withDependencies: { [time] in
             $0.store = .inMemory(workspace, actor: .user(device: "iPhone", surface: .iPhone))
             $0.session = InMemorySession().client
             $0.reminders = RemindersClient.inMemory().client
@@ -40,7 +43,8 @@ final class PhoneFlowSnapshotTests: XCTestCase {
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
             $0.models = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B]).client
-            $0.date = DateGenerator { now }
+            $0.date = DateGenerator { time.value }
+            $0.lock = lock
             $0.timeZone = .gmt
             $0.withRandomNumberGenerator = WithRandomNumberGenerator(SeededRandomNumberGenerator())
             $0.uuid = UUIDGenerator {
@@ -278,6 +282,24 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         await flow.step("chosen")
         store.send(.syncReview(.presented(.laterTapped)))
         await flow.step("later")
+        flow.finish()
+    }
+    /// The lock: turning it on in Settings, coming back after a few
+    /// minutes away to the locked app, a try Face ID turns down, then in.
+    func testLock() async {
+        let (store, flow) = app("lock", lock: .scripted([nil, .cancelled, .failed("Face ID didn't recognise you")]))
+        store.isSettingsShown = true
+        store.send(.settings(.lockToggled(true)))
+        await flow.step("turned-on")
+        store.isSettingsShown = false
+        store.send(.backgrounded)
+        time.setValue(now + 5 * 60)
+        store.send(.foregrounded)
+        await flow.step("locked")
+        store.send(.unlockTapped)
+        await flow.step("not-recognised")
+        store.send(.unlockTapped)
+        await flow.step("unlocked", image: false)
         flow.finish()
     }
 }

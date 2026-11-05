@@ -3,6 +3,7 @@ import Foundation
 import LifrAPI
 import LifrAssistantClient
 import LifrCore
+import LifrLockClient
 import LifrSessionClient
 import LifrSettings
 import LifrStoreClient
@@ -17,13 +18,16 @@ final class SettingsFeatureTests: XCTestCase {
     private lazy var claude = ConnectedApp(
         id: "com.anthropic.claude-code", grant: .agentDefault(client: "Claude Code", now: now), lastUsedAt: now)
 
-    private func settings(_ session: InMemorySession) async -> TestStoreOf<SettingsFeature> {
+    private func settings(_ session: InMemorySession, lock: LockClient = .always()) async
+        -> TestStoreOf<SettingsFeature>
+    {
         let store = TestStore(initialState: SettingsFeature.State(showsAgents: true)) {
             SettingsFeature()
         } withDependencies: { [now, records] in
             $0.conversations = .inMemory()
             $0.store = .inMemory(records.workspace)
             $0.session = session.client
+            $0.lock = lock
             $0.date.now = now
             $0.uuid = .incrementing
         }
@@ -33,6 +37,40 @@ final class SettingsFeatureTests: XCTestCase {
         await store.receive(\.appsLoaded)
         await store.receive(\.cliLoaded)
         return store
+    }
+
+    func testTurningTheLockOnOrOffAsksFirst() async {
+        let store = await settings(InMemorySession(), lock: .always(.touchID))
+        XCTAssertEqual(store.state.biometry, .touchID)
+
+        await store.send(.lockToggled(true))
+        await store.receive(\.lockConfirmed)
+        XCTAssertTrue(store.state.locksApp)
+
+        await store.send(.lockToggled(false))
+        await store.receive(\.lockConfirmed)
+        XCTAssertFalse(store.state.locksApp)
+        await store.skipInFlightEffects()
+    }
+
+    func testClosingThePromptLeavesTheLockAsItWas() async {
+        let store = await settings(InMemorySession(), lock: .always(failing: .cancelled))
+
+        await store.send(.lockToggled(true))
+        await store.receive(\.lockConfirmed)
+        XCTAssertFalse(store.state.locksApp)
+        XCTAssertNil(store.state.alert)
+        await store.skipInFlightEffects()
+    }
+
+    func testALockTheDeviceCantBackSaysWhy() async {
+        let store = await settings(InMemorySession(), lock: .always(failing: .noPasscode))
+
+        await store.send(.lockToggled(true))
+        await store.receive(\.lockConfirmed)
+        XCTAssertFalse(store.state.locksApp)
+        XCTAssertNotNil(store.state.alert)
+        await store.skipInFlightEffects()
     }
 
     func testShowsSettingsAvenuesAndApps() async {

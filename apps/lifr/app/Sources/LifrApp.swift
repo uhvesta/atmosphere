@@ -4,6 +4,7 @@ import LifrAssistantClient
 import LifrAssistantLive
 import LifrCore
 import LifrLiteRT
+import LifrLockClient
 import LifrModelsClient
 import LifrModelsLive
 import LifrRemindersClient
@@ -88,6 +89,7 @@ private enum Storage {
         $0.recorder = .live()
         $0.session = session
         $0.sync = sync
+        $0.lock = .live()
     }
 
     /// Syncs the records with the person's other devices through iCloud,

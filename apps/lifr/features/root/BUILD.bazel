@@ -4,6 +4,7 @@ load("//apps/lifr/testing/snapshot:defs.bzl", "lifr_snapshot_test")
 
 _DEPS = [
     "//apps/lifr/api",
+    "//apps/lifr/clients/lock",
     "//apps/lifr/clients/reminders",
     "//apps/lifr/clients/session",
     "//apps/lifr/clients/store",

@@ -5,6 +5,7 @@ import LifrAvenue
 import LifrBoard
 import LifrConversations
 import LifrCore
+import LifrLockClient
 import LifrProcrastinated
 import LifrQuickAdd
 import LifrRemindersClient
@@ -94,6 +95,21 @@ package struct RootFeature {
         @Shared(.lastChange) package var lastChange
         /// The last change whose toast went away; Undo stays in the Edit menu.
         package var dismissedToast: UUID?
+        /// Whether Lifr asks for Face ID, Touch ID or the passcode.
+        @Shared(.locksApp) package var locksApp
+        /// Whether the records are hidden until the person confirms it's
+        /// them.
+        package var isLocked = false
+        /// What this device confirms with, which Unlock is named for.
+        package var biometry = Biometry.faceID
+        /// Whether the system is asking the person to confirm.
+        package var isUnlocking = false
+        /// Why the last try to unlock failed.
+        package var lockMessage: String?
+        /// When the app last went to the background.
+        package var awayAt: Date?
+        /// Why the lock turned itself off.
+        @Presents package var lockAlert: AlertState<Never>?
 
         /// The last change, while its toast is up.
         package var toast: LastChange? {
@@ -196,8 +212,15 @@ package struct RootFeature {
         case undoAlert(PresentationAction<Never>)
         case syncBannerDismissed
         case syncChanged(SyncState)
-        /// The app came to the front: sync what changed meanwhile.
+        /// The app came to the front: lock it if it was away long enough,
+        /// and sync what changed meanwhile.
         case foregrounded
+        /// The app went to the background.
+        case backgrounded
+        /// The lock screen's Unlock, or the lock coming on.
+        case unlockTapped
+        case unlocked(Result<Void, any Error>)
+        case lockAlert(PresentationAction<Never>)
         /// The Mac's File › Sync Now.
         case syncNowTapped
         /// The banner's Review.
@@ -233,6 +256,7 @@ package struct RootFeature {
     @Dependency(\.reminders) private var reminders
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
+    @Dependency(\.lock) private var lock
 
     package init() {}
 
@@ -254,7 +278,11 @@ package struct RootFeature {
         Scope(state: \.search, action: \.search) { SearchFeature() }
         Scope(state: \.conversations, action: \.conversations) { ConversationsFeature() }
         Scope(state: \.settings, action: \.settings) { SettingsFeature() }
-        Reduce { state, action in
+        Reduce(locking)
+        Reduce { (state: inout State, action: Action) -> Effect<Action> in
+            // Menus and shortcuts reach the app while it's locked; what they'd
+            // show or change waits until it's unlocked.
+            if state.isLocked, action.isCommand { return .none }
             switch action {
             case .task:
                 var effects: [Effect<Action>] = [
@@ -270,6 +298,11 @@ package struct RootFeature {
                         for await _ in clock.timer(interval: Self.syncInterval) { _ = await sync.sync() }
                     },
                 ]
+                state.biometry = lock.biometry()
+                if state.locksApp {
+                    state.isLocked = true
+                    effects.append(.send(.unlockTapped))
+                }
                 if state.platform == .mac {
                     effects.append(
                         .run { [session] send in
@@ -442,9 +475,25 @@ package struct RootFeature {
                 guard state.syncReview != nil else { return .none }
                 return .send(.syncReview(.presented(.show(sync.review, state.workspace ?? Workspace()))))
 
-            case .foregrounded, .syncNowTapped:
+            case .foregrounded:
+                let away = state.awayAt
+                state.awayAt = nil
+                var effects: [Effect<Action>] = []
+                if state.locksApp, !state.isLocked, AppLock.locks(away: away, now: now) {
+                    state.isLocked = true
+                    effects.append(.send(.unlockTapped))
+                }
+                if state.sync.status != .syncing {
+                    effects.append(.run { [sync] _ in _ = await sync.sync() })
+                }
+                return .merge(effects)
+
+            case .syncNowTapped:
                 guard state.sync.status != .syncing else { return .none }
                 return .run { [sync] _ in _ = await sync.sync() }
+
+            case .backgrounded, .unlockTapped, .unlocked:
+                return .none
 
             case .syncReviewTapped:
                 guard !state.sync.review.isEmpty else { return .none }
@@ -478,7 +527,7 @@ package struct RootFeature {
                 return .send(.newTaskInTapped(scope))
 
             case .binding, .remindersScheduled, .today, .upcoming, .procrastinated, .avenues, .search, .avenue, .board,
-                .conversations, .settings, .quickAdd, .approval, .undoAlert, .syncReview:
+                .conversations, .settings, .quickAdd, .approval, .undoAlert, .syncReview, .lockAlert:
                 return .none
             }
         }
@@ -488,6 +537,58 @@ package struct RootFeature {
         .ifLet(\.$approval, action: \.approval) { ApprovalFeature() }
         .ifLet(\.$syncReview, action: \.syncReview) { SyncReviewFeature() }
         .ifLet(\.$undoAlert, action: \.undoAlert)
+        .ifLet(\.$lockAlert, action: \.lockAlert)
+    }
+
+    /// Away, unlocking and what happens when it fails.
+    private func locking(_ state: inout State, _ action: Action) -> Effect<Action> {
+        switch action {
+        case .backgrounded:
+            // The iPhone passes through inactive on its way to the
+            // background; away starts at the first.
+            if state.awayAt == nil { state.awayAt = now }
+            return .none
+
+        case .unlockTapped:
+            guard state.isLocked, !state.isUnlocking else { return .none }
+            state.isUnlocking = true
+            state.lockMessage = nil
+            let reason = String(localized: "Unlock Lifr to see your tasks")
+            return .run { [lock] send in
+                await send(.unlocked(Result { try await lock.authenticate(reason) }))
+            }
+
+        case .unlocked(.success):
+            state.isLocked = false
+            state.isUnlocking = false
+            return .none
+
+        case .unlocked(.failure(let error)):
+            state.isUnlocking = false
+            switch error as? LockError {
+            case .cancelled:
+                return .none
+            case .noPasscode:
+                // Without a passcode nothing protects the device, so the
+                // lock can't either; better to say so than to lock the
+                // person out.
+                state.isLocked = false
+                state.$locksApp.withLock { $0 = false }
+                state.lockAlert = AlertState {
+                    TextState("Lifr's lock is off")
+                } actions: {
+                    ButtonState(role: .cancel) { TextState("OK") }
+                } message: {
+                    TextState(LockError.noPasscode.description)
+                }
+                return .none
+            case .failed, nil:
+                state.lockMessage = String(describing: error)
+                return .none
+            }
+        default:
+            return .none
+        }
     }
 
     /// Shows `workspace` on every screen, then schedules its reminders.
@@ -557,6 +658,19 @@ package struct RootFeature {
         case .avenue: .avenue(.list(action))
         case .board: .board(.list(action))
         case .openAvenue: .avenues(.avenue(.presented(.list(action))))
+        }
+    }
+}
+
+extension RootFeature.Action {
+    /// What a menu, a keyboard shortcut or the menu bar sends.
+    fileprivate var isCommand: Bool {
+        switch self {
+        case .newTaskTapped, .newTaskInTapped, .newAvenueTapped, .newProjectTapped, .newSubtaskTapped,
+            .statusShortcut, .undoTapped, .syncReviewTapped, .apiSwitched:
+            true
+        default:
+            false
         }
     }
 }

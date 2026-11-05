@@ -3,6 +3,7 @@ import Foundation
 import LifrAPI
 import LifrAvenue
 import LifrCore
+import LifrLockClient
 import LifrQuickAdd
 import LifrRemindersClient
 import LifrRoot
@@ -472,5 +473,95 @@ final class RootFeatureTests: XCTestCase {
         let store = makeStore(.phone)
         await store.send(.syncReviewTapped)
         XCTAssertNil(store.state.syncReview)
+    }
+
+    // MARK: The lock
+
+    /// A phone store whose lock is on, confirming with `lock`, and the
+    /// time it thinks it is.
+    private func locked(_ lock: LockClient) -> (TestStoreOf<RootFeature>, LockIsolated<Date>) {
+        let time = LockIsolated(now)
+        let store = makeStore(.phone)
+        store.dependencies.lock = lock
+        store.dependencies.date = DateGenerator { time.value }
+        store.state.$locksApp.withLock { $0 = true }
+        return (store, time)
+    }
+
+    func testALockedAppAsksWhenItOpensAndShowsOnceConfirmed() async {
+        let (store, _) = locked(.always())
+
+        let task = await store.send(.task)
+        XCTAssertTrue(store.state.isLocked)
+        await store.receive(\.unlocked)
+        XCTAssertFalse(store.state.isLocked)
+        await task.cancel()
+    }
+
+    func testMenusAndShortcutsWaitWhileLocked() async {
+        let (store, _) = locked(.always(failing: .cancelled))
+
+        let task = await store.send(.task)
+        await store.receive(\.unlocked)
+        XCTAssertTrue(store.state.isLocked)
+        XCTAssertNil(store.state.lockMessage)
+        await store.send(.newTaskTapped)
+        XCTAssertNil(store.state.quickAdd)
+        await task.cancel()
+    }
+
+    func testComingBackAfterAMinuteAwayLocksAgain() async {
+        let (store, time) = locked(.always())
+        let task = await store.send(.task)
+        await store.receive(\.unlocked)
+
+        await store.send(.backgrounded)
+        time.setValue(now + 30)
+        await store.send(.foregrounded)
+        XCTAssertFalse(store.state.isLocked)
+
+        await store.send(.backgrounded)
+        time.setValue(now + 120)
+        await store.send(.foregrounded)
+        XCTAssertTrue(store.state.isLocked)
+        await store.receive(\.unlocked)
+        XCTAssertFalse(store.state.isLocked)
+        await task.cancel()
+    }
+
+    func testWithTheLockOffNothingAsks() async {
+        // The lock's test value fails if anything asks it to confirm.
+        let time = LockIsolated(now)
+        let store = makeStore(.phone)
+        store.dependencies.date = DateGenerator { time.value }
+
+        let task = await store.send(.task)
+        await store.send(.backgrounded)
+        time.setValue(now + 3600)
+        await store.send(.foregrounded)
+        XCTAssertFalse(store.state.isLocked)
+        await task.cancel()
+    }
+
+    func testAFailedUnlockSaysWhyAndStaysLocked() async {
+        let (store, _) = locked(.always(failing: .failed("Face ID didn't recognise you")))
+
+        let task = await store.send(.task)
+        await store.receive(\.unlocked)
+        XCTAssertTrue(store.state.isLocked)
+        XCTAssertNotNil(store.state.lockMessage)
+        XCTAssertFalse(store.state.isUnlocking)
+        await task.cancel()
+    }
+
+    func testADeviceWithoutAPasscodeTurnsTheLockOffAndSaysSo() async {
+        let (store, _) = locked(.always(failing: .noPasscode))
+
+        let task = await store.send(.task)
+        await store.receive(\.unlocked)
+        XCTAssertFalse(store.state.isLocked)
+        XCTAssertFalse(store.state.locksApp)
+        XCTAssertNotNil(store.state.lockAlert)
+        await task.cancel()
     }
 }

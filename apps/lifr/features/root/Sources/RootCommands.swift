@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import LifrCore
+import LifrLockClient
 import LifrSettings
 import LifrUI
 import SwiftUI
@@ -69,6 +70,15 @@ package struct MenuBarContent: View {
     }
 
     package var body: some View {
+        if store.isLocked {
+            Text("Lifr is locked")
+            Button(LockView.unlockTitle(store.biometry)) { store.send(.unlockTapped) }
+        } else {
+            unlocked
+        }
+    }
+
+    @ViewBuilder private var unlocked: some View {
         Button("New Task") { store.send(.newTaskTapped) }
             .keyboardShortcut("n")
         Divider()

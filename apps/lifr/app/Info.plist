@@ -14,6 +14,8 @@
 	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Lifr uses Face ID to unlock, when you turn on its lock in Settings.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Lifr records what you say for the assistant to hear, when you tap Record in a chat. The recording stays on this device.</string>
 	<key>NSHumanReadableCopyright</key>

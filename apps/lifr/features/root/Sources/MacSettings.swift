@@ -13,8 +13,14 @@ package struct MacSettingsView: View {
     }
 
     package var body: some View {
-        NavigationStack {
-            SettingsView(store: store.scope(state: \.settings, action: \.settings))
+        Group {
+            if store.isLocked {
+                LockView(store: store)
+            } else {
+                NavigationStack {
+                    SettingsView(store: store.scope(state: \.settings, action: \.settings))
+                }
+            }
         }
         .formStyle(.grouped)
         .frame(minWidth: 560, idealWidth: 620, minHeight: 520, idealHeight: 680)

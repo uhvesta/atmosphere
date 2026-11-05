@@ -442,10 +442,16 @@
     "Couldn't change connected apps" : {
 
     },
+    "Couldn't change the lock" : {
+
+    },
     "Couldn't change the setting" : {
 
     },
     "Couldn't change the task" : {
+
+    },
+    "Couldn't confirm it's you (%@). Try again." : {
 
     },
     "Couldn't keep the attachment on this device (%@). Check that this device has free storage, then attach it again." : {
@@ -709,6 +715,9 @@
     "Lifr's default" : {
 
     },
+    "Lifr's lock is off" : {
+
+    },
     "Lifr, an app is connected" : {
 
     },
@@ -716,6 +725,9 @@
 
     },
     "Local API" : {
+
+    },
+    "Lock Lifr when it opens" : {
 
     },
     "Look back at what's done, overdue and stalled." : {
@@ -1150,6 +1162,9 @@
     "Stop Syncing" : {
 
     },
+    "Stop locking Lifr" : {
+
+    },
     "Sub task" : {
 
     },
@@ -1271,6 +1286,9 @@
     "This Mac" : {
 
     },
+    "This Mac has no login password, so Lifr can't lock. Set one in System Settings › Users & Groups, then turn the lock on." : {
+
+    },
     "This can't be undone. Tasks the assistant added or changed stay." : {
 
     },
@@ -1326,6 +1344,12 @@
 
     },
     "Undo changes" : {
+
+    },
+    "Unlock Lifr to see your tasks" : {
+
+    },
+    "Unlocking was cancelled. Tap Unlock to try again." : {
 
     },
     "Upcoming" : {
@@ -1395,6 +1419,9 @@
 
     },
     "iCloud lost the records twice" : {
+
+    },
+    "the device didn't say why" : {
 
     }
   },

@@ -1,0 +1,3 @@
+[text] "Lifr is locked"
+[text] "Couldn't confirm it's you (Face ID didn't recognise you). Try again."
+[button] "Unlock with Face ID"

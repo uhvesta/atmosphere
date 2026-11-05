@@ -2,6 +2,7 @@ import ComposableArchitecture
 import LifrAPI
 import LifrAssistantClient
 import LifrCore
+import LifrLockClient
 import LifrSessionClient
 import LifrSkills
 import LifrSyncClient
@@ -29,6 +30,7 @@ package struct SettingsView: View {
                 Text("An In Progress task with no activity for longer than this counts as Procrastinated.")
             }
             SyncSection(store: store)
+            LockSection(store: store)
             Section {
                 Button("Activity") { store.send(.activityTapped) }
             } footer: {
@@ -294,6 +296,33 @@ private struct SyncSection: View {
         case .idle:
             guard let last = store.sync.lastSynced else { return String(localized: "Not synced yet") }
             return String(localized: "Synced \(last.formatted(date: .abbreviated, time: .shortened))")
+        }
+    }
+}
+
+/// The app lock's switch.
+private struct LockSection: View {
+    let store: StoreOf<SettingsFeature>
+
+    var body: some View {
+        Section {
+            Toggle(title, isOn: Binding(get: { store.locksApp }, set: { store.send(.lockToggled($0)) }))
+        } header: {
+            Text("Privacy")
+        } footer: {
+            Text(
+                "Lifr asks when it opens, and when you come back after a minute away. The app switcher shows "
+                    + "nothing while it's locked. Widgets show counts only. Apps you connected keep their access; "
+                    + "revoke them in Connected apps on the Mac.")
+        }
+    }
+
+    private var title: LocalizedStringKey {
+        switch store.biometry {
+        case .faceID: "Lock with Face ID"
+        case .touchID: "Lock with Touch ID"
+        case .opticID: "Lock with Optic ID"
+        case .passcode: "Lock with passcode"
         }
     }
 }

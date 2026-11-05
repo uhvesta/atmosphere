@@ -23,6 +23,31 @@ package struct RootView: View {
     }
 
     package var body: some View {
+        ZStack {
+            if store.isLocked {
+                LockView(store: store)
+            } else {
+                content
+            }
+            if store.platform == .phone, store.locksApp, !store.isLocked, scenePhase != .active {
+                // What the app switcher shows: nothing to read. Locked, the
+                // lock screen already shows nothing.
+                PrivacyCover()
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                store.send(.conversations(.resumed))
+                store.send(.foregrounded)
+            } else {
+                store.send(.backgrounded)
+            }
+        }
+        .alert($store.scope(state: \.lockAlert, action: \.lockAlert))
+        .task { await store.send(.task).finish() }
+    }
+
+    private var content: some View {
         Group {
             switch store.platform {
             case .phone: PhoneRootView(store: store)
@@ -49,15 +74,8 @@ package struct RootView: View {
             .padding(store.platform == .phone ? .bottom : .top, store.platform == .phone ? 64 : 60)
             .animation(.default, value: store.toast?.id)
         }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
-                store.send(.conversations(.resumed))
-                store.send(.foregrounded)
-            }
-        }
         .modifier(RegistersUndo(store: store))
         .alert($store.scope(state: \.undoAlert, action: \.undoAlert))
-        .task { await store.send(.task).finish() }
         .sheet(item: $store.scope(state: \.quickAdd, action: \.quickAdd)) { store in
             NavigationStack { QuickAddView(store: store) }
                 .sheetLayout()
