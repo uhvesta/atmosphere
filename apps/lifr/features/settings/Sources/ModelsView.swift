@@ -4,6 +4,7 @@ import SwiftUI
 
 package struct ModelsView: View {
     @Bindable package var store: StoreOf<ModelsFeature>
+    @Shared(.answersInBackground) private var answersInBackground
 
     package init(store: StoreOf<ModelsFeature>) {
         self.store = store
@@ -26,6 +27,18 @@ package struct ModelsView: View {
             } footer: {
                 Text("Downloaded models run on this device, like Apple's. Nothing you write leaves it.")
             }
+            #if os(iOS)
+                // The Mac doesn't suspend apps, so a model there always
+                // goes on answering.
+                Section {
+                    Toggle("Answer in the background", isOn: Binding($answersInBackground))
+                } footer: {
+                    Text(
+                        "When you leave Lifr mid-answer, a downloaded model keeps going on the iPhone's CPU, "
+                            + "which is slower and uses more battery, and Lifr shows its progress on the Lock "
+                            + "Screen. Off, the model stops and carries on where it was when you come back.")
+                }
+            #endif
             Section {
                 ForEach(store.downloadable) { model in
                     ModelRow(model: model, store: store)

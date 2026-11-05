@@ -24,8 +24,15 @@ package struct ConversationsFeature {
         @Presents package var rename: RenameFeature.State?
         @Presents package var confirm: ConfirmationDialogState<Confirm>?
         @Presents package var alert: AlertState<Never>?
+        /// The chat open when Lifr last ran, with what was typed in it.
+        @Shared(.openChat) package var lastOpen
 
         package init() {}
+
+        /// The chat open now, with what's typed in it.
+        package var open: OpenChat? {
+            openID.map { OpenChat(id: $0, input: chats[id: $0]?.input ?? "") }
+        }
 
         /// The main list: conversations not archived, newest first.
         package var sorted: [Conversation] {
@@ -131,6 +138,16 @@ package struct ConversationsFeature {
     package init() {}
 
     package var body: some ReducerOf<Self> {
+        CombineReducers { chats }
+            .onChange(of: \.open) { _, open in
+                Reduce { state, _ in
+                    state.$lastOpen.withLock { $0 = open }
+                    return .none
+                }
+            }
+    }
+
+    @ReducerBuilder<State, Action> private var chats: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
             case .task:
@@ -142,6 +159,11 @@ package struct ConversationsFeature {
                 state.conversations = IdentifiedArray(uniqueElements: loaded)
                 for chat in state.chats where !chat.conversation.messages.isEmpty {
                     state.conversations[id: chat.id] = chat.conversation
+                }
+                // Back where the person was before the system ended Lifr.
+                if state.openID == nil, let last = state.lastOpen, let conversation = state.conversations[id: last.id] {
+                    state.open(conversation)
+                    state.chats[id: last.id]?.input = last.input
                 }
                 return .none
 
@@ -290,5 +312,23 @@ package struct ConversationsFeature {
         synced
             ? String(localized: "It's deleted here and from iCloud, and can't be undone. Tasks it changed stay.")
             : String(localized: "This can't be undone. Tasks the assistant added or changed stay.")
+    }
+}
+
+/// A chat open on screen, with what's typed in it and not sent.
+package struct OpenChat: Codable, Equatable, Sendable {
+    package var id: UUID
+    package var input: String
+
+    package init(id: UUID, input: String) {
+        self.id = id
+        self.input = input
+    }
+}
+
+extension SharedKey where Self == FileStorageKey<OpenChat?>.Default {
+    /// The chat open when Lifr last ran, on this device.
+    package static var openChat: Self {
+        Self[.fileStorage(.applicationSupportDirectory.appending(path: "Lifr/open-chat.json")), default: nil]
     }
 }

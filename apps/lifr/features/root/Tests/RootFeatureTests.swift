@@ -68,6 +68,67 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testTheIPhoneOpensWhereThePersonWas() async {
+        let stretch = records.task("Stretch", in: health, due: 3)
+        @Shared(.place) var place
+        $place.withLock { $0 = Place(tab: .upcoming, task: stretch.id) }
+        let store = makeStore(.phone)
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.receive(\.reopen)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.tab, .upcoming)
+        XCTAssertEqual(store.state.upcoming.list.detail?.id, stretch.id)
+        await task.cancel()
+    }
+
+    func testTheMacOpensTheAvenueAndTaskThePersonHadOpen() async {
+        let run = records.task("Run", in: health)
+        @Shared(.place) var place
+        $place.withLock { $0 = Place(sidebar: .scope(.avenue(health.id)), task: run.id) }
+        let store = makeStore(.mac)
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.receive(\.selected)
+        await store.receive(\.reopen)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.selection, .scope(.avenue(health.id)))
+        XCTAssertEqual(store.state.avenue?.list.detail?.id, run.id)
+        await task.cancel()
+    }
+
+    func testATaskDeletedSinceIsntOpened() async {
+        @Shared(.place) var place
+        $place.withLock { $0 = Place(tab: .today, task: UUID()) }
+        let store = makeStore(.phone)
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertNil(store.state.today.list.detail)
+        await task.cancel()
+    }
+
+    func testWhereThePersonGoesIsKept() async {
+        let run = records.task("Run", in: health, due: 0)
+        let store = makeStore(.phone)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.today(.list(.rowTapped(run.id))))
+        @Shared(.place) var place
+
+        XCTAssertEqual(place, Place(tab: .today, task: run.id))
+        await store.send(.binding(.set(\.tab, .search)))
+        XCTAssertEqual(place, Place(tab: .search))
+        await task.cancel()
+    }
+
     func testTheIPhoneDoesNotUseTheSession() async {
         // The session's test value fails any call, so this passes only if
         // the iPhone never asks it.

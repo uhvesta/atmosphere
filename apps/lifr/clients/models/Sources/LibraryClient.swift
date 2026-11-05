@@ -9,6 +9,9 @@ package struct ModelLibraryClient: Sendable {
     package var catalog: @Sendable () -> [ModelSpec] = { [] }
     /// The models whose files are downloaded and checked.
     package var installed: @Sendable () async -> [InstalledModel] = { [] }
+    /// The models downloads were started for and haven't finished, running
+    /// or paused, even ones from before Lifr last quit.
+    package var unfinished: @Sendable () async -> [ModelSpec] = { [] }
     // A typed throw needs its closure's parameters spelled out, and the
     // formatter puts them on their own line.
     // swiftlint:disable closure_parameter_position
@@ -61,6 +64,7 @@ package final class InMemoryModelLibrary: Sendable {
         var installed: [ModelID: InstalledModel] = [:]
         var selection: [ModelUse: ModelID] = [:]
         var failures: [ModelID: ModelDownloadError] = [:]
+        var unfinished: [ModelID: ModelSpec] = [:]
     }
 
     private let state = LockIsolated(State())
@@ -90,6 +94,12 @@ package final class InMemoryModelLibrary: Sendable {
         state.withValue { $0.failures[id] = error }
     }
 
+    /// Keeps `spec`'s download unfinished, as one paused before Lifr quit.
+    package func leaveUnfinished(_ spec: ModelSpec, received: Int64) {
+        state.withValue { $0.unfinished[spec.id] = spec }
+        board.update { $0[spec.id] = .paused(received: received, total: spec.source?.totalSize ?? 0) }
+    }
+
     /// Shows `download` for `id`, as a download in progress would.
     package func show(_ download: DownloadState?, for id: ModelID) {
         board.update { $0[id] = download }
@@ -101,6 +111,9 @@ package final class InMemoryModelLibrary: Sendable {
             installed: { [state] in
                 state.value.installed.values.sorted { $0.id.rawValue < $1.id.rawValue }
             },
+            unfinished: { [state] in
+                state.value.unfinished.values.sorted { $0.id.rawValue < $1.id.rawValue }
+            },
             resolve: { [links] link, _ throws(ModelResolveError) in
                 guard let result = links[link] else { throw .notALink(link) }
                 return try result.get()
@@ -111,7 +124,10 @@ package final class InMemoryModelLibrary: Sendable {
                     throw error
                 }
                 let model = Self.installed(spec, at: now)
-                state.withValue { $0.installed[spec.id] = model }
+                state.withValue { state in
+                    state.installed[spec.id] = model
+                    state.unfinished[spec.id] = nil
+                }
                 board.update { $0[spec.id] = nil }
                 return model
             },
@@ -126,6 +142,7 @@ package final class InMemoryModelLibrary: Sendable {
             delete: { [self] id throws(ModelStorageError) in
                 state.withValue { state in
                     state.installed[id] = nil
+                    state.unfinished[id] = nil
                     for (use, selected) in state.selection where selected == id { state.selection[use] = nil }
                 }
                 board.update { $0[id] = nil }

@@ -55,8 +55,8 @@ final class AssistantOnRealModelTests: XCTestCase {
         let ids = LockIsolated(1000)
         let (client, _) = StoreClient.inMemorySyncing(
             Workspace.sample(now: now, timeZone: .gmt), actor: .user(device: "Mac", surface: .mac))
-        let host = ModelHost(load: { model async throws(ModelRuntimeError) in
-            try await LiteRTLMEngine.load(model, greedy: true)
+        let host = ModelHost(load: { model, backend async throws(ModelRuntimeError) in
+            try await LiteRTLMEngine.load(model, on: backend, greedy: true)
         })
         let store = Store(initialState: RootFeature.State(platform: .mac)) {
             RootFeature()

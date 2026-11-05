@@ -35,12 +35,12 @@ package struct RootFeature {
         case mac
     }
 
-    package enum Tab: Hashable, Sendable {
+    package enum Tab: Hashable, Codable, Sendable {
         case today, upcoming, avenues, conversations, search
     }
 
     /// What the Mac's sidebar can show.
-    package enum SidebarItem: Hashable, Sendable {
+    package enum SidebarItem: Hashable, Codable, Sendable {
         case today, upcoming, procrastinated, conversations, search
         case scope(AvenueScope)
     }
@@ -112,6 +112,10 @@ package struct RootFeature {
         package var awayAt: Date?
         /// Why the lock turned itself off.
         @Presents package var lockAlert: AlertState<Never>?
+        /// Where the person was when Lifr last ran.
+        @Shared(.place) package var place
+        /// The place to go back to, until the records are in.
+        package var restoring: Place?
 
         /// The last change, while its toast is up.
         package var toast: LastChange? {
@@ -170,6 +174,12 @@ package struct RootFeature {
         /// The task open in the current list's detail.
         package var openTaskID: UUID? {
             currentList.flatMap { self[list: $0]?.detail?.id }
+        }
+
+        /// Where the person is now.
+        package var here: Place {
+            platform == .phone
+                ? Place(tab: tab, task: openTaskID) : Place(sidebar: selection, task: openTaskID)
         }
     }
 
@@ -232,6 +242,8 @@ package struct RootFeature {
         case remindersScheduled
         /// The approval sheet closed: show the next app's, if one is waiting.
         case nextApproval
+        /// Opens the task the person had open when Lifr last ran.
+        case reopen(UUID)
         case today(TodayFeature.Action)
         case upcoming(UpcomingFeature.Action)
         case procrastinated(ProcrastinatedFeature.Action)
@@ -265,6 +277,13 @@ package struct RootFeature {
 
     package var body: some ReducerOf<Self> {
         CombineReducers { screens }
+            // Kept as it changes, once Lifr has gone back to where it was.
+            .onChange(of: \.here) { _, here in
+                Reduce { state, _ in
+                    if state.restoring == nil { state.$place.withLock { $0 = here } }
+                    return .none
+                }
+            }
             // The widgets show only counts while the lock is on.
             .onChange(of: \.locksApp) { _, _ in
                 Reduce { state, _ in writeGlance(state) }
@@ -306,6 +325,10 @@ package struct RootFeature {
                     },
                 ]
                 state.biometry = lock.biometry()
+                if state.place != Place() {
+                    state.restoring = state.place
+                    if state.platform == .phone, let tab = state.place.tab { state.tab = tab }
+                }
                 if state.locksApp {
                     state.isLocked = true
                     effects.append(.send(.unlockTapped))
@@ -321,7 +344,21 @@ package struct RootFeature {
                 return .merge(effects)
 
             case .loaded(.success(let workspace)):
-                return show(workspace, in: &state)
+                let shown = show(workspace, in: &state)
+                guard let place = state.restoring else { return shown }
+                state.restoring = nil
+                let selects: Effect<Action> =
+                    if state.platform == .mac, let item = place.sidebar, item != state.selection {
+                        .send(.selected(item))
+                    } else {
+                        .none
+                    }
+                let reopens: Effect<Action> = place.task.map { .send(.reopen($0)) } ?? .none
+                return .merge(shown, .concatenate(selects, reopens))
+
+            case .reopen(let id):
+                guard let slot = state.currentList, state.workspace?.tasks[id] != nil else { return .none }
+                return .send(list(slot, .rowTapped(id)))
 
             case .loaded(.failure):
                 // Each screen loads on its own too, and says what failed.

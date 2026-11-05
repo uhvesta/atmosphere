@@ -64,9 +64,15 @@ struct HubClient: Sendable {
         }
         if let host = redirects.refused.value { throw .redirectNotAllowed(host) }
         guard let http = response as? HTTPURLResponse else { throw .unreadable(what) }
+        try Self.check(http, what: what)
+        return (data, http)
+    }
+
+    /// Throws unless `http` is a success from Hugging Face.
+    static func check(_ http: HTTPURLResponse, what: String) throws(HubError) {
         if let url = http.url, !HostPolicy.allows(url) { throw .redirectNotAllowed(url.host() ?? what) }
         switch http.statusCode {
-        case 200..<300: return (data, http)
+        case 200..<300: return
         case 401, 403: throw .notAllowed(what)
         case 404: throw .notFound(what)
         case 429: throw .rateLimited

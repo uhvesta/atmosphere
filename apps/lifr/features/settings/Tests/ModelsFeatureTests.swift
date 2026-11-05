@@ -52,6 +52,32 @@ final class ModelsFeatureTests: XCTestCase {
         await store.skipInFlightEffects()
     }
 
+    func testADownloadFromALinkLeftUnfinishedCanBeResumedAfterARelaunch() async {
+        let library = InMemoryModelLibrary()
+        library.leaveUnfinished(pasted, received: 300)
+        let store = await models(library)
+
+        XCTAssertEqual(store.state.downloads[pasted.id], .paused(received: 300, total: 1_000))
+        await store.send(.downloadTapped(pasted.id))
+        await store.receive(\.downloaded)
+
+        XCTAssertTrue(store.state.installed.contains(pasted.id))
+        await store.skipInFlightEffects()
+    }
+
+    func testADownloadThatFinishesWithoutTheScreenShowsAsDownloaded() async {
+        let library = InMemoryModelLibrary()
+        library.show(.downloading(received: 10, total: 100), for: ModelCatalog.gemma4E2B.id)
+        let store = await models(library)
+
+        _ = try? await library.client.download(ModelCatalog.gemma4E2B)
+        await store.receive(\.downloadsChanged)
+        await store.receive(\.loaded)
+
+        XCTAssertTrue(store.state.installed.contains(ModelCatalog.gemma4E2B.id))
+        await store.skipInFlightEffects()
+    }
+
     func testDownloadsAModelThatThenRunsAUse() async {
         let library = InMemoryModelLibrary()
         let store = await models(library)

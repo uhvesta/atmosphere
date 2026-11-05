@@ -2,7 +2,8 @@ import Foundation
 import LifrAPI
 import LifrModelsClient
 
-/// A downloaded model, run by LiteRT-LM on the GPU through `host`.
+/// A downloaded model, run by LiteRT-LM through `host`: on the GPU, or on
+/// the CPU while it answers in the background.
 package struct LiteRTRuntime: ModelRuntime {
     package let model: InstalledModel
     package let host: ModelHost
@@ -41,8 +42,10 @@ package struct LiteRTRuntime: ModelRuntime {
         let status = status
         guard status == .available else { throw .unavailable(status) }
         if let kind = turn.unreadable(by: inputs) { throw .unsupportedInput(kind) }
+        // Kept across the host's restarts of the turn, so it carries on.
+        let journal = LiteRTTurn.Journal()
         return try await host.run(model) { engine async throws(ModelRuntimeError) in
-            try await LiteRTTurn.respond(to: turn, on: engine, partial: partial)
+            try await LiteRTTurn.respond(to: turn, on: engine, journal: journal, partial: partial)
         }
     }
 }

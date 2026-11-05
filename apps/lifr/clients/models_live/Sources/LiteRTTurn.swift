@@ -1,3 +1,4 @@
+import ComposableArchitecture
 import Foundation
 import LifrAPI
 import LifrModelsClient
@@ -31,8 +32,30 @@ enum LiteRTTurn {
     /// Tool calls one turn may make before it must answer.
     static let toolRounds = 5
 
+    /// What a turn has done so far: each tool call the model wrote, and
+    /// what Lifr sent back. When the turn starts again, as after Lifr went
+    /// to the background, it carries on from there rather than calling the
+    /// tools again.
+    final class Journal: Sendable {
+        struct Round: Equatable, Sendable {
+            /// The call, as the model wrote it.
+            var written: String
+            /// What Lifr sent back.
+            var reply: String
+        }
+
+        private let recorded = LockIsolated<[Round]>([])
+
+        var rounds: [Round] { recorded.value }
+
+        func record(_ round: Round) {
+            recorded.withValue { $0.append(round) }
+        }
+    }
+
     static func respond(
-        to turn: ModelTurn, on engine: any LiteRTEngine, partial: @escaping @Sendable (JSONValue) -> Void
+        to turn: ModelTurn, on engine: any LiteRTEngine, journal: Journal = Journal(),
+        partial: @escaping @Sendable (JSONValue) -> Void
     ) async throws(ModelRuntimeError) -> JSONValue {
         let answer = turn.schema.map(JSONSchema.value)
         let chat = try await engine.chat(
@@ -40,7 +63,7 @@ enum LiteRTTurn {
         let result = await withTaskCancellationHandler {
             do throws(ModelRuntimeError) {
                 return Result<JSONValue, ModelRuntimeError>.success(
-                    try await answering(turn, answer: answer, chat: chat, partial: partial))
+                    try await answering(turn, answer: answer, chat: chat, journal: journal, partial: partial))
             } catch {
                 return .failure(error)
             }
@@ -51,9 +74,12 @@ enum LiteRTTurn {
     }
 
     private static func answering(
-        _ turn: ModelTurn, answer: JSONValue?, chat: any LiteRTChat, partial: @escaping @Sendable (JSONValue) -> Void
+        _ turn: ModelTurn, answer: JSONValue?, chat: any LiteRTChat, journal: Journal,
+        partial: @escaping @Sendable (JSONValue) -> Void
     ) async throws(ModelRuntimeError) -> JSONValue {
-        guard turn.tools.isEmpty else { return try await withTools(turn, answer: answer, chat: chat) }
+        guard turn.tools.isEmpty else {
+            return try await withTools(turn, answer: answer, chat: chat, journal: journal)
+        }
         guard let answer else {
             return .string(
                 try await chat.send(turn.prompt, attachments: turn.attachments, format: nil) { partial(.string($0)) })
@@ -62,18 +88,20 @@ enum LiteRTTurn {
             await chat.send(turn.prompt, attachments: turn.attachments, format: JSONSchema.text(answer)) { _ in })
     }
 
-    private static func withTools(_ turn: ModelTurn, answer: JSONValue?, chat: any LiteRTChat)
+    private static func withTools(_ turn: ModelTurn, answer: JSONValue?, chat: any LiteRTChat, journal: Journal)
         async throws(ModelRuntimeError) -> JSONValue
     {
         let calling = JSONSchema.text(step(tools: turn.tools, answer: answer))
         let answering = JSONSchema.text(step(tools: [], answer: answer))
-        var message = turn.prompt
+        let done = journal.rounds
+        var message = done.isEmpty ? turn.prompt : resumed(turn.prompt, after: done)
         // The photos and recordings go with the prompt; the conversation
         // keeps them for the tools' rounds.
         var attachments = turn.attachments
-        for round in 0...toolRounds {
+        for round in min(done.count, toolRounds)...toolRounds {
             let format = round == toolRounds ? answering : calling
-            let written = try parse(await chat.send(message, attachments: attachments, format: format) { _ in })
+            let text = try await chat.send(message, attachments: attachments, format: format) { _ in }
+            let written = try parse(text)
             attachments = []
             switch try Step(written) {
             case .answer(let value):
@@ -82,9 +110,24 @@ enum LiteRTTurn {
                 guard let tool = turn.tools.first(where: { $0.name == name }) else { throw .decodingFailure }
                 let result = await tool.call(arguments)
                 message = "\(name) returned:\n\(result)"
+                journal.record(Journal.Round(written: text, reply: message))
             }
         }
         throw .decodingFailure
+    }
+
+    /// The prompt of a turn starting again after `rounds`, in a new
+    /// conversation that hasn't seen them.
+    static func resumed(_ prompt: String, after rounds: [Journal.Round]) -> String {
+        var parts = [
+            prompt,
+            "You started answering this before, and Lifr had to stop. Here is what you did; it's done and "
+                + "saved, so don't do it again. Carry on from there.",
+        ]
+        for round in rounds {
+            parts.append("You wrote: \(round.written)\n\(round.reply)")
+        }
+        return parts.joined(separator: "\n\n")
     }
 
     /// The turn's instructions, with its tools and schema spelled out.

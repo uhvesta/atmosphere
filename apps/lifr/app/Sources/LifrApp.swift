@@ -51,6 +51,11 @@ struct LifrApp: App {
             }
         #else
             window
+                // Woken for downloads the system finished while Lifr was away.
+                .backgroundTask(.urlSession(ModelLibrary.backgroundSession)) {
+                    _ = Storage.models
+                    await ModelLibrary.caughtUp()
+                }
         #endif
     }
 
@@ -108,10 +113,14 @@ private enum Storage {
         container: LifrIdentity.iCloudContainer, store: client, device: deviceName)
 
     /// The models downloaded to this device, and the one that's loaded.
-    nonisolated private static let models: ModelRuntimes = {
-        let host = ModelHost(load: LiteRTLMEngine.load)
+    nonisolated static let models: ModelRuntimes = {
+        let host = ModelHost(load: { model, backend async throws(ModelRuntimeError) in
+            try await LiteRTLMEngine.load(model, on: backend)
+        })
         Task { await host.observeSystem() }
-        return ModelRuntimes(library: ModelLibrary.live(), host: host)
+        let library = ModelLibrary.live()
+        library.resumeUnfinished()
+        return ModelRuntimes(library: library, host: host)
     }()
 
     /// On the Mac, the local API that `lifr` connects to. The iPhone has no

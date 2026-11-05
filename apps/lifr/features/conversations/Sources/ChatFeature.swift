@@ -9,7 +9,8 @@ import LifrStoreClient
 /// A chat with the assistant: it answers questions, changes tasks when
 /// asked (each reply that did has Undo), and drafts plans on a card the
 /// person can edit and then add. A reply keeps going when the person
-/// leaves the chat or Lifr; one the system stops is sent again on `resume`.
+/// leaves the chat or Lifr; one the system turns away, as Apple's model
+/// does in the background, is sent again on `resume`.
 @Reducer
 package struct ChatFeature {
     @ObservableState
@@ -20,9 +21,11 @@ package struct ChatFeature {
         package var availability = AssistantAvailability.available
         /// The reply as it's written, until it's complete.
         package var replying: String?
-        /// The request of a reply the system stopped, such as while Lifr
-        /// was in the background, to send again on `resume`.
+        /// The request of the reply being written, kept until it's complete.
         package var waiting: AssistantRequest?
+        /// Whether the system turned the reply away, such as while Lifr was
+        /// in the background, so `resume` sends it again.
+        package var stopped = false
         /// Whether the changes of the last reply are still being looked up.
         package var reloading = false
         /// Whether the assistant is naming the conversation.
@@ -302,7 +305,8 @@ package struct ChatFeature {
                 return .run { [attachments] _ in await attachments.remove(attachment, conversation) }
 
             case .resume:
-                guard let request = state.waiting else { return .none }
+                // A reply still being written carries on by itself.
+                guard state.stopped, let request = state.waiting else { return .none }
                 return reply(request, in: &state)
 
             case .replied(let reply):
@@ -312,6 +316,7 @@ package struct ChatFeature {
                 }
                 state.replying = nil
                 state.waiting = nil
+                state.stopped = false
                 state.reloading = true
                 let id = uuid()
                 state.conversation.messages.append(ChatMessage(id: id, role: .assistant, text: reply.text, at: now))
@@ -344,6 +349,7 @@ package struct ChatFeature {
 
             case .replyFailed(let error as AssistantError) where error == .busy:
                 // Keep what's written so far, and send again on `resume`.
+                state.stopped = true
                 return .none
 
             case .replyFailed(let error):
@@ -356,6 +362,7 @@ package struct ChatFeature {
                     } ?? true
                 state.failed = retries ? state.waiting : nil
                 state.waiting = nil
+                state.stopped = false
                 state.alert = AlertState {
                     TextState("The assistant couldn't answer")
                 } actions: {
@@ -474,14 +481,20 @@ package struct ChatFeature {
     /// keeps the request for `resume`.
     private func reply(_ request: AssistantRequest, in state: inout State) -> Effect<Action> {
         state.waiting = request
+        state.stopped = false
         if state.replying == nil { state.replying = "" }
         return .run { [assistant, backgroundTime, clock, guidance] send in
             var request = request
             // The default when the person's can't be read; the
             // Instructions screen says why.
             request.guidance = (try? await guidance.load().text) ?? Guidance.defaultText
-            try await backgroundTime.run("Assistant reply") { [request] in
-                try await Self.watch(request, assistant: assistant, clock: clock) { await send(.replied($0)) }
+            try await backgroundTime.run("Answering") { [request] progressed in
+                try await Self.watch(
+                    request, assistant: assistant, clock: clock, returns: backgroundTime.returns
+                ) { reply in
+                    progressed()
+                    await send(.replied(reply))
+                }
             }
         } catch: { error, send in
             await send(.replyFailed(error))
@@ -490,10 +503,12 @@ package struct ChatFeature {
     }
 
     /// Sends each reply to `request`, and stops with `.timedOut` when the
-    /// assistant writes or saves nothing for `stallLimit`.
+    /// assistant writes or saves nothing for `stallLimit`. Time in the
+    /// background doesn't count: a model there may be waiting for Lifr to
+    /// be back on screen, so each return starts the wait again.
     private static func watch(
         _ request: AssistantRequest, assistant: AssistantClient, clock: any Clock<Duration>,
-        _ each: @escaping @Sendable (AssistantReply) async -> Void
+        returns: @escaping @Sendable () -> Int, _ each: @escaping @Sendable (AssistantReply) async -> Void
     ) async throws {
         let progress = LockIsolated(0)
         let saved = LockIsolated(false)
@@ -516,8 +531,10 @@ package struct ChatFeature {
             }
             group.addTask {
                 var seen = -1
-                while progress.value != seen {
+                var back = -1
+                while progress.value != seen || returns() != back {
                     seen = progress.value
+                    back = returns()
                     try await clock.sleep(for: stallLimit)
                 }
                 throw AssistantError.timedOut(saved: saved.value)

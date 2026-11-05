@@ -4,24 +4,27 @@ import LifrModelsClient
 import LifrModelsLive
 import LiteRTLM
 
-/// LiteRT-LM's engine for one downloaded model, on the GPU through Metal.
+/// LiteRT-LM's engine for one downloaded model, on the GPU through Metal,
+/// or on the CPU while Lifr answers in the background.
 package struct LiteRTLMEngine: LiteRTEngine {
     let engine: Engine
     /// Whether each turn takes the likeliest next token, rather than the
     /// model's own sampling.
     let greedy: Bool
 
-    /// Loads `model`'s `.litertlm` file. LiteRT-LM keeps the GPU's compiled
-    /// programs in Caches, so the next load is quicker.
-    @Sendable package static func load(_ model: InstalledModel) async throws(ModelRuntimeError) -> any LiteRTEngine {
-        try await load(model, greedy: false)
+    /// Loads `model`'s `.litertlm` file to run on `backend`. LiteRT-LM keeps
+    /// the GPU's compiled programs in Caches, so the next load is quicker.
+    @Sendable package static func load(_ model: InstalledModel, on backend: ModelBackend)
+        async throws(ModelRuntimeError) -> any LiteRTEngine
+    {
+        try await load(model, on: backend, greedy: false)
     }
 
     /// Loads `model`, taking the likeliest token at each step with
     /// `greedy`, so a turn reads the same each time on one Mac. The GPU's
     /// arithmetic still differs between machines.
-    package static func load(_ model: InstalledModel, greedy: Bool) async throws(ModelRuntimeError)
-        -> any LiteRTEngine
+    package static func load(_ model: InstalledModel, on backend: ModelBackend = .gpu, greedy: Bool)
+        async throws(ModelRuntimeError) -> any LiteRTEngine
     {
         guard let file = model.spec.source?.files.first(where: { $0.path.hasSuffix(".litertlm") }) else {
             throw .unavailable(.notDownloaded)
@@ -30,12 +33,17 @@ package struct LiteRTLMEngine: LiteRTEngine {
         guard FileManager.default.fileExists(atPath: path) else { throw .unavailable(.notDownloaded) }
         do {
             let cache = try cacheDirectory(model.id)
-            // Gemma's vision encoder runs on the GPU and its audio encoder
-            // on the CPU, as Google runs them; each loads only for a model
-            // that reads photos or recordings.
+            // Gemma's vision encoder runs where the model does and its
+            // audio encoder on the CPU, as Google runs them; each loads
+            // only for a model that reads photos or recordings.
+            let main: Backend =
+                switch backend {
+                case .gpu: .gpu
+                case .cpu: .cpu()
+                }
             let config = try EngineConfig(
-                modelPath: path, backend: .gpu,
-                visionBackend: model.spec.inputs.contains(.image) ? .gpu : nil,
+                modelPath: path, backend: main,
+                visionBackend: model.spec.inputs.contains(.image) ? main : nil,
                 audioBackend: model.spec.inputs.contains(.audio) ? .cpu() : nil,
                 maxNumTokens: model.spec.contextTokens, cacheDir: cache.path)
             let engine = Engine(engineConfig: config)

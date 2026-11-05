@@ -1,3 +1,4 @@
+import ComposableArchitecture
 import Foundation
 import LifrAPI
 
@@ -167,6 +168,23 @@ package enum ModelInterruption: Hashable, Sendable {
     case memory
     /// Lifr went to the background.
     case background
+}
+
+/// Where a downloaded model runs. iOS lets an app use the GPU only while
+/// it's on screen, so a model that keeps answering in the background moves
+/// to the CPU, which is slower and uses more battery.
+package enum ModelBackend: Hashable, Sendable {
+    case gpu
+    case cpu
+}
+
+extension SharedKey where Self == AppStorageKey<Bool>.Default {
+    /// Whether a downloaded model keeps answering on the CPU while Lifr is in
+    /// the background on iPhone, instead of waiting for Lifr to be back on
+    /// screen. Off unless the person turns it on.
+    package static var answersInBackground: Self {
+        Self[.appStorage("lifrAnswersInBackground"), default: false]
+    }
 }
 
 /// Why a model didn't answer.

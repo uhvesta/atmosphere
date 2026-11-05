@@ -414,6 +414,64 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Done."])
     }
 
+    func testAReplyWaitingInTheBackgroundDoesntTimeOutWhenLifrIsBack() async throws {
+        let (workspace, _) = home()
+        let clock = TestClock()
+        let returns = LockIsolated(0)
+        let finish = AsyncStream.makeStream(of: Void.self)
+        let store = chat(workspace, clock: clock) { _ in AssistantReply(text: "", isComplete: false) }
+        store.dependencies.backgroundTime.returns = { returns.value }
+        store.dependencies.assistant.reply = { _ in
+            AssistantReplies { continuation in
+                Task {
+                    // The model waits for Lifr to be back, then answers.
+                    var wake = finish.stream.makeAsyncIterator()
+                    _ = await wake.next()
+                    continuation.yield(AssistantReply(text: "Done.", isComplete: true))
+                    continuation.finish()
+                }
+            }
+        }
+
+        await send("Hello", in: store)
+        // Away for longer than a stall, then back.
+        returns.setValue(1)
+        await clock.advance(by: ChatFeature.stallLimit)
+        await store.send(.resume)
+        finish.continuation.yield()
+        await store.skipReceivedActions()
+
+        XCTAssertNil(store.state.alert)
+        XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Done."])
+    }
+
+    func testAReplyStillBeingWrittenIsntSentAgainOnResume() async throws {
+        let (workspace, _) = home()
+        let sent = LockIsolated(0)
+        let finish = AsyncStream.makeStream(of: Void.self)
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: false) }
+        store.dependencies.assistant.reply = { _ in
+            sent.withValue { $0 += 1 }
+            return AssistantReplies { continuation in
+                Task {
+                    continuation.yield(AssistantReply(text: "Half"))
+                    var wake = finish.stream.makeAsyncIterator()
+                    _ = await wake.next()
+                    continuation.yield(AssistantReply(text: "Half and the rest.", isComplete: true))
+                    continuation.finish()
+                }
+            }
+        }
+
+        await send("Hello", in: store)
+        await store.send(.resume)
+        finish.continuation.yield()
+        await store.skipReceivedActions()
+
+        XCTAssertEqual(sent.value, 1)
+        XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Half and the rest."])
+    }
+
     func testABusyReplyKeepsItsTextAndIsSentAgainOnResume() async throws {
         let (workspace, _) = home()
         let attempts = LockIsolated(0)
@@ -548,6 +606,41 @@ final class ChatFeatureTests: XCTestCase {
         await reopened.send(.task)
         await reopened.skipReceivedActions()
         XCTAssertEqual(reopened.state.conversations.map(\.title), ["Hello"])
+    }
+
+    func testLifrReopensTheChatThatWasOpenWithWhatWasTypedInIt() async throws {
+        let kept = ConversationsClient.inMemory()
+        let before = list(kept)
+        await before.send(.newTapped)
+        let id = try XCTUnwrap(before.state.openID)
+        await before.send(.chats(.element(id: id, action: .binding(.set(\.input, "Hello")))))
+        await before.send(.chats(.element(id: id, action: .sendTapped)))
+        await before.skipReceivedActions()
+        await before.send(.chats(.element(id: id, action: .binding(.set(\.input, "And then")))))
+
+        let after = list(kept)
+        await after.send(.task)
+        await after.receive(\.loaded)
+
+        XCTAssertEqual(after.state.openID, id)
+        XCTAssertEqual(after.state.chat?.input, "And then")
+    }
+
+    func testAChatClosedBeforeLifrQuitStaysClosed() async throws {
+        let kept = ConversationsClient.inMemory()
+        let before = list(kept)
+        await before.send(.newTapped)
+        let id = try XCTUnwrap(before.state.openID)
+        await before.send(.chats(.element(id: id, action: .binding(.set(\.input, "Hello")))))
+        await before.send(.chats(.element(id: id, action: .sendTapped)))
+        await before.skipReceivedActions()
+        await before.send(.closed)
+
+        let after = list(kept)
+        await after.send(.task)
+        await after.receive(\.loaded)
+
+        XCTAssertNil(after.state.openID)
     }
 
     func testAReplyKeepsGoingAfterLeavingTheChat() async throws {

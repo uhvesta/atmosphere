@@ -53,7 +53,7 @@ package struct ModelsFeature {
     package enum Action: BindableAction {
         case binding(BindingAction<State>)
         case task
-        case loaded(installed: [InstalledModel], selection: [ModelUse: ModelID])
+        case loaded(installed: [InstalledModel], unfinished: [ModelSpec], selection: [ModelUse: ModelID])
         case downloadsChanged([ModelID: DownloadState])
         case picked(ModelID, for: ModelUse)
         case downloadTapped(ModelID)
@@ -84,15 +84,19 @@ package struct ModelsFeature {
                     }
                 }
 
-            case .loaded(let installed, let selection):
+            case .loaded(let installed, let unfinished, let selection):
+                for spec in unfinished { state.add(spec) }
                 for model in installed { state.add(model.spec) }
                 state.installed = Set(installed.map(\.id))
                 state.selection = selection
                 return .none
 
             case .downloadsChanged(let downloads):
+                // One that left finished, perhaps started before Lifr last
+                // quit, with no one here waiting for it.
+                let finished = state.downloads.keys.contains { downloads[$0] == nil }
                 state.downloads = downloads
-                return .none
+                return finished ? reload() : .none
 
             case .picked(let id, let use):
                 state.selection[use] = id
@@ -191,7 +195,7 @@ package struct ModelsFeature {
         let installed = await library.installed()
         var selection: [ModelUse: ModelID] = [:]
         for use in ModelUse.allCases { selection[use] = library.selection(use) }
-        return .loaded(installed: installed, selection: selection)
+        return .loaded(installed: installed, unfinished: await library.unfinished(), selection: selection)
     }
 
     private func download(_ spec: ModelSpec) -> Effect<Action> {

@@ -213,13 +213,173 @@ final class ModelHostTests: XCTestCase {
         memory: Int64 = 8_000_000_000,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in
             try await Task.sleep(for: .seconds(3_600))
-        }
+        },
+        backends: LockIsolated<[ModelBackend]> = LockIsolated([]), answersInBackground: Bool = false
     ) -> ModelHost {
         ModelHost(
-            load: { model throws(ModelRuntimeError) in
+            load: { model, backend throws(ModelRuntimeError) in
                 loads.withValue { $0.append(model.id) }
+                backends.withValue { $0.append(backend) }
                 return FakeEngine(chat: chat)
-            }, memory: { memory }, sleep: sleep)
+            }, memory: { memory }, sleep: sleep, answersInBackground: { answersInBackground })
+    }
+
+    /// A conversation whose first message waits until it's stopped, and
+    /// whose later ones say "hi". `started` hears each message.
+    private func stalling(_ started: AsyncStream<Void>.Continuation) -> FakeChat {
+        let first = LockIsolated(true)
+        return FakeChat { _, _ throws(ModelRuntimeError) in
+            started.yield()
+            guard
+                first.withValue({ was in
+                    defer { was = false }
+                    return was
+                })
+            else { return "hi" }
+            do {
+                try await Task.sleep(for: .seconds(60))
+            } catch {
+                throw .cancelled
+            }
+            return "too late"
+        }
+    }
+
+    /// Waits for `done`, for up to two seconds.
+    private func eventually(_ done: () async -> Bool) async throws {
+        for _ in 0..<200 {
+            if await done() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("it didn't happen")
+    }
+
+    func testATurnInTheBackgroundGoesOnOnceLifrIsBack() async throws {
+        let started = AsyncStream.makeStream(of: Void.self)
+        let backends = LockIsolated<[ModelBackend]>([])
+        let host = host(chat: stalling(started.continuation), backends: backends)
+        let model = model("a")
+
+        let turn = Task { try await host.run(model, plain) }
+        var events = started.stream.makeAsyncIterator()
+        _ = await events.next()
+        await host.backgrounded()
+        try await eventually { await host.loadedModel == nil }
+        await host.foregrounded()
+
+        let answer = try await turn.value
+        XCTAssertEqual(answer, .string("hi"))
+        XCTAssertEqual(backends.value, [.gpu, .gpu])
+    }
+
+    func testATurnMovesToTheCPUWhenThePersonLetsItAnswerInTheBackground() async throws {
+        let started = AsyncStream.makeStream(of: Void.self)
+        let backends = LockIsolated<[ModelBackend]>([])
+        let host = host(chat: stalling(started.continuation), backends: backends, answersInBackground: true)
+        let model = model("a")
+
+        let turn = Task { try await host.run(model, plain) }
+        var events = started.stream.makeAsyncIterator()
+        _ = await events.next()
+        await host.backgrounded()
+
+        let answer = try await turn.value
+        XCTAssertEqual(answer, .string("hi"))
+        XCTAssertEqual(backends.value, [.gpu, .cpu])
+        // Its last turn over, the model leaves the background's memory.
+        let loaded = await host.loadedModel
+        XCTAssertNil(loaded)
+    }
+
+    func testBackOnScreenTheNextTurnIsOnTheGPU() async throws {
+        let backends = LockIsolated<[ModelBackend]>([])
+        let host = host(backends: backends, answersInBackground: true)
+
+        await host.backgrounded()
+        _ = try await host.run(model("a"), plain)
+        await host.foregrounded()
+        _ = try await host.run(model("a"), plain)
+
+        XCTAssertEqual(backends.value, [.cpu, .gpu])
+        let backend = await host.loadedBackend
+        XCTAssertEqual(backend, .gpu)
+    }
+
+    func testATurnStartedInTheBackgroundWaitsForTheScreen() async throws {
+        let backends = LockIsolated<[ModelBackend]>([])
+        let host = host(backends: backends)
+
+        await host.backgrounded()
+        let turn = Task { try await host.run(model("a"), plain) }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(backends.value, [])
+        await host.foregrounded()
+
+        let answer = try await turn.value
+        XCTAssertEqual(answer, .string("hi"))
+        XCTAssertEqual(backends.value, [.gpu])
+    }
+
+    func testATurnWaitingForTheScreenCanBeCancelled() async throws {
+        let host = host()
+
+        await host.backgrounded()
+        let turn = Task { try await host.run(model("a"), plain) }
+        try await Task.sleep(for: .milliseconds(50))
+        turn.cancel()
+
+        guard case .failure(let error) = await turn.result else { return XCTFail("it answered") }
+        XCTAssertEqual(error as? ModelRuntimeError, .cancelled)
+    }
+
+    func testAToolTurnStartedAgainDoesntCallItsToolsAgain() async throws {
+        let calls = LockIsolated(0)
+        let tool = ModelTool(name: "addTask", description: "", parameters: []) { _ in
+            calls.withValue { $0 += 1 }
+            return "Added HOME-0002."
+        }
+        let started = AsyncStream.makeStream(of: Void.self)
+        let messages = LockIsolated(0)
+        // Calls the tool, then stalls on its answer the first time.
+        let chat = FakeChat { _, _ throws(ModelRuntimeError) in
+            let count = messages.withValue {
+                $0 += 1
+                return $0
+            }
+            switch count {
+            case 1: return #"{"tool":"addTask","arguments":{}}"#
+            case 2:
+                started.continuation.yield()
+                do {
+                    try await Task.sleep(for: .seconds(60))
+                } catch {
+                    throw .cancelled
+                }
+                return #"{"answer":"too late"}"#
+            default: return #"{"answer":"Added it."}"#
+            }
+        }
+        let host = host(chat: chat)
+        let turn = ModelTurn(instructions: "", prompt: "Add a task", tools: [tool])
+        let journal = LiteRTTurn.Journal()
+
+        let running = Task {
+            try await host.run(model("a")) { engine async throws(ModelRuntimeError) in
+                try await LiteRTTurn.respond(to: turn, on: engine, journal: journal) { _ in }
+            }
+        }
+        var events = started.stream.makeAsyncIterator()
+        _ = await events.next()
+        await host.backgrounded()
+        try await eventually { await host.loadedModel == nil }
+        await host.foregrounded()
+
+        let answer = try await running.value
+        XCTAssertEqual(answer, .string("Added it."))
+        XCTAssertEqual(calls.value, 1)
+        let resumed = try XCTUnwrap(chat.sent.value.last?.message)
+        XCTAssertTrue(resumed.hasPrefix("Add a task"))
+        XCTAssertTrue(resumed.contains("Added HOME-0002."))
     }
 
     private func plain(_ engine: any LiteRTEngine) async throws(ModelRuntimeError) -> JSONValue {
@@ -333,7 +493,7 @@ final class LiteRTRuntimeTests: XCTestCase {
         let spec = ModelCatalog.gemma4E2B
         let runtime = LiteRTRuntime(
             model: InstalledModel(spec: spec, directory: URL(filePath: "/nonexistent"), installedAt: Date()),
-            host: ModelHost(load: { _ throws(ModelRuntimeError) in throw .failed("no") }))
+            host: ModelHost(load: { _, _ throws(ModelRuntimeError) in throw .failed("no") }))
 
         XCTAssertEqual(runtime.status, .notDownloaded)
     }
@@ -341,7 +501,7 @@ final class LiteRTRuntimeTests: XCTestCase {
     func testABiggerWindowKeepsMoreForTheAnswer() {
         let runtime = LiteRTRuntime(
             model: InstalledModel(spec: ModelCatalog.gemma4E2B, directory: URL(filePath: "/"), installedAt: Date()),
-            host: ModelHost(load: { _ throws(ModelRuntimeError) in throw .failed("no") }))
+            host: ModelHost(load: { _, _ throws(ModelRuntimeError) in throw .failed("no") }))
 
         XCTAssertEqual(runtime.budget.window, 8_192)
         XCTAssertGreaterThan(runtime.budget.reservedForAnswer, ContextBudget.appleOnDevice.reservedForAnswer)
@@ -352,7 +512,7 @@ final class LiteRTRuntimeTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let host = ModelHost(
-            load: { _ throws(ModelRuntimeError) in FakeEngine(chat: FakeChat(["Done"])) },
+            load: { _, _ throws(ModelRuntimeError) in FakeEngine(chat: FakeChat(["Done"])) },
             memory: { 16_000_000_000 }, sleep: { _ in try await Task.sleep(for: .seconds(3_600)) })
         let photo = ModelTurn(
             instructions: "", prompt: "What's this?",
@@ -396,7 +556,7 @@ final class LiteRTRuntimeTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let library = ModelLibrary(root: root, session: .shared)
         let runtimes = ModelRuntimes(
-            library: library, host: ModelHost(load: { _ throws(ModelRuntimeError) in throw .failed("no") }))
+            library: library, host: ModelHost(load: { _, _ throws(ModelRuntimeError) in throw .failed("no") }))
 
         library.select(ModelCatalog.gemma4E2B.id, for: .assistant)
 

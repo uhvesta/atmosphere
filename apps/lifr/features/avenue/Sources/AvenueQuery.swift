@@ -19,7 +19,7 @@ package enum Grouping: String, CaseIterable, Hashable, Sendable {
 }
 
 /// What an Avenue view shows: a whole Avenue, or one of its Projects.
-package enum AvenueScope: Hashable, Sendable {
+package enum AvenueScope: Hashable, Codable, Sendable {
     case avenue(UUID)
     case project(UUID)
 

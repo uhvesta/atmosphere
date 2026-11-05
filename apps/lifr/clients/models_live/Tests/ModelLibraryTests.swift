@@ -141,6 +141,68 @@ final class ModelLibraryTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: model.location(of: try XCTUnwrap(model.spec.source?.files.first))), bytes)
     }
 
+    func testADownloadPausedBeforeLifrQuitIsStillPausedNextTime() async throws {
+        let before = library()
+        hub.hold = 300
+        let started = expectation(description: "the second chunk was asked for")
+        hub.onHold = { started.fulfill() }
+        let spec = spec()
+        let first = Task { await Self.attempt(before, spec) }
+        await fulfillment(of: [started], timeout: 5)
+        await before.client.pause(spec.id)
+        _ = await first.value
+        hub.ranges = []
+
+        let after = library()
+        after.resumeUnfinished()
+        var downloads = after.client.downloads().makeAsyncIterator()
+        let now = await downloads.next()
+
+        XCTAssertEqual(now?[spec.id], .paused(received: 300, total: 1_000))
+        let unfinished = await after.client.unfinished()
+        XCTAssertEqual(unfinished, [spec])
+        XCTAssertEqual(hub.ranges, [])
+    }
+
+    func testADownloadRunningWhenLifrQuitStartsAgainFromWhereItWas() async throws {
+        let before = library()
+        hub.hold = 300
+        let started = expectation(description: "the second chunk was asked for")
+        hub.onHold = { started.fulfill() }
+        let spec = spec()
+        let first = Task { await Self.attempt(before, spec) }
+        await fulfillment(of: [started], timeout: 5)
+        hub.hold = nil
+        hub.ranges = []
+
+        let after = library()
+        after.resumeUnfinished()
+        let model = try await after.download(spec)
+
+        XCTAssertEqual(hub.ranges.first, "bytes=300-599")
+        XCTAssertEqual(try Data(contentsOf: model.location(of: try XCTUnwrap(model.spec.source?.files.first))), bytes)
+        let unfinished = await after.client.unfinished()
+        XCTAssertEqual(unfinished, [])
+        first.cancel()
+        await before.client.pause(spec.id)
+    }
+
+    func testRemovingAnUnfinishedDownloadForgetsIt() async throws {
+        let library = library()
+        hub.hold = 300
+        let started = expectation(description: "the second chunk was asked for")
+        hub.onHold = { started.fulfill() }
+        let spec = spec()
+        let first = Task { await Self.attempt(library, spec) }
+        await fulfillment(of: [started], timeout: 5)
+
+        try await library.delete(spec.id)
+        _ = await first.value
+
+        let unfinished = await library.client.unfinished()
+        XCTAssertEqual(unfinished, [])
+    }
+
     func testAFileThatDoesntMatchItsHashIsDeleted() async throws {
         let library = library()
         let wrong = spec(digest: .sha256(String(repeating: "0", count: 64)))

@@ -15,8 +15,8 @@ package final class ModelLibrary: Sendable {
 
     private let root: URL
     private let hub: HubClient
+    private let fetcher: any ModelFetcher
     private let capacity: @Sendable (URL) throws -> Int64
-    private let chunkSize: Int64
     private let catalog: [ModelSpec]
     private let now: @Sendable () -> Date
     private let state = LockIsolated(State())
@@ -27,15 +27,26 @@ package final class ModelLibrary: Sendable {
     ///   - capacity: The bytes free for important use on `root`'s volume.
     ///   - chunkSize: The bytes asked for at once. A pause or a dropped
     ///     connection loses at most this much.
-    package init(
+    package convenience init(
         root: URL, session: URLSession, capacity: @escaping @Sendable (URL) throws -> Int64 = ModelLibrary.capacity,
         chunkSize: Int64 = 32 << 20, catalog: [ModelSpec] = ModelCatalog.all,
         now: @escaping @Sendable () -> Date = Date.init
     ) {
+        let hub = HubClient(session: session)
+        self.init(
+            root: root, hub: hub, fetcher: ChunkedFetcher(hub: hub, chunkSize: chunkSize), capacity: capacity,
+            catalog: catalog, now: now)
+    }
+
+    /// - Parameter fetcher: What brings each file's bytes down.
+    init(
+        root: URL, hub: HubClient, fetcher: any ModelFetcher, capacity: @escaping @Sendable (URL) throws -> Int64,
+        catalog: [ModelSpec], now: @escaping @Sendable () -> Date
+    ) {
         self.root = root
-        hub = HubClient(session: session)
+        self.hub = hub
+        self.fetcher = fetcher
         self.capacity = capacity
-        self.chunkSize = chunkSize
         self.catalog = catalog
         self.now = now
         let saved = try? JSONDecoder().decode([ModelUse: ModelID].self, from: Data(contentsOf: selectionFile))
@@ -43,19 +54,48 @@ package final class ModelLibrary: Sendable {
     }
 
     /// The library in Application Support, in a folder for the app on the
-    /// Mac, downloading over its own session.
+    /// Mac. On the iPhone, files download in the background, so they go on
+    /// while Lifr is away.
     package static func live() -> ModelLibrary {
         let support = URL.applicationSupportDirectory
+        let configuration = URLSessionConfiguration.default
+        configuration.httpAdditionalHeaders = ["User-Agent": "Lifr"]
+        let hub = HubClient(session: URLSession(configuration: configuration))
         #if os(macOS)
             let app = Bundle.main.bundleIdentifier ?? "Lifr"
             let root = support.appending(path: "\(app)/Models", directoryHint: .isDirectory)
+            let fetcher: any ModelFetcher = ChunkedFetcher(hub: hub, chunkSize: 32 << 20)
         #else
             let root = support.appending(path: "Models", directoryHint: .isDirectory)
+            let fetcher: any ModelFetcher = backgroundFetcher(root: root)
         #endif
-        let configuration = URLSessionConfiguration.default
-        configuration.httpAdditionalHeaders = ["User-Agent": "Lifr"]
-        return ModelLibrary(root: root, session: URLSession(configuration: configuration))
+        let library = ModelLibrary(
+            root: root, hub: hub, fetcher: fetcher, capacity: ModelLibrary.capacity, catalog: ModelCatalog.all,
+            now: Date.init)
+        return library
     }
+
+    /// The one background session there may be, for the library's root.
+    private static let background = LockIsolated<BackgroundFetcher?>(nil)
+
+    private static func backgroundFetcher(root: URL) -> BackgroundFetcher {
+        background.withValue { fetcher in
+            if let fetcher { return fetcher }
+            let made = BackgroundFetcher(root: root)
+            fetcher = made
+            return made
+        }
+    }
+
+    /// Returns once the system has handed Lifr the downloads it finished
+    /// while Lifr wasn't running, for SwiftUI's
+    /// `.backgroundTask(.urlSession(backgroundSession))`.
+    package static func caughtUp() async {
+        await background.value?.caughtUp()
+    }
+
+    /// The background session's identifier.
+    package static var backgroundSession: String { BackgroundFetcher.identifier }
 
     /// The bytes free for important use on `url`'s volume.
     package static func capacity(_ url: URL) throws -> Int64 {
@@ -73,6 +113,7 @@ package final class ModelLibrary: Sendable {
         ModelLibraryClient(
             catalog: { [catalog] in catalog },
             installed: { [self] in installed() },
+            unfinished: { [self] in unfinished().map(\.spec) },
             resolve: { [self] link, sha256 throws(ModelResolveError) in try await resolve(link, sha256: sha256) },
             download: { [self] spec throws(ModelDownloadError) in try await download(spec) },
             downloads: { [board] in board.stream() },
@@ -131,6 +172,52 @@ package final class ModelLibrary: Sendable {
 
     // MARK: Downloads
 
+    /// The downloads started and not finished, with whether each was
+    /// stopped, by the person or by an error, rather than by Lifr quitting.
+    func unfinished() -> [Pending] {
+        let staging = root.appending(path: ".staging", directoryHint: .isDirectory)
+        let folders = (try? FileManager.default.contentsOfDirectory(at: staging, includingPropertiesForKeys: nil)) ?? []
+        return folders.compactMap { folder in
+            let file = folder.appending(path: Pending.name, directoryHint: .notDirectory)
+            guard let data = try? Data(contentsOf: file) else { return nil }
+            return try? JSONDecoder().decode(Pending.self, from: data)
+        }
+        .sorted { $0.spec.id.rawValue < $1.spec.id.rawValue }
+    }
+
+    /// Starts again the downloads Lifr was running when it quit, and shows
+    /// the stopped ones as paused.
+    package func resumeUnfinished() {
+        for pending in unfinished() {
+            if pending.stopped {
+                let received = received(pending.spec)
+                let total = pending.spec.source?.totalSize ?? 0
+                board.update { $0[pending.spec.id] = .paused(received: received, total: total) }
+            } else {
+                Task { [self] in _ = try? await download(pending.spec) }
+            }
+        }
+    }
+
+    /// Marks `spec`'s download as unfinished, and whether it was stopped.
+    private func mark(_ spec: ModelSpec, stopped: Bool) {
+        let folder = root.appending(path: ".staging/\(spec.id.directoryName)", directoryHint: .isDirectory)
+        guard FileManager.default.fileExists(atPath: folder.path(percentEncoded: false)) else { return }
+        let file = folder.appending(path: Pending.name, directoryHint: .notDirectory)
+        try? JSONEncoder().encode(Pending(spec: spec, stopped: stopped)).write(to: file, options: .atomic)
+    }
+
+    /// The bytes of `spec` on the device so far.
+    private func received(_ spec: ModelSpec) -> Int64 {
+        guard let source = spec.source else { return 0 }
+        let staging = root.appending(
+            path: ".staging/\(spec.id.directoryName)/\(source.commit)", directoryHint: .isDirectory)
+        return source.files.reduce(Int64(0)) { sum, file in
+            let done = staging.appending(path: file.path, directoryHint: .notDirectory)
+            return sum + (FetchedFile.size(of: done) ?? FetchedFile.size(of: Self.partial(done)) ?? 0)
+        }
+    }
+
     package func download(_ spec: ModelSpec) async throws(ModelDownloadError) -> InstalledModel {
         let task = state.withValue { state in
             if let running = state.downloads[spec.id] { return running }
@@ -141,6 +228,7 @@ package final class ModelLibrary: Sendable {
                     return Result<InstalledModel, ModelDownloadError>.success(model)
                 } catch {
                     let stopped = Task.isCancelled ? ModelDownloadError.paused : error
+                    mark(spec, stopped: true)
                     board.update { downloads in
                         if stopped == .paused, case .downloading(let received, let total) = downloads[spec.id] {
                             downloads[spec.id] = .paused(received: received, total: total)
@@ -175,34 +263,35 @@ package final class ModelLibrary: Sendable {
         let staging = root.appending(
             path: ".staging/\(spec.id.directoryName)/\(source.commit)", directoryHint: .isDirectory)
         try storage("create", staging) { try prepare(staging) }
+        mark(spec, stopped: false)
 
         let total = source.totalSize
-        var received = source.files.reduce(Int64(0)) { sum, file in
-            let done = staging.appending(path: file.path, directoryHint: .notDirectory)
-            return sum + (Self.size(of: done) ?? Self.size(of: Self.partial(done)) ?? 0)
-        }
+        let received = LockIsolated(received(spec))
         let available: Int64
         do {
             available = try capacity(root)
         } catch {
             throw .storage(.fileSystem(operation: "check the free space for", path: root.path(), reason: "\(error)"))
         }
-        let needed = spaceNeeded(toDownload: total - received)
+        let needed = spaceNeeded(toDownload: total - received.value)
         guard available >= needed else { throw .notEnoughSpace(needed: needed, available: available) }
-        board.update { $0[spec.id] = .downloading(received: received, total: total) }
+        board.update { $0[spec.id] = .downloading(received: received.value, total: total) }
 
         for file in source.files {
             let done = staging.appending(path: file.path, directoryHint: .notDirectory)
-            guard Self.size(of: done) == nil else { continue }
+            guard FetchedFile.size(of: done) == nil else { continue }
             guard let url = source.url(of: file) else { throw .hub(.notFound(file.path)) }
             let partial = Self.partial(done)
             try storage("create", done.deletingLastPathComponent()) {
                 try FileManager.default.createDirectory(
                     at: done.deletingLastPathComponent(), withIntermediateDirectories: true)
             }
-            try await transfer(file, from: url, to: partial) { bytes in
-                received += bytes
-                board.update { $0[spec.id] = .downloading(received: received, total: total) }
+            try await fetcher.fetch(file, from: url, into: partial) { [board] bytes in
+                let now = received.withValue { received in
+                    received += bytes
+                    return received
+                }
+                board.update { $0[spec.id] = .downloading(received: now, total: total) }
             }
             board.update { $0[spec.id] = .verifying }
             guard try Self.matches(partial, file.digest) else {
@@ -223,56 +312,6 @@ package final class ModelLibrary: Sendable {
             try? FileManager.default.removeItem(at: root.appending(path: ".staging/\(spec.id.directoryName)"))
         }
         return InstalledModel(spec: spec, directory: destination, installedAt: manifest.installedAt)
-    }
-
-    /// Downloads what's missing of `file` into `partial`, a chunk at a time,
-    /// so a pause or a dropped connection loses at most one chunk.
-    private func transfer(
-        _ file: ModelFile, from url: URL, to partial: URL, received: (Int64) -> Void
-    ) async throws(ModelDownloadError) {
-        var offset = Self.size(of: partial) ?? 0
-        if offset > file.size {
-            try? FileManager.default.removeItem(at: partial)
-            offset = 0
-        }
-        if offset == 0 {
-            try storage("create", partial) {
-                guard FileManager.default.createFile(atPath: partial.path(percentEncoded: false), contents: nil) else {
-                    throw CocoaError(.fileWriteUnknown)
-                }
-            }
-        }
-        let handle: FileHandle
-        do {
-            handle = try FileHandle(forWritingTo: partial)
-            try handle.seekToEnd()
-        } catch {
-            throw .storage(.fileSystem(operation: "open", path: partial.path(), reason: "\(error)"))
-        }
-        defer { try? handle.close() }
-        while offset < file.size {
-            guard !Task.isCancelled else { throw .paused }
-            let end = min(offset + chunkSize, file.size) - 1
-            let (data, response) = try await hub.bytes(url, offset...end, what: file.name)
-            let expected = end - offset + 1
-            switch response.statusCode {
-            case 206 where Int64(data.count) == expected:
-                break
-            case 200 where offset == 0 && Int64(data.count) == file.size:
-                break
-            case 200, 206:
-                throw .wrongSize(file: file.name, expected: expected, received: Int64(data.count))
-            default:
-                throw .hub(.status(response.statusCode, file.name))
-            }
-            do {
-                try handle.write(contentsOf: data)
-            } catch {
-                throw .storage(.fileSystem(operation: "write", path: partial.path(), reason: "\(error)"))
-            }
-            offset += Int64(data.count)
-            received(Int64(data.count))
-        }
     }
 
     /// Whether the bytes in `url` have `digest`, read 8 MB at a time.
@@ -374,13 +413,16 @@ package final class ModelLibrary: Sendable {
     private static func partial(_ url: URL) -> URL {
         url.deletingLastPathComponent().appending(path: url.lastPathComponent + ".partial")
     }
+}
 
-    private static func size(of url: URL) -> Int64? {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path(percentEncoded: false)),
-            let size = attributes[.size] as? NSNumber
-        else { return nil }
-        return size.int64Value
-    }
+/// What's written in a model's staging folder while it downloads.
+struct Pending: Codable {
+    static let name = "pending.json"
+
+    var spec: ModelSpec
+    /// Whether the person paused it, or it failed; otherwise Lifr quit
+    /// while it ran, and starts it again.
+    var stopped: Bool
 }
 
 /// What's written next to a model's files once they're all checked.
