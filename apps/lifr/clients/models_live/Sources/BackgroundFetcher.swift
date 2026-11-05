@@ -153,9 +153,7 @@ struct BackgroundJob: Codable, Equatable {
         do {
             let source = try FileHandle(forReadingFrom: download)
             defer { try? source.close() }
-            while let chunk = try source.read(upToCount: 8 << 20), !chunk.isEmpty {
-                try handle.write(contentsOf: chunk)
-            }
+            try FetchedFile.forEachChunk(of: source) { try handle.write(contentsOf: $0) }
         } catch {
             throw .storage(.fileSystem(operation: "write", path: partial.path(), reason: "\(error)"))
         }

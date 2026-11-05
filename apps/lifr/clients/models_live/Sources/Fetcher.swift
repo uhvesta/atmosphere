@@ -25,6 +25,22 @@ extension ModelFetcher {
 
 /// Files a fetch writes.
 enum FetchedFile {
+    /// Calls `body` with each piece of `handle` from where it is, 8 MB at a
+    /// time. Each piece is let go before the next is read: a model's files
+    /// are gigabytes, more than iOS lets an app hold.
+    static func forEachChunk(of handle: FileHandle, _ body: (Data) throws -> Void) throws {
+        while true {
+            // Foundation hands back each piece autoreleased, kept until the
+            // pool drains; without one per piece, the whole file stays.
+            let more = try autoreleasepool { () throws -> Bool in
+                guard let chunk = try handle.read(upToCount: 8 << 20), !chunk.isEmpty else { return false }
+                try body(chunk)
+                return true
+            }
+            guard more else { return }
+        }
+    }
+
     static func size(of url: URL) -> Int64? {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path(percentEncoded: false)),
             let size = attributes[.size] as? NSNumber

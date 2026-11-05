@@ -369,13 +369,17 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertNil(store.state.failed)
     }
 
-    func testOpeningTheChatLoadsTheModel() async {
+    func testOpeningTheChatLoadsNoModelUntilThePersonWrites() async {
         let (workspace, _) = home()
         let prewarmed = LockIsolated(0)
         let store = chat(workspace, prewarmed: prewarmed) { _ in AssistantReply(text: "", isComplete: true) }
+        store.exhaustivity = .off
 
         await store.send(.task)
+        XCTAssertEqual(prewarmed.value, 0)
 
+        await store.send(.binding(.set(\.input, "A")))
+        await store.send(.binding(.set(\.input, "Ad")))
         XCTAssertEqual(prewarmed.value, 1)
     }
 

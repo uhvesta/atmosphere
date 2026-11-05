@@ -315,21 +315,21 @@ package final class ModelLibrary: Sendable {
     }
 
     /// Whether the bytes in `url` have `digest`, read 8 MB at a time.
-    private static func matches(_ url: URL, _ digest: FileDigest) throws(ModelDownloadError) -> Bool {
+    static func matches(_ url: URL, _ digest: FileDigest) throws(ModelDownloadError) -> Bool {
         do {
             let handle = try FileHandle(forReadingFrom: url)
             defer { try? handle.close() }
             switch digest {
             case .sha256(let expected):
                 var hash = SHA256()
-                while let chunk = try handle.read(upToCount: 8 << 20), !chunk.isEmpty { hash.update(data: chunk) }
+                try FetchedFile.forEachChunk(of: handle) { hash.update(data: $0) }
                 return hex(hash.finalize()) == expected.lowercased()
             case .gitBlobSHA1(let expected):
                 let size = try handle.seekToEnd()
                 try handle.seek(toOffset: 0)
                 var hash = Insecure.SHA1()
                 hash.update(data: Data("blob \(size)\0".utf8))
-                while let chunk = try handle.read(upToCount: 8 << 20), !chunk.isEmpty { hash.update(data: chunk) }
+                try FetchedFile.forEachChunk(of: handle) { hash.update(data: $0) }
                 return hex(hash.finalize()) == expected.lowercased()
             }
         } catch {

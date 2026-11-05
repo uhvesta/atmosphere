@@ -62,6 +62,10 @@ package struct ChatFeature {
         /// Attachments of this conversation whose files aren't on this
         /// device, such as those sent from another one.
         package var elsewhere: Set<UUID> = []
+        /// Whether the model was asked to load, once the person started
+        /// writing. Opening a chat doesn't: Lifr reopens the last one at
+        /// launch, and a model takes gigabytes.
+        package var warmed = false
 
         package init(conversation: Conversation, workspace: Workspace) {
             self.conversation = conversation
@@ -169,7 +173,6 @@ package struct ChatFeature {
             case .task:
                 state.availability = assistant.availability()
                 state.today = CalendarDate(now, in: timeZone)
-                if state.availability == .available { assistant.prewarm() }
                 state.inputs = assistant.inputs()
                 let conversation = state.conversation.id
                 state.elsewhere = Set(
@@ -415,6 +418,13 @@ package struct ChatFeature {
                 state.conversation.draft = nil
                 state.problem = nil
                 state.editsDraft = false
+                return .none
+
+            case .binding(\.input):
+                if !state.warmed, !state.input.isEmpty, state.availability == .available {
+                    state.warmed = true
+                    assistant.prewarm()
+                }
                 return .none
 
             case .binding(\.conversation.draft), .binding(\.conversation):
