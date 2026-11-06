@@ -60,29 +60,56 @@ enum LiteRTTurn {
         partial: @escaping @Sendable (JSONValue) -> Void
     ) async throws(ModelRuntimeError) -> JSONValue {
         let answer = turn.schema.map(JSONSchema.value)
-        let chat = try await engine.chat(
-            instructions: instructions(turn), constrained: answer != nil || !turn.tools.isEmpty)
+        let chats = Chats(
+            engine: engine, instructions: instructions(turn), constrained: answer != nil || !turn.tools.isEmpty)
+        let chat = try await chats.new()
         let result = await withTaskCancellationHandler {
             do throws(ModelRuntimeError) {
-                return Result<JSONValue, ModelRuntimeError>.success(
-                    try await answering(turn, answer: answer, chat: chat, journal: journal, partial: partial))
+                let value = try await answering(
+                    turn, answer: answer, chat: chat, chats: chats, journal: journal, partial: partial)
+                return Result<JSONValue, ModelRuntimeError>.success(value)
             } catch {
                 return .failure(error)
             }
         } onCancel: {
-            chat.cancel()
+            chats.cancel()
         }
         return try result.get()
     }
 
+    /// The conversations of one turn, of which the latest is answering.
+    private final class Chats: Sendable {
+        private let engine: any LiteRTEngine
+        private let instructions: String
+        private let constrained: Bool
+        private let latest = LockIsolated<(any LiteRTChat)?>(nil)
+
+        init(engine: any LiteRTEngine, instructions: String, constrained: Bool) {
+            self.engine = engine
+            self.instructions = instructions
+            self.constrained = constrained
+        }
+
+        func new() async throws(ModelRuntimeError) -> any LiteRTChat {
+            let chat = try await engine.chat(instructions: instructions, constrained: constrained)
+            latest.setValue(chat)
+            if Task.isCancelled { chat.cancel() }
+            return chat
+        }
+
+        func cancel() {
+            latest.value?.cancel()
+        }
+    }
+
     private static func answering(
-        _ turn: ModelTurn, answer: JSONSchema.Node?, chat: any LiteRTChat, journal: Journal,
-        partial: @escaping @Sendable (JSONValue) -> Void
+        _ turn: ModelTurn, answer: JSONSchema.Node?, chat: any LiteRTChat, chats: Chats,
+        journal: Journal, partial: @escaping @Sendable (JSONValue) -> Void
     ) async throws(ModelRuntimeError) -> JSONValue {
         let thought = turn.thinking
         let thinks = thought != nil
         guard turn.tools.isEmpty else {
-            return try await withTools(turn, answer: answer, chat: chat, journal: journal)
+            return try await withTools(turn, answer: answer, chat: chat, chats: chats, journal: journal)
         }
         guard let answer else {
             let text = try await chat.send(
@@ -96,9 +123,10 @@ enum LiteRTTurn {
         return try parse(text)
     }
 
-    private static func withTools(_ turn: ModelTurn, answer: JSONSchema.Node?, chat: any LiteRTChat, journal: Journal)
-        async throws(ModelRuntimeError) -> JSONValue
-    {
+    private static func withTools(
+        _ turn: ModelTurn, answer: JSONSchema.Node?, chat first: any LiteRTChat, chats: Chats, journal: Journal
+    ) async throws(ModelRuntimeError) -> JSONValue {
+        var chat = first
         let calling = JSONSchema.text(step(tools: turn.tools, answer: answer))
         let answering = JSONSchema.text(step(tools: [], answer: answer))
         let done = journal.rounds
@@ -134,18 +162,30 @@ enum LiteRTTurn {
                 let result = await tool.call(arguments)
                 message = "\(name) returned:\n\(result)"
                 journal.record(Journal.Round(written: text, reply: message))
+                // Before a conversation reads on after the model thought,
+                // LiteRT-LM winds it back past the thinking, and for
+                // Gemma's per-layer embeddings that fails ("No per-layer
+                // embeddings found in inputs", LiteRT-LM issue 3947). So
+                // the turn carries on in a new conversation told what it
+                // did, with the photos and recordings again.
+                if thinks {
+                    chat = try await chats.new()
+                    message = resumed(turn.prompt, after: journal.rounds)
+                    attachments = turn.attachments
+                }
             }
         }
         throw .decodingFailure
     }
 
-    /// The prompt of a turn starting again after `rounds`, in a new
-    /// conversation that hasn't seen them.
+    /// The prompt of a turn carrying on after `rounds` in a new
+    /// conversation that hasn't seen them, as after Lifr went to the
+    /// background or the model thought.
     static func resumed(_ prompt: String, after rounds: [Journal.Round]) -> String {
         var parts = [
             prompt,
-            "You started answering this before, and Lifr had to stop. Here is what you did; it's done and "
-                + "saved, so don't do it again. Carry on from there.",
+            "You started answering this already. Here is what you did; it's done and saved, so don't do it "
+                + "again. Carry on from there.",
         ]
         for round in rounds {
             parts.append("You wrote: \(round.written)\n\(round.reply)")

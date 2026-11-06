@@ -167,6 +167,41 @@ final class LiteRTTurnTests: XCTestCase {
         XCTAssertEqual(thoughts.value.last?.duration, .seconds(2))
     }
 
+    /// LiteRT-LM can't read on in a conversation whose model thought, so
+    /// the turn carries on in a new one that knows what happened.
+    func testAToolTurnThatThoughtCarriesOnInANewConversation() async throws {
+        let tool = ModelTool(name: "overview", description: "", parameters: []) { _ in "HOME-0001 Buy milk" }
+        let chat = FakeChat([#"{"tool":"overview","arguments":{}}"#, #"{"answer":"Buy milk."}"#])
+        let engine = FakeEngine(chat: chat)
+        let photo = [ModelAttachment(.image, file: URL(filePath: "/a.jpg"))]
+        var turn = ModelTurn(instructions: "Be brief.", prompt: "What's due?", tools: [tool], attachments: photo)
+        turn.thinking = { _ in }
+
+        let answer = try await LiteRTTurn.respond(to: turn, on: engine) { _ in }
+
+        XCTAssertEqual(answer, .string("Buy milk."))
+        XCTAssertEqual(engine.instructions.value.count, 2)
+        XCTAssertEqual(engine.instructions.value.first, engine.instructions.value.last)
+        let carried = try XCTUnwrap(chat.sent.value.last)
+        XCTAssertTrue(carried.message.hasPrefix("What's due?"))
+        XCTAssertTrue(carried.message.contains("HOME-0001 Buy milk"))
+        XCTAssertEqual(carried.attachments, photo)
+        XCTAssertFalse(carried.thinks)
+    }
+
+    func testAToolTurnThatDidntThinkStaysInOneConversation() async throws {
+        let tool = ModelTool(name: "overview", description: "", parameters: []) { _ in "Nothing's due." }
+        let chat = FakeChat([#"{"tool":"overview","arguments":{}}"#, #"{"answer":"Nothing."}"#])
+        let engine = FakeEngine(chat: chat)
+
+        _ = try await LiteRTTurn.respond(
+            to: ModelTurn(instructions: "", prompt: "What's due?", tools: [tool]), on: engine
+        ) { _ in }
+
+        XCTAssertEqual(engine.instructions.value.count, 1)
+        XCTAssertEqual(chat.sent.value.last?.message, "overview returned:\nNothing's due.")
+    }
+
     func testAPlainAnswerWithToolsIsItsText() async throws {
         let tool = ModelTool(name: "overview", description: "", parameters: []) { _ in "" }
         let chat = FakeChat([#"{"answer":"Nothing's due."}"#])
