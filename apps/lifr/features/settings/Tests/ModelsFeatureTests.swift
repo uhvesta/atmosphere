@@ -36,7 +36,23 @@ final class ModelsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.downloadable.map(\.id), [ModelCatalog.gemma4E2B.id, ModelCatalog.gemma4E4B.id])
         XCTAssertEqual(store.state.choices.map(\.id), [.apple, ModelCatalog.gemma4E2B.id])
         XCTAssertEqual(store.state.selected(for: .assistant), ModelCatalog.gemma4E2B.id)
+        XCTAssertEqual(store.state.selected(for: .titles), ModelCatalog.gemma4E2B.id)
+        await store.skipInFlightEffects()
+    }
+
+    func testUsesNotPickedFollowTheAssistantsModel() async {
+        let library = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B])
+        let store = await models(library)
+        store.exhaustivity = .off
+
+        await store.send(.picked(ModelCatalog.gemma4E2B.id, for: .assistant))
+        await store.receive(\.selectionChanged)
+        XCTAssertEqual(store.state.selected(for: .titles), ModelCatalog.gemma4E2B.id)
+
+        await store.send(.picked(.apple, for: .titles))
+        await store.receive(\.selectionChanged)
         XCTAssertEqual(store.state.selected(for: .titles), .apple)
+        XCTAssertEqual(store.state.selected(for: .skills), ModelCatalog.gemma4E2B.id)
         await store.skipInFlightEffects()
     }
 
@@ -49,6 +65,7 @@ final class ModelsFeatureTests: XCTestCase {
 
         XCTAssertEqual(library.client.selection(.skills), ModelCatalog.gemma4E2B.id)
         XCTAssertEqual(library.client.selection(.assistant), .apple)
+        await store.skipReceivedActions()
         await store.skipInFlightEffects()
     }
 

@@ -354,21 +354,31 @@ package final class ModelLibrary: Sendable {
             }
         }
         board.update { $0[id] = nil }
-        let uses = state.value.selection.filter { $0.value == id }.keys
-        for use in uses { select(.apple, for: use) }
+        let selection = state.withValue { state in
+            for (use, selected) in state.selection where selected == id { state.selection[use] = nil }
+            return state.selection
+        }
+        save(selection)
     }
 
     // MARK: Selection
 
+    /// Uses the person hasn't picked a model for run on the assistant's.
     package func selection(for use: ModelUse) -> ModelID {
-        state.value.selection[use] ?? .apple
+        use.model(in: state.value.selection)
     }
 
     package func select(_ id: ModelID, for use: ModelUse) {
         let selection = state.withValue { state in
-            state.selection[use] = id == .apple ? nil : id
+            // Apple is the assistant's default, but naming or skills on
+            // Apple while the assistant runs elsewhere is a choice to keep.
+            state.selection[use] = use == .assistant && id == .apple ? nil : id
             return state.selection
         }
+        save(selection)
+    }
+
+    private func save(_ selection: [ModelUse: ModelID]) {
         try? prepare(root)
         try? JSONEncoder().encode(selection).write(to: selectionFile, options: .atomic)
     }

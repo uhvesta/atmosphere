@@ -147,7 +147,7 @@ package final class InMemoryModelLibrary: Sendable {
                 }
                 board.update { $0[id] = nil }
             },
-            selection: { [state] use in state.value.selection[use] ?? .apple },
+            selection: { [state] use in use.model(in: state.value.selection) },
             select: { [state] id, use in state.withValue { $0.selection[use] = id } }
         )
     }

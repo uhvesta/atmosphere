@@ -18,7 +18,13 @@ struct RenameView: View {
                         store.send(.suggestTapped)
                     } label: {
                         HStack {
-                            Label("Suggest with Apple Intelligence", systemImage: "apple.intelligence")
+                            if let suggester = store.suggester {
+                                Label(
+                                    "Suggest with \(suggester.name)",
+                                    systemImage: suggester.isApple ? "apple.intelligence" : "sparkles")
+                            } else {
+                                Label("Suggest a Name", systemImage: "sparkles")
+                            }
                             if store.suggesting {
                                 Spacer()
                                 ProgressView()
@@ -43,5 +49,6 @@ struct RenameView: View {
             }
         }
         .presentationDetents([.medium])
+        .task { await store.send(.task).finish() }
     }
 }

@@ -581,6 +581,8 @@ final class LiteRTRuntimeTests: XCTestCase {
         library.select(ModelCatalog.gemma4E2B.id, for: .assistant)
 
         XCTAssertEqual(runtimes.runtime(for: .assistant).status, .notDownloaded)
+        XCTAssertEqual(runtimes.runtime(for: .titles).status, .notDownloaded)
+        library.select(.apple, for: .titles)
         XCTAssertTrue(runtimes.runtime(for: .titles) is AppleRuntime)
     }
 }

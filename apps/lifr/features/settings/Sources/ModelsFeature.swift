@@ -56,6 +56,9 @@ package struct ModelsFeature {
         case loaded(installed: [InstalledModel], unfinished: [ModelSpec], selection: [ModelUse: ModelID])
         case downloadsChanged([ModelID: DownloadState])
         case picked(ModelID, for: ModelUse)
+        /// What each use runs on after a pick, as uses left unpicked
+        /// follow the assistant.
+        case selectionChanged([ModelUse: ModelID])
         case downloadTapped(ModelID)
         case downloaded(ModelID, Result<InstalledModel, ModelDownloadError>)
         case pauseTapped(ModelID)
@@ -100,7 +103,14 @@ package struct ModelsFeature {
 
             case .picked(let id, let use):
                 state.selection[use] = id
-                return .run { [library] _ in await library.select(id, use) }
+                return .run { [library] send in
+                    await library.select(id, use)
+                    await send(.selectionChanged(Self.selection(library)))
+                }
+
+            case .selectionChanged(let selection):
+                state.selection = selection
+                return .none
 
             case .downloadTapped(let id):
                 guard let spec = state.models.first(where: { $0.id == id }) else { return .none }
@@ -193,9 +203,11 @@ package struct ModelsFeature {
 
     private static func loaded(_ library: ModelLibraryClient) async -> Action {
         let installed = await library.installed()
-        var selection: [ModelUse: ModelID] = [:]
-        for use in ModelUse.allCases { selection[use] = library.selection(use) }
-        return .loaded(installed: installed, unfinished: await library.unfinished(), selection: selection)
+        return .loaded(installed: installed, unfinished: await library.unfinished(), selection: selection(library))
+    }
+
+    private static func selection(_ library: ModelLibraryClient) -> [ModelUse: ModelID] {
+        Dictionary(uniqueKeysWithValues: ModelUse.allCases.map { ($0, library.selection($0)) })
     }
 
     private func download(_ spec: ModelSpec) -> Effect<Action> {

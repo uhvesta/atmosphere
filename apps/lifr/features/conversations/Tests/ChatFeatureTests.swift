@@ -873,6 +873,26 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.suggesting)
     }
 
+    func testTheRenameSheetSaysWhichModelSuggestsTheName() async {
+        let library = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B])
+        let store = TestStore(initialState: RenameFeature.State(chat("Plan the week"))) {
+            RenameFeature()
+        } withDependencies: {
+            $0.models = library.client
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.receive(\.suggesterFound)
+        XCTAssertEqual(store.state.suggester?.name, ModelCatalog.apple.name)
+        XCTAssertEqual(store.state.suggester?.isApple, true)
+
+        await library.client.select(ModelCatalog.gemma4E2B.id, .assistant)
+        await store.send(.task)
+        await store.receive(\.suggesterFound)
+        XCTAssertEqual(store.state.suggester?.name, ModelCatalog.gemma4E2B.name)
+        XCTAssertEqual(store.state.suggester?.isApple, false)
+    }
+
     func testTheAssistantNamesANewConversationOnlyWhenTurnedOn() async throws {
         let store = list(.inMemory())
         await store.send(.newTapped)

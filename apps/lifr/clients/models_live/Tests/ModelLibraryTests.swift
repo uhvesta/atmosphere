@@ -285,6 +285,19 @@ final class ModelLibraryTests: XCTestCase {
         XCTAssertEqual(library().selection(for: .skills), "gemma-4-e2b")
         XCTAssertEqual(library().selection(for: .assistant), .apple)
     }
+
+    func testNamingAndSkillsRunOnTheAssistantsModelUntilPicked() {
+        let library = library()
+        library.select("gemma-4-e2b", for: .assistant)
+        XCTAssertEqual(library.selection(for: .titles), "gemma-4-e2b")
+        XCTAssertEqual(library.selection(for: .skills), "gemma-4-e2b")
+
+        library.select(.apple, for: .titles)
+        XCTAssertEqual(library.selection(for: .titles), .apple)
+        XCTAssertEqual(library.selection(for: .skills), "gemma-4-e2b")
+        library.select(.apple, for: .assistant)
+        XCTAssertEqual(library.selection(for: .skills), .apple)
+    }
 }
 
 extension Result {

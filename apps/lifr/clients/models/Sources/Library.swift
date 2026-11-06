@@ -166,6 +166,12 @@ package enum ModelUse: String, Hashable, Codable, Sendable, CaseIterable {
     case skills
     /// Naming conversations.
     case titles
+
+    /// The model this use runs on, given what the person picked: the
+    /// assistant's model, unless they picked another for this use.
+    package func model(in selection: [ModelUse: ModelID]) -> ModelID {
+        selection[self] ?? (self == .assistant ? .apple : ModelUse.assistant.model(in: selection))
+    }
 }
 
 /// Where a download is.
