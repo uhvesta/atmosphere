@@ -349,16 +349,16 @@ final class LiveAssistantTests: XCTestCase {
         let home = records.avenue("HOME", "Home")
         records.task("Pay rent", in: home)
         let found = LockIsolated("")
-        let model = ScriptedRuntime(steps: [
-            { turn, partial throws(ModelRuntimeError) in
-                guard let tool = turn.tools.first(where: { $0.name == "findTasks" }) else {
-                    throw .failed("no findTasks")
-                }
-                let result = await tool.call(["words": "rent"])
-                found.setValue(result)
-                return try await ScriptedRuntime.answer(["message": "You have one."])(turn, partial)
+        // Typed, not inferred in the array: Swift 6.4.2 crashes inferring it.
+        let step: ScriptedRuntime.Step = { turn, partial throws(ModelRuntimeError) in
+            guard let tool = turn.tools.first(where: { $0.name == "findTasks" }) else {
+                throw .failed("no findTasks")
             }
-        ])
+            let result = await tool.call(["words": "rent"])
+            found.setValue(result)
+            return try await ScriptedRuntime.answer(["message": "You have one."])(turn, partial)
+        }
+        let model = ScriptedRuntime(steps: [step])
 
         let (replies, error) = await replies(
             .live(runtime: { _ in model }), request("What's due?", workspace: records.workspace))
