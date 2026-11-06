@@ -134,16 +134,46 @@ extension AssistantPrompt {
         return phrases.count == 1 ? phrases.first : nil
     }
 
+    /// The date a change is to, from the model's `due`: a small model
+    /// often works out a date the person named as a day, such as next
+    /// Monday, and gets it wrong, so when it writes a date the last message
+    /// doesn't have, the one day that message names is used instead.
+    package static func dated(_ due: String?, _ request: AssistantRequest) -> String? {
+        guard let due, (try? CalendarDate(due)) != nil else { return due }
+        let text = (request.messages.last?.text ?? "").lowercased()
+        guard !text.contains(due) else { return due }
+        let words = text.split { !$0.isLetter }.map(String.init)
+        let today = CalendarDate(request.now, in: request.timeZone)
+        var named: [String] = []
+        for (index, word) in words.enumerated() {
+            let phrase = index > 0 && words[index - 1] == "next" ? "next " + word : word
+            guard dayWords.contains(word), CalendarDate.resolving(phrase, today: today) != nil,
+                !named.contains(phrase)
+            else { continue }
+            named.append(phrase)
+        }
+        return named.count == 1 ? named.first : due
+    }
+
+    /// The words that name a day by themselves.
+    private static let dayWords: Set<String> = [
+        "today", "tomorrow", "sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    ]
+
     /// The changes to the current plan's tasks in the model's whole answer,
     /// whose tasks are given by their number in `titles`, counting from 1,
     /// or by title. Changes that name none of them are left out.
     package static func draftChanges(
         from answer: JSONValue, titles: [String], _ request: AssistantRequest
     ) -> [DraftChange] {
-        (answer["draftChanges"]?.items ?? []).compactMap { change in
+        let items = answer["draftChanges"]?.items ?? []
+        let latest = items.count == 1 && meansTheLatest(request, titles: titles) ? titles.last : nil
+        return items.compactMap { change in
             guard let given = change["task"]?.text else { return nil }
             let task: String
-            if let number = Int(given), titles.indices.contains(number - 1) {
+            if let latest {
+                task = latest
+            } else if let number = Int(given), titles.indices.contains(number - 1) {
                 task = titles[number - 1]
             } else if let title = titles.first(where: { $0.caseInsensitiveCompare(given) == .orderedSame }) {
                 task = title
@@ -153,13 +183,30 @@ extension AssistantPrompt {
             return DraftChange(
                 task: task, remove: change["remove"]?.bool ?? false,
                 rename: renamed(task, to: change["rename"]?.text, request),
-                due: change["due"]?.text,
+                due: dated(change["due"]?.text, request),
                 // The model writes none for every change it makes, so none
                 // changes nothing.
                 priority: change["priority"]?.text.flatMap(Priority.init(rawValue:)).flatMap { $0 == .none ? nil : $0 },
                 moveTo: change["moveTo"]?.text)
         }
     }
+
+    /// Whether the last message changes "that" or "it" without saying which
+    /// task, such as "change that to friday": the one added last. A small
+    /// model often changes the first instead.
+    static func meansTheLatest(_ request: AssistantRequest, titles: [String]) -> Bool {
+        let words = lastWords(request)
+        let text = (request.messages.last?.text ?? "").lowercased()
+        // In a draft with Projects, the last title needn't be the newest.
+        return titles.count > 1 && request.draft?.projects.isEmpty == true && !words.isDisjoint(with: ["that", "it"])
+            && words.isDisjoint(with: whichTask) && !titles.contains { text.contains($0.lowercased()) }
+    }
+
+    /// Words that say which tasks a change is to.
+    private static let whichTask: Set<String> = [
+        "first", "second", "third", "fourth", "fifth", "last", "one", "ones", "all", "both", "them", "those",
+        "these", "each", "every",
+    ]
 
     /// The whole plan after a follow-up: the `draft` with `changes` made to
     /// its tasks, and the new things the model's `added` plan has. Nil when

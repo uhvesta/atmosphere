@@ -121,12 +121,18 @@ enum LiveAssistant {
         _ thoughts: Thoughts, saved: () -> Bool, _ continuation: AssistantReplies.Continuation
     ) async throws {
         tools.resultBudget = size.toolResultBudget
+        var forgot = false
         for attempt in 1...2 {
             do {
-                try await structured(request, size, tools, model, thoughts, continuation)
+                try await structured(request, size, tools, model, thoughts, forgot: forgot, continuation)
                 return
             } catch ModelRuntimeError.decodingFailure {
                 guard !saved() else { throw AssistantError.unreadable(saved: true) }
+                if attempt == 2 { break }
+            } catch is ForgotTasks {
+                // Asked the same way, a model that answers the same each
+                // time would forget them again.
+                forgot = true
                 if attempt == 2 { break }
             }
         }
@@ -140,22 +146,23 @@ enum LiveAssistant {
     /// One answer as a message and maybe a plan, with the tools.
     private static func structured(
         _ request: AssistantRequest, _ size: AssistantPrompt.Size, _ tools: AssistantTools, _ model: any ModelRuntime,
-        _ thoughts: Thoughts, _ continuation: AssistantReplies.Continuation
+        _ thoughts: Thoughts, forgot: Bool, _ continuation: AssistantReplies.Continuation
     ) async throws {
         let allowed = AssistantPrompt.tools(request, size: size)
         let changeable = AssistantPrompt.changeable(request)
         let draftTitles = AssistantPrompt.draftTitles(request)
         let asksForPlan = request.draftsPlans && AssistantPrompt.asksForPlan(request)
         let asksToAdd = AssistantPrompt.asksToAdd(request)
+        let mustPlan = asksForPlan && (draftTitles.isEmpty || asksToAdd)
         var turn = ModelTurn(
             instructions: AssistantPrompt.instructions(request, size: size),
-            prompt: AssistantPrompt.prompt(request, size: size),
+            prompt: AssistantPrompt.prompt(request, size: size) + (forgot ? Self.forgotTasks : ""),
             tools: AssistantTool.allCases.filter(allowed.contains).compactMap { $0.definition(tools) },
             schema: Shapes.turn(
                 changes: changeable.map(\.code), places: request.lookup.places.flatMap(\.choices),
                 draftTitles: draftTitles, mustChange: AssistantPrompt.asksForChange(request),
                 mustChangeDraft: asksForPlan && !asksToAdd,
-                mustPlan: asksForPlan && (draftTitles.isEmpty || asksToAdd)),
+                mustPlan: mustPlan),
             schemaInPrompt: size.schemaInPrompt,
             attachments: request.attachments)
         let draftsPlans = request.draftsPlans
@@ -172,6 +179,7 @@ enum LiveAssistant {
                 if let old = changeable.first(where: { $0.code == change.code })?.title {
                     change.title = AssistantPrompt.renamed(old, to: change.title, request)
                 }
+                change.due = AssistantPrompt.dated(change.due, request)
                 do {
                     changed.append(try await tools.change(change))
                 } catch {
@@ -180,6 +188,12 @@ enum LiveAssistant {
             }
         }
         var reply = AssistantPrompt.reply(from: answer, isComplete: true, draftsPlans: draftsPlans)
+        // Asked to add something, a small model sometimes writes back an
+        // Avenue that's there already and none of the tasks, and says it
+        // added them. Told so, it usually writes them.
+        if mustPlan, changed.isEmpty, refused.isEmpty, reply.plan?.leavingOut(request.workspace).isEmpty ?? true {
+            throw ForgotTasks()
+        }
         reply.plan = reply.plan.map {
             AssistantPrompt.withoutRestatedGoals(AssistantPrompt.withAskedProjects($0, request), request)
         }
@@ -192,6 +206,18 @@ enum LiveAssistant {
         continuation.yield(AssistantPrompt.reply(reply, changed: changed, refused: refused))
         continuation.finish()
     }
+
+    /// Added to the prompt when asking again after an answer that added
+    /// none of what the person asked for.
+    private static let forgotTasks = """
+
+
+        Your last answer added none of what the person asked for. Put each new task they asked for in the \
+        plan's "tasks", even when it goes in an Avenue that's there already.
+        """
+
+    /// An answer that was asked for new things and added none of them.
+    private struct ForgotTasks: Error {}
 
     /// One answer as plain text, without tools or a plan: what's left when
     /// the structured answer can't be read.

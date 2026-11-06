@@ -336,7 +336,8 @@ final class PhoneFlowSnapshotTests: XCTestCase {
 
     /// Adding to a draft, then changing and removing one of its tasks. The
     /// model writes the draft's task again with the new one, and changes
-    /// it by number with a priority of none it wasn't asked for.
+    /// it by number with a priority of none it wasn't asked for, and the
+    /// first task for "that".
     func testAssistantFollowUpEdits() async throws {
         let (store, flow) = app(
             "assistant-follow-up-edits",
@@ -352,9 +353,10 @@ final class PhoneFlowSnapshotTests: XCTestCase {
                     ],
                     "message": "I added a task to buy eggs in HOME.",
                 ],
+                // Gemma changes the first task for "that", the one added last.
                 [
-                    "draftChanges": [["task": "2", "due": "Friday", "priority": "none", "remove": false]],
-                    "message": "I moved buy eggs to Friday.",
+                    "draftChanges": [["task": "1", "due": "Friday", "priority": "none", "remove": false]],
+                    "message": "I moved buy milk to Friday.",
                 ],
                 [
                     "draftChanges": [["task": "2", "remove": true, "priority": "none"]],
@@ -456,6 +458,68 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.tap("Add")
         await flow.step("garden-added", image: false)
         XCTAssertNotNil(store.workspace?.avenues.values.first { $0.key.rawValue == "GARDEN" }, "Garden wasn't added")
+        flow.finish()
+    }
+
+    /// Adding an urgent task, where the model first writes back only the
+    /// WORK Avenue that's there already and says it added the task: Lifr
+    /// asks again, and the draft has the task.
+    func testAssistantAsksAgainForForgottenTasks() async throws {
+        let (store, flow) = app(
+            "assistant-forgotten-tasks",
+            assistant: gemma([
+                [
+                    "plan": ["avenues": [["name": "Work", "key": "WORK"]]],
+                    "message": "I have added an urgent task to your WORK avenue titled 'file my taxes'.",
+                ],
+                [
+                    "plan": [
+                        "tasks": [["title": "file my taxes", "place": "WORK", "priority": "urgent"]],
+                        "avenues": [["key": "WORK", "name": "Work"]],
+                    ],
+                    "message": "I have added an urgent task to file my taxes under the WORK avenue for you.",
+                ],
+            ]))
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        // Once the chat has the records, so it knows WORK is there.
+        await flow.step("new-chat", image: false)
+        send("Add an urgent task to file my taxes, in WORK", in: id, of: store)
+        await flow.step("draft")
+        let chat = try XCTUnwrap(store.conversations.chats[id: id])
+        XCTAssertEqual(chat.conversation.draft?.tasks.map(\.title), ["file my taxes"])
+        XCTAssertEqual(chat.conversation.draft?.tasks.first?.priority, .urgent)
+        XCTAssertEqual(chat.conversation.draft?.avenues, [])
+        flow.tap("Add")
+        await flow.step("added", image: false)
+        let added = store.workspace?.tasks.values.first { $0.title == "file my taxes" }
+        XCTAssertEqual(added?.priority, .urgent)
+        flow.finish()
+    }
+
+    /// Pushing a task to next Monday, where the model works the date out
+    /// as the Saturday before: the task is due the Monday the person named.
+    func testAssistantReschedulesToTheDayNamed() async throws {
+        let workspace = Workspace.sample(now: now, timeZone: .gmt)
+        let plumber = try XCTUnwrap(workspace.tasks.values.first { $0.title == "Call the plumber" })
+        let code = JSONValue.string(workspace.displayCode(of: plumber))
+        let (store, flow) = app(
+            "assistant-reschedule", workspace: workspace,
+            assistant: gemma([
+                [
+                    "changes": [["code": code, "due": "2026-11-07"]],
+                    "message": "I moved Call the plumber to next Monday.",
+                ]
+            ]))
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        await flow.step("new-chat", image: false)
+        send("Push “Call the plumber” to next Monday", in: id, of: store)
+        await flow.step("rescheduled")
+        let task = store.workspace?.tasks.values.first { $0.title == "Call the plumber" }
+        XCTAssertEqual(task?.dueDate?.description, "2026-11-09")
         flow.finish()
     }
 

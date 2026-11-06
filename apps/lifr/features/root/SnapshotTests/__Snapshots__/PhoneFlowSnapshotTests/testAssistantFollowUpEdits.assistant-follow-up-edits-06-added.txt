@@ -6,7 +6,7 @@
 [text] "Also add buy eggs"
 [text] "I added a task to buy eggs in HOME."
 [text] "Change that to Friday"
-[text] "I moved buy eggs to Friday."
+[text] "I moved buy milk to Friday."
 [text] "Remove the second one"
 [text] "I took buy eggs out of the plan."
 [button] "Undo"

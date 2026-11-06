@@ -94,6 +94,39 @@ final class FollowUpTests: XCTestCase {
         XCTAssertNil(AssistantPrompt.renamed("Call the plumber", to: nil, request))
     }
 
+    func testChangingThatIsToTheTaskAddedLast() {
+        let draft = Plan(tasks: [.init(title: "buy milk", place: "HOME"), .init(title: "buy eggs", place: "HOME")])
+        let answer: JSONValue = ["draftChanges": [["task": "1", "due": "friday"]]]
+        let titles = ["buy milk", "buy eggs"]
+
+        let that = AssistantPrompt.draftChanges(
+            from: answer, titles: titles, request("Change that to Friday", draft: draft))
+        XCTAssertEqual(that.map(\.task), ["buy eggs"])
+        let first = AssistantPrompt.draftChanges(
+            from: answer, titles: titles, request("Change the first one to Friday", draft: draft))
+        XCTAssertEqual(first.map(\.task), ["buy milk"])
+        let named = AssistantPrompt.draftChanges(
+            from: answer, titles: titles, request("Change buy milk, that's for Friday", draft: draft))
+        XCTAssertEqual(named.map(\.task), ["buy milk"])
+    }
+
+    // MARK: - Dates
+
+    func testADateWorkedOutWrongIsTheDayThePersonNamed() throws {
+        let request = request("Push “Book physio appointment” to next Monday")
+        let due = try XCTUnwrap(AssistantPrompt.dated("2026-11-07", request))
+
+        XCTAssertEqual(CalendarDate.resolving(due, today: CalendarDate(now, in: .gmt))?.description, "2026-11-09")
+    }
+
+    func testADateThePersonGaveOrNoSingleDayStaysAsWritten() {
+        XCTAssertEqual(AssistantPrompt.dated("2026-11-07", request("Move it to 2026-11-07")), "2026-11-07")
+        XCTAssertEqual(AssistantPrompt.dated("2026-11-07", request("Move it to Friday or Monday")), "2026-11-07")
+        XCTAssertEqual(AssistantPrompt.dated("2026-11-07", request("Move it to next week")), "2026-11-07")
+        XCTAssertEqual(AssistantPrompt.dated("friday", request("Move it to Monday")), "friday")
+        XCTAssertNil(AssistantPrompt.dated(nil, request("Move it to Monday")))
+    }
+
     // MARK: - What a message asks for
 
     func testAddingAndChangingMessagesAskForAPlanButQuestionsDont() {

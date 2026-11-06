@@ -6,7 +6,7 @@
 [text] "Also add buy eggs"
 [text] "I added a task to buy eggs in HOME."
 [text] "Change that to Friday"
-[text] "I moved buy eggs to Friday."
+[text] "I moved buy milk to Friday."
 [header, text] "Draft"
 [text] "2 tasks"
 [text] "buy milk, Home"

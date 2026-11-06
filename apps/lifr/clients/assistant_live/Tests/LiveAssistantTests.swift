@@ -100,6 +100,44 @@ final class LiveAssistantTests: XCTestCase {
         XCTAssertTrue(model.turns.allSatisfy { $0.schema != nil })
     }
 
+    func testAPlanOfOnlyWhatsThereAlreadyIsAskedForAgain() async {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        _ = records.avenue("HOME", "Home")
+        let model = ScriptedRuntime(steps: [
+            ScriptedRuntime.answer([
+                "message": "I added buy milk to HOME.", "plan": ["avenues": [["key": "HOME", "name": "Home"]]],
+            ]),
+            ScriptedRuntime.answer([
+                "message": "I added buy milk to HOME.", "plan": ["tasks": [["title": "buy milk", "place": "HOME"]]],
+            ]),
+        ])
+
+        let (replies, error) = await replies(
+            .live(runtime: { _ in model }), request("Add a task to buy milk, in HOME", workspace: records.workspace))
+
+        XCTAssertNil(error)
+        XCTAssertEqual(replies.last?.plan?.tasks.map(\.title), ["buy milk"])
+        XCTAssertEqual(model.turns.count, 2)
+        XCTAssertNotEqual(model.turns.first?.prompt, model.turns.last?.prompt, "Asked the same way again")
+    }
+
+    func testAPlanTheModelKeepsLeavingEmptyEndsInPlainText() async {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        _ = records.avenue("HOME", "Home")
+        let empty: JSONValue = ["message": "Added it.", "plan": ["avenues": [["key": "HOME", "name": "Home"]]]]
+        let model = ScriptedRuntime(steps: [
+            ScriptedRuntime.answer(empty), ScriptedRuntime.answer(empty),
+            ScriptedRuntime.answer("I couldn't make a plan. Try asking again."),
+        ])
+
+        let (replies, error) = await replies(
+            .live(runtime: { _ in model }), request("Add a task to buy milk, in HOME", workspace: records.workspace))
+
+        XCTAssertNil(error)
+        XCTAssertNil(replies.last?.plan)
+        XCTAssertEqual(model.turns.count, 3)
+    }
+
     func testTwoUnreadableAnswersFallBackToPlainText() async {
         let model = ScriptedRuntime(steps: [
             ScriptedRuntime.fail(.decodingFailure), ScriptedRuntime.fail(.decodingFailure),
