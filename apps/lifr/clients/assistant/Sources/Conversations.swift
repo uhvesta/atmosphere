@@ -53,6 +53,25 @@ package struct Conversation: Identifiable, Hashable, Codable, Sendable {
     package var updatedAt: Date { (messages + hidden).map(\.at).max() ?? createdAt }
 
     package var isArchived: Bool { archivedAt != nil }
+
+    /// Whether `query` is in its name, or else the newest message that has
+    /// it, on any branch, ignoring case and accents. Nil when it isn't in
+    /// either, or `query` is blank.
+    package func match(_ query: String) -> Match? {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return nil }
+        let has = { (text: String) in text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil }
+        if let name, has(name) { return Match(message: nil) }
+        let newestFirst = (messages + hidden).sorted { $0.at > $1.at }
+        return newestFirst.first { has($0.text) }.map { Match(message: $0) }
+    }
+
+    /// Where a search found a conversation.
+    package struct Match: Hashable, Sendable {
+        /// The message that has what was searched for; nil when its name
+        /// does.
+        package var message: ChatMessage?
+    }
 }
 
 extension Conversation {

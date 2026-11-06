@@ -606,6 +606,19 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         XCTAssertNotEqual(fork, id)
         XCTAssertEqual(
             store.conversations.chats[id: fork]?.conversation.messages.map(\.text), shown.prefix(2).map(\.text))
+
+        // Searching the list finds the reply on the branch not shown, and
+        // opens the chat on it.
+        store.send(.conversations(.closed))
+        store.send(.conversations(.searched("saturday")))
+        await flow.step("search")
+        let found = try XCTUnwrap(store.conversations.found.first)
+        XCTAssertEqual(store.conversations.found.map(\.id), [id])
+        store.send(.conversations(.foundTapped(found.id, messageID: found.message?.id)))
+        await flow.step("found")
+        XCTAssertEqual(
+            store.conversations.chats[id: id]?.conversation.messages.last?.text,
+            "Saturday morning suits the garden; leave the afternoon free.")
         flow.finish()
     }
 

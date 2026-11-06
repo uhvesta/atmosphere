@@ -21,6 +21,8 @@ package struct ConversationsFeature {
         package var openID: UUID?
         /// Whether the archive is on screen.
         package var showsArchive = false
+        /// What's searched for in the main list's names and messages.
+        package var query = ""
         @Presents package var rename: RenameFeature.State?
         @Presents package var confirm: ConfirmationDialogState<Confirm>?
         @Presents package var alert: AlertState<Never>?
@@ -38,6 +40,14 @@ package struct ConversationsFeature {
         package var sorted: [Conversation] {
             conversations.filter { !$0.isArchived }
                 .sorted { ($0.updatedAt, $0.id.uuidString) > ($1.updatedAt, $1.id.uuidString) }
+        }
+
+        /// The main list's conversations that have the query, newest first,
+        /// with where.
+        package var found: [Found] {
+            sorted.compactMap { conversation in
+                conversation.match(query).map { Found(conversation: conversation, message: $0.message) }
+            }
         }
 
         /// The archive, most recently archived first.
@@ -93,6 +103,20 @@ package struct ConversationsFeature {
         }
     }
 
+    /// A conversation a search found, and the message that has what was
+    /// searched for; nil when its name does.
+    package struct Found: Identifiable, Equatable {
+        package var conversation: Conversation
+        package var message: ChatMessage?
+
+        package var id: UUID { conversation.id }
+
+        package init(conversation: Conversation, message: ChatMessage? = nil) {
+            self.conversation = conversation
+            self.message = message
+        }
+    }
+
     package enum Confirm: Equatable, Sendable {
         case delete(UUID)
         case deleteArchived
@@ -103,6 +127,10 @@ package struct ConversationsFeature {
         case loaded(Result<[Conversation], any Error>)
         case newTapped
         case opened(UUID)
+        case searched(String)
+        /// Opens a conversation a search found, on the branch with the
+        /// message `messageID` when there is one.
+        case foundTapped(UUID, messageID: UUID?)
         /// The chat on screen was left.
         case closed
         /// Lifr is back on screen: replies the system stopped go again.
@@ -175,6 +203,25 @@ package struct ConversationsFeature {
                 guard let conversation = state.conversations[id: id] else { return .none }
                 state.open(conversation)
                 return .none
+
+            case .searched(let query):
+                state.query = query
+                return .none
+
+            case .foundTapped(let id, let messageID):
+                guard var conversation = state.conversations[id: id] else { return .none }
+                // A chat writing a reply stays where it is.
+                guard let messageID, state.chats[id: id]?.canGo ?? true,
+                    !conversation.messages.contains(where: { $0.id == messageID })
+                else {
+                    state.open(conversation)
+                    return .none
+                }
+                conversation.go(to: conversation.newest(through: messageID))
+                state.conversations[id: id] = conversation
+                state.chats[id: id]?.conversation = conversation
+                state.open(conversation)
+                return save(conversation)
 
             case .closed:
                 state.openID = nil

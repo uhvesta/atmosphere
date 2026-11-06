@@ -67,14 +67,22 @@ package struct ConversationsView: View {
         #endif
     }
 
+    /// The conversations shown: those that have what's searched for, and
+    /// where, while there's a search.
+    private var shown: [ConversationsFeature.Found] {
+        store.query.isEmpty ? store.state.sorted.map { .init(conversation: $0) } : store.state.found
+    }
+
     private var list: some View {
         List {
-            ForEach(store.state.sorted) { conversation in
+            ForEach(shown) { found in
+                let conversation = found.conversation
                 Button {
-                    store.send(.opened(conversation.id))
+                    store.send(.foundTapped(conversation.id, messageID: found.message?.id))
                 } label: {
                     ConversationRow(
-                        conversation: conversation, replying: store.chats[id: conversation.id]?.replying != nil)
+                        conversation: conversation, replying: store.chats[id: conversation.id]?.replying != nil,
+                        found: found.message, query: store.query)
                 }
                 .buttonStyle(.plain)
                 #if os(macOS)
@@ -96,8 +104,13 @@ package struct ConversationsView: View {
                 }
             }
         }
+        .searchable(
+            text: Binding(get: { store.query }, set: { store.send(.searched($0)) }), prompt: "Search conversations"
+        )
         .overlay {
-            if store.state.sorted.isEmpty {
+            if !store.query.isEmpty, shown.isEmpty {
+                ContentUnavailableView.search(text: store.query)
+            } else if store.state.sorted.isEmpty {
                 ContentUnavailableView {
                     Label("No conversations", systemImage: "bubble.left.and.text.bubble.right")
                 } description: {
@@ -175,10 +188,26 @@ struct ArchivedConversationsView: View {
 private struct ConversationRow: View {
     var conversation: Conversation
     var replying: Bool
+    /// The message a search found, shown from what was searched for.
+    var found: ChatMessage?
+    var query = ""
 
-    /// The last thing said, to tell conversations apart.
+    /// The message a search found, or else the last thing said, to tell
+    /// conversations apart.
     private var preview: ChatMessage? {
-        conversation.messages.last { !$0.text.isEmpty }
+        found ?? conversation.messages.last { !$0.text.isEmpty }
+    }
+
+    /// `preview`'s text, from a little before what was searched for when
+    /// that's further in.
+    private var previewText: String {
+        guard let preview else { return "" }
+        let text = preview.text
+        guard found != nil,
+            let range = text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]),
+            text.distance(from: text.startIndex, to: range.lowerBound) > 40
+        else { return text }
+        return "…" + text[text.index(range.lowerBound, offsetBy: -30)...]
     }
 
     var body: some View {
@@ -198,7 +227,7 @@ private struct ConversationRow: View {
                         .font(.subheadline)
                         .foregroundStyle(.tint)
                 } else if let preview {
-                    Text(preview.text)
+                    Text(previewText)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)

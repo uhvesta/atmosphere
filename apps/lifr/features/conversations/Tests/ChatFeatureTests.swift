@@ -1024,6 +1024,47 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertNil(saved.first { $0.id == first.id }?.archivedAt)
     }
 
+    func testSearchingFindsConversationsByNameOrMessage() async throws {
+        let milk = chat("Buy milk")
+        var trip = chat("Plan the trip")
+        trip.name = "Milk run"
+        let other = chat("Call mum")
+        let store = list(.inMemory([milk, trip, other]))
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        await store.send(.searched("milk"))
+        XCTAssertEqual(Set(store.state.found.map(\.id)), [milk.id, trip.id])
+        XCTAssertNil(store.state.found.first { $0.id == trip.id }?.message, "Its name has it")
+        XCTAssertNotNil(store.state.found.first { $0.id == milk.id }?.message)
+
+        await store.send(.searched(""))
+        XCTAssertTrue(store.state.found.isEmpty)
+    }
+
+    func testOpeningAMessageFoundOnAnotherBranchShowsThatBranch() async throws {
+        var trip = chat("Plan the trip")
+        let hotel = ChatMessage(id: UUID(), role: .person, text: "Book a hotel", at: now.addingTimeInterval(1))
+        trip.append(hotel)
+        let first = try XCTUnwrap(trip.messages.first)
+        trip.go(to: first.id)
+        trip.append(ChatMessage(id: UUID(), role: .person, text: "Book a flight", at: now.addingTimeInterval(2)))
+        let kept = ConversationsClient.inMemory([trip])
+        let store = list(kept)
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        await store.send(.searched("hotel"))
+        let found = try XCTUnwrap(store.state.found.first)
+        await store.send(.foundTapped(found.id, messageID: found.message?.id))
+        await store.finish()
+
+        XCTAssertEqual(store.state.openID, trip.id)
+        XCTAssertEqual(store.state.chat?.conversation.messages.map(\.text), ["Plan the trip", "Book a hotel"])
+        let saved = try await kept.load()
+        XCTAssertEqual(saved.first?.messages.last?.id, hotel.id)
+    }
+
     func testArchivingTheOpenChatClosesIt() async throws {
         let first = chat("First")
         let store = list(.inMemory([first]))

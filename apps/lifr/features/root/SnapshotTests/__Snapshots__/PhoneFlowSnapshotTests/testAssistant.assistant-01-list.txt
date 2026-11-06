@@ -1,6 +1,7 @@
 [button] "New conversation"
 [button] "More"
 [header] "Conversations"
+[searchField] "Search conversations" value: "Search conversations"
 [text] "No conversations"
 [text] "Ask about your tasks, change them, or plan what to add."
 [button] "New conversation"
