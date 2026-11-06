@@ -28,6 +28,10 @@ import XCTest
 /// away again.
 @MainActor
 final class AssistantOnRealModelTests: XCTestCase {
+    override func setUp() async throws {
+        try FlowRecorder.checkScreen()
+    }
+
     /// Asking for a task: the reply and its draft, fixing the draft, adding
     /// it, then Undo.
     func testAReplyItsDraftAndUndo() async throws {

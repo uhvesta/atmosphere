@@ -95,6 +95,25 @@
                 testName: testName, line: line)
         }
 
+        /// Throws when flows can't run here: while the screen is locked,
+        /// macOS hides the session's windows, from the accessibility tree
+        /// too, so every step would fail. Call it from the test's `setUp`.
+        package static func checkScreen() throws(ScreenError) {
+            let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+            if session?["CGSSessionScreenIsLocked"] as? Bool == true { throw .locked }
+        }
+
+        package enum ScreenError: LocalizedError, CustomStringConvertible {
+            case locked
+
+            package var errorDescription: String? { description }
+
+            package var description: String {
+                "the screen is locked, and macOS hides a locked session's windows from the test. Unlock the Mac "
+                    + "and run the test again."
+            }
+        }
+
         /// Ends the flow, closing its windows.
         package func finish() {
             for window in windows where window !== self.window { window.orderOut(nil) }

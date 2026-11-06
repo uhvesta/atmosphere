@@ -23,6 +23,10 @@ import XCTest
 /// read in order.
 @MainActor
 final class MacFlowSnapshotTests: XCTestCase {
+    override func setUp() async throws {
+        try FlowRecorder.checkScreen()
+    }
+
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
     /// The time the app thinks it is, which a flow can move on.
     private let time = LockIsolated(Date(timeIntervalSince1970: 1_793_700_000))
