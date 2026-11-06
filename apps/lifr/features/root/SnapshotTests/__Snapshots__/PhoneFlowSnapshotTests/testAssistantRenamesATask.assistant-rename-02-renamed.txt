@@ -4,6 +4,7 @@
 [text] "Rename “Call the plumber” to “Call the electrician”"
 [text] "I renamed the task to Call the electrician."
 [button] "Undo"
+[button] "Retry" hint: "Write this reply again"
 [text] "Changed “Call the electrician”"
 [button] "Undo"
 [button] "Use a Skill"

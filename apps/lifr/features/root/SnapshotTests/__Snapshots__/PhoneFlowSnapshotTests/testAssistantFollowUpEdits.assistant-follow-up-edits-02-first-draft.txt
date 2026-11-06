@@ -3,6 +3,7 @@
 [header] "Add a task to buy milk, in HOME"
 [text] "Add a task to buy milk, in HOME"
 [text] "I added a task to buy milk in HOME."
+[button] "Retry" hint: "Write this reply again"
 [header, text] "Draft"
 [text] "1 task"
 [text] "buy milk, Home"

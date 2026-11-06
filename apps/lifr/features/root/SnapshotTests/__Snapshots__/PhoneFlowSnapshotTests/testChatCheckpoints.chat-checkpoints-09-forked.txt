@@ -3,6 +3,7 @@
 [header] "What should I do first? (fork)"
 [text] "What should I do first?"
 [text] "Start with the urgent tasks, then the ones due this week."
+[button] "Retry" hint: "Write this reply again"
 [button] "Use a Skill"
 [button, notEnabled] "Send"
 [element] "" value: "Message"

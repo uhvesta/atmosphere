@@ -130,7 +130,10 @@ package struct ChatView: View {
                             select: { selecting = TextToSelect(text: $0) }
                         )
                         .contextMenu { messageMenu(for: message) }
-                        if message.role == .person { branches(at: message) }
+                        branches(at: message)
+                        if message.id == store.conversation.messages.last?.id, store.replying == nil {
+                            after(message)
+                        }
                     }
                 }
                 if let replying = store.replying {
@@ -198,8 +201,36 @@ package struct ChatView: View {
         .padding(.vertical, 8)
     }
 
-    /// ‹ 2/3 › under a message written again after going back, to show
-    /// the others.
+    /// Under the last message: Retry for a reply, and for the person's
+    /// message, why its reply didn't come.
+    @ViewBuilder private func after(_ message: ChatMessage) -> some View {
+        let retry = Button("Retry", systemImage: "arrow.clockwise") {
+            store.send(.retryTapped(messageID: message.id))
+        }
+        .disabled(!store.state.canRetry(message))
+        if message.role == .assistant {
+            retry
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help("Write this reply again")
+        } else if store.waiting == nil {
+            VStack(alignment: .leading, spacing: 6) {
+                Label(
+                    store.failure?.reason ?? String(localized: "No reply came to this message."),
+                    systemImage: "exclamationmark.triangle"
+                )
+                .foregroundStyle(.secondary)
+                if store.state.canRetry(message) { retry.buttonStyle(.bordered) }
+            }
+            .font(.callout)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// ‹ 2/3 › under a message or reply written again, to show the others.
     @ViewBuilder private func branches(at message: ChatMessage) -> some View {
         let branches = store.conversation.branches(at: message.id)
         if branches.count > 1, let index = branches.firstIndex(where: { $0.id == message.id }) {
@@ -223,11 +254,19 @@ package struct ChatView: View {
         }
     }
 
-    /// Copying a message, going back to it and forking from it.
+    /// Copying a message, editing it or writing its reply again, going back
+    /// to it and forking from it.
     @ViewBuilder private func messageMenu(for message: ChatMessage) -> some View {
         if !message.text.isEmpty {
             TextMenu(text: message.text) { selecting = TextToSelect(text: $0) }
             Divider()
+        }
+        if message.role == .person {
+            Button("Edit", systemImage: "pencil") { store.send(.editTapped(messageID: message.id)) }
+                .disabled(!store.canGo)
+        } else {
+            Button("Retry", systemImage: "arrow.clockwise") { store.send(.retryTapped(messageID: message.id)) }
+                .disabled(!store.state.canRetry(message))
         }
         let end = store.conversation.end(of: message.id)
         if end != store.conversation.messages.last?.id {
@@ -266,6 +305,16 @@ package struct ChatView: View {
     /// attached to the next message.
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if store.editing != nil {
+                HStack {
+                    Label("Editing your message. Sending it writes the reply again.", systemImage: "pencil")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Cancel") { store.send(.cancelEditTapped) }
+                        .font(.footnote.weight(.semibold))
+                }
+            }
             if !store.pending.isEmpty || store.attaching || store.recording {
                 attachments
             }

@@ -5,6 +5,7 @@
 [text] "Recording, 6 s"
 [text] "What plant is this?"
 [text] "A Boston fern. Water it when the top of the soil is dry."
+[button] "Retry" hint: "Write this reply again"
 [button] "Use a Skill"
 [button] "Record"
 [button, notEnabled] "Send"

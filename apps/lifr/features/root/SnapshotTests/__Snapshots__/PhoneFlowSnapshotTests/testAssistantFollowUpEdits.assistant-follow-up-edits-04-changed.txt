@@ -7,6 +7,7 @@
 [text] "I added a task to buy eggs in HOME."
 [text] "Change that to Friday"
 [text] "I moved buy milk to Friday."
+[button] "Retry" hint: "Write this reply again"
 [header, text] "Draft"
 [text] "2 tasks"
 [text] "buy milk, Home"

@@ -5,6 +5,7 @@
 [text] "I added a task to buy milk in HOME."
 [text] "Also add buy eggs"
 [text] "I added a task to buy eggs in HOME."
+[button] "Retry" hint: "Write this reply again"
 [header, text] "Draft"
 [text] "2 tasks"
 [text] "buy milk, Home"

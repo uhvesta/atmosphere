@@ -5,6 +5,7 @@
 [text] "Start with the urgent tasks, then the ones due this week."
 [text] "Tidy my weekend"
 [text] "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
+[button] "Retry" hint: "Write this reply again"
 [header, text] "Draft"
 [text] "6 tasks"
 [text] "Clean up living room, Sat, Nov 7 · Home"

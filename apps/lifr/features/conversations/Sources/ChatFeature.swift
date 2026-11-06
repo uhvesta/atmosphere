@@ -43,9 +43,12 @@ package struct ChatFeature {
         /// The day the draft's dates are read from, such as "saturday".
         package var today: CalendarDate?
         @Presents package var alert: AlertState<Action.Alert>?
-        /// The request of a reply that failed in a way sending it again can
-        /// fix, for the alert's Try Again.
-        package var failed: AssistantRequest?
+        /// Why the last reply couldn't be written, shown under the message
+        /// it's to.
+        package var failure: Failure?
+        /// The person's message being written again: sending puts the new
+        /// one in its place, as a branch beside it.
+        package var editing: UUID?
         /// Every skill, on or off. The built-ins until the person's load.
         package var skills = Skill.builtIn
         /// The ID of the skill picked for the next message.
@@ -83,15 +86,25 @@ package struct ChatFeature {
         package var id: UUID { conversation.id }
 
         /// Whether a reply is being written, waits to be sent again, is
-        /// being finished, or failed with an alert not yet seen: the chat is
-        /// kept until it isn't.
-        package var isWorking: Bool { replying != nil || waiting != nil || reloading || naming || alert != nil }
+        /// being finished, or failed: the chat is kept until it isn't.
+        package var isWorking: Bool {
+            replying != nil || waiting != nil || reloading || naming || alert != nil || failure != nil
+        }
 
         package var canAdd: Bool { conversation.draft != nil && problem == nil }
 
         /// Whether the conversation can go back, forward or to another
         /// branch: not while a reply is written or its changes are read.
         package var canGo: Bool { replying == nil && waiting == nil && !reloading && !conversation.messages.isEmpty }
+
+        /// Whether the reply to `message`, or `message` itself for a reply,
+        /// can be written again: any reply, or the last message when its
+        /// reply failed in a way sending it again can fix, or never came.
+        package func canRetry(_ message: ChatMessage) -> Bool {
+            guard canGo, availability == .available else { return false }
+            guard message.role == .person else { return true }
+            return message.id == conversation.messages.last?.id && failure?.retries ?? true
+        }
 
         /// The skill picked for the next message, while it exists and is on.
         package var picked: Skill? { skill.flatMap { id in skills.first { $0.id == id && $0.isOn } } }
@@ -161,14 +174,29 @@ package struct ChatFeature {
         /// Makes a new conversation of the messages up to this one.
         case forkTapped(messageID: UUID)
         case forked(Conversation)
+        /// Puts one of the person's messages in the field, to send again in
+        /// its place.
+        case editTapped(messageID: UUID)
+        case cancelEditTapped
+        /// Writes the reply to this message, or this reply, again.
+        case retryTapped(messageID: UUID)
+        /// Sends the message being edited, once the person said whether to
+        /// undo the changes of the replies that hides.
+        case sendConfirmed
+        /// Writes the reply to the person's message `id` again, once the
+        /// person said whether to undo the changes of the replies that hides.
+        case retryConfirmed(UUID)
         case alert(PresentationAction<Alert>)
         case delegate(Delegate)
 
         package enum Alert: Equatable {
-            case tryAgain
             /// Goes to the message, undoing the changes of the replies
             /// that hides or keeping them.
             case go(to: UUID, undo: Bool)
+            /// Sends the message being edited in place of the old one.
+            case resend(undo: Bool)
+            /// Writes the reply to the person's message again.
+            case retry(UUID, undo: Bool)
         }
 
         @CasePathable
@@ -178,6 +206,15 @@ package struct ChatFeature {
             /// A new conversation forked from this one, to keep and open.
             case fork(Conversation)
         }
+    }
+
+    /// Why a reply couldn't be written.
+    package struct Failure: Equatable, Sendable {
+        package var reason: String
+        /// Whether sending it again can fix it: not once the reply saved
+        /// changes, which sending again could make twice, nor for a request
+        /// that's too long or declined.
+        package var retries: Bool
     }
 
     private enum CancelID { case reply, recording }
@@ -248,27 +285,63 @@ package struct ChatFeature {
 
             case .sendTapped:
                 guard state.canSend else { return .none }
-                let text = state.input.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let editing = state.editing {
+                    let changed = state.conversation.changedReplies(hiddenGoingBefore: editing)
+                    guard changed.isEmpty else {
+                        state.alert = undoAlert(
+                            changed, in: state, undo: .resend(undo: true), keep: .resend(undo: false))
+                        return .none
+                    }
+                }
+                return send(in: &state)
+
+            case .sendConfirmed:
+                guard state.canSend else { return .none }
+                return send(in: &state)
+
+            case .editTapped(let id):
+                guard state.canGo,
+                    let message = state.conversation.messages.first(where: { $0.id == id && $0.role == .person })
+                else { return .none }
+                state.editing = id
+                state.input = message.text
+                state.skill = message.skill
+                return .none
+
+            case .cancelEditTapped:
+                state.editing = nil
                 state.input = ""
-                let skill = state.picked
                 state.skill = nil
-                let sent = state.pending
-                state.pending = []
-                let conversation = state.conversation.id
-                state.conversation.append(
-                    ChatMessage(id: uuid(), role: .person, text: text, at: now, skill: skill?.id, attachments: sent))
-                state.replying = ""
-                let request = AssistantRequest(
-                    messages: state.conversation.messages, draft: state.conversation.draft, problem: state.problem,
-                    workspace: state.workspace, now: now, timeZone: timeZone,
-                    writes: AssistantWrites(conversation: state.conversation.id) { [store] operation in
-                        try await store.save(operation).workspace
-                    },
-                    skill: skill,
-                    attachments: sent.compactMap { attachment in
-                        attachments.file(attachment, conversation).map { ModelAttachment(attachment.kind, file: $0) }
-                    })
-                return reply(request, in: &state)
+                return .none
+
+            case .retryTapped(let id):
+                let messages = state.conversation.messages
+                guard let index = messages.firstIndex(where: { $0.id == id }), state.canRetry(messages[index]),
+                    let asked = messages[...index].last(where: { $0.role == .person })
+                else { return .none }
+                let changed = state.conversation.changedReplies(hiddenGoingTo: asked.id)
+                guard changed.isEmpty else {
+                    state.alert = undoAlert(
+                        changed, in: state, undo: .retry(asked.id, undo: true), keep: .retry(asked.id, undo: false))
+                    return .none
+                }
+                return .send(.retryConfirmed(asked.id))
+
+            case .retryConfirmed(let id):
+                guard state.canGo else { return .none }
+                state.conversation.go(to: id)
+                guard state.conversation.messages.last?.id == id else { return .none }
+                state.failure = nil
+                return reply(request(in: state), in: &state)
+
+            case .alert(.presented(.resend(let undo))):
+                guard let editing = state.editing else { return .none }
+                let changed = undo ? state.conversation.changedReplies(hiddenGoingBefore: editing) : []
+                return undoing(changed, in: state) { .sendConfirmed }
+
+            case .alert(.presented(.retry(let id, let undo))):
+                let changed = undo ? state.conversation.changedReplies(hiddenGoingTo: id) : []
+                return undoing(changed, in: state) { .retryConfirmed(id) }
 
             case .suggestionTapped(let text):
                 guard state.conversation.messages.isEmpty else { return .none }
@@ -420,30 +493,9 @@ package struct ChatFeature {
                     (error as? AssistantError).map {
                         $0 == .unreadable(saved: false) || $0 == .timedOut(saved: false) || $0.isFailure
                     } ?? true
-                state.failed = retries ? state.waiting : nil
+                state.failure = Failure(reason: String(describing: error), retries: retries)
                 state.waiting = nil
                 state.stopped = false
-                state.alert = AlertState {
-                    TextState("The assistant couldn't answer")
-                } actions: {
-                    if retries {
-                        ButtonState(action: .tryAgain) { TextState("Try Again") }
-                        ButtonState(role: .cancel) { TextState("Cancel") }
-                    } else {
-                        ButtonState(role: .cancel) { TextState("OK") }
-                    }
-                } message: {
-                    TextState(String(describing: error))
-                }
-                return .none
-
-            case .alert(.presented(.tryAgain)):
-                guard let request = state.failed else { return .none }
-                state.failed = nil
-                return reply(request, in: &state)
-
-            case .alert(.dismiss):
-                state.failed = nil
                 return .none
 
             case .backTapped:
@@ -687,19 +739,81 @@ package struct ChatFeature {
             state.conversation.go(to: id)
             return .none
         }
+        state.alert = undoAlert(changed, in: state, undo: .go(to: id, undo: true), keep: .go(to: id, undo: false))
+        return .none
+    }
+
+    /// Asks whether to undo the task changes of the replies `changed`,
+    /// which what the person asked for hides.
+    private func undoAlert(
+        _ changed: [UUID], in state: State, undo: Action.Alert, keep: Action.Alert
+    ) -> AlertState<Action.Alert> {
         let count = changed.reduce(0) { $0 + (state.conversation.changes[$1]?.count ?? 0) }
         let changes = String(AttributedString(localized: "^[\(count) change](inflect: true)").characters)
-        state.alert = AlertState {
+        return AlertState {
             TextState("Also undo the \(changes) made after this point?")
         } actions: {
-            ButtonState(role: .destructive, action: .go(to: id, undo: true)) { TextState("Undo Changes") }
-            ButtonState(action: .go(to: id, undo: false)) { TextState("Keep Changes") }
+            ButtonState(role: .destructive, action: undo) { TextState("Undo Changes") }
+            ButtonState(action: keep) { TextState("Keep Changes") }
             ButtonState(role: .cancel) { TextState("Cancel") }
         } message: {
             TextState(
                 "The replies after it are kept to go forward to. Going forward doesn't make undone changes again.")
         }
-        return .none
+    }
+
+    /// Undoes the changes of the replies `changed`, then sends `next`. When
+    /// undoing fails, it says so and sends nothing, for the person to
+    /// choose again.
+    private func undoing(_ changed: [UUID], in state: State, then next: @escaping @Sendable () -> Action)
+        -> Effect<Action>
+    {
+        let entries = changed.flatMap { state.conversation.changes[$0] ?? [] }
+        guard !entries.isEmpty else { return .send(next()) }
+        return .run { [store] send in
+            let result = await Result { try await store.revert(entries: entries) }
+            await send(.saved(result))
+            if case .success = result { await send(next()) }
+        }
+    }
+
+    /// Sends what's in the field, in place of the message being edited if
+    /// there is one.
+    private func send(in state: inout State) -> Effect<Action> {
+        let text = state.input.trimmingCharacters(in: .whitespacesAndNewlines)
+        state.input = ""
+        let skill = state.picked
+        state.skill = nil
+        var sent = state.pending
+        state.pending = []
+        if let editing = state.editing {
+            // The new message keeps what was attached to the old one.
+            let old = (state.conversation.messages + state.conversation.hidden).first { $0.id == editing }
+            sent = (old?.attachments ?? []) + sent
+            state.conversation.go(before: editing)
+            state.editing = nil
+        }
+        state.failure = nil
+        state.conversation.append(
+            ChatMessage(id: uuid(), role: .person, text: text, at: now, skill: skill?.id, attachments: sent))
+        return reply(request(in: state), in: &state)
+    }
+
+    /// The request for a reply to the last message shown, the person's,
+    /// with its skill and what's attached to it.
+    private func request(in state: State) -> AssistantRequest {
+        let conversation = state.conversation.id
+        let asked = state.conversation.messages.last
+        return AssistantRequest(
+            messages: state.conversation.messages, draft: state.conversation.draft, problem: state.problem,
+            workspace: state.workspace, now: now, timeZone: timeZone,
+            writes: AssistantWrites(conversation: conversation) { [store] operation in
+                try await store.save(operation).workspace
+            },
+            skill: asked?.skill.flatMap { id in state.skills.first { $0.id == id } },
+            attachments: (asked?.attachments ?? []).compactMap { attachment in
+                attachments.file(attachment, conversation).map { ModelAttachment(attachment.kind, file: $0) }
+            })
     }
 
     /// Checks the draft against the records as they are now.

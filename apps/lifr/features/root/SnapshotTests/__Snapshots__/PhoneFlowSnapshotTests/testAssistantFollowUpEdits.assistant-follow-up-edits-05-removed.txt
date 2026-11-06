@@ -9,6 +9,7 @@
 [text] "I moved buy milk to Friday."
 [text] "Remove the second one"
 [text] "I took buy eggs out of the plan."
+[button] "Retry" hint: "Write this reply again"
 [header, text] "Draft"
 [text] "1 task"
 [text] "buy milk, Home"

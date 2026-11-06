@@ -4,6 +4,7 @@
 [text] "Add an urgent task to file my taxes, in WORK"
 [text] "I have added an urgent task to file my taxes under the WORK avenue for you."
 [button] "Undo"
+[button] "Retry" hint: "Write this reply again"
 [text] "Added “file my taxes” to Work"
 [button] "Undo"
 [button] "Use a Skill"

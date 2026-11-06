@@ -10,6 +10,7 @@
 [text] "Remove the second one"
 [text] "I took buy eggs out of the plan."
 [button] "Undo"
+[button] "Retry" hint: "Write this reply again"
 [text] "Added “buy milk” to Home"
 [button] "Undo"
 [button] "Use a Skill"

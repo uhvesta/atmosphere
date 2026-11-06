@@ -14,6 +14,7 @@
 [button] "Next Version"
 [text] "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
 [button] "Undo"
+[button] "Retry" hint: "Write this reply again"
 [button] "Use a Skill"
 [button, notEnabled] "Send"
 [element] "" value: "Message"

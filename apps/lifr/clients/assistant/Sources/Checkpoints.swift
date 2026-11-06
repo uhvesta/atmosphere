@@ -52,6 +52,20 @@ extension Conversation {
         messages = path
     }
 
+    /// Shows the path to the message `id` follows, to write another in
+    /// its place: `id` and what came after it are kept, to go to again.
+    package mutating func go(before id: UUID) {
+        if let parent = parent(of: id) {
+            go(to: parent)
+            return
+        }
+        guard (messages + hidden).contains(where: { $0.id == id }) else { return }
+        // The first message: nothing is shown before it.
+        keepParents()
+        hidden = messages + hidden
+        messages = []
+    }
+
     /// Every point to go to, on every branch, oldest first.
     package var checkpoints: [Checkpoint] {
         let shown = Set(messages.map(\.id))
@@ -90,8 +104,18 @@ extension Conversation {
     /// The replies shown now that going to `id` would hide, and that saved
     /// changes still to undo.
     package func changedReplies(hiddenGoingTo id: UUID) -> [UUID] {
+        changedReplies { $0.go(to: id) }
+    }
+
+    /// The replies shown now that writing the message `id` again would
+    /// hide, and that saved changes still to undo.
+    package func changedReplies(hiddenGoingBefore id: UUID) -> [UUID] {
+        changedReplies { $0.go(before: id) }
+    }
+
+    private func changedReplies(going: (inout Conversation) -> Void) -> [UUID] {
         var there = self
-        there.go(to: id)
+        going(&there)
         let shown = Set(there.messages.map(\.id))
         return messages.map(\.id).filter { !shown.contains($0) && changes[$0]?.isEmpty == false }
     }

@@ -4,6 +4,7 @@
 [text] "Push “Call the plumber” to next Monday"
 [text] "I moved Call the plumber to next Monday."
 [button] "Undo"
+[button] "Retry" hint: "Write this reply again"
 [text] "Changed “Call the plumber”"
 [button] "Undo"
 [button] "Use a Skill"

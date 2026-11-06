@@ -665,25 +665,57 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
-    /// The assistant failing: an answer it couldn't read.
+    /// The assistant failing to answer, then Retry writing the reply, the
+    /// message edited to write it again beside the old, and a message too
+    /// long to answer, which Retry can't help.
     func testAssistantFails() async throws {
-        let (store, flow) = app("assistant-fails")
+        let calls = LockIsolated(0)
+        var assistant = AssistantClient.scripted([
+            AssistantReply(text: "Start with the urgent tasks, then the ones due this week.", isComplete: true),
+            AssistantReply(text: "Keep Saturday for the garden and Sunday free.", isComplete: true),
+        ])
+        let scripted = assistant.reply
+        assistant.reply = { request in
+            let call = calls.withValue { count in
+                count += 1
+                return count
+            }
+            let failure: AssistantError? =
+                switch call {
+                case 1: .unreadable(saved: false)
+                case 4: .tooLong(saved: false)
+                default: nil
+                }
+            guard let failure else { return scripted(request) }
+            return AssistantReplies { $0.finish(throwing: failure) }
+        }
+        let (store, flow) = app("assistant-fails", assistant: assistant)
         store.tab = .conversations
         store.send(.conversations(.newTapped))
         let id = try XCTUnwrap(store.conversations.openID)
-        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "Plan my week"))))))
-        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
-        store.send(
-            .conversations(.chats(.element(id: id, action: .replyFailed(AssistantError.unreadable(saved: false))))))
+        func chat(_ action: ChatFeature.Action) { store.send(.conversations(.chats(.element(id: id, action: action)))) }
+        send("Plan my week", in: id, of: store)
         await flow.step("unreadable")
-        for (name, error) in [
-            ("timed-out", AssistantError.timedOut(saved: false)), ("too-long", AssistantError.tooLong(saved: false)),
-        ] {
-            store.send(.conversations(.chats(.element(id: id, action: .alert(.dismiss)))))
-            await flow.step("dismissed", image: false)
-            store.send(.conversations(.chats(.element(id: id, action: .replyFailed(error)))))
-            await flow.step(name)
-        }
+        let asked = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last)
+        XCTAssertNotNil(store.conversations.chats[id: id]?.failure)
+
+        chat(.retryTapped(messageID: asked.id))
+        await flow.step("retried")
+        XCTAssertEqual(store.conversations.chats[id: id]?.conversation.messages.count, 2)
+
+        time.withValue { $0 += 60 }
+        chat(.editTapped(messageID: asked.id))
+        await flow.step("editing")
+        chat(.binding(.set(\.input, "Plan my weekend")))
+        chat(.sendTapped)
+        await flow.step("edited")
+        let edited = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.first)
+        XCTAssertEqual(store.conversations.chats[id: id]?.conversation.branches(at: edited.id).count, 2)
+
+        send("Add a task for every day of the year", in: id, of: store)
+        await flow.step("too-long")
+        let long = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last)
+        XCTAssertEqual(store.conversations.chats[id: id]?.canRetry(long), false)
         flow.finish()
     }
 

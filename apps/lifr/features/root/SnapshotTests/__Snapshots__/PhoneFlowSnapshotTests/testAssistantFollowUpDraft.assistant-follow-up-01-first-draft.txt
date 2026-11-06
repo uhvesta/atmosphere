@@ -3,6 +3,7 @@
 [header] "Add a Fitness Avenue"
 [text] "Add a Fitness Avenue"
 [text] "Here's a Fitness Avenue. Tap Add to make it."
+[button] "Retry" hint: "Write this reply again"
 [header, text] "Draft"
 [text] "0 tasks"
 [text] "New Avenue Fitness, FIT"

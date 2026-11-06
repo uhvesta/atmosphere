@@ -375,11 +375,13 @@ final class ChatFeatureTests: XCTestCase {
 
         await send("Hello", in: store)
         XCTAssertNil(store.state.replying)
-        XCTAssertNotNil(store.state.alert)
+        XCTAssertNotNil(store.state.failure)
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello"])
+        let hello = try XCTUnwrap(store.state.conversation.messages.last)
+        XCTAssertFalse(store.state.canRetry(hello), "Sending a message that's too long again can't help")
     }
 
-    func testTryAgainSendsAnUnreadableReplysMessageAgain() async throws {
+    func testRetrySendsAnUnreadableReplysMessageAgain() async throws {
         let (workspace, _) = home()
         let attempts = LockIsolated(0)
         let store = chat(workspace) { _ in
@@ -392,13 +394,12 @@ final class ChatFeatureTests: XCTestCase {
         }
 
         await send("Hello", in: store)
-        XCTAssertNotNil(store.state.alert)
-        XCTAssertNotNil(store.state.failed)
+        let hello = try XCTUnwrap(store.state.conversation.messages.last)
+        XCTAssertTrue(store.state.canRetry(hello))
 
-        await store.send(.alert(.presented(.tryAgain)))
-        await store.skipReceivedActions()
-        XCTAssertNil(store.state.alert)
-        XCTAssertNil(store.state.failed)
+        await store.send(.retryTapped(messageID: hello.id))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertNil(store.state.failure)
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Done."])
     }
 
@@ -407,8 +408,9 @@ final class ChatFeatureTests: XCTestCase {
         let store = chat(workspace) { _ in throw AssistantError.unreadable(saved: true) }
 
         await send("Hello", in: store)
-        XCTAssertNotNil(store.state.alert)
-        XCTAssertNil(store.state.failed)
+        let hello = try XCTUnwrap(store.state.conversation.messages.last)
+        XCTAssertNotNil(store.state.failure)
+        XCTAssertFalse(store.state.canRetry(hello))
     }
 
     func testOpeningTheChatLoadsNoModelUntilThePersonWrites() async {
@@ -439,9 +441,9 @@ final class ChatFeatureTests: XCTestCase {
         await clock.advance(by: ChatFeature.stallLimit * 2)
         await store.receive(\.replyFailed)
         XCTAssertNil(store.state.replying)
-        XCTAssertNotNil(store.state.alert)
-        XCTAssertNotNil(store.state.failed)
-        await store.send(.alert(.dismiss))
+        let hello = try XCTUnwrap(store.state.conversation.messages.last)
+        XCTAssertNotNil(store.state.failure)
+        XCTAssertTrue(store.state.canRetry(hello))
     }
 
     func testAReplyThatStallsAfterSavingIsNotTriedAgain() async throws {
@@ -457,9 +459,9 @@ final class ChatFeatureTests: XCTestCase {
         await send("Finish rent", in: store)
         await clock.advance(by: ChatFeature.stallLimit * 2)
         await store.receive(\.replyFailed)
-        XCTAssertNotNil(store.state.alert)
-        XCTAssertNil(store.state.failed)
-        await store.send(.alert(.dismiss))
+        let finish = try XCTUnwrap(store.state.conversation.messages.last)
+        XCTAssertNotNil(store.state.failure)
+        XCTAssertFalse(store.state.canRetry(finish))
     }
 
     func testAReplyThatKeepsWritingDoesntTimeOut() async throws {
@@ -726,6 +728,86 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.sendTapped)
         await store.send(.backTapped)
         XCTAssertEqual(store.state.conversation.messages.last?.text, "three")
+    }
+
+    func testAnEditedMessageIsABranchBesideTheOldWithANewReply() async throws {
+        let (workspace, _) = home()
+        let store = chat(workspace) { request in
+            AssistantReply(text: "re " + (request.messages.last?.text ?? ""), isComplete: true)
+        }
+        ticking(store)
+        await send("one", in: store)
+        await send("two", in: store)
+        let two = try XCTUnwrap(store.state.conversation.messages.first { $0.text == "two" })
+
+        await store.send(.editTapped(messageID: two.id))
+        XCTAssertEqual(store.state.input, "two")
+        await send("two, edited", in: store)
+
+        XCTAssertNil(store.state.editing)
+        XCTAssertEqual(texts(store), ["one", "re one", "two, edited", "re two, edited"])
+        let edited = try XCTUnwrap(store.state.conversation.messages.first { $0.text == "two, edited" })
+        XCTAssertEqual(store.state.conversation.branches(at: edited.id).map(\.text), ["two", "two, edited"])
+    }
+
+    func testCancellingAnEditLeavesTheChatAsItWas() async throws {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "OK.", isComplete: true) }
+        ticking(store)
+        await send("one", in: store)
+        let one = try XCTUnwrap(store.state.conversation.messages.first)
+
+        await store.send(.editTapped(messageID: one.id))
+        await store.send(.cancelEditTapped)
+
+        XCTAssertNil(store.state.editing)
+        XCTAssertEqual(store.state.input, "")
+        XCTAssertEqual(texts(store), ["one", "OK."])
+    }
+
+    func testEditingAMessageBeforeChangesAsksWhetherToUndoThem() async throws {
+        let (workspace, rent) = home()
+        let code = workspace.displayCode(of: rent)
+        let store = chat(workspace) { request in
+            if request.messages.last?.text == "I paid the rent" {
+                _ = try? await request.tools().change(TaskChange(code: code, status: "done"))
+            }
+            return AssistantReply(text: "OK.", isComplete: true)
+        }
+        ticking(store)
+        await send("I paid the rent", in: store)
+        let paid = try XCTUnwrap(store.state.conversation.messages.first)
+
+        await store.send(.editTapped(messageID: paid.id))
+        await store.send(.binding(.set(\.input, "Hello")))
+        await store.send(.sendTapped)
+        XCTAssertNotNil(store.state.alert, "Asks before hiding the reply that changed the rent")
+        XCTAssertEqual(texts(store), ["I paid the rent", "OK."])
+
+        await store.send(.alert(.presented(.resend(undo: true))))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(texts(store), ["Hello", "OK."])
+        XCTAssertEqual(store.state.workspace.tasks[rent.id]?.status, .todo)
+    }
+
+    func testRetryWritesAReplyAgainBesideTheOld() async throws {
+        let (workspace, _) = home()
+        let count = LockIsolated(0)
+        let store = chat(workspace) { _ in
+            count.withValue { $0 += 1 }
+            return AssistantReply(text: "reply \(count.value)", isComplete: true)
+        }
+        ticking(store)
+        await send("one", in: store)
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+        XCTAssertTrue(store.state.canRetry(reply))
+
+        await store.send(.retryTapped(messageID: reply.id))
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(texts(store), ["one", "reply 2"])
+        let again = try XCTUnwrap(store.state.conversation.messages.last)
+        XCTAssertEqual(store.state.conversation.branches(at: again.id).map(\.text), ["reply 1", "reply 2"])
     }
 
     func testAForkOpensAsANewConversationUpToThere() async throws {

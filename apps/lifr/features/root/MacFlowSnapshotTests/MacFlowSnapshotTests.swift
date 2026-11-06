@@ -244,14 +244,9 @@ final class MacFlowSnapshotTests: XCTestCase {
         store.send(
             .conversations(.chats(.element(id: id, action: .replyFailed(AssistantError.unreadable(saved: false))))))
         await flow.step("unreadable")
-        for (name, error) in [
-            ("timed-out", AssistantError.timedOut(saved: false)), ("too-long", AssistantError.tooLong(saved: false)),
-        ] {
-            store.send(.conversations(.chats(.element(id: id, action: .alert(.dismiss)))))
-            await flow.step("dismissed", image: false)
-            store.send(.conversations(.chats(.element(id: id, action: .replyFailed(error)))))
-            await flow.step(name)
-        }
+        store.send(
+            .conversations(.chats(.element(id: id, action: .replyFailed(AssistantError.tooLong(saved: false))))))
+        await flow.step("too-long")
         flow.finish()
     }
 

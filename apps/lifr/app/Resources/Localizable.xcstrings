@@ -707,6 +707,9 @@
     "Edit description" : {
 
     },
+    "Editing your message. Sending it writes the reply again." : {
+
+    },
     "Every Friday, show what I finished and what's overdue" : {
 
     },
@@ -1183,6 +1186,9 @@
     "No priority" : {
 
     },
+    "No reply came to this message." : {
+
+    },
     "No skills on" : {
 
     },
@@ -1407,6 +1413,9 @@
 
     },
     "Resume" : {
+
+    },
+    "Retry" : {
 
     },
     "Revert" : {
@@ -1851,6 +1860,9 @@
 
     },
     "Write how the assistant should behave, or use Lifr's default." : {
+
+    },
+    "Write this reply again" : {
 
     },
     "Writes a note for this skill" : {

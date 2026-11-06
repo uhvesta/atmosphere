@@ -6,6 +6,7 @@
 [button] "Undo"
 [text] "Now add a Reading Avenue"
 [text] "I added Reading, and a run to start with."
+[button] "Retry" hint: "Write this reply again"
 [header, text] "Draft"
 [text] "1 task"
 [text] "New Avenue Reading, READ"

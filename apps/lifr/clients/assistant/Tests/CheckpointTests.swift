@@ -63,6 +63,44 @@ final class CheckpointTests: XCTestCase {
         XCTAssertEqual(conversation.messages.map(\.text), ["one", "re one", "two", "re two", "three", "re three"])
     }
 
+    func testWritingAMessageAgainMakesItABranchBesideTheOld() throws {
+        var conversation = threeTurns()
+        let two = try id("two", in: conversation)
+        conversation.changes[try id("re three", in: conversation)] = [UUID()]
+        XCTAssertEqual(conversation.changedReplies(hiddenGoingBefore: two).count, 1)
+
+        conversation.go(before: two)
+        XCTAssertEqual(conversation.messages.map(\.text), ["one", "re one"])
+        conversation.append(message(.person, "two, edited"))
+
+        let branches = try conversation.branches(at: id("two, edited", in: conversation))
+        XCTAssertEqual(branches.map(\.text), ["two", "two, edited"])
+    }
+
+    func testWritingTheFirstMessageAgainKeepsTheOldConversationToGoBackTo() throws {
+        var conversation = threeTurns()
+        let one = try id("one", in: conversation)
+
+        conversation.go(before: one)
+        XCTAssertEqual(conversation.messages, [])
+        conversation.append(message(.person, "one, edited"))
+        conversation.append(message(.assistant, "re one, edited"))
+
+        let first = try XCTUnwrap(conversation.branches(at: id("one, edited", in: conversation)).first)
+        XCTAssertEqual(first.text, "one")
+        conversation.go(to: conversation.newest(through: first.id))
+        XCTAssertEqual(conversation.messages.count, 6)
+    }
+
+    func testAReplyWrittenAgainIsABranchBesideTheOld() throws {
+        var conversation = threeTurns()
+        try conversation.go(to: id("three", in: conversation))
+        conversation.append(message(.assistant, "re three, again"))
+
+        let branches = try conversation.branches(at: id("re three, again", in: conversation))
+        XCTAssertEqual(branches.map(\.text), ["re three", "re three, again"])
+    }
+
     func testTheLogHasEveryPointOnEveryBranch() throws {
         var conversation = threeTurns()
         try conversation.go(to: id("re one", in: conversation))

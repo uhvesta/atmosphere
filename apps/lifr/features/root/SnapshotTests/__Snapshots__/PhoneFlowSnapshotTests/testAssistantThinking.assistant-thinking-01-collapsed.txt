@@ -4,6 +4,7 @@
 [text] "When should I water the plants?"
 [button] "Thoughts · 4.2 secs. on the GPU" hint: "Shows the thinking"
 [text] "I'd water them on Saturday morning."
+[button] "Retry" hint: "Write this reply again"
 [button] "Use a Skill"
 [button, notEnabled] "Send"
 [element] "" value: "Message"

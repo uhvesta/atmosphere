@@ -8,6 +8,7 @@
 [button] "Previous Version"
 [button, notEnabled] "Next Version"
 [text] "Saturday morning suits the garden; leave the afternoon free."
+[button] "Retry" hint: "Write this reply again"
 [text] "Added 2 tasks to Home"
 [button] "Undo"
 [button] "Use a Skill"

@@ -3,6 +3,7 @@
 [header] "Add a task to stretch after every run t…"
 [text] "Add a task to stretch after every run to my Half marathon project"
 [text] "I added Stretch after every run to your Half marathon project."
+[button] "Retry" hint: "Write this reply again"
 [header, text] "Draft"
 [text] "1 task"
 [text] "Stretch after every run, Health › Half marathon"
