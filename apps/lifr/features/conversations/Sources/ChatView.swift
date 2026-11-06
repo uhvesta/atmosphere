@@ -16,6 +16,7 @@ package struct ChatView: View {
 
     @Environment(\.locale) private var locale
     @State private var photo: PhotosPickerItem?
+    @State private var selecting: TextToSelect?
     @Environment(\.dynamicTypeSize) private var typeSize
 
     package var body: some View {
@@ -27,9 +28,30 @@ package struct ChatView: View {
             messages
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            composer
-                .padding()
-                .background(.bar)
+            VStack(spacing: 0) {
+                if store.conversation.forward != nil {
+                    rewound
+                    Divider()
+                }
+                composer
+                    .padding()
+            }
+            .background(.bar)
+        }
+        .sheet(item: $selecting) { selecting in
+            SelectTextSheet(text: selecting.text)
+        }
+        .sheet(isPresented: $store.showsCheckpoints) {
+            NavigationStack {
+                CheckpointLog(store: store)
+                    .navigationTitle("Checkpoints")
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            DismissButton()
+                        }
+                    }
+            }
+            .sheetLayout(height: 560)
         }
         #if os(iOS)
             .sheet(isPresented: $store.findsSkill) {
@@ -67,6 +89,17 @@ package struct ChatView: View {
         .toolbarTitleMenu {
             Button("Rename", systemImage: "pencil") { store.send(.renameTapped) }
         }
+        #if os(iOS)
+            .toolbar {
+                // One menu, as three buttons fold into the bar's overflow.
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu("Checkpoints", systemImage: "clock.arrow.circlepath") {
+                        checkpointButtons
+                    }
+                    .disabled(store.conversation.messages.isEmpty)
+                }
+            }
+        #endif
         .task { await store.send(.task).finish() }
         .alert($store.scope(state: \.alert, action: \.alert))
     }
@@ -86,13 +119,19 @@ package struct ChatView: View {
                     Suggestions { store.send(.suggestionTapped($0)) }
                 }
                 ForEach(store.conversation.messages) { message in
-                    MessageView(
-                        message: message, skill: store.state.skillTitle(of: message),
-                        elsewhere: store.elsewhere,
-                        canUndo: store.conversation.changes[message.id] != nil,
-                        showsThinking: store.shownThinking.contains(message.id),
-                        toggleThinking: { store.send(.thinkingToggled(messageID: message.id)) },
-                        undo: { store.send(.undoTapped(messageID: message.id)) })
+                    VStack(alignment: .trailing, spacing: 4) {
+                        MessageView(
+                            message: message, skill: store.state.skillTitle(of: message),
+                            elsewhere: store.elsewhere,
+                            canUndo: store.conversation.changes[message.id] != nil,
+                            showsThinking: store.shownThinking.contains(message.id),
+                            toggleThinking: { store.send(.thinkingToggled(messageID: message.id)) },
+                            undo: { store.send(.undoTapped(messageID: message.id)) },
+                            select: { selecting = TextToSelect(text: $0) }
+                        )
+                        .contextMenu { messageMenu(for: message) }
+                        if message.role == .person { branches(at: message) }
+                    }
                 }
                 if let replying = store.replying {
                     if let thinking = store.replyingThinking {
@@ -131,6 +170,74 @@ package struct ChatView: View {
         .defaultScrollAnchor(.bottom)
     }
 
+    /// Back, forward and the log of every point to go to.
+    @ViewBuilder private var checkpointButtons: some View {
+        Button("Back", systemImage: "arrow.uturn.backward") { store.send(.backTapped) }
+            .disabled(!store.canGo || store.conversation.back == nil)
+            .help("Go back to the message before")
+        Button("Forward", systemImage: "arrow.uturn.forward") { store.send(.forwardTapped) }
+            .disabled(!store.canGo || store.conversation.forward == nil)
+            .help("Go forward to the message after")
+        Button("All Checkpoints", systemImage: "clock.arrow.circlepath") { store.showsCheckpoints = true }
+            .disabled(store.conversation.messages.isEmpty)
+            .help("Every point to go back or forward to")
+    }
+
+    /// Says the conversation is shown as it was earlier, above the field.
+    private var rewound: some View {
+        HStack {
+            Label("Going on from an earlier point. What came after is kept.", systemImage: "clock.arrow.circlepath")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Back to Latest") { store.send(.latestTapped) }
+                .font(.footnote.weight(.semibold))
+                .disabled(!store.canGo)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+
+    /// ‹ 2/3 › under a message written again after going back, to show
+    /// the others.
+    @ViewBuilder private func branches(at message: ChatMessage) -> some View {
+        let branches = store.conversation.branches(at: message.id)
+        if branches.count > 1, let index = branches.firstIndex(where: { $0.id == message.id }) {
+            HStack(spacing: 4) {
+                Button("Previous Version", systemImage: "chevron.left") {
+                    store.send(.branchTapped(messageID: message.id, by: -1))
+                }
+                .disabled(index == 0 || !store.canGo)
+                Text("\(index + 1)/\(branches.count)")
+                    .monospacedDigit()
+                    .accessibilityLabel(Text("Version \(index + 1) of \(branches.count)"))
+                Button("Next Version", systemImage: "chevron.right") {
+                    store.send(.branchTapped(messageID: message.id, by: 1))
+                }
+                .disabled(index == branches.count - 1 || !store.canGo)
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Copying a message, going back to it and forking from it.
+    @ViewBuilder private func messageMenu(for message: ChatMessage) -> some View {
+        if !message.text.isEmpty {
+            TextMenu(text: message.text) { selecting = TextToSelect(text: $0) }
+            Divider()
+        }
+        let end = store.conversation.end(of: message.id)
+        if end != store.conversation.messages.last?.id {
+            Button("Go Back to Here", systemImage: "arrow.uturn.backward") { store.send(.goTapped(end)) }
+                .disabled(!store.canGo)
+        }
+        Button("Fork From Here", systemImage: "arrow.triangle.branch") { store.send(.forkTapped(messageID: end)) }
+            .disabled(!store.canGo)
+    }
+
     #if os(macOS)
         /// The Mac shows no title for the third column, so the chat names
         /// itself here, with Rename beside it.
@@ -141,10 +248,13 @@ package struct ChatView: View {
                     .lineLimit(1)
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
-                Button("Rename", systemImage: "pencil") { store.send(.renameTapped) }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .help("Rename")
+                Group {
+                    checkpointButtons
+                    Button("Rename", systemImage: "pencil") { store.send(.renameTapped) }
+                        .help("Rename")
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
             }
             .padding(.horizontal)
             .padding(.vertical, 10)
@@ -303,7 +413,7 @@ private struct SkillFinderPopover: ViewModifier {
     }
 }
 
-private struct DismissButton: View {
+struct DismissButton: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -480,6 +590,64 @@ private struct AttachmentChip: View {
     }
 }
 
+/// Every point the conversation can go to, on every branch, oldest first:
+/// tap one to go there, or swipe to fork from it.
+private struct CheckpointLog: View {
+    let store: StoreOf<ChatFeature>
+
+    var body: some View {
+        List(store.conversation.checkpoints) { checkpoint in
+            Button {
+                store.send(.goTapped(checkpoint.end))
+            } label: {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title(of: checkpoint))
+                            .lineLimit(2)
+                            .foregroundStyle(checkpoint.isShown ? .primary : .secondary)
+                        HStack(spacing: 6) {
+                            Text(checkpoint.message.at, format: .dateTime.hour().minute())
+                            if checkpoint.changes > 0 {
+                                Text("^[\(checkpoint.changes) change](inflect: true)")
+                            }
+                            if !checkpoint.isShown {
+                                Text("Not shown")
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if checkpoint.isCurrent {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(.tint)
+                            .accessibilityLabel(Text("Where the conversation is"))
+                    }
+                }
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .disabled(!store.canGo)
+            .accessibilityAddTraits(checkpoint.isCurrent ? .isSelected : [])
+            .swipeActions {
+                Button("Fork", systemImage: "arrow.triangle.branch") {
+                    store.send(.forkTapped(messageID: checkpoint.end))
+                }
+                .tint(.indigo)
+            }
+            .contextMenu {
+                Button("Fork From Here", systemImage: "arrow.triangle.branch") {
+                    store.send(.forkTapped(messageID: checkpoint.end))
+                }
+            }
+        }
+    }
+
+    private func title(of checkpoint: Conversation.Checkpoint) -> String {
+        checkpoint.message.text.isEmpty ? String(localized: "Attachment") : checkpoint.message.text
+    }
+}
+
 private struct MessageView: View {
     let message: ChatMessage
     let skill: String?
@@ -488,11 +656,14 @@ private struct MessageView: View {
     let showsThinking: Bool
     let toggleThinking: () -> Void
     let undo: () -> Void
+    /// Opens text to select part of.
+    let select: (String) -> Void
 
     var body: some View {
         VStack(alignment: message.role == .person ? .trailing : .leading, spacing: 4) {
             if let thinking = message.thinking, message.role == .assistant {
-                ThinkingDisclosure(thinking: thinking, isExpanded: showsThinking, toggle: toggleThinking)
+                ThinkingDisclosure(
+                    thinking: thinking, isExpanded: showsThinking, toggle: toggleThinking, select: select)
             }
             if let skill {
                 Label(skill, systemImage: "sparkles")
@@ -505,6 +676,7 @@ private struct MessageView: View {
             if !message.text.isEmpty {
                 if message.role == .person {
                     Text(message.text)
+                        .selectableOnMac()
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(.tint.opacity(0.2), in: .rect(cornerRadius: 16))
@@ -512,7 +684,7 @@ private struct MessageView: View {
                 } else {
                     // The assistant's words read as text, not a bubble.
                     Text(message.text)
-                        .textSelection(.enabled)
+                        .selectableOnMac()
                         .accessibilityIdentifier(ModelText.identifier)
                 }
             }
@@ -531,6 +703,8 @@ private struct ThinkingDisclosure: View {
     let thinking: ModelThinking
     let isExpanded: Bool
     let toggle: () -> Void
+    /// Opens the thoughts to select part of; nil while they're written.
+    var select: ((String) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -551,10 +725,13 @@ private struct ThinkingDisclosure: View {
             .accessibilityHint(isExpanded ? Text("Hides the thinking") : Text("Shows the thinking"))
             .accessibilityAddTraits(isExpanded ? .isSelected : [])
             if isExpanded {
-                Text(thinking.text.trimmingCharacters(in: .whitespacesAndNewlines))
+                Text(thoughts)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+                    .selectableOnMac()
+                    .contextMenu {
+                        if let select { TextMenu(text: thoughts, select: select) }
+                    }
                     .padding(.leading, 10)
                     .overlay(alignment: .leading) {
                         Rectangle().fill(.quaternary).frame(width: 2)
@@ -563,6 +740,8 @@ private struct ThinkingDisclosure: View {
         }
         .animation(.snappy(duration: 0.2), value: isExpanded)
     }
+
+    private var thoughts: String { thinking.text.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private var summary: String {
         guard let duration = thinking.duration else { return String(localized: "Thinking…") }
@@ -593,4 +772,27 @@ extension Binding {
 /// next. Tests' accessibility trees don't show it.
 enum ModelText {
     static let identifier = "lifr.model-text"
+}
+
+/// Copy and Select Text, for a message or its thoughts.
+private struct TextMenu: View {
+    let text: String
+    let select: (String) -> Void
+
+    var body: some View {
+        Button("Copy", systemImage: "doc.on.doc") { copyToClipboard(text) }
+        Button("Select Text", systemImage: "selection.pin.in.out") { select(text) }
+    }
+}
+
+extension View {
+    /// Lets the Mac select any part of the text by dragging. On iOS a long
+    /// press opens the message's menu instead, whose Select Text does.
+    @ViewBuilder fileprivate func selectableOnMac() -> some View {
+        #if os(macOS)
+            textSelection(.enabled)
+        #else
+            self
+        #endif
+    }
 }

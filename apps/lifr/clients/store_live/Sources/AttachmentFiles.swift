@@ -26,7 +26,12 @@ extension AttachmentsClient {
             },
             file: { attachment, conversation in try? files().file(attachment, conversation: conversation) },
             remove: { attachment, conversation in try? files().remove(attachment, conversation: conversation) },
-            removeAll: { conversation in try? files().removeAll(conversation) })
+            removeAll: { conversation in try? files().removeAll(conversation) },
+            copy: { attachments, from, to in
+                // One that can't be copied shows as not on this device.
+                guard let files = try? files() else { return }
+                for attachment in attachments { try? files.copy(attachment, from: from, to: to) }
+            })
     }
 }
 
@@ -52,6 +57,26 @@ struct AttachmentFiles: Sendable {
             guard Self.isWAV(data) else { throw .recordingFailed("it isn't a WAV file") }
             contents = data
         }
+        try write(contents, of: attachment, conversation: conversation)
+        return attachment
+    }
+
+    /// Keeps `attachment`'s file from conversation `from` for `to` too, if
+    /// it's on this device.
+    func copy(_ attachment: ChatAttachment, from: UUID, to: UUID) throws(AttachmentError) {
+        guard let source = file(attachment, conversation: from) else { return }
+        let contents: Data
+        do {
+            contents = try Data(contentsOf: source)
+        } catch {
+            throw .storageFailed(error.localizedDescription)
+        }
+        try write(contents, of: attachment, conversation: to)
+    }
+
+    /// Writes `contents` as `attachment`'s file, readable only by Lifr and
+    /// left out of backups.
+    private func write(_ contents: Data, of attachment: ChatAttachment, conversation: UUID) throws(AttachmentError) {
         let folder = folder(conversation)
         let url = url(attachment, conversation: conversation)
         do {
@@ -69,7 +94,6 @@ struct AttachmentFiles: Sendable {
         } catch {
             throw .storageFailed(error.localizedDescription)
         }
-        return attachment
     }
 
     /// The attachment's file, or nil when it isn't on this device.

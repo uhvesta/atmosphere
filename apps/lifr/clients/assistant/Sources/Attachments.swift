@@ -90,6 +90,9 @@ package struct AttachmentsClient: Sendable {
     package var remove: @Sendable (_ attachment: ChatAttachment, _ conversation: UUID) async -> Void
     /// Deletes every file of `conversation`.
     package var removeAll: @Sendable (_ conversation: UUID) async -> Void
+    /// Keeps a copy of each attachment's file from one conversation for
+    /// another, such as a fork, leaving out those not on this device.
+    package var copy: @Sendable (_ attachments: [ChatAttachment], _ from: UUID, _ to: UUID) async -> Void
 }
 
 extension AttachmentsClient {
@@ -119,6 +122,14 @@ extension AttachmentsClient {
             },
             removeAll: { conversation in
                 stored.withValue { $0[conversation] = nil }
+            },
+            copy: { attachments, from, to in
+                stored.withValue { stored in
+                    let kept = stored[from] ?? []
+                    for attachment in attachments where kept.contains(attachment.id) {
+                        stored[to, default: []].insert(attachment.id)
+                    }
+                }
             })
     }
 }

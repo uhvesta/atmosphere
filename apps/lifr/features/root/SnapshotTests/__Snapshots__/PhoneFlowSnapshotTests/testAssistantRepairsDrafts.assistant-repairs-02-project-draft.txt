@@ -1,4 +1,5 @@
 [button] "Conversations" id: BackButton
+[button] "Checkpoints"
 [header] "Add a task to stretch after every run t…"
 [text] "Add a task to stretch after every run to my Half marathon project"
 [text] "I added Stretch after every run to your Half marathon project."

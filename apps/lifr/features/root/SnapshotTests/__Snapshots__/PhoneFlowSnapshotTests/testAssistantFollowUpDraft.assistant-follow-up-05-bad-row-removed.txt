@@ -1,4 +1,5 @@
 [button] "Conversations" id: BackButton
+[button] "Checkpoints"
 [button] "Done"
 [button] "More"
 [header] "Add a Fitness Avenue"
@@ -9,6 +10,7 @@
 [button] "Remove"
 [text] "Add a Fitness Avenue"
 [text] "Here's a Fitness Avenue. Tap Add to make it."
+[button] "Undo"
 [text] "Now add a Reading Avenue"
 [text] "I added Reading, and a run to start with."
 [header, text] "Draft"

@@ -5,7 +5,17 @@ import LifrCore
 /// One conversation with the assistant.
 package struct Conversation: Identifiable, Hashable, Codable, Sendable {
     package var id: UUID
+    /// The messages shown, from the first to where the conversation is now.
+    /// Change them with `append` and `go(to:)`, which keep the branches.
     package var messages: [ChatMessage] = []
+    /// The messages not shown: those after the point the person went back
+    /// to, and those of other branches.
+    package var hidden: [ChatMessage] = []
+    /// The message each one follows. One missing follows the one before it
+    /// in `messages`, as in conversations kept before branches.
+    package var parents: [UUID: UUID] = [:]
+    /// The message last shown after each one, which going forward follows.
+    package var latest: [UUID: UUID] = [:]
     /// The plan on the draft card.
     package var draft: Plan?
     /// The journal entries each assistant message saved, for its Undo.
@@ -38,22 +48,29 @@ package struct Conversation: Identifiable, Hashable, Codable, Sendable {
         return first.count > 40 ? String(first.prefix(39)) + "…" : first
     }
 
-    package var updatedAt: Date { messages.last?.at ?? createdAt }
+    /// When its last message was written, on any branch: going back
+    /// doesn't make a conversation older.
+    package var updatedAt: Date { (messages + hidden).map(\.at).max() ?? createdAt }
 
     package var isArchived: Bool { archivedAt != nil }
 }
 
 extension Conversation {
     private enum CodingKeys: String, CodingKey {
-        case id, messages, draft, changes, added, createdAt, archivedAt, isSynced, name, isNamedByHand
+        case id, messages, hidden, parents, latest, draft, changes, added, createdAt, archivedAt, isSynced, name
+        case isNamedByHand
     }
 
-    /// Conversations saved before archiving, per-conversation syncing and
-    /// names read as in the main list, on this device and unnamed.
+    /// Conversations saved before archiving, per-conversation syncing,
+    /// names and branches read as in the main list, on this device, unnamed
+    /// and in one line.
     package init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         messages = try container.decodeIfPresent([ChatMessage].self, forKey: .messages) ?? []
+        hidden = try container.decodeIfPresent([ChatMessage].self, forKey: .hidden) ?? []
+        parents = try container.decodeIfPresent([UUID: UUID].self, forKey: .parents) ?? [:]
+        latest = try container.decodeIfPresent([UUID: UUID].self, forKey: .latest) ?? [:]
         draft = try container.decodeIfPresent(Plan.self, forKey: .draft)
         changes = try container.decodeIfPresent([UUID: [UUID]].self, forKey: .changes) ?? [:]
         added = try container.decodeIfPresent([UUID].self, forKey: .added) ?? []

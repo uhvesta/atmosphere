@@ -1,4 +1,5 @@
 [button] "Conversations" id: BackButton
+[button, notEnabled] "Checkpoints"
 [header] "New conversation"
 [text] "Ask about your tasks, change them, or plan what to add."
 [button] "Plan my week"

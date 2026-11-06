@@ -1,4 +1,5 @@
 [button] "Conversations" id: BackButton
+[button] "Checkpoints"
 [header] "Add a task to buy milk, in HOME"
 [text] "Add a task to buy milk, in HOME"
 [text] "I added a task to buy milk in HOME."

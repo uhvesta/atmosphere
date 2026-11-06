@@ -261,6 +261,11 @@ package struct ConversationsFeature {
                 }
                 return .none
 
+            case .chats(.element(_, .delegate(.fork(let fork)))):
+                state.conversations[id: fork.id] = fork
+                state.open(fork)
+                return save(fork)
+
             case .chats(.element(_, .delegate(.saved(let workspace)))):
                 state.show(workspace)
                 return .send(.delegate(.saved(workspace)))

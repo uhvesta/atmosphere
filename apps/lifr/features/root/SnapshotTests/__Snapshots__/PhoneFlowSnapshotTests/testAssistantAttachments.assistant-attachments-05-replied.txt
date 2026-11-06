@@ -1,4 +1,5 @@
 [button] "Conversations" id: BackButton
+[button] "Checkpoints"
 [header] "What plant is this?"
 [text] "Photo"
 [text] "Recording, 6 s"

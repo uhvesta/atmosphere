@@ -1,7 +1,9 @@
 [button] "Conversations" id: BackButton
+[button] "Checkpoints"
 [header] "Tidy my weekend"
 [text] "Tidy my weekend"
 [text] "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
+[button] "Undo"
 [text] "Added 2 tasks to Home"
 [button] "Undo"
 [button] "Use a Skill"

@@ -3,6 +3,7 @@ import LifrAPI
 import LifrAssistantClient
 import LifrAssistantLive
 import LifrBugReport
+import LifrConversations
 import LifrCore
 import LifrGlance
 import LifrGlanceClient
@@ -482,6 +483,65 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         let titles = store.workspace?.tasks.values.map(\.title) ?? []
         XCTAssertTrue(titles.contains("Call the electrician"))
         XCTAssertFalse(titles.contains("Call the plumber"))
+        flow.finish()
+    }
+
+    /// Going back in a chat past a reply whose plan was added, keeping its
+    /// tasks; writing again from there, which starts a second version; the
+    /// log of every point; then forking the chat from the first reply.
+    func testChatCheckpoints() async throws {
+        let (store, flow) = app(
+            "chat-checkpoints",
+            replies: [
+                AssistantReply(text: "Start with the urgent tasks, then the ones due this week.", isComplete: true),
+                .example,
+                AssistantReply(text: "Saturday morning suits the garden; leave the afternoon free.", isComplete: true),
+            ])
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        func chat(_ action: ChatFeature.Action) { store.send(.conversations(.chats(.element(id: id, action: action)))) }
+        func later() { time.withValue { $0 += 60 } }
+        send("What should I do first?", in: id, of: store)
+        await flow.step("first", image: false)
+        later()
+        send("Tidy my weekend", in: id, of: store)
+        await flow.step("drafted", image: false)
+        chat(.addTapped)
+        await flow.step("added", image: false)
+        later()
+
+        chat(.backTapped)
+        await flow.step("undo-asked")
+        let back = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.back)
+        chat(.alert(.presented(.go(to: back, undo: false))))
+        await flow.step("rewound")
+        XCTAssertEqual(store.conversations.chats[id: id]?.conversation.messages.count, 2)
+        XCTAssertNotNil(store.conversations.chats[id: id]?.conversation.forward, "What came after is kept")
+
+        send("Plan Saturday instead", in: id, of: store)
+        await flow.step("second-version")
+        let conversation = try XCTUnwrap(store.conversations.chats[id: id]?.conversation)
+        let asked = try XCTUnwrap(conversation.messages.last { $0.role == .person })
+        XCTAssertEqual(conversation.branches(at: asked.id).count, 2)
+        chat(.branchTapped(messageID: asked.id, by: -1))
+        await flow.step("first-version")
+        let shownLast = store.conversations.chats[id: id]?.conversation.messages.last
+        XCTAssertEqual(shownLast?.text, AssistantReply.example.text)
+
+        // The Undo toast's gone by now, and the log's sheet covers it.
+        if let toast = store.toast { store.send(.toastExpired(toast.id)) }
+        chat(.binding(.set(\.showsCheckpoints, true)))
+        await flow.step("log")
+        XCTAssertEqual(store.conversations.chats[id: id]?.conversation.checkpoints.count, 3)
+        let shown = store.conversations.chats[id: id]?.conversation.messages ?? []
+        let reply = try XCTUnwrap(shown.dropFirst().first)
+        chat(.forkTapped(messageID: reply.id))
+        await flow.step("forked")
+        let fork = try XCTUnwrap(store.conversations.openID)
+        XCTAssertNotEqual(fork, id)
+        XCTAssertEqual(
+            store.conversations.chats[id: fork]?.conversation.messages.map(\.text), shown.prefix(2).map(\.text))
         flow.finish()
     }
 

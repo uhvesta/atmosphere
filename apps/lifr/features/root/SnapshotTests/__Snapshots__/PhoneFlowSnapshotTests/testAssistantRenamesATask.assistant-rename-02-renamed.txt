@@ -1,4 +1,5 @@
 [button] "Conversations" id: BackButton
+[button] "Checkpoints"
 [header] "Rename “Call the plumber” to “Call the …"
 [text] "Rename “Call the plumber” to “Call the electrician”"
 [text] "I renamed the task to Call the electrician."

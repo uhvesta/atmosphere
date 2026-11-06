@@ -3,12 +3,6 @@ import LifrCore
 import LifrUI
 import SwiftUI
 
-#if os(macOS)
-    import AppKit
-#else
-    import UIKit
-#endif
-
 /// What the plan adds, to read before adding: each row with what it means,
 /// such as "Sat, Nov 7" for "saturday" or "Home" for "HOME". Edit opens the
 /// plan's fields; Add adds exactly what the card shows.
@@ -223,18 +217,9 @@ struct DraftEditor: View {
         }
         .toolbar {
             ToolbarItem(placement: .secondaryAction) {
-                Button("Copy as TOML", systemImage: "doc.on.doc") { copy(PlanFile.write(plan)) }
+                Button("Copy as TOML", systemImage: "doc.on.doc") { copyToClipboard(PlanFile.write(plan)) }
             }
         }
-    }
-
-    private func copy(_ text: String) {
-        #if os(macOS)
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-        #else
-            UIPasteboard.general.string = text
-        #endif
     }
 }
 

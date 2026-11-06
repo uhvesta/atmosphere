@@ -1,4 +1,5 @@
 [button] "Conversations" id: BackButton
+[button] "Checkpoints"
 [header] "When should I water the plants?"
 [text] "When should I water the plants?"
 [button, selected] "Thoughts · 4.2 secs. on the GPU" hint: "Hides the thinking"

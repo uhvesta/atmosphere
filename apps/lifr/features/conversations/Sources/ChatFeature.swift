@@ -72,6 +72,8 @@ package struct ChatFeature {
         /// writing. Opening a chat doesn't: Lifr reopens the last one at
         /// launch, and a model takes gigabytes.
         package var warmed = false
+        /// Whether the log of every point to go back or forward to is open.
+        package var showsCheckpoints = false
 
         package init(conversation: Conversation, workspace: Workspace) {
             self.conversation = conversation
@@ -86,6 +88,10 @@ package struct ChatFeature {
         package var isWorking: Bool { replying != nil || waiting != nil || reloading || naming || alert != nil }
 
         package var canAdd: Bool { conversation.draft != nil && problem == nil }
+
+        /// Whether the conversation can go back, forward or to another
+        /// branch: not while a reply is written or its changes are read.
+        package var canGo: Bool { replying == nil && waiting == nil && !reloading && !conversation.messages.isEmpty }
 
         /// The skill picked for the next message, while it exists and is on.
         package var picked: Skill? { skill.flatMap { id in skills.first { $0.id == id && $0.isOn } } }
@@ -141,17 +147,36 @@ package struct ChatFeature {
         case discardDraftTapped
         case addTapped
         case saved(Result<Saved, any Error>)
+        /// Goes to the point before the last one shown.
+        case backTapped
+        /// Goes to the point after the last one shown, the way it last went.
+        case forwardTapped
+        /// Goes to the end of the latest branch from here.
+        case latestTapped
+        /// Shows the branch `by` places along from the message's, such as
+        /// -1 for the one written before it.
+        case branchTapped(messageID: UUID, by: Int)
+        /// A point in the log, or a message, to go to.
+        case goTapped(UUID)
+        /// Makes a new conversation of the messages up to this one.
+        case forkTapped(messageID: UUID)
+        case forked(Conversation)
         case alert(PresentationAction<Alert>)
         case delegate(Delegate)
 
         package enum Alert: Equatable {
             case tryAgain
+            /// Goes to the message, undoing the changes of the replies
+            /// that hides or keeping them.
+            case go(to: UUID, undo: Bool)
         }
 
         @CasePathable
         package enum Delegate {
             case saved(Workspace)
             case rename
+            /// A new conversation forked from this one, to keep and open.
+            case fork(Conversation)
         }
     }
 
@@ -230,7 +255,7 @@ package struct ChatFeature {
                 let sent = state.pending
                 state.pending = []
                 let conversation = state.conversation.id
-                state.conversation.messages.append(
+                state.conversation.append(
                     ChatMessage(id: uuid(), role: .person, text: text, at: now, skill: skill?.id, attachments: sent))
                 state.replying = ""
                 let request = AssistantRequest(
@@ -334,7 +359,7 @@ package struct ChatFeature {
                 state.reloading = true
                 let id = uuid()
                 let thinking = reply.thinking?.shown
-                state.conversation.messages.append(
+                state.conversation.append(
                     ChatMessage(id: id, role: .assistant, text: reply.text, at: now, thinking: thinking))
                 // Thinking opened while it was written stays open.
                 if state.showsReplyThinking, thinking != nil { state.shownThinking.insert(id) }
@@ -421,6 +446,53 @@ package struct ChatFeature {
                 state.failed = nil
                 return .none
 
+            case .backTapped:
+                guard let back = state.conversation.back else { return .none }
+                return go(to: back, in: &state)
+
+            case .forwardTapped:
+                guard let forward = state.conversation.forward else { return .none }
+                return go(to: forward, in: &state)
+
+            case .latestTapped:
+                guard let newest = state.conversation.newest else { return .none }
+                return go(to: newest, in: &state)
+
+            case .branchTapped(let id, let offset):
+                let branches = state.conversation.branches(at: id)
+                guard let index = branches.firstIndex(where: { $0.id == id }),
+                    branches.indices.contains(index + offset)
+                else { return .none }
+                return go(to: state.conversation.newest(through: branches[index + offset].id), in: &state)
+
+            case .goTapped(let id):
+                state.showsCheckpoints = false
+                return go(to: id, in: &state)
+
+            case .alert(.presented(.go(let id, let undo))):
+                let entries = state.conversation.changedReplies(hiddenGoingTo: id).flatMap {
+                    state.conversation.changes[$0] ?? []
+                }
+                state.conversation.go(to: id)
+                guard undo, !entries.isEmpty else { return .none }
+                return .run { [store] send in
+                    await send(.saved(Result { try await store.revert(entries: entries) }))
+                }
+
+            case .forkTapped(let id):
+                state.showsCheckpoints = false
+                guard state.canGo, let fork = state.conversation.fork(at: id, as: uuid(), now: now) else {
+                    return .none
+                }
+                let from = state.conversation.id
+                return .run { [attachments] send in
+                    await attachments.copy(fork.messages.flatMap(\.attachments), from, fork.id)
+                    await send(.forked(fork))
+                }
+
+            case .forked(let fork):
+                return .send(.delegate(.fork(fork)))
+
             case .reloaded(let messageID, .success(let workspace)):
                 state.reloading = false
                 let known = Set(state.conversation.changes.values.joined()).union(state.conversation.added)
@@ -496,6 +568,11 @@ package struct ChatFeature {
                     state.problem = nil
                     if let entry = saved.change.entry {
                         state.conversation.added.append(entry)
+                        // The reply that drafted it made it, for going back
+                        // past that reply to undo.
+                        if let reply = state.conversation.messages.last(where: { $0.role == .assistant }) {
+                            state.conversation.changes[reply.id, default: []].append(entry)
+                        }
                     }
                 }
                 check(&state)
@@ -598,6 +675,31 @@ package struct ChatFeature {
         } message: {
             TextState(String(describing: error))
         }
+    }
+
+    /// Goes to the message `id`, first asking whether to undo the task
+    /// changes of the replies that hides. Going forward again doesn't make
+    /// undone changes again.
+    private func go(to id: UUID, in state: inout State) -> Effect<Action> {
+        guard state.canGo else { return .none }
+        let changed = state.conversation.changedReplies(hiddenGoingTo: id)
+        guard !changed.isEmpty else {
+            state.conversation.go(to: id)
+            return .none
+        }
+        let count = changed.reduce(0) { $0 + (state.conversation.changes[$1]?.count ?? 0) }
+        let changes = String(AttributedString(localized: "^[\(count) change](inflect: true)").characters)
+        state.alert = AlertState {
+            TextState("Also undo the \(changes) made after this point?")
+        } actions: {
+            ButtonState(role: .destructive, action: .go(to: id, undo: true)) { TextState("Undo Changes") }
+            ButtonState(action: .go(to: id, undo: false)) { TextState("Keep Changes") }
+            ButtonState(role: .cancel) { TextState("Cancel") }
+        } message: {
+            TextState(
+                "The replies after it are kept to go forward to. Going forward doesn't make undone changes again.")
+        }
+        return .none
     }
 
     /// Checks the draft against the records as they are now.

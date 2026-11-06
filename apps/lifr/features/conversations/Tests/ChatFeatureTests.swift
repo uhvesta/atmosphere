@@ -636,6 +636,128 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertNil(store.state.picked)
     }
 
+    // MARK: - Checkpoints
+
+    /// Gives each message a later time, as when the person writes them.
+    private func ticking(_ store: TestStoreOf<ChatFeature>) {
+        let seconds = LockIsolated(0.0)
+        store.dependencies.date = DateGenerator { [now] in
+            seconds.withValue { $0 += 1 }
+            return now.addingTimeInterval(seconds.value)
+        }
+    }
+
+    private func texts(_ store: TestStoreOf<ChatFeature>) -> [String] {
+        store.state.conversation.messages.map(\.text)
+    }
+
+    func testGoingBackAndForwardKeepsWhatCameAfter() async throws {
+        let (workspace, _) = home()
+        let store = chat(workspace) { request in
+            AssistantReply(text: "re " + (request.messages.last?.text ?? ""), isComplete: true)
+        }
+        ticking(store)
+        await send("one", in: store)
+        await send("two", in: store)
+
+        await store.send(.backTapped)
+        XCTAssertEqual(texts(store), ["one", "re one"])
+        await store.send(.forwardTapped)
+        XCTAssertEqual(texts(store), ["one", "re one", "two", "re two"])
+
+        await store.send(.backTapped)
+        await send("two again", in: store)
+        XCTAssertEqual(texts(store), ["one", "re one", "two again", "re two again"])
+        let again = try XCTUnwrap(store.state.conversation.messages.first { $0.text == "two again" })
+        XCTAssertEqual(store.state.conversation.branches(at: again.id).count, 2)
+        XCTAssertEqual(
+            store.state.conversation.checkpoints.map(\.message.text), ["one", "two", "two again"])
+
+        await store.send(.branchTapped(messageID: again.id, by: -1))
+        XCTAssertEqual(texts(store), ["one", "re one", "two", "re two"])
+        let two = try XCTUnwrap(store.state.conversation.messages.first { $0.text == "two" })
+        await store.send(.branchTapped(messageID: two.id, by: 1))
+        XCTAssertEqual(texts(store), ["one", "re one", "two again", "re two again"])
+    }
+
+    func testGoingBackPastChangesAsksWhetherToUndoThem() async throws {
+        let (workspace, rent) = home()
+        let code = workspace.displayCode(of: rent)
+        let store = chat(workspace) { request in
+            if request.messages.last?.text == "I paid the rent" {
+                _ = try? await request.tools().change(TaskChange(code: code, status: "done"))
+            }
+            return AssistantReply(text: "OK.", isComplete: true)
+        }
+        ticking(store)
+        await send("Hello", in: store)
+        await send("I paid the rent", in: store)
+        let start = try XCTUnwrap(store.state.conversation.messages.dropFirst().first?.id)
+
+        await store.send(.goTapped(start))
+        XCTAssertNotNil(store.state.alert, "Asks before going back past changes")
+        XCTAssertEqual(store.state.conversation.messages.count, 4)
+        await store.send(.alert(.presented(.go(to: start, undo: false))))
+        XCTAssertEqual(store.state.conversation.messages.count, 2)
+        XCTAssertEqual(store.state.workspace.tasks[rent.id]?.status, .done)
+
+        await store.send(.forwardTapped)
+        await store.send(.goTapped(start))
+        await store.send(.alert(.presented(.go(to: start, undo: true))))
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.conversation.messages.count, 2)
+        XCTAssertEqual(store.state.workspace.tasks[rent.id]?.status, .todo)
+
+        await store.send(.forwardTapped)
+        XCTAssertNil(store.state.alert, "Nothing left to undo")
+        XCTAssertEqual(store.state.conversation.messages.count, 4)
+        XCTAssertEqual(store.state.workspace.tasks[rent.id]?.status, .todo, "Going forward changes nothing again")
+    }
+
+    func testNothingGoesBackWhileAReplyIsWritten() async throws {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "OK.", isComplete: true) }
+        ticking(store)
+        await send("one", in: store)
+        await send("two", in: store)
+        store.dependencies.assistant.reply = { _ in AssistantReplies { _ in } }
+
+        await store.send(.binding(.set(\.input, "three")))
+        await store.send(.sendTapped)
+        await store.send(.backTapped)
+        XCTAssertEqual(store.state.conversation.messages.last?.text, "three")
+    }
+
+    func testAForkOpensAsANewConversationUpToThere() async throws {
+        let kept = ConversationsClient.inMemory()
+        let attachments = AttachmentsClient.inMemory()
+        let store = list(kept, attachments: attachments)
+        await store.send(.task)
+        await store.send(.newTapped)
+        let id = try XCTUnwrap(store.state.openID)
+        let photo = try await attachments.save(Data([1]), .image, nil, id)
+        await store.send(.chats(.element(id: id, action: .attached(.success(photo)))))
+        for text in ["Plan the week", "And the weekend"] {
+            await store.send(.chats(.element(id: id, action: .binding(.set(\.input, text)))))
+            await store.send(.chats(.element(id: id, action: .sendTapped)))
+            await store.skipReceivedActions()
+        }
+        let original = try XCTUnwrap(store.state.chat?.conversation)
+        let reply = try XCTUnwrap(original.messages.dropFirst().first?.id)
+
+        await store.send(.chats(.element(id: id, action: .forkTapped(messageID: reply))))
+        await store.skipReceivedActions()
+
+        let fork = try XCTUnwrap(store.state.chat?.conversation)
+        XCTAssertNotEqual(fork.id, id)
+        XCTAssertEqual(fork.messages.map(\.text), ["Plan the week", "Hi."])
+        XCTAssertNotEqual(fork.title, original.title)
+        XCTAssertNotNil(attachments.file(photo, fork.id), "The photo goes with the fork")
+        XCTAssertEqual(store.state.conversations[id: id]?.messages.count, 4)
+        let saved = try await kept.load()
+        XCTAssertEqual(Set(saved.map(\.id)), [id, fork.id])
+    }
+
     private func list(
         _ kept: ConversationsClient, attachments: AttachmentsClient = .inMemory()
     ) -> TestStoreOf<ConversationsFeature> {

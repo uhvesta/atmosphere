@@ -73,6 +73,21 @@ final class AttachmentFilesTests: XCTestCase {
         XCTAssertNotNil(files.file(theirs, conversation: other))
     }
 
+    func testAForkKeepsItsOwnCopyOfEachAttachmentHere() throws {
+        let fork = UUID()
+        let recording = try files.save(Self.wav, kind: .audio, seconds: 1, conversation: conversation)
+        let synced = ChatAttachment(id: UUID(), kind: .image)
+
+        try files.copy(recording, from: conversation, to: fork)
+        try files.copy(synced, from: conversation, to: fork)
+        try files.removeAll(conversation)
+
+        let url = try XCTUnwrap(files.file(recording, conversation: fork))
+        XCTAssertEqual(try Data(contentsOf: url), Self.wav)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int, 0o600)
+        XCTAssertNil(files.file(synced, conversation: fork))
+    }
+
     func testAnAttachmentFromAnotherDeviceIsntHere() {
         let synced = ChatAttachment(id: UUID(), kind: .image)
         XCTAssertNil(files.file(synced, conversation: conversation))
