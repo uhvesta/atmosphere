@@ -194,7 +194,8 @@ package enum ModelStatus: Hashable, Sendable {
     /// The model picked isn't on the device: its download didn't finish,
     /// or it was deleted.
     case notDownloaded
-    /// The model needs more memory than the system leaves Lifr now.
+    /// The model needs more memory than the system leaves Lifr now: the
+    /// bytes it takes with what's kept free besides, and the bytes free.
     case notEnoughMemory(needed: Int64, available: Int64)
 }
 

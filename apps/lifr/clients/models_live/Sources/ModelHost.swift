@@ -128,11 +128,43 @@ package actor ModelHost {
         if let loaded, loaded.id == model.id, loaded.backend == backend || !turns.isEmpty { return loaded.engine }
         if let loading, loading.id == model.id, loading.backend == backend { return try await loading.task.value.get() }
         unload(nil)
-        let needed = MemoryPlan.needed(model.spec)
-        let available = memory()
-        guard MemoryPlan.fits(needed, available: available) else {
-            throw .unavailable(.notEnoughMemory(needed: needed, available: available))
+        let fitting = try await self.backend(for: model, preferring: backend)
+        // Another turn may have started loading it while this one waited.
+        if let loading, loading.id == model.id { return try await loading.task.value.get() }
+        if let loaded, loaded.id == model.id { return loaded.engine }
+        if loaded != nil || loading != nil { unload(nil) }
+        return try await start(model, on: fitting)
+    }
+
+    /// Where `model` fits in memory now: on `preferred`, or on the CPU when
+    /// only that fits. The memory of a model unloaded just now takes a
+    /// moment to come back, while its last turns let go of it, so it looks
+    /// again a few times before it gives up.
+    private func backend(
+        for model: InstalledModel, preferring preferred: ModelBackend
+    ) async throws(ModelRuntimeError) -> ModelBackend {
+        let needed = MemoryPlan.needed(model.spec, on: preferred)
+        var available = memory()
+        for _ in 0..<MemoryPlan.looks where !MemoryPlan.fits(needed, available: available) {
+            do {
+                try await sleep(MemoryPlan.between)
+            } catch {
+                throw .cancelled
+            }
+            available = memory()
         }
+        if MemoryPlan.fits(needed, available: available) { return preferred }
+        if preferred == .gpu, MemoryPlan.fits(MemoryPlan.needed(model.spec, on: .cpu), available: available) {
+            return .cpu
+        }
+        throw .unavailable(
+            .notEnoughMemory(needed: needed + MemoryPlan.headroom(available), available: available))
+    }
+
+    /// Loads `model` on `backend`, as the one loaded once it's done.
+    private func start(_ model: InstalledModel, on backend: ModelBackend) async throws(ModelRuntimeError)
+        -> any LiteRTEngine
+    {
         let load = load
         let task = Task { () async -> Result<any LiteRTEngine, ModelRuntimeError> in
             do throws(ModelRuntimeError) {
@@ -277,11 +309,17 @@ package actor ModelHost {
 
 /// Whether a model fits in the memory the system leaves Lifr.
 package enum MemoryPlan {
-    /// The memory a model takes once loaded: its catalog figure, or for a
-    /// pasted model, the size of its files.
-    package static func needed(_ spec: ModelSpec) -> Int64 {
-        spec.memoryBytes > 0 ? spec.memoryBytes : spec.downloadSize
+    /// The memory a model takes once loaded on `backend`: its catalog
+    /// figure, or for a pasted model, the size of its files.
+    package static func needed(_ spec: ModelSpec, on backend: ModelBackend = .gpu) -> Int64 {
+        let gpu = spec.memoryBytes > 0 ? spec.memoryBytes : spec.downloadSize
+        return backend == .cpu && spec.cpuMemoryBytes > 0 ? spec.cpuMemoryBytes : gpu
     }
+
+    /// How many more times a model that doesn't fit looks again, and how
+    /// long it waits before each: memory given back takes a moment.
+    static let looks = 6
+    static let between: Duration = .milliseconds(500)
 
     /// What's kept free besides the model: half a gigabyte, or a tenth of
     /// what's available if that's more.

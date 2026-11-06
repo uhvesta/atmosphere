@@ -95,6 +95,9 @@ package struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
     /// The memory it takes while answering, measured, at `contextTokens`
     /// or less. Zero when unknown.
     package var memoryBytes: Int64
+    /// The memory it takes on the CPU, which is less: there's no GPU copy
+    /// of its weights. Zero when unknown.
+    package var cpuMemoryBytes: Int64
     /// The license's name, such as Apache 2.0.
     package var license: String
     /// What it can read besides text.
@@ -102,7 +105,7 @@ package struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
 
     package init(
         id: ModelID, name: String, summary: String, runtime: RuntimeKind, source: ModelSource?, contextTokens: Int,
-        memoryBytes: Int64, license: String, inputs: Set<ModelInput> = []
+        memoryBytes: Int64, cpuMemoryBytes: Int64 = 0, license: String, inputs: Set<ModelInput> = []
     ) {
         self.id = id
         self.name = name
@@ -111,15 +114,17 @@ package struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
         self.source = source
         self.contextTokens = contextTokens
         self.memoryBytes = memoryBytes
+        self.cpuMemoryBytes = cpuMemoryBytes
         self.license = license
         self.inputs = inputs
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, summary, runtime, source, contextTokens, memoryBytes, license, inputs
+        case id, name, summary, runtime, source, contextTokens, memoryBytes, cpuMemoryBytes, license, inputs
     }
 
-    /// Reads manifests written before models had inputs as text only.
+    /// Reads manifests written before models had inputs as text only, and
+    /// before they had a CPU figure as unknown.
     package init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(ModelID.self, forKey: .id)
@@ -129,6 +134,7 @@ package struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
         source = try container.decodeIfPresent(ModelSource.self, forKey: .source)
         contextTokens = try container.decode(Int.self, forKey: .contextTokens)
         memoryBytes = try container.decode(Int64.self, forKey: .memoryBytes)
+        cpuMemoryBytes = try container.decodeIfPresent(Int64.self, forKey: .cpuMemoryBytes) ?? 0
         license = try container.decode(String.self, forKey: .license)
         inputs = try container.decodeIfPresent(Set<ModelInput>.self, forKey: .inputs) ?? []
     }

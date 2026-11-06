@@ -144,7 +144,11 @@ package final class ModelLibrary: Sendable {
             let manifest = try? JSONDecoder().decode(Manifest.self, from: data)
         else { return nil }
         var spec = manifest.spec
-        if let entry = ModelCatalog.entry(for: spec) { spec.inputs.formUnion(entry.inputs) }
+        if let entry = ModelCatalog.entry(for: spec) {
+            spec.inputs.formUnion(entry.inputs)
+            spec.memoryBytes = entry.memoryBytes
+            spec.cpuMemoryBytes = entry.cpuMemoryBytes
+        }
         return InstalledModel(spec: spec, directory: directory, installedAt: manifest.installedAt)
     }
 

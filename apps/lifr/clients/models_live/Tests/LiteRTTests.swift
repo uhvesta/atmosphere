@@ -299,20 +299,21 @@ final class LiteRTTurnTests: XCTestCase {
 }
 
 final class ModelHostTests: XCTestCase {
-    private func model(_ id: ModelID, memory: Int64 = 1_000_000_000) -> InstalledModel {
+    private func model(_ id: ModelID, memory: Int64 = 1_000_000_000, cpu: Int64 = 0) -> InstalledModel {
         InstalledModel(
             spec: ModelSpec(
                 id: id, name: id.rawValue, summary: "", runtime: .liteRT,
                 source: ModelSource(
                     repo: "org/model", commit: String(repeating: "a", count: 40),
                     files: [ModelFile(path: "m.litertlm", size: 10, digest: .sha256(String(repeating: "b", count: 64)))]
-                ), contextTokens: 8_192, memoryBytes: memory, license: ""),
+                ), contextTokens: 8_192, memoryBytes: memory, cpuMemoryBytes: cpu,
+                license: ""),
             directory: URL(filePath: "/nonexistent"), installedAt: Date(timeIntervalSince1970: 0))
     }
 
     private func host(
         loads: LockIsolated<[ModelID]> = LockIsolated([]), chat: FakeChat = FakeChat(["hi", "hi", "hi"]),
-        memory: Int64 = 8_000_000_000,
+        memory: @escaping @Sendable () -> Int64 = { 8_000_000_000 },
         sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in
             try await Task.sleep(for: .seconds(3_600))
         },
@@ -323,7 +324,7 @@ final class ModelHostTests: XCTestCase {
                 loads.withValue { $0.append(model.id) }
                 backends.withValue { $0.append(backend) }
                 return FakeEngine(chat: chat)
-            }, memory: { memory }, sleep: sleep, answersInBackground: { answersInBackground })
+            }, memory: memory, sleep: sleep, answersInBackground: { answersInBackground })
     }
 
     /// A conversation whose first message waits until it's stopped, and
@@ -512,15 +513,38 @@ final class ModelHostTests: XCTestCase {
 
     func testAModelThatDoesntFitIsntLoaded() async {
         let loads = LockIsolated<[ModelID]>([])
-        let host = host(loads: loads, memory: 3_000_000_000)
+        let host = host(loads: loads, memory: { 3_000_000_000 }, sleep: { _ in })
 
         do {
             _ = try await host.run(model("a", memory: 2_600_000_000), plain)
             XCTFail("it loaded")
         } catch {
-            XCTAssertEqual(error, .unavailable(.notEnoughMemory(needed: 2_600_000_000, available: 3_000_000_000)))
+            XCTAssertEqual(error, .unavailable(.notEnoughMemory(needed: 3_100_000_000, available: 3_000_000_000)))
         }
         XCTAssertEqual(loads.value, [])
+    }
+
+    func testAModelLoadsOnceMemoryUnloadedJustNowComesBack() async throws {
+        let looks = LockIsolated(0)
+        let backends = LockIsolated<[ModelBackend]>([])
+        let host = host(
+            memory: {
+                looks.withValue { $0 += 1 }
+                return looks.value < 3 ? 1_000_000_000 : 8_000_000_000
+            }, sleep: { _ in }, backends: backends)
+
+        _ = try await host.run(model("a", memory: 2_600_000_000), plain)
+
+        XCTAssertEqual(backends.value, [.gpu])
+    }
+
+    func testAModelThatOnlyFitsOnTheCPULoadsThere() async throws {
+        let backends = LockIsolated<[ModelBackend]>([])
+        let host = host(memory: { 2_000_000_000 }, sleep: { _ in }, backends: backends)
+
+        _ = try await host.run(model("a", memory: 2_600_000_000, cpu: 1_000_000_000), plain)
+
+        XCTAssertEqual(backends.value, [.cpu])
     }
 
     func testRunningLowOnMemoryStopsTheTurn() async throws {
@@ -551,10 +575,10 @@ final class ModelHostTests: XCTestCase {
 
     func testAnIdleModelIsUnloaded() async throws {
         let wake = AsyncStream.makeStream(of: Void.self)
-        let host = host { _ in
+        let host = host(sleep: { _ in
             var iterator = wake.stream.makeAsyncIterator()
             _ = await iterator.next()
-        }
+        })
 
         _ = try await host.run(model("a"), plain)
         let before = await host.loadedModel
@@ -651,6 +675,18 @@ final class LiteRTRuntimeTests: XCTestCase {
 
         XCTAssertEqual(decoded.inputs, [])
         XCTAssertEqual(ModelCatalog.entry(for: decoded)?.inputs, [.image, .audio])
+    }
+
+    func testAModelDownloadedBeforeItsCPUFigureTakesTheCatalogs() throws {
+        let manifest = try JSONEncoder().encode(ModelCatalog.gemma4E2B)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: manifest) as? [String: Any])
+        json["cpuMemoryBytes"] = nil
+        let decoded = try JSONDecoder().decode(
+            ModelSpec.self, from: JSONSerialization.data(withJSONObject: json))
+
+        XCTAssertEqual(decoded.cpuMemoryBytes, 0)
+        let cpu = try XCTUnwrap(ModelCatalog.entry(for: decoded)?.cpuMemoryBytes)
+        XCTAssertLessThan(cpu, decoded.memoryBytes)
     }
 
     func testAPickedModelThatIsntDownloadedSaysSo() throws {

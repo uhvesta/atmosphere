@@ -44,8 +44,9 @@ package enum AssistantAvailability: Hashable, Sendable, CustomStringConvertible 
     case modelNotReady
     /// The model picked for the assistant isn't on the device.
     case notDownloaded
-    /// The model picked needs more memory than the device has free.
-    case notEnoughMemory
+    /// The model picked needs more memory than the device has free: the
+    /// bytes it takes with room to spare, and the bytes free now.
+    case notEnoughMemory(needed: Int64, available: Int64)
 
     package var description: String {
         switch self {
@@ -64,10 +65,15 @@ package enum AssistantAvailability: Hashable, Sendable, CustomStringConvertible 
         case .notDownloaded:
             "The model picked for the assistant isn't on this device. Download it again in Settings › Models, or "
                 + "pick another model there."
-        case .notEnoughMemory:
-            "The model picked for the assistant needs more memory than this device has free. Close other apps "
-                + "and try again, or pick a smaller model in Settings › Models."
+        case .notEnoughMemory(let needed, let available):
+            "The model picked for the assistant needs about \(Self.bytes(needed)) of memory and Lifr has "
+                + "\(Self.bytes(available)) free now. Close other apps and try again, or pick a smaller model in "
+                + "Settings › Models."
         }
+    }
+
+    private static func bytes(_ count: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: count, countStyle: .memory)
     }
 }
 

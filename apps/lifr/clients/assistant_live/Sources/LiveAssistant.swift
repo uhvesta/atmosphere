@@ -32,7 +32,8 @@ extension AssistantAvailability {
         case .notEnabled: self = .notEnabled
         case .modelNotReady: self = .modelNotReady
         case .notDownloaded: self = .notDownloaded
-        case .notEnoughMemory: self = .notEnoughMemory
+        case .notEnoughMemory(let needed, let available):
+            self = .notEnoughMemory(needed: needed, available: available)
         }
     }
 }
