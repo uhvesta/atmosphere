@@ -97,6 +97,13 @@ package struct ChatFeature {
         /// branch: not while a reply is written or its changes are read.
         package var canGo: Bool { replying == nil && waiting == nil && !reloading && !conversation.messages.isEmpty }
 
+        /// Whether the conversation can be forked at the message `id`: also
+        /// while a reply is written, from before the message it answers.
+        package func canFork(at id: UUID) -> Bool {
+            guard !conversation.messages.isEmpty else { return false }
+            return canGo || id != conversation.messages.last?.id
+        }
+
         /// Whether the reply to `message`, or `message` itself for a reply,
         /// can be written again: any reply, or the last message when its
         /// reply failed in a way sending it again can fix, or never came.
@@ -533,7 +540,7 @@ package struct ChatFeature {
 
             case .forkTapped(let id):
                 state.showsCheckpoints = false
-                guard state.canGo, let fork = state.conversation.fork(at: id, as: uuid(), now: now) else {
+                guard state.canFork(at: id), let fork = state.conversation.fork(at: id, as: uuid(), now: now) else {
                     return .none
                 }
                 let from = state.conversation.id

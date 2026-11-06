@@ -730,6 +730,26 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.conversation.messages.last?.text, "three")
     }
 
+    func testAForkFromBeforeTheMessageBeingAnsweredCanBeMadeMeanwhile() async throws {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "OK.", isComplete: true) }
+        ticking(store)
+        await send("one", in: store)
+        store.dependencies.assistant.reply = { _ in AssistantReplies { _ in } }
+        await store.send(.binding(.set(\.input, "two")))
+        await store.send(.sendTapped)
+        let messages = store.state.conversation.messages
+        let reply = try XCTUnwrap(messages.dropFirst().first)
+        let asked = try XCTUnwrap(messages.last)
+
+        XCTAssertFalse(store.state.canFork(at: asked.id), "It has no reply yet to fork with")
+        await store.send(.forkTapped(messageID: reply.id))
+        await store.receive(\.forked)
+
+        XCTAssertNotNil(store.state.replying, "The reply goes on being written")
+        XCTAssertEqual(texts(store), ["one", "OK.", "two"])
+    }
+
     func testAnEditedMessageIsABranchBesideTheOldWithANewReply() async throws {
         let (workspace, _) = home()
         let store = chat(workspace) { request in

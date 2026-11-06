@@ -274,7 +274,7 @@ package struct ChatView: View {
                 .disabled(!store.canGo)
         }
         Button("Fork From Here", systemImage: "arrow.triangle.branch") { store.send(.forkTapped(messageID: end)) }
-            .disabled(!store.canGo)
+            .disabled(!store.state.canFork(at: end))
     }
 
     #if os(macOS)
@@ -683,11 +683,13 @@ private struct CheckpointLog: View {
                     store.send(.forkTapped(messageID: checkpoint.end))
                 }
                 .tint(.indigo)
+                .disabled(!store.state.canFork(at: checkpoint.end))
             }
             .contextMenu {
                 Button("Fork From Here", systemImage: "arrow.triangle.branch") {
                     store.send(.forkTapped(messageID: checkpoint.end))
                 }
+                .disabled(!store.state.canFork(at: checkpoint.end))
             }
         }
     }
