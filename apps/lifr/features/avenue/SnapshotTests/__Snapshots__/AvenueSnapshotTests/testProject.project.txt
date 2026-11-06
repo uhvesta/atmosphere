@@ -1,0 +1,8 @@
+[button] "Add a due date"
+[text] "Progress"
+[text] "0 of 1 done"
+[button, notEnabled] "Complete Project"
+[button] "Archive Project"
+[text] "Complete the Project once its tasks are closed."
+[header, text] "To Do"
+[button] "Buy running shoes" value: "To Do, High priority, Nov 4, HEALTH-0016"

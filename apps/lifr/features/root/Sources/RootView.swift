@@ -264,6 +264,19 @@ private struct Sidebar: View {
                     AvenueItems(avenue: avenue, store: store)
                 }
             }
+            if !store.avenues.archived.isEmpty {
+                Section("Archived") {
+                    ForEach(store.avenues.archived) { row in
+                        Label {
+                            Text(row.name)
+                        } icon: {
+                            Image(systemName: "archivebox")
+                        }
+                        .badge(Text(row.detail))
+                        .tag(RootFeature.SidebarItem.scope(row.scope))
+                    }
+                }
+            }
         }
         .navigationTitle("Lifr")
         .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }

@@ -138,6 +138,68 @@ extension StoreClient {
         }
     }
 
+    package func edit(project id: UUID, _ edit: Workspace.ProjectEdit) async throws -> Saved {
+        try await save { (workspace, _) throws(LifrError) in
+            try workspace.edit(project: id, edit)
+            return Change()
+        }
+    }
+
+    /// `Workspace.move(project:toAvenue:)`: a Project and its tasks.
+    package func move(project id: UUID, toAvenue avenueID: UUID) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            try workspace.move(project: id, toAvenue: avenueID, in: context)
+        }
+    }
+
+    /// Completes a Project, or makes an archived or completed one active
+    /// again.
+    package func setStatus(_ status: ProjectStatus, ofProject id: UUID) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            try workspace.setStatus(status, ofProject: id, in: context)
+            return Change()
+        }
+    }
+
+    package func archive(project id: UUID, openTasks: Workspace.OpenTasks) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            try workspace.archive(project: id, openTasks: openTasks, in: context)
+        }
+    }
+
+    package func edit(avenue id: UUID, _ edit: Workspace.AvenueEdit) async throws -> Saved {
+        try await save { (workspace, _) throws(LifrError) in
+            try workspace.edit(avenue: id, edit)
+            return Change()
+        }
+    }
+
+    package func archive(avenue id: UUID, openTasks: Workspace.OpenTasks?) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            try workspace.archive(avenue: id, openTasks: openTasks, in: context)
+        }
+    }
+
+    package func restore(avenue id: UUID) async throws -> Saved {
+        try await save { (workspace, _) throws(LifrError) in
+            try workspace.restore(avenue: id)
+            return Change()
+        }
+    }
+
+    /// `Workspace.moveToTrash`: a task and its Sub tasks, for 30 days.
+    package func moveToTrash(_ id: UUID) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in try workspace.moveToTrash(id, in: context) }
+    }
+
+    /// `Workspace.setParent`: makes a task a Sub task of `parentID`, or a
+    /// top-level task when it's nil.
+    package func setParent(_ parentID: UUID?, of id: UUID) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            try workspace.setParent(parentID, of: id, in: context)
+        }
+    }
+
     package func addReminder(_ trigger: Reminder.Trigger, to id: UUID) async throws -> Saved {
         try await save { (workspace, context) throws(LifrError) in
             try workspace.addReminder(trigger, to: id, in: context)

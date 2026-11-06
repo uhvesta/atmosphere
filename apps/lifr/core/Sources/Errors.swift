@@ -11,6 +11,8 @@ package enum Entity: String, Hashable, Codable, Sendable {
 /// message says what failed and how to fix it.
 package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
     case invalidTitle(length: Int)
+    /// An Avenue's or Project's name.
+    case invalidName(length: Int)
     case invalidAvenueKey(String)
     case avenueKeyTaken(AvenueKey)
     case invalidTaskCode(String)
@@ -30,6 +32,8 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
     /// Won't Do would also close these Sub tasks; retry with `cascade: true`.
     case wontDoNeedsCascade(task: UUID, open: [UUID])
     case projectHasOpenTasks(project: UUID, open: [UUID])
+    /// Archiving would hide these; retry with `openTasks: .closeAsWontDo`.
+    case avenueHasOpenTasks(avenue: UUID, open: [UUID])
     case emptyComment
     case notCommentAuthor(comment: UUID)
     case inTrash(UUID)
@@ -46,6 +50,9 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
         switch self {
         case .invalidTitle(let length):
             "A title must be 1 to 200 characters; this one has \(length). Shorten it, or move the rest into the "
+                + "details."
+        case .invalidName(let length):
+            "A name must be 1 to 100 characters; this one has \(length). Shorten it, or put the rest in the "
                 + "details."
         case .invalidAvenueKey(let key):
             "\"\(key)\" isn't a valid Avenue key. Use 2 to 10 capital letters, such as HEALTH."
@@ -83,6 +90,9 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
         case .projectHasOpenTasks(_, let open):
             "This Project still has \(counted(open.count, "open task", "open tasks")). Close them before "
                 + "completing it, or archive the Project instead."
+        case .avenueHasOpenTasks(_, let open):
+            "This Avenue still has \(counted(open.count, "open task", "open tasks")), and archiving hides them. "
+                + "Move them to another Avenue first, or confirm to close them as Won't Do."
         case .emptyComment:
             "A comment can't be empty. Write something, or delete the comment."
         case .notCommentAuthor:

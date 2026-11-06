@@ -11,6 +11,7 @@ package struct TaskListView<Header: View>: View {
     @Bindable package var store: StoreOf<TaskListFeature>
     private let header: Header
     private var emptyAction: (title: LocalizedStringKey, perform: () -> Void)?
+    private var emptyBelowHeader = false
 
     package init(store: StoreOf<TaskListFeature>, @ViewBuilder header: () -> Header) {
         self.store = store
@@ -25,9 +26,21 @@ package struct TaskListView<Header: View>: View {
         return view
     }
 
+    /// Shows the empty list's message under the header rather than over
+    /// the whole list, for a header the person works in, such as a
+    /// Project's fields.
+    package func emptyBelowHeader(_ below: Bool = true) -> Self {
+        var view = self
+        view.emptyBelowHeader = below
+        return view
+    }
+
     package var body: some View {
         List {
             header
+            if emptyBelowHeader, store.workspace != nil, store.isEmpty {
+                empty.listRowBackground(Color.clear)
+            }
             ForEach(store.sections) { section in
                 Section(section.title) {
                     ForEach(section.rows) { row in
@@ -37,16 +50,8 @@ package struct TaskListView<Header: View>: View {
             }
         }
         .overlay {
-            if store.workspace != nil, store.isEmpty {
-                ContentUnavailableView {
-                    Label(store.query.empty.title, systemImage: store.query.empty.systemImage)
-                } description: {
-                    Text(store.query.empty.description)
-                } actions: {
-                    if let emptyAction {
-                        Button(emptyAction.title, action: emptyAction.perform)
-                    }
-                }
+            if !emptyBelowHeader, store.workspace != nil, store.isEmpty {
+                empty
             }
         }
         .safeAreaInset(edge: .top) {
@@ -56,6 +61,20 @@ package struct TaskListView<Header: View>: View {
         }
         .task { await store.send(.task).finish() }
         .modifier(TaskListPresentations(store: store))
+    }
+}
+
+extension TaskListView {
+    private var empty: some View {
+        ContentUnavailableView {
+            Label(store.query.empty.title, systemImage: store.query.empty.systemImage)
+        } description: {
+            Text(store.query.empty.description)
+        } actions: {
+            if let emptyAction {
+                Button(emptyAction.title, action: emptyAction.perform)
+            }
+        }
     }
 }
 

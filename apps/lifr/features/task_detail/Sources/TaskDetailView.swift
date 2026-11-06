@@ -27,6 +27,7 @@ package struct TaskDetailView: View {
             }
             reminders
             activity
+            manage
         }
         .safeAreaInset(edge: .top) {
             if let banner = store.banner {
@@ -178,6 +179,24 @@ package struct TaskDetailView: View {
             }
         } footer: {
             Text("Moving a task moves its Sub tasks with it.")
+        }
+    }
+
+    /// Changing what kind of task this is, and the trash.
+    private var manage: some View {
+        Section {
+            if store.isSubtask {
+                Button("Turn into a Task", systemImage: "arrow.up.forward.square") { store.send(.parentPicked(nil)) }
+            } else if !store.parentChoices.isEmpty {
+                Menu {
+                    ForEach(store.parentChoices) { choice in
+                        Button(choice.name) { store.send(.parentPicked(choice.id)) }
+                    }
+                } label: {
+                    Label("Make Sub Task Of…", systemImage: "arrow.turn.down.right")
+                }
+            }
+            Button("Move to Trash", systemImage: "trash", role: .destructive) { store.send(.trashTapped) }
         }
     }
 

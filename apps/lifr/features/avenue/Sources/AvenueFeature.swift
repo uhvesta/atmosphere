@@ -1,13 +1,15 @@
 import ComposableArchitecture
 import Foundation
 import LifrCore
+import LifrProjectDetail
 import LifrStoreClient
 import LifrTaskDetail
 import LifrTaskList
 import LifrUI
 
 /// One Avenue or Project: its tasks grouped by status or Project. An
-/// Avenue view can add Projects.
+/// Avenue view can add Projects; a Project view starts with the Project's
+/// own fields.
 @Reducer
 package struct AvenueFeature {
     @ObservableState
@@ -17,6 +19,9 @@ package struct AvenueFeature {
         package var grouping: Grouping
         package var list: TaskListFeature.State
         package var newProjectName: String?
+        /// The Project's fields, when the scope is a Project.
+        package var project: ProjectDetailFeature.State?
+        @Presents package var editAvenue: EditAvenueFeature.State?
 
         package init(
             scope: AvenueScope, workspace: Workspace, grouping: Grouping = .status, now: Date, timeZone: TimeZone
@@ -26,6 +31,15 @@ package struct AvenueFeature {
             title = Self.title(of: scope, in: workspace)
             list = TaskListFeature.State(
                 query: .scope(scope, by: grouping), workspace: workspace, now: now, timeZone: timeZone)
+            if case .project(let id) = scope {
+                project = ProjectDetailFeature.State(id: id, workspace: workspace)
+            }
+        }
+
+        /// Shows `workspace` in the title and the Project's fields.
+        mutating func refresh(from workspace: Workspace) {
+            title = Self.title(of: scope, in: workspace)
+            if project?.refresh(from: workspace) == false { project = nil }
         }
 
         static func title(of scope: AvenueScope, in workspace: Workspace) -> String {
@@ -48,6 +62,9 @@ package struct AvenueFeature {
         case newProjectTapped
         case newProjectCancelled
         case newProjectSubmitted
+        case project(ProjectDetailFeature.Action)
+        case editAvenueTapped
+        case editAvenue(PresentationAction<EditAvenueFeature.Action>)
         case delegate(Delegate)
 
         @CasePathable
@@ -92,17 +109,29 @@ package struct AvenueFeature {
                 }
 
             case .list(.show(let workspace)), .list(.loaded(.success(let workspace))):
-                state.title = State.title(of: state.scope, in: workspace)
+                state.refresh(from: workspace)
                 return .none
 
             case .list(.delegate(.saved(let workspace))):
-                state.title = State.title(of: state.scope, in: workspace)
+                state.refresh(from: workspace)
                 return .send(.delegate(.saved(workspace)))
 
-            case .binding, .list, .delegate:
+            case .editAvenueTapped:
+                guard case .avenue(let id) = state.scope, let workspace = state.list.workspace else { return .none }
+                state.editAvenue = EditAvenueFeature.State(id: id, workspace: workspace)
+                return .none
+
+            case .project(.delegate(.saved(let workspace))), .editAvenue(.presented(.delegate(.saved(let workspace)))):
+                state.refresh(from: workspace)
+                state.list.show(workspace, now: now, timeZone: timeZone)
+                return .send(.delegate(.saved(workspace)))
+
+            case .binding, .list, .project, .editAvenue, .delegate:
                 return .none
             }
         }
+        .ifLet(\.project, action: \.project) { ProjectDetailFeature() }
+        .ifLet(\.$editAvenue, action: \.editAvenue) { EditAvenueFeature() }
     }
 }
 
@@ -147,6 +176,37 @@ extension Workspace {
     }
 }
 
+/// An archived Avenue, or a Project that's completed or archived, which can
+/// be opened to restore it.
+package struct ArchivedRow: Identifiable, Hashable, Sendable {
+    package var scope: AvenueScope
+    package var name: String
+    /// Such as "Health" for a Project, or "Avenue" for an Avenue.
+    package var detail: String
+    package var id: AvenueScope { scope }
+}
+
+extension Workspace {
+    /// Archived Avenues, then completed and archived Projects of open
+    /// Avenues, each by name.
+    package var archivedRows: [ArchivedRow] {
+        let byName = { (lhs: ArchivedRow, rhs: ArchivedRow) in
+            lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
+        let archivedAvenues = avenues.values.filter { $0.archivedAt != nil }
+            .map { ArchivedRow(scope: .avenue($0.id), name: $0.name, detail: String(localized: "Avenue")) }
+            .sorted(by: byName)
+        let closedProjects = projects.values
+            .filter { $0.status != .active && avenues[$0.avenueID]?.archivedAt == nil }
+            .map { project in
+                ArchivedRow(
+                    scope: .project(project.id), name: project.name, detail: avenues[project.avenueID]?.name ?? "")
+            }
+            .sorted(by: byName)
+        return archivedAvenues + closedProjects
+    }
+}
+
 /// Every Avenue and its Projects. Opens one, or adds an Avenue.
 @Reducer
 package struct AvenuesFeature {
@@ -155,6 +215,7 @@ package struct AvenuesFeature {
         /// `nil` until the records load.
         package var workspace: Workspace?
         package var avenues: [AvenueRow] = []
+        package var archived: [ArchivedRow] = []
         @Presents package var avenue: AvenueFeature.State?
         @Presents package var newAvenue: NewAvenueFeature.State?
         @Presents package var alert: AlertState<Never>?
@@ -164,6 +225,7 @@ package struct AvenuesFeature {
         package init(workspace: Workspace) {
             self.workspace = workspace
             avenues = workspace.avenueRows
+            archived = workspace.archivedRows
         }
     }
 
@@ -200,6 +262,7 @@ package struct AvenuesFeature {
             case .loaded(.success(let workspace)), .show(let workspace):
                 state.workspace = workspace
                 state.avenues = workspace.avenueRows
+                state.archived = workspace.archivedRows
                 state.avenue?.list.show(workspace, now: now, timeZone: timeZone)
                 return .none
 
@@ -220,6 +283,7 @@ package struct AvenuesFeature {
                 .newAvenue(.presented(.delegate(.saved(let workspace)))):
                 state.workspace = workspace
                 state.avenues = workspace.avenueRows
+                state.archived = workspace.archivedRows
                 return .send(.delegate(.saved(workspace)))
 
             case .avenue, .newAvenue, .alert, .delegate:

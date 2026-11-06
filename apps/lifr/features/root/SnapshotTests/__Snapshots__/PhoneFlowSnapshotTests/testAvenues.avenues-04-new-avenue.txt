@@ -1,5 +1,6 @@
 [button] "Avenues" id: BackButton
 [button] "New Project"
+[button] "Edit Avenue"
 [button] "Cancel"
 [button, notEnabled] "Add"
 [header] "Health"

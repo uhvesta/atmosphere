@@ -172,6 +172,16 @@
         }
       }
     },
+    "%lld of %lld done" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld of %2$lld done"
+          }
+        }
+      }
+    },
     "%lld of them overdue." : {
 
     },
@@ -249,6 +259,9 @@
 
     },
     "Add a description" : {
+
+    },
+    "Add a due date" : {
 
     },
     "Add a task or Project" : {
@@ -361,7 +374,22 @@
     "Archive" : {
 
     },
+    "Archive %@?" : {
+
+    },
+    "Archive Avenue" : {
+
+    },
+    "Archive Project" : {
+
+    },
+    "Archive this Project?" : {
+
+    },
     "Archived" : {
+
+    },
+    "Archiving hides the Avenue and its tasks. You can restore it from Archived." : {
 
     },
     "Ask about your tasks, change them, or plan what to add." : {
@@ -430,7 +458,16 @@
     "Clear filters" : {
 
     },
+    "Close %@ as Won't Do and Archive" : {
+
+    },
+    "Close %lld Open Tasks as Won't Do" : {
+
+    },
     "Close %lld open Sub task(s) too?" : {
+
+    },
+    "Close Them as Won't Do" : {
 
     },
     "Close its %lld open Sub tasks too?" : {
@@ -440,6 +477,9 @@
 
     },
     "Closed" : {
+
+    },
+    "Color" : {
 
     },
     "Command line" : {
@@ -452,6 +492,15 @@
 
     },
     "Comments" : {
+
+    },
+    "Complete Project" : {
+
+    },
+    "Complete the Project once its tasks are closed." : {
+
+    },
+    "Completed" : {
 
     },
     "Connected" : {
@@ -482,6 +531,12 @@
 
     },
     "Couldn't change connected apps" : {
+
+    },
+    "Couldn't change the Avenue" : {
+
+    },
+    "Couldn't change the Project" : {
 
     },
     "Couldn't change the lock" : {
@@ -565,6 +620,9 @@
     "Description" : {
 
     },
+    "Details" : {
+
+    },
     "Device" : {
 
     },
@@ -611,6 +669,9 @@
 
     },
     "Edit" : {
+
+    },
+    "Edit Avenue" : {
 
     },
     "Edit Draft" : {
@@ -710,6 +771,12 @@
 
     },
     "It can always read. Agents can never empty the trash, change Avenues or Settings, or approve apps." : {
+
+    },
+    "It has %@. Archiving takes the Project out of the sidebar; you can restore it from Archived." : {
+
+    },
+    "It still has %@. To keep them, move them to another Avenue first, then archive." : {
 
     },
     "It was deleted here, and %@ changed it." : {
@@ -876,6 +943,9 @@
     "Made by" : {
 
     },
+    "Make Sub Task Of…" : {
+
+    },
     "Make changes" : {
 
     },
@@ -906,7 +976,23 @@
     "More" : {
 
     },
+    "Move %lld Open Tasks to %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Move %1$lld Open Tasks to %2$@"
+          }
+        }
+      }
+    },
+    "Move Them to %@" : {
+
+    },
     "Move to %@" : {
+
+    },
+    "Move to Trash" : {
 
     },
     "Moved %@ to the Trash" : {
@@ -1137,7 +1223,13 @@
     "Procrastinated" : {
 
     },
+    "Progress" : {
+
+    },
     "Project" : {
+
+    },
+    "Project details" : {
 
     },
     "Project name" : {
@@ -1197,6 +1289,9 @@
     "Remove %@?" : {
 
     },
+    "Remove due date" : {
+
+    },
     "Remove model" : {
 
     },
@@ -1231,6 +1326,12 @@
 
     },
     "Restart" : {
+
+    },
+    "Restore Avenue" : {
+
+    },
+    "Restore Project" : {
 
     },
     "Restored" : {
@@ -1390,6 +1491,9 @@
 
     },
     "Swipe left on a conversation to archive it." : {
+
+    },
+    "Symbol" : {
 
     },
     "Sync" : {
@@ -1561,6 +1665,9 @@
 
     },
     "Try other words, or clear the filters." : {
+
+    },
+    "Turn into a Task" : {
 
     },
     "Turn skills on in Manage Skills." : {

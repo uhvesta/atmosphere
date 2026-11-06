@@ -34,6 +34,10 @@ package struct TaskDetailFeature {
         package var projectChoices: [Choice]
         /// Every label, for the label menu.
         package var labelChoices: [Choice]
+        /// Tasks this one can become a Sub task of: open top-level tasks in
+        /// the same Avenue and Project. Empty for a Sub task, or a task
+        /// with Sub tasks of its own, since Sub tasks don't nest.
+        package var parentChoices: [Choice]
         package var newLabelName = ""
         package var createdAt: Date
         package var closedAt: Date?
@@ -81,6 +85,17 @@ package struct TaskDetailFeature {
             subtasks = workspace.subtasks(of: id).map {
                 TaskRowData($0, in: workspace, now: now, timeZone: timeZone)
             }
+            let hasSubtasks = !workspace.subtasks(of: id).isEmpty
+            parentChoices =
+                task.isSubtask || hasSubtasks
+                ? []
+                : workspace.tasks.values
+                    .filter {
+                        $0.id != task.id && $0.deletedAt == nil && $0.isOpen && !$0.isSubtask
+                            && $0.avenueID == task.avenueID && $0.projectID == task.projectID
+                    }
+                    .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
+                    .map { Choice(id: $0.id, name: $0.title) }
             reminders = workspace.reminders(of: id, timeZone: timeZone).map { reminder in
                 ReminderRow(reminder, fireAt: reminder.fireDate(for: task, in: timeZone))
             }
@@ -134,6 +149,10 @@ package struct TaskDetailFeature {
         case avenuePicked(UUID)
         case projectPicked(UUID?)
         case labelToggled(UUID)
+        /// Makes the task a Sub task of this one, or a top-level task when
+        /// nil.
+        case parentPicked(UUID?)
+        case trashTapped
         case newLabelSubmitted
         case subtaskTapped(UUID)
         case subtaskLoaded(UUID, Workspace)
@@ -226,6 +245,12 @@ package struct TaskDetailFeature {
                 var labelIDs = state.labelIDs
                 if labelIDs.remove(labelID) == nil { labelIDs.insert(labelID) }
                 return edit(state, Workspace.TaskEdit(labelIDs: labelIDs))
+
+            case .parentPicked(let parentID):
+                return save { [id = state.id] in try await $0.setParent(parentID, of: id) }
+
+            case .trashTapped:
+                return save { [id = state.id] in try await $0.moveToTrash(id) }
 
             case .newLabelSubmitted:
                 let name = state.newLabelName.trimmingCharacters(in: .whitespacesAndNewlines)

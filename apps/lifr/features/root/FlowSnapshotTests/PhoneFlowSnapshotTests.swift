@@ -185,6 +185,37 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// A Project: rename it, give it a due date, archive it with its open
+    /// task moved out, find it under Archived, then restore it. And edit
+    /// its Avenue.
+    func testProject() async throws {
+        let sample = Workspace.sample(now: now, timeZone: .gmt)
+        let marathon = try XCTUnwrap(sample.projects.values.first { $0.name == "Half marathon" }?.id)
+        let health = try XCTUnwrap(sample.avenues.values.first { $0.key.rawValue == "HEALTH" }?.id)
+        let (store, flow) = app("project", workspace: sample)
+        store.tab = .avenues
+        await flow.step("avenues")
+        store.send(.avenues(.opened(.project(marathon))))
+        await flow.step("opened")
+        store.send(.avenues(.avenue(.presented(.project(.binding(.set(\.name, "Spring half marathon")))))))
+        store.send(.avenues(.avenue(.presented(.project(.nameSubmitted)))))
+        store.send(.avenues(.avenue(.presented(.project(.dueDatePicked(try CalendarDate("2027-04-11")))))))
+        await flow.step("renamed-due")
+        store.send(.avenues(.avenue(.presented(.project(.archiveTapped)))))
+        await flow.step("archive-asks")
+        store.send(.avenues(.avenue(.presented(.project(.archive(.presented(.moveToAvenue)))))))
+        await flow.step("archived")
+        store.send(.avenues(.avenue(.dismiss)))
+        await flow.step("archived-list")
+        store.send(.avenues(.opened(.project(marathon))))
+        store.send(.avenues(.avenue(.presented(.project(.restoreTapped)))))
+        await flow.step("restored")
+        store.send(.avenues(.opened(.avenue(health))))
+        store.send(.avenues(.avenue(.presented(.editAvenueTapped))))
+        await flow.step("edit-avenue")
+        flow.finish()
+    }
+
     /// Search: words, then a due filter.
     func testSearch() async {
         let (store, flow) = app("search")

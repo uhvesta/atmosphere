@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import LifrCore
+import LifrProjectDetail
 import LifrTaskList
 import LifrUI
 import SwiftUI
@@ -42,6 +43,17 @@ package struct AvenuesView: View {
                     }
                 }
             }
+            if !store.archived.isEmpty {
+                Section("Archived") {
+                    ForEach(store.archived) { row in
+                        Button {
+                            store.send(.opened(row.scope))
+                        } label: {
+                            LabeledContent(row.name) { Text(row.detail) }
+                        }
+                    }
+                }
+            }
         }
         .tint(.primary)
         .overlay {
@@ -81,6 +93,9 @@ package struct AvenueView: View {
 
     package var body: some View {
         TaskListView(store: store.scope(state: \.list, action: \.list)) {
+            if let project = store.scope(state: \.project, action: \.project) {
+                ProjectDetailView(store: project)
+            }
             if store.canGroupByProject {
                 Picker(
                     "Group by", selection: Binding(get: { store.grouping }, set: { store.send(.groupingPicked($0)) })
@@ -91,6 +106,7 @@ package struct AvenueView: View {
                 .listRowBackground(Color.clear)
             }
         }
+        .emptyBelowHeader(store.project != nil)
         .navigationTitle(store.title)
         .toolbar {
             if store.canGroupByProject {
@@ -99,7 +115,16 @@ package struct AvenueView: View {
                 } label: {
                     Label("New Project", systemImage: "folder.badge.plus")
                 }
+                Button {
+                    store.send(.editAvenueTapped)
+                } label: {
+                    Label("Edit Avenue", systemImage: "slider.horizontal.3")
+                }
             }
+        }
+        .sheet(item: $store.scope(state: \.editAvenue, action: \.editAvenue)) { store in
+            NavigationStack { EditAvenueView(store: store) }
+                .sheetLayout(height: 520)
         }
         .alert(
             "New Project",
@@ -149,6 +174,65 @@ package struct NewAvenueView: View {
                 Button("Add") { store.send(.addTapped) }.disabled(store.key.isEmpty)
             }
         }
+    }
+}
+
+/// The form for changing an Avenue, or archiving or restoring it.
+package struct EditAvenueView: View {
+    @Bindable package var store: StoreOf<EditAvenueFeature>
+
+    package init(store: StoreOf<EditAvenueFeature>) {
+        self.store = store
+    }
+
+    package var body: some View {
+        Form {
+            Section {
+                TextField("Name", text: $store.name)
+                    .accessibilityLabel("Name")
+                // A menu draws its images in one color, so the row's icon
+                // shows the Avenue's.
+                Picker(selection: $store.color) {
+                    ForEach(store.colorChoices, id: \.self) { Text($0.capitalized).tag($0) }
+                } label: {
+                    Label {
+                        Text("Color")
+                    } icon: {
+                        Image(systemName: store.symbol).foregroundStyle(Color(avenue: store.color))
+                    }
+                }
+                Picker("Symbol", selection: $store.symbol) {
+                    ForEach(store.symbolChoices, id: \.self) { symbol in
+                        Image(systemName: symbol).accessibilityLabel(symbol).tag(symbol)
+                    }
+                }
+            }
+            Section {
+                if store.isArchived {
+                    Button("Restore Avenue", systemImage: "arrow.uturn.backward") { store.send(.restoreTapped) }
+                } else {
+                    Button("Archive Avenue", systemImage: "archivebox", role: .destructive) {
+                        store.send(.archiveTapped)
+                    }
+                }
+            } footer: {
+                if !store.isArchived {
+                    Text("Archiving hides the Avenue and its tasks. You can restore it from Archived.")
+                }
+            }
+        }
+        .navigationTitle("Edit Avenue")
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { store.send(.cancelTapped) }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") { store.send(.saveTapped) }
+                    .disabled(store.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .alert($store.scope(state: \.confirmArchive, action: \.confirmArchive))
+        .alert($store.scope(state: \.alert, action: \.alert))
     }
 }
 

@@ -1,0 +1,4 @@
+[button] "Cancel"
+[button] "Save"
+[button] "Archive Avenue"
+[text] "Archiving hides the Avenue and its tasks. You can restore it from Archived."

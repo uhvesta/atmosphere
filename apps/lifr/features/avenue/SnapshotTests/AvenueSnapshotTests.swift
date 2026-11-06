@@ -56,6 +56,29 @@ final class AvenueSnapshotTests: XCTestCase {
         assertScreenImages(of: avenue(health(.project)), named: "health-project")
     }
 
+    /// The sample's first Health Project, with its fields above its tasks.
+    private func project() throws -> AvenueFeature.State {
+        let project = try XCTUnwrap(
+            sample.projects.values.filter { $0.avenueID == healthID }.min { $0.sortOrder < $1.sortOrder })
+        return AvenueFeature.State(scope: .project(project.id), workspace: sample, now: now, timeZone: .gmt)
+    }
+
+    func testProject() throws {
+        let state = try project()
+        assertSnapshot(
+            of: avenue(state), as: .accessibilityTree(size: CGSize(width: 402, height: 874)), named: "project")
+        assertScreenImages(of: avenue(state), named: "project")
+    }
+
+    func testEditAvenue() throws {
+        let state = try XCTUnwrap(EditAvenueFeature.State(id: healthID, workspace: sample))
+        let view = NavigationStack {
+            EditAvenueView(store: Store(initialState: state) { EmptyReducer() })
+        }
+        assertSnapshot(of: view, as: .accessibilityTree(size: CGSize(width: 402, height: 874)), named: "edit")
+        assertScreenImages(of: view, named: "edit-avenue")
+    }
+
     func testEmptyImage() {
         assertSnapshot(
             of: avenues(Workspace()), as: .image(layout: .device(config: .iPhoneSe)), named: "empty")

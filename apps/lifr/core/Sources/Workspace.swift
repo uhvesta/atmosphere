@@ -158,6 +158,136 @@ package struct Workspace: Hashable, Codable, Sendable {
         projects[id] = project
     }
 
+    /// What happens to the open tasks of a Project or Avenue being archived.
+    package enum OpenTasks: Sendable {
+        /// They stay in the Project's Avenue, outside any Project. Only for
+        /// Projects.
+        case moveToAvenue
+        /// They and their open Sub tasks become Won't Do.
+        case closeAsWontDo
+    }
+
+    /// Fields of a Project to change; `nil` leaves one as it is.
+    package struct ProjectEdit: Sendable {
+        package var name: String?
+        package var details: String?
+        package var dueDate: CalendarDate??
+
+        package init(name: String? = nil, details: String? = nil, dueDate: CalendarDate?? = nil) {
+            self.name = name
+            self.details = details
+            self.dueDate = dueDate
+        }
+    }
+
+    package mutating func edit(project id: UUID, _ edit: ProjectEdit) throws(LifrError) {
+        var project = try project(id)
+        if let name = edit.name { project.name = try Self.validName(name) }
+        if let details = edit.details { project.details = details }
+        if let dueDate = edit.dueDate { project.dueDate = dueDate }
+        projects[id] = project
+    }
+
+    /// Moves a Project to another Avenue, with every task in it.
+    package mutating func move(project id: UUID, toAvenue avenueID: UUID, in context: Context) throws(LifrError)
+        -> Change
+    {
+        var project = try project(id)
+        _ = try avenue(avenueID)
+        var change = Change()
+        guard project.avenueID != avenueID else { return change }
+        let last = projects.values.filter { $0.avenueID == avenueID }.map(\.sortOrder).max()
+        project.avenueID = avenueID
+        project.sortOrder = SortKey.between(last, nil)
+        projects[id] = project
+        // Trashed tasks move too, so a restored one is still in its Project's
+        // Avenue.
+        let inProject = tasks.values.filter { $0.projectID == id }.sorted { $0.id.uuidString < $1.id.uuidString }
+        for task in inProject {
+            place(
+                task.id, avenue: avenueID, project: id, by: context.actor,
+                reason: task.isSubtask ? .movedWithParent : nil, in: context, &change)
+        }
+        return change
+    }
+
+    /// Archives a Project, first doing `openTasks` with its open tasks.
+    package mutating func archive(project id: UUID, openTasks: OpenTasks, in context: Context) throws(LifrError)
+        -> Change
+    {
+        let project = try project(id)
+        var change = Change()
+        for task in openTopLevelTasks(where: { $0.projectID == id }) {
+            switch openTasks {
+            case .moveToAvenue:
+                for moved in [task] + subtasks(of: task.id) {
+                    place(
+                        moved.id, avenue: project.avenueID, project: nil, by: context.actor,
+                        reason: moved.isSubtask ? .movedWithParent : nil, in: context, &change)
+                }
+            case .closeAsWontDo:
+                change.merge(try setStatus(.wontDo, of: task.id, cascade: true, in: context))
+            }
+        }
+        try setStatus(.archived, ofProject: id, in: context)
+        return change
+    }
+
+    /// Fields of an Avenue to change; `nil` leaves one as it is.
+    package struct AvenueEdit: Sendable {
+        package var name: String?
+        package var color: String?
+        /// An SF Symbol name.
+        package var symbol: String?
+
+        package init(name: String? = nil, color: String? = nil, symbol: String? = nil) {
+            self.name = name
+            self.color = color
+            self.symbol = symbol
+        }
+    }
+
+    package mutating func edit(avenue id: UUID, _ edit: AvenueEdit) throws(LifrError) {
+        var avenue = try avenue(id)
+        if let name = edit.name { avenue.name = try Self.validName(name) }
+        if let color = edit.color { avenue.color = color }
+        if let symbol = edit.symbol { avenue.symbol = symbol }
+        avenues[id] = avenue
+    }
+
+    /// Archives an Avenue, which takes its tasks out of every list. With open
+    /// tasks it needs `openTasks: .closeAsWontDo`; moving them would need
+    /// another Avenue, so move them by hand first instead.
+    package mutating func archive(avenue id: UUID, openTasks: OpenTasks?, in context: Context) throws(LifrError)
+        -> Change
+    {
+        var avenue = try avenue(id)
+        let open = openTopLevelTasks(where: { $0.avenueID == id })
+        var change = Change()
+        if !open.isEmpty {
+            guard openTasks == .closeAsWontDo else { throw .avenueHasOpenTasks(avenue: id, open: open.map(\.id)) }
+            for task in open { change.merge(try setStatus(.wontDo, of: task.id, cascade: true, in: context)) }
+        }
+        avenue.archivedAt = context.now
+        avenues[id] = avenue
+        return change
+    }
+
+    /// Brings an archived Avenue back, with its tasks as they were.
+    package mutating func restore(avenue id: UUID) throws(LifrError) {
+        var avenue = try avenue(id)
+        avenue.archivedAt = nil
+        avenues[id] = avenue
+    }
+
+    /// Open top-level tasks that aren't in the trash and match, in a fixed
+    /// order.
+    private func openTopLevelTasks(where matches: (LifrTask) -> Bool) -> [LifrTask] {
+        tasks.values
+            .filter { $0.deletedAt == nil && $0.isOpen && !$0.isSubtask && matches($0) }
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+    }
+
     @discardableResult
     package mutating func createLabel(
         name: String, color: String = "gray", in context: Context
@@ -640,6 +770,12 @@ package struct Workspace: Hashable, Codable, Sendable {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (1...200).contains(title.count) else { throw .invalidTitle(length: title.count) }
         return title
+    }
+
+    static func validName(_ name: String) throws(LifrError) -> String {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard (1...100).contains(name.count) else { throw .invalidName(length: name.count) }
+        return name
     }
 
     static func describe(_ labels: Set<UUID>) -> String {

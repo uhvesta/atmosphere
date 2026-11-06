@@ -12,6 +12,7 @@ runSuites([
     ("Reverting from history", revertTests()),
     ("Plans", planTests()),
     ("Repairing plans", planRepairTests()),
+    ("Projects and Avenues", projectAndAvenueTests()),
     ("Journal", journalTests()),
     ("Merging synced records", mergeTests()),
 ])
