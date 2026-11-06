@@ -11,6 +11,8 @@ package struct LiteRTLMEngine: LiteRTEngine {
     /// Whether each turn takes the likeliest next token, rather than the
     /// model's own sampling.
     let greedy: Bool
+    /// What it runs on.
+    var backend: ModelBackend = .gpu
 
     /// Loads `model`'s `.litertlm` file to run on `backend`. LiteRT-LM keeps
     /// the GPU's compiled programs in Caches, so the next load is quicker.
@@ -48,7 +50,7 @@ package struct LiteRTLMEngine: LiteRTEngine {
                 maxNumTokens: model.spec.contextTokens, cacheDir: cache.path)
             let engine = Engine(engineConfig: config)
             try await engine.initialize()
-            return LiteRTLMEngine(engine: engine, greedy: greedy)
+            return LiteRTLMEngine(engine: engine, greedy: greedy, backend: backend)
         } catch {
             throw runtimeError(error)
         }
@@ -61,7 +63,7 @@ package struct LiteRTLMEngine: LiteRTEngine {
                 with: ConversationConfig(
                     systemMessage: Message(instructions, role: .system), samplerConfig: sampler,
                     automaticToolCalling: false, enableResponseFormat: constrained))
-            return LiteRTLMChat(conversation: conversation)
+            return LiteRTLMChat(conversation: conversation, backend: backend)
         } catch {
             throw runtimeError(error)
         }
@@ -79,12 +81,19 @@ package struct LiteRTLMEngine: LiteRTEngine {
 
 /// One LiteRT-LM conversation.
 struct LiteRTLMChat: LiteRTChat {
+    /// The most a turn thinks before it answers, in tokens: about 20
+    /// seconds on an iPhone 17 Pro's GPU.
+    static let thinkingTokens = 512
+
     let conversation: Conversation
+    let backend: ModelBackend
 
     func send(
-        _ message: String, attachments: [ModelAttachment], format: String?,
-        partial: @escaping @Sendable (String) -> Void
+        _ message: String, attachments: [ModelAttachment], format: String?, thinks: Bool,
+        thought: (@Sendable (ModelThinking) -> Void)?, partial: @escaping @Sendable (String) -> Void
     ) async throws(ModelRuntimeError) -> String {
+        let clock = ContinuousClock()
+        let start = clock.now
         do {
             let responseFormat = try format.map { try ResponseFormat.json(schema: $0) }
             // Gemma reads photos and recordings before the words about them.
@@ -95,14 +104,27 @@ struct LiteRTLMChat: LiteRTChat {
                     case .audio: .audioFile(attachment.file.path)
                     }
                 } + [.text(message)]
+            // Off unless asked for: Gemma 4 can think by default.
+            let thinking = ThinkingConfig(enableThinking: thinks, thinkingTokenBudget: Self.thinkingTokens)
             var written = ""
+            var reasoning = ""
             for try await chunk in conversation.sendMessageStream(
-                Message(contents: contents), responseFormat: responseFormat)
+                Message(contents: contents), thinkingConfig: thinking, responseFormat: responseFormat)
             {
-                written += chunk.toString
-                partial(written)
+                // Gemma writes its reasoning to a channel of its own.
+                let thinkingPart = chunk.channels.values.joined()
+                if !thinkingPart.isEmpty {
+                    reasoning += thinkingPart
+                    thought?(ModelThinking(text: reasoning, processor: backend))
+                }
+                let answerPart = chunk.toString
+                if !answerPart.isEmpty {
+                    written += answerPart
+                    partial(written)
+                }
             }
             if Task.isCancelled { throw ModelRuntimeError.cancelled }
+            thought?(ModelThinking(text: reasoning, duration: clock.now - start, processor: backend))
             return written
         } catch {
             throw runtimeError(error)

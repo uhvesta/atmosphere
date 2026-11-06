@@ -203,6 +203,32 @@ final class LiveAssistantTests: XCTestCase {
         XCTAssertEqual(model.turns.count, 1)
     }
 
+    func testTheRepliesCarryWhatTheModelThoughtAndHowLong() async {
+        let model = ScriptedRuntime(steps: [
+            ScriptedRuntime.think("Plants need water.", for: .seconds(3)) { turn, partial throws(ModelRuntimeError) in
+                try await ScriptedRuntime.answer(self.turn, partials: [["message": "Here's"]])(turn, partial)
+            }
+        ])
+
+        let (replies, error) = await replies(.live(runtime: { _ in model }), request("Plan the garden"))
+
+        XCTAssertNil(error)
+        XCTAssertEqual(replies.first?.thinking, ModelThinking(text: "Plants need water.", processor: .gpu))
+        XCTAssertEqual(
+            replies.last?.thinking, ModelThinking(text: "Plants need water.", duration: .seconds(3), processor: .gpu))
+        XCTAssertEqual(replies.last?.isComplete, true)
+    }
+
+    func testNamingAConversationDoesntWaitForThinking() async throws {
+        let model = ScriptedRuntime(steps: [ScriptedRuntime.answer("Garden plans")])
+
+        _ = try await AssistantClient.live(runtime: { _ in model }).suggestTitle([
+            ChatMessage(id: UUID(), role: .person, text: "Plan the garden", at: now)
+        ])
+
+        XCTAssertNil(model.turns.first?.thinking)
+    }
+
     func testAModelWithALargerWindowGetsTheFullRequest() async {
         let tasks = (0..<400).map { Plan.TaskDraft(title: "Task \($0) with a fairly long title", place: "HOME") }
         var request = request("Add these")

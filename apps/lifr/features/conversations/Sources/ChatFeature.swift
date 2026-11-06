@@ -21,6 +21,12 @@ package struct ChatFeature {
         package var availability = AssistantAvailability.available
         /// The reply as it's written, until it's complete.
         package var replying: String?
+        /// What the model has thought so far for the reply being written.
+        package var replyingThinking: ModelThinking?
+        /// Whether the thinking of the reply being written is open.
+        package var showsReplyThinking = false
+        /// The replies whose thinking is open.
+        package var shownThinking: Set<UUID> = []
         /// The request of the reply being written, kept until it's complete.
         package var waiting: AssistantRequest?
         /// Whether the system turned the reply away, such as while Lifr was
@@ -124,6 +130,9 @@ package struct ChatFeature {
         case resume
         case replied(AssistantReply)
         case replyFailed(any Error)
+        /// The thinking of the reply `messageID` was opened or closed, or of
+        /// the reply being written when nil.
+        case thinkingToggled(messageID: UUID?)
         case reloaded(messageID: UUID, Result<Workspace, any Error>)
         case named(Result<String, any Error>)
         /// The title was tapped, to rename the conversation.
@@ -315,14 +324,21 @@ package struct ChatFeature {
             case .replied(let reply):
                 guard reply.isComplete else {
                     state.replying = reply.text
+                    state.replyingThinking = reply.thinking?.shown
                     return .none
                 }
                 state.replying = nil
+                state.replyingThinking = nil
                 state.waiting = nil
                 state.stopped = false
                 state.reloading = true
                 let id = uuid()
-                state.conversation.messages.append(ChatMessage(id: id, role: .assistant, text: reply.text, at: now))
+                let thinking = reply.thinking?.shown
+                state.conversation.messages.append(
+                    ChatMessage(id: id, role: .assistant, text: reply.text, at: now, thinking: thinking))
+                // Thinking opened while it was written stays open.
+                if state.showsReplyThinking, thinking != nil { state.shownThinking.insert(id) }
+                state.showsReplyThinking = false
                 if let plan = reply.plan {
                     // A model often repeats what this chat already added,
                     // and makes small mistakes Lifr can put right. A plan
@@ -361,8 +377,18 @@ package struct ChatFeature {
                 state.stopped = true
                 return .none
 
+            case .thinkingToggled(let id?):
+                if state.shownThinking.remove(id) == nil { state.shownThinking.insert(id) }
+                return .none
+
+            case .thinkingToggled(nil):
+                state.showsReplyThinking.toggle()
+                return .none
+
             case .replyFailed(let error):
                 state.replying = nil
+                state.replyingThinking = nil
+                state.showsReplyThinking = false
                 // Sending again can't help a request that's too long or
                 // declined, and could make saved changes twice.
                 let retries =
@@ -499,7 +525,10 @@ package struct ChatFeature {
     private func reply(_ request: AssistantRequest, in state: inout State) -> Effect<Action> {
         state.waiting = request
         state.stopped = false
-        if state.replying == nil { state.replying = "" }
+        if state.replying == nil {
+            state.replying = ""
+            state.replyingThinking = nil
+        }
         return .run { [assistant, backgroundTime, clock, guidance] send in
             var request = request
             // The default when the person's can't be read; the
@@ -576,5 +605,12 @@ package struct ChatFeature {
         state.problem = state.conversation.draft.flatMap { plan in
             state.workspace.problem(with: plan, timeZone: timeZone, now: now)?.description
         }
+    }
+}
+
+extension ModelThinking {
+    /// This, unless the model thought nothing worth showing.
+    fileprivate var shown: ModelThinking? {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self
     }
 }

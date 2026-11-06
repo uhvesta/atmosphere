@@ -731,6 +731,9 @@
     "Hidden Avenues aren't listed; agents never see them." : {
 
     },
+    "Hides the thinking" : {
+
+    },
     "High" : {
 
     },
@@ -1433,6 +1436,9 @@
     "Show as" : {
 
     },
+    "Shows the thinking" : {
+
+    },
     "Signed as" : {
 
     },
@@ -1635,6 +1641,15 @@
 
     },
     "This iPhone" : {
+
+    },
+    "Thoughts · %@" : {
+
+    },
+    "Thoughts · %@ on the CPU" : {
+
+    },
+    "Thoughts · %@ on the GPU" : {
 
     },
     "Time" : {

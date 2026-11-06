@@ -83,9 +83,12 @@ package struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
     package var skill: String?
     /// The photos and recordings the person sent with it.
     package var attachments: [ChatAttachment]
+    /// What the model thought before it wrote this reply.
+    package var thinking: ModelThinking?
 
     package init(
-        id: UUID, role: Role, text: String, at: Date, skill: String? = nil, attachments: [ChatAttachment] = []
+        id: UUID, role: Role, text: String, at: Date, skill: String? = nil, attachments: [ChatAttachment] = [],
+        thinking: ModelThinking? = nil
     ) {
         self.id = id
         self.role = role
@@ -93,11 +96,13 @@ package struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
         self.at = at
         self.skill = skill
         self.attachments = attachments
+        self.thinking = thinking
     }
 
-    private enum CodingKeys: String, CodingKey { case id, role, text, at, skill, attachments }
+    private enum CodingKeys: String, CodingKey { case id, role, text, at, skill, attachments, thinking }
 
-    /// Reads messages saved before they had attachments as having none.
+    /// Reads messages saved before they had attachments or thinking as
+    /// having none.
     package init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -106,6 +111,7 @@ package struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
         at = try container.decode(Date.self, forKey: .at)
         skill = try container.decodeIfPresent(String.self, forKey: .skill)
         attachments = try container.decodeIfPresent([ChatAttachment].self, forKey: .attachments) ?? []
+        thinking = try container.decodeIfPresent(ModelThinking.self, forKey: .thinking)
     }
 
     package func encode(to encoder: any Encoder) throws {
@@ -116,6 +122,7 @@ package struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
         try container.encode(at, forKey: .at)
         try container.encodeIfPresent(skill, forKey: .skill)
         if !attachments.isEmpty { try container.encode(attachments, forKey: .attachments) }
+        try container.encodeIfPresent(thinking, forKey: .thinking)
     }
 }
 
@@ -258,11 +265,15 @@ package struct AssistantReply: Hashable, Sendable {
     package var plan: Plan?
     /// The last reply of the stream.
     package var isComplete: Bool
+    /// What the model thought before answering, and how long it took, for
+    /// a model that says.
+    package var thinking: ModelThinking?
 
-    package init(text: String, plan: Plan? = nil, isComplete: Bool = false) {
+    package init(text: String, plan: Plan? = nil, isComplete: Bool = false, thinking: ModelThinking? = nil) {
         self.text = text
         self.plan = plan
         self.isComplete = isComplete
+        self.thinking = thinking
     }
 }
 

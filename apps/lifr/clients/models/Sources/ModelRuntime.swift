@@ -38,6 +38,11 @@ package struct ModelTurn: Sendable {
     package var schemaInPrompt: Bool
     /// Photos and recordings sent with the prompt, in order.
     package var attachments: [ModelAttachment]
+    /// Gets what the model thinks before it answers, each time it grows,
+    /// and how long it took once it's done. Nil when the turn isn't worth
+    /// the wait, such as naming a conversation, and the model answers
+    /// straight away.
+    package var thinking: (@Sendable (ModelThinking) -> Void)?
 
     package init(
         instructions: String, prompt: String, tools: [ModelTool] = [], schema: ModelSchema? = nil,
@@ -54,6 +59,37 @@ package struct ModelTurn: Sendable {
     /// The first kind of attachment `inputs` doesn't include, if any.
     package func unreadable(by inputs: Set<ModelInput>) -> ModelInput? {
         attachments.map(\.kind).first { !inputs.contains($0) }
+    }
+}
+
+/// What a model thought on its way to an answer, and how long it worked
+/// on it.
+package struct ModelThinking: Hashable, Codable, Sendable {
+    /// Its reasoning, as it wrote it.
+    package var text: String
+    /// How long the model spent reading the turn and writing, not counting
+    /// loading it or waiting for tools. Nil until the answer is done, or
+    /// when the model doesn't say.
+    package var duration: Duration?
+    /// What it ran on.
+    package var processor: ModelBackend?
+
+    package init(text: String, duration: Duration? = nil, processor: ModelBackend? = nil) {
+        self.text = text
+        self.duration = duration
+        self.processor = processor
+    }
+
+    /// This, then `next`: as when a turn asks the model again after a tool.
+    package func then(_ next: ModelThinking) -> ModelThinking {
+        let joined = [text, next.text].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let total: Duration? =
+            switch (duration, next.duration) {
+            case (nil, nil): nil
+            case (let one?, nil), (nil, let one?): one
+            case (let one?, let other?): one + other
+            }
+        return ModelThinking(text: joined, duration: total, processor: next.processor ?? processor)
     }
 }
 
@@ -173,7 +209,7 @@ package enum ModelInterruption: Hashable, Sendable {
 /// Where a downloaded model runs. iOS lets an app use the GPU only while
 /// it's on screen, so a model that keeps answering in the background moves
 /// to the CPU, which is slower and uses more battery.
-package enum ModelBackend: Hashable, Sendable {
+package enum ModelBackend: String, Hashable, Codable, Sendable {
     case gpu
     case cpu
 }

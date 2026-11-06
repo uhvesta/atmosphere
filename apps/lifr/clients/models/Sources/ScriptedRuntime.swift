@@ -57,6 +57,19 @@ extension ScriptedRuntime {
         }
     }
 
+    /// Thinks `text` for `duration` on `processor` when the turn asks for
+    /// thinking, then goes on with `then`.
+    package static func think(
+        _ text: String, for duration: Duration, on processor: ModelBackend = .gpu, then: @escaping Step
+    ) -> Step {
+        { turn, partial throws(ModelRuntimeError) in
+            turn.thinking?(ModelThinking(text: text, processor: processor))
+            let answer = try await then(turn, partial)
+            turn.thinking?(ModelThinking(text: text, duration: duration, processor: processor))
+            return answer
+        }
+    }
+
     /// Fails with `error`.
     package static func fail(_ error: ModelRuntimeError) -> Step {
         { _, _ throws(ModelRuntimeError) in throw error }

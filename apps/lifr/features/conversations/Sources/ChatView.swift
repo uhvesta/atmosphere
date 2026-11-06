@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import LifrAssistantClient
 import LifrCore
+import LifrModelsClient
 import LifrSkills
 import LifrUI
 import PhotosUI
@@ -88,13 +89,18 @@ package struct ChatView: View {
                     MessageView(
                         message: message, skill: store.state.skillTitle(of: message),
                         elsewhere: store.elsewhere,
-                        canUndo: store.conversation.changes[message.id] != nil
-                    ) {
-                        store.send(.undoTapped(messageID: message.id))
-                    }
+                        canUndo: store.conversation.changes[message.id] != nil,
+                        showsThinking: store.shownThinking.contains(message.id),
+                        toggleThinking: { store.send(.thinkingToggled(messageID: message.id)) },
+                        undo: { store.send(.undoTapped(messageID: message.id)) })
                 }
                 if let replying = store.replying {
-                    if replying.isEmpty {
+                    if let thinking = store.replyingThinking {
+                        ThinkingDisclosure(
+                            thinking: thinking, isExpanded: store.showsReplyThinking,
+                            toggle: { store.send(.thinkingToggled(messageID: nil)) })
+                    }
+                    if replying.isEmpty, store.replyingThinking == nil {
                         HStack(spacing: 8) {
                             ProgressView().controlSize(.small)
                             Text("Thinking…")
@@ -479,10 +485,15 @@ private struct MessageView: View {
     let skill: String?
     let elsewhere: Set<UUID>
     let canUndo: Bool
+    let showsThinking: Bool
+    let toggleThinking: () -> Void
     let undo: () -> Void
 
     var body: some View {
         VStack(alignment: message.role == .person ? .trailing : .leading, spacing: 4) {
+            if let thinking = message.thinking, message.role == .assistant {
+                ThinkingDisclosure(thinking: thinking, isExpanded: showsThinking, toggle: toggleThinking)
+            }
             if let skill {
                 Label(skill, systemImage: "sparkles")
                     .font(.caption.weight(.medium))
@@ -511,6 +522,57 @@ private struct MessageView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: message.role == .person ? .trailing : .leading)
+    }
+}
+
+/// What the model thought before it replied, behind a chevron: closed, a
+/// line saying how long it thought and on what; open, the thoughts too.
+private struct ThinkingDisclosure: View {
+    let thinking: ModelThinking
+    let isExpanded: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button(action: toggle) {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    Text(summary)
+                    if thinking.duration == nil { ProgressView().controlSize(.mini) }
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(summary)
+            .accessibilityHint(isExpanded ? Text("Hides the thinking") : Text("Shows the thinking"))
+            .accessibilityAddTraits(isExpanded ? .isSelected : [])
+            if isExpanded {
+                Text(thinking.text.trimmingCharacters(in: .whitespacesAndNewlines))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(.leading, 10)
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(.quaternary).frame(width: 2)
+                    }
+            }
+        }
+        .animation(.snappy(duration: 0.2), value: isExpanded)
+    }
+
+    private var summary: String {
+        guard let duration = thinking.duration else { return String(localized: "Thinking…") }
+        let time = duration.formatted(
+            .units(allowed: [.seconds], width: .abbreviated, fractionalPart: .show(length: 1)))
+        switch thinking.processor {
+        case .gpu?: return String(localized: "Thoughts · \(time) on the GPU")
+        case .cpu?: return String(localized: "Thoughts · \(time) on the CPU")
+        case nil: return String(localized: "Thoughts · \(time)")
+        }
     }
 }
 

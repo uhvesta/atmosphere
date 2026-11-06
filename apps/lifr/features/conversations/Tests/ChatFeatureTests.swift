@@ -327,6 +327,48 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertNil(store.state.conversation.changes[reply.id])
     }
 
+    func testAReplysThinkingIsKeptClosedAndOpensAndClosesWithItsChevron() async throws {
+        let (workspace, _) = home()
+        let thinking = ModelThinking(text: "Rent is due.", duration: .seconds(4), processor: .gpu)
+        let store = chat(workspace) { _ in AssistantReply(text: "Paid.", isComplete: true, thinking: thinking) }
+
+        await send("I paid the rent", in: store)
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+        XCTAssertEqual(reply.thinking, thinking)
+        XCTAssertEqual(store.state.shownThinking, [])
+
+        await store.send(.thinkingToggled(messageID: reply.id))
+        XCTAssertEqual(store.state.shownThinking, [reply.id])
+        await store.send(.thinkingToggled(messageID: reply.id))
+        XCTAssertEqual(store.state.shownThinking, [])
+    }
+
+    func testThinkingOpenedWhileTheReplyIsWrittenStaysOpen() async throws {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "") }
+        let thinking = ModelThinking(text: "Rent is due.", processor: .gpu)
+
+        await store.send(.replied(AssistantReply(text: "", thinking: thinking)))
+        XCTAssertEqual(store.state.replyingThinking, thinking)
+        await store.send(.thinkingToggled(messageID: nil))
+        await store.send(.replied(AssistantReply(text: "Paid.", isComplete: true, thinking: thinking)))
+
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+        XCTAssertEqual(store.state.shownThinking, [reply.id])
+        XCTAssertNil(store.state.replyingThinking)
+        XCTAssertFalse(store.state.showsReplyThinking)
+    }
+
+    func testAReplyWithoutThoughtsShowsNoThinking() async throws {
+        let (workspace, _) = home()
+        let empty = ModelThinking(text: "  ", duration: .seconds(1), processor: .gpu)
+        let store = chat(workspace) { _ in AssistantReply(text: "Paid.", isComplete: true, thinking: empty) }
+
+        await send("I paid the rent", in: store)
+
+        XCTAssertNil(store.state.conversation.messages.last?.thinking)
+    }
+
     func testAFailedReplyKeepsTheMessageAndSaysWhy() async throws {
         let (workspace, _) = home()
         let store = chat(workspace) { _ in throw AssistantError.tooLong(saved: false) }

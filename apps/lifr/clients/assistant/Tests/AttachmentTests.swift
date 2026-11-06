@@ -24,6 +24,14 @@ final class AttachmentTests: XCTestCase {
         let message = try JSONDecoder().decode(ChatMessage.self, from: saved)
         XCTAssertEqual(message.text, "Hi")
         XCTAssertEqual(message.attachments, [])
+        XCTAssertNil(message.thinking)
+    }
+
+    func testWhatTheModelThoughtIsKeptWithItsReply() throws {
+        let thinking = ModelThinking(text: "Ferns like shade.", duration: .milliseconds(4_200), processor: .gpu)
+        let message = ChatMessage(id: UUID(), role: .assistant, text: "A fern.", at: now, thinking: thinking)
+        let read = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(message))
+        XCTAssertEqual(read.thinking, thinking)
     }
 
     func testAttachmentsAreKeptWithTheMessage() throws {

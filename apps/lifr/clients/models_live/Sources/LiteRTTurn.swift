@@ -14,10 +14,12 @@ package protocol LiteRTEngine: Sendable {
 package protocol LiteRTChat: Sendable {
     /// What the model writes back to `message` and its `attachments`, held
     /// to the JSON schema `format` when there is one. `partial` gets the
-    /// answer as far as it's written, each time it grows.
+    /// answer as far as it's written, each time it grows. With `thinks`,
+    /// the model reasons before it answers. `thought` gets that reasoning
+    /// as it grows, then how long the answer took.
     func send(
-        _ message: String, attachments: [ModelAttachment], format: String?,
-        partial: @escaping @Sendable (String) -> Void
+        _ message: String, attachments: [ModelAttachment], format: String?, thinks: Bool,
+        thought: (@Sendable (ModelThinking) -> Void)?, partial: @escaping @Sendable (String) -> Void
     ) async throws(ModelRuntimeError) -> String
     /// Stops the answer being written.
     func cancel()
@@ -77,15 +79,21 @@ enum LiteRTTurn {
         _ turn: ModelTurn, answer: JSONSchema.Node?, chat: any LiteRTChat, journal: Journal,
         partial: @escaping @Sendable (JSONValue) -> Void
     ) async throws(ModelRuntimeError) -> JSONValue {
+        let thought = turn.thinking
+        let thinks = thought != nil
         guard turn.tools.isEmpty else {
             return try await withTools(turn, answer: answer, chat: chat, journal: journal)
         }
         guard let answer else {
-            return .string(
-                try await chat.send(turn.prompt, attachments: turn.attachments, format: nil) { partial(.string($0)) })
+            let text = try await chat.send(
+                turn.prompt, attachments: turn.attachments, format: nil, thinks: thinks, thought: thought
+            ) { partial(.string($0)) }
+            return .string(text)
         }
-        return try parse(
-            await chat.send(turn.prompt, attachments: turn.attachments, format: JSONSchema.text(answer)) { _ in })
+        let text = try await chat.send(
+            turn.prompt, attachments: turn.attachments, format: JSONSchema.text(answer), thinks: thinks,
+            thought: thought, partial: { _ in })
+        return try parse(text)
     }
 
     private static func withTools(_ turn: ModelTurn, answer: JSONSchema.Node?, chat: any LiteRTChat, journal: Journal)
@@ -98,9 +106,24 @@ enum LiteRTTurn {
         // The photos and recordings go with the prompt; the conversation
         // keeps them for the tools' rounds.
         var attachments = turn.attachments
+        // The model thinks once, before its first step. Every round's time
+        // counts, but thinking again after each tool would fill the
+        // conversation's window.
+        let earlier = LockIsolated(ModelThinking(text: ""))
         for round in min(done.count, toolRounds)...toolRounds {
             let format = round == toolRounds ? answering : calling
-            let text = try await chat.send(message, attachments: attachments, format: format) { _ in }
+            let before = earlier.value
+            let thought = turn.thinking.map { report in
+                { @Sendable (now: ModelThinking) in
+                    let sofar = before.then(now)
+                    earlier.setValue(sofar)
+                    report(sofar)
+                }
+            }
+            let thinks = turn.thinking != nil && round == min(done.count, toolRounds)
+            let text = try await chat.send(
+                message, attachments: attachments, format: format, thinks: thinks, thought: thought,
+                partial: { _ in })
             let written = try parse(text)
             attachments = []
             switch try Step(written) {

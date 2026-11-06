@@ -514,6 +514,33 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// A reply with what the model thought: closed under its chevron with
+    /// how long it took on the GPU, then opened.
+    func testAssistantThinking() async throws {
+        let thinking = ModelThinking(
+            text: """
+                The person wants to water the plants this weekend. Saturday morning is free, \
+                so a task for Saturday at HOME fits.
+                """,
+            duration: .milliseconds(4_200), processor: .gpu)
+        let (store, flow) = app(
+            "assistant-thinking",
+            replies: [
+                AssistantReply(
+                    text: "I'd water them on Saturday morning.", plan: nil, isComplete: true, thinking: thinking)
+            ])
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        send("When should I water the plants?", in: id, of: store)
+        await flow.step("collapsed")
+        let reply = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last)
+        XCTAssertEqual(reply.thinking, thinking)
+        store.send(.conversations(.chats(.element(id: id, action: .thinkingToggled(messageID: reply.id)))))
+        await flow.step("expanded")
+        flow.finish()
+    }
+
     /// The assistant failing: an answer it couldn't read.
     func testAssistantFails() async throws {
         let (store, flow) = app("assistant-fails")

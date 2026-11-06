@@ -3,6 +3,7 @@ import LifrAPI
 import LifrAssistantClient
 import LifrCore
 import LifrModelsClient
+import Synchronization
 
 extension AssistantClient {
     /// The assistant on the model `runtime` returns for each use, asked
@@ -73,6 +74,7 @@ enum LiveAssistant {
                 }
                 let tools = request.tools()
                 let before = tools.workspace
+                let thoughts = Thoughts()
                 do {
                     // Start with as much as the estimate says fits, and
                     // send less each time the model says it's too long,
@@ -83,7 +85,8 @@ enum LiveAssistant {
                     for size in sizes {
                         do {
                             try await answer(
-                                request, size, tools, model, saved: { tools.workspace != before }, continuation)
+                                request, size, tools, model, thoughts, saved: { tools.workspace != before },
+                                continuation)
                             return
                         } catch ModelRuntimeError.exceededContext {
                             let saved = tools.workspace != before
@@ -115,12 +118,12 @@ enum LiveAssistant {
     /// it already saved changes.
     private static func answer(
         _ request: AssistantRequest, _ size: AssistantPrompt.Size, _ tools: AssistantTools, _ model: any ModelRuntime,
-        saved: () -> Bool, _ continuation: AssistantReplies.Continuation
+        _ thoughts: Thoughts, saved: () -> Bool, _ continuation: AssistantReplies.Continuation
     ) async throws {
         tools.resultBudget = size.toolResultBudget
         for attempt in 1...2 {
             do {
-                try await structured(request, size, tools, model, continuation)
+                try await structured(request, size, tools, model, thoughts, continuation)
                 return
             } catch ModelRuntimeError.decodingFailure {
                 guard !saved() else { throw AssistantError.unreadable(saved: true) }
@@ -128,7 +131,7 @@ enum LiveAssistant {
             }
         }
         do {
-            try await plain(request, size, model, continuation)
+            try await plain(request, size, model, thoughts, continuation)
         } catch ModelRuntimeError.decodingFailure {
             throw AssistantError.unreadable(saved: false)
         }
@@ -137,14 +140,14 @@ enum LiveAssistant {
     /// One answer as a message and maybe a plan, with the tools.
     private static func structured(
         _ request: AssistantRequest, _ size: AssistantPrompt.Size, _ tools: AssistantTools, _ model: any ModelRuntime,
-        _ continuation: AssistantReplies.Continuation
+        _ thoughts: Thoughts, _ continuation: AssistantReplies.Continuation
     ) async throws {
         let allowed = AssistantPrompt.tools(request, size: size)
         let changeable = AssistantPrompt.changeable(request)
         let draftTitles = AssistantPrompt.draftTitles(request)
         let asksForPlan = request.draftsPlans && AssistantPrompt.asksForPlan(request)
         let asksToAdd = AssistantPrompt.asksToAdd(request)
-        let turn = ModelTurn(
+        var turn = ModelTurn(
             instructions: AssistantPrompt.instructions(request, size: size),
             prompt: AssistantPrompt.prompt(request, size: size),
             tools: AssistantTool.allCases.filter(allowed.contains).compactMap { $0.definition(tools) },
@@ -156,8 +159,10 @@ enum LiveAssistant {
             schemaInPrompt: size.schemaInPrompt,
             attachments: request.attachments)
         let draftsPlans = request.draftsPlans
+        turn.thinking = thoughts.attempt(continuation)
         let answer = try await model.respond(to: turn) { partial in
-            continuation.yield(AssistantPrompt.reply(from: partial, isComplete: false, draftsPlans: draftsPlans))
+            let reply = AssistantPrompt.reply(from: partial, isComplete: false, draftsPlans: draftsPlans)
+            thoughts.yield(reply, continuation)
         }
         var changed: [LifrTask] = []
         var refused: [TaskChangeError] = []
@@ -183,6 +188,7 @@ enum LiveAssistant {
                 reply.plan, changes: AssistantPrompt.draftChanges(from: answer, titles: draftTitles, request),
                 to: draft)
         }
+        reply.thinking = thoughts.value
         continuation.yield(AssistantPrompt.reply(reply, changed: changed, refused: refused))
         continuation.finish()
     }
@@ -190,16 +196,17 @@ enum LiveAssistant {
     /// One answer as plain text, without tools or a plan: what's left when
     /// the structured answer can't be read.
     private static func plain(
-        _ request: AssistantRequest, _ size: AssistantPrompt.Size, _ model: any ModelRuntime,
+        _ request: AssistantRequest, _ size: AssistantPrompt.Size, _ model: any ModelRuntime, _ thoughts: Thoughts,
         _ continuation: AssistantReplies.Continuation
     ) async throws {
-        let turn = ModelTurn(
+        var turn = ModelTurn(
             instructions: AssistantPrompt.plainInstructions(request),
             prompt: AssistantPrompt.prompt(request, size: size), attachments: request.attachments)
+        turn.thinking = thoughts.attempt(continuation)
         let answer = try await model.respond(to: turn) { partial in
-            continuation.yield(AssistantReply(text: partial.plainText, isComplete: false))
+            thoughts.yield(AssistantReply(text: partial.plainText, isComplete: false), continuation)
         }
-        continuation.yield(AssistantReply(text: answer.plainText, isComplete: true))
+        continuation.yield(AssistantReply(text: answer.plainText, isComplete: true, thinking: thoughts.value))
         continuation.finish()
     }
 
@@ -233,6 +240,58 @@ enum LiveAssistant {
         } catch let error as ModelRuntimeError {
             throw AssistantError(error)
         }
+    }
+}
+
+/// What the model has thought for one request, over each time Lifr asked
+/// it, and the reply written so far, so a reply as it's written carries
+/// both.
+final class Thoughts: Sendable {
+    private struct State {
+        /// The thinking of answers Lifr asked again after.
+        var earlier: ModelThinking?
+        var current: ModelThinking?
+        var reply = AssistantReply(text: "")
+    }
+
+    private let state = Mutex(State())
+
+    /// Everything thought so far.
+    var value: ModelThinking? {
+        state.withLock { Self.joined($0.earlier, $0.current) }
+    }
+
+    /// Starts an answer: the thinking of any before it stays, and what the
+    /// model thinks now is added after it, sent on with the reply so far.
+    func attempt(_ continuation: AssistantReplies.Continuation) -> @Sendable (ModelThinking) -> Void {
+        state.withLock { state in
+            state.earlier = Self.joined(state.earlier, state.current)
+            state.current = nil
+            state.reply = AssistantReply(text: "")
+        }
+        return { [self] thought in
+            let reply = state.withLock { state in
+                state.current = thought
+                state.reply.thinking = Self.joined(state.earlier, thought)
+                return state.reply
+            }
+            continuation.yield(reply)
+        }
+    }
+
+    /// Sends on `reply`, a partial answer, with the thinking so far.
+    func yield(_ reply: AssistantReply, _ continuation: AssistantReplies.Continuation) {
+        let reply = state.withLock { state in
+            state.reply = reply
+            state.reply.thinking = Self.joined(state.earlier, state.current)
+            return state.reply
+        }
+        continuation.yield(reply)
+    }
+
+    private static func joined(_ earlier: ModelThinking?, _ current: ModelThinking?) -> ModelThinking? {
+        guard let earlier else { return current }
+        return current.map(earlier.then) ?? earlier
     }
 }
 

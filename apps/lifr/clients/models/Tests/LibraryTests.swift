@@ -221,3 +221,27 @@ final class ModelLibraryTypesTests: XCTestCase {
         XCTAssertEqual(DownloadState.downloading(received: 0, total: 0).fraction, 0)
     }
 }
+
+final class ModelThinkingTests: XCTestCase {
+    func testThinkingAgainAddsTheTextAndTheTime() {
+        let first = ModelThinking(text: "Look up the task.", duration: .seconds(2), processor: .gpu)
+        let second = ModelThinking(text: "It's due today.", duration: .milliseconds(500), processor: .gpu)
+
+        XCTAssertEqual(
+            first.then(second),
+            ModelThinking(
+                text: "Look up the task.\n\nIt's due today.", duration: .milliseconds(2_500), processor: .gpu))
+    }
+
+    func testARoundWithoutThoughtsAddsOnlyItsTime() {
+        let first = ModelThinking(text: "Look up the task.", duration: .seconds(2), processor: .gpu)
+        let second = ModelThinking(text: "", duration: .seconds(1), processor: .cpu)
+
+        XCTAssertEqual(
+            first.then(second), ModelThinking(text: "Look up the task.", duration: .seconds(3), processor: .cpu))
+    }
+
+    func testThinkingNotYetDoneHasNoTime() {
+        XCTAssertNil(ModelThinking(text: "So far").then(ModelThinking(text: "more")).duration)
+    }
+}

@@ -12,6 +12,7 @@ final class FakeChat: LiteRTChat, @unchecked Sendable {
         var message: String
         var format: String?
         var attachments: [ModelAttachment] = []
+        var thinks = false
     }
 
     let sent = LockIsolated<[Sent]>([])
@@ -30,11 +31,16 @@ final class FakeChat: LiteRTChat, @unchecked Sendable {
     }
 
     func send(
-        _ message: String, attachments: [ModelAttachment], format: String?,
-        partial: @escaping @Sendable (String) -> Void
+        _ message: String, attachments: [ModelAttachment], format: String?, thinks: Bool,
+        thought: (@Sendable (ModelThinking) -> Void)?, partial: @escaping @Sendable (String) -> Void
     ) async throws(ModelRuntimeError) -> String {
-        sent.withValue { $0.append(Sent(message: message, format: format, attachments: attachments)) }
+        sent.withValue {
+            $0.append(Sent(message: message, format: format, attachments: attachments, thinks: thinks))
+        }
+        // A model thinking on the GPU for a second about each message.
+        if thinks { thought?(ModelThinking(text: "About \(message)", processor: .gpu)) }
         let written = try await reply(message, format)
+        thought?(ModelThinking(text: thinks ? "About \(message)" : "", duration: .seconds(1), processor: .gpu))
         partial(written)
         return written
     }
@@ -118,6 +124,47 @@ final class LiteRTTurnTests: XCTestCase {
         ) { _ in }
 
         XCTAssertEqual(chat.sent.value.map(\.attachments), [attachments, []])
+    }
+
+    func testATurnThatWantsThinkingGetsItWithItsTime() async throws {
+        let chat = FakeChat(["Hello there"])
+        let thoughts = LockIsolated<[ModelThinking]>([])
+        var turn = ModelTurn(instructions: "", prompt: "Hi")
+        turn.thinking = { thought in thoughts.withValue { $0.append(thought) } }
+
+        _ = try await LiteRTTurn.respond(to: turn, on: FakeEngine(chat: chat)) { _ in }
+
+        XCTAssertEqual(chat.sent.value.map(\.thinks), [true])
+        XCTAssertEqual(thoughts.value.first?.duration, nil, "it streams before it's done")
+        XCTAssertEqual(
+            thoughts.value.last, ModelThinking(text: "About Hi", duration: .seconds(1), processor: .gpu))
+    }
+
+    func testATurnThatDoesntWantThinkingAsksForNone() async throws {
+        let chat = FakeChat(["Hello there"])
+
+        let turn = ModelTurn(instructions: "", prompt: "Hi")
+
+        _ = try await LiteRTTurn.respond(to: turn, on: FakeEngine(chat: chat)) { _ in }
+
+        XCTAssertEqual(chat.sent.value.map(\.thinks), [false])
+    }
+
+    func testAToolTurnThinksBeforeItsFirstStepAndCountsEveryRoundsTime() async throws {
+        let tool = ModelTool(name: "getTask", description: "One task.", parameters: []) { _ in "HOME-0001 Buy milk" }
+        let chat = FakeChat([
+            #"{"tool":"getTask","arguments":{}}"#,
+            #"{"answer":{"text":"It's Buy milk."}}"#,
+        ])
+        let thoughts = LockIsolated<[ModelThinking]>([])
+        var turn = ModelTurn(instructions: "", prompt: "What's due?", tools: [tool], schema: reply)
+        turn.thinking = { thought in thoughts.withValue { $0.append(thought) } }
+
+        _ = try await LiteRTTurn.respond(to: turn, on: FakeEngine(chat: chat)) { _ in }
+
+        XCTAssertEqual(chat.sent.value.map(\.thinks), [true, false])
+        XCTAssertEqual(thoughts.value.last?.text, "About What's due?")
+        XCTAssertEqual(thoughts.value.last?.duration, .seconds(2))
     }
 
     func testAPlainAnswerWithToolsIsItsText() async throws {
