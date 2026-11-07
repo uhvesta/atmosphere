@@ -1708,6 +1708,9 @@
     "Stop locking Lifr" : {
 
     },
+    "Stop the reply, keeping what it has written" : {
+
+    },
     "Stops recording and describes the bug" : {
 
     },

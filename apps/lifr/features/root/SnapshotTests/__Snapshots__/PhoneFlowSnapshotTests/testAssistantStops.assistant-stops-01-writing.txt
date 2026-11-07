@@ -1,0 +1,13 @@
+[button] "Conversations" id: BackButton
+[button] "More"
+[header] "Plan my week"
+[text] "Plan my week"
+[text] "Start with the urgent tasks, then"
+[button] "Use a Skill"
+[button] "Stop" hint: "Stop the reply, keeping what it has written"
+[element] "" value: "Message"
+[button] "Search"
+[button] "Today"
+[button] "Upcoming"
+[button] "Avenues"
+[button, selected] "Assistant"

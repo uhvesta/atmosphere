@@ -678,6 +678,57 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Half and the rest."])
     }
 
+    func testStoppingAReplyKeepsWhatItWroteAndLetsThePersonSendAgain() async throws {
+        let (workspace, _) = home()
+        let finish = AsyncStream.makeStream(of: Void.self)
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: false) }
+        store.dependencies.assistant.reply = { _ in
+            AssistantReplies { continuation in
+                Task {
+                    continuation.yield(AssistantReply(text: "Half"))
+                    var wake = finish.stream.makeAsyncIterator()
+                    _ = await wake.next()
+                    continuation.yield(AssistantReply(text: "Half and the rest.", isComplete: true))
+                    continuation.finish()
+                }
+            }
+        }
+
+        await send("Hello", in: store)
+        for _ in 0..<100 where store.state.replying != "Half" {
+            try await Task.sleep(for: .milliseconds(10))
+            await store.skipReceivedActions(strict: false)
+        }
+        XCTAssertEqual(store.state.replying, "Half")
+        XCTAssertTrue(store.state.canStop)
+
+        await store.send(.stopTapped)
+        finish.continuation.yield()
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertFalse(store.state.canStop)
+        XCTAssertNil(store.state.replying)
+        XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Half"])
+        await store.send(.binding(.set(\.input, "Again")))
+        XCTAssertTrue(store.state.canSend)
+    }
+
+    func testStoppingBeforeAnyWordsAddsNoReply() async throws {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in
+            try await Task.sleep(for: .seconds(60))
+            return AssistantReply(text: "Too late.", isComplete: true)
+        }
+
+        await send("Hello", in: store)
+        await store.send(.stopTapped)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello"])
+        XCTAssertNil(store.state.alert)
+        XCTAssertNil(store.state.failure)
+    }
+
     func testABusyReplyKeepsItsTextAndIsSentAgainOnResume() async throws {
         let (workspace, _) = home()
         let attempts = LockIsolated(0)

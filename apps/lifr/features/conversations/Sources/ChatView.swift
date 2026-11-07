@@ -561,15 +561,28 @@ package struct ChatView: View {
         .onSubmit { store.send(.sendTapped) }
     }
 
-    private var sendButton: some View {
-        Button {
-            store.send(.sendTapped)
-        } label: {
-            Label("Send", systemImage: "arrow.up.circle.fill")
-                .labelStyle(.iconOnly)
-                .font(.title2)
+    /// Send, or Stop while a reply is being written.
+    @ViewBuilder private var sendButton: some View {
+        if store.canStop {
+            Button {
+                store.send(.stopTapped)
+            } label: {
+                Label("Stop", systemImage: "stop.circle.fill")
+                    .labelStyle(.iconOnly)
+                    .font(.title2)
+            }
+            .help("Stop the reply, keeping what it has written")
+            .keyboardShortcut(".", modifiers: .command)
+        } else {
+            Button {
+                store.send(.sendTapped)
+            } label: {
+                Label("Send", systemImage: "arrow.up.circle.fill")
+                    .labelStyle(.iconOnly)
+                    .font(.title2)
+            }
+            .disabled(!store.canSend)
         }
-        .disabled(!store.canSend)
     }
 }
 

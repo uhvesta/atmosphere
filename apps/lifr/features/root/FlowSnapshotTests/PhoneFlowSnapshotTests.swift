@@ -830,6 +830,53 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Stop while a reply is written: Send turns to Stop, and Stop keeps
+    /// what the reply had written, then the person can send again.
+    func testAssistantStops() async throws {
+        var assistant = AssistantClient.scripted([
+            AssistantReply(text: "Keep Saturday for the garden.", isComplete: true)
+        ])
+        let scripted = assistant.reply
+        let asked = LockIsolated(0)
+        assistant.reply = { request in
+            guard
+                asked.withValue({
+                    $0 += 1
+                    return $0
+                }) == 1
+            else { return scripted(request) }
+            return AssistantReplies { continuation in
+                let task = Task {
+                    continuation.yield(AssistantReply(text: "Start with the urgent tasks, then"))
+                    try? await Task.sleep(for: .seconds(3600))
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        }
+        let (store, flow) = app("assistant-stops", assistant: assistant)
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        func chat(_ action: ChatFeature.Action) { store.send(.conversations(.chats(.element(id: id, action: action)))) }
+        send("Plan my week", in: id, of: store)
+        await flow.step("writing")
+        XCTAssertEqual(store.conversations.chats[id: id]?.canStop, true)
+
+        chat(.stopTapped)
+        await flow.step("stopped")
+        XCTAssertEqual(store.conversations.chats[id: id]?.canStop, false)
+        XCTAssertEqual(
+            store.conversations.chats[id: id]?.conversation.messages.last?.text, "Start with the urgent tasks, then")
+
+        time.withValue { $0 += 60 }
+        send("And the weekend?", in: id, of: store)
+        await flow.step("sent-again")
+        XCTAssertEqual(
+            store.conversations.chats[id: id]?.conversation.messages.last?.text, "Keep Saturday for the garden.")
+        flow.finish()
+    }
+
     /// A long conversation: the reply written without older messages
     /// offers Compact, which summarizes them; the summary is shown where
     /// it ends, and Forget Summary sends the messages again.

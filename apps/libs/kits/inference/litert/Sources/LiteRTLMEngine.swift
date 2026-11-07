@@ -129,22 +129,34 @@ struct LiteRTLMChat: LiteRTChat {
                 } + [.text(message)]
             // Off unless asked for: Gemma 4 can think by default.
             let thinking = ThinkingConfig(enableThinking: thinks, thinkingTokenBudget: Self.thinkingTokens)
-            var written = ""
-            var reasoning = ""
-            for try await chunk in conversation.sendMessageStream(
+            let chunks = conversation.sendMessageStream(
                 Message(contents: contents), thinkingConfig: thinking, responseFormat: responseFormat)
-            {
-                // Gemma writes its reasoning to a channel of its own.
-                let thinkingPart = chunk.channels.values.joined()
-                if !thinkingPart.isEmpty {
-                    reasoning += thinkingPart
-                    thought?(ModelThinking(text: reasoning, processor: backend))
+            // A stream stops giving chunks as soon as the task reading it is
+            // cancelled, while the model is still writing, and the next turn
+            // then waits behind it. So it's read where cancelling doesn't
+            // reach, and a stopped turn returns once the model has stopped.
+            let reading = Task { [backend] () throws -> (written: String, reasoning: String) in
+                var written = ""
+                var reasoning = ""
+                for try await chunk in chunks {
+                    // Gemma writes its reasoning to a channel of its own.
+                    let thinkingPart = chunk.channels.values.joined()
+                    if !thinkingPart.isEmpty {
+                        reasoning += thinkingPart
+                        thought?(ModelThinking(text: reasoning, processor: backend))
+                    }
+                    let answerPart = chunk.toString
+                    if !answerPart.isEmpty {
+                        written += answerPart
+                        partial(written)
+                    }
                 }
-                let answerPart = chunk.toString
-                if !answerPart.isEmpty {
-                    written += answerPart
-                    partial(written)
-                }
+                return (written, reasoning)
+            }
+            let (written, reasoning) = try await withTaskCancellationHandler {
+                try await reading.value
+            } onCancel: {
+                try? conversation.cancel()
             }
             if Task.isCancelled { throw ModelRuntimeError.cancelled }
             thought?(ModelThinking(text: reasoning, duration: clock.now - start, processor: backend))

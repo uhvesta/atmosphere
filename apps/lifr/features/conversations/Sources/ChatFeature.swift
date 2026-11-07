@@ -204,6 +204,9 @@ package struct ChatFeature {
             setProposal(proposal, of: id)
         }
 
+        /// Whether a reply is being written, which Stop ends.
+        package var canStop: Bool { waiting != nil }
+
         package var canSend: Bool {
             availability == .available && replying == nil && waiting == nil && !attaching && !recording && !compacting
                 && (picked != nil || !pending.isEmpty
@@ -226,6 +229,8 @@ package struct ChatFeature {
         case manageSkillsTapped
         case manageSkills(PresentationAction<SkillsFeature.Action>)
         case sendTapped
+        /// Stops the reply being written, keeping what it has written.
+        case stopTapped
         /// A suggestion in an empty chat: sent as the person's message.
         case suggestionTapped(String)
         case editDraftTapped
@@ -565,6 +570,25 @@ package struct ChatFeature {
                 state.pending.removeAll { $0.id == id }
                 let conversation = state.conversation.id
                 return .run { [attachments] _ in await attachments.remove(attachment, conversation) }
+
+            case .stopTapped:
+                guard state.canStop else { return .none }
+                let written = (state.replying ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let thinking = state.replyingThinking
+                state.replying = nil
+                state.replyingThinking = nil
+                state.waiting = nil
+                state.stopped = false
+                // What it was asking to change is left out with the rest:
+                // nothing's saved before the person applies it.
+                if !written.isEmpty || thinking != nil {
+                    let id = uuid()
+                    state.conversation.append(
+                        ChatMessage(id: id, role: .assistant, text: written, at: now, thinking: thinking))
+                    if state.showsReplyThinking, thinking != nil { state.shownThinking.insert(id) }
+                }
+                state.showsReplyThinking = false
+                return .cancel(id: CancelID.reply)
 
             case .resume:
                 // A reply still being written carries on by itself.
