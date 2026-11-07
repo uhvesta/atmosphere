@@ -37,7 +37,7 @@
   [StaticText] "" value: "No task selected"
   [Toolbar] ""
     [Button] "Hide Sidebar"
-    [MenuButton] "Add" help: "Add a task or Project" id: plus
+    [MenuButton] "Add" help: "Add a task or Project" id: add
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""

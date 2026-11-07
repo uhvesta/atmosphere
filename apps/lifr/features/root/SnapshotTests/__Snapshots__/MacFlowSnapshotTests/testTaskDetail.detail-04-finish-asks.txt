@@ -96,7 +96,7 @@
   [Button] "Move to Trash"
   [Toolbar] ""
     [Button] "Hide Sidebar"
-    [MenuButton] "Add" help: "Add a task or Project" id: plus
+    [MenuButton] "Add" help: "Add a task or Project" id: add
   [Button/CloseButton, disabled] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""

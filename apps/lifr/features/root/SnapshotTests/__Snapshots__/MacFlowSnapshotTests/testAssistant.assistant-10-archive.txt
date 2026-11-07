@@ -34,7 +34,7 @@
     [RadioGroup] "Show"
       [RadioButton/Segment] "Conversations" value: "0"
       [RadioButton/Segment] "Archived" value: "1"
-    [MenuButton] "Add" help: "Add a task or Project" id: plus
+    [MenuButton] "Add" help: "Add a task or Project" id: add
     [Button] "New conversation"
     [Button] "Delete All"
   [Button/CloseButton] ""

@@ -36,7 +36,7 @@
     [RadioGroup] "Show as"
       [RadioButton/Segment] "List" value: "0"
       [RadioButton/Segment] "Board" value: "1"
-    [MenuButton] "Add" help: "Add a task or Project" id: plus
+    [MenuButton] "Add" help: "Add a task or Project" id: add
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""

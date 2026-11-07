@@ -212,8 +212,11 @@ private struct MacRootView: View {
 
     private var addMenu: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
+            // Named, as the Mac otherwise names it after its symbol only
+            // once the first window has loaded.
             AddMenu(store: store)
                 .help("Add a task or Project")
+                .accessibilityIdentifier("add")
         }
     }
 

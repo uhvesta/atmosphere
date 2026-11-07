@@ -52,7 +52,7 @@
     [RadioGroup] "Show"
       [RadioButton/Segment] "Conversations" value: "1"
       [RadioButton/Segment] "Archived" value: "0"
-    [MenuButton] "Add" help: "Add a task or Project" id: plus
+    [MenuButton] "Add" help: "Add a task or Project" id: add
     [Button] "New conversation"
     [TextField/SearchField] ""
       [Button] "Search"
