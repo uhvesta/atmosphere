@@ -1,10 +1,10 @@
 import ComposableArchitecture
 import FlowKit
+import InferenceKitLiteRT
 import LifrAssistantClient
 import LifrAssistantLive
 import LifrCore
 import LifrGlanceClient
-import LifrLiteRT
 import LifrLockClient
 import LifrModelsClient
 import LifrModelsLive

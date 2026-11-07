@@ -1,12 +1,12 @@
 import AppIntents
 import ComposableArchitecture
+import InferenceKitLiteRT
 import LifrAPI
 import LifrAssistantClient
 import LifrAssistantLive
 import LifrCore
 import LifrGlance
 import LifrGlanceClient
-import LifrLiteRT
 import LifrLockClient
 import LifrModelsClient
 import LifrModelsLive
@@ -98,7 +98,7 @@ private enum Storage {
         $0.reminders = .live()
         $0.assistant = .live(runtime: { use in models.runtime(for: use) })
         $0.relatedWords = .live(
-            selected: { models.library.selection(for: .search) }, runtime: { models.runtime(for: .search) })
+            selected: { models.selection.model(for: .search) }, runtime: { models.runtime(for: .search) })
         $0.models = models.client
         $0.conversations = chats.conversations
         $0.skills = chats.skills
@@ -117,10 +117,11 @@ private enum Storage {
         container: LifrIdentity.iCloudContainer, store: client, device: deviceName)
 
     /// The models downloaded to this device, and the one that's loaded.
-    nonisolated static let models: ModelRuntimes = {
-        let host = ModelHost(load: { model, backend async throws(ModelRuntimeError) in
-            try await LiteRTLMEngine.load(model, on: backend)
-        })
+    nonisolated static let models: ModelRuntimes<ModelUse> = {
+        let host = ModelHost(
+            load: { model, backend async throws(ModelRuntimeError) in
+                try await LiteRTLMEngine.load(model, on: backend)
+            }, answersInBackground: { Shared(.answersInBackground).wrappedValue })
         Task { await host.observeSystem() }
         let library = ModelLibrary.live()
         library.resumeUnfinished()

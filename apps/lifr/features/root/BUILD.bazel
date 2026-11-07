@@ -1,6 +1,6 @@
 load("@rules_apple//apple:macos.bzl", "macos_unit_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
-load("//apps/lifr/clients/models_litert:test_model.bzl", "GEMMA_4_E2B")
+load("//apps/libs/kits/inference/litert:test_model.bzl", "GEMMA_4_E2B")
 load("//apps/lifr/testing/snapshot:defs.bzl", "lifr_snapshot_test")
 
 _DEPS = [
@@ -160,10 +160,10 @@ lifr_snapshot_test(
     tags = ["manual"],
     deps = [
         ":root",
+        "//apps/libs/kits/inference/litert",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/assistant_live",
         "//apps/lifr/clients/models",
-        "//apps/lifr/clients/models_litert",
         "//apps/lifr/clients/models_live",
         "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
     ] + _DEPS,

@@ -20,12 +20,12 @@ swift_library(
     module_name = "LifrApp",
     target_compatible_with = ["//bazel/xcode"],
     deps = [
+        "//apps/libs/kits/inference/litert",
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/assistant_live",
         "//apps/lifr/clients/lock",
         "//apps/lifr/clients/models",
-        "//apps/lifr/clients/models_litert",
         "//apps/lifr/clients/models_live",
         "//apps/lifr/clients/reminders",
         "//apps/lifr/clients/reminders_live",

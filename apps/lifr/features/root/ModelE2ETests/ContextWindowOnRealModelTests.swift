@@ -1,6 +1,6 @@
 import Darwin
+import InferenceKitLiteRT
 import LifrAPI
-import LifrLiteRT
 import LifrModelsClient
 import LifrModelsLive
 import XCTest

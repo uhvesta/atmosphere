@@ -139,15 +139,15 @@ use_repo(swift_deps, "swift_package", "swiftpkg_swift_composable_architecture", 
 
 # Google's LiteRT-LM, which runs downloaded models for Lifr: its Swift API
 # and prebuilt runtime, pinned by SHA-256. See
-# apps/lifr/clients/models_litert/litert_lm.bzl.
-litert_lm = use_repo_rule("//apps/lifr/clients/models_litert:litert_lm.bzl", "litert_lm")
+# apps/libs/kits/inference/litert/litert_lm.bzl.
+litert_lm = use_repo_rule("//apps/libs/kits/inference/litert:litert_lm.bzl", "litert_lm")
 
 litert_lm(name = "litert_lm")
 
 # Gemma 4 E2B, as Lifr's catalog pins it, for the assistant's end-to-end
 # test on a real model. Only that manual test fetches it. See
-# apps/lifr/clients/models_litert/test_model.bzl.
-test_model = use_repo_rule("//apps/lifr/clients/models_litert:test_model.bzl", "test_model")
+# apps/libs/kits/inference/litert/test_model.bzl.
+test_model = use_repo_rule("//apps/libs/kits/inference/litert:test_model.bzl", "test_model")
 
 test_model(name = "lifr_test_model")
 

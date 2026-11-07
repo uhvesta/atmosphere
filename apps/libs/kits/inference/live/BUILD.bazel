@@ -1,0 +1,51 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# The models an app runs on the device, and the downloads. Apple's on-device
+# model goes through Foundation Models (iOS and macOS 26), weakly linked so
+# apps still run on iOS 18 and macOS 15, where it says the system is too old;
+# it needs Apple Intelligence, so it's checked by building, and by hand.
+# Downloads come only from Hugging Face, are checked against their hashes and
+# go to Application Support. Downloaded models run through ModelHost, which
+# keeps one loaded; LiteRT-LM itself is in //apps/libs/kits/inference/litert.
+swift_library(
+    name = "live",
+    package_name = "inference",
+    srcs = glob(["Sources/*.swift"]),
+    linkopts = ["-Wl,-weak_framework,FoundationModels"],
+    module_name = "InferenceKitLive",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps:__subpackages__"],
+    deps = [
+        "//apps/libs/kits/inference",
+        "//apps/libs/kits/json",
+    ],
+)
+
+# Downloads against a stub of Hugging Face, into a temporary folder, and
+# turns against a fake engine, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "inference",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":live",
+        "//apps/libs/kits/inference",
+        "//apps/libs/kits/json",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

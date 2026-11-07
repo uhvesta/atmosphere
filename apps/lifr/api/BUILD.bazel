@@ -46,7 +46,10 @@ swift_library(
     ],
     module_name = "LifrAPI",
     visibility = ["//apps/lifr:__subpackages__"],
-    deps = ["//apps/lifr/core"],
+    deps = [
+        "//apps/libs/kits/json",
+        "//apps/lifr/core",
+    ],
 )
 
 # The CLI's tests run against the same fixture and check --json against the
