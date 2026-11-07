@@ -10,9 +10,11 @@ public enum ShelfError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .write(let book, let error):
-            "\(book) couldn't be saved: \(error.localizedDescription). Free some space on the device, then make any change to save it again."
+            "\(book) couldn't be saved: \(error.localizedDescription). Free some space on the device, then make "
+                + "any change to save it again."
         case .read(let file, let error):
-            "The book in \(file) couldn't be opened: \(error). It stays on the device, so a newer version of the app may open it; delete it to import it again."
+            "The book in \(file) couldn't be opened: \(error). It stays on the device, so a newer version of the "
+                + "app may open it; delete it to import it again."
         case .delete(let book, let error):
             "\(book) couldn't be deleted: \(error.localizedDescription). Try again."
         }

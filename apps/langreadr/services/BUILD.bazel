@@ -1,0 +1,66 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# What LangReadr asks of the system besides its model: the language of a
+# text and its words, ICU's to-Latin transform, speech, text in photos, and
+# web pages. `ReaderServices.live` is the system's; tests and flows give
+# their own. Needs Xcode: build with `--config=xcode`.
+swift_library(
+    name = "services",
+    srcs = glob(["Sources/*.swift"]),
+    copts = [
+        "-swift-version",
+        "6",
+    ],
+    module_name = "LangReadrServices",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/langreadr:__subpackages__"],
+    deps = ["//apps/langreadr/core"],
+)
+
+# The live services on this Mac: languages, words and the transform, which
+# need no network or permission.
+swift_binary(
+    name = "services_tests",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    copts = [
+        "-swift-version",
+        "6",
+    ],
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":services",
+        "//apps/langreadr/core",
+        "//apps/libs/kits/testing",
+    ],
+)
+
+sh_test(
+    name = "services_test",
+    srcs = ["//apps/libs/kits/testing:run_tests.sh"],
+    args = ["$(rootpath :services_tests)"],
+    data = [":services_tests"],
+    target_compatible_with = ["//bazel/xcode"],
+)
+
+# Services for tests and previews of the screens.
+swift_library(
+    name = "fake",
+    testonly = True,
+    srcs = glob(["Fake/*.swift"]),
+    module_name = "LangReadrServicesFake",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/langreadr:__subpackages__"],
+    deps = [
+        ":services",
+        "//apps/langreadr/core",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

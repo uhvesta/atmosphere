@@ -14,7 +14,8 @@ public enum ImportError: Error, Hashable, Sendable, CustomStringConvertible {
         case .empty(.photo):
             "No text was found in the photo. Try a sharper photo, with the text straight and well lit."
         case .empty(.web(let url)):
-            "\(url.host() ?? url.absoluteString) has no paragraphs to read. If it needs a sign-in or runs as an app, copy its text and paste it instead."
+            "\(url.host() ?? url.absoluteString) has no paragraphs to read. If it needs a sign-in or runs as an "
+                + "app, copy its text and paste it instead."
         case .empty(.file(let name)):
             "\(name) has no text in it. Choose another file, or paste its text."
         case .empty(.text):
@@ -22,7 +23,8 @@ public enum ImportError: Error, Hashable, Sendable, CustomStringConvertible {
         case .unsupportedFile(let name):
             "\(name) isn't a file the reader opens. Choose a .txt, .md or .html file, or copy its text and paste it."
         case .notText(let name):
-            "\(name) isn't in a text encoding the reader knows. Save it as UTF-8 and import it again, or paste its text."
+            "\(name) isn't in a text encoding the reader knows. Save it as UTF-8 and import it again, or paste "
+                + "its text."
         }
     }
 }
