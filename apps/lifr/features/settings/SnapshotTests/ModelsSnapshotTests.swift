@@ -24,16 +24,19 @@ final class ModelsSnapshotTests: XCTestCase {
 
     /// Measured here at 16K: the GPU twice as fast and light on the CPU.
     private static let measured: ModelTuning = {
-        func measurement(_ backend: ModelBackend, decode: Double, memory: Int64, cpu: Double) -> ModelMeasurement {
+        func measurement(
+            _ backend: ModelBackend, decode: Double, memory: Int64, cpu: Double, joules: Double, gpu: Double
+        ) -> ModelMeasurement {
             ModelMeasurement(
                 backend: backend, runtime: .liteRT, window: 16_384, device: "iPhone18,1", system: "27.0",
                 prefillTokensPerSecond: decode * 17, decodeTokensPerSecond: decode, timeToFirstToken: 0.6,
-                peakMemoryBytes: memory, cpuSecondsPerToken: cpu, measuredAt: Date(timeIntervalSince1970: 0))
+                peakMemoryBytes: memory, cpuSecondsPerToken: cpu, cpuJoulesPerToken: joules, gpuSecondsPerToken: gpu,
+                measuredAt: Date(timeIntervalSince1970: 0))
         }
-        let gpu = measurement(.gpu, decode: 24, memory: 3_328_599_654, cpu: 0.004)
+        let gpu = measurement(.gpu, decode: 24, memory: 3_328_599_654, cpu: 0.004, joules: 0.012, gpu: 0.03)
         return ModelTuning(
             plan: ModelPlanner.Plan(backend: .gpu, reason: .measured(gpu)),
-            measurements: [gpu, measurement(.cpu, decode: 11, memory: 2_899_102_924, cpu: 0.31)])
+            measurements: [gpu, measurement(.cpu, decode: 11, memory: 2_899_102_924, cpu: 0.31, joules: 0.85, gpu: 0)])
     }()
 
     private var models: ModelsFeature.State {

@@ -24,12 +24,20 @@ public struct ModelMeasurement: Hashable, Codable, Sendable {
     public var peakMemoryBytes: Int64
     /// The CPU's seconds, across its cores, for each token read or written.
     public var cpuSecondsPerToken: Double
+    /// The energy the CPU drew from the battery for each token, in joules,
+    /// as the system counts it against the app; nil where it doesn't. The
+    /// GPU's isn't in it: the system doesn't tell an app what it drew.
+    public var cpuJoulesPerToken: Double?
+    /// The GPU's busy time for each token, in seconds, which stands in for
+    /// what it drew; nil where the system doesn't say.
+    public var gpuSecondsPerToken: Double?
     public var measuredAt: Date
 
     public init(
         backend: ModelBackend, runtime: RuntimeKind, quantization: String = "", window: Int, device: String,
         system: String, prefillTokensPerSecond: Double, decodeTokensPerSecond: Double, timeToFirstToken: Double,
-        peakMemoryBytes: Int64, cpuSecondsPerToken: Double, measuredAt: Date
+        peakMemoryBytes: Int64, cpuSecondsPerToken: Double, cpuJoulesPerToken: Double? = nil,
+        gpuSecondsPerToken: Double? = nil, measuredAt: Date
     ) {
         self.backend = backend
         self.runtime = runtime
@@ -42,6 +50,8 @@ public struct ModelMeasurement: Hashable, Codable, Sendable {
         self.timeToFirstToken = timeToFirstToken
         self.peakMemoryBytes = peakMemoryBytes
         self.cpuSecondsPerToken = cpuSecondsPerToken
+        self.cpuJoulesPerToken = cpuJoulesPerToken
+        self.gpuSecondsPerToken = gpuSecondsPerToken
         self.measuredAt = measuredAt
     }
 

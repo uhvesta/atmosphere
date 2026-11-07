@@ -64,6 +64,9 @@
     "%@ is a task of its own now, because its parents were Sub tasks of each other." : {
 
     },
+    "%@ mJ" : {
+
+    },
     "%@ moved to its parent's Avenue and Project." : {
 
     },
@@ -76,6 +79,9 @@
           }
         }
       }
+    },
+    "%@ ms" : {
+
     },
     "%@ of %@" : {
       "localizations" : {
@@ -495,6 +501,9 @@
     "Back to Latest" : {
 
     },
+    "Battery per token" : {
+
+    },
     "Board" : {
 
     },
@@ -513,7 +522,13 @@
     "CPU" : {
 
     },
-    "CPU per token" : {
+    "CPU time is the CPU's seconds, across its cores." : {
+
+    },
+    "CPU time is the CPU's seconds, across its cores. Battery is what the CPU drew: the system doesn't tell an app what the GPU drew, so its busy time is shown instead." : {
+
+    },
+    "CPU time per token" : {
 
     },
     "Cancel" : {
@@ -892,6 +907,9 @@
 
     },
     "GPU" : {
+
+    },
+    "GPU time per token" : {
 
     },
     "Give the skill a name with letters or digits." : {

@@ -277,7 +277,10 @@ final class ModelLibraryTests: XCTestCase {
 
     private func bench(
         failing: Set<ModelBackend> = [], footprints: Locked<[Int64]> = Locked([100, 900, 400]),
-        cpu: Locked<[Double]> = Locked([1, 4])
+        cpu: Locked<[Double]> = Locked([1, 4]),
+        energy: Locked<[TaskEnergy?]> = Locked([
+            TaskEnergy(cpuJoules: 10, gpuSeconds: 2), TaskEnergy(cpuJoules: 16, gpuSeconds: 11),
+        ])
     ) -> Bench {
         Bench(
             measure: { _, backend throws(ModelRuntimeError) in
@@ -288,6 +291,7 @@ final class ModelLibraryTests: XCTestCase {
             }, device: DeviceInfo(model: "Mac16,10", system: "26.7"),
             footprint: { footprints.withValue { $0.count > 1 ? $0.removeFirst() : $0.first ?? 0 } },
             cpuSeconds: { cpu.withValue { $0.count > 1 ? $0.removeFirst() : $0.first ?? 0 } },
+            energy: { energy.withValue { $0.count > 1 ? $0.removeFirst() : $0.first ?? nil } },
             now: { Date(timeIntervalSince1970: 0) }, interval: .seconds(3_600))
     }
 
@@ -304,7 +308,35 @@ final class ModelLibraryTests: XCTestCase {
         XCTAssertEqual(gpu.decodeTokensPerSecond, 30)
         XCTAssertEqual(gpu.peakMemoryBytes, 800)
         XCTAssertEqual(gpu.cpuSecondsPerToken, 3.0 / 300, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(gpu.cpuJoulesPerToken), 6.0 / 300, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(gpu.gpuSecondsPerToken), 9.0 / 300, accuracy: 1e-9)
         XCTAssertEqual(gpu.device, "Mac16,10")
+    }
+
+    func testABenchLeavesEnergyOutWhereTheSystemDoesNotCountIt() async throws {
+        let library = library()
+        let model = try await library.download(spec())
+        let host = ModelHost(load: { _, _ throws(ModelRuntimeError) in throw .failed("no") })
+
+        let measured = try await bench(energy: Locked([nil])).run(model, on: [.gpu], host: host)
+
+        let gpu = try XCTUnwrap(measured.first)
+        XCTAssertNil(gpu.cpuJoulesPerToken)
+        XCTAssertNil(gpu.gpuSecondsPerToken)
+    }
+
+    func testAMeasurementSavedBeforeEnergyWasCountedStillReads() throws {
+        let saved = Data(
+            #"""
+            {"backend":"gpu","runtime":"liteRT","quantization":"","window":4096,"device":"iPhone18,1",
+             "system":"27.0","prefillTokensPerSecond":400,"decodeTokensPerSecond":20,"timeToFirstToken":0.5,
+             "peakMemoryBytes":100,"cpuSecondsPerToken":0.01,"measuredAt":0}
+            """#.utf8)
+
+        let measurement = try JSONDecoder().decode(ModelMeasurement.self, from: saved)
+
+        XCTAssertEqual(measurement.decodeTokensPerSecond, 20)
+        XCTAssertNil(measurement.cpuJoulesPerToken)
     }
 
     func testABackendThatFailsIsLeftOutAndAllFailingSaysWhy() async throws {

@@ -69,8 +69,10 @@ let runtime = ScriptedRuntime(steps: [{ _, _ in "Tidied." }])
   checks with `MemoryPlan` that the model fits.
 - `Bench` (in live) measures a downloaded model when the person asks: a
   short fixed prompt on each backend it fits on, with how fast it reads
-  and writes, how soon the first token comes, its peak memory and the CPU
-  time per token. `ModelLibrary` keeps each `ModelMeasurement` with the
+  and writes, how soon the first token comes, its peak memory, and per
+  token the CPU's time, the energy the CPU drew and the GPU's busy time.
+  The system counts the energy only for the CPU, so the GPU's busy time
+  stands in for what it drew. `ModelLibrary` keeps each `ModelMeasurement` with the
   model, along with the backend the person picked, and drops both with it.
 - `ModelPlanner` picks where a model runs on screen: the person's pick;
   else the fastest measured on this device and system at its window that

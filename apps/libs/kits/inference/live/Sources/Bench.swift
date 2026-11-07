@@ -31,9 +31,22 @@ public struct DeviceInfo: Hashable, Sendable {
     }()
 }
 
+/// What the app has drawn so far, as the system counts it against the app.
+public struct TaskEnergy: Hashable, Sendable {
+    /// The energy the CPU drew for the app, in joules.
+    public var cpuJoules: Double
+    /// How long the GPU has been busy for the app, in seconds.
+    public var gpuSeconds: Double
+
+    public init(cpuJoules: Double, gpuSeconds: Double) {
+        self.cpuJoules = cpuJoules
+        self.gpuSeconds = gpuSeconds
+    }
+}
+
 /// Measures a downloaded model on each backend, only when the person asks:
-/// a short fixed prompt read and answered, with the memory the app took and
-/// the CPU it used. Nothing else runs on the model meanwhile.
+/// a short fixed prompt read and answered, with the memory the app took,
+/// the CPU it used and the energy the CPU drew. Nothing else runs on the model meanwhile.
 public struct Bench: Sendable {
     /// Runs the short prompt on `model` on a backend, with the engine that
     /// loads it, and says how fast it read and wrote.
@@ -44,23 +57,28 @@ public struct Bench: Sendable {
     private let device: DeviceInfo
     private let footprint: @Sendable () -> Int64
     private let cpuSeconds: @Sendable () -> Double
+    private let energy: @Sendable () -> TaskEnergy?
     private let now: @Sendable () -> Date
     private let interval: Duration
 
     /// - Parameters:
     ///   - footprint: The memory the app takes now.
     ///   - cpuSeconds: The CPU time the app has used, across its cores.
+    ///   - energy: What the app has drawn, or nil where the system doesn't
+    ///     say.
     ///   - interval: How often the memory is looked at during a run.
     public init(
         measure: @escaping Measure, device: DeviceInfo = .current,
         footprint: @escaping @Sendable () -> Int64 = Bench.footprint,
         cpuSeconds: @escaping @Sendable () -> Double = Bench.cpuSeconds,
+        energy: @escaping @Sendable () -> TaskEnergy? = Bench.energy,
         now: @escaping @Sendable () -> Date = Date.init, interval: Duration = .milliseconds(20)
     ) {
         self.measure = measure
         self.device = device
         self.footprint = footprint
         self.cpuSeconds = cpuSeconds
+        self.energy = energy
         self.now = now
         self.interval = interval
     }
@@ -112,6 +130,7 @@ public struct Bench: Sendable {
             }
         }
         let cpuBefore = cpuSeconds()
+        let energyBefore = energy()
         let speed: EngineSpeed
         do throws(ModelRuntimeError) {
             speed = try await measure(model, backend)
@@ -120,17 +139,24 @@ public struct Bench: Sendable {
             throw error
         }
         let cpu = cpuSeconds() - cpuBefore
+        let energyAfter = energy()
         sampling.cancel()
         let end = self.footprint()
         peak.withValue { $0 = max($0, end) }
         let tokens = max(1, speed.prefillTokens + speed.decodeTokens)
+        let drawn = energyBefore.flatMap { before in
+            energyAfter.map {
+                TaskEnergy(cpuJoules: $0.cpuJoules - before.cpuJoules, gpuSeconds: $0.gpuSeconds - before.gpuSeconds)
+            }
+        }
         let variant = model.spec.variant
         return ModelMeasurement(
             backend: backend, runtime: variant.runtime, quantization: variant.quantization, window: model.window,
             device: device.model, system: device.system, prefillTokensPerSecond: speed.prefillTokensPerSecond,
             decodeTokensPerSecond: speed.decodeTokensPerSecond, timeToFirstToken: speed.timeToFirstToken,
             peakMemoryBytes: max(0, peak.value - baseline), cpuSecondsPerToken: cpu / Double(tokens),
-            measuredAt: now())
+            cpuJoulesPerToken: drawn.map { $0.cpuJoules / Double(tokens) },
+            gpuSecondsPerToken: drawn.map { $0.gpuSeconds / Double(tokens) }, measuredAt: now())
     }
 
     /// The memory the app takes now, as the system counts it against the
@@ -152,5 +178,27 @@ public struct Bench: Sendable {
         guard getrusage(RUSAGE_SELF, &usage) == 0 else { return 0 }
         func seconds(_ time: timeval) -> Double { Double(time.tv_sec) + Double(time.tv_usec) / 1_000_000 }
         return seconds(usage.ru_utime) + seconds(usage.ru_stime)
+    }
+
+    /// What the app has drawn so far: the CPU's energy, which the system
+    /// reads from the chip's own counters, and the GPU's busy time. Nil on
+    /// an Intel Mac, which doesn't count the energy.
+    @Sendable public static func energy() -> TaskEnergy? {
+        #if arch(arm64)
+            var info = task_power_info_v2_data_t()
+            var count = mach_msg_type_number_t(
+                MemoryLayout<task_power_info_v2_data_t>.size / MemoryLayout<natural_t>.size)
+            let result = withUnsafeMutablePointer(to: &info) { pointer in
+                pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                    task_info(mach_task_self_, task_flavor_t(TASK_POWER_INFO_V2), $0, &count)
+                }
+            }
+            guard result == KERN_SUCCESS else { return nil }
+            return TaskEnergy(
+                cpuJoules: Double(info.task_energy) / 1_000_000_000,
+                gpuSeconds: Double(info.gpu_energy.task_gpu_utilisation) / 1_000_000_000)
+        #else
+            return nil
+        #endif
     }
 }

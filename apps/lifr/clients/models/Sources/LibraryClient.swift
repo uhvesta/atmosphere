@@ -204,12 +204,14 @@ package final class InMemoryModelLibrary: Sendable {
                 backend: .gpu, runtime: variant.runtime, quantization: variant.quantization, window: model.window,
                 device: device.model, system: device.system, prefillTokensPerSecond: 410,
                 decodeTokensPerSecond: 24, timeToFirstToken: 0.6, peakMemoryBytes: 31 * gigabyte / 10,
-                cpuSecondsPerToken: 0.004, measuredAt: now),
+                cpuSecondsPerToken: 0.004, cpuJoulesPerToken: 0.012, gpuSecondsPerToken: 0.03,
+                measuredAt: now),
             ModelMeasurement(
                 backend: .cpu, runtime: variant.runtime, quantization: variant.quantization, window: model.window,
                 device: device.model, system: device.system, prefillTokensPerSecond: 95,
                 decodeTokensPerSecond: 11, timeToFirstToken: 2.1, peakMemoryBytes: 27 * gigabyte / 10,
-                cpuSecondsPerToken: 0.31, measuredAt: now),
+                cpuSecondsPerToken: 0.31, cpuJoulesPerToken: 0.85, gpuSecondsPerToken: 0,
+                measuredAt: now),
         ]
     }
 

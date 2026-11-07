@@ -58,7 +58,9 @@ CompactChat(
 - **Models:** `ModelRow` shows a download's progress, the context window,
   and buttons to start, pause or remove. `ModelTuningView` shows where a
   downloaded model runs and why, what was measured of it on the GPU and
-  the CPU side by side, a button to measure it, and a picker to choose.
+  the CPU side by side (speed, memory, and per token the CPU's time, the
+  battery the CPU drew and the GPU's busy time), a button to measure it,
+  and a picker to choose.
 - **Odds and ends:** `TextMenu` and `SelectTextSheet` for copying and
   selecting text, `sheetLayout`, `DismissButton`, and `Binding.or` and
   `.orEmpty` for optional bindings.

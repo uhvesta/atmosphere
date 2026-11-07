@@ -75,7 +75,7 @@ public struct ModelTuningView: View {
     }
 
     /// Each backend measured, side by side.
-    private var results: some View {
+    @ViewBuilder private var results: some View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
             GridRow {
                 Text(verbatim: "")
@@ -85,10 +85,29 @@ public struct ModelTuningView: View {
             row("Reads") { Self.speed($0.prefillTokensPerSecond) }
             row("First word") { Self.seconds($0.timeToFirstToken) }
             row("Memory") { Self.bytes($0.peakMemoryBytes) }
-            row("CPU per token") { Self.seconds($0.cpuSecondsPerToken, digits: 3) }
+            row("CPU time per token") { Self.seconds($0.cpuSecondsPerToken, digits: 3) }
+            if countsEnergy {
+                row("Battery per token") { $0.cpuJoulesPerToken.map(Self.millijoules) ?? "–" }
+                row("GPU time per token") { $0.gpuSecondsPerToken.map(Self.milliseconds) ?? "–" }
+            }
         }
         .font(.caption.monospacedDigit())
+        Group {
+            if countsEnergy {
+                Text(
+                    """
+                    CPU time is the CPU's seconds, across its cores. Battery is what the CPU drew: the system \
+                    doesn't tell an app what the GPU drew, so its busy time is shown instead.
+                    """)
+            } else {
+                Text("CPU time is the CPU's seconds, across its cores.")
+            }
+        }
+        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
     }
+
+    /// Whether the system counted the energy the CPU drew.
+    private var countsEnergy: Bool { tuning.measurements.contains { $0.cpuJoulesPerToken != nil } }
 
     private func row(_ title: LocalizedStringKey, _ value: @escaping (ModelMeasurement) -> String) -> some View {
         GridRow {
@@ -105,6 +124,14 @@ public struct ModelTuningView: View {
 
     private static func seconds(_ seconds: Double, digits: Int = 1) -> String {
         String(localized: "\(seconds.formatted(.number.precision(.fractionLength(digits)))) s")
+    }
+
+    private static func millijoules(_ joules: Double) -> String {
+        String(localized: "\((joules * 1_000).formatted(.number.precision(.fractionLength(0)))) mJ")
+    }
+
+    private static func milliseconds(_ seconds: Double) -> String {
+        String(localized: "\((seconds * 1_000).formatted(.number.precision(.fractionLength(0)))) ms")
     }
 
     private static func bytes(_ count: Int64) -> String {
