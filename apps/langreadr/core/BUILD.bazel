@@ -1,0 +1,49 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# LangReadr's books: chapters and paragraphs, what the app writes under
+# them, the words looked up and the chats about passages; importers for
+# text, web pages and files; and the shelf that keeps them. Plain Swift
+# with Foundation, so it builds with the hermetic toolchains too.
+swift_library(
+    name = "core",
+    srcs = glob(["Sources/*.swift"]),
+    copts = [
+        "-swift-version",
+        "6",
+    ],
+    module_name = "LangReadrCore",
+    visibility = ["//apps/langreadr:__subpackages__"],
+    deps = [
+        "//apps/libs/kits/blob",
+        "//apps/libs/kits/chat",
+    ],
+)
+
+swift_binary(
+    name = "core_tests",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    copts = [
+        "-swift-version",
+        "6",
+    ],
+    deps = [
+        ":core",
+        "//apps/libs/kits/testing",
+    ],
+)
+
+sh_test(
+    name = "core_test",
+    srcs = ["//apps/libs/kits/testing:run_tests.sh"],
+    args = ["$(rootpath :core_tests)"],
+    data = [":core_tests"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
