@@ -115,4 +115,20 @@ rm -rf "$scratch/private_keys"
 if grep -q "Failed to upload" "$scratch/altool.log" || ! grep -qi "UPLOAD SUCCEEDED\|No errors uploading" "$scratch/altool.log"; then
   fail "Apple refused build $build; its reasons are above. Fix those and run this again."
 fi
-echo "Uploaded build $build. TestFlight shows it on your iPhone once Apple has processed it, usually within 15 minutes."
+echo "Uploaded build $build. Waiting for Apple to process it, usually within 15 minutes…"
+# Done only once TestFlight can offer the build, so a build Apple rejects
+# after the upload doesn't pass for one that's out.
+for _ in $(seq 1 80); do
+  state=$(api build "$bundle" "$build")
+  case "$state" in
+    VALID)
+      echo "Build $build is on TestFlight."
+      exit 0
+      ;;
+    FAILED | INVALID)
+      fail "Apple couldn't process build $build ($state). App Store Connect › TestFlight says why, and Apple emails the reasons to the account holder. Fix those and run this again."
+      ;;
+  esac
+  sleep 30
+done
+fail "Build $build is still processing after 40 minutes. Check App Store Connect › TestFlight; it often finishes later, so there's no need to upload again unless it fails."

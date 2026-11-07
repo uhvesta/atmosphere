@@ -23,6 +23,7 @@ enum Failure: Error, CustomStringConvertible {
             """
             usage: asc <command> [arguments], with the key on standard input
               app <bundle ID>
+              build <bundle ID> <build number>
               register <bundle ID> <name>
               certificates
               create-certificate <CSR path> <certificate output path>
@@ -175,6 +176,21 @@ func run(_ arguments: [String]) async throws(Failure) {
             throw .missingApp(bundleID: arguments[1], found: apps.compactMap { attributes($0)["bundleId"] as? String })
         }
         print(id)
+
+    case ("build", 3):
+        // Where Apple is with an uploaded build: PROCESSING, VALID once
+        // TestFlight can offer it, FAILED or INVALID; or NOT_LISTED while
+        // Apple hasn't listed it yet.
+        let apps = try await api.list("/v1/apps?limit=200")
+        guard let app = apps.first(where: { attributes($0)["bundleId"] as? String == arguments[1] })?["id"] as? String
+        else {
+            throw .missingApp(bundleID: arguments[1], found: apps.compactMap { attributes($0)["bundleId"] as? String })
+        }
+        // A build number is digits and dots, which go into the query as
+        // they are: Apple fails on an encoded dot.
+        guard arguments[2].allSatisfy({ $0.isNumber || $0 == "." }) else { throw .usage }
+        let builds = try await api.list("/v1/builds?filter[app]=\(query(app))&filter[version]=\(arguments[2])")
+        print(builds.first.flatMap { attributes($0)["processingState"] as? String } ?? "NOT_LISTED")
 
     case ("register", 3):
         if let id = try await bundleIDResource(api, arguments[1]) {
