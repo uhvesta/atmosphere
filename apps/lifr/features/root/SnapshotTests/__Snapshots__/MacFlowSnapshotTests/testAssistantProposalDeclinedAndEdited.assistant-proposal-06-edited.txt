@@ -25,6 +25,7 @@
     [Row/OutlineRow] ""
       [Button] "I called the plumber, Nov 3 at 10:00 AM, I'd mark it done."
   [Heading] "I called the plumber"
+  [Button] "Model" help: "Model, Thinking and Context Window"
   [Button] "Find in Conversation" help: "Find in Conversation"
   [Button] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
   [Button] "Back" help: "Go back to the message before"

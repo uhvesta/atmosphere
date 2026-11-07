@@ -26,6 +26,7 @@
   [Button] "New conversation"
   [Outline] ""
   [Heading] "New conversation"
+  [Button] "Model" help: "Model, Thinking and Context Window"
   [Button, disabled] "Find in Conversation" help: "Find in Conversation"
   [Button, disabled] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
   [Button, disabled] "Back" help: "Go back to the message before"

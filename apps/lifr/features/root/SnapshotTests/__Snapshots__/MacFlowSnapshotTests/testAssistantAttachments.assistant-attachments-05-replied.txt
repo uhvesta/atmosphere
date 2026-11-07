@@ -25,6 +25,7 @@
     [Row/OutlineRow] ""
       [Button] "What plant is this?, Nov 3 at 10:00 AM, A Boston fern. Water it when the top of the soil is dry."
   [Heading] "What plant is this?"
+  [Button] "Model" help: "Model, Thinking and Context Window"
   [Button] "Find in Conversation" help: "Find in Conversation"
   [Button, disabled] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
   [Button, disabled] "Back" help: "Go back to the message before"

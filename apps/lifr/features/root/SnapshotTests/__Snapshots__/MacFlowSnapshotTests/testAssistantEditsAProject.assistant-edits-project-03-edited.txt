@@ -27,6 +27,7 @@
     [Row/OutlineRow] ""
       [Button] "Rename the Half marathon to “Spring hal…, Nov 3 at 10:00 AM, I renamed it to Spring half marathon, due 6 December."
   [Heading] "Rename the Half marathon to “Spring hal…"
+  [Button] "Model" help: "Model, Thinking and Context Window"
   [Button] "Find in Conversation" help: "Find in Conversation"
   [Button, disabled] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
   [Button, disabled] "Back" help: "Go back to the message before"
