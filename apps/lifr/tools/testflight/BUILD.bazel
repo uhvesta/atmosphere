@@ -27,7 +27,8 @@ sh_binary(
     srcs = ["setup.sh"],
 )
 
-# See upload.sh for what each argument is.
+# See upload.sh for what each argument is. Bazel splits args at spaces like
+# a shell, so those with a space in them are quoted.
 sh_binary(
     name = "upload",
     srcs = ["upload.sh"],
@@ -38,8 +39,8 @@ sh_binary(
         "lifr_testflight",
         "//apps/lifr/app:ios",
         "lifr",
-        BUNDLE_ID + "|Lifr|Lifr App Store|lifr-app-store",
-        WIDGETS_BUNDLE_ID + "|Lifr Widgets|Lifr Widgets App Store|lifr-widgets-app-store",
+        "'" + BUNDLE_ID + "|Lifr|Lifr App Store|lifr-app-store'",
+        "'" + WIDGETS_BUNDLE_ID + "|Lifr Widgets|Lifr Widgets App Store|lifr-widgets-app-store'",
     ],
     data = [":asc"],
     target_compatible_with = ["//bazel/xcode"],
