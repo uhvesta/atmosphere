@@ -1,3 +1,4 @@
+import ChatUI
 import LifrAPI
 import LifrCore
 import LifrUI

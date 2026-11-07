@@ -1,3 +1,4 @@
+import ChatUI
 import ComposableArchitecture
 import LifrCore
 import SwiftUI
@@ -66,31 +67,7 @@ private struct ActivityRowView: View {
     let row: ActivityRow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(row.summary).font(.headline)
-                if row.isReverted {
-                    Text("Reverted")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(row.at, format: .dateTime.month().day().hour().minute())
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Text(row.author).font(.subheadline).foregroundStyle(.secondary)
-            ForEach(Array(row.changes.enumerated()), id: \.offset) { _, change in
-                Text(Self.describe(change, showsRecord: row.changes.count > 1))
-                    .font(.caption)
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    /// "Priority: None → High".
-    private static func describe(_ change: ActivityRow.Change, showsRecord: Bool) -> String {
-        let name = showsRecord ? "\(change.record) · \(change.field)" : change.field
-        return "\(name): \(change.before ?? "—") → \(change.after ?? "—")"
+        ActivityEntryRow(
+            summary: row.summary, author: row.author, at: row.at, changes: row.changes, isReverted: row.isReverted)
     }
 }

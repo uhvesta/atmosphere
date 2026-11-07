@@ -1,3 +1,4 @@
+import ChatUI
 import ComposableArchitecture
 import LifrAssistantClient
 import LifrUI
@@ -56,16 +57,7 @@ package struct SkillsView: View {
     }
 
     private func toggle(_ skill: Skill) -> some View {
-        Toggle(
-            isOn: Binding(get: { skill.isOn }, set: { store.send(.toggled(skill.id, $0)) })
-        ) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(skill.title)
-                Text(skill.autoPicks ? "\(skill.summary) Automatic." : skill.summary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
+        SkillToggle(skill) { store.send(.toggled(skill.id, $0)) }
     }
 
     private func autoPicks(_ skill: Skill) -> some View {

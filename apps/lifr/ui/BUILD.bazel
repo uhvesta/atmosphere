@@ -13,7 +13,10 @@ swift_library(
         "//apps/lifr/app:__subpackages__",
         "//apps/lifr/features:__subpackages__",
     ],
-    deps = ["//apps/lifr/core"],
+    deps = [
+        "//apps/libs/kits/chatui",
+        "//apps/lifr/core",
+    ],
 )
 
 filegroup(

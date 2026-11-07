@@ -11,9 +11,7 @@ public struct Proposal<Action: Hashable & Codable & Sendable, Step: Hashable & C
     public var steps: [Step]
     public var decision: Decision?
 
-    public enum Decision: String, Hashable, Codable, Sendable {
-        case applied, declined
-    }
+    public typealias Decision = ProposalDecision
 
     public init(actions: [Action], steps: [Step], decision: Decision? = nil) {
         self.actions = actions
@@ -24,4 +22,9 @@ public struct Proposal<Action: Hashable & Codable & Sendable, Step: Hashable & C
     /// Whether the person hasn't applied or declined it yet: only then can
     /// it be edited, applied or declined.
     public var isPending: Bool { decision == nil }
+}
+
+/// What the person did with a proposal.
+public enum ProposalDecision: String, Hashable, Codable, Sendable {
+    case applied, declined
 }

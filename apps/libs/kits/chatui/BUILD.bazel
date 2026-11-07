@@ -1,0 +1,55 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# ChatUI: SwiftUI views for an app's assistant, each built from plain data
+# and closures, with no store: messages with their thinking, branches and
+# summaries; the message field, find bar and notices; checkpoints; the
+# conversation list's rows and search snippets; skills to pick and turn on;
+# a proposal's card and editor; the change log's rows; models to download;
+# and a compact chat to put inside another screen. Their words are looked
+# up in the app's String Catalog. Needs Xcode for SwiftUI: build with
+# `--config=xcode`. In Swift 5 mode, like the apps' views: SwiftUI's
+# bindings take Sendable closures, which views' own closures aren't.
+swift_library(
+    name = "chatui",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "ChatUI",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps:__subpackages__"],
+    deps = [
+        "//apps/libs/kits/assistant",
+        "//apps/libs/kits/chat",
+        "//apps/libs/kits/inference",
+    ],
+)
+
+# Given/then tests of what the views work out from their data.
+swift_binary(
+    name = "chatui_tests",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    copts = [
+        "-swift-version",
+        "6",
+    ],
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":chatui",
+        "//apps/libs/kits/testing",
+    ],
+)
+
+sh_test(
+    name = "chatui_test",
+    srcs = ["//apps/libs/kits/testing:run_tests.sh"],
+    args = ["$(rootpath :chatui_tests)"],
+    data = [":chatui_tests"],
+    target_compatible_with = ["//bazel/xcode"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

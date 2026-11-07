@@ -1,3 +1,5 @@
+import AssistantKit
+import ChatUI
 import ComposableArchitecture
 import LifrAssistantClient
 import LifrCore
@@ -17,7 +19,6 @@ package struct ChatView: View {
     @Environment(\.locale) private var locale
     @State private var photo: PhotosPickerItem?
     @State private var selecting: TextToSelect?
-    @FocusState private var findFocused: Bool
     @Environment(\.dynamicTypeSize) private var typeSize
 
     package var body: some View {
@@ -53,19 +54,23 @@ package struct ChatView: View {
         }
         .sheet(isPresented: $store.showsCheckpoints) {
             NavigationStack {
-                CheckpointLog(store: store)
-                    .navigationTitle("Checkpoints")
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            DismissButton()
-                        }
+                CheckpointList(
+                    store.conversation.checkpoints, canGo: store.canGo,
+                    canFork: { store.state.canFork(at: $0) }, go: { store.send(.goTapped($0)) },
+                    fork: { store.send(.forkTapped(messageID: $0)) }
+                )
+                .navigationTitle("Checkpoints")
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        DismissButton()
                     }
+                }
             }
             .sheetLayout(height: 560)
         }
         #if os(iOS)
             .sheet(isPresented: $store.findsSkill) {
-                SkillFinder(store: store)
+                skillFinder
             }
         #endif
         .sheet(item: $store.scope(state: \.manageSkills, action: \.manageSkills)) { store in
@@ -97,7 +102,7 @@ package struct ChatView: View {
         }
         .sheet(item: $store.editingProposal) { edit in
             NavigationStack {
-                ProposalEditor(
+                ChangesEditor(
                     edit: $store.editingProposal.or(edit), workspace: store.workspace,
                     isBusy: store.applying == edit.id,
                     done: { store.send(.editProposalDone) })
@@ -149,31 +154,9 @@ package struct ChatView: View {
 
     /// Finds words in the messages shown, one match at a time.
     private var findBar: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            TextField("Find in conversation", text: $store.findQuery)
-                .accessibilityLabel("Find in conversation")
-                .focused($findFocused)
-                .onSubmit { store.send(.findMoved(by: -1)) }
-                .onAppear { findFocused = true }
-            if !store.findQuery.isEmpty {
-                let count = store.state.findMatches.count
-                Text(count == 0 ? "No matches" : "\(store.findPosition + 1) of \(count)")
-                    .font(.footnote.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                Button("Previous Match", systemImage: "chevron.up") { store.send(.findMoved(by: -1)) }
-                    .disabled(count < 2)
-                Button("Next Match", systemImage: "chevron.down") { store.send(.findMoved(by: 1)) }
-                    .disabled(count < 2)
-            }
-            Button("Done") { store.send(.findClosed) }
-                .font(.body.weight(.semibold))
-                .keyboardShortcut(.cancelAction)
-        }
-        .labelStyle(.iconOnly)
-        .buttonStyle(.borderless)
+        FindBar(
+            query: $store.findQuery, matches: store.state.findMatches.count, position: store.findPosition,
+            move: { store.send(.findMoved(by: $0)) }, close: { store.send(.findClosed) })
     }
 
     private var scroll: some View {
@@ -184,24 +167,31 @@ package struct ChatView: View {
                         .foregroundStyle(.secondary)
                 }
                 if store.conversation.messages.isEmpty, store.availability == .available {
-                    Suggestions { store.send(.suggestionTapped($0)) }
+                    Suggestions(
+                        "Ask about your tasks, change them, or plan what to add.", suggestions: Self.suggestions
+                    ) { store.send(.suggestionTapped($0)) }
                 }
                 ForEach(store.conversation.messages) { message in
                     VStack(alignment: .trailing, spacing: 4) {
                         MessageView(
-                            message: message, skill: store.state.skillTitle(of: message),
-                            elsewhere: store.elsewhere,
+                            role: message.role, text: message.text, thinking: message.thinking,
+                            skill: store.state.skillTitle(of: message),
                             // A proposal's card offers its own Undo.
                             canUndo: message.proposal == nil && store.conversation.changes[message.id] != nil,
                             showsThinking: store.shownThinking.contains(message.id),
                             toggleThinking: { store.send(.thinkingToggled(messageID: message.id)) },
                             undo: { store.send(.undoTapped(messageID: message.id)) },
-                            select: { selecting = TextToSelect(text: $0) }
+                            select: { selecting = TextToSelect(text: $0) },
+                            attachments: {
+                                ForEach(message.attachments) { attachment in
+                                    attachment.chip(elsewhere: store.elsewhere.contains(attachment.id))
+                                }
+                            }
                         )
                         .contextMenu { messageMenu(for: message) }
                         if let proposal = message.proposal {
-                            ProposalCard(
-                                proposal: proposal, workspace: store.workspace,
+                            proposal.card(
+                                in: store.workspace,
                                 canUndo: store.conversation.changes[message.id] != nil,
                                 isBusy: store.applying == message.id,
                                 apply: { store.send(.applyTapped(messageID: message.id)) },
@@ -229,22 +219,9 @@ package struct ChatView: View {
                     .id(message.id)
                 }
                 if let replying = store.replying {
-                    if let thinking = store.replyingThinking {
-                        ThinkingDisclosure(
-                            thinking: thinking, isExpanded: store.showsReplyThinking,
-                            toggle: { store.send(.thinkingToggled(messageID: nil)) })
-                    }
-                    if replying.isEmpty, store.replyingThinking == nil {
-                        HStack(spacing: 8) {
-                            ProgressView().controlSize(.small)
-                            Text("Thinking…")
-                        }
-                        .foregroundStyle(.secondary)
-                        .accessibilityElement(children: .combine)
-                    } else {
-                        Text(replying).foregroundStyle(.secondary)
-                            .accessibilityIdentifier(ModelText.identifier)
-                    }
+                    ReplyInProgress(
+                        text: replying, thinking: store.replyingThinking, showsThinking: store.showsReplyThinking,
+                        toggleThinking: { store.send(.thinkingToggled(messageID: nil)) })
                 }
                 if let draft = store.conversation.draft {
                     DraftCard(
@@ -287,43 +264,23 @@ package struct ChatView: View {
 
     /// Says the last reply was written without older messages, above the
     /// field, with Compact; or that they're being summarized.
-    private var compactBanner: some View {
-        HStack {
-            if store.compacting {
-                ProgressView().controlSize(.small)
-                Text("Summarizing older messages…")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                Spacer()
-            } else {
-                Label(
-                    "Older messages no longer fit what the model reads. Compact them into a summary it keeps.",
-                    systemImage: "text.badge.minus"
-                )
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                Spacer()
-                Button("Compact") { store.send(.compactTapped) }
-                    .font(.footnote.weight(.semibold))
-            }
+    @ViewBuilder private var compactBanner: some View {
+        if store.compacting {
+            ChatNotice("Summarizing older messages…", systemImage: "text.badge.minus", isBusy: true)
+        } else {
+            ChatNotice(
+                "Older messages no longer fit what the model reads. Compact them into a summary it keeps.",
+                systemImage: "text.badge.minus", action: "Compact"
+            ) { store.send(.compactTapped) }
         }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
     }
 
     /// Says the conversation is shown as it was earlier, above the field.
     private var rewound: some View {
-        HStack {
-            Label("Going on from an earlier point. What came after is kept.", systemImage: "clock.arrow.circlepath")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Button("Back to Latest") { store.send(.latestTapped) }
-                .font(.footnote.weight(.semibold))
-                .disabled(!store.canGo)
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
+        ChatNotice(
+            "Going on from an earlier point. What came after is kept.", systemImage: "clock.arrow.circlepath",
+            action: "Back to Latest", isEnabled: store.canGo
+        ) { store.send(.latestTapped) }
     }
 
     /// Under the last message: Retry for a reply, and for the person's
@@ -359,23 +316,9 @@ package struct ChatView: View {
     @ViewBuilder private func branches(at message: ChatMessage) -> some View {
         let branches = store.conversation.branches(at: message.id)
         if branches.count > 1, let index = branches.firstIndex(where: { $0.id == message.id }) {
-            HStack(spacing: 4) {
-                Button("Previous Version", systemImage: "chevron.left") {
-                    store.send(.branchTapped(messageID: message.id, by: -1))
-                }
-                .disabled(index == 0 || !store.canGo)
-                Text("\(index + 1)/\(branches.count)")
-                    .monospacedDigit()
-                    .accessibilityLabel(Text("Version \(index + 1) of \(branches.count)"))
-                Button("Next Version", systemImage: "chevron.right") {
-                    store.send(.branchTapped(messageID: message.id, by: 1))
-                }
-                .disabled(index == branches.count - 1 || !store.canGo)
+            BranchSwitcher(index: index, count: branches.count, canGo: store.canGo) {
+                store.send(.branchTapped(messageID: message.id, by: $0))
             }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
     }
 
@@ -460,9 +403,7 @@ package struct ChatView: View {
                         .font(.callout)
                 }
                 ForEach(store.pending) { attachment in
-                    AttachmentChip(attachment: attachment, elsewhere: false) {
-                        store.send(.removeAttachmentTapped(attachment.id))
-                    }
+                    attachment.chip(elsewhere: false) { store.send(.removeAttachmentTapped(attachment.id)) }
                 }
                 if store.attaching {
                     ProgressView().controlSize(.small)
@@ -534,55 +475,39 @@ package struct ChatView: View {
         }
     }
 
-    @ViewBuilder private var skillButton: some View {
-        if let skill = store.picked {
-            SkillPill(title: skill.title) {
-                store.send(.findSkillTapped)
-            } remove: {
-                store.send(.clearSkillTapped)
-            }
-        } else {
-            Button {
-                store.send(.findSkillTapped)
-            } label: {
-                Label("Use a Skill", systemImage: "sparkles")
-                    .labelStyle(.iconOnly)
-                    .font(.title2)
-            }
-        }
+    private var skillButton: some View {
+        SkillButton(
+            picked: store.picked?.title, find: { store.send(.findSkillTapped) },
+            remove: { store.send(.clearSkillTapped) })
     }
 
     private var textField: some View {
-        TextField(
-            "Message", text: $store.input, prompt: store.picked.map { _ in Text("Add details, or just send") },
-            axis: .vertical
-        )
-        .textFieldStyle(.roundedBorder)
-        .onSubmit { store.send(.sendTapped) }
+        MessageField(
+            text: $store.input, prompt: store.picked.map { _ in Text("Add details, or just send") },
+            submit: { store.send(.sendTapped) })
     }
 
     /// Send, or Stop while a reply is being written.
-    @ViewBuilder private var sendButton: some View {
-        if store.canStop {
-            Button {
-                store.send(.stopTapped)
-            } label: {
-                Label("Stop", systemImage: "stop.circle.fill")
-                    .labelStyle(.iconOnly)
-                    .font(.title2)
-            }
-            .help("Stop the reply, keeping what it has written")
-            .keyboardShortcut(".", modifiers: .command)
-        } else {
-            Button {
-                store.send(.sendTapped)
-            } label: {
-                Label("Send", systemImage: "arrow.up.circle.fill")
-                    .labelStyle(.iconOnly)
-                    .font(.title2)
-            }
-            .disabled(!store.canSend)
-        }
+    private var sendButton: some View {
+        SendButton(
+            canSend: store.canSend, canStop: store.canStop, send: { store.send(.sendTapped) },
+            stop: { store.send(.stopTapped) })
+    }
+
+    /// Finds a skill for the next message by its name or what it does.
+    private var skillFinder: some View {
+        SkillFinder(
+            store.skillChoices, query: $store.skillQuery, pick: { store.send(.pickSkillTapped($0)) },
+            manage: { store.send(.manageSkillsTapped) }, cancel: { store.findsSkill = false })
+    }
+
+    /// Ways to start, in a chat with nothing in it yet.
+    private static var suggestions: [Suggestions.Suggestion] {
+        [
+            .init(systemImage: "calendar", text: String(localized: "Plan my week")),
+            .init(systemImage: "exclamationmark.circle", text: String(localized: "What's overdue?")),
+            .init(systemImage: "checkmark.circle", text: String(localized: "What did I finish this week?")),
+        ]
     }
 }
 
@@ -594,7 +519,9 @@ private struct SkillFinderPopover: ViewModifier {
     func body(content: Content) -> some View {
         #if os(macOS)
             content.popover(isPresented: $store.findsSkill, arrowEdge: .top) {
-                SkillFinder(store: store)
+                SkillFinder(
+                    store.skillChoices, query: $store.skillQuery, pick: { store.send(.pickSkillTapped($0)) },
+                    manage: { store.send(.manageSkillsTapped) }, cancel: { store.findsSkill = false })
             }
         #else
             content
@@ -602,426 +529,15 @@ private struct SkillFinderPopover: ViewModifier {
     }
 }
 
-struct DismissButton: View {
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        Button("Done") { dismiss() }
-    }
-}
-
-/// The skill picked for the next message: tap it to pick another, or
-/// remove it.
-private struct SkillPill: View {
-    let title: String
-    let change: () -> Void
-    let remove: () -> Void
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Button(action: change) {
-                Label(title, systemImage: "sparkles")
-                    .font(.callout.weight(.medium))
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint(Text("Picks another skill"))
-            Button(action: remove) {
-                Label("Remove \(title)", systemImage: "xmark.circle.fill")
-                    .labelStyle(.iconOnly)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
+extension ChatAttachment {
+    /// The attachment's chip: on the next message with a button to remove
+    /// it, or on a sent one, saying when its file is on another device.
+    fileprivate func chip(elsewhere: Bool, remove: (() -> Void)? = nil) -> AttachmentChip {
+        switch kind {
+        case .image: AttachmentChip("Photo", systemImage: "photo", elsewhere: elsewhere, remove: remove)
+        case .audio:
+            AttachmentChip(
+                "Recording, \(seconds ?? 0) s", systemImage: "waveform", elsewhere: elsewhere, remove: remove)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(.tint.opacity(0.2), in: .capsule)
-    }
-}
-
-/// Finds a skill for the next message by its name or what it does.
-private struct SkillFinder: View {
-    @Bindable var store: StoreOf<ChatFeature>
-
-    var body: some View {
-        #if os(macOS)
-            VStack(spacing: 0) {
-                TextField("Find a skill", text: $store.skillQuery)
-                    .textFieldStyle(.roundedBorder)
-                    .padding(10)
-                list
-                Divider()
-                HStack {
-                    Button("Manage Skills…") { store.send(.manageSkillsTapped) }
-                    Spacer()
-                    Button("Cancel") { store.findsSkill = false }
-                        .keyboardShortcut(.cancelAction)
-                }
-                .padding(10)
-            }
-            .frame(width: 340, height: 420)
-        #else
-            NavigationStack {
-                // The search field and Manage Skills sit above the list:
-                // at the bottom they'd float over its last rows.
-                list
-                    .searchable(
-                        text: $store.skillQuery, placement: .navigationBarDrawer(displayMode: .always),
-                        prompt: Text("Find a skill")
-                    )
-                    .navigationTitle("Skills")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Cancel") { store.findsSkill = false }
-                        }
-                        ToolbarItem(placement: .primaryAction) {
-                            Button("Manage Skills…") { store.send(.manageSkillsTapped) }
-                        }
-                    }
-            }
-            .presentationDetents([.medium, .large])
-        #endif
-    }
-
-    private var list: some View {
-        List(store.skillChoices) { skill in
-            Button {
-                store.send(.pickSkillTapped(skill.id))
-            } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(skill.title)
-                    Text(skill.summary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-        }
-        .overlay {
-            if store.skillChoices.isEmpty {
-                if store.skillQuery.isEmpty {
-                    ContentUnavailableView(
-                        "No skills on", systemImage: "sparkles",
-                        description: Text("Turn skills on in Manage Skills."))
-                } else {
-                    ContentUnavailableView.search(text: store.skillQuery)
-                }
-            }
-        }
-    }
-}
-
-/// Ways to start, in a chat with nothing in it yet.
-/// Under the last message a summary covers: what the model gets in place of
-/// the messages up to here, and Forget to send them again instead.
-private struct SummaryMarker: View {
-    var text: String
-    var canForget: Bool
-    var forget: () -> Void
-
-    @State private var isExpanded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Button {
-                    withAnimation { isExpanded.toggle() }
-                } label: {
-                    Label("Summarized up to here", systemImage: isExpanded ? "chevron.down" : "chevron.right")
-                }
-                .accessibilityValue(isExpanded ? Text("Shown") : Text("Hidden"))
-                Spacer()
-                Button("Forget Summary", role: .destructive, action: forget)
-                    .disabled(!canForget)
-                    .help("Send the messages above again, as far as they fit")
-            }
-            .buttonStyle(.borderless)
-            Text(text)
-                .lineLimit(isExpanded ? nil : 2)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-        }
-        .font(.footnote)
-        .padding(10)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct Suggestions: View {
-    let send: (String) -> Void
-
-    private let suggestions: [(symbol: String, text: String)] = [
-        ("calendar", String(localized: "Plan my week")),
-        ("exclamationmark.circle", String(localized: "What's overdue?")),
-        ("checkmark.circle", String(localized: "What did I finish this week?")),
-    ]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Ask about your tasks, change them, or plan what to add.")
-                .foregroundStyle(.secondary)
-            ForEach(suggestions, id: \.text) { suggestion in
-                Button {
-                    send(suggestion.text)
-                } label: {
-                    Label(suggestion.text, systemImage: suggestion.symbol)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(.fill.quaternary, in: .rect(cornerRadius: 12))
-                        .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-}
-
-/// A photo or recording: on the next message with a button to remove it,
-/// or on a sent one, saying when its file is on another device.
-private struct AttachmentChip: View {
-    let attachment: ChatAttachment
-    let elsewhere: Bool
-    var remove: (() -> Void)?
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Label(title, systemImage: attachment.kind == .image ? "photo" : "waveform")
-            if elsewhere {
-                Text("Not on this device").foregroundStyle(.secondary)
-            }
-            if let remove {
-                Button("Remove", systemImage: "xmark.circle.fill", action: remove)
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .tint(.secondary)
-            }
-        }
-        .font(.callout)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color.secondary.opacity(0.15), in: .capsule)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var title: LocalizedStringKey {
-        switch attachment.kind {
-        case .image: "Photo"
-        case .audio: "Recording, \(attachment.seconds ?? 0) s"
-        }
-    }
-}
-
-/// Every point the conversation can go to, on every branch, oldest first:
-/// tap one to go there, or swipe to fork from it.
-private struct CheckpointLog: View {
-    let store: StoreOf<ChatFeature>
-
-    var body: some View {
-        List(store.conversation.checkpoints) { checkpoint in
-            Button {
-                store.send(.goTapped(checkpoint.end))
-            } label: {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(title(of: checkpoint))
-                            .lineLimit(2)
-                            .foregroundStyle(checkpoint.isShown ? .primary : .secondary)
-                        HStack(spacing: 6) {
-                            Text(checkpoint.message.at, format: .dateTime.hour().minute())
-                            if checkpoint.changes > 0 {
-                                Text("^[\(checkpoint.changes) change](inflect: true)")
-                            }
-                            if !checkpoint.isShown {
-                                Text("Not shown")
-                            }
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if checkpoint.isCurrent {
-                        Image(systemName: "checkmark")
-                            .foregroundStyle(.tint)
-                            .accessibilityLabel(Text("Where the conversation is"))
-                    }
-                }
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .disabled(!store.canGo)
-            .accessibilityAddTraits(checkpoint.isCurrent ? .isSelected : [])
-            .swipeActions {
-                Button("Fork", systemImage: "arrow.triangle.branch") {
-                    store.send(.forkTapped(messageID: checkpoint.end))
-                }
-                .tint(.indigo)
-                .disabled(!store.state.canFork(at: checkpoint.end))
-            }
-            .contextMenu {
-                Button("Fork From Here", systemImage: "arrow.triangle.branch") {
-                    store.send(.forkTapped(messageID: checkpoint.end))
-                }
-                .disabled(!store.state.canFork(at: checkpoint.end))
-            }
-        }
-    }
-
-    private func title(of checkpoint: Conversation.Checkpoint) -> String {
-        checkpoint.message.text.isEmpty ? String(localized: "Attachment") : checkpoint.message.text
-    }
-}
-
-private struct MessageView: View {
-    let message: ChatMessage
-    let skill: String?
-    let elsewhere: Set<UUID>
-    let canUndo: Bool
-    let showsThinking: Bool
-    let toggleThinking: () -> Void
-    let undo: () -> Void
-    /// Opens text to select part of.
-    let select: (String) -> Void
-
-    var body: some View {
-        VStack(alignment: message.role == .person ? .trailing : .leading, spacing: 4) {
-            if let thinking = message.thinking, message.role == .assistant {
-                ThinkingDisclosure(
-                    thinking: thinking, isExpanded: showsThinking, toggle: toggleThinking, select: select)
-            }
-            if let skill {
-                Label(skill, systemImage: "sparkles")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.tint)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(Text("Skill: \(skill)"))
-            }
-            ForEach(message.attachments) { attachment in
-                AttachmentChip(attachment: attachment, elsewhere: elsewhere.contains(attachment.id))
-            }
-            if !message.text.isEmpty {
-                if message.role == .person {
-                    Text(message.text)
-                        .selectableOnMac()
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(.tint.opacity(0.2), in: .rect(cornerRadius: 16))
-                        .frame(maxWidth: 520, alignment: .trailing)
-                } else {
-                    // The assistant's words read as text, not a bubble.
-                    Text(message.text)
-                        .selectableOnMac()
-                        .accessibilityIdentifier(ModelText.identifier)
-                }
-            }
-            if canUndo {
-                Button("Undo", action: undo)
-                    .font(.caption)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: message.role == .person ? .trailing : .leading)
-    }
-}
-
-/// What the model thought before it replied, behind a chevron: closed, a
-/// line saying how long it thought and on what; open, the thoughts too.
-private struct ThinkingDisclosure: View {
-    let thinking: ModelThinking
-    let isExpanded: Bool
-    let toggle: () -> Void
-    /// Opens the thoughts to select part of; nil while they're written.
-    var select: ((String) -> Void)?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Button(action: toggle) {
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    Text(summary)
-                    if thinking.duration == nil { ProgressView().controlSize(.mini) }
-                }
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(summary)
-            .accessibilityHint(isExpanded ? Text("Hides the thinking") : Text("Shows the thinking"))
-            .accessibilityAddTraits(isExpanded ? .isSelected : [])
-            if isExpanded {
-                Text(thoughts)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .selectableOnMac()
-                    .contextMenu {
-                        if let select { TextMenu(text: thoughts, select: select) }
-                    }
-                    .padding(.leading, 10)
-                    .overlay(alignment: .leading) {
-                        Rectangle().fill(.quaternary).frame(width: 2)
-                    }
-            }
-        }
-        .animation(.snappy(duration: 0.2), value: isExpanded)
-    }
-
-    private var thoughts: String { thinking.text.trimmingCharacters(in: .whitespacesAndNewlines) }
-
-    private var summary: String {
-        guard let duration = thinking.duration else { return String(localized: "Thinking…") }
-        let time = duration.formatted(
-            .units(allowed: [.seconds], width: .abbreviated, fractionalPart: .show(length: 1)))
-        switch thinking.processor {
-        case .gpu?: return String(localized: "Thoughts · \(time) on the GPU")
-        case .cpu?: return String(localized: "Thoughts · \(time) on the CPU")
-        case nil: return String(localized: "Thoughts · \(time)")
-        }
-    }
-}
-
-extension Binding {
-    /// The value, or `fallback` once it's gone, with writes dropped then,
-    /// while SwiftUI catches up. SwiftUI's own `Binding(_:)` over an
-    /// optional force-unwraps it, which traps if the view reads it once more
-    /// after it's set to nil, as Discard does.
-    fileprivate func or<Wrapped>(_ fallback: Wrapped) -> Binding<Wrapped> where Value == Wrapped? {
-        Binding<Wrapped>(
-            get: { wrappedValue ?? fallback },
-            set: { if wrappedValue != nil { wrappedValue = $0 } })
-    }
-}
-
-/// Marks what the model wrote, such as its replies and its drafts, so a
-/// test on a real model can leave out words that differ from one GPU to the
-/// next. It's FlowKit's `modelTextIdentifier`, so flow steps don't show it.
-enum ModelText {
-    static let identifier = "model-text"
-}
-
-/// Copy and Select Text, for a message or its thoughts.
-private struct TextMenu: View {
-    let text: String
-    let select: (String) -> Void
-
-    var body: some View {
-        Button("Copy", systemImage: "doc.on.doc") { copyToClipboard(text) }
-        Button("Select Text", systemImage: "selection.pin.in.out") { select(text) }
-    }
-}
-
-extension View {
-    /// Lets the Mac select any part of the text by dragging. On iOS a long
-    /// press opens the message's menu instead, whose Select Text does.
-    @ViewBuilder fileprivate func selectableOnMac() -> some View {
-        #if os(macOS)
-            textSelection(.enabled)
-        #else
-            self
-        #endif
     }
 }

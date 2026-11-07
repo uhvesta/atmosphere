@@ -14,6 +14,7 @@ swift_library(
         "//apps/lifr/features:__subpackages__",
     ],
     deps = [
+        "//apps/libs/kits/chatui",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "//apps/lifr/features/project_detail",

@@ -1,3 +1,4 @@
+import ChatUI
 import ComposableArchitecture
 import LifrAssistantClient
 import LifrSearchClient
@@ -103,7 +104,7 @@ package struct ConversationsView: View {
         return Button {
             store.send(.foundTapped(conversation.id, messageID: found.message?.id))
         } label: {
-            ConversationRow(
+            ConversationListRow(
                 conversation: conversation, replying: store.chats[id: conversation.id]?.replying != nil,
                 found: found.message, searched: store.searched.words + store.related)
         }
@@ -201,7 +202,7 @@ struct ArchivedConversationsView: View {
     var body: some View {
         List {
             ForEach(store.state.archived) { conversation in
-                ConversationRow(conversation: conversation, replying: false)
+                ConversationListRow(conversation: conversation, replying: false)
                     .swipeActions(edge: .leading, allowsFullSwipe: false) {
                         UnarchiveButton(id: conversation.id, store: store).tint(.indigo)
                     }
@@ -233,73 +234,25 @@ struct ArchivedConversationsView: View {
     }
 }
 
-private struct ConversationRow: View {
+/// A conversation in the list, with the message a search found, shown from
+/// what was searched for, or else the last thing said, to tell
+/// conversations apart.
+private struct ConversationListRow: View {
     var conversation: Conversation
     var replying: Bool
-    /// The message a search found, shown from what was searched for.
+    /// The message a search found.
     var found: ChatMessage?
     /// The words and phrases searched for.
     var searched: [String] = []
 
-    /// The message a search found, or else the last thing said, to tell
-    /// conversations apart.
-    private var preview: ChatMessage? {
-        found ?? conversation.messages.last { !$0.text.isEmpty }
-    }
-
-    /// `preview`'s text, from a little before what was searched for when
-    /// that's further in.
-    private var previewText: String {
-        guard let preview else { return "" }
-        let text = preview.text
-        let ranges = searched.compactMap { text.range(of: $0, options: [.caseInsensitive, .diacriticInsensitive]) }
-        guard found != nil, let range = ranges.min(by: { $0.lowerBound < $1.lowerBound }),
-            text.distance(from: text.startIndex, to: range.lowerBound) > 40
-        else { return text }
-        // From the start of a word, so the snippet doesn't open mid-word.
-        let near = text.index(range.lowerBound, offsetBy: -30)
-        let start = text[near..<range.lowerBound].firstIndex(where: \.isWhitespace).map(text.index(after:)) ?? near
-        return "…" + text[start...]
-    }
-
     var body: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(conversation.title)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Spacer()
-                    Text(conversation.updatedAt, format: .dateTime.month().day().hour().minute())
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if replying {
-                    Text("Replying…")
-                        .font(.subheadline)
-                        .foregroundStyle(.tint)
-                } else if let preview {
-                    Text(previewText)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .accessibilityIdentifier(preview.role == .assistant ? ModelText.identifier : "")
-                }
-                if conversation.draft != nil {
-                    Label("Draft to review", systemImage: "doc.badge.plus")
-                        .font(.caption)
-                        .foregroundStyle(.tint)
-                }
-            }
-            if conversation.isSynced {
-                Image(systemName: "icloud")
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Synced")
-            }
-        }
-        .padding(.vertical, 4)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(.rect)
+        let preview = found ?? conversation.messages.last { !$0.text.isEmpty }
+        ConversationRow(
+            title: conversation.title, updatedAt: conversation.updatedAt, isReplying: replying,
+            preview: found.map { Snippet.around(searched, in: $0.text) } ?? preview?.text,
+            previewIsModel: preview?.role == .assistant,
+            badge: conversation.draft == nil ? nil : .init("Draft to review", systemImage: "doc.badge.plus"),
+            isSynced: conversation.isSynced)
     }
 }
 

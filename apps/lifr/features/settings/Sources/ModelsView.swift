@@ -1,3 +1,4 @@
+import ChatUI
 import ComposableArchitecture
 import LifrModelsClient
 import SwiftUI
@@ -92,95 +93,18 @@ package struct ModelsView: View {
     }
 }
 
+/// A model to download, with what the store says of it.
 private struct ModelRow: View {
     let model: ModelSpec
     let store: StoreOf<ModelsFeature>
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(model.name).font(.headline)
-                    Text(details).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                action
-            }
-            progress
-            if isInstalled, !model.contextChoices.isEmpty {
-                window
-            }
-        }
-        .buttonStyle(.borderless)
-    }
-
-    /// The window it runs at, for a model with a choice: a larger one
-    /// keeps more of a conversation and takes more memory.
-    @ViewBuilder private var window: some View {
-        let chosen = store.windows[model.id] ?? model.contextTokens
-        Picker(
-            "Context window",
-            selection: Binding(get: { chosen }, set: { store.send(.windowPicked($0, for: model.id)) })
-        ) {
-            ForEach(model.contextChoices, id: \.self) { tokens in
-                Text("\(tokens / 1_024)K tokens").tag(tokens)
-            }
-        }
-        let memory = model.memoryBytes(at: chosen)
-        Text(
-            memory > 0
-                ? "Uses about \(Self.bytes(memory)) of memory. A larger window keeps more of a conversation."
-                : "A larger window keeps more of a conversation and uses more memory."
-        )
-        .font(.caption).foregroundStyle(.secondary)
-    }
-
-    private var details: String {
-        "\(model.summary) · \(Self.bytes(model.downloadSize)) · \(model.license)"
-    }
-
-    private static func bytes(_ count: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
-    }
-
-    private var isInstalled: Bool { store.installed.contains(model.id) }
-
-    @ViewBuilder private var action: some View {
-        switch store.downloads[model.id] {
-        case .downloading:
-            Button("Pause") { store.send(.pauseTapped(model.id)) }
-        case .verifying:
-            Text("Checking").foregroundStyle(.secondary)
-        case .paused:
-            Button("Resume") { store.send(.downloadTapped(model.id)) }
-        case .failed:
-            Button("Download model") { store.send(.downloadTapped(model.id)) }
-        case nil:
-            if isInstalled {
-                Button("Remove", role: .destructive) { store.send(.removeTapped(model.id)) }
-            } else {
-                Button("Download model") { store.send(.downloadTapped(model.id)) }
-            }
-        }
-    }
-
-    @ViewBuilder private var progress: some View {
-        switch store.downloads[model.id] {
-        case .downloading(let received, let total), .paused(let received, let total):
-            ProgressView(value: store.downloads[model.id]?.fraction ?? 0) {
-                EmptyView()
-            } currentValueLabel: {
-                Text("\(Self.bytes(received)) of \(Self.bytes(total))")
-            }
-        case .verifying:
-            ProgressView(value: 1)
-        case .failed(let error):
-            Text(error.description).font(.caption).foregroundStyle(.red)
-        case nil:
-            if isInstalled {
-                Text("Downloaded").font(.caption).foregroundStyle(.secondary)
-            }
-        }
+        ChatUI.ModelRow(
+            model, download: store.downloads[model.id], isInstalled: store.installed.contains(model.id),
+            window: store.windows[model.id] ?? model.contextTokens,
+            pickWindow: { store.send(.windowPicked($0, for: model.id)) },
+            start: { store.send(.downloadTapped(model.id)) }, pause: { store.send(.pauseTapped(model.id)) },
+            remove: { store.send(.removeTapped(model.id)) })
     }
 }
 

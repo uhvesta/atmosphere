@@ -11,6 +11,7 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     visibility = ["//apps/lifr/features:__subpackages__"],
     deps = [
+        "//apps/libs/kits/chatui",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "//apps/lifr/features/task_detail",

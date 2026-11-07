@@ -1,4 +1,3 @@
-import LifrUI
 import SwiftUI
 
 #if os(macOS)
@@ -8,7 +7,7 @@ import SwiftUI
 #endif
 
 /// Puts text on the clipboard.
-func copyToClipboard(_ text: String) {
+public func copyToClipboard(_ text: String) {
     #if os(macOS)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
@@ -17,17 +16,48 @@ func copyToClipboard(_ text: String) {
     #endif
 }
 
+/// Marks what a model wrote, such as its replies, so a test on a real model
+/// can leave out words that differ from one GPU to the next. It's FlowKit's
+/// `modelTextIdentifier`, so flow steps don't show it.
+public enum ModelText {
+    public static let identifier = "model-text"
+}
+
 /// Text to select part of, in its own sheet.
-struct TextToSelect: Identifiable {
-    let id = UUID()
+public struct TextToSelect: Identifiable {
+    public let id = UUID()
+    public let text: String
+
+    public init(text: String) {
+        self.text = text
+    }
+}
+
+/// Copy and Select Text, for a message or its thoughts.
+public struct TextMenu: View {
     let text: String
+    let select: (String) -> Void
+
+    public init(text: String, select: @escaping (String) -> Void) {
+        self.text = text
+        self.select = select
+    }
+
+    public var body: some View {
+        Button("Copy", systemImage: "doc.on.doc") { copyToClipboard(text) }
+        Button("Select Text", systemImage: "selection.pin.in.out") { select(text) }
+    }
 }
 
 /// A message's text, to select any part of and copy.
-struct SelectTextSheet: View {
+public struct SelectTextSheet: View {
     let text: String
 
-    var body: some View {
+    public init(text: String) {
+        self.text = text
+    }
+
+    public var body: some View {
         NavigationStack {
             SelectableText(text: text)
                 .navigationTitle("Select Text")
@@ -84,3 +114,15 @@ struct SelectTextSheet: View {
         }
     }
 #endif
+
+extension View {
+    /// Lets the Mac select any part of the text by dragging. On iOS a long
+    /// press opens the message's menu instead, whose Select Text does.
+    @ViewBuilder public func selectableOnMac() -> some View {
+        #if os(macOS)
+            textSelection(.enabled)
+        #else
+            self
+        #endif
+    }
+}

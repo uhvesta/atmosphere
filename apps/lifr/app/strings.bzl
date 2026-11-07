@@ -5,13 +5,16 @@ load("@apple_support//lib:apple_support.bzl", "apple_support")
 visibility("private")
 
 _StringsInfo = provider(
-    doc = "The .stringsdata directories of Lifr's Swift libraries.",
+    doc = "The .stringsdata directories of Lifr's Swift libraries and the kits it uses.",
     fields = {"directories": "depset of directories of .stringsdata files"},
 )
 
 def _strings_aspect_impl(target, ctx):
     own = []
-    is_lifr = ctx.label.workspace_name == "" and ctx.label.package.startswith("apps/lifr/")
+
+    # Lifr's own libraries and the kits it shows, whose words are looked up
+    # in the app's catalog.
+    is_lifr = ctx.label.workspace_name == "" and ctx.label.package.startswith(("apps/lifr/", "apps/libs/kits/"))
     if is_lifr and OutputGroupInfo in target and hasattr(target[OutputGroupInfo], "swift_localized_strings"):
         own = [target[OutputGroupInfo].swift_localized_strings]
     deps = [dep[_StringsInfo].directories for dep in getattr(ctx.rule.attr, "deps", []) if _StringsInfo in dep]

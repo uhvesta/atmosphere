@@ -1,3 +1,4 @@
+import ChatUI
 import ComposableArchitecture
 import LifrCore
 import LifrProjectDetail

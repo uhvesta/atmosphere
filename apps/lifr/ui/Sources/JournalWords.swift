@@ -1,3 +1,4 @@
+import ChatUI
 import Foundation
 import LifrCore
 
@@ -15,19 +16,7 @@ package struct JournalWords {
     }
 
     /// A field of a record, before and after, in words.
-    package struct FieldWords: Hashable, Codable, Sendable {
-        package var record: String
-        package var field: String
-        package var before: String?
-        package var after: String?
-
-        package init(record: String, field: String, before: String?, after: String?) {
-            self.record = record
-            self.field = field
-            self.before = before
-            self.after = after
-        }
-    }
+    package typealias FieldWords = ChatUI.ChangedField
 
     /// Every field the steps change, record by record, but `hiding`. Leaves
     /// out the order, and the task a comment or reminder is on, which the

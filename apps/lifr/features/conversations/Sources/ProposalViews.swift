@@ -1,150 +1,41 @@
+import AssistantKit
+import ChatUI
 import LifrAssistantClient
 import LifrCore
 import LifrUI
 import SwiftUI
 
-/// What a reply asks to change, field by field, before → after, with
-/// Apply, Edit and Decline until the person decides.
-struct ProposalCard: View {
-    let proposal: Proposal
-    let workspace: Workspace
-    let canUndo: Bool
-    let isBusy: Bool
-    let apply: () -> Void
-    let edit: () -> Void
-    let decline: () -> Void
-    let undo: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(words.summary(of: proposal.steps, reverts: proposal.reverts))
-                .font(.subheadline.weight(.semibold))
-            ForEach(groups, id: \.record) { group in
-                VStack(alignment: .leading, spacing: 2) {
-                    // One record is named in the summary already.
-                    if groups.count > 1 {
-                        Text(group.record)
-                            .font(.footnote.weight(.medium))
-                    }
-                    ForEach(group.fields, id: \.self) { field in
-                        FieldLine(field: field)
-                    }
-                }
-            }
-            if proposal.decision == nil {
-                HStack {
-                    Button("Decline", role: .destructive, action: decline)
-                    Spacer()
-                    Button("Edit", action: edit)
-                    Button("Apply", action: apply)
-                        .buttonStyle(.borderedProminent)
-                }
-                .disabled(isBusy)
-                .font(.subheadline)
-            } else {
-                HStack {
-                    Label(status, systemImage: proposal.decision == .applied ? "checkmark.circle" : "xmark.circle")
-                        .foregroundStyle(.secondary)
-                    if proposal.decision == .applied, canUndo {
-                        Spacer()
-                        Button("Undo", action: undo)
-                    }
-                }
-                .font(.caption)
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: 520, alignment: .leading)
-        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 12))
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .contain)
-    }
-
-    private var words: JournalWords { JournalWords(workspace) { _ in "" } }
-
+extension AssistantKit.Proposal where Action == AssistantAction, Step == JournalStep {
     /// Fields the change bumps by itself, which say nothing new.
-    private static let bookkeeping: Set<Field> = [.author, .closedAt, .completedAt, .editedAt]
+    private static var bookkeeping: Set<Field> { [.author, .closedAt, .completedAt, .editedAt] }
 
-    private var groups: [(record: String, fields: [JournalWords.FieldWords])] {
-        var groups: [(record: String, fields: [JournalWords.FieldWords])] = []
-        for field in words.fields(of: proposal.steps, hiding: Self.bookkeeping) {
-            if let last = groups.indices.last, groups[last].record == field.record {
-                groups[last].fields.append(field)
-            } else {
-                groups.append((field.record, [field]))
-            }
-        }
-        return groups
-    }
-
-    private var status: String {
-        switch (proposal.decision, canUndo) {
-        case (.applied?, true): String(localized: "Applied")
-        case (.applied?, false): String(localized: "Applied, then undone")
-        case (.declined?, _): String(localized: "Declined")
-        case (nil, _): ""
-        }
-    }
-}
-
-/// A field before → after, such as "Status: To Do → Done".
-private struct FieldLine: View {
-    let field: JournalWords.FieldWords
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 4) {
-            Text("\(field.field):")
-                .foregroundStyle(.secondary)
-            if let before = field.before {
-                Text(before)
-                    .strikethrough()
-                    .foregroundStyle(.secondary)
-                Image(systemName: "arrow.right")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("to")
-            }
-            Text(field.after ?? String(localized: "none"))
-        }
-        .font(.footnote)
+    /// What it would change, in words, for its card.
+    func card(
+        in workspace: Workspace, canUndo: Bool, isBusy: Bool, apply: @escaping () -> Void,
+        edit: @escaping () -> Void, decline: @escaping () -> Void, undo: @escaping () -> Void
+    ) -> ProposalCard {
+        let words = JournalWords(workspace) { _ in "" }
+        return ProposalCard(
+            summary: words.summary(of: steps, reverts: reverts),
+            changes: words.fields(of: steps, hiding: Self.bookkeeping), decision: decision, canUndo: canUndo,
+            isBusy: isBusy, apply: apply, edit: edit, decline: decline, undo: undo)
     }
 }
 
 /// The changes a reply proposed, each to keep or leave out, and what each
 /// sets. Done checks them against the records as they are now.
-struct ProposalEditor: View {
+struct ChangesEditor: View {
     @Binding var edit: ChatFeature.ProposalEdit
     /// The records the changes are to, for their names.
     let workspace: Workspace
     let isBusy: Bool
     let done: () -> Void
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        Form {
-            if let problem = edit.problem {
-                Label(problem, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
-            }
-            ForEach(edit.actions.indices, id: \.self) { index in
-                Section {
-                    Toggle(title(of: edit.actions[index]), isOn: $edit.kept[index])
-                    if edit.kept[index] {
-                        ActionFields(action: $edit.actions[index])
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .navigationTitle("Edit Changes")
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") { dismiss() }
-            }
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Done", action: done)
-                    .disabled(isBusy)
-            }
+        ProposalEditor(
+            titles: edit.actions.map(title), kept: $edit.kept, problem: edit.problem, isBusy: isBusy, done: done
+        ) { index in
+            ActionFields(action: $edit.actions[index])
         }
     }
 
@@ -236,13 +127,4 @@ private struct ActionFields: View {
     private static let taskStatuses: [(key: String, value: TaskStatus)] = [
         ("todo", .todo), ("in_progress", .inProgress), ("done", .done), ("wont_do", .wontDo),
     ]
-}
-
-extension Binding where Value == String? {
-    /// The text, with empty text as `nil`.
-    fileprivate var orEmpty: Binding<String> {
-        Binding<String>(
-            get: { wrappedValue ?? "" },
-            set: { wrappedValue = $0.isEmpty ? nil : $0 })
-    }
 }

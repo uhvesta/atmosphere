@@ -4,6 +4,7 @@ load("//apps/libs/kits/inference/litert:test_model.bzl", "GEMMA_4_E2B")
 load("//apps/lifr/testing/snapshot:defs.bzl", "lifr_snapshot_test")
 
 _DEPS = [
+    "//apps/libs/kits/chatui",
     "//apps/lifr/api",
     "//apps/lifr/clients/lock",
     "//apps/lifr/clients/reminders",
