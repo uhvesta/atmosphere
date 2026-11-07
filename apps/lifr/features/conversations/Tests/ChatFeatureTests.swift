@@ -64,6 +64,24 @@ final class ChatFeatureTests: XCTestCase {
         return store
     }
 
+    /// A reply proposing `changes`, as the live assistant writes one.
+    private static func proposing(
+        _ changes: [TaskChange], in request: AssistantRequest, text: String = "OK."
+    ) async -> AssistantReply {
+        let tools = request.tools()
+        for change in changes { _ = try? await tools.change(change) }
+        var reply = AssistantReply(text: text, isComplete: true)
+        reply.proposal = tools.proposal
+        return reply
+    }
+
+    /// Applies what the last reply proposed.
+    private func applyLast(in store: TestStoreOf<ChatFeature>) async throws {
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+        await store.send(.applyTapped(messageID: reply.id))
+        await store.skipReceivedActions(strict: false)
+    }
+
     private func send(_ text: String, in store: TestStoreOf<ChatFeature>) async {
         await store.send(.task)
         await store.send(.binding(.set(\.input, text)))
@@ -309,23 +327,121 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.editsDraft)
     }
 
-    func testUndoPutsBackWhatTheAssistantChangedInThatReply() async throws {
+    func testAProposalIsSavedOnlyOnceAppliedAndUndoPutsItBack() async throws {
         let (workspace, rent) = home()
         let code = workspace.displayCode(of: rent)
         let store = chat(workspace) { request in
-            _ = try? await request.tools().change(TaskChange(code: code, status: "done"))
-            return AssistantReply(text: "Marked it done.", isComplete: true)
+            await Self.proposing([TaskChange(code: code, status: "done")], in: request, text: "Marked it done.")
         }
 
         await send("I paid the rent", in: store)
-        XCTAssertEqual(store.state.workspace.tasks[rent.id]?.status, .done)
         let reply = try XCTUnwrap(store.state.conversation.messages.last)
+        XCTAssertEqual(store.state.workspace.tasks[rent.id]?.status, .todo, "nothing changes until it's applied")
+        XCTAssertEqual(reply.proposal?.steps.map(\.record), [RecordID(.task, rent.id)])
+        XCTAssertNil(reply.proposal?.decision)
+        let untouched = try await store.dependencies.store.load()
+        XCTAssertEqual(untouched.journal, [])
+
+        try await applyLast(in: store)
+        XCTAssertEqual(store.state.workspace.tasks[rent.id]?.status, .done)
+        XCTAssertEqual(store.state.proposal(of: reply.id)?.decision, .applied)
+        XCTAssertEqual(store.state.workspace.journal.map(\.actor), [.assistant(device: "iPhone")])
+        XCTAssertEqual(store.state.workspace.journal.map(\.conversation), [conversationID])
         XCTAssertNotNil(store.state.conversation.changes[reply.id])
+        await store.send(.applyTapped(messageID: reply.id))
+        XCTAssertEqual(store.state.workspace.journal.count, 1, "an applied proposal isn't applied again")
 
         await store.send(.undoTapped(messageID: reply.id))
         await store.skipReceivedActions()
         XCTAssertEqual(store.state.workspace.tasks[rent.id]?.status, .todo)
         XCTAssertNil(store.state.conversation.changes[reply.id])
+    }
+
+    func testDecliningAProposalSavesNothing() async throws {
+        let (workspace, rent) = home()
+        let code = workspace.displayCode(of: rent)
+        let store = chat(workspace) { request in
+            await Self.proposing([TaskChange(code: code, status: "done")], in: request)
+        }
+
+        await send("I paid the rent", in: store)
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+        await store.send(.declineTapped(messageID: reply.id))
+        await store.send(.applyTapped(messageID: reply.id))
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.proposal(of: reply.id)?.decision, .declined)
+        let saved = try await store.dependencies.store.load()
+        XCTAssertEqual(saved.journal, [])
+        XCTAssertEqual(saved.tasks[rent.id]?.status, .todo)
+    }
+
+    func testAnEditedProposalIsCheckedAgainAndAppliesAsEdited() async throws {
+        let (workspace, rent) = home()
+        let code = workspace.displayCode(of: rent)
+        let store = chat(workspace) { request in
+            await Self.proposing([TaskChange(code: code, status: "done")], in: request)
+        }
+        await send("I paid the rent", in: store)
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+
+        await store.send(.editProposalTapped(messageID: reply.id))
+        var edit = try XCTUnwrap(store.state.editingProposal)
+        edit.actions = [.task(TaskChange(code: code, status: "lots"))]
+        await store.send(.binding(.set(\.editingProposal, edit)))
+        await store.send(.editProposalDone)
+        await store.skipReceivedActions(strict: false)
+        XCTAssertNotNil(store.state.editingProposal?.problem, "a status Lifr doesn't know is said in the editor")
+
+        edit.actions = [.task(TaskChange(code: code, status: "in_progress"))]
+        await store.send(.binding(.set(\.editingProposal, edit)))
+        await store.send(.editProposalDone)
+        await store.skipReceivedActions(strict: false)
+        XCTAssertNil(store.state.editingProposal)
+        try await applyLast(in: store)
+
+        XCTAssertEqual(store.state.workspace.tasks[rent.id]?.status, .inProgress)
+    }
+
+    func testLeavingOutEveryChangeDeclinesTheProposal() async throws {
+        let (workspace, rent) = home()
+        let code = workspace.displayCode(of: rent)
+        let store = chat(workspace) { request in
+            await Self.proposing([TaskChange(code: code, status: "done")], in: request)
+        }
+        await send("I paid the rent", in: store)
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+
+        await store.send(.editProposalTapped(messageID: reply.id))
+        var edit = try XCTUnwrap(store.state.editingProposal)
+        edit.kept = [false]
+        await store.send(.binding(.set(\.editingProposal, edit)))
+        await store.send(.editProposalDone)
+
+        XCTAssertNil(store.state.editingProposal)
+        XCTAssertEqual(store.state.proposal(of: reply.id)?.decision, .declined)
+    }
+
+    func testAProposalForATaskTrashedSinceSaysSoAndChangesNothing() async throws {
+        let (workspace, rent) = home()
+        let code = workspace.displayCode(of: rent)
+        let store = chat(workspace) { request in
+            await Self.proposing([TaskChange(code: code, status: "done")], in: request)
+        }
+        await send("I paid the rent", in: store)
+        _ = try await withDependencies {
+            $0.date.now = now
+            $0.uuid = .incrementing
+        } operation: {
+            try await store.dependencies.store.moveToTrash(rent.id)
+        }
+
+        try await applyLast(in: store)
+
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertNil(store.state.proposal(of: try XCTUnwrap(store.state.conversation.messages.last).id)?.decision)
+        let saved = try await store.dependencies.store.load()
+        XCTAssertEqual(saved.journal.count, 1, "only the trashing")
     }
 
     func testAReplysChangesUndoneElsewhereNoLongerOfferUndo() async throws {
@@ -396,7 +512,7 @@ final class ChatFeatureTests: XCTestCase {
 
     func testAFailedReplyKeepsTheMessageAndSaysWhy() async throws {
         let (workspace, _) = home()
-        let store = chat(workspace) { _ in throw AssistantError.tooLong(saved: false) }
+        let store = chat(workspace) { _ in throw AssistantError.tooLong }
 
         await send("Hello", in: store)
         XCTAssertNil(store.state.replying)
@@ -414,7 +530,7 @@ final class ChatFeatureTests: XCTestCase {
                 $0 += 1
                 return $0
             }
-            if attempt == 1 { throw AssistantError.unreadable(saved: false) }
+            if attempt == 1 { throw AssistantError.unreadable }
             return AssistantReply(text: "Done.", isComplete: true)
         }
 
@@ -426,16 +542,6 @@ final class ChatFeatureTests: XCTestCase {
         await store.skipReceivedActions(strict: false)
         XCTAssertNil(store.state.failure)
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Done."])
-    }
-
-    func testChangesSavedBeforeAnUnreadableReplyAreNotMadeAgain() async throws {
-        let (workspace, _) = home()
-        let store = chat(workspace) { _ in throw AssistantError.unreadable(saved: true) }
-
-        await send("Hello", in: store)
-        let hello = try XCTUnwrap(store.state.conversation.messages.last)
-        XCTAssertNotNil(store.state.failure)
-        XCTAssertFalse(store.state.canRetry(hello))
     }
 
     func testOpeningTheChatLoadsNoModelUntilThePersonWrites() async {
@@ -471,7 +577,7 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.canRetry(hello))
     }
 
-    func testAReplyThatStallsAfterSavingIsNotTriedAgain() async throws {
+    func testAReplyThatStallsAfterProposingCanBeTriedAgain() async throws {
         let (workspace, rent) = home()
         let clock = TestClock()
         let code = workspace.displayCode(of: rent)
@@ -486,7 +592,7 @@ final class ChatFeatureTests: XCTestCase {
         await store.receive(\.replyFailed)
         let finish = try XCTUnwrap(store.state.conversation.messages.last)
         XCTAssertNotNil(store.state.failure)
-        XCTAssertFalse(store.state.canRetry(finish))
+        XCTAssertTrue(store.state.canRetry(finish), "nothing was saved, so sending it again is safe")
     }
 
     func testAReplyThatKeepsWritingDoesntTimeOut() async throws {
@@ -711,14 +817,15 @@ final class ChatFeatureTests: XCTestCase {
         let (workspace, rent) = home()
         let code = workspace.displayCode(of: rent)
         let store = chat(workspace) { request in
-            if request.messages.last?.text == "I paid the rent" {
-                _ = try? await request.tools().change(TaskChange(code: code, status: "done"))
+            guard request.messages.last?.text == "I paid the rent" else {
+                return AssistantReply(text: "OK.", isComplete: true)
             }
-            return AssistantReply(text: "OK.", isComplete: true)
+            return await Self.proposing([TaskChange(code: code, status: "done")], in: request)
         }
         ticking(store)
         await send("Hello", in: store)
         await send("I paid the rent", in: store)
+        try await applyLast(in: store)
         let start = try XCTUnwrap(store.state.conversation.messages.dropFirst().first?.id)
 
         await store.send(.goTapped(start))
@@ -814,13 +921,14 @@ final class ChatFeatureTests: XCTestCase {
         let (workspace, rent) = home()
         let code = workspace.displayCode(of: rent)
         let store = chat(workspace) { request in
-            if request.messages.last?.text == "I paid the rent" {
-                _ = try? await request.tools().change(TaskChange(code: code, status: "done"))
+            guard request.messages.last?.text == "I paid the rent" else {
+                return AssistantReply(text: "OK.", isComplete: true)
             }
-            return AssistantReply(text: "OK.", isComplete: true)
+            return await Self.proposing([TaskChange(code: code, status: "done")], in: request)
         }
         ticking(store)
         await send("I paid the rent", in: store)
+        try await applyLast(in: store)
         let paid = try XCTUnwrap(store.state.conversation.messages.first)
 
         await store.send(.editTapped(messageID: paid.id))

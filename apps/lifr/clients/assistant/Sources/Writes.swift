@@ -5,28 +5,20 @@ import LifrCore
 /// A change the assistant makes, run the way the stores run every save.
 package typealias AssistantOperation = @Sendable (inout Workspace, Context) throws(LifrError) -> Change
 
-/// How the assistant saves what it changes, and the conversation the
-/// changes belong to, so they can be found and reverted together.
+/// That the assistant may change records in a conversation: it proposes
+/// each change, for the person to apply as one change of that conversation,
+/// so it can be found and reverted with the rest.
 package struct AssistantWrites: Sendable, Hashable {
     package var conversation: UUID
-    /// Saves an operation and returns the records after it.
-    package var save: @Sendable (_ operation: @escaping AssistantOperation) async throws -> Workspace
 
-    package init(
-        conversation: UUID,
-        save: @escaping @Sendable (_ operation: @escaping AssistantOperation) async throws -> Workspace
-    ) {
+    package init(conversation: UUID) {
         self.conversation = conversation
-        self.save = save
     }
-
-    package static func == (lhs: Self, rhs: Self) -> Bool { lhs.conversation == rhs.conversation }
-    package func hash(into hasher: inout Hasher) { hasher.combine(conversation) }
 }
 
 /// A change to one existing task, as the assistant's answer gives it.
 /// Fields left nil stay as they are.
-package struct TaskChange: Hashable, Sendable {
+package struct TaskChange: Hashable, Codable, Sendable {
     /// Such as HOME-0003.
     package var code: String
     package var title: String?
@@ -68,8 +60,6 @@ package enum TaskChangeError: Error, Hashable, Sendable, CustomStringConvertible
     case readOnly
     /// A Core rule refused the change.
     case refused(code: String, LifrError)
-    /// Saving failed, for a reason outside Lifr's rules.
-    case notSaved(code: String, reason: String)
 
     package var description: String {
         switch self {
@@ -95,8 +85,6 @@ package enum TaskChangeError: Error, Hashable, Sendable, CustomStringConvertible
             "Nothing can be changed in this conversation. Change the task yourself, or ask without the skill."
         case .refused(let code, let error):
             "\(code) wasn't changed: \(error)"
-        case .notSaved(let code, let reason):
-            "\(code) wasn't changed because saving failed: \(reason) Try again; if it keeps failing, restart Lifr."
         }
     }
 }
@@ -141,7 +129,9 @@ extension AssistantTools {
             throw .nothingToChange(code: shown)
         }
         let id = task.id
-        try await apply(code: shown) { workspace, context throws(LifrError) in
+        var asked = change
+        asked.code = code
+        try apply(.task(asked), code: shown) { workspace, context throws(LifrError) in
             var saved = Change()
             if newTitle != nil || newPriority != nil || newDue != nil {
                 let edit = Workspace.TaskEdit(title: newTitle, priority: newPriority, dueDate: newDue)
@@ -183,29 +173,35 @@ extension AssistantTools {
         return (avenue.id, project.id)
     }
 
-    /// Saves `operation` for the change to `code`, as `TaskChangeError`.
-    private func apply(code: String, _ operation: @escaping AssistantOperation) async throws(TaskChangeError) {
-        switch await apply(operation) {
+    /// Proposes `operation` for the change to `code`, as `TaskChangeError`.
+    private func apply(
+        _ action: AssistantAction, code: String, _ operation: @escaping AssistantOperation
+    ) throws(TaskChangeError) {
+        switch apply(action, operation) {
         case .success: return
         case .readOnly: throw .readOnly
         case .refused(let error): throw .refused(code: code, error)
-        case .failed(let reason): throw .notSaved(code: code, reason: reason)
         }
     }
 
-    /// Adds a comment to the task with `code`.
+    /// Proposes a comment on the task with `code`.
     package func addComment(code: String, text: String) async -> String {
         let code = code.trimmingCharacters(in: .whitespaces).uppercased()
-        guard let task = try? workspace.task(code: code), task.deletedAt == nil else {
-            return "There's no task \(code). Use findTasks to look up its code. Nothing changed."
+        do {
+            try comment(code: code, text: text)
+            return "The comment on \(code) waits for the person to apply it."
+        } catch {
+            return error.description
         }
+    }
+
+    private func comment(code: String, text: String) throws(ActionError) {
+        guard let task = try? workspace.task(code: code), task.deletedAt == nil else { throw .noTask(code: code) }
         let id = task.id
-        let saved = await apply { workspace, context throws(LifrError) in
+        try propose(.comment(code: code, text: text)) { workspace, context throws(LifrError) in
             _ = try workspace.addComment(text, to: id, in: context)
             return Change()
         }
-        guard case .success = saved else { return saved.message }
-        return "Saved the comment on \(code). The person can undo it."
     }
 
     /// The newest changes, each with a ref for `revert`.
@@ -218,9 +214,9 @@ extension AssistantTools {
         }.joined(separator: "\n")
     }
 
-    /// Puts back what changes did, as a new change: `ref` is one from
-    /// `recentActivity`, "last" for the newest change, or "conversation"
-    /// for everything done in this conversation.
+    /// Proposes putting back what changes did, as a new change: `ref` is
+    /// one from `recentActivity`, "last" for the newest change, or
+    /// "conversation" for everything done in this conversation.
     package func revert(ref: String) async -> String {
         let ref = ref.trimmingCharacters(in: .whitespaces).lowercased()
         let entries: [JournalEntry]
@@ -238,56 +234,118 @@ extension AssistantTools {
                 : "There's no change \(ref). Use recentActivity for refs."
         }
         let ids = entries.map(\.id)
+        let skipped: Int
+        do {
+            skipped = try revert(ids)
+        } catch {
+            return error.description
+        }
+        var text =
+            ids.count == 1
+            ? "The revert waits for the person to apply it." : "Reverting \(ids.count) changes waits for the person."
+        if skipped > 0 {
+            text += " \(skipped) fields were changed again since, so they'd stay as they are now."
+        }
+        return text
+    }
+
+    /// Proposes reverting the entries, and says how many fields would stay
+    /// as they are, being changed again since.
+    private func revert(_ ids: [UUID]) throws(ActionError) -> Int {
+        let known = Set(workspace.journal.map(\.id))
+        if let missing = ids.first(where: { !known.contains($0) }) { throw .noChange(ref: Self.ref(missing)) }
         let skipped = LockIsolated(0)
-        let saved = await apply { workspace, context throws(LifrError) in
+        try propose(.revert(entries: ids)) { workspace, context throws(LifrError) in
             let change = try workspace.revert(ids, in: context)
             skipped.setValue(change.skipped.count)
             return change
         }
-        guard case .success = saved else { return saved.message }
-        var text = ids.count == 1 ? "Reverted the change." : "Reverted \(ids.count) changes."
-        if skipped.value > 0 {
-            text += " \(skipped.value) fields were changed again since, so they stay as they are now."
-        }
-        return text + " The revert can be reverted too."
+        return skipped.value
     }
 
-    /// Saves `operation` as the assistant, in this conversation.
-    func apply(_ operation: @escaping AssistantOperation) async -> SaveResult {
-        guard let writes else { return .readOnly }
-        let conversation = writes.conversation
-        do {
-            workspace = try await writes.save { workspace, context throws(LifrError) in
-                var context = context
-                context.actor = .assistant(device: context.actor.device)
-                var change = try operation(&workspace, context)
-                change.actor = context.actor
-                change.conversation = conversation
-                return change
+    /// Makes `action` again, as `Proposal.make` does for the person.
+    func run(_ action: AssistantAction) async throws(ActionError) {
+        switch action {
+        case .task(let change):
+            do {
+                _ = try await self.change(change)
+            } catch {
+                throw .task(error)
             }
-            return .success
-        } catch let error as LifrError {
-            return .refused(error)
-        } catch {
-            return .failed(error.localizedDescription)
+        case .project(let change):
+            do {
+                _ = try await self.change(change)
+            } catch {
+                throw .project(error)
+            }
+        case .comment(let code, let text):
+            try comment(code: code, text: text)
+        case .revert(let entries):
+            _ = try revert(entries)
         }
     }
 
-    enum SaveResult {
+    /// Runs `operation` on these tools' records, so later lookups see it,
+    /// and keeps it with `action` for the person to apply. Saves nothing.
+    func apply(_ action: AssistantAction, _ operation: @escaping AssistantOperation) -> Proposed {
+        guard writes != nil else { return .readOnly }
+        var records = workspace
+        do {
+            _ = try operation(&records, Context(actor: .assistant(device: ""), now: now))
+        } catch {
+            return .refused(error)
+        }
+        workspace = records
+        proposed.withValue { $0.append((action, operation)) }
+        return .success
+    }
+
+    /// `apply`, as `ActionError`.
+    private func propose(_ action: AssistantAction, _ operation: @escaping AssistantOperation) throws(ActionError) {
+        switch apply(action, operation) {
+        case .success: return
+        case .readOnly: throw .readOnly
+        case .refused(let error): throw .refused(error)
+        }
+    }
+
+    /// What these tools were asked to change, for the person to apply, or
+    /// `nil` when nothing.
+    package var proposal: Proposal? {
+        let actions = proposed.value.map(\.action)
+        guard !actions.isEmpty else { return nil }
+        return Proposal(actions: actions, steps: workspace.steps(since: initial))
+    }
+
+    /// What saves every change these tools were asked for, as one change by
+    /// the assistant in the conversation, or `nil` when nothing.
+    var operation: AssistantOperation? {
+        let operations = proposed.value.map(\.operation)
+        guard !operations.isEmpty, let conversation = writes?.conversation else { return nil }
+        return { workspace, context throws(LifrError) in
+            var context = context
+            context.actor = .assistant(device: context.actor.device)
+            var change = Change()
+            for operation in operations {
+                change.merge(try operation(&workspace, context))
+            }
+            change.actor = context.actor
+            change.conversation = conversation
+            return change
+        }
+    }
+
+    /// Forgets what was proposed, for answering again from the start.
+    package func discardProposal() {
+        proposed.setValue([])
+        workspace = initial
+    }
+
+    /// Whether a change could be proposed.
+    enum Proposed {
         case success
         case readOnly
         case refused(LifrError)
-        case failed(String)
-
-        /// What the model is told when a tool's save didn't happen.
-        var message: String {
-            switch self {
-            case .success: ""
-            case .readOnly: "You can't change anything here. Suggest the change and the person can make it."
-            case .refused(let error): "\(error) Nothing changed."
-            case .failed(let reason): "Saving failed: \(reason) Nothing changed."
-            }
-        }
     }
 
     /// The first six characters of an entry's ID: enough to tell the

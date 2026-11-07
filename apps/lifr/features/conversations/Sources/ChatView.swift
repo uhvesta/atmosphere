@@ -95,6 +95,15 @@ package struct ChatView: View {
                 .sheetLayout(height: 560)
             }
         }
+        .sheet(item: $store.editingProposal) { edit in
+            NavigationStack {
+                ProposalEditor(
+                    edit: $store.editingProposal.or(edit), workspace: store.workspace,
+                    isBusy: store.applying == edit.id,
+                    done: { store.send(.editProposalDone) })
+            }
+            .sheetLayout(height: 560)
+        }
         .navigationTitle(store.conversation.title)
         .toolbarTitleMenu {
             Button("Rename", systemImage: "pencil") { store.send(.renameTapped) }
@@ -182,13 +191,24 @@ package struct ChatView: View {
                         MessageView(
                             message: message, skill: store.state.skillTitle(of: message),
                             elsewhere: store.elsewhere,
-                            canUndo: store.conversation.changes[message.id] != nil,
+                            // A proposal's card offers its own Undo.
+                            canUndo: message.proposal == nil && store.conversation.changes[message.id] != nil,
                             showsThinking: store.shownThinking.contains(message.id),
                             toggleThinking: { store.send(.thinkingToggled(messageID: message.id)) },
                             undo: { store.send(.undoTapped(messageID: message.id)) },
                             select: { selecting = TextToSelect(text: $0) }
                         )
                         .contextMenu { messageMenu(for: message) }
+                        if let proposal = message.proposal {
+                            ProposalCard(
+                                proposal: proposal, workspace: store.workspace,
+                                canUndo: store.conversation.changes[message.id] != nil,
+                                isBusy: store.applying == message.id,
+                                apply: { store.send(.applyTapped(messageID: message.id)) },
+                                edit: { store.send(.editProposalTapped(messageID: message.id)) },
+                                decline: { store.send(.declineTapped(messageID: message.id)) },
+                                undo: { store.send(.undoTapped(messageID: message.id)) })
+                        }
                         branches(at: message)
                         if let summary = store.conversation.summary, summary.through == message.id {
                             SummaryMarker(text: summary.summary.text, canForget: !store.compacting) {

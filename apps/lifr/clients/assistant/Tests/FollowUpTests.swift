@@ -18,7 +18,7 @@ final class FollowUpTests: XCTestCase {
         return AssistantRequest(
             messages: texts.map { ChatMessage(id: UUID(), role: .person, text: $0, at: now) }, draft: draft,
             problem: problem, workspace: records.workspace, now: now, timeZone: .gmt,
-            writes: AssistantWrites(conversation: UUID()) { _ in records.workspace })
+            writes: AssistantWrites(conversation: UUID()))
     }
 
     private let milk = Plan(tasks: [.init(title: "buy milk", place: "HOME")])

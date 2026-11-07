@@ -120,6 +120,9 @@
     "%@, 1 task" : {
 
     },
+    "%@:" : {
+
+    },
     "%@: %@" : {
       "localizations" : {
         "en" : {
@@ -245,6 +248,9 @@
 
     },
     "Access" : {
+
+    },
+    "Active" : {
 
     },
     "Activity" : {
@@ -396,6 +402,15 @@
     "Apple Intelligence" : {
 
     },
+    "Applied" : {
+
+    },
+    "Applied, then undone" : {
+
+    },
+    "Apply" : {
+
+    },
     "Approve" : {
 
     },
@@ -450,6 +465,9 @@
     "Avenue" : {
 
     },
+    "Avenue key, or KEY/Project" : {
+
+    },
     "Avenue name" : {
 
     },
@@ -483,10 +501,16 @@
     "Cancel" : {
 
     },
+    "Change %@" : {
+
+    },
     "Change Projects" : {
 
     },
     "Change tasks" : {
+
+    },
+    "Change “%@”" : {
 
     },
     "Changed" : {
@@ -543,6 +567,9 @@
     "Comment" : {
 
     },
+    "Comment on %@" : {
+
+    },
     "Comment on tasks" : {
 
     },
@@ -592,6 +619,9 @@
 
     },
     "Copy as TOML" : {
+
+    },
+    "Couldn't apply" : {
 
     },
     "Couldn't attach that" : {
@@ -667,6 +697,12 @@
 
     },
     "Dates" : {
+
+    },
+    "Decline" : {
+
+    },
+    "Declined" : {
 
     },
     "Delete" : {
@@ -748,6 +784,9 @@
 
     },
     "Edit Avenue" : {
+
+    },
+    "Edit Changes" : {
 
     },
     "Edit Draft" : {
@@ -1114,6 +1153,9 @@
       }
     },
     "Move Them to %@" : {
+
+    },
+    "Move to" : {
 
     },
     "Move to %@" : {
@@ -1525,7 +1567,13 @@
     "Revert" : {
 
     },
+    "Revert %lld changes" : {
+
+    },
     "Revert %lld changes, back to this one?" : {
+
+    },
+    "Revert a change" : {
 
     },
     "Revert everything since" : {
@@ -1673,6 +1721,12 @@
 
     },
     "Sub tasks of %@" : {
+
+    },
+    "Such as Friday, or none" : {
+
+    },
+    "Such as tomorrow, or none" : {
 
     },
     "Such as “only the HOME Avenue”" : {
@@ -1897,6 +1951,9 @@
     "Unarchive" : {
 
     },
+    "Unchanged" : {
+
+    },
     "Under %@" : {
 
     },
@@ -2029,10 +2086,16 @@
     "iCloud lost the records twice" : {
 
     },
+    "none" : {
+
+    },
     "something removed" : {
 
     },
     "the device didn't say why" : {
+
+    },
+    "to" : {
 
     },
     "·" : {

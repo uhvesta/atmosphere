@@ -6,8 +6,9 @@ import LifrModelsClient
 import LifrSkills
 import LifrStoreClient
 
-/// A chat with the assistant: it answers questions, changes tasks when
-/// asked (each reply that did has Undo), and drafts plans on a card the
+/// A chat with the assistant: it answers questions, proposes changes to
+/// tasks and Projects when asked, which the person applies, edits or
+/// declines (each reply applied has Undo), and drafts plans on a card the
 /// person can edit and then add. A reply keeps going when the person
 /// leaves the chat or Lifr; one the system turns away, as Apple's model
 /// does in the background, is sent again on `resume`.
@@ -71,6 +72,10 @@ package struct ChatFeature {
         @Presents package var manageSkills: SkillsFeature.State?
         /// Whether the draft's editor is open.
         package var editsDraft = false
+        /// The proposal being edited, before it's checked again.
+        package var editingProposal: ProposalEdit?
+        /// The reply whose proposal is being applied or checked again.
+        package var applying: UUID?
         /// What the assistant's model reads besides text: the composer only
         /// offers to attach what it can read.
         package var inputs: Set<ModelInput> = []
@@ -181,6 +186,24 @@ package struct ChatFeature {
             message.skill.map { id in skills.first { $0.id == id }?.title ?? id }
         }
 
+        /// What the reply `id` proposed, if it's shown.
+        package func proposal(of id: UUID) -> Proposal? {
+            conversation.messages.first { $0.id == id }?.proposal
+        }
+
+        /// Puts `proposal` on the reply `id` in place of what it proposed.
+        mutating func setProposal(_ proposal: Proposal, of id: UUID) {
+            guard let index = conversation.messages.firstIndex(where: { $0.id == id }) else { return }
+            conversation.messages[index].proposal = proposal
+        }
+
+        /// Keeps what the person decided about the reply's proposal.
+        mutating func decide(_ id: UUID, _ decision: Proposal.Decision) {
+            guard var proposal = proposal(of: id) else { return }
+            proposal.decision = decision
+            setProposal(proposal, of: id)
+        }
+
         package var canSend: Bool {
             availability == .available && replying == nil && waiting == nil && !attaching && !recording && !compacting
                 && (picked != nil || !pending.isEmpty
@@ -233,6 +256,16 @@ package struct ChatFeature {
         /// covers are sent again as far as they fit.
         case forgetSummaryTapped(UUID)
         case undoTapped(messageID: UUID)
+        /// Saves what the reply proposed, made again on the records as they
+        /// are now, as one change.
+        case applyTapped(messageID: UUID)
+        case applied(messageID: UUID, Result<Saved, any Error>)
+        case declineTapped(messageID: UUID)
+        case editProposalTapped(messageID: UUID)
+        /// Checks the edited proposal against the records, and keeps it
+        /// in place of the reply's when it can be made.
+        case editProposalDone
+        case reproposed(messageID: UUID, Result<Proposal, any Error>)
         case discardDraftTapped
         case addTapped
         case saved(Result<Saved, any Error>)
@@ -284,12 +317,34 @@ package struct ChatFeature {
         }
     }
 
+    /// A reply's proposal as the person edits it: each change can be left
+    /// out or changed.
+    package struct ProposalEdit: Equatable, Identifiable, Sendable {
+        /// The reply.
+        package var id: UUID
+        package var actions: [AssistantAction]
+        /// Whether each of `actions` is kept.
+        package var kept: [Bool]
+        /// Why the edited changes can't be made, shown in the editor.
+        package var problem: String?
+
+        package init(id: UUID, actions: [AssistantAction]) {
+            self.id = id
+            self.actions = actions
+            kept = actions.map { _ in true }
+        }
+
+        /// The actions kept.
+        var chosen: [AssistantAction] {
+            zip(actions, kept).compactMap { action, kept in kept ? action : nil }
+        }
+    }
+
     /// Why a reply couldn't be written.
     package struct Failure: Equatable, Sendable {
         package var reason: String
-        /// Whether sending it again can fix it: not once the reply saved
-        /// changes, which sending again could make twice, nor for a request
-        /// that's too long or declined.
+        /// Whether sending it again can fix it: not for a request that's
+        /// too long or declined.
         package var retries: Bool
     }
 
@@ -530,7 +585,9 @@ package struct ChatFeature {
                 let id = uuid()
                 let thinking = reply.thinking?.shown
                 state.conversation.append(
-                    ChatMessage(id: id, role: .assistant, text: reply.text, at: now, thinking: thinking))
+                    ChatMessage(
+                        id: id, role: .assistant, text: reply.text, at: now, thinking: thinking,
+                        proposal: reply.proposal))
                 // Thinking opened while it was written stays open.
                 if state.showsReplyThinking, thinking != nil { state.shownThinking.insert(id) }
                 state.showsReplyThinking = false
@@ -618,7 +675,7 @@ package struct ChatFeature {
                 // declined, and could make saved changes twice.
                 let retries =
                     (error as? AssistantError).map {
-                        $0 == .unreadable(saved: false) || $0 == .timedOut(saved: false) || $0.isFailure
+                        $0 == .unreadable || $0 == .timedOut || $0.isFailure
                     } ?? true
                 state.failure = Failure(reason: String(describing: error), retries: retries)
                 state.waiting = nil
@@ -694,6 +751,90 @@ package struct ChatFeature {
                 return .run { [store] send in
                     await send(.saved(Result { try await store.revert(entries: entries) }))
                 }
+
+            case .applyTapped(let id):
+                guard state.applying == nil, let proposal = state.proposal(of: id), proposal.decision == nil else {
+                    return .none
+                }
+                state.applying = id
+                let conversation = state.conversation.id
+                return .run { [store, now, timeZone] send in
+                    await send(
+                        .applied(
+                            messageID: id,
+                            Result {
+                                let workspace = try await store.load()
+                                let made = try await Proposal.make(
+                                    proposal.actions, on: workspace, now: now, timeZone: timeZone,
+                                    conversation: conversation)
+                                return try await store.save(made.operation)
+                            }))
+                }
+
+            case .applied(let id, .success(let saved)):
+                state.applying = nil
+                state.workspace = saved.workspace
+                state.decide(id, .applied)
+                if let entry = saved.change.entry { state.conversation.changes[id, default: []].append(entry) }
+                check(&state)
+                return .send(.delegate(.saved(saved.workspace)))
+
+            case .applied(_, .failure(let error)):
+                state.applying = nil
+                state.alert = AlertState {
+                    TextState("Couldn't apply")
+                } actions: {
+                    ButtonState(role: .cancel) { TextState("OK") }
+                } message: {
+                    TextState(
+                        "\(String(describing: error)) Nothing changed. Edit the changes, or ask the assistant "
+                            + "again for what you want now.")
+                }
+                return .none
+
+            case .declineTapped(let id):
+                guard state.proposal(of: id)?.decision == nil else { return .none }
+                state.decide(id, .declined)
+                return .none
+
+            case .editProposalTapped(let id):
+                guard let proposal = state.proposal(of: id), proposal.decision == nil else { return .none }
+                state.editingProposal = ProposalEdit(id: id, actions: proposal.actions)
+                return .none
+
+            case .editProposalDone:
+                guard let edit = state.editingProposal, state.applying == nil else { return .none }
+                let actions = edit.chosen
+                guard !actions.isEmpty else {
+                    // Every change left out: nothing to apply.
+                    state.editingProposal = nil
+                    state.decide(edit.id, .declined)
+                    return .none
+                }
+                state.applying = edit.id
+                let conversation = state.conversation.id
+                return .run { [store, now, timeZone] send in
+                    await send(
+                        .reproposed(
+                            messageID: edit.id,
+                            Result {
+                                let workspace = try await store.load()
+                                return try await Proposal.make(
+                                    actions, on: workspace, now: now, timeZone: timeZone, conversation: conversation
+                                ).proposal
+                            }))
+                }
+
+            case .reproposed(let id, .success(let proposal)):
+                state.applying = nil
+                state.editingProposal = nil
+                state.setProposal(proposal, of: id)
+                return .none
+
+            case .reproposed(_, .failure(let error)):
+                state.applying = nil
+                state.editingProposal?.problem = String(describing: error)
+                return .none
 
             case .discardDraftTapped:
                 state.conversation.draft = nil
@@ -817,7 +958,7 @@ package struct ChatFeature {
     }
 
     /// Sends each reply to `request`, and stops with `.timedOut` when the
-    /// assistant writes or saves nothing for `stallLimit`. Time in the
+    /// assistant writes nothing for `stallLimit`. Time in the
     /// background doesn't count: a model there may be waiting for Lifr to
     /// be back on screen, so each return starts the wait again.
     private static func watch(
@@ -825,17 +966,6 @@ package struct ChatFeature {
         returns: @escaping @Sendable () -> Int, _ each: @escaping @Sendable (AssistantReply) async -> Void
     ) async throws {
         let progress = LockIsolated(0)
-        let saved = LockIsolated(false)
-        var request = request
-        if let writes = request.writes {
-            request.writes = AssistantWrites(conversation: writes.conversation) { operation in
-                progress.withValue { $0 += 1 }
-                defer { progress.withValue { $0 += 1 } }
-                let workspace = try await writes.save(operation)
-                saved.setValue(true)
-                return workspace
-            }
-        }
         try await withThrowingTaskGroup(of: Void.self) { [request] group in
             group.addTask {
                 for try await reply in assistant.reply(request) {
@@ -851,7 +981,7 @@ package struct ChatFeature {
                     back = returns()
                     try await clock.sleep(for: stallLimit)
                 }
-                throw AssistantError.timedOut(saved: saved.value)
+                throw AssistantError.timedOut
             }
             try await group.next()
             group.cancelAll()
@@ -947,9 +1077,7 @@ package struct ChatFeature {
         var request = AssistantRequest(
             messages: Array(state.conversation.unsummarized), draft: state.conversation.draft, problem: state.problem,
             workspace: state.workspace, now: now, timeZone: timeZone,
-            writes: AssistantWrites(conversation: conversation) { [store] operation in
-                try await store.save(operation).workspace
-            },
+            writes: AssistantWrites(conversation: conversation),
             skill: asked?.skill.flatMap { id in state.skills.first { $0.id == id } },
             attachments: (asked?.attachments ?? []).compactMap { attachment in
                 attachments.file(attachment, conversation).map { ModelAttachment(attachment.kind, file: $0) }

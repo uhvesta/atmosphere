@@ -265,23 +265,25 @@ package enum AssistantPrompt {
                 + "them, put each in \"changes\" with its code, from the existing tasks the prompt lists. Never put "
                 + "an existing task in \"plan\": that would add it a second time. Tasks in the current plan "
                 + "aren't saved yet: change those in \"\(draftTitles(request).isEmpty ? "plan" : "draftChanges")\". "
-                + "Changes save at once and the person can undo them."
+                + "Each change waits for the person to apply it."
         }
         if changesProjects {
             text +=
                 "\n\nTo change Projects that already exist, such as to rename, describe, reschedule, complete, "
                 + "reopen or archive them, put each in \"projectChanges\" with its name from the existing Projects "
-                + "the prompt lists. Archiving a Project moves its open tasks out to its Avenue. Changes save at "
-                + "once and the person can undo them."
+                + "the prompt lists. Archiving a Project moves its open tasks out to its Avenue. Each change waits "
+                + "for the person to apply it."
         }
         let writes = AssistantTool.allCases.filter { $0.writes && tools.contains($0) }
         if !writes.isEmpty {
             text +=
                 "\n\nAlso, when the person asks, use " + writes.map(\.use).joined(separator: ", ")
-                + ". They save at once and the person can undo them."
+                + ". What they change waits for the person to apply it."
         }
         if changesTasks || changesProjects || !writes.isEmpty {
-            text += " Say in \"message\" what you changed."
+            text +=
+                " Say in \"message\" what you'd change: nothing is changed until the person applies it below "
+                + "your message."
             if draftsPlans {
                 text += " New tasks, Projects and Avenues always go in \"plan\" for the person to add."
             }

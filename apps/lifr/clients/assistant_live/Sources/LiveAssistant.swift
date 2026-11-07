@@ -54,11 +54,11 @@ extension AssistantError {
     init(_ error: ModelRuntimeError) {
         switch error {
         case .unavailable(let status): self = .unavailable(AssistantAvailability(status))
-        case .exceededContext: self = .tooLong(saved: false)
+        case .exceededContext: self = .tooLong
         case .declined: self = .declined
         case .busy: self = .busy
         case .simulatorHost(let reason): self = .simulatorHost(reason)
-        case .interrupted(let reason): self = .interrupted(AssistantInterruption(reason), saved: false)
+        case .interrupted(let reason): self = .interrupted(AssistantInterruption(reason))
         case .unsupportedInput(let kind): self = .cantRead(kind)
         case .decodingFailure, .cancelled, .failed: self = .failed(error.description)
         }
@@ -80,24 +80,18 @@ enum LiveAssistant {
                     return
                 }
                 let tools = request.tools()
-                let before = tools.workspace
                 let thoughts = Thoughts()
                 do {
                     // Start with as much as the estimate says fits, and
-                    // send less each time the model says it's too long,
-                    // unless it already saved changes: sending again
-                    // could make them twice.
+                    // send less each time the model says it's too long.
                     let sizes = AssistantPrompt.sizes(request, budget: model.budget)
-                    guard let smallest = sizes.last else { throw AssistantError.tooLong(saved: false) }
+                    guard let smallest = sizes.last else { throw AssistantError.tooLong }
                     for size in sizes {
                         do {
-                            try await answer(
-                                request, size, tools, model, thoughts, saved: { tools.workspace != before },
-                                continuation)
+                            try await answer(request, size, tools, model, thoughts, continuation)
                             return
                         } catch ModelRuntimeError.exceededContext {
-                            let saved = tools.workspace != before
-                            if saved || size == smallest { throw AssistantError.tooLong(saved: saved) }
+                            if size == smallest { throw AssistantError.tooLong }
                         }
                     }
                 } catch let error as AssistantError {
@@ -106,8 +100,7 @@ enum LiveAssistant {
                     continuation.finish()
                 } catch ModelRuntimeError.interrupted(let reason) {
                     continuation.finish(
-                        throwing: AssistantError.interrupted(
-                            AssistantInterruption(reason), saved: tools.workspace != before))
+                        throwing: AssistantError.interrupted(AssistantInterruption(reason)))
                 } catch let error as ModelRuntimeError {
                     continuation.finish(throwing: AssistantError(error))
                 } catch is CancellationError {
@@ -121,11 +114,10 @@ enum LiveAssistant {
     }
 
     /// One answer at `size`. The model sometimes writes an answer that
-    /// doesn't fit the schema: ask again once, then for plain text, unless
-    /// it already saved changes.
+    /// doesn't fit the schema: ask again once, then for plain text.
     private static func answer(
         _ request: AssistantRequest, _ size: AssistantPrompt.Size, _ tools: AssistantTools, _ model: any ModelRuntime,
-        _ thoughts: Thoughts, saved: () -> Bool, _ continuation: AssistantReplies.Continuation
+        _ thoughts: Thoughts, _ continuation: AssistantReplies.Continuation
     ) async throws {
         tools.resultBudget = size.toolResultBudget
         var forgot = false
@@ -134,7 +126,6 @@ enum LiveAssistant {
                 try await structured(request, size, tools, model, thoughts, forgot: forgot, continuation)
                 return
             } catch ModelRuntimeError.decodingFailure {
-                guard !saved() else { throw AssistantError.unreadable(saved: true) }
                 if attempt == 2 { break }
             } catch is ForgotTasks {
                 // Asked the same way, a model that answers the same each
@@ -143,10 +134,12 @@ enum LiveAssistant {
                 if attempt == 2 { break }
             }
         }
+        // Plain text has no tools, so it asks to change nothing.
+        tools.discardProposal()
         do {
             try await plain(request, size, model, thoughts, continuation)
         } catch ModelRuntimeError.decodingFailure {
-            throw AssistantError.unreadable(saved: false)
+            throw AssistantError.unreadable
         }
     }
 
@@ -155,6 +148,8 @@ enum LiveAssistant {
         _ request: AssistantRequest, _ size: AssistantPrompt.Size, _ tools: AssistantTools, _ model: any ModelRuntime,
         _ thoughts: Thoughts, forgot: Bool, _ continuation: AssistantReplies.Continuation
     ) async throws {
+        // What an earlier try asked to change is asked again, or not.
+        tools.discardProposal()
         let allowed = AssistantPrompt.tools(request, size: size)
         let changeable = AssistantPrompt.changeable(request)
         let projects = AssistantPrompt.changeableProjects(request)
@@ -232,6 +227,7 @@ enum LiveAssistant {
         }
         reply.thinking = thoughts.value
         reply.leftOut = AssistantPrompt.leftOut(request, size: size)
+        reply.proposal = tools.proposal
         continuation.yield(
             AssistantPrompt.reply(reply, changed: changed, refused: refused, refusedProjects: refusedProjects))
         continuation.finish()

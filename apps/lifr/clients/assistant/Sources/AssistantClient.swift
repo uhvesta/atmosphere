@@ -95,10 +95,12 @@ package struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
     package var attachments: [ChatAttachment]
     /// What the model thought before it wrote this reply.
     package var thinking: ModelThinking?
+    /// What this reply asks to change, and whether the person applied it.
+    package var proposal: Proposal?
 
     package init(
         id: UUID, role: Role, text: String, at: Date, skill: String? = nil, attachments: [ChatAttachment] = [],
-        thinking: ModelThinking? = nil
+        thinking: ModelThinking? = nil, proposal: Proposal? = nil
     ) {
         self.id = id
         self.role = role
@@ -107,12 +109,13 @@ package struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
         self.skill = skill
         self.attachments = attachments
         self.thinking = thinking
+        self.proposal = proposal
     }
 
-    private enum CodingKeys: String, CodingKey { case id, role, text, at, skill, attachments, thinking }
+    private enum CodingKeys: String, CodingKey { case id, role, text, at, skill, attachments, thinking, proposal }
 
-    /// Reads messages saved before they had attachments or thinking as
-    /// having none.
+    /// Reads messages saved before they had attachments, thinking or
+    /// proposals as having none.
     package init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -122,6 +125,7 @@ package struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
         skill = try container.decodeIfPresent(String.self, forKey: .skill)
         attachments = try container.decodeIfPresent([ChatAttachment].self, forKey: .attachments) ?? []
         thinking = try container.decodeIfPresent(ModelThinking.self, forKey: .thinking)
+        proposal = try container.decodeIfPresent(Proposal.self, forKey: .proposal)
     }
 
     package func encode(to encoder: any Encoder) throws {
@@ -150,7 +154,7 @@ package struct AssistantRequest: Hashable, Sendable {
     package var workspace: Workspace
     package var now: Date
     package var timeZone: TimeZone
-    /// How the assistant saves changes it makes. Without it, it only reads
+    /// That the assistant may propose changes. Without it, it only reads
     /// and drafts plans.
     package var writes: AssistantWrites?
     /// The skill the person picked for this message. Without one, the
@@ -187,7 +191,7 @@ package struct AssistantRequest: Hashable, Sendable {
     }
 
     /// The tools the skill allows, or every tool without one. Tools that
-    /// save changes need `writes`.
+    /// change records need `writes`.
     package var allowedTools: Set<AssistantTool> {
         let tools = skill?.tools ?? Set(AssistantTool.allCases)
         return writes == nil ? tools.filter { !$0.writes } : tools
@@ -323,6 +327,8 @@ package struct AssistantReply: Hashable, Sendable {
     /// How many of the request's messages the model didn't get, as they
     /// didn't fit: older ones, which a summary can stand in for.
     package var leftOut = 0
+    /// What it asks to change, for the person to apply.
+    package var proposal: Proposal?
 
     package init(
         text: String, plan: Plan? = nil, isComplete: Bool = false, thinking: ModelThinking? = nil, leftOut: Int = 0
@@ -339,12 +345,11 @@ package struct AssistantReply: Hashable, Sendable {
 package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible {
     case unavailable(AssistantAvailability)
     /// The last message, the draft and the instructions don't fit the
-    /// model, even with older messages, labels and tools left out. `saved`
-    /// when it changed tasks before running out of room.
-    case tooLong(saved: Bool)
+    /// model, even with older messages, labels and tools left out.
+    case tooLong
     /// The model wrote nothing for a minute or more, and Lifr stopped
-    /// waiting. `saved` when it changed tasks before that.
-    case timedOut(saved: Bool)
+    /// waiting.
+    case timedOut
     /// The model declined, such as for content it won't write about.
     case declined
     /// The model is busy with another request, or iOS is limiting it while
@@ -355,12 +360,11 @@ package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible 
     /// are the same version.
     case simulatorHost(String)
     /// The model's answer didn't fit what Lifr asked for, even after
-    /// asking again. `saved` when it changed tasks before that.
-    case unreadable(saved: Bool)
+    /// asking again.
+    case unreadable
     /// Lifr stopped the model in the middle of the answer: the device ran
-    /// low on memory, or Lifr went to the background. `saved` when it
-    /// changed tasks before that.
-    case interrupted(AssistantInterruption, saved: Bool)
+    /// low on memory, or Lifr went to the background.
+    case interrupted(AssistantInterruption)
     /// The model picked can't read what was sent with the message.
     case cantRead(ModelInput)
     /// Anything else the model reported.
@@ -377,18 +381,12 @@ package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible 
         switch self {
         case .unavailable(let availability):
             availability.description
-        case .tooLong(saved: true):
-            "The assistant changed tasks, then ran out of room in the on-device model. The changes are saved; undo "
-                + "them or see them in Settings › Activity. Ask for the rest in a shorter message."
-        case .tooLong(saved: false):
+        case .tooLong:
             "Your message and the draft are more than the on-device model can read at once, even with older "
                 + "messages left out. Shorten the message, ask for less at once, or remove rows from the draft."
-        case .timedOut(saved: false):
+        case .timedOut:
             "The assistant stopped answering, so Lifr stopped waiting. Send the message again; if it keeps "
                 + "happening, ask for less at once."
-        case .timedOut(saved: true):
-            "The assistant changed tasks, then stopped answering. The changes are saved; undo them or see them in "
-                + "Settings › Activity. Check them before sending the message again, or they may be made twice."
         case .declined:
             "The assistant can't help with that. Rephrase the request, or edit the draft by hand."
         case .busy:
@@ -397,18 +395,11 @@ package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible 
             "The Simulator couldn't use this Mac's Apple Intelligence (\(detail)). This usually means the Simulator "
                 + "runtime and macOS are different versions: update Xcode and its iOS Simulator to match macOS, or "
                 + "run Lifr on a device or as the Mac app."
-        case .unreadable(saved: false):
+        case .unreadable:
             "The on-device model wrote answers Lifr couldn't read, twice. Send the message again, or ask for less "
                 + "at once: long plans are the hardest for it."
-        case .unreadable(saved: true):
-            "The assistant changed tasks, then wrote an answer Lifr couldn't read. The changes are saved; undo them "
-                + "or see them in Settings › Activity. Check them before sending the message again, or they may "
-                + "be made twice."
-        case .interrupted(let reason, saved: false):
+        case .interrupted(let reason):
             "\(reason.description) Send the message again."
-        case .interrupted(let reason, saved: true):
-            "\(reason.description) It had changed tasks; those changes are saved. Check them in Settings › "
-                + "Activity before sending the message again, or they may be made twice."
         case .cantRead(.image):
             "The model picked for the assistant can't read photos. Pick one that can, such as Gemma 4 E4B, in "
                 + "Settings › Models, or remove the photo and send the message again."

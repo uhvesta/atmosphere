@@ -17,7 +17,7 @@ final class AssistantBudgetTests: XCTestCase {
                 ChatMessage(id: UUID(), role: index % 2 == 0 ? .person : .assistant, text: text, at: now)
             },
             draft: draft, workspace: workspace, now: now, timeZone: .gmt,
-            writes: AssistantWrites(conversation: UUID()) { _ in Workspace() }, skill: skill)
+            writes: AssistantWrites(conversation: UUID()), skill: skill)
     }
 
     func testAShortConversationStartsAtFullSize() {

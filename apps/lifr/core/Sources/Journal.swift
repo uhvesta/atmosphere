@@ -150,7 +150,7 @@ extension Workspace {
     }
 
     /// Every record that differs from `before`, in a fixed order.
-    func steps(since before: Workspace) -> [JournalStep] {
+    package func steps(since before: Workspace) -> [JournalStep] {
         func diff<Record: Equatable>(
             _ old: [UUID: Record], _ new: [UUID: Record], _ value: (Record) -> RecordValue
         ) -> [JournalStep] {

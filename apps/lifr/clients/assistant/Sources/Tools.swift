@@ -9,20 +9,25 @@ package final class AssistantTools: Sendable {
     package static let limit = 15
 
     private let current: LockIsolated<Workspace>
+    /// The records as the answer started, before what it proposed.
+    let initial: Workspace
+    /// What the answer asked to change, in order, with how to make each.
+    let proposed = LockIsolated<[(action: AssistantAction, operation: AssistantOperation)]>([])
     private let budget = LockIsolated(1_200)
     package let now: Date
     package let timeZone: TimeZone
-    /// How to save changes; without it the tools only read.
+    /// Whether the tools may propose changes; without it they only read.
     let writes: AssistantWrites?
 
     package init(workspace: Workspace, now: Date, timeZone: TimeZone, writes: AssistantWrites? = nil) {
         current = LockIsolated(workspace)
+        initial = workspace
         self.now = now
         self.timeZone = timeZone
         self.writes = writes
     }
 
-    /// The records, with the changes these tools saved.
+    /// The records, with the changes these tools proposed.
     package var workspace: Workspace {
         get { current.value }
         set { current.setValue(newValue) }

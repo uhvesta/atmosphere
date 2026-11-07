@@ -53,7 +53,7 @@ extension AssistantTool {
             nil
         case .addComment:
             ModelTool(
-                name: "addComment", description: "Add a comment to a task now. The person can undo it.",
+                name: "addComment", description: "Comment on a task, once the person applies it.",
                 parameters: [
                     ModelProperty("code", "Such as HOME-0003."),
                     ModelProperty("text", "The comment."),
@@ -65,7 +65,8 @@ extension AssistantTool {
             ModelTool(
                 name: "revert",
                 description:
-                    "Undo changes: a ref from recentActivity, last for the newest, or conversation for all yours.",
+                    "Undo changes, once the person applies it: a ref from recentActivity, last for the newest, or "
+                    + "conversation for all yours.",
                 parameters: [ModelProperty("ref", "A ref, last, or conversation.")]
             ) { arguments in
                 await tools.revert(ref: arguments.string("ref") ?? "")

@@ -65,18 +65,6 @@ extension RecordKind {
         case .settings: String(localized: "Settings")
         }
     }
-
-    fileprivate var noun: String {
-        switch self {
-        case .avenue: String(localized: "Avenue")
-        case .project: String(localized: "Project")
-        case .task: "task"
-        case .label: "label"
-        case .comment: "comment"
-        case .reminder: "reminder"
-        case .settings: "settings"
-        }
-    }
 }
 
 /// One journal entry as the Activity log shows it.
@@ -93,12 +81,7 @@ package struct ActivityRow: Identifiable, Hashable, Sendable {
     package var isRevert: Bool
 
     /// A field of a record, before and after, in words.
-    package struct Change: Hashable, Sendable {
-        package var record: String
-        package var field: String
-        package var before: String?
-        package var after: String?
-    }
+    package typealias Change = JournalWords.FieldWords
 }
 
 /// The Activity log: every change, newest first, with who made it and what
@@ -133,63 +116,11 @@ package struct ActivityFeature {
         }
 
         private func row(_ entry: JournalEntry, isReverted: Bool) -> ActivityRow {
-            ActivityRow(
-                id: entry.id, summary: summary(entry), author: author(entry.actor), at: entry.at,
-                changes: entry.steps.flatMap { step in
-                    let record = name(step)
-                    return step.fields.filter { !Self.hidden.contains($0.field) }.map { change in
-                        ActivityRow.Change(
-                            record: record, field: change.field.title, before: change.before.map(text),
-                            after: change.after.map(text))
-                    }
-                },
+            let words = JournalWords(workspace) { actor in self.author(actor) }
+            return ActivityRow(
+                id: entry.id, summary: words.summary(of: entry.steps, reverts: entry.reverts.count),
+                author: author(entry.actor), at: entry.at, changes: words.fields(of: entry.steps),
                 isReverted: isReverted, isRevert: !entry.reverts.isEmpty)
-        }
-
-        /// Fields people don't need to see: the order, and the task a
-        /// comment or reminder is on, which the row already names.
-        private static let hidden: Set<Field> = [.sortOrder, .task]
-
-        private func summary(_ entry: JournalEntry) -> String {
-            if !entry.reverts.isEmpty {
-                return entry.reverts.count == 1
-                    ? String(localized: "Reverted a change")
-                    : String(localized: "Reverted \(entry.reverts.count) changes")
-            }
-            guard let first = entry.steps.first else { return String(localized: "No change") }
-            var text = "\(verb(first)) \(first.record.kind.noun)"
-            if first.record.kind != .settings { text += " “\(title(first))”" }
-            return entry.steps.count == 1 ? text : text + " and \(entry.steps.count - 1) more"
-        }
-
-        private func verb(_ step: JournalStep) -> String {
-            switch (step.before, step.after) {
-            case (nil, _): return String(localized: "Added")
-            case (_, nil): return String(localized: "Removed")
-            case (.task(let old)?, .task(let new)?):
-                if old.deletedAt == nil, new.deletedAt != nil { return String(localized: "Trashed") }
-                if old.deletedAt != nil, new.deletedAt == nil { return String(localized: "Restored") }
-                return String(localized: "Changed")
-            case (.comment(let old)?, .comment(let new)?) where old.deletedAt == nil && new.deletedAt != nil:
-                return String(localized: "Deleted")
-            default: return String(localized: "Changed")
-            }
-        }
-
-        private func title(_ step: JournalStep) -> String {
-            switch step.after ?? step.before {
-            case .avenue(let avenue): avenue.name
-            case .project(let project): project.name
-            case .task(let task): task.title
-            case .label(let label): label.name
-            case .comment(let comment): workspace.tasks[comment.taskID]?.title ?? "a task"
-            case .reminder(let reminder): workspace.tasks[reminder.taskID]?.title ?? "a task"
-            case .settings, nil: String(localized: "Settings")
-            }
-        }
-
-        private func name(_ step: JournalStep) -> String {
-            step.record.kind == .settings ? String(localized: "Settings") : title(step)
         }
 
         private func author(_ actor: Actor) -> String {
@@ -199,40 +130,6 @@ package struct ActivityFeature {
                 return String(localized: "\(actor.client ?? String(localized: "An agent")) · \(place)")
             default: return place
             }
-        }
-
-        /// A value as people read it: records by name, times as dates.
-        private func text(_ value: FieldValue) -> String {
-            switch value {
-            case .text(let text): text
-            case .number(let number): String(number)
-            case .day(let day): day.description
-            case .time(let time): time.description
-            case .moment(let date): date.formatted(date: .abbreviated, time: .shortened)
-            case .taskStatus(let status): status.title
-            case .projectStatus(let status): status.rawValue.capitalized
-            case .priority(let priority): priority.title ?? String(localized: "None")
-            case .access(let access): access.title
-            case .record(let kind, let id): name(of: kind, id)
-            case .records(let kind, let ids): ids.map { name(of: kind, $0) }.sorted().joined(separator: ", ")
-            case .actor(let actor): author(actor)
-            case .trigger(.at(let date)): date.formatted(date: .abbreviated, time: .shortened)
-            case .trigger(.beforeDue(let seconds)):
-                Duration.seconds(seconds).formatted(.units(allowed: [.days, .hours, .minutes], width: .wide))
-                    + " before due"
-            }
-        }
-
-        private func name(of kind: RecordKind, _ id: UUID) -> String {
-            let name: String? =
-                switch kind {
-                case .avenue: workspace.avenues[id]?.name
-                case .project: workspace.projects[id]?.name
-                case .task: workspace.tasks[id]?.title
-                case .label: workspace.labels[id]?.name
-                case .comment, .reminder, .settings: nil
-                }
-            return name ?? "something removed"
         }
     }
 

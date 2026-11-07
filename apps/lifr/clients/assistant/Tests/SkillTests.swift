@@ -10,7 +10,7 @@ final class SkillTests: XCTestCase {
     private func request(_ skill: Skill?, writes: Bool = true) -> AssistantRequest {
         AssistantRequest(
             messages: [], workspace: Workspace(), now: now, timeZone: .gmt,
-            writes: writes ? AssistantWrites(conversation: UUID()) { _ in Workspace() } : nil, skill: skill)
+            writes: writes ? AssistantWrites(conversation: UUID()) : nil, skill: skill)
     }
 
     func testWithoutASkillEveryToolIsAllowedAndPlansAreDrafted() {

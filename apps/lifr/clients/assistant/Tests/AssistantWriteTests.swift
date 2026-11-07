@@ -10,18 +10,23 @@ final class AssistantWriteTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
     private let conversation = UUID()
 
-    /// Tools that save through an in-memory store as the person on an iPhone.
+    /// Tools on `workspace`, and an in-memory store of it the person saves
+    /// to on an iPhone.
     private func tools(_ workspace: Workspace, writes: Bool = true) -> (AssistantTools, StoreClient) {
         let store = StoreClient.inMemory(workspace, actor: .user(device: "iPhone", surface: .iPhone))
-        let save = AssistantWrites(conversation: conversation) { [now] operation in
-            try await withDependencies {
-                $0.date.now = now
-                $0.uuid = .incrementing
-            } operation: {
-                try await store.save(operation).workspace
-            }
-        }
-        return (AssistantTools(workspace: workspace, now: now, timeZone: .gmt, writes: writes ? save : nil), store)
+        return (tools(on: workspace, writes: writes), store)
+    }
+
+    private func tools(on workspace: Workspace, writes: Bool = true) -> AssistantTools {
+        AssistantTools(
+            workspace: workspace, now: now, timeZone: .gmt,
+            writes: writes ? AssistantWrites(conversation: conversation) : nil)
+    }
+
+    /// Applies what `tools` proposed, as the person does, and returns the
+    /// records saved.
+    private func apply(_ tools: AssistantTools, to store: StoreClient) async throws -> Workspace {
+        try await tools.applied(to: store, now: now, conversation: conversation)
     }
 
     private func home() -> (RecordsBuilder, LifrTask, LifrTask) {
@@ -32,7 +37,7 @@ final class AssistantWriteTests: XCTestCase {
         return (records, rent, plants)
     }
 
-    func testChangingTasksSavesAsTheAssistantInTheConversation() async throws {
+    func testChangesWaitForThePersonThenSaveAsOneChangeByTheAssistant() async throws {
         let (records, rent, plants) = home()
         let (tools, store) = tools(records.workspace)
         let codes = [rent, plants].map { records.workspace.displayCode(of: $0) }
@@ -41,7 +46,11 @@ final class AssistantWriteTests: XCTestCase {
             _ = try await tools.change(TaskChange(code: code, status: "in_progress", priority: "high", due: "friday"))
         }
 
-        let saved = try await store.load()
+        let before = try await store.load()
+        XCTAssertEqual(before.journal, [], "nothing is saved until the person applies it")
+        XCTAssertEqual(tools.proposal?.steps.map(\.record), [rent, plants].map { RecordID(.task, $0.id) })
+        let saved = try await apply(tools, to: store)
+        XCTAssertEqual(saved.journal.count, 1)
         for task in [rent, plants] {
             XCTAssertEqual(saved.tasks[task.id]?.status, .inProgress)
             XCTAssertEqual(saved.tasks[task.id]?.priority, .high)
@@ -50,7 +59,28 @@ final class AssistantWriteTests: XCTestCase {
         let entry = try XCTUnwrap(saved.journal.last)
         XCTAssertEqual(entry.actor, .assistant(device: "iPhone"))
         XCTAssertEqual(entry.conversation, conversation)
-        XCTAssertEqual(tools.workspace, saved, "later lookups see the change")
+        XCTAssertEqual(tools.workspace.tasks, saved.tasks, "later lookups see the change")
+    }
+
+    func testAProposalForATaskTrashedSinceCantBeApplied() async throws {
+        let (records, rent, _) = home()
+        let (tools, store) = tools(records.workspace)
+        _ = try await tools.change(TaskChange(code: records.workspace.displayCode(of: rent), status: "done"))
+        let actions = try XCTUnwrap(tools.proposal?.actions)
+        let trashed = try await withDependencies {
+            $0.date.now = now
+            $0.uuid = .incrementing
+        } operation: {
+            try await store.moveToTrash(rent.id).workspace
+        }
+
+        do {
+            _ = try await Proposal.make(actions, on: trashed, now: now, timeZone: .gmt, conversation: conversation)
+            XCTFail("a trashed task can't change")
+        } catch .task(.noTask) {
+        } catch {
+            XCTFail("\(error)")
+        }
     }
 
     func testAWrongCodeOrValueChangesNothing() async throws {
@@ -80,7 +110,7 @@ final class AssistantWriteTests: XCTestCase {
                 .noTask(code: "HOME-9999"), .unknownStatus("procrastinated"), .invalidDate("someday"),
                 .unknownAvenue(key: "GARDEN", suggestion: nil), .nothingToChange(code: code),
             ])
-        let saved = try await store.load()
+        let saved = try await apply(tools, to: store)
         XCTAssertEqual(saved.journal, [])
         XCTAssertEqual(saved.tasks[rent.id]?.status, .todo)
     }
@@ -91,7 +121,7 @@ final class AssistantWriteTests: XCTestCase {
 
         _ = await tools.addComment(code: records.workspace.displayCode(of: rent), text: "Paid by transfer")
 
-        let comments = try await store.load().comments
+        let comments = try await apply(tools, to: store).comments
         let comment = try XCTUnwrap(comments.values.first)
         XCTAssertEqual(comment.body, "Paid by transfer")
         XCTAssertEqual(comment.author, .assistant(device: "iPhone"))
@@ -102,17 +132,18 @@ final class AssistantWriteTests: XCTestCase {
         let (tools, store) = tools(records.workspace)
         let rentCode = records.workspace.displayCode(of: rent)
         _ = try await tools.change(TaskChange(code: rentCode, status: "done"))
+        _ = try await apply(tools, to: store)
         let byHand = try await withDependencies {
             $0.date.now = now
             $0.uuid = .incrementing
         } operation: {
             try await store.edit(plants.id, .init(priority: .low)).workspace
         }
-        tools.workspace = byHand
+        let later = self.tools(on: byHand)
 
-        _ = await tools.revert(ref: "conversation")
+        _ = await later.revert(ref: "conversation")
 
-        let saved = try await store.load()
+        let saved = try await apply(later, to: store)
         XCTAssertEqual(saved.tasks[rent.id]?.status, .todo)
         XCTAssertEqual(saved.tasks[plants.id]?.priority, .low)
     }
@@ -121,15 +152,16 @@ final class AssistantWriteTests: XCTestCase {
         let (records, rent, _) = home()
         let (tools, store) = tools(records.workspace)
         _ = try await tools.change(TaskChange(code: records.workspace.displayCode(of: rent), title: "Pay May rent"))
+        let later = self.tools(on: try await apply(tools, to: store))
 
-        let activity = tools.recentActivity()
+        let activity = later.recentActivity()
         let ref = try XCTUnwrap(activity.split(separator: " ").drop { $0 != "ref" }.dropFirst().first)
         XCTAssertTrue(activity.contains("you"))
-        _ = await tools.revert(ref: String(ref))
+        _ = await later.revert(ref: String(ref))
 
-        let title = try await store.load().tasks[rent.id]?.title
+        let title = try await apply(later, to: store).tasks[rent.id]?.title
         XCTAssertEqual(title, "Pay rent")
-        let unknown = await tools.revert(ref: "zzzzzz")
+        let unknown = await later.revert(ref: "zzzzzz")
         XCTAssertTrue(unknown.contains("no change"))
     }
 
@@ -141,14 +173,14 @@ final class AssistantWriteTests: XCTestCase {
             try await tools.change(TaskChange(code: records.workspace.displayCode(of: rent), status: "done")),
             .readOnly)
 
-        let journal = try await store.load().journal
+        let journal = try await apply(tools, to: store).journal
         XCTAssertEqual(journal, [])
     }
 
     func testThePromptOffersChangesOnlyWithWrites() {
         let request = AssistantRequest(messages: [], workspace: Workspace(), now: now, timeZone: .gmt)
         var writing = request
-        writing.writes = AssistantWrites(conversation: conversation) { _ in Workspace() }
+        writing.writes = AssistantWrites(conversation: conversation)
 
         XCTAssertFalse(request.changesTasks)
         XCTAssertTrue(writing.changesTasks)
@@ -166,12 +198,12 @@ final class AssistantWriteTests: XCTestCase {
         let code = records.workspace.displayCode(of: passport)
 
         _ = try await tools.change(TaskChange(code: code, place: "work"))
-        var saved = try await store.load()
+        var saved = try await apply(tools, to: store)
         XCTAssertEqual(saved.tasks[passport.id]?.avenueID, work.id)
         XCTAssertEqual(saved.tasks[photo.id]?.avenueID, work.id)
 
         _ = try await tools.change(TaskChange(code: code, place: "Work/launch"))
-        saved = try await store.load()
+        saved = try await apply(tools, to: store)
         XCTAssertEqual(saved.tasks[passport.id]?.projectID, launch.id)
 
         let photoCode = saved.displayCode(of: try XCTUnwrap(saved.tasks[photo.id]))
@@ -190,7 +222,7 @@ final class AssistantWriteTests: XCTestCase {
         XCTAssertEqual(same, rent)
         XCTAssertEqual(renamed.title, "Pay the rent")
         XCTAssertEqual(renamed.status, .todo)
-        let journal = try await store.load().journal
+        let journal = try await apply(tools, to: store).journal
         XCTAssertEqual(journal.count, 1)
     }
 
@@ -204,7 +236,7 @@ final class AssistantWriteTests: XCTestCase {
 
         XCTAssertEqual(done.status, .done)
         XCTAssertEqual(moved.dueDate?.description, "2026-11-09")
-        let saved = try await store.load()
+        let saved = try await apply(tools, to: store)
         XCTAssertEqual(saved.tasks[rent.id]?.dueDate?.description, "2026-11-09")
     }
 }

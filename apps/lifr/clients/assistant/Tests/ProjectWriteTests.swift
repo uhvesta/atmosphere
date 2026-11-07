@@ -11,18 +11,18 @@ final class ProjectWriteTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
     private let conversation = UUID()
 
-    /// Tools that save through an in-memory store as the person on an iPhone.
+    /// Tools on `workspace`, and an in-memory store of it the person saves
+    /// to on an iPhone.
     private func tools(_ workspace: Workspace, writes: Bool = true) -> (AssistantTools, StoreClient) {
         let store = StoreClient.inMemory(workspace, actor: .user(device: "iPhone", surface: .iPhone))
-        let save = AssistantWrites(conversation: conversation) { [now] operation in
-            try await withDependencies {
-                $0.date.now = now
-                $0.uuid = .incrementing
-            } operation: {
-                try await store.save(operation).workspace
-            }
-        }
-        return (AssistantTools(workspace: workspace, now: now, timeZone: .gmt, writes: writes ? save : nil), store)
+        let tools = AssistantTools(
+            workspace: workspace, now: now, timeZone: .gmt,
+            writes: writes ? AssistantWrites(conversation: conversation) : nil)
+        return (tools, store)
+    }
+
+    private func apply(_ tools: AssistantTools, to store: StoreClient) async throws -> Workspace {
+        try await tools.applied(to: store, now: now, conversation: conversation)
     }
 
     /// HEALTH with the Project "Half marathon", which has one open task.
@@ -44,7 +44,7 @@ final class ProjectWriteTests: XCTestCase {
                 due: "2026-11-20"))
 
         XCTAssertEqual(changed.name, "Spring half marathon")
-        let saved = try await store.load()
+        let saved = try await apply(tools, to: store)
         let project = try XCTUnwrap(saved.projects[marathon.id])
         XCTAssertEqual(project.name, "Spring half marathon")
         XCTAssertEqual(project.details, "Under two hours")
@@ -60,7 +60,7 @@ final class ProjectWriteTests: XCTestCase {
 
         _ = try await tools.change(ProjectChange(project: "Half marathon", status: "archived"))
 
-        let saved = try await store.load()
+        let saved = try await apply(tools, to: store)
         XCTAssertEqual(saved.projects[marathon.id]?.status, .archived)
         let task = try XCTUnwrap(saved.tasks[shoes.id])
         XCTAssertNil(task.projectID)
@@ -79,7 +79,7 @@ final class ProjectWriteTests: XCTestCase {
             guard case .refused(_, .projectHasOpenTasks) = error else { return XCTFail("\(error)") }
         }
 
-        let saved = try await store.load()
+        let saved = try await apply(tools, to: store)
         XCTAssertEqual(saved.projects[marathon.id]?.status, .active)
         XCTAssertEqual(saved.journal, [])
     }
@@ -88,10 +88,11 @@ final class ProjectWriteTests: XCTestCase {
         let (records, _, marathon, _) = health()
         let (tools, store) = tools(records.workspace)
         _ = try await tools.change(ProjectChange(project: "Half marathon", status: "archived"))
+        let (later, _) = self.tools(try await apply(tools, to: store))
 
-        _ = try await tools.change(ProjectChange(project: "Half marathon", status: "active"))
+        _ = try await later.change(ProjectChange(project: "Half marathon", status: "active"))
+        let saved = try await apply(later, to: store)
 
-        let saved = try await store.load()
         XCTAssertEqual(saved.projects[marathon.id]?.status, .active)
     }
 
@@ -123,7 +124,7 @@ final class ProjectWriteTests: XCTestCase {
             }
         }
 
-        let journal = try await store.load().journal
+        let journal = try await apply(tools, to: store).journal
         XCTAssertEqual(journal, [])
     }
 
@@ -138,7 +139,7 @@ final class ProjectWriteTests: XCTestCase {
             XCTAssertEqual(error, .readOnly)
         }
 
-        let journal = try await store.load().journal
+        let journal = try await apply(tools, to: store).journal
         XCTAssertEqual(journal, [])
     }
 
@@ -147,7 +148,7 @@ final class ProjectWriteTests: XCTestCase {
         var request = AssistantRequest(
             messages: [ChatMessage(id: UUID(), role: .person, text: text, at: now)], workspace: records.workspace,
             now: now, timeZone: .gmt)
-        if writes { request.writes = AssistantWrites(conversation: conversation) { _ in Workspace() } }
+        if writes { request.writes = AssistantWrites(conversation: conversation) }
         return request
     }
 

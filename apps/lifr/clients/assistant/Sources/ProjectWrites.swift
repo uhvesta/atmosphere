@@ -3,7 +3,7 @@ import LifrCore
 
 /// A change to one existing Project, as the assistant's answer gives it.
 /// Fields left nil stay as they are.
-package struct ProjectChange: Hashable, Sendable {
+package struct ProjectChange: Hashable, Codable, Sendable {
     /// "KEY/Project name", as the prompt lists it, or just its name.
     package var project: String
     package var name: String?
@@ -36,8 +36,6 @@ package enum ProjectChangeError: Error, Hashable, Sendable, CustomStringConverti
     /// A Core rule refused the change, such as completing a Project with
     /// open tasks.
     case refused(project: String, LifrError)
-    /// Saving failed, for a reason outside Lifr's rules.
-    case notSaved(project: String, reason: String)
 
     package var description: String {
         switch self {
@@ -54,9 +52,6 @@ package enum ProjectChangeError: Error, Hashable, Sendable, CustomStringConverti
             "Nothing can be changed in this conversation. Change the Project yourself, or ask without the skill."
         case .refused(let project, let error):
             "“\(project)” wasn't changed: \(error)"
-        case .notSaved(let project, let reason):
-            "“\(project)” wasn't changed because saving failed: \(reason) Try again; if it keeps failing, "
-                + "restart Lifr."
         }
     }
 }
@@ -93,7 +88,7 @@ extension AssistantTools {
             throw .nothingToChange(project: project.name)
         }
         let id = project.id
-        let saved = await apply { workspace, context throws(LifrError) in
+        let saved = apply(.project(change)) { workspace, context throws(LifrError) in
             var saved = Change()
             if newName != nil || newDetails != nil || newDue != nil {
                 try workspace.edit(
@@ -110,7 +105,6 @@ extension AssistantTools {
         case .success: return workspace.projects[id] ?? project
         case .readOnly: throw .readOnly
         case .refused(let error): throw .refused(project: project.name, error)
-        case .failed(let reason): throw .notSaved(project: project.name, reason: reason)
         }
     }
 
