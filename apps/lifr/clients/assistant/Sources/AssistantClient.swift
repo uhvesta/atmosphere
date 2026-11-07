@@ -158,6 +158,9 @@ package struct AssistantRequest: Hashable, Sendable {
     /// The files of the photos and recordings sent with the new message,
     /// those still on this device.
     package var attachments: [ModelAttachment]
+    /// The most characters of conversation sent at full size: more for a
+    /// model with a larger window. See `AssistantPrompt.historyBudget(for:)`.
+    package var historyBudget = AssistantPrompt.historyBudget
 
     package init(
         messages: [ChatMessage], draft: Plan? = nil, problem: String? = nil, workspace: Workspace, now: Date,

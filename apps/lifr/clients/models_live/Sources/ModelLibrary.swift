@@ -11,6 +11,8 @@ package final class ModelLibrary: Sendable {
     private struct State {
         var downloads: [ModelID: Task<Result<InstalledModel, ModelDownloadError>, Never>] = [:]
         var selection: [ModelUse: ModelID] = [:]
+        /// The window picked for each model that has a choice.
+        var windows: [ModelID: Int] = [:]
     }
 
     private let root: URL
@@ -50,7 +52,11 @@ package final class ModelLibrary: Sendable {
         self.catalog = catalog
         self.now = now
         let saved = try? JSONDecoder().decode([ModelUse: ModelID].self, from: Data(contentsOf: selectionFile))
-        state.withValue { $0.selection = saved ?? [:] }
+        let windows = try? JSONDecoder().decode([ModelID: Int].self, from: Data(contentsOf: windowsFile))
+        state.withValue { state in
+            state.selection = saved ?? [:]
+            state.windows = windows ?? [:]
+        }
     }
 
     /// The library in Application Support, in a folder for the app on the
@@ -120,7 +126,8 @@ package final class ModelLibrary: Sendable {
             pause: { [self] id in await stop(id) },
             delete: { [self] id throws(ModelStorageError) in try await delete(id) },
             selection: { [self] use in selection(for: use) },
-            select: { [self] id, use in select(id, for: use) }
+            select: { [self] id, use in select(id, for: use) },
+            setWindow: { [self] id, window in setWindow(window, for: id) }
         )
     }
 
@@ -130,9 +137,15 @@ package final class ModelLibrary: Sendable {
     package func installed() -> [InstalledModel] {
         let manager = FileManager.default
         let folders = (try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+        let windows = state.value.windows
         return folders.filter { !$0.lastPathComponent.hasPrefix(".") }.flatMap { model in
             let commits = (try? manager.contentsOfDirectory(at: model, includingPropertiesForKeys: nil)) ?? []
             return commits.compactMap(Self.manifest)
+        }
+        .map { model in
+            var model = model
+            model.chosenWindow = windows[model.id].flatMap { ModelSpec.choice($0, of: model.spec) }
+            return model
         }
         .sorted { $0.installedAt < $1.installedAt }
     }
@@ -148,6 +161,8 @@ package final class ModelLibrary: Sendable {
             spec.inputs.formUnion(entry.inputs)
             spec.memoryBytes = entry.memoryBytes
             spec.cpuMemoryBytes = entry.cpuMemoryBytes
+            spec.contextChoices = entry.contextChoices
+            spec.memoryBytesPerToken = entry.memoryBytesPerToken
         }
         return InstalledModel(spec: spec, directory: directory, installedAt: manifest.installedAt)
     }
@@ -382,6 +397,19 @@ package final class ModelLibrary: Sendable {
         save(selection)
     }
 
+    // MARK: Windows
+
+    /// Runs `id` at `window` from now on; see `ModelLibraryClient.setWindow`.
+    package func setWindow(_ window: Int, for id: ModelID) {
+        let spec = installed().first { $0.id == id }?.spec
+        let windows = state.withValue { state in
+            state.windows[id] = spec.flatMap { ModelSpec.choice(window, of: $0) }
+            return state.windows
+        }
+        try? prepare(root)
+        try? JSONEncoder().encode(windows).write(to: windowsFile, options: .atomic)
+    }
+
     private func save(_ selection: [ModelUse: ModelID]) {
         try? prepare(root)
         try? JSONEncoder().encode(selection).write(to: selectionFile, options: .atomic)
@@ -390,6 +418,7 @@ package final class ModelLibrary: Sendable {
     // MARK: Files
 
     private var selectionFile: URL { root.appending(path: "selection.json", directoryHint: .notDirectory) }
+    private var windowsFile: URL { root.appending(path: "windows.json", directoryHint: .notDirectory) }
 
     private func folder(_ id: ModelID) -> URL {
         root.appending(path: id.directoryName, directoryHint: .isDirectory)

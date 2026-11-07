@@ -66,7 +66,10 @@ extension AssistantError {
 /// doesn't come back as asked. The same for every model.
 enum LiveAssistant {
     static func reply(to request: AssistantRequest, on model: any ModelRuntime) -> AssistantReplies {
-        AssistantReplies { continuation in
+        var sized = request
+        sized.historyBudget = AssistantPrompt.historyBudget(for: model.budget)
+        let request = sized
+        return AssistantReplies { continuation in
             let task = Task {
                 let availability = AssistantAvailability(model.status)
                 guard availability == .available else {

@@ -16,7 +16,7 @@ package struct LiteRTRuntime: ModelRuntime {
     /// What's kept for the answer and the tools' results: the same share
     /// of the window as Apple's model keeps, and no less.
     package var budget: ContextBudget {
-        let window = model.spec.contextTokens
+        let window = model.window
         return ContextBudget(
             window: window,
             reservedForAnswer: max(ContextBudget.appleOnDevice.reservedForAnswer, window * 1_100 / 4_096))

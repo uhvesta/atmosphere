@@ -107,8 +107,32 @@ private struct ModelRow: View {
                 action
             }
             progress
+            if isInstalled, !model.contextChoices.isEmpty {
+                window
+            }
         }
         .buttonStyle(.borderless)
+    }
+
+    /// The window it runs at, for a model with a choice: a larger one
+    /// keeps more of a conversation and takes more memory.
+    @ViewBuilder private var window: some View {
+        let chosen = store.windows[model.id] ?? model.contextTokens
+        Picker(
+            "Context window",
+            selection: Binding(get: { chosen }, set: { store.send(.windowPicked($0, for: model.id)) })
+        ) {
+            ForEach(model.contextChoices, id: \.self) { tokens in
+                Text("\(tokens / 1_024)K tokens").tag(tokens)
+            }
+        }
+        let memory = model.memoryBytes(at: chosen)
+        Text(
+            memory > 0
+                ? "Uses about \(Self.bytes(memory)) of memory. A larger window keeps more of a conversation."
+                : "A larger window keeps more of a conversation and uses more memory."
+        )
+        .font(.caption).foregroundStyle(.secondary)
     }
 
     private var details: String {

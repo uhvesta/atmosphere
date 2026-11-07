@@ -14,6 +14,8 @@ package enum ModelCatalog {
     /// Google's Gemma 4 E2B, for the GPU through LiteRT-LM. Measured by
     /// Google at 1.45 GB on an iPhone 17 Pro, at 2,048 tokens, and 607 MB on
     /// its CPU; the CPU figure here leaves room for Lifr's 8,192 tokens.
+    /// Each token of window past that takes about 150 KB, measured on a
+    /// Mac's GPU at 16K and 32K (`ContextWindowOnRealModelTests`).
     package static let gemma4E2B = ModelSpec(
         id: "gemma-4-e2b", name: "Gemma 4 E2B", summary: "Small and quick", runtime: .liteRT,
         source: ModelSource(
@@ -23,11 +25,13 @@ package enum ModelCatalog {
                     path: "gemma-4-E2B-it.litertlm", size: 2_588_147_712,
                     digest: .sha256("181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c"))
             ]), contextTokens: 8_192, memoryBytes: 1_450_000_000, cpuMemoryBytes: 1_000_000_000,
-        license: "Apache 2.0")
+        license: "Apache 2.0", contextChoices: gemmaWindows, memoryBytesPerToken: 150_000)
 
     /// Google's Gemma 4 E4B, larger and slower than E2B, and the one that
     /// reads photos and listens to recordings. Measured by Google at 3.38 GB
-    /// on an iPhone 17 Pro, at 2,048 tokens.
+    /// on an iPhone 17 Pro, at 2,048 tokens. Its window's memory isn't
+    /// measured: twice E2B's per token, for its larger layers, so the
+    /// planner errs towards the CPU.
     package static let gemma4E4B = ModelSpec(
         id: "gemma-4-e4b", name: "Gemma 4 E4B", summary: "Reads photos and recordings", runtime: .liteRT,
         source: ModelSource(
@@ -36,7 +40,12 @@ package enum ModelCatalog {
                 ModelFile(
                     path: "gemma-4-E4B-it.litertlm", size: 3_659_530_240,
                     digest: .sha256("0b2a8980ce155fd97673d8e820b4d29d9c7d99b8fa6806f425d969b145bd52e0"))
-            ]), contextTokens: 8_192, memoryBytes: 3_380_000_000, license: "Apache 2.0", inputs: [.image, .audio])
+            ]), contextTokens: 8_192, memoryBytes: 3_380_000_000, license: "Apache 2.0", inputs: [.image, .audio],
+        contextChoices: gemmaWindows, memoryBytesPerToken: 300_000)
+
+    /// The windows Gemma 4 runs at in Lifr. It reads up to 128K tokens;
+    /// past 32K the memory is more than an iPhone leaves an app.
+    static let gemmaWindows = [4_096, 8_192, 16_384, 32_768]
 
     /// The catalog's entry for a model downloaded from it, by ID and
     /// commit: what it can read, and the memory it takes, may be newer than

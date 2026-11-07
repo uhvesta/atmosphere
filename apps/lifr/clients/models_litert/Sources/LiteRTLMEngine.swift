@@ -47,7 +47,7 @@ package struct LiteRTLMEngine: LiteRTEngine {
                 modelPath: path, backend: main,
                 visionBackend: model.spec.inputs.contains(.image) ? main : nil,
                 audioBackend: model.spec.inputs.contains(.audio) ? .cpu() : nil,
-                maxNumTokens: model.spec.contextTokens, cacheDir: cache.path,
+                maxNumTokens: model.window, cacheDir: cache.path,
                 // On the GPU, Gemma 4's half-precision activations garble
                 // digits once a prompt is past about 2,000 tokens, writing
                 // a date such as 2026-11-06 as 20026-111-06 (LiteRT-LM

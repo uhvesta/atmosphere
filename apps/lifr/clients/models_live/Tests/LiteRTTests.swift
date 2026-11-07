@@ -511,6 +511,35 @@ final class ModelHostTests: XCTestCase {
         XCTAssertEqual(loaded, "b")
     }
 
+    func testAModelLoadsAgainAtANewWindow() async throws {
+        let loads = LockIsolated<[ModelID]>([])
+        let host = host(loads: loads)
+        var larger = model("a")
+        larger.chosenWindow = 16_384
+
+        _ = try await host.run(model("a"), plain)
+        _ = try await host.run(larger, plain)
+        _ = try await host.run(larger, plain)
+
+        XCTAssertEqual(loads.value, ["a", "a"])
+    }
+
+    func testALargerWindowNeedsMoreMemoryAndASmallerOneLess() {
+        var model = InstalledModel(spec: ModelCatalog.gemma4E2B, directory: URL(filePath: "/"), installedAt: Date())
+        let standard = MemoryPlan.needed(model)
+        model.chosenWindow = 32_768
+        let larger = MemoryPlan.needed(model)
+        let largerOnCPU = MemoryPlan.needed(model, on: .cpu)
+        model.chosenWindow = 4_096
+        let smaller = MemoryPlan.needed(model)
+
+        XCTAssertEqual(standard, ModelCatalog.gemma4E2B.memoryBytes)
+        XCTAssertGreaterThan(larger, standard)
+        XCTAssertLessThan(smaller, standard)
+        XCTAssertLessThan(largerOnCPU, larger)
+        XCTAssertGreaterThan(largerOnCPU, ModelCatalog.gemma4E2B.cpuMemoryBytes)
+    }
+
     func testAModelThatDoesntFitIsntLoaded() async {
         let loads = LockIsolated<[ModelID]>([])
         let host = host(loads: loads, memory: { 3_000_000_000 }, sleep: { _ in })
@@ -632,6 +661,15 @@ final class LiteRTRuntimeTests: XCTestCase {
         XCTAssertEqual(runtime.budget.window, 8_192)
         XCTAssertGreaterThan(runtime.budget.reservedForAnswer, ContextBudget.appleOnDevice.reservedForAnswer)
         XCTAssertGreaterThan(runtime.budget.room, ContextBudget.appleOnDevice.room)
+    }
+
+    func testThePickedWindowIsTheModelsBudget() {
+        let runtime = LiteRTRuntime(
+            model: InstalledModel(
+                spec: ModelCatalog.gemma4E2B, directory: URL(filePath: "/"), installedAt: Date(), chosenWindow: 32_768),
+            host: ModelHost(load: { _, _ throws(ModelRuntimeError) in throw .failed("no") }))
+
+        XCTAssertEqual(runtime.budget.window, 32_768)
     }
 
     func testOnlyAModelThatReadsPhotosGetsThem() async throws {

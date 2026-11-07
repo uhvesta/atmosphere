@@ -69,6 +69,21 @@ final class ModelsFeatureTests: XCTestCase {
         await store.skipInFlightEffects()
     }
 
+    func testPicksTheWindowADownloadedModelRunsAt() async {
+        let library = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B])
+        let store = await models(library)
+        XCTAssertEqual(store.state.windows[ModelCatalog.gemma4E2B.id], ModelCatalog.gemma4E2B.contextTokens)
+
+        await store.send(.windowPicked(32_768, for: ModelCatalog.gemma4E2B.id))
+        let window = { await library.client.installed().first?.window }
+        for _ in 0..<100 where await window() != 32_768 { await Task.yield() }
+
+        XCTAssertEqual(store.state.windows[ModelCatalog.gemma4E2B.id], 32_768)
+        let saved = await window()
+        XCTAssertEqual(saved, 32_768)
+        await store.skipInFlightEffects()
+    }
+
     func testADownloadFromALinkLeftUnfinishedCanBeResumedAfterARelaunch() async {
         let library = InMemoryModelLibrary()
         library.leaveUnfinished(pasted, received: 300)

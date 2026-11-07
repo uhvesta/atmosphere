@@ -42,6 +42,9 @@ package struct ModelLibraryClient: Sendable {
     /// The model `use` runs on.
     package var selection: @Sendable (_ use: ModelUse) -> ModelID = { _ in .apple }
     package var select: @Sendable (_ id: ModelID, _ use: ModelUse) async -> Void
+    /// Sets the window `id` runs at, one of its `contextChoices`; its own
+    /// window, or one it doesn't offer, goes back to its own.
+    package var setWindow: @Sendable (_ id: ModelID, _ window: Int) async -> Void
 }
 
 extension ModelLibraryClient: TestDependencyKey {
@@ -148,7 +151,13 @@ package final class InMemoryModelLibrary: Sendable {
                 board.update { $0[id] = nil }
             },
             selection: { [state] use in use.model(in: state.value.selection) },
-            select: { [state] id, use in state.withValue { $0.selection[use] = id } }
+            select: { [state] id, use in state.withValue { $0.selection[use] = id } },
+            setWindow: { [state] id, window in
+                state.withValue { state in
+                    guard let spec = state.installed[id]?.spec else { return }
+                    state.installed[id]?.chosenWindow = ModelSpec.choice(window, of: spec)
+                }
+            }
         )
     }
 

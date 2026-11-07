@@ -8,3 +8,4 @@
 [text] "Gemma 4 E2B"
 [text] "Small and quick · 2.59 GB · Apache 2.0"
 [text] "Downloaded"
+[text] "Uses about 2.68 GB of memory. A larger window keeps more of a conversation."

@@ -56,6 +56,27 @@ final class AssistantBudgetTests: XCTestCase {
         XCTAssertEqual(AssistantPrompt.sizes(request, budget: larger), [.full, .smaller, .smallest])
     }
 
+    func testAModelWithALargerWindowKeepsMoreOfTheConversation() {
+        let messages = (0..<40).map { String(repeating: "Message \($0) ", count: 20) }
+        var request = request(messages)
+        let small = AssistantPrompt.prompt(request)
+        request.historyBudget = AssistantPrompt.historyBudget(
+            for: ContextBudget(window: 32_768, reservedForAnswer: 8_800))
+        let large = AssistantPrompt.prompt(request)
+
+        XCTAssertEqual(AssistantPrompt.historyBudget(for: .appleOnDevice), AssistantPrompt.historyBudget)
+        XCTAssertFalse(small.contains("Message 20 "))
+        XCTAssertTrue(large.contains("Message 0 "))
+        XCTAssertTrue(large.contains("Message 39 "))
+    }
+
+    func testTheSmallerSizesKeepLessOfALargerHistory() {
+        XCTAssertEqual(AssistantPrompt.Size.full.historyBudget(10_000), 10_000)
+        XCTAssertLessThan(AssistantPrompt.Size.smaller.historyBudget(10_000), 10_000)
+        XCTAssertGreaterThan(
+            AssistantPrompt.Size.smaller.historyBudget(10_000), AssistantPrompt.Size.smaller.historyBudget(1_500))
+    }
+
     func testADraftTooBigForAnySizeFitsNone() {
         let tasks = (1...300).map { Plan.TaskDraft(title: "Task number \($0) with a long title", place: "HOME") }
 

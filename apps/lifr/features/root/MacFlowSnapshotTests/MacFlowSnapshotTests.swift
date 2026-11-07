@@ -332,6 +332,8 @@ final class MacFlowSnapshotTests: XCTestCase {
         store.send(.settings(.activity(.dismiss)))
         store.send(.settings(.modelsTapped))
         await flow.step("models")
+        store.send(.settings(.models(.presented(.windowPicked(32_768, for: ModelCatalog.gemma4E2B.id)))))
+        await flow.step("models-window")
         store.send(.settings(.models(.dismiss)))
         store.send(.settings(.instructionsTapped))
         await flow.step("instructions")

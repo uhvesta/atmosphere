@@ -286,6 +286,26 @@ final class ModelLibraryTests: XCTestCase {
         XCTAssertEqual(library().selection(for: .assistant), .apple)
     }
 
+    func testThePickedWindowIsKeptForThatModel() async throws {
+        var offered = spec()
+        offered.contextChoices = [4_096, 16_384]
+        let model = try await library().download(offered)
+
+        library().setWindow(16_384, for: model.id)
+        XCTAssertEqual(library().installed().first?.window, 16_384)
+
+        library().setWindow(1_000, for: model.id)
+        XCTAssertEqual(library().installed().first?.window, offered.contextTokens)
+    }
+
+    func testAModelWithNoChoiceKeepsItsWindow() async throws {
+        let model = try await library().download(spec())
+
+        library().setWindow(16_384, for: model.id)
+
+        XCTAssertEqual(library().installed().first?.window, model.spec.contextTokens)
+    }
+
     func testNamingAndSkillsRunOnTheAssistantsModelUntilPicked() {
         let library = library()
         library.select("gemma-4-e2b", for: .assistant)

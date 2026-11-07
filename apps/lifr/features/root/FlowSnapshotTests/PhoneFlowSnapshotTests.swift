@@ -782,7 +782,8 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
-    /// Settings, its Activity, Models and Skills.
+    /// Settings, its Activity, Models (with a larger window for Gemma) and
+    /// Skills.
     func testSettings() async {
         let (store, flow) = app("settings")
         store.isSettingsShown = true
@@ -794,6 +795,8 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         store.send(.settings(.activity(.dismiss)))
         store.send(.settings(.modelsTapped))
         await flow.step("models")
+        store.send(.settings(.models(.presented(.windowPicked(32_768, for: ModelCatalog.gemma4E2B.id)))))
+        await flow.step("models-window")
         store.send(.settings(.models(.dismiss)))
         store.send(.settings(.skillsTapped))
         await flow.step("skills")

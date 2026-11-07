@@ -68,7 +68,7 @@ final class RealModel {
     }
 
     /// The model Bazel downloaded, as the catalog pins it.
-    private static func installedModel() throws -> InstalledModel {
+    static func installedModel() throws -> InstalledModel {
         let spec = ModelCatalog.gemma4E2B
         let file = try XCTUnwrap(spec.source?.files.first, "The catalog's Gemma 4 E2B has no file")
         XCTAssertEqual(

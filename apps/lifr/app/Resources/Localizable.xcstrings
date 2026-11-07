@@ -220,6 +220,9 @@
         }
       }
     },
+    "%lldK tokens" : {
+
+    },
     "1 Sub task is still open" : {
 
     },
@@ -233,6 +236,9 @@
 
     },
     "A closed task can't keep open Sub tasks, so they'll be marked Won't Do too." : {
+
+    },
+    "A larger window keeps more of a conversation and uses more memory." : {
 
     },
     "A task" : {
@@ -547,6 +553,9 @@
 
     },
     "Connected apps" : {
+
+    },
+    "Context window" : {
 
     },
     "Conversations" : {
@@ -1861,6 +1870,9 @@
 
     },
     "Use a Skill" : {
+
+    },
+    "Uses about %@ of memory. A larger window keeps more of a conversation." : {
 
     },
     "Version %lld of %lld" : {

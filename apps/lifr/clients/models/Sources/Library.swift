@@ -106,10 +106,17 @@ package struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
     package var license: String
     /// What it can read besides text.
     package var inputs: Set<ModelInput>
+    /// The windows the person may pick from instead of `contextTokens`,
+    /// smallest first; empty when it has only the one.
+    package var contextChoices: [Int]
+    /// The memory each token of window takes past `contextTokens`, for an
+    /// estimate of a larger one. Zero when unknown.
+    package var memoryBytesPerToken: Int64
 
     package init(
         id: ModelID, name: String, summary: String, runtime: RuntimeKind, source: ModelSource?, contextTokens: Int,
-        memoryBytes: Int64, cpuMemoryBytes: Int64 = 0, license: String, inputs: Set<ModelInput> = []
+        memoryBytes: Int64, cpuMemoryBytes: Int64 = 0, license: String, inputs: Set<ModelInput> = [],
+        contextChoices: [Int] = [], memoryBytesPerToken: Int64 = 0
     ) {
         self.id = id
         self.name = name
@@ -121,14 +128,18 @@ package struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
         self.cpuMemoryBytes = cpuMemoryBytes
         self.license = license
         self.inputs = inputs
+        self.contextChoices = contextChoices
+        self.memoryBytesPerToken = memoryBytesPerToken
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, summary, runtime, source, contextTokens, memoryBytes, cpuMemoryBytes, license, inputs
+        case id, name, summary, runtime, source, contextTokens, memoryBytes, cpuMemoryBytes, license, inputs,
+            contextChoices,
+            memoryBytesPerToken
     }
 
     /// Reads manifests written before models had inputs as text only, and
-    /// before they had a CPU figure as unknown.
+    /// before they had a CPU figure or a choice of window as unknown.
     package init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(ModelID.self, forKey: .id)
@@ -141,10 +152,27 @@ package struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
         cpuMemoryBytes = try container.decodeIfPresent(Int64.self, forKey: .cpuMemoryBytes) ?? 0
         license = try container.decode(String.self, forKey: .license)
         inputs = try container.decodeIfPresent(Set<ModelInput>.self, forKey: .inputs) ?? []
+        contextChoices = try container.decodeIfPresent([Int].self, forKey: .contextChoices) ?? []
+        memoryBytesPerToken = try container.decodeIfPresent(Int64.self, forKey: .memoryBytesPerToken) ?? 0
     }
 
     /// The bytes to download; zero for Apple's model.
     package var downloadSize: Int64 { source?.totalSize ?? 0 }
+
+    /// The memory it takes on the GPU with a window of `window` tokens:
+    /// the measured figure, moved by what each token past `contextTokens`
+    /// takes, and never under half the measured figure. Zero when unknown.
+    /// `window` as a choice to keep for `spec`: nil when it's the model's
+    /// own window or one it doesn't offer.
+    package static func choice(_ window: Int, of spec: ModelSpec) -> Int? {
+        window != spec.contextTokens && spec.contextChoices.contains(window) ? window : nil
+    }
+
+    package func memoryBytes(at window: Int) -> Int64 {
+        guard memoryBytes > 0 else { return 0 }
+        let more = Int64(window - contextTokens) * memoryBytesPerToken
+        return max(memoryBytes / 2, memoryBytes + more)
+    }
 }
 
 /// A model whose files are on this device, checked.
@@ -153,14 +181,21 @@ package struct InstalledModel: Identifiable, Hashable, Codable, Sendable {
     /// The folder with its files.
     package var directory: URL
     package var installedAt: Date
+    /// The window the person picked from `spec.contextChoices`, or nil for
+    /// the model's own.
+    package var chosenWindow: Int?
 
-    package init(spec: ModelSpec, directory: URL, installedAt: Date) {
+    package init(spec: ModelSpec, directory: URL, installedAt: Date, chosenWindow: Int? = nil) {
         self.spec = spec
         self.directory = directory
         self.installedAt = installedAt
+        self.chosenWindow = chosenWindow
     }
 
     package var id: ModelID { spec.id }
+
+    /// The tokens it reads and writes at most.
+    package var window: Int { chosenWindow ?? spec.contextTokens }
 
     /// Where `file` is.
     package func location(of file: ModelFile) -> URL {

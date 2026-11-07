@@ -11,21 +11,31 @@ package enum AssistantPrompt {
     /// so older messages are left out; the draft carries what was agreed.
     package static let historyBudget = 1_500
 
+    /// The history a model with `budget` gets: Apple's 1,500 characters,
+    /// and three quarters of whatever room it has past Apple's, at three
+    /// characters a token. The rest goes to tools' results and the draft.
+    package static func historyBudget(for budget: ContextBudget) -> Int {
+        let more = max(0, budget.room - ContextBudget.appleOnDevice.room)
+        return historyBudget + more * 3 * 3 / 4
+    }
+
     /// How much of the request goes to the model. Lifr starts with the
     /// largest that fits its estimate, and when the model still says it's
     /// too long, tries the next.
     package enum Size: CaseIterable, Comparable, Sendable {
-        /// Every allowed tool, 1,500 characters of conversation, the labels,
-        /// and the answer's shape spelled out in the prompt.
+        /// Every allowed tool, the request's history budget of
+        /// conversation, the labels, and the answer's shape spelled out in
+        /// the prompt.
         case full
-        /// The tools the last message needs, 600 characters of
-        /// conversation, no labels, and the answer's shape only enforced.
+        /// The tools the last message needs, two fifths of the history
+        /// budget and at least 600 characters of conversation, no labels,
+        /// and the answer's shape only enforced.
         case smaller
-        /// As `smaller`, with only the last message, cut to 600 characters.
+        /// As `smaller`, with only the last message, cut to fit.
         case smallest
 
-        /// The most characters of conversation.
-        package var historyBudget: Int { self == .full ? AssistantPrompt.historyBudget : 600 }
+        /// The most characters of conversation, out of `full` at full size.
+        package func historyBudget(_ full: Int) -> Int { self == .full ? full : max(600, full * 2 / 5) }
         /// Whether messages before the last are sent.
         package var keepsEarlier: Bool { self != .smallest }
         package var listsLabels: Bool { self == .full }
@@ -274,7 +284,7 @@ package enum AssistantPrompt {
     package static func prompt(_ request: AssistantRequest, size: Size = .full) -> String {
         let messages = size.keepsEarlier ? request.messages : Array(request.messages.suffix(1))
         var text = "Conversation so far:\n"
-        let kept = history(messages, budget: size.historyBudget)
+        let kept = history(messages, budget: size.historyBudget(request.historyBudget))
         text += kept.enumerated().map { index, message in
             let said = said(message, attached: index == kept.count - 1 && !request.attachments.isEmpty)
             return switch (message.role, message.skill) {

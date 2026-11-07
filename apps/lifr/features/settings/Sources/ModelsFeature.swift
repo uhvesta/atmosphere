@@ -14,6 +14,8 @@ package struct ModelsFeature {
         package var installed: Set<ModelID> = []
         package var downloads: [ModelID: DownloadState] = [:]
         package var selection: [ModelUse: ModelID] = [:]
+        /// The window each downloaded model runs at.
+        package var windows: [ModelID: Int] = [:]
         /// The Hugging Face link being added, and its SHA-256 if given.
         package var link = ""
         package var sha256 = ""
@@ -56,6 +58,7 @@ package struct ModelsFeature {
         case loaded(installed: [InstalledModel], unfinished: [ModelSpec], selection: [ModelUse: ModelID])
         case downloadsChanged([ModelID: DownloadState])
         case picked(ModelID, for: ModelUse)
+        case windowPicked(Int, for: ModelID)
         /// What each use runs on after a pick, as uses left unpicked
         /// follow the assistant.
         case selectionChanged([ModelUse: ModelID])
@@ -91,6 +94,7 @@ package struct ModelsFeature {
                 for spec in unfinished { state.add(spec) }
                 for model in installed { state.add(model.spec) }
                 state.installed = Set(installed.map(\.id))
+                state.windows = Dictionary(installed.map { ($0.id, $0.window) }) { first, _ in first }
                 state.selection = selection
                 return .none
 
@@ -108,6 +112,10 @@ package struct ModelsFeature {
                     await send(.selectionChanged(Self.selection(library)))
                 }
 
+            case .windowPicked(let window, let id):
+                state.windows[id] = window
+                return .run { [library] _ in await library.setWindow(id, window) }
+
             case .selectionChanged(let selection):
                 state.selection = selection
                 return .none
@@ -119,6 +127,7 @@ package struct ModelsFeature {
             case .downloaded(_, .success(let model)):
                 state.add(model.spec)
                 state.installed.insert(model.id)
+                state.windows[model.id] = model.window
                 return .none
 
             case .downloaded(_, .failure):

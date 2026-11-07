@@ -30,14 +30,20 @@ package actor ModelHost {
 
     private struct Loaded {
         var id: ModelID
+        var window: Int
         var backend: ModelBackend
         var engine: any LiteRTEngine
+
+        func `is`(_ model: InstalledModel) -> Bool { id == model.id && window == model.window }
     }
 
     private struct Loading {
         var id: ModelID
+        var window: Int
         var backend: ModelBackend
         var task: Task<Result<any LiteRTEngine, ModelRuntimeError>, Never>
+
+        func `is`(_ model: InstalledModel) -> Bool { id == model.id && window == model.window }
     }
 
     private let load: Loader
@@ -125,13 +131,15 @@ package actor ModelHost {
     package func engine(for model: InstalledModel) async throws(ModelRuntimeError) -> any LiteRTEngine {
         idleTimer?.cancel()
         let backend: ModelBackend = inBackground ? .cpu : .gpu
-        if let loaded, loaded.id == model.id, loaded.backend == backend || !turns.isEmpty { return loaded.engine }
-        if let loading, loading.id == model.id, loading.backend == backend { return try await loading.task.value.get() }
+        // A model loaded at another window is loaded again, once its turns
+        // are done.
+        if let loaded, loaded.is(model), loaded.backend == backend || !turns.isEmpty { return loaded.engine }
+        if let loading, loading.is(model), loading.backend == backend { return try await loading.task.value.get() }
         unload(nil)
         let fitting = try await self.backend(for: model, preferring: backend)
         // Another turn may have started loading it while this one waited.
-        if let loading, loading.id == model.id { return try await loading.task.value.get() }
-        if let loaded, loaded.id == model.id { return loaded.engine }
+        if let loading, loading.is(model) { return try await loading.task.value.get() }
+        if let loaded, loaded.is(model) { return loaded.engine }
         if loaded != nil || loading != nil { unload(nil) }
         return try await start(model, on: fitting)
     }
@@ -143,7 +151,7 @@ package actor ModelHost {
     private func backend(
         for model: InstalledModel, preferring preferred: ModelBackend
     ) async throws(ModelRuntimeError) -> ModelBackend {
-        let needed = MemoryPlan.needed(model.spec, on: preferred)
+        let needed = MemoryPlan.needed(model, on: preferred)
         var available = memory()
         for _ in 0..<MemoryPlan.looks where !MemoryPlan.fits(needed, available: available) {
             do {
@@ -154,7 +162,7 @@ package actor ModelHost {
             available = memory()
         }
         if MemoryPlan.fits(needed, available: available) { return preferred }
-        if preferred == .gpu, MemoryPlan.fits(MemoryPlan.needed(model.spec, on: .cpu), available: available) {
+        if preferred == .gpu, MemoryPlan.fits(MemoryPlan.needed(model, on: .cpu), available: available) {
             return .cpu
         }
         throw .unavailable(
@@ -173,7 +181,7 @@ package actor ModelHost {
                 return .failure(error)
             }
         }
-        loading = Loading(id: model.id, backend: backend, task: task)
+        loading = Loading(id: model.id, window: model.window, backend: backend, task: task)
         let result = await task.value
         // Unloaded while it loaded: going to the background, or for
         // another model.
@@ -182,7 +190,7 @@ package actor ModelHost {
         }
         loading = nil
         let engine = try result.get()
-        loaded = Loaded(id: model.id, backend: backend, engine: engine)
+        loaded = Loaded(id: model.id, window: model.window, backend: backend, engine: engine)
         scheduleIdle()
         return engine
     }
@@ -309,11 +317,14 @@ package actor ModelHost {
 
 /// Whether a model fits in the memory the system leaves Lifr.
 package enum MemoryPlan {
-    /// The memory a model takes once loaded on `backend`: its catalog
-    /// figure, or for a pasted model, the size of its files.
-    package static func needed(_ spec: ModelSpec, on backend: ModelBackend = .gpu) -> Int64 {
-        let gpu = spec.memoryBytes > 0 ? spec.memoryBytes : spec.downloadSize
-        return backend == .cpu && spec.cpuMemoryBytes > 0 ? spec.cpuMemoryBytes : gpu
+    /// The memory a model takes once loaded on `backend` at its window: its
+    /// catalog figure, or for a pasted model, the size of its files. The
+    /// window's share is the same on the CPU as on the GPU.
+    package static func needed(_ model: InstalledModel, on backend: ModelBackend = .gpu) -> Int64 {
+        let spec = model.spec
+        let gpu = spec.memoryBytes > 0 ? spec.memoryBytes(at: model.window) : spec.downloadSize
+        guard backend == .cpu, spec.cpuMemoryBytes > 0 else { return gpu }
+        return spec.cpuMemoryBytes + max(0, gpu - spec.memoryBytes)
     }
 
     /// How many more times a model that doesn't fit looks again, and how
