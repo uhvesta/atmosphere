@@ -36,6 +36,13 @@ package struct AvenueFeature {
             }
         }
 
+        /// Shows `workspace` in the title, the Project's fields and the
+        /// list, such as after Undo or a sync.
+        package mutating func show(_ workspace: Workspace, now: Date, timeZone: TimeZone) {
+            refresh(from: workspace)
+            list.show(workspace, now: now, timeZone: timeZone)
+        }
+
         /// Shows `workspace` in the title and the Project's fields.
         mutating func refresh(from workspace: Workspace) {
             title = Self.title(of: scope, in: workspace)
@@ -263,7 +270,7 @@ package struct AvenuesFeature {
                 state.workspace = workspace
                 state.avenues = workspace.avenueRows
                 state.archived = workspace.archivedRows
-                state.avenue?.list.show(workspace, now: now, timeZone: timeZone)
+                state.avenue?.show(workspace, now: now, timeZone: timeZone)
                 return .none
 
             case .loaded(.failure(let error)):

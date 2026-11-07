@@ -11,7 +11,7 @@
 [button] "Restore Project"
 [text] "No tasks yet"
 [text] "Tasks you add here, or move here, show up in this list."
-[text] "Changed “Buy running shoes”"
+[text] "Archived “Spring half marathon”"
 [button] "Undo"
 [button] "Search"
 [button] "Today"

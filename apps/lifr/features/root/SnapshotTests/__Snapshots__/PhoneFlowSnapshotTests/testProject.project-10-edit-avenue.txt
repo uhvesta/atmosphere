@@ -18,7 +18,7 @@
 [text] "Archiving hides the Avenue and its tasks. You can restore it from Archived."
 [button] "Buy running shoes" value: "To Do, High priority, Nov 4, HEALTH-0016"
 [button] "Book physio appointment" value: "To Do, Medium priority, Overdue, Nov 1, HEALTH-0005"
-[text] "Changed “Buy running shoes”"
+[text] "Reopened “Spring half marathon”"
 [button] "Undo"
 [button] "Search"
 [button] "Today"

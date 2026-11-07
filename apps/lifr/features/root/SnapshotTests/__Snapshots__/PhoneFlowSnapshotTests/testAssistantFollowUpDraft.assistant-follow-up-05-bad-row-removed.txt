@@ -20,6 +20,8 @@
 [button] "Edit"
 [button] "Add"
 [button] "Discard"
+[text] "Added “Fitness”"
+[button] "Undo"
 [button] "Use a Skill"
 [button, notEnabled] "Send"
 [element] "" value: "Message"

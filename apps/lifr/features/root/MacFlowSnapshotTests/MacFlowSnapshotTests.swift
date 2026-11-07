@@ -189,6 +189,27 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Archiving a Project with its open task moved out, then ⌘Z, which
+    /// puts both back.
+    func testProjectUndo() async throws {
+        let (store, flow) = app("project-undo")
+        await flow.step("launch", image: false)
+        let marathon = try XCTUnwrap(store.workspace?.projects.values.first { $0.name == "Half marathon" }?.id)
+        store.send(.selected(.scope(.project(marathon))))
+        await flow.step("opened", image: false)
+        store.send(.avenue(.project(.archiveTapped)))
+        store.send(.avenue(.project(.archive(.presented(.moveToAvenue)))))
+        await flow.step("archived")
+        let id = try XCTUnwrap(store.lastChange?.id)
+        store.send(.undoTapped(id))
+        await flow.step("undone")
+        XCTAssertEqual(store.workspace?.projects[marathon]?.status, .active)
+        XCTAssertEqual(
+            store.workspace?.tasks.values.filter { $0.projectID == marathon && $0.isOpen }.map(\.title),
+            ["Buy running shoes"])
+        flow.finish()
+    }
+
     /// The assistant: a new conversation, the skill finder, a reply with a
     /// draft, adding it, renaming, then the archive.
     func testAssistant() async throws {

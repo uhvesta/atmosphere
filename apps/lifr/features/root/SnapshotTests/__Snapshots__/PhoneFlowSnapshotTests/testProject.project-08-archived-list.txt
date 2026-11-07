@@ -5,7 +5,7 @@
 [button] "Home, HOME, 4" value: "4 open"
 [header, text] "Archived"
 [button] "Spring half marathon, Health"
-[text] "Changed “Buy running shoes”"
+[text] "Archived “Spring half marathon”"
 [button] "Undo"
 [button] "Search"
 [button] "Today"

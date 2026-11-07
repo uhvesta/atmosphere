@@ -8,6 +8,8 @@
 [text] "I added Reading, and a run to start with."
 [button] "Undo"
 [button] "Retry" hint: "Write this reply again"
+[text] "Added “Reading”"
+[button] "Undo"
 [button] "Use a Skill"
 [button, notEnabled] "Send"
 [element] "" value: "Message"

@@ -336,6 +336,9 @@
     "Added Sub task %@" : {
 
     },
+    "Added “%@”" : {
+
+    },
     "Adds a task to Lifr, due today unless you pick otherwise." : {
 
     },
@@ -415,6 +418,9 @@
 
     },
     "Archived" : {
+
+    },
+    "Archived %@" : {
 
     },
     "Archiving hides the Avenue and its tasks. You can restore it from Archived." : {
@@ -559,6 +565,9 @@
 
     },
     "Completed" : {
+
+    },
+    "Completed %@" : {
 
     },
     "Connected" : {
@@ -885,6 +894,9 @@
     "It can always read. Agents can never empty the trash, change Avenues or Settings, or approve apps." : {
 
     },
+    "It changed again since, here or on another device, and undoing would lose that change. Open it to change it back by hand." : {
+
+    },
     "It has %@. Archiving takes the Project out of the sidebar; you can restore it from Archived." : {
 
     },
@@ -1109,6 +1121,16 @@
     },
     "Move to Trash" : {
 
+    },
+    "Moved %@ to %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Moved %1$@ to %2$@"
+          }
+        }
+      }
     },
     "Moved %@ to the Trash" : {
 
@@ -1452,6 +1474,9 @@
     "Renew" : {
 
     },
+    "Reopened %@" : {
+
+    },
     "Replying…" : {
 
     },
@@ -1480,6 +1505,9 @@
 
     },
     "Restored" : {
+
+    },
+    "Restored %@" : {
 
     },
     "Restored from the trash" : {

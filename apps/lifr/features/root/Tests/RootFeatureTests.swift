@@ -428,6 +428,72 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testAProjectChangeOffersUndoAndUndoPutsItAndItsTasksBack() async throws {
+        let marathon = records.project("Half marathon", in: health)
+        let shoes = records.task("Buy running shoes", in: health, project: marathon)
+        let store = makeStore(.phone)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.avenues(.opened(.project(marathon.id))))
+        await store.send(.avenues(.avenue(.presented(.project(.archiveTapped)))))
+        await store.send(.avenues(.avenue(.presented(.project(.archive(.presented(.moveToAvenue)))))))
+        await store.skipReceivedActions()
+        let toast = try XCTUnwrap(store.state.toast)
+        XCTAssertEqual(store.state.workspace?.projects[marathon.id]?.status, .archived)
+        XCTAssertNil(store.state.workspace?.tasks[shoes.id]?.projectID)
+
+        await store.send(.undoTapped(toast.id))
+        await store.receive(\.undone)
+        XCTAssertEqual(store.state.workspace?.projects[marathon.id]?.status, .active)
+        XCTAssertEqual(store.state.workspace?.tasks[shoes.id]?.projectID, marathon.id)
+        XCTAssertEqual(store.state.avenues.avenue?.project?.status, .active, "the open Project shows it")
+        XCTAssertNil(store.state.lastChange)
+        await task.cancel()
+    }
+
+    func testUndoRefusesOnceTheProjectChangedAgainElsewhere() async throws {
+        let marathon = records.project("Half marathon", in: health)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = makeStore(.phone, store: client)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.avenues(.opened(.project(marathon.id))))
+        await store.send(.avenues(.avenue(.presented(.project(.binding(.set(\.name, "Spring half")))))))
+        await store.send(.avenues(.avenue(.presented(.project(.nameSubmitted)))))
+        await store.skipReceivedActions()
+        let id = try XCTUnwrap(store.state.lastChange).id
+
+        // Another device gives it a due date.
+        let synced = try await withDependencies {
+            $0.uuid = UUIDGenerator { UUID() }
+            $0.date.now = now
+        } operation: {
+            try await client.edit(
+                project: marathon.id, Workspace.ProjectEdit(dueDate: try CalendarDate(year: 2026, month: 12, day: 6)))
+        }
+        await store.send(.updated(Update(workspace: synced.workspace)))
+
+        await store.send(.undoTapped(id))
+        XCTAssertNotNil(store.state.undoAlert)
+        XCTAssertEqual(store.state.workspace?.projects[marathon.id]?.name, "Spring half")
+        await task.cancel()
+    }
+
+    func testWhatAnAvenueSharesWithAppsIsNotAChangeToUndo() async throws {
+        let health = health
+        let client = StoreClient.inMemory(records.workspace)
+
+        let saved = try await withDependencies {
+            $0.uuid = .incrementing
+            $0.date.now = now
+        } operation: {
+            try await client.setAgentAccess(.readOnly, ofAvenue: health.id)
+        }
+
+        XCTAssertNil(LastChange(saved, id: UUID()))
+    }
+
     func testAddingACommentIsNotAChangeToUndo() async {
         let run = records.task("Run", in: health, due: 0)
         let store = makeStore(.phone)

@@ -191,8 +191,8 @@ final class PhoneFlowSnapshotTests: XCTestCase {
     }
 
     /// A Project: rename it, give it a due date, archive it with its open
-    /// task moved out, find it under Archived, then restore it. And edit
-    /// its Avenue.
+    /// task moved out and Undo that, archive it again, find it under
+    /// Archived, then restore it. And edit its Avenue.
     func testProject() async throws {
         let sample = Workspace.sample(now: now, timeZone: .gmt)
         let marathon = try XCTUnwrap(sample.projects.values.first { $0.name == "Half marathon" }?.id)
@@ -210,6 +210,13 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         await flow.step("archive-asks")
         store.send(.avenues(.avenue(.presented(.project(.archive(.presented(.moveToAvenue)))))))
         await flow.step("archived")
+        let archived = try XCTUnwrap(store.toast?.id)
+        store.send(.undoTapped(archived))
+        await flow.step("archive-undone")
+        XCTAssertEqual(store.workspace?.projects[marathon]?.status, .active)
+        store.send(.avenues(.avenue(.presented(.project(.archiveTapped)))))
+        store.send(.avenues(.avenue(.presented(.project(.archive(.presented(.moveToAvenue)))))))
+        await flow.step("archived-again", image: false)
         store.send(.avenues(.avenue(.dismiss)))
         await flow.step("archived-list")
         store.send(.avenues(.opened(.project(marathon))))

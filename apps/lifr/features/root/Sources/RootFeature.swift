@@ -507,14 +507,18 @@ package struct RootFeature {
                     } message: {
                         TextState(
                             """
-                            The task changed again since, here or on another device, and undoing would lose that \
-                            change. Open the task to change it back by hand.
+                            It changed again since, here or on another device, and undoing would lose that \
+                            change. Open it to change it back by hand.
                             """)
                     }
                     return .none
                 }
                 return .run { [store] send in
-                    await send(.undone(Result { try await store.undo(last.change) }))
+                    if let entry = last.entry {
+                        await send(.undone(Result { try await store.revert(entries: [entry]) }))
+                    } else {
+                        await send(.undone(Result { try await store.undo(last.change) }))
+                    }
                 }
 
             case .undone(.success(let saved)):
@@ -703,7 +707,7 @@ package struct RootFeature {
             AvenuesFeature().reduce(into: &state.avenues, action: .show(workspace)).map(Action.avenues),
             SearchFeature().reduce(into: &state.search, action: .list(.show(workspace))).map(Action.search),
         ]
-        state.avenue?.list.show(workspace, now: now, timeZone: timeZone)
+        state.avenue?.show(workspace, now: now, timeZone: timeZone)
         state.board?.list.show(workspace, now: now, timeZone: timeZone)
         state.settings.show(workspace)
         state.conversations.show(workspace)

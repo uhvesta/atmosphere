@@ -5,6 +5,8 @@
 [text] "Here's a Fitness Avenue. Tap Add to make it."
 [button] "Undo"
 [button] "Retry" hint: "Write this reply again"
+[text] "Added “Fitness”"
+[button] "Undo"
 [button] "Use a Skill"
 [button, notEnabled] "Send"
 [element] "" value: "Message"
