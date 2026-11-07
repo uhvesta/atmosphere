@@ -1,5 +1,7 @@
 import ComposableArchitecture
+import LifrAPI
 import LifrAssistantClient
+import LifrAssistantLive
 import LifrBugReport
 import LifrConversations
 import LifrCore
@@ -90,6 +92,15 @@ final class MacFlowSnapshotTests: XCTestCase {
             : FlowRecorder(name, RootView(store: store).environment(\.timeZone, .gmt))
         store.send(.task)
         return (store, flow)
+    }
+
+    /// The live assistant on a model that gives `answers` in turn.
+    private func gemma(_ answers: [JSONValue]) -> AssistantClient {
+        let model = ScriptedRuntime(
+            budget: ContextBudget(window: 32_768, reservedForAnswer: 2_048),
+            steps: answers.map { ScriptedRuntime.answer($0) })
+        let titles = ScriptedRuntime(steps: [ScriptedRuntime.answer("Groceries")])
+        return .live(runtime: { $0 == .assistant ? model : titles })
     }
 
     private func send(_ text: String, in id: Conversation.ID, of store: StoreOf<RootFeature>) {
@@ -315,6 +326,38 @@ final class MacFlowSnapshotTests: XCTestCase {
         chat(.forgetSummaryTapped(summary.through))
         await flow.step("forgot")
         XCTAssertNil(store.conversations.chats[id: id]?.conversation.summary)
+        flow.finish()
+    }
+
+    /// Asking the assistant to rename the Half marathon and set when
+    /// it's due, which it saves at once, then Undo on its reply.
+    func testAssistantEditsAProject() async throws {
+        let workspace = Workspace.sample(now: now, timeZone: .gmt)
+        let marathon = try XCTUnwrap(workspace.projects.values.first { $0.name == "Half marathon" })
+        let (store, flow) = app(
+            "assistant-edits-project", workspace: workspace,
+            assistant: gemma([
+                [
+                    "projectChanges": [
+                        ["project": "HEALTH/Half marathon", "rename": "Spring half marathon", "due": "2026-12-06"]
+                    ],
+                    "message": "I renamed it to Spring half marathon, due 6 December.",
+                ]
+            ]))
+        store.send(.selected(.conversations))
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        await flow.step("new-chat", image: false)
+        send("Rename the Half marathon to “Spring half marathon”, due 2026-12-06", in: id, of: store)
+        await flow.step("edited")
+        XCTAssertEqual(store.workspace?.projects[marathon.id]?.name, "Spring half marathon")
+        XCTAssertEqual(store.workspace?.projects[marathon.id]?.dueDate?.description, "2026-12-06")
+
+        let reply = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last?.id)
+        store.send(.conversations(.chats(.element(id: id, action: .undoTapped(messageID: reply)))))
+        await flow.step("undone")
+        XCTAssertEqual(store.workspace?.projects[marathon.id]?.name, "Half marathon")
+        XCTAssertEqual(store.workspace?.projects[marathon.id]?.dueDate, marathon.dueDate)
         flow.finish()
     }
 

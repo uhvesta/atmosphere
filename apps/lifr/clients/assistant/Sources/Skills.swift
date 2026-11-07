@@ -3,13 +3,13 @@ import Foundation
 
 /// A tool the assistant can call while it answers.
 package enum AssistantTool: String, Hashable, Codable, Sendable, CaseIterable {
-    case findTasks, getTask, overview, recentActivity, updateTasks, addComment, revert
+    case findTasks, getTask, overview, recentActivity, updateTasks, updateProjects, addComment, revert
 
     /// Whether the tool saves changes, which needs `AssistantRequest.writes`.
     package var writes: Bool {
         switch self {
         case .findTasks, .getTask, .overview, .recentActivity: false
-        case .updateTasks, .addComment, .revert: true
+        case .updateTasks, .updateProjects, .addComment, .revert: true
         }
     }
 }
@@ -82,7 +82,7 @@ package struct Skill: Identifiable, Hashable, Codable, Sendable {
             Help tidy existing tasks: clearer titles, missing priorities and due dates, consistent labels. \
             Say what you'd change first, and put it in "changes" once the person agrees.
             """,
-        tools: [.findTasks, .getTask, .overview, .updateTasks], draftsPlans: false)
+        tools: [.findTasks, .getTask, .overview, .updateTasks, .updateProjects], draftsPlans: false)
 
     package static let review = Skill(
         id: "review", summary: String(localized: "Look back at what's done, overdue and stalled."),

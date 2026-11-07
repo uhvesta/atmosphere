@@ -91,10 +91,10 @@ package enum AssistantPrompt {
     /// last message asks for what they do. A message that asks to add
     /// something or change a task gets no reading tools at any size: a
     /// small model calls them anyway, and loses its way.
-    /// updateTasks isn't a tool the model calls: its changes come in the
-    /// answer, as `changes`.
+    /// updateTasks and updateProjects aren't tools the model calls: their
+    /// changes come in the answer, as `changes` and `projectChanges`.
     package static func tools(_ request: AssistantRequest, size: Size) -> Set<AssistantTool> {
-        let allowed = request.allowedTools.subtracting([.updateTasks])
+        let allowed = request.allowedTools.subtracting([.updateTasks, .updateProjects])
         guard request.skill == nil else { return allowed }
         let reads = !asksForChange(request) && !asksForPlan(request)
         guard size != .full || !reads else { return allowed }
@@ -103,7 +103,7 @@ package enum AssistantPrompt {
             switch tool {
             case .findTasks, .getTask, .overview: reads
             case .recentActivity, .revert: !words.isDisjoint(with: undoWords)
-            case .updateTasks: false
+            case .updateTasks, .updateProjects: false
             case .addComment: !words.isDisjoint(with: commentWords)
             }
         }
@@ -118,7 +118,8 @@ package enum AssistantPrompt {
     package static func instructions(_ request: AssistantRequest, size: Size = .full) -> String {
         instructions(
             request, tools: tools(request, size: size), draftsPlans: request.draftsPlans,
-            changesTasks: !changeable(request).isEmpty, listsLabels: size.listsLabels)
+            changesTasks: !changeable(request).isEmpty, changesProjects: !changeableProjects(request).isEmpty,
+            listsLabels: size.listsLabels)
     }
 
     /// The existing tasks the model may change in this answer: those the
@@ -136,6 +137,24 @@ package enum AssistantPrompt {
     package static func asksForChange(_ request: AssistantRequest) -> Bool {
         !changeable(request).isEmpty && !lastWords(request).isDisjoint(with: changeWords)
     }
+
+    /// The existing Projects the model may change in this answer: those
+    /// the last message may mean, when the person lets it change Projects.
+    package static func changeableProjects(_ request: AssistantRequest) -> [AssistantLookup.KnownProject] {
+        request.changesProjects ? meantProjects(request) : []
+    }
+
+    /// Whether the last message asks to change a Project the prompt lists,
+    /// such as "archive the half marathon" or "rename … to …". Then the
+    /// answer must have a Project change, unless it may mean a task too.
+    package static func asksForProjectChange(_ request: AssistantRequest) -> Bool {
+        !changeableProjects(request).isEmpty
+            && !lastWords(request).isDisjoint(with: changeWords.union(projectChangeWords))
+    }
+
+    private static let projectChangeWords: Set<String> = [
+        "archive", "restore", "describe", "description", "details", "goal",
+    ]
 
     private static let changeWords: Set<String> = [
         "rename", "call", "move", "put", "mark", "done", "finish", "finished", "complete", "completed", "tick",
@@ -193,7 +212,7 @@ package enum AssistantPrompt {
 
     private static func instructions(
         _ request: AssistantRequest, tools: Set<AssistantTool>, draftsPlans: Bool, changesTasks: Bool,
-        listsLabels: Bool = true
+        changesProjects: Bool = false, listsLabels: Bool = true
     ) -> String {
         let lookup = request.lookup
         let today = request.today
@@ -248,13 +267,20 @@ package enum AssistantPrompt {
                 + "aren't saved yet: change those in \"\(draftTitles(request).isEmpty ? "plan" : "draftChanges")\". "
                 + "Changes save at once and the person can undo them."
         }
+        if changesProjects {
+            text +=
+                "\n\nTo change Projects that already exist, such as to rename, describe, reschedule, complete, "
+                + "reopen or archive them, put each in \"projectChanges\" with its name from the existing Projects "
+                + "the prompt lists. Archiving a Project moves its open tasks out to its Avenue. Changes save at "
+                + "once and the person can undo them."
+        }
         let writes = AssistantTool.allCases.filter { $0.writes && tools.contains($0) }
         if !writes.isEmpty {
             text +=
                 "\n\nAlso, when the person asks, use " + writes.map(\.use).joined(separator: ", ")
                 + ". They save at once and the person can undo them."
         }
-        if changesTasks || !writes.isEmpty {
+        if changesTasks || changesProjects || !writes.isEmpty {
             text += " Say in \"message\" what you changed."
             if draftsPlans {
                 text += " New tasks, Projects and Avenues always go in \"plan\" for the person to add."
@@ -303,6 +329,18 @@ package enum AssistantPrompt {
                 + meant.map { "- \($0.code) \"\($0.title)\" in \($0.place)" }.joined(separator: "\n")
             if asksForChange(request) {
                 text += "\nIt asks to change one of them: put that in \"changes\"."
+            }
+        }
+        let projects = meantProjects(request)
+        if !projects.isEmpty {
+            text +=
+                "\n\nExisting Projects the last message may mean:\n"
+                + projects.map { project in
+                    "- \"\(project.place)\", \(project.status.rawValue)"
+                        + (project.due.map { ", due \($0)" } ?? "")
+                }.joined(separator: "\n")
+            if asksForProjectChange(request) {
+                text += "\nIt may ask to change one of them: put that in \"projectChanges\"."
             }
         }
         if let draft = request.draft, !draft.isEmpty {
@@ -387,6 +425,24 @@ package enum AssistantPrompt {
     /// What the scripted assistant summarizes any conversation as.
     package static let exampleSummary =
         "The person planned the week: cleaning the living room on Saturday and buying new clothes. Both are drafted."
+
+    /// The most Projects `meantProjects` lists.
+    package static let meantProjectsLimit = 4
+
+    /// The Projects the last message may be about, of any status: those
+    /// more than half of whose name's words it has, most words first.
+    package static func meantProjects(_ request: AssistantRequest) -> [AssistantLookup.KnownProject] {
+        let said = Set(words(request.messages.last?.text ?? ""))
+        guard !said.isEmpty else { return [] }
+        let scored = request.lookup.projects.compactMap { project -> (AssistantLookup.KnownProject, Int)? in
+            let own = Set(words(project.name))
+            let shared = own.intersection(said).count
+            return !own.isEmpty && shared * 2 > own.count ? (project, shared) : nil
+        }
+        return scored.enumerated()
+            .sorted { ($0.element.1, -$0.offset) > ($1.element.1, -$1.offset) }
+            .prefix(meantProjectsLimit).map(\.element.0)
+    }
 
     /// The most tasks `meantTasks` lists.
     package static let meantTasksLimit = 8
@@ -476,7 +532,7 @@ package enum AssistantPrompt {
         before changing anything.
         - "tools": only those the skill needs. findTasks searches tasks, getTask reads one, overview shows \
         what's due, overdue or stalled, recentActivity shows recent changes, updateTasks changes tasks, \
-        addComment comments on a task, revert undoes changes.
+        updateProjects changes Projects, addComment comments on a task, revert undoes changes.
         - "draftsPlans": true only if the skill adds new tasks, Projects or Avenues.
         """
 
@@ -536,11 +592,27 @@ package enum AssistantPrompt {
         }
     }
 
+    /// The changes to existing Projects in the model's whole answer, the
+    /// first to each Project.
+    package static func projectChanges(from answer: JSONValue) -> [ProjectChange] {
+        var seen: Set<String> = []
+        return (answer["projectChanges"]?.items ?? []).compactMap { change in
+            guard let project = change["project"]?.text, seen.insert(project.lowercased()).inserted else {
+                return nil
+            }
+            return ProjectChange(
+                project: project, name: change["rename"]?.text, details: change["details"]?.text,
+                status: change["status"]?.text, due: change["due"]?.text)
+        }
+    }
+
     /// `reply` after its changes were made: tasks the plan would add a
     /// second time, with the title of a task just `changed`, left out;
-    /// and what was `refused` said after the model's message.
+    /// and what was `refused`, of tasks then Projects, said after the
+    /// model's message.
     package static func reply(
-        _ reply: AssistantReply, changed: [LifrTask], refused: [TaskChangeError]
+        _ reply: AssistantReply, changed: [LifrTask], refused: [TaskChangeError],
+        refusedProjects: [ProjectChangeError] = []
     ) -> AssistantReply {
         var reply = reply
         if var plan = reply.plan, !changed.isEmpty {
@@ -548,8 +620,8 @@ package enum AssistantPrompt {
             plan.tasks.removeAll { titles.contains($0.title.lowercased()) }
             reply.plan = plan.isEmpty ? nil : plan
         }
-        if !refused.isEmpty {
-            let notes = refused.map(\.description).joined(separator: " ")
+        let notes = (refused.map(\.description) + refusedProjects.map(\.description)).joined(separator: " ")
+        if !notes.isEmpty {
             reply.text = reply.text.isEmpty ? notes : reply.text + "\n\n" + notes
         }
         return reply
@@ -600,6 +672,7 @@ extension AssistantTool {
         case .overview: "overview for what's due, overdue or stalled"
         case .recentActivity: "recentActivity for what changed lately"
         case .updateTasks: "updateTasks to change tasks"
+        case .updateProjects: "updateProjects to change Projects"
         case .addComment: "addComment to comment on a task"
         case .revert: "revert to undo changes"
         }

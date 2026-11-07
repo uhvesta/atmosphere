@@ -197,6 +197,10 @@ package struct AssistantRequest: Hashable, Sendable {
     /// `changes`.
     package var changesTasks: Bool { allowedTools.contains(.updateTasks) }
 
+    /// Whether the assistant may change existing Projects, in its answer's
+    /// `projectChanges`.
+    package var changesProjects: Bool { allowedTools.contains(.updateProjects) }
+
     /// Whether the assistant may propose a plan: without a skill, or when
     /// the skill drafts plans.
     package var draftsPlans: Bool { skill?.draftsPlans ?? true }
@@ -236,14 +240,36 @@ package struct AssistantLookup: Hashable, Sendable {
         }
     }
 
+    /// A Project of any status, which the assistant may change.
+    package struct KnownProject: Hashable, Sendable {
+        /// "KEY/Project name": how a change names it.
+        package var place: String
+        package var name: String
+        package var status: ProjectStatus
+        package var due: CalendarDate?
+
+        package init(place: String, name: String, status: ProjectStatus, due: CalendarDate? = nil) {
+            self.place = place
+            self.name = name
+            self.status = status
+            self.due = due
+        }
+    }
+
     package var places: [Place]
     package var tasks: [OpenTask]
     package var labels: [String]
+    /// Every Project in an Avenue that isn't archived, active, completed or
+    /// archived, in sidebar order.
+    package var projects: [KnownProject]
 
-    package init(places: [Place] = [], tasks: [OpenTask] = [], labels: [String] = []) {
+    package init(
+        places: [Place] = [], tasks: [OpenTask] = [], labels: [String] = [], projects: [KnownProject] = []
+    ) {
         self.places = places
         self.tasks = tasks
         self.labels = labels
+        self.projects = projects
     }
 
     /// Avenues that aren't archived, in sidebar order, with their active
@@ -270,6 +296,16 @@ package struct AssistantLookup: Hashable, Sendable {
                 return OpenTask(code: workspace.displayCode(of: task), title: task.title, place: place)
             }
         labels = workspace.labels.values.map(\.name).sorted()
+        projects = avenues.flatMap { avenue in
+            workspace.projects.values
+                .filter { $0.avenueID == avenue.id }
+                .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
+                .map { project in
+                    KnownProject(
+                        place: avenue.key.rawValue + "/" + project.name, name: project.name, status: project.status,
+                        due: project.dueDate)
+                }
+        }
     }
 }
 

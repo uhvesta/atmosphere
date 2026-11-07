@@ -554,6 +554,38 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Asking the assistant to rename the Half marathon and set when
+    /// it's due, which it saves at once, then Undo on its reply.
+    func testAssistantEditsAProject() async throws {
+        let workspace = Workspace.sample(now: now, timeZone: .gmt)
+        let marathon = try XCTUnwrap(workspace.projects.values.first { $0.name == "Half marathon" })
+        let (store, flow) = app(
+            "assistant-edits-project", workspace: workspace,
+            assistant: gemma([
+                [
+                    "projectChanges": [
+                        ["project": "HEALTH/Half marathon", "rename": "Spring half marathon", "due": "2026-12-06"]
+                    ],
+                    "message": "I renamed it to Spring half marathon, due 6 December.",
+                ]
+            ]))
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        await flow.step("new-chat", image: false)
+        send("Rename the Half marathon to “Spring half marathon”, due 2026-12-06", in: id, of: store)
+        await flow.step("edited")
+        XCTAssertEqual(store.workspace?.projects[marathon.id]?.name, "Spring half marathon")
+        XCTAssertEqual(store.workspace?.projects[marathon.id]?.dueDate?.description, "2026-12-06")
+
+        let reply = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last?.id)
+        store.send(.conversations(.chats(.element(id: id, action: .undoTapped(messageID: reply)))))
+        await flow.step("undone")
+        XCTAssertEqual(store.workspace?.projects[marathon.id]?.name, "Half marathon")
+        XCTAssertEqual(store.workspace?.projects[marathon.id]?.dueDate, marathon.dueDate)
+        flow.finish()
+    }
+
     /// Going back in a chat past a reply whose plan was added, keeping its
     /// tasks; writing again from there, which starts a second version; the
     /// log of every point; then forking the chat from the first reply.

@@ -3,8 +3,8 @@ import LifrAssistantClient
 import LifrModelsClient
 
 extension AssistantTool {
-    /// The tool as a model sees it, running on `tools`. Nil for updateTasks,
-    /// whose changes come in the answer.
+    /// The tool as a model sees it, running on `tools`. Nil for updateTasks
+    /// and updateProjects, whose changes come in the answer.
     func definition(_ tools: AssistantTools) -> ModelTool? {
         switch self {
         case .findTasks:
@@ -48,8 +48,8 @@ extension AssistantTool {
             ) { _ in
                 tools.capped(tools.recentActivity())
             }
-        case .updateTasks:
-            // Changes come in the answer's `changes` instead.
+        case .updateTasks, .updateProjects:
+            // Changes come in the answer's `changes` and `projectChanges`.
             nil
         case .addComment:
             ModelTool(

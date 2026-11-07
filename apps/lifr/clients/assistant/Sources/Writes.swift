@@ -253,7 +253,7 @@ extension AssistantTools {
     }
 
     /// Saves `operation` as the assistant, in this conversation.
-    private func apply(_ operation: @escaping AssistantOperation) async -> SaveResult {
+    func apply(_ operation: @escaping AssistantOperation) async -> SaveResult {
         guard let writes else { return .readOnly }
         let conversation = writes.conversation
         do {
@@ -273,7 +273,7 @@ extension AssistantTools {
         }
     }
 
-    private enum SaveResult {
+    enum SaveResult {
         case success
         case readOnly
         case refused(LifrError)
@@ -325,7 +325,7 @@ extension AssistantTools {
 
 extension String? {
     /// The text without surrounding spaces, or nil when there's none.
-    fileprivate var nonEmpty: String? {
+    var nonEmpty: String? {
         guard let text = self?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
         return text
     }

@@ -95,7 +95,7 @@ final class AssistantBudgetTests: XCTestCase {
     func testFullSizeSendsEveryAllowedTool() {
         XCTAssertEqual(
             AssistantPrompt.tools(request(["What's due?"]), size: .full),
-            Set(AssistantTool.allCases).subtracting([.updateTasks]), "its changes are in the answer")
+            Set(AssistantTool.allCases).subtracting([.updateTasks, .updateProjects]), "their changes are in the answer")
     }
 
     func testSmallerSizesSendTheToolsTheMessageNeeds() {

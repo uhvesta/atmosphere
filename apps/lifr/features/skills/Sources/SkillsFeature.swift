@@ -250,6 +250,7 @@ extension AssistantTool {
         case .overview: String(localized: "See what's due")
         case .recentActivity: String(localized: "See recent changes")
         case .updateTasks: String(localized: "Change tasks")
+        case .updateProjects: String(localized: "Change Projects")
         case .addComment: String(localized: "Comment on tasks")
         case .revert: String(localized: "Undo changes")
         }

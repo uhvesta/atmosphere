@@ -58,6 +58,22 @@ enum Shapes {
             ])
     }
 
+    /// A change to one of the existing Projects named `projects`, as
+    /// "KEY/Name". Only the fields to change are given.
+    static func projectChange(projects: [String]) -> ModelSchema {
+        .object(
+            name: "ProjectChange",
+            [
+                ModelProperty("project", "The existing Project.", .choice(name: "ProjectName", projects)),
+                optional(
+                    "status", "Only to complete, archive or reopen it: active reopens it.",
+                    .choice(name: "ProjectStatus", ["active", "completed", "archived"])),
+                optional("due", "Only to change when it's due: the new date as the person said it, or none."),
+                optional("rename", "Only to rename it: the new name."),
+                optional("details", "Only to change what the goal is: the new description."),
+            ])
+    }
+
     /// A change to one of the current plan's `count` tasks, which aren't
     /// saved yet, given by its number: a choice of titles with spaces is
     /// more than the model's grammar can follow. Only the fields to change
@@ -129,9 +145,12 @@ enum Shapes {
     /// With `draftTitles`, the answer may change the current plan's tasks
     /// with those titles, and must with `mustChangeDraft`; its plan then
     /// has only what's new.
+    /// With `projects`, the answer may change those existing Projects, and
+    /// must with `mustChangeProject`.
     static func turn(
-        changes codes: [String], places: [String] = [], draftTitles: [String] = [],
-        mustChange: Bool = false, mustChangeDraft: Bool = false, mustPlan: Bool = false
+        changes codes: [String], places: [String] = [], draftTitles: [String] = [], projects: [String] = [],
+        mustChange: Bool = false, mustChangeDraft: Bool = false, mustChangeProject: Bool = false,
+        mustPlan: Bool = false
     ) -> ModelSchema {
         var properties: [ModelProperty] = []
         if !codes.isEmpty {
@@ -140,6 +159,12 @@ enum Shapes {
                     "changes", "Changes to these existing tasks the person asked for.",
                     .array(change(codes: codes, places: places)),
                     optional: !mustChange))
+        }
+        if !projects.isEmpty {
+            properties.append(
+                ModelProperty(
+                    "projectChanges", "Changes to these existing Projects the person asked for.",
+                    .array(projectChange(projects: projects)), optional: !mustChangeProject))
         }
         if !draftTitles.isEmpty {
             properties.append(

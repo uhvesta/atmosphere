@@ -157,6 +157,9 @@ enum LiveAssistant {
     ) async throws {
         let allowed = AssistantPrompt.tools(request, size: size)
         let changeable = AssistantPrompt.changeable(request)
+        let projects = AssistantPrompt.changeableProjects(request)
+        let asksForChange = AssistantPrompt.asksForChange(request)
+        let asksForProjectChange = AssistantPrompt.asksForProjectChange(request)
         let draftTitles = AssistantPrompt.draftTitles(request)
         let asksForPlan = request.draftsPlans && AssistantPrompt.asksForPlan(request)
         let asksToAdd = AssistantPrompt.asksToAdd(request)
@@ -167,8 +170,10 @@ enum LiveAssistant {
             tools: AssistantTool.allCases.filter(allowed.contains).compactMap { $0.definition(tools) },
             schema: Shapes.turn(
                 changes: changeable.map(\.code), places: request.lookup.places.flatMap(\.choices),
-                draftTitles: draftTitles, mustChange: AssistantPrompt.asksForChange(request),
+                draftTitles: draftTitles, projects: projects.map(\.place),
+                mustChange: asksForChange && !asksForProjectChange,
                 mustChangeDraft: asksForPlan && !asksToAdd,
+                mustChangeProject: asksForProjectChange && !asksForChange,
                 mustPlan: mustPlan),
             schemaInPrompt: size.schemaInPrompt,
             attachments: request.attachments)
@@ -194,11 +199,27 @@ enum LiveAssistant {
                 }
             }
         }
+        var changedProjects = 0
+        var refusedProjects: [ProjectChangeError] = []
+        for var change in AssistantPrompt.projectChanges(from: answer) {
+            guard let known = projects.first(where: { $0.place.caseInsensitiveCompare(change.project) == .orderedSame })
+            else { continue }
+            change.name = AssistantPrompt.renamed(known.name, to: change.name, request)
+            change.due = AssistantPrompt.dated(change.due, request)
+            do {
+                _ = try await tools.change(change)
+                changedProjects += 1
+            } catch {
+                refusedProjects.append(error)
+            }
+        }
         var reply = AssistantPrompt.reply(from: answer, isComplete: true, draftsPlans: draftsPlans)
         // Asked to add something, a small model sometimes writes back an
         // Avenue that's there already and none of the tasks, and says it
         // added them. Told so, it usually writes them.
-        if mustPlan, changed.isEmpty, refused.isEmpty, reply.plan?.leavingOut(request.workspace).isEmpty ?? true {
+        if mustPlan, changed.isEmpty, refused.isEmpty, changedProjects == 0, refusedProjects.isEmpty,
+            reply.plan?.leavingOut(request.workspace).isEmpty ?? true
+        {
             throw ForgotTasks()
         }
         reply.plan = reply.plan.map {
@@ -211,7 +232,8 @@ enum LiveAssistant {
         }
         reply.thinking = thoughts.value
         reply.leftOut = AssistantPrompt.leftOut(request, size: size)
-        continuation.yield(AssistantPrompt.reply(reply, changed: changed, refused: refused))
+        continuation.yield(
+            AssistantPrompt.reply(reply, changed: changed, refused: refused, refusedProjects: refusedProjects))
         continuation.finish()
     }
 

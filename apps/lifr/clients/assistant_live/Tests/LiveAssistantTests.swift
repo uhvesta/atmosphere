@@ -371,6 +371,57 @@ final class LiveAssistantTests: XCTestCase {
         XCTAssertEqual(saved.tasks[rent.id]?.status, .todo)
     }
 
+    func testTheAnswersProjectChangesAreSaved() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let health = records.avenue("HEALTH", "Health")
+        let marathon = records.project("Half marathon", in: health)
+        let store = StoreClient.inMemory(records.workspace, actor: .user(device: "iPhone", surface: .iPhone))
+        let model = ScriptedRuntime(steps: [
+            ScriptedRuntime.answer([
+                "message": "Renamed it and set it for 6 December.",
+                "projectChanges": [
+                    ["project": "HEALTH/Half marathon", "rename": "Spring half marathon", "due": "2026-12-06"]
+                ],
+            ])
+        ])
+
+        let (replies, error) = await replies(
+            .live(runtime: { _ in model }),
+            request(
+                "Rename the half marathon to “Spring half marathon”, due 2026-12-06", workspace: records.workspace,
+                writes: store))
+
+        XCTAssertNil(error)
+        XCTAssertEqual(replies.last?.text, "Renamed it and set it for 6 December.")
+        let saved = try await store.load()
+        XCTAssertEqual(saved.projects[marathon.id]?.name, "Spring half marathon")
+        XCTAssertEqual(saved.projects[marathon.id]?.dueDate?.description, "2026-12-06")
+    }
+
+    func testAProjectChangeLifrCantMakeIsSaidAfterTheMessage() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let health = records.avenue("HEALTH", "Health")
+        let marathon = records.project("Half marathon", in: health)
+        records.task("Buy running shoes", in: health, project: marathon)
+        let store = StoreClient.inMemory(records.workspace, actor: .user(device: "iPhone", surface: .iPhone))
+        let model = ScriptedRuntime(steps: [
+            ScriptedRuntime.answer([
+                "message": "Completed it.",
+                "projectChanges": [["project": "HEALTH/Half marathon", "status": "completed"]],
+            ])
+        ])
+
+        let (replies, _) = await replies(
+            .live(runtime: { _ in model }),
+            request("Complete the half marathon", workspace: records.workspace, writes: store))
+
+        let text = try XCTUnwrap(replies.last?.text)
+        XCTAssertTrue(text.hasPrefix("Completed it."))
+        XCTAssertGreaterThan(text.count, "Completed it.".count, "the refusal is said")
+        let saved = try await store.load()
+        XCTAssertEqual(saved.projects[marathon.id]?.status, .active)
+    }
+
     func testOnlyTheTasksTheMessageMeansCanBeChanged() async throws {
         let (records, rent, passport, store) = homeStore()
         let model = ScriptedRuntime(steps: [
