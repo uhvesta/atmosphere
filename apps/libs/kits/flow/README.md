@@ -63,3 +63,6 @@ References live next to the tests in `SnapshotTests/__Snapshots__/`.
 - All iOS tests render on one pinned simulator
   (`//apps/libs/kits/flow:iphone_17`), so references don't drift from one
   machine to another.
+- `SeededRandomNumberGenerator` gives the same numbers on every run, so
+  anything made at random, such as a new record's key, matches its
+  reference.
