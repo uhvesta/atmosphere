@@ -379,6 +379,27 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testAToastGoesAfterFiveSecondsOnTheAppsClock() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let store = makeStore(.phone)
+        let clock = TestClock()
+        store.dependencies.continuousClock = clock
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.today(.list(.rowAction(run.id, .status(.done)))))
+        await store.receive(\.today.delegate.saved)
+        let toast = try XCTUnwrap(store.state.toast)
+
+        let shown = await store.send(.toastShown(toast.id))
+        await clock.advance(by: .seconds(4))
+        XCTAssertNotNil(store.state.toast)
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.toastExpired)
+        XCTAssertNil(store.state.toast)
+        await shown.finish()
+        await task.cancel()
+    }
+
     func testAChangeOffersUndoAndUndoRevertsIt() async throws {
         let run = records.task("Run", in: health, due: 0)
         let store = makeStore(.phone)

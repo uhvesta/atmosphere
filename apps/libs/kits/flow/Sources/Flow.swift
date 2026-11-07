@@ -90,20 +90,24 @@
 
         /// Effects run on other tasks, and sheets present and toasts fade on
         /// later run loop turns: waits until the screen stays the same for three
-        /// looks in a row, and returns its accessibility tree; nil when it's
-        /// still changing after `timeout`.
+        /// looks in a row, its words and where each element sits, and returns
+        /// its accessibility tree; nil when it's still changing after `timeout`.
         private func settle() async -> [String]? {
             var last: [String] = []
+            var lastFrames: [CGRect] = []
             var unchanged = 0
             let clock = ContinuousClock()
             let deadline = clock.now + timeout
             while clock.now < deadline {
                 try? await Task.sleep(for: .milliseconds(80))
                 window.layoutIfNeeded()
-                let lines = AccessibilityTree.readingOrder(AccessibilityTree.elements(in: window))
-                    .map(AccessibilityTree.describe)
-                unchanged = lines == last ? unchanged + 1 : 0
+                let elements = AccessibilityTree.readingOrder(AccessibilityTree.elements(in: window))
+                let lines = elements.map(AccessibilityTree.describe)
+                // A list still scrolling reads the same while it moves.
+                let frames = elements.map(\.accessibilityFrame.integral)
+                unchanged = lines == last && frames == lastFrames ? unchanged + 1 : 0
                 last = lines
+                lastFrames = frames
                 if unchanged == 3 {
                     // The tree settles before the last frames of a transition draw.
                     try? await Task.sleep(for: .milliseconds(250))

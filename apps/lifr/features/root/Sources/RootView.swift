@@ -66,10 +66,7 @@ package struct RootView: View {
                 }
                 if let toast = store.toast {
                     UndoToast(message: toast.message) { store.send(.undoTapped(toast.id)) }
-                        .task(id: toast.id) {
-                            try? await Task.sleep(for: .seconds(5))
-                            store.send(.toastExpired(toast.id))
-                        }
+                        .task(id: toast.id) { await store.send(.toastShown(toast.id)).finish() }
                 }
                 if let banner = store.syncBanner {
                     SyncBannerView(banner: banner) { store.send(.syncBannerDismissed) }

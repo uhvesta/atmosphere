@@ -228,6 +228,9 @@ package struct RootFeature {
         /// The toast's Undo, ⌘Z or a shake, for the change with this ID.
         case undoTapped(UUID)
         case undone(Result<Saved, any Error>)
+        /// The toast for the change with this ID came up; it goes after
+        /// five seconds.
+        case toastShown(UUID)
         case toastExpired(UUID)
         case undoAlert(PresentationAction<Never>)
         case syncBannerDismissed
@@ -529,6 +532,12 @@ package struct RootFeature {
             case .undone(.failure(let error)):
                 state.undoAlert = .failed("Couldn't undo", error)
                 return .none
+
+            case .toastShown(let id):
+                return .run { [clock] send in
+                    try await clock.sleep(for: .seconds(5))
+                    await send(.toastExpired(id))
+                }
 
             case .toastExpired(let id):
                 state.dismissedToast = id
