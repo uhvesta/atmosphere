@@ -1,0 +1,55 @@
+load("@rules_apple//apple:ios.bzl", "ios_application")
+load("@rules_apple//apple:macos.bzl", "macos_application")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# LangReadr for the iPhone and the Mac, on Apple's on-device model. Unsigned
+# for now, with a placeholder bundle ID: it runs on simulators and this Mac
+# until it has an App ID of its own. Needs Xcode: build with
+# `--config=xcode`.
+
+# A placeholder until the App ID is reserved.
+_BUNDLE_ID = "local.langreadr"
+
+swift_library(
+    name = "app_lib",
+    package_name = "langreadr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LangReadrApp",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        "//apps/langreadr/core",
+        "//apps/langreadr/reading",
+        "//apps/libs/kits/inference/live",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+ios_application(
+    name = "ios",
+    bundle_id = _BUNDLE_ID,
+    bundle_name = "LangReadr",
+    families = ["iphone"],
+    infoplists = ["Info.plist"],
+    minimum_os_version = "18.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":app_lib"],
+)
+
+macos_application(
+    name = "macos",
+    bundle_id = _BUNDLE_ID,
+    bundle_name = "LangReadr",
+    infoplists = [
+        "Info.plist",
+        "Info-macOS.plist",
+    ],
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":app_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -1,0 +1,93 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("//apps/libs/kits/flow:defs.bzl", "flow_host_app", "flow_snapshot_test")
+
+# LangReadr's screens: the library, the reader with its words to tap, the
+# word card, and chats about passages. TCA reducers with SwiftUI views
+# built from ChatUI; the model's work is in Tutor. Needs Xcode: build with
+# `--config=xcode`. In Swift 5 mode, like the other apps' features.
+swift_library(
+    name = "reading",
+    package_name = "langreadr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LangReadrReading",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/langreadr:__subpackages__"],
+    deps = [
+        "//apps/langreadr/core",
+        "//apps/langreadr/services",
+        "//apps/libs/kits/chat",
+        "//apps/libs/kits/chatui",
+        "//apps/libs/kits/inference",
+        "//apps/libs/kits/json",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# TestStore tests of the library and reader on a scripted model, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "langreadr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":reading",
+        "//apps/langreadr/core",
+        "//apps/langreadr/services",
+        "//apps/langreadr/services:fake",
+        "//apps/libs/kits/chat",
+        "//apps/libs/kits/inference",
+        "//apps/libs/kits/json",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+_FLOW_DEPS = [
+    ":reading",
+    "//apps/langreadr/core",
+    "//apps/langreadr/services:fake",
+    "//apps/libs/kits/inference",
+    "//apps/libs/kits/json",
+    "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+]
+
+# The app the iPhone flows run in, for its window scene. Simulators only.
+flow_host_app(
+    name = "host",
+    bundle_id = "local.langreadr.flowhost",
+)
+
+# Reading a story on the iPhone, step by step: references in
+# SnapshotTests/__Snapshots__. Record with --config=record_snapshots.
+flow_snapshot_test(
+    name = "flow_snapshot_test",
+    package_name = "langreadr",
+    srcs = glob(["FlowSnapshotTests/*.swift"]) + ["FlowSupport/Sample.swift"],
+    host = ":host",
+    deps = _FLOW_DEPS,
+)
+
+# The same on the Mac. Manual, since `bazel test` can't read other windows:
+# run it with //apps/libs/kits/flow:run_mac.sh.
+flow_snapshot_test(
+    name = "mac_flow_snapshot_test",
+    package_name = "langreadr",
+    srcs = glob(["MacFlowSnapshotTests/*.swift"]) + ["FlowSupport/Sample.swift"],
+    mac = True,
+    tags = ["manual"],
+    deps = _FLOW_DEPS,
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
