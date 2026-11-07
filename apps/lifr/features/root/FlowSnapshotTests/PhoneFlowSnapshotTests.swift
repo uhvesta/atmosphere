@@ -43,13 +43,17 @@ final class PhoneFlowSnapshotTests: XCTestCase {
 
     private func app(
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
-        inputs: Set<ModelInput> = [], lock: LockClient = .always(), assistant: AssistantClient? = nil
+        inputs: Set<ModelInput> = [], lock: LockClient = .always(), assistant: AssistantClient? = nil,
+        tab: RootFeature.Tab = .today
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
         let ids = LockIsolated(1000)
         let (client, records) = StoreClient.inMemorySyncing(workspace, actor: .user(device: "iPhone", surface: .iPhone))
         self.records = records
-        let store = Store(initialState: RootFeature.State(platform: .phone)) {
+        var state = RootFeature.State(platform: .phone)
+        // The tab the app opens on: Search opens with its field in the tab bar.
+        state.tab = tab
+        let store = Store(initialState: state) {
             RootFeature()
         } withDependencies: { [time, widgets, bugReports, copied, clock] in
             $0.store = client
@@ -230,8 +234,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
 
     /// Search: words, then a due filter.
     func testSearch() async {
-        let (store, flow) = app("search")
-        store.tab = .search
+        let (store, flow) = app("search", tab: .search)
         await flow.step("empty")
         store.send(.search(.binding(.set(\.filter.text, "run"))))
         await flow.step("words")
@@ -848,13 +851,14 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
-    /// Picking what one chat runs on: the Model sheet before the first
-    /// message, Gemma thinking Long with a larger window, then the chat.
+    /// Picking what one chat runs on: a new chat, its Model sheet before
+    /// the first message, Gemma thinking Long with a larger window, then the chat.
     /// Settings keeps its default.
     func testChatModel() async throws {
         let (store, flow) = app("chat-model")
         store.tab = .conversations
         store.send(.conversations(.newTapped))
+        await flow.step("new")
         let id = try XCTUnwrap(store.conversations.openID)
         store.send(.conversations(.chats(.element(id: id, action: .modelTapped))))
         await flow.step("defaults")

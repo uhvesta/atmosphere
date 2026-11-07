@@ -33,6 +33,10 @@
             window.frame = CGRect(origin: .zero, size: size)
             window.rootViewController = UIHostingController(rootView: view)
             window.makeKeyAndVisible()
+            // Draws the first screen now, so a change the test makes next is
+            // always a change from it, as it is for a person, and not
+            // sometimes the screen the app opens on.
+            window.layoutIfNeeded()
         }
 
         /// Lets the screen settle after a change, then checks it as the next
@@ -53,10 +57,7 @@
                 of: lines.joined(separator: "\n") + "\n", as: .lines, named: label, file: file, testName: testName,
                 line: line)
             guard image else { return }
-            let bounds = window.bounds
-            let rendered = UIGraphicsImageRenderer(bounds: bounds).image { _ in
-                window.drawHierarchy(in: bounds, afterScreenUpdates: true)
-            }
+            let rendered = await stillImage()
             assertSnapshot(
                 of: rendered, as: .image(precision: 0.99, perceptualPrecision: 0.98), named: label, file: file,
                 testName: testName, line: line)
@@ -130,12 +131,36 @@
                 last = lines
                 lastFrames = frames
                 if unchanged == 3 {
-                    // The tree settles before the last frames of a transition draw.
-                    try? await Task.sleep(for: .milliseconds(250))
                     return last
                 }
             }
             return nil
+        }
+
+        /// The tree settles before the system's own transitions finish
+        /// drawing, such as the tab bar folding up beside a search field:
+        /// draws the screen until two looks in a row match, and returns the
+        /// last look if it's still moving after `timeout`.
+        private func stillImage() async -> UIImage {
+            let clock = ContinuousClock()
+            let deadline = clock.now + timeout
+            var last = render()
+            while clock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(100))
+                let next = render()
+                if next.pngData() == last.pngData() {
+                    return next
+                }
+                last = next
+            }
+            return last
+        }
+
+        private func render() -> UIImage {
+            let bounds = window.bounds
+            return UIGraphicsImageRenderer(bounds: bounds).image { _ in
+                window.drawHierarchy(in: bounds, afterScreenUpdates: true)
+            }
         }
     }
 #endif

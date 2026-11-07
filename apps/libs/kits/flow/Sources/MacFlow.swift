@@ -63,6 +63,10 @@
             window.setContentSize(size)
             window.orderFrontRegardless()
             window.makeKey()
+            // Draws the first screen now, so a change the test makes next is
+            // always a change from it, and not sometimes the screen the app
+            // opens on.
+            window.layoutIfNeeded()
             MacAccessibilityTree.start()
         }
 

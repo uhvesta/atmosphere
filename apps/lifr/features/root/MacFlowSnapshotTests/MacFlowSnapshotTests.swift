@@ -245,13 +245,14 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
-    /// Picking what one chat runs on: the Model sheet before the first
-    /// message, Gemma thinking Long with a larger window, then the chat.
+    /// Picking what one chat runs on: a new chat, its Model sheet before
+    /// the first message, Gemma thinking Long with a larger window, then the chat.
     /// Settings keeps its default.
     func testChatModel() async throws {
         let (store, flow) = app("chat-model")
         store.send(.selected(.conversations))
         store.send(.conversations(.newTapped))
+        await flow.step("new")
         let id = try XCTUnwrap(store.conversations.openID)
         store.send(.conversations(.chats(.element(id: id, action: .modelTapped))))
         await flow.step("defaults")
