@@ -11,7 +11,7 @@
       - rawValue: "gemma-4-e4b"
     ▿ hf/litert-community/Qwen3-0.6B/Qwen3-0.6B.litertlm
       - rawValue: "hf/litert-community/Qwen3-0.6B/Qwen3-0.6B.litertlm"
-  ▿ selected: 3 elements
+  ▿ selected: 4 elements
     ▿ (2 elements)
       - .0: ModelUse.assistant
       ▿ .1: apple
@@ -24,4 +24,8 @@
       - .0: ModelUse.titles
       ▿ .1: apple
         - rawValue: "apple"
+    ▿ (2 elements)
+      - .0: ModelUse.search
+      ▿ .1: built-in
+        - rawValue: "built-in"
   - canAdd: false

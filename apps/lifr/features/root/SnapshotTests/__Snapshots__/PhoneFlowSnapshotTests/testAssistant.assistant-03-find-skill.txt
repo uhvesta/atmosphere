@@ -1,5 +1,5 @@
 [button] "Conversations" id: BackButton
-[button, notEnabled] "Checkpoints"
+[button, notEnabled] "More"
 [header] "New conversation"
 [button] "Sheet Grabber" value: "Half screen" hint: "Double tap to expand the sheet."
 [button] "Cancel"

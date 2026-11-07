@@ -1,0 +1,48 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# Related words for searching conversations: from the system's word lists,
+# with no model, unless the person picked a model for searching, which
+# falls back to them. Only the app uses it; features depend on
+# //apps/lifr/clients/search.
+swift_library(
+    name = "search_live",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrSearchLive",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/lifr/app:__subpackages__"],
+    deps = [
+        "//apps/lifr/api",
+        "//apps/lifr/clients/models",
+        "//apps/lifr/clients/search",
+    ],
+)
+
+# Runs on the system's word lists and a scripted model, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":search_live",
+        "//apps/lifr/api",
+        "//apps/lifr/clients/models",
+        "//apps/lifr/clients/search",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

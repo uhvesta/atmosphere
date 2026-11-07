@@ -19,13 +19,17 @@ package struct ModelsView: View {
                         selection: Binding(
                             get: { store.state.selected(for: use) }, set: { store.send(.picked($0, for: use)) })
                     ) {
+                        if use == .search { Text("Built-in").tag(ModelID.builtIn) }
                         ForEach(store.choices) { Text($0.name).tag($0.id) }
                     }
                 }
             } header: {
                 Text("Runs on")
             } footer: {
-                Text("Downloaded models run on this device, like Apple's. Nothing you write leaves it.")
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Downloaded models run on this device, like Apple's. Nothing you write leaves it.")
+                    Text("Built-in search adds related words from the system's word lists, with no model.")
+                }
             }
             #if os(iOS)
                 // The Mac doesn't suspend apps, so a model there always

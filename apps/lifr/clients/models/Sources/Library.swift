@@ -14,6 +14,10 @@ package struct ModelID: Hashable, Codable, Sendable, RawRepresentable, Expressib
 
     /// Apple's on-device model, which needs no download.
     package static let apple: ModelID = "apple"
+
+    /// No model: Lifr's own word lists, built into the system. Only
+    /// searching runs on it, and does unless the person picks a model.
+    package static let builtIn: ModelID = "built-in"
 }
 
 /// What runs a model.
@@ -172,11 +176,29 @@ package enum ModelUse: String, Hashable, Codable, Sendable, CaseIterable {
     case skills
     /// Naming conversations.
     case titles
+    /// Finding words related to what's searched for in conversations.
+    case search
 
-    /// The model this use runs on, given what the person picked: the
-    /// assistant's model, unless they picked another for this use.
+    /// The model this use runs on, given what the person picked: for the
+    /// assistant, Apple's; for searching, the built-in word lists; for the
+    /// rest, the assistant's model. Unless they picked another for this use.
     package func model(in selection: [ModelUse: ModelID]) -> ModelID {
-        selection[self] ?? (self == .assistant ? .apple : ModelUse.assistant.model(in: selection))
+        if let picked = selection[self] { return picked }
+        switch self {
+        case .assistant: return .apple
+        case .search: return .builtIn
+        case .skills, .titles: return ModelUse.assistant.model(in: selection)
+        }
+    }
+
+    /// The model this use runs on when the person hasn't picked one, if it
+    /// isn't the assistant's.
+    package var standard: ModelID? {
+        switch self {
+        case .assistant: .apple
+        case .search: .builtIn
+        case .skills, .titles: nil
+        }
     }
 }
 

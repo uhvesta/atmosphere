@@ -1,5 +1,5 @@
 [button] "Conversations" id: BackButton
-[button] "Checkpoints"
+[button] "More"
 [header] "What should I do first?"
 [text] "What should I do first?"
 [text] "Start with the urgent tasks, then the ones due this week."

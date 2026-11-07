@@ -367,7 +367,7 @@ package final class ModelLibrary: Sendable {
 
     // MARK: Selection
 
-    /// Uses the person hasn't picked a model for run on the assistant's.
+    /// What runs `use`; see `ModelUse.model(in:)`.
     package func selection(for use: ModelUse) -> ModelID {
         use.model(in: state.value.selection)
     }
@@ -376,7 +376,7 @@ package final class ModelLibrary: Sendable {
         let selection = state.withValue { state in
             // Apple is the assistant's default, but naming or skills on
             // Apple while the assistant runs elsewhere is a choice to keep.
-            state.selection[use] = use == .assistant && id == .apple ? nil : id
+            state.selection[use] = id == use.standard ? nil : id
             return state.selection
         }
         save(selection)

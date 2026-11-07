@@ -49,6 +49,12 @@ package struct ChatFeature {
         /// The person's message being written again: sending puts the new
         /// one in its place, as a branch beside it.
         package var editing: UUID?
+        /// Whether the bar to find words in the messages shown is up.
+        package var finds = false
+        /// What's being found in the messages shown.
+        package var findQuery = ""
+        /// Which of `findMatches` is current, counting from the oldest.
+        package var findPosition = 0
         /// Every skill, on or off. The built-ins until the person's load.
         package var skills = Skill.builtIn
         /// The ID of the skill picked for the next message.
@@ -99,6 +105,19 @@ package struct ChatFeature {
 
         /// Whether the conversation can be forked at the message `id`: also
         /// while a reply is written, from before the message it answers.
+        /// The messages shown that have every word being found, oldest
+        /// first.
+        package var findMatches: [UUID] {
+            let query = ConversationQuery(words: findQuery.split(whereSeparator: \.isWhitespace).map(String.init))
+            return conversation.messages.filter { query.matches($0.text) }.map(\.id)
+        }
+
+        /// The match shown now, when there's one.
+        package var currentMatch: UUID? {
+            let matches = findMatches
+            return matches.indices.contains(findPosition) ? matches[findPosition] : nil
+        }
+
         package func canFork(at id: UUID) -> Bool {
             guard !conversation.messages.isEmpty else { return false }
             return canGo || id != conversation.messages.last?.id
@@ -134,6 +153,11 @@ package struct ChatFeature {
     package enum Action: BindableAction {
         case binding(BindingAction<State>)
         case task
+        case findTapped
+        /// Goes to the match `by` after the current one, or before it when
+        /// negative, coming round at the ends.
+        case findMoved(by: Int)
+        case findClosed
         case skillsLoaded([Skill])
         case findSkillTapped
         case pickSkillTapped(String)
@@ -313,6 +337,27 @@ package struct ChatFeature {
                 state.editing = id
                 state.input = message.text
                 state.skill = message.skill
+                return .none
+
+            case .findTapped:
+                state.finds = true
+                return .none
+
+            case .findMoved(let step):
+                let count = state.findMatches.count
+                guard count > 0 else { return .none }
+                state.findPosition = ((state.findPosition + step) % count + count) % count
+                return .none
+
+            case .findClosed:
+                state.finds = false
+                state.findQuery = ""
+                state.findPosition = 0
+                return .none
+
+            case .binding(\.findQuery):
+                // The newest match first, nearest where the chat ends.
+                state.findPosition = max(state.findMatches.count - 1, 0)
                 return .none
 
             case .cancelEditTapped:

@@ -4,6 +4,7 @@ import LifrAssistantClient
 import LifrConversations
 import LifrCore
 import LifrModelsClient
+import LifrSearchClient
 import LifrStoreClient
 import XCTest
 
@@ -1040,6 +1041,98 @@ final class ChatFeatureTests: XCTestCase {
 
         await store.send(.searched(""))
         XCTAssertTrue(store.state.found.isEmpty)
+    }
+
+    func testRelatedWordsFindConversationsTheWordsTypedDontOnceThePersonPauses() async throws {
+        let milk = chat("Buy milk")
+        let plumber = chat("Call the plumber")
+        let groceries = chat("Groceries for Sunday")
+        let clock = TestClock()
+        let store = list(.inMemory([milk, plumber, groceries]))
+        store.dependencies.relatedWords = .scripted(["milk", "eggs"])
+        store.dependencies.continuousClock = clock
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        await store.send(.searched("groceries"))
+        XCTAssertEqual(store.state.found.map(\.id), [groceries.id])
+
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.related)
+        XCTAssertEqual(store.state.found.map(\.id), [groceries.id, milk.id], "What has the words typed comes first")
+        XCTAssertEqual(store.state.found.map(\.isRelated), [false, true])
+
+        await store.send(.searched("groceries sunday"))
+        XCTAssertEqual(store.state.related, [], "A new search finds its own")
+    }
+
+    func testRelatedWordsFromAModelWaitToBeAskedFor() async throws {
+        let milk = chat("Buy milk")
+        let groceries = chat("Groceries for Sunday")
+        let clock = TestClock()
+        let store = list(.inMemory([milk, groceries]))
+        store.dependencies.relatedWords = .scripted(["milk"], from: .model)
+        store.dependencies.continuousClock = clock
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        await store.send(.searched("groceries"))
+        await clock.advance(by: .seconds(1))
+        XCTAssertEqual(store.state.found.map(\.id), [groceries.id])
+        XCTAssertFalse(store.state.relating)
+
+        await store.send(.relatedTapped)
+        await store.receive(\.related)
+        XCTAssertEqual(store.state.found.map(\.id), [groceries.id, milk.id])
+    }
+
+    func testSearchingForATimeFindsConversationsFromThen() async throws {
+        let today = chat("Buy milk")
+        var old = Conversation(id: UUID(), createdAt: now.addingTimeInterval(-20 * 86_400))
+        old.messages = [ChatMessage(id: UUID(), role: .person, text: "Buy milk", at: old.createdAt)]
+        let store = list(.inMemory([today, old]))
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        await store.send(.searched("milk today"))
+
+        XCTAssertEqual(store.state.found.map(\.id), [today.id])
+        XCTAssertNotNil(store.state.searched.during)
+    }
+
+    func testFindingInAChatGoesThroughItsMatchesFromTheNewest() async throws {
+        var conversation = chat("Buy milk")
+        for (index, text) in ["Added buy milk.", "And eggs", "Added eggs and milk."].enumerated() {
+            conversation.append(
+                ChatMessage(
+                    id: UUID(), role: index.isMultiple(of: 2) ? .assistant : .person, text: text,
+                    at: now.addingTimeInterval(Double(index + 1))))
+        }
+        let ids = conversation.messages.map(\.id)
+        let store = list(.inMemory([conversation]))
+        await store.send(.task)
+        await store.skipReceivedActions()
+        await store.send(.opened(conversation.id))
+        func send(_ action: ChatFeature.Action) async {
+            await store.send(.chats(.element(id: conversation.id, action: action)))
+        }
+        var shown: ChatFeature.State? { store.state.chats[id: conversation.id] }
+
+        await send(.findTapped)
+        await send(.binding(.set(\.findQuery, "MILK")))
+        XCTAssertEqual(shown?.findMatches, [ids[0], ids[1], ids[3]])
+        XCTAssertEqual(shown?.currentMatch, ids[3])
+
+        await send(.findMoved(by: -1))
+        XCTAssertEqual(shown?.currentMatch, ids[1])
+        await send(.findMoved(by: 2))
+        XCTAssertEqual(shown?.currentMatch, ids[0], "Past the newest comes round to the oldest")
+
+        await send(.binding(.set(\.findQuery, "bread")))
+        XCTAssertNil(shown?.currentMatch)
+        await send(.findClosed)
+        XCTAssertEqual(shown?.finds, false)
+        XCTAssertEqual(shown?.findQuery, "")
     }
 
     func testOpeningAMessageFoundOnAnotherBranchShowsThatBranch() async throws {

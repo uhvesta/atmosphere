@@ -1,5 +1,5 @@
 [button] "Conversations" id: BackButton
-[button] "Checkpoints"
+[button] "More"
 [header] "Plan my weekend"
 [text] "Plan my weekend"
 [text] "Version 2 of 2"

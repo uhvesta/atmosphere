@@ -1,0 +1,27 @@
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# Words related to what's searched for in conversations, to find them by
+# what they mean as well as what they say. This package has the definition
+# and a scripted version for tests and previews. The live one, from the
+# system's word lists or the model the person picks, is
+# //apps/lifr/clients/search_live, which features never depend on.
+swift_library(
+    name = "search",
+    package_name = "lifr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LifrSearchClient",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/lifr/app:__subpackages__",
+        "//apps/lifr/clients/search_live:__pkg__",
+        "//apps/lifr/features/conversations:__pkg__",
+        "//apps/lifr/features/root:__pkg__",
+    ],
+    deps = ["@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

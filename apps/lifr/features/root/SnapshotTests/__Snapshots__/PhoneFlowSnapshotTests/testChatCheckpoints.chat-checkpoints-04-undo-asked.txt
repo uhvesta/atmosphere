@@ -1,5 +1,5 @@
 [button] "Conversations" id: BackButton
-[button] "Checkpoints"
+[button] "More"
 [header] "What should I do first?"
 [text] "Also undo the 1 change made after this point?"
 [text] "The replies after it are kept to go forward to. Going forward doesn't make undone changes again."

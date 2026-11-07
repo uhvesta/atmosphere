@@ -1,5 +1,5 @@
 [button] "Conversations" id: BackButton
-[button] "Checkpoints"
+[button] "More"
 [header] "Add a Fitness Avenue"
 [text] "Add a Fitness Avenue"
 [text] "Here's a Fitness Avenue. Tap Add to make it."

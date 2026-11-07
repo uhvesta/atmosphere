@@ -33,7 +33,7 @@ package struct ModelsFeature {
         /// The models that need a download: all but Apple's.
         package var downloadable: [ModelSpec] { models.filter { $0.id != .apple } }
 
-        package func selected(for use: ModelUse) -> ModelID { selection[use] ?? .apple }
+        package func selected(for use: ModelUse) -> ModelID { use.model(in: selection) }
 
         package var canAdd: Bool { !isAdding && !link.trimmingCharacters(in: .whitespaces).isEmpty }
 
@@ -227,6 +227,7 @@ extension ModelUse {
         case .assistant: String(localized: "Assistant")
         case .skills: String(localized: "Writing skills")
         case .titles: String(localized: "Naming conversations")
+        case .search: String(localized: "Searching conversations")
         }
     }
 }

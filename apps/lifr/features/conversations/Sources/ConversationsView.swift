@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import LifrAssistantClient
+import LifrSearchClient
 import LifrUI
 import SwiftUI
 
@@ -67,48 +68,20 @@ package struct ConversationsView: View {
         #endif
     }
 
-    /// The conversations shown: those that have what's searched for, and
-    /// where, while there's a search.
-    private var shown: [ConversationsFeature.Found] {
-        store.query.isEmpty ? store.state.sorted.map { .init(conversation: $0) } : store.state.found
-    }
-
     private var list: some View {
         List {
-            ForEach(shown) { found in
-                let conversation = found.conversation
-                Button {
-                    store.send(.foundTapped(conversation.id, messageID: found.message?.id))
-                } label: {
-                    ConversationRow(
-                        conversation: conversation, replying: store.chats[id: conversation.id]?.replying != nil,
-                        found: found.message, query: store.query)
-                }
-                .buttonStyle(.plain)
-                #if os(macOS)
-                    .listRowBackground(
-                        store.openID == conversation.id
-                            ? RoundedRectangle(cornerRadius: 8).fill(.tint.opacity(0.15)) : nil)
-                #endif
-                .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                    SyncButton(conversation: conversation, store: store).tint(.blue)
-                }
-                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                    ArchiveButton(id: conversation.id, store: store).tint(.indigo)
-                    RenameButton(id: conversation.id, store: store).tint(.gray)
-                }
-                .contextMenu {
-                    RenameButton(id: conversation.id, store: store)
-                    SyncButton(conversation: conversation, store: store)
-                    ArchiveButton(id: conversation.id, store: store)
-                }
+            if store.query.isEmpty {
+                ForEach(store.state.sorted) { row(ConversationsFeature.Found(conversation: $0)) }
+            } else {
+                results
             }
         }
         .searchable(
             text: Binding(get: { store.query }, set: { store.send(.searched($0)) }), prompt: "Search conversations"
         )
+        .onSubmit(of: .search) { store.send(.relatedTapped) }
         .overlay {
-            if !store.query.isEmpty, shown.isEmpty {
+            if !store.query.isEmpty, foundNothing {
                 ContentUnavailableView.search(text: store.query)
             } else if store.state.sorted.isEmpty {
                 ContentUnavailableView {
@@ -121,6 +94,81 @@ package struct ConversationsView: View {
             }
         }
         .navigationTitle("Conversations")
+    }
+
+    /// A conversation in the list: one a search found, while there's a
+    /// search, with the message that has what was searched for.
+    private func row(_ found: ConversationsFeature.Found) -> some View {
+        let conversation = found.conversation
+        return Button {
+            store.send(.foundTapped(conversation.id, messageID: found.message?.id))
+        } label: {
+            ConversationRow(
+                conversation: conversation, replying: store.chats[id: conversation.id]?.replying != nil,
+                found: found.message, searched: store.searched.words + store.related)
+        }
+        .buttonStyle(.plain)
+        #if os(macOS)
+            .listRowBackground(
+                store.openID == conversation.id
+                    ? RoundedRectangle(cornerRadius: 8).fill(.tint.opacity(0.15)) : nil)
+        #endif
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            SyncButton(conversation: conversation, store: store).tint(.blue)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            ArchiveButton(id: conversation.id, store: store).tint(.indigo)
+            RenameButton(id: conversation.id, store: store).tint(.gray)
+        }
+        .contextMenu {
+            RenameButton(id: conversation.id, store: store)
+            SyncButton(conversation: conversation, store: store)
+            ArchiveButton(id: conversation.id, store: store)
+        }
+    }
+
+    /// What a search found: conversations with its words, then those
+    /// related words found. Words from a model wait for the person to ask.
+    @ViewBuilder private var results: some View {
+        let found = store.state.found
+        let related = found.filter(\.isRelated)
+        Section {
+            ForEach(found.filter { !$0.isRelated }) { row($0) }
+        } header: {
+            if let during = store.searched.during {
+                Text("Written \(during.start..<during.end.addingTimeInterval(-1), format: .interval.month().day())")
+            }
+        }
+        if !related.isEmpty {
+            Section {
+                ForEach(related) { row($0) }
+            } header: {
+                Text("Related")
+            } footer: {
+                Text("Also searched for \(store.related.formatted(.list(type: .or)))")
+            }
+        } else if store.relatedSource == .model, !store.searched.words.isEmpty {
+            Section {
+                if store.relating {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Finding related conversations…")
+                    }
+                    .foregroundStyle(.secondary)
+                    .accessibilityElement(children: .combine)
+                } else if store.hasRelated {
+                    Text("No related conversations")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button("Find Related Conversations", systemImage: "sparkles") { store.send(.relatedTapped) }
+                }
+            }
+        }
+    }
+
+    /// Whether a search has nothing to show, nor anything left to try.
+    private var foundNothing: Bool {
+        store.state.found.isEmpty && !store.relating && (store.hasRelated || store.searched.words.isEmpty)
     }
 
     private var newButton: some ToolbarContent {
@@ -190,7 +238,8 @@ private struct ConversationRow: View {
     var replying: Bool
     /// The message a search found, shown from what was searched for.
     var found: ChatMessage?
-    var query = ""
+    /// The words and phrases searched for.
+    var searched: [String] = []
 
     /// The message a search found, or else the last thing said, to tell
     /// conversations apart.
@@ -203,11 +252,14 @@ private struct ConversationRow: View {
     private var previewText: String {
         guard let preview else { return "" }
         let text = preview.text
-        guard found != nil,
-            let range = text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]),
+        let ranges = searched.compactMap { text.range(of: $0, options: [.caseInsensitive, .diacriticInsensitive]) }
+        guard found != nil, let range = ranges.min(by: { $0.lowerBound < $1.lowerBound }),
             text.distance(from: text.startIndex, to: range.lowerBound) > 40
         else { return text }
-        return "…" + text[text.index(range.lowerBound, offsetBy: -30)...]
+        // From the start of a word, so the snippet doesn't open mid-word.
+        let near = text.index(range.lowerBound, offsetBy: -30)
+        let start = text[near..<range.lowerBound].firstIndex(where: \.isWhitespace).map(text.index(after:)) ?? near
+        return "…" + text[start...]
     }
 
     var body: some View {

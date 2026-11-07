@@ -1,5 +1,5 @@
 [button] "Conversations" id: BackButton
-[button] "Checkpoints"
+[button] "More"
 [header] "Plan my week"
 [text] "Plan my week"
 [text] "The on-device model wrote answers Lifr couldn't read, twice. Send the message again, or ask for less at once: long plans are the hardest for it."

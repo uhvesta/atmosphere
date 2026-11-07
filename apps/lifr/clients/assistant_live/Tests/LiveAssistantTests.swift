@@ -505,6 +505,7 @@ final class LiveAssistantTests: XCTestCase {
             case .assistant: chat
             case .skills: skills
             case .titles: titles
+            case .search: ScriptedRuntime(steps: [])
             }
         }
 

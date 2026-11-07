@@ -2,6 +2,7 @@ import ComposableArchitecture
 import Foundation
 import LifrAssistantClient
 import LifrCore
+import LifrSearchClient
 
 /// The conversations with the assistant, newest first, and the open one.
 /// Each is kept as it changes, on this device until it's synced. Archived
@@ -21,8 +22,21 @@ package struct ConversationsFeature {
         package var openID: UUID?
         /// Whether the archive is on screen.
         package var showsArchive = false
-        /// What's searched for in the main list's names and messages.
+        /// What's searched for in the main list's names and messages, as
+        /// typed.
         package var query = ""
+        /// The query read: its words, and when the messages were written.
+        package var searched = ConversationQuery(words: [])
+        /// Words related to what's searched for, to find conversations by
+        /// what they mean as well as what they say.
+        package var related: [String] = []
+        /// Whether related words are being found.
+        package var relating = false
+        /// Where related words come from: the system's word lists, found as
+        /// the person types, or a model, asked when they submit the search.
+        package var relatedSource = RelatedWordsSource.builtIn
+        /// Whether related words were found for this search, even if none.
+        package var hasRelated = false
         @Presents package var rename: RenameFeature.State?
         @Presents package var confirm: ConfirmationDialogState<Confirm>?
         @Presents package var alert: AlertState<Never>?
@@ -43,11 +57,14 @@ package struct ConversationsFeature {
         }
 
         /// The main list's conversations that have the query, newest first,
-        /// with where.
+        /// with where: those with its words before those with related ones.
         package var found: [Found] {
-            sorted.compactMap { conversation in
-                conversation.match(query).map { Found(conversation: conversation, message: $0.message) }
+            let found = sorted.compactMap { conversation in
+                conversation.match(searched, related: related).map {
+                    Found(conversation: conversation, message: $0.message, isRelated: $0.isRelated)
+                }
             }
+            return found.filter { !$0.isRelated } + found.filter(\.isRelated)
         }
 
         /// The archive, most recently archived first.
@@ -108,12 +125,15 @@ package struct ConversationsFeature {
     package struct Found: Identifiable, Equatable {
         package var conversation: Conversation
         package var message: ChatMessage?
+        /// Whether it was found by words related to what was searched for.
+        package var isRelated = false
 
         package var id: UUID { conversation.id }
 
-        package init(conversation: Conversation, message: ChatMessage? = nil) {
+        package init(conversation: Conversation, message: ChatMessage? = nil, isRelated: Bool = false) {
             self.conversation = conversation
             self.message = message
+            self.isRelated = isRelated
         }
     }
 
@@ -128,6 +148,10 @@ package struct ConversationsFeature {
         case newTapped
         case opened(UUID)
         case searched(String)
+        /// Finds words related to what's searched for, when they come from
+        /// a model and so wait to be asked for.
+        case relatedTapped
+        case related([String])
         /// Opens a conversation a search found, on the branch with the
         /// message `messageID` when there is one.
         case foundTapped(UUID, messageID: UUID?)
@@ -162,6 +186,11 @@ package struct ConversationsFeature {
     @Dependency(\.attachments) private var attachments
     @Dependency(\.uuid) private var uuid
     @Dependency(\.date.now) private var now
+    @Dependency(\.timeZone) private var timeZone
+    @Dependency(\.relatedWords) private var relatedWords
+    @Dependency(\.continuousClock) private var clock
+
+    private enum CancelID { case related }
 
     package init() {}
 
@@ -205,7 +234,30 @@ package struct ConversationsFeature {
                 return .none
 
             case .searched(let query):
+                guard query != state.query else { return .none }
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = timeZone
                 state.query = query
+                state.searched = ConversationQuery(query, now: now, calendar: calendar)
+                state.related = []
+                state.relating = false
+                state.hasRelated = false
+                state.relatedSource = relatedWords.source()
+                guard state.relatedSource == .builtIn, !state.searched.words.isEmpty else {
+                    return .cancel(id: CancelID.related)
+                }
+                // The word lists answer at once, so they're found as the
+                // person types, once they pause.
+                return relate(&state, after: .milliseconds(250))
+
+            case .relatedTapped:
+                guard !state.searched.words.isEmpty, !state.relating, !state.hasRelated else { return .none }
+                return relate(&state, after: .zero)
+
+            case .related(let words):
+                state.relating = false
+                state.hasRelated = true
+                state.related = words
                 return .none
 
             case .foundTapped(let id, let messageID):
@@ -340,6 +392,18 @@ package struct ConversationsFeature {
                 await send(.failed(error))
             }
         }
+    }
+
+    /// Finds words related to what's searched for, after `delay`, in place
+    /// of any being found for an earlier search.
+    private func relate(_ state: inout State, after delay: Duration) -> Effect<Action> {
+        let text = state.searched.text
+        state.relating = true
+        return .run { [relatedWords, clock] send in
+            if delay > .zero { try await clock.sleep(for: delay) }
+            await send(.related(relatedWords.related(text)))
+        }
+        .cancellable(id: CancelID.related, cancelInFlight: true)
     }
 
     private func save(_ conversation: Conversation) -> Effect<Action> {

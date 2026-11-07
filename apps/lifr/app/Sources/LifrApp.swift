@@ -13,6 +13,8 @@ import LifrModelsLive
 import LifrRemindersClient
 import LifrRemindersLive
 import LifrRoot
+import LifrSearchClient
+import LifrSearchLive
 import LifrSessionClient
 import LifrShortcuts
 import LifrStoreClient
@@ -95,6 +97,8 @@ private enum Storage {
         $0.store = client
         $0.reminders = .live()
         $0.assistant = .live(runtime: { use in models.runtime(for: use) })
+        $0.relatedWords = .live(
+            selected: { models.library.selection(for: .search) }, runtime: { models.runtime(for: .search) })
         $0.models = models.client
         $0.conversations = chats.conversations
         $0.skills = chats.skills

@@ -1,5 +1,5 @@
 [button] "Conversations" id: BackButton
-[button] "Checkpoints"
+[button] "More"
 [header] "Push “Call the plumber” to next Monday"
 [text] "Push “Call the plumber” to next Monday"
 [text] "I moved Call the plumber to next Monday."

@@ -100,6 +100,7 @@ lifr_snapshot_test(
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/assistant_live",
         "//apps/lifr/clients/models",
+        "//apps/lifr/clients/search",
         "//apps/lifr/features/shortcuts",
         "//apps/lifr/widgets:views",
         "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",

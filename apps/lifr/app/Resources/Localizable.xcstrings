@@ -145,6 +145,16 @@
     "%lld fields were changed again since, so they stay as they are now." : {
 
     },
+    "%lld of %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld of %2$lld"
+          }
+        }
+      }
+    },
     "%lld of %lld Sub tasks closed" : {
       "localizations" : {
         "en" : {
@@ -344,6 +354,9 @@
     "All time" : {
 
     },
+    "Also searched for %@" : {
+
+    },
     "Also undo the %@ made after this point?" : {
 
     },
@@ -447,6 +460,12 @@
 
     },
     "Built in" : {
+
+    },
+    "Built-in" : {
+
+    },
+    "Built-in search adds related words from the system's word lists, with no model." : {
 
     },
     "Cancel" : {
@@ -734,7 +753,19 @@
     "Filters, %lld set" : {
 
     },
+    "Find Related Conversations" : {
+
+    },
     "Find a skill" : {
+
+    },
+    "Find in Conversation" : {
+
+    },
+    "Find in conversation" : {
+
+    },
+    "Finding related conversations…" : {
 
     },
     "Finish a Task" : {
@@ -1141,6 +1172,9 @@
     "Next 7 days" : {
 
     },
+    "Next Match" : {
+
+    },
     "Next Version" : {
 
     },
@@ -1183,7 +1217,13 @@
     "No due date" : {
 
     },
+    "No matches" : {
+
+    },
     "No priority" : {
+
+    },
+    "No related conversations" : {
 
     },
     "No reply came to this message." : {
@@ -1280,6 +1320,9 @@
     "Plan new tasks, Projects and Avenues." : {
 
     },
+    "Previous Match" : {
+
+    },
     "Previous Version" : {
 
     },
@@ -1341,6 +1384,9 @@
 
     },
     "Redraft" : {
+
+    },
+    "Related" : {
 
     },
     "Reminder" : {
@@ -1473,6 +1519,9 @@
 
     },
     "Search tasks" : {
+
+    },
+    "Searching conversations" : {
 
     },
     "See recent changes" : {
@@ -1872,6 +1921,9 @@
 
     },
     "Writing skills" : {
+
+    },
+    "Written %@" : {
 
     },
     "You already have a skill called %@. Pick another name." : {

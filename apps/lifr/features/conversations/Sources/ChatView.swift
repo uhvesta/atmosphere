@@ -17,6 +17,7 @@ package struct ChatView: View {
     @Environment(\.locale) private var locale
     @State private var photo: PhotosPickerItem?
     @State private var selecting: TextToSelect?
+    @FocusState private var findFocused: Bool
     @Environment(\.dynamicTypeSize) private var typeSize
 
     package var body: some View {
@@ -29,12 +30,17 @@ package struct ChatView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
-                if store.conversation.forward != nil {
-                    rewound
-                    Divider()
+                if store.finds {
+                    findBar
+                        .padding()
+                } else {
+                    if store.conversation.forward != nil {
+                        rewound
+                        Divider()
+                    }
+                    composer
+                        .padding()
                 }
-                composer
-                    .padding()
             }
             .background(.bar)
         }
@@ -91,10 +97,11 @@ package struct ChatView: View {
         }
         #if os(iOS)
             .toolbar {
-                // One menu, as three buttons fold into the bar's overflow.
+                // One menu, as more buttons fold into the bar's overflow.
                 ToolbarItem(placement: .topBarTrailing) {
-                    Menu("Checkpoints", systemImage: "clock.arrow.circlepath") {
-                        checkpointButtons
+                    Menu("More", systemImage: "ellipsis.circle") {
+                        findButton
+                        Section("Checkpoints") { checkpointButtons }
                     }
                     .disabled(store.conversation.messages.isEmpty)
                 }
@@ -109,6 +116,53 @@ package struct ChatView: View {
     }
 
     private var messages: some View {
+        ScrollViewReader { proxy in
+            scroll
+                .onChange(of: store.state.currentMatch) { _, id in
+                    guard let id else { return }
+                    withAnimation { proxy.scrollTo(id, anchor: .center) }
+                }
+        }
+    }
+
+    /// Opens the bar to find words in the messages shown.
+    private var findButton: some View {
+        Button("Find in Conversation", systemImage: "magnifyingglass") { store.send(.findTapped) }
+            .keyboardShortcut("f")
+            .disabled(store.conversation.messages.isEmpty)
+            .help("Find in Conversation")
+    }
+
+    /// Finds words in the messages shown, one match at a time.
+    private var findBar: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            TextField("Find in conversation", text: $store.findQuery)
+                .accessibilityLabel("Find in conversation")
+                .focused($findFocused)
+                .onSubmit { store.send(.findMoved(by: -1)) }
+                .onAppear { findFocused = true }
+            if !store.findQuery.isEmpty {
+                let count = store.state.findMatches.count
+                Text(count == 0 ? "No matches" : "\(store.findPosition + 1) of \(count)")
+                    .font(.footnote.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Button("Previous Match", systemImage: "chevron.up") { store.send(.findMoved(by: -1)) }
+                    .disabled(count < 2)
+                Button("Next Match", systemImage: "chevron.down") { store.send(.findMoved(by: 1)) }
+                    .disabled(count < 2)
+            }
+            Button("Done") { store.send(.findClosed) }
+                .font(.body.weight(.semibold))
+                .keyboardShortcut(.cancelAction)
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.borderless)
+    }
+
+    private var scroll: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if store.availability != .available {
@@ -135,6 +189,14 @@ package struct ChatView: View {
                             after(message)
                         }
                     }
+                    .background {
+                        if store.finds, store.state.findMatches.contains(message.id) {
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(.yellow.opacity(message.id == store.state.currentMatch ? 0.35 : 0.12))
+                                .padding(-6)
+                        }
+                    }
+                    .id(message.id)
                 }
                 if let replying = store.replying {
                     if let thinking = store.replyingThinking {
@@ -288,6 +350,7 @@ package struct ChatView: View {
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
                 Group {
+                    findButton
                     checkpointButtons
                     Button("Rename", systemImage: "pencil") { store.send(.renameTapped) }
                         .help("Rename")

@@ -11,6 +11,7 @@ import LifrLockClient
 import LifrModelsClient
 import LifrRemindersClient
 import LifrRoot
+import LifrSearchClient
 import LifrSessionClient
 import LifrShortcuts
 import LifrSnapshotTesting
@@ -36,6 +37,9 @@ final class PhoneFlowSnapshotTests: XCTestCase {
     private let bugReports = BugReportsClient.inMemory()
     /// What the app last put on the clipboard.
     private let copied = LockIsolated<String?>(nil)
+    /// The app's clock, which only moves when a flow says, so the assistant
+    /// never stalls.
+    private let clock = TestClock()
 
     private func app(
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
@@ -47,7 +51,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         self.records = records
         let store = Store(initialState: RootFeature.State(platform: .phone)) {
             RootFeature()
-        } withDependencies: { [time, widgets, bugReports, copied] in
+        } withDependencies: { [time, widgets, bugReports, copied, clock] in
             $0.store = client
             $0.session = InMemorySession().client
             $0.reminders = RemindersClient.inMemory().client
@@ -55,8 +59,8 @@ final class PhoneFlowSnapshotTests: XCTestCase {
             $0.assistant = assistant ?? .scripted(replies, inputs: inputs)
             $0.attachments = .inMemory()
             $0.recorder = .scripted(RecorderClient.Recording(data: Data([1]), seconds: 6))
-            // The assistant never stalls in a flow.
-            $0.continuousClock = TestClock()
+            $0.continuousClock = clock
+            $0.relatedWords = .scripted(["garden", "lawn"])
             $0.conversations = .inMemory()
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
@@ -610,7 +614,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         // Searching the list finds the reply on the branch not shown, and
         // opens the chat on it.
         store.send(.conversations(.closed))
-        store.send(.conversations(.searched("saturday")))
+        store.send(.conversations(.searched("afternoon")))
         await flow.step("search")
         let found = try XCTUnwrap(store.conversations.found.first)
         XCTAssertEqual(store.conversations.found.map(\.id), [id])
@@ -619,6 +623,21 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         XCTAssertEqual(
             store.conversations.chats[id: id]?.conversation.messages.last?.text,
             "Saturday morning suits the garden; leave the afternoon free.")
+
+        // Finding in the chat goes to the newest message with the words.
+        chat(.findTapped)
+        chat(.binding(.set(\.findQuery, "saturday")))
+        await flow.step("find")
+        XCTAssertEqual(store.conversations.chats[id: id]?.findMatches.count, 2)
+
+        // Related words find what the words typed don't, once the person
+        // pauses.
+        chat(.findClosed)
+        store.send(.conversations(.closed))
+        store.send(.conversations(.searched("yard work")))
+        await clock.advance(by: .seconds(1))
+        await flow.step("related")
+        XCTAssertEqual(store.conversations.found.map(\.isRelated), [true])
         flow.finish()
     }
 

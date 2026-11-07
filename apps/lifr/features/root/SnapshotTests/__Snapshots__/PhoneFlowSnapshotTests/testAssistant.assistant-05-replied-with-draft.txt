@@ -1,5 +1,5 @@
 [button] "Conversations" id: BackButton
-[button] "Checkpoints"
+[button] "More"
 [header] "Tidy my weekend"
 [text] "Tidy my weekend"
 [text] "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
