@@ -543,4 +543,41 @@ final class LiveAssistantTests: XCTestCase {
 
         XCTAssertEqual(title, "Garden plans")
     }
+
+    func testCompactingSummarizesOnTheAssistantsModelWithTheEarlierSummary() async throws {
+        let model = ScriptedRuntime(steps: [ScriptedRuntime.answer("They planned the garden.")])
+        let messages = [
+            ChatMessage(id: UUID(), role: .person, text: "Plan the garden", at: now),
+            ChatMessage(id: UUID(), role: .assistant, text: "Here's a plan.", at: now),
+        ]
+        let used = LockIsolated<[ModelUse]>([])
+        let client = AssistantClient.live { use in
+            used.withValue { $0.append(use) }
+            return model
+        }
+
+        let summary = try await client.compact(messages, "They moved in.")
+
+        XCTAssertEqual(summary, "They planned the garden.")
+        XCTAssertEqual(used.value, [.assistant])
+        let prompt = try XCTUnwrap(model.turns.first?.prompt)
+        XCTAssertTrue(prompt.contains("They moved in."))
+        XCTAssertTrue(prompt.contains("Plan the garden"))
+    }
+
+    func testAReplySaysHowManyMessagesDidntFit() async {
+        let model = ScriptedRuntime(steps: [ScriptedRuntime.answer(turn)])
+        var long = request("Plan the garden")
+        long.messages =
+            (0..<30).map { index in
+                ChatMessage(
+                    id: UUID(), role: index % 2 == 0 ? .person : .assistant,
+                    text: String(repeating: "Message \(index) ", count: 10), at: now)
+            } + long.messages
+
+        let (replies, error) = await replies(.live(runtime: { _ in model }), long)
+
+        XCTAssertNil(error)
+        XCTAssertGreaterThan(replies.last?.leftOut ?? 0, 0)
+    }
 }

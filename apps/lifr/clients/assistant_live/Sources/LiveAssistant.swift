@@ -15,6 +15,9 @@ extension AssistantClient {
             reply: { request in LiveAssistant.reply(to: request, on: runtime(.assistant)) },
             draftSkill: { description in try await LiveAssistant.draftSkill(description, on: runtime(.skills)) },
             suggestTitle: { messages in try await LiveAssistant.suggestTitle(messages, on: runtime(.titles)) },
+            compact: { messages, earlier in
+                try await LiveAssistant.compact(messages, earlier: earlier, on: runtime(.assistant))
+            },
             prewarm: {
                 let model = runtime(.assistant)
                 if model.status == .available { model.prewarm() }
@@ -207,6 +210,7 @@ enum LiveAssistant {
                 to: draft)
         }
         reply.thinking = thoughts.value
+        reply.leftOut = AssistantPrompt.leftOut(request, size: size)
         continuation.yield(AssistantPrompt.reply(reply, changed: changed, refused: refused))
         continuation.finish()
     }
@@ -236,7 +240,10 @@ enum LiveAssistant {
         let answer = try await model.respond(to: turn) { partial in
             thoughts.yield(AssistantReply(text: partial.plainText, isComplete: false), continuation)
         }
-        continuation.yield(AssistantReply(text: answer.plainText, isComplete: true, thinking: thoughts.value))
+        continuation.yield(
+            AssistantReply(
+                text: answer.plainText, isComplete: true, thinking: thoughts.value,
+                leftOut: AssistantPrompt.leftOut(request, size: size)))
         continuation.finish()
     }
 
@@ -267,6 +274,28 @@ enum LiveAssistant {
                 throw AssistantError.failed("it didn't suggest a title")
             }
             return title
+        } catch let error as ModelRuntimeError {
+            throw AssistantError(error)
+        }
+    }
+}
+
+extension LiveAssistant {
+    static func compact(_ messages: [ChatMessage], earlier: String?, on model: any ModelRuntime) async throws
+        -> String
+    {
+        let availability = AssistantAvailability(model.status)
+        guard availability == .available else { throw AssistantError.unavailable(availability) }
+        do {
+            let turn = ModelTurn(
+                instructions: AssistantPrompt.summaryInstructions,
+                prompt: AssistantPrompt.summaryPrompt(
+                    messages, earlier: earlier, budget: AssistantPrompt.summaryInputBudget(for: model.budget)))
+            let answer = try await model.respond(to: turn) { _ in }
+            guard let summary = AssistantPrompt.summary(from: answer.plainText) else {
+                throw AssistantError.failed("it didn't write a summary")
+            }
+            return summary
         } catch let error as ModelRuntimeError {
             throw AssistantError(error)
         }

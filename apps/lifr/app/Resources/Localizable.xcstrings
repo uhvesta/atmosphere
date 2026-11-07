@@ -540,6 +540,15 @@
     "Comments" : {
 
     },
+    "Compact" : {
+
+    },
+    "Compact Conversation" : {
+
+    },
+    "Compact long conversations" : {
+
+    },
     "Complete Project" : {
 
     },
@@ -598,6 +607,9 @@
 
     },
     "Couldn't change the task" : {
+
+    },
+    "Couldn't compact" : {
 
     },
     "Couldn't confirm it's you (%@). Try again." : {
@@ -781,6 +793,9 @@
 
     },
     "Finished %@." : {
+
+    },
+    "Forget Summary" : {
 
     },
     "Fork" : {
@@ -1271,6 +1286,9 @@
     "OK" : {
 
     },
+    "Older messages no longer fit what the model reads. Compact them into a summary it keeps." : {
+
+    },
     "One field was changed again since, so it stays as it is now." : {
 
     },
@@ -1548,6 +1566,9 @@
     "Send comment" : {
 
     },
+    "Send the messages above again, as far as they fit" : {
+
+    },
     "Set to Procrastinated by hand. It stays until you change its status." : {
 
     },
@@ -1567,6 +1588,9 @@
 
     },
     "Show as" : {
+
+    },
+    "Shown" : {
 
     },
     "Shows the thinking" : {
@@ -1630,6 +1654,15 @@
 
     },
     "Suggest with Apple Intelligence" : {
+
+    },
+    "Summarize older messages, so the assistant keeps them in mind" : {
+
+    },
+    "Summarized up to here" : {
+
+    },
+    "Summarizing older messages…" : {
 
     },
     "Summary" : {

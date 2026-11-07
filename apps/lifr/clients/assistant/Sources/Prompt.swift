@@ -282,9 +282,12 @@ package enum AssistantPrompt {
 
     /// The conversation, the draft and its problem, as one prompt.
     package static func prompt(_ request: AssistantRequest, size: Size = .full) -> String {
-        let messages = size.keepsEarlier ? request.messages : Array(request.messages.suffix(1))
-        var text = "Conversation so far:\n"
-        let kept = history(messages, budget: size.historyBudget(request.historyBudget))
+        var text = ""
+        if size.keepsEarlier, let summary = request.summary {
+            text += "Earlier in the conversation, in short: \(summary)\n\n"
+        }
+        text += "Conversation so far:\n"
+        let kept = kept(request, size: size)
         text += kept.enumerated().map { index, message in
             let said = said(message, attached: index == kept.count - 1 && !request.attachments.isEmpty)
             return switch (message.role, message.skill) {
@@ -321,6 +324,69 @@ package enum AssistantPrompt {
         }
         return text + "\n\nAnswer the person's last message."
     }
+
+    /// The messages sent at `size`: the newest that fit what's left of the
+    /// history budget after the summary.
+    private static func kept(_ request: AssistantRequest, size: Size) -> [ChatMessage] {
+        guard size.keepsEarlier else {
+            return history(Array(request.messages.suffix(1)), budget: size.historyBudget(request.historyBudget))
+        }
+        let budget = size.historyBudget(request.historyBudget) - (request.summary?.count ?? 0)
+        return history(request.messages, budget: max(minimumHistory, budget))
+    }
+
+    /// The fewest characters of conversation sent beside a summary.
+    private static let minimumHistory = 400
+
+    /// How many of the request's messages aren't sent at `size`.
+    package static func leftOut(_ request: AssistantRequest, size: Size) -> Int {
+        request.messages.count - kept(request, size: size).count
+    }
+
+    // MARK: - Compacting
+
+    /// The longest summary kept: it's sent with every message after it, so
+    /// it takes room from the conversation.
+    package static let summaryLimit = 600
+
+    package static let summaryInstructions = """
+        You summarize a conversation between a person and the assistant of Lifr, a task app, so the assistant \
+        can go on with it later. In at most five short sentences, say what the person asked for, what was \
+        decided or changed, and what's still open. Keep task names, dates and Avenue keys exactly as written. \
+        Answer with only the summary, in plain sentences with no lists or formatting.
+        """
+
+    /// The characters of conversation the model with `budget` reads to
+    /// summarize it: most of its room, as the answer is short and there
+    /// are no tools.
+    package static func summaryInputBudget(for budget: ContextBudget) -> Int {
+        max(historyBudget, (budget.room - estimatedTokens(summaryInstructions)) * 3 * 3 / 4)
+    }
+
+    /// The summary before `messages`, and the newest of them that fit
+    /// `budget` characters.
+    package static func summaryPrompt(_ messages: [ChatMessage], earlier: String?, budget: Int) -> String {
+        var text = ""
+        if let earlier { text += "Summary so far: \(earlier)\n\nWhat came after:\n" }
+        let kept = history(messages, budget: max(minimumHistory, budget - text.count))
+        text += kept.map { "\($0.role == .person ? "Person" : "Assistant"): \($0.text)" }.joined(separator: "\n")
+        return text + "\n\nSummarize the conversation" + (earlier == nil ? "." : ", the summary so far included.")
+    }
+
+    /// The model's answer as a summary: trimmed, and cut at a sentence's end
+    /// to `summaryLimit`. Nil when it wrote nothing.
+    package static func summary(from answer: String) -> String? {
+        let text = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        guard text.count > summaryLimit else { return text }
+        let cut = String(text.prefix(summaryLimit))
+        guard let end = cut.lastIndex(where: { ".!?".contains($0) }) else { return cut + "…" }
+        return String(cut[...end])
+    }
+
+    /// What the scripted assistant summarizes any conversation as.
+    package static let exampleSummary =
+        "The person planned the week: cleaning the living room on Saturday and buying new clothes. Both are drafted."
 
     /// The most tasks `meantTasks` lists.
     package static let meantTasksLimit = 8

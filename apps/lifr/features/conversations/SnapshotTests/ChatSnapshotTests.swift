@@ -79,6 +79,25 @@ final class ChatSnapshotTests: XCTestCase {
         return state
     }
 
+    /// A chat whose older messages were summarized, and whose last reply
+    /// was written without some of those after: Compact is offered.
+    private var compacted: ChatFeature.State {
+        var conversation = Conversation(id: UUID(0), createdAt: now)
+        conversation.messages = [
+            ChatMessage(id: UUID(1), role: .person, text: "Plan a vegetable garden this month", at: now),
+            ChatMessage(id: UUID(2), role: .assistant, text: "Added a Vegetable garden Project in HOME.", at: now),
+            ChatMessage(id: UUID(3), role: .person, text: "Move Buy soil to Saturday", at: now),
+            ChatMessage(id: UUID(4), role: .assistant, text: "Buy soil is due Saturday now.", at: now),
+        ]
+        conversation.summaries[UUID(2)] = ChatSummary(
+            text: "The person planned a vegetable garden for November: a Vegetable garden Project in HOME, due "
+                + "November 30, with Buy soil and Plant seedlings.",
+            at: now)
+        var state = ChatFeature.State(conversation: conversation, workspace: .sample(now: now, timeZone: .gmt))
+        state.leftOut = 1
+        return state
+    }
+
     private func screen(_ state: ChatFeature.State) -> some View {
         NavigationStack {
             ChatView(store: Store(initialState: state) { EmptyReducer() })
@@ -95,5 +114,6 @@ final class ChatSnapshotTests: XCTestCase {
         assertScreenImages(of: screen(skills), named: "skills")
         assertScreenImages(of: screen(attachments()), named: "attachments")
         assertScreenImages(of: screen(attachments(recording: true)), named: "recording", images: [.proMaxLight])
+        assertScreenImages(of: screen(compacted), named: "compacted", images: [.proMaxLight, .proMaxDark])
     }
 }

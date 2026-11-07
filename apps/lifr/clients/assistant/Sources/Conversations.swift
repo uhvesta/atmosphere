@@ -33,6 +33,10 @@ package struct Conversation: Identifiable, Hashable, Codable, Sendable {
     /// Whether the person gave it its name, which the assistant then never
     /// replaces.
     package var isNamedByHand = false
+    /// What the assistant wrote of the conversation, each kept under the
+    /// last message it covers. A summary goes with every branch through
+    /// that message, as what came before it is the same on each.
+    package var summaries: [UUID: ChatSummary] = [:]
 
     package init(id: UUID, createdAt: Date) {
         self.id = id
@@ -58,7 +62,7 @@ package struct Conversation: Identifiable, Hashable, Codable, Sendable {
 extension Conversation {
     private enum CodingKeys: String, CodingKey {
         case id, messages, hidden, parents, latest, draft, changes, added, createdAt, archivedAt, isSynced, name
-        case isNamedByHand
+        case isNamedByHand, summaries
     }
 
     /// Conversations saved before archiving, per-conversation syncing,
@@ -79,7 +83,33 @@ extension Conversation {
         isSynced = try container.decodeIfPresent(Bool.self, forKey: .isSynced) ?? false
         name = try container.decodeIfPresent(String.self, forKey: .name)
         isNamedByHand = try container.decodeIfPresent(Bool.self, forKey: .isNamedByHand) ?? false
+        summaries = try container.decodeIfPresent([UUID: ChatSummary].self, forKey: .summaries) ?? [:]
     }
+
+    /// The newest summary of the messages shown, and the message it ends
+    /// at: nil when none of them is summarized.
+    package var summary: (through: UUID, summary: ChatSummary)? {
+        for message in messages.reversed() {
+            if let summary = summaries[message.id] { return (message.id, summary) }
+        }
+        return nil
+    }
+
+    /// The messages shown after the newest summary: all of them without one.
+    package var unsummarized: ArraySlice<ChatMessage> {
+        guard let through = summary?.through, let index = messages.firstIndex(where: { $0.id == through }) else {
+            return messages[...]
+        }
+        return messages[(index + 1)...]
+    }
+
+    /// The messages a new summary would cover: those after the newest one
+    /// but the last two, which stay as they were written so the model
+    /// sees the latest exchange word for word.
+    package var compactable: ArraySlice<ChatMessage> { unsummarized.dropLast(Self.keptWhole) }
+
+    /// The messages a summary leaves as they are.
+    package static let keptWhole = 2
 
     /// Names it as the person typed it; an empty name goes back to the
     /// first message and lets the assistant name it again.
@@ -90,7 +120,26 @@ extension Conversation {
     }
 }
 
+/// What the assistant wrote of a conversation up to one message, sent in
+/// place of those messages so a long conversation fits the model.
+package struct ChatSummary: Hashable, Codable, Sendable {
+    package var text: String
+    package var at: Date
+
+    package init(text: String, at: Date) {
+        self.text = text
+        self.at = at
+    }
+}
+
 extension SharedKey where Self == AppStorageKey<Bool>.Default {
+    /// Whether the assistant summarizes older messages by itself once they
+    /// no longer fit what the model reads. Off unless the person turns it
+    /// on: otherwise the chat offers Compact.
+    package static var compactsConversations: Self {
+        Self[.appStorage("lifrCompactsConversations"), default: false]
+    }
+
     /// Whether the assistant names each new conversation after its first
     /// reply. Off unless the person turns it on.
     package static var namesConversations: Self {

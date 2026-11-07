@@ -38,6 +38,10 @@ package struct ChatView: View {
                         rewound
                         Divider()
                     }
+                    if store.compacting || store.state.offersCompact {
+                        compactBanner
+                        Divider()
+                    }
                     composer
                         .padding()
                 }
@@ -101,6 +105,7 @@ package struct ChatView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu("More", systemImage: "ellipsis.circle") {
                         findButton
+                        compactButton
                         Section("Checkpoints") { checkpointButtons }
                     }
                     .disabled(store.conversation.messages.isEmpty)
@@ -185,6 +190,11 @@ package struct ChatView: View {
                         )
                         .contextMenu { messageMenu(for: message) }
                         branches(at: message)
+                        if let summary = store.conversation.summary, summary.through == message.id {
+                            SummaryMarker(text: summary.summary.text, canForget: !store.compacting) {
+                                store.send(.forgetSummaryTapped(message.id))
+                            }
+                        }
                         if message.id == store.conversation.messages.last?.id, store.replying == nil {
                             after(message)
                         }
@@ -246,6 +256,39 @@ package struct ChatView: View {
         Button("All Checkpoints", systemImage: "clock.arrow.circlepath") { store.showsCheckpoints = true }
             .disabled(store.conversation.messages.isEmpty)
             .help("Every point to go back or forward to")
+    }
+
+    /// Summarizes older messages, so the model keeps them in mind.
+    private var compactButton: some View {
+        Button("Compact Conversation", systemImage: "rectangle.compress.vertical") { store.send(.compactTapped) }
+            .disabled(!store.state.canCompact)
+            .help("Summarize older messages, so the assistant keeps them in mind")
+    }
+
+    /// Says the last reply was written without older messages, above the
+    /// field, with Compact; or that they're being summarized.
+    private var compactBanner: some View {
+        HStack {
+            if store.compacting {
+                ProgressView().controlSize(.small)
+                Text("Summarizing older messages…")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            } else {
+                Label(
+                    "Older messages no longer fit what the model reads. Compact them into a summary it keeps.",
+                    systemImage: "text.badge.minus"
+                )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                Spacer()
+                Button("Compact") { store.send(.compactTapped) }
+                    .font(.footnote.weight(.semibold))
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
     }
 
     /// Says the conversation is shown as it was earlier, above the field.
@@ -351,6 +394,7 @@ package struct ChatView: View {
                 Spacer()
                 Group {
                     findButton
+                    compactButton
                     checkpointButtons
                     Button("Rename", systemImage: "pencil") { store.send(.renameTapped) }
                         .help("Rename")
@@ -637,6 +681,42 @@ private struct SkillFinder: View {
 }
 
 /// Ways to start, in a chat with nothing in it yet.
+/// Under the last message a summary covers: what the model gets in place of
+/// the messages up to here, and Forget to send them again instead.
+private struct SummaryMarker: View {
+    var text: String
+    var canForget: Bool
+    var forget: () -> Void
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Button {
+                    withAnimation { isExpanded.toggle() }
+                } label: {
+                    Label("Summarized up to here", systemImage: isExpanded ? "chevron.down" : "chevron.right")
+                }
+                .accessibilityValue(isExpanded ? Text("Shown") : Text("Hidden"))
+                Spacer()
+                Button("Forget Summary", role: .destructive, action: forget)
+                    .disabled(!canForget)
+                    .help("Send the messages above again, as far as they fit")
+            }
+            .buttonStyle(.borderless)
+            Text(text)
+                .lineLimit(isExpanded ? nil : 2)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+        }
+        .font(.footnote)
+        .padding(10)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 private struct Suggestions: View {
     let send: (String) -> Void
 

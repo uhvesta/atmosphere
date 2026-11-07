@@ -287,6 +287,37 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// A long conversation: the reply written without older messages
+    /// offers Compact, which summarizes them; the summary is shown where
+    /// it ends, and Forget Summary sends the messages again.
+    func testAssistantCompacts() async throws {
+        let assistant = AssistantClient.scripted([
+            AssistantReply(text: "Start with the urgent tasks, then the ones due this week.", isComplete: true),
+            AssistantReply(text: "Keep Saturday for the garden and Sunday free.", isComplete: true, leftOut: 1),
+        ])
+        let (store, flow) = app("assistant-compacts", assistant: assistant)
+        store.send(.selected(.conversations))
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        func chat(_ action: ChatFeature.Action) { store.send(.conversations(.chats(.element(id: id, action: action)))) }
+        send("Plan my week", in: id, of: store)
+        await flow.step("planned")
+        time.withValue { $0 += 60 }
+        send("And the weekend?", in: id, of: store)
+        await flow.step("offered")
+        XCTAssertEqual(store.conversations.chats[id: id]?.offersCompact, true)
+
+        chat(.compactTapped)
+        await flow.step("compacted")
+        let summary = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.summary)
+        XCTAssertEqual(store.conversations.chats[id: id]?.offersCompact, false)
+
+        chat(.forgetSummaryTapped(summary.through))
+        await flow.step("forgot")
+        XCTAssertNil(store.conversations.chats[id: id]?.conversation.summary)
+        flow.finish()
+    }
+
     /// Help › Record Steps, finishing a task while it records, Stop,
     /// describing the bug, copying it without the task's title, saving it,
     /// then finding it in Settings › Bug Reports.

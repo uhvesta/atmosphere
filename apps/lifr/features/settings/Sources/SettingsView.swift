@@ -12,6 +12,7 @@ import SwiftUI
 package struct SettingsView: View {
     @Bindable package var store: StoreOf<SettingsFeature>
     @Shared(.namesConversations) private var namesConversations
+    @Shared(.compactsConversations) private var compactsConversations
 
     package init(store: StoreOf<SettingsFeature>) {
         self.store = store
@@ -39,6 +40,7 @@ package struct SettingsView: View {
             }
             Section {
                 Toggle("Name conversations", isOn: Binding($namesConversations))
+                Toggle("Compact long conversations", isOn: Binding($compactsConversations))
                 Button("Instructions") { store.send(.instructionsTapped) }
                 Button("Models") { store.send(.modelsTapped) }
                 Button("Skills") { store.send(.skillsTapped) }
@@ -47,9 +49,10 @@ package struct SettingsView: View {
             } footer: {
                 Text(
                     "Names each new conversation after its first reply, on this device, with the model picked "
-                        + "in Models. Names you give are kept. Conversations stay on this device unless you sync "
-                        + "them: swipe right on one in Conversations. Instructions stay on this device. Skills sync "
-                        + "through iCloud, encrypted end to end.")
+                        + "in Models. Names you give are kept. Compacting summarizes older messages once they no "
+                        + "longer fit what the model reads; without it, a chat offers Compact then. Conversations "
+                        + "stay on this device unless you sync them: swipe right on one in Conversations. "
+                        + "Instructions stay on this device. Skills sync through iCloud, encrypted end to end.")
             }
             Section {
                 Button("Bug Reports") { store.send(.bugReportsTapped) }

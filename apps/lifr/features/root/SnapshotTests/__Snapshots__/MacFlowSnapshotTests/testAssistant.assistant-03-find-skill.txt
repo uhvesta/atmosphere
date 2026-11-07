@@ -27,6 +27,7 @@
   [Outline] ""
   [Heading] "New conversation"
   [Button, disabled] "Find in Conversation" help: "Find in Conversation"
+  [Button, disabled] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
   [Button, disabled] "Back" help: "Go back to the message before"
   [Button, disabled] "Forward" help: "Go forward to the message after"
   [Button, disabled] "All Checkpoints" help: "Every point to go back or forward to"

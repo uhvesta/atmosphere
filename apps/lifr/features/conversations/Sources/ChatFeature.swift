@@ -37,6 +37,12 @@ package struct ChatFeature {
         /// Whether the assistant is naming the conversation.
         package var naming = false
         @Shared(.namesConversations) package var namesConversations
+        @Shared(.compactsConversations) package var compactsConversations
+        /// How many older messages the model didn't get with the last
+        /// message, as they didn't fit: the chat then offers Compact.
+        package var leftOut = 0
+        /// Whether the assistant is summarizing older messages.
+        package var compacting = false
         /// Why the draft can't be added as it is now, checked on every
         /// change, and sent with the next message.
         package var problem: String?
@@ -112,14 +118,28 @@ package struct ChatFeature {
         /// Whether a reply is being written, waits to be sent again, is
         /// being finished, or failed: the chat is kept until it isn't.
         package var isWorking: Bool {
-            replying != nil || waiting != nil || reloading || naming || alert != nil || failure != nil
+            replying != nil || waiting != nil || reloading || naming || compacting || alert != nil
+                || failure != nil
         }
+
+        /// Whether older messages can be summarized now: there are some
+        /// after the newest summary, and no reply is being written.
+        package var canCompact: Bool {
+            availability == .available && replying == nil && waiting == nil && !compacting
+                && !conversation.compactable.isEmpty
+        }
+
+        /// Whether to offer Compact: the last reply was written without
+        /// some of the conversation.
+        package var offersCompact: Bool { leftOut > 0 && canCompact }
 
         package var canAdd: Bool { conversation.draft != nil && problem == nil }
 
         /// Whether the conversation can go back, forward or to another
         /// branch: not while a reply is written or its changes are read.
-        package var canGo: Bool { replying == nil && waiting == nil && !reloading && !conversation.messages.isEmpty }
+        package var canGo: Bool {
+            replying == nil && waiting == nil && !reloading && !compacting && !conversation.messages.isEmpty
+        }
 
         /// Whether the conversation can be forked at the message `id`: also
         /// while a reply is written, from before the message it answers.
@@ -162,7 +182,7 @@ package struct ChatFeature {
         }
 
         package var canSend: Bool {
-            availability == .available && replying == nil && waiting == nil && !attaching && !recording
+            availability == .available && replying == nil && waiting == nil && !attaching && !recording && !compacting
                 && (picked != nil || !pending.isEmpty
                     || !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
@@ -205,6 +225,13 @@ package struct ChatFeature {
         case named(Result<String, any Error>)
         /// The title was tapped, to rename the conversation.
         case renameTapped
+        /// Summarizes the messages before the last two, to send in their
+        /// place.
+        case compactTapped
+        case compacted(through: UUID, Result<String, any Error>)
+        /// Removes the summary that ends at the message, so the messages it
+        /// covers are sent again as far as they fit.
+        case forgetSummaryTapped(UUID)
         case undoTapped(messageID: UUID)
         case discardDraftTapped
         case addTapped
@@ -507,6 +534,7 @@ package struct ChatFeature {
                 // Thinking opened while it was written stays open.
                 if state.showsReplyThinking, thinking != nil { state.shownThinking.insert(id) }
                 state.showsReplyThinking = false
+                state.leftOut = reply.leftOut
                 if let plan = reply.plan {
                     // A model often repeats what this chat already added,
                     // and makes small mistakes Lifr can put right. A plan
@@ -517,9 +545,10 @@ package struct ChatFeature {
                     if !new.isEmpty || plan.isEmpty { state.conversation.draft = new.isEmpty ? nil : new }
                     check(&state)
                 }
-                let reload: Effect<Action> = .run { [store] send in
+                var reload: Effect<Action> = .run { [store] send in
                     await send(.reloaded(messageID: id, Result { try await store.load() }))
                 }
+                if state.compactsConversations, state.offersCompact { reload = .merge(reload, compact(&state)) }
                 guard state.namesConversations, !state.conversation.isNamedByHand, state.conversation.name == nil
                 else { return reload }
                 state.naming = true
@@ -539,6 +568,34 @@ package struct ChatFeature {
 
             case .renameTapped:
                 return .send(.delegate(.rename))
+
+            case .compactTapped:
+                guard state.canCompact else { return .none }
+                return compact(&state)
+
+            case .compacted(let through, .success(let text)):
+                state.compacting = false
+                state.conversation.summaries[through] = ChatSummary(text: text, at: now)
+                state.leftOut = 0
+                return .none
+
+            case .compacted(_, .failure(let error)):
+                state.compacting = false
+                state.alert = AlertState {
+                    TextState("Couldn't compact")
+                } actions: {
+                    ButtonState(role: .cancel) { TextState("OK") }
+                } message: {
+                    TextState(
+                        "\(String(describing: error)) The conversation is as it was: the newest messages that fit "
+                            + "are still sent.")
+                }
+                return .none
+
+            case .forgetSummaryTapped(let id):
+                guard !state.compacting else { return .none }
+                state.conversation.summaries[id] = nil
+                return .none
 
             case .replyFailed(let error as AssistantError) where error == .busy:
                 // Keep what's written so far, and send again on `resume`.
@@ -718,6 +775,18 @@ package struct ChatFeature {
         .ifLet(\.$manageSkills, action: \.manageSkills) { SkillsFeature() }
     }
 
+    /// Summarizes the messages before the last two, after the newest
+    /// summary, which the new one takes in.
+    private func compact(_ state: inout State) -> Effect<Action> {
+        let messages = Array(state.conversation.compactable)
+        guard let through = messages.last?.id else { return .none }
+        state.compacting = true
+        let earlier = state.conversation.summary?.summary.text
+        return .run { [assistant] send in
+            await send(.compacted(through: through, Result { try await assistant.compact(messages, earlier) }))
+        }
+    }
+
     /// Writes the reply to `request`, with background time so it keeps
     /// going when the person leaves Lifr. Until it's complete, `waiting`
     /// keeps the request for `resume`.
@@ -804,6 +873,7 @@ package struct ChatFeature {
     /// undone changes again.
     private func go(to id: UUID, in state: inout State) -> Effect<Action> {
         guard state.canGo else { return .none }
+        state.leftOut = 0
         let changed = state.conversation.changedReplies(hiddenGoingTo: id)
         guard !changed.isEmpty else {
             state.conversation.go(to: id)
@@ -874,8 +944,8 @@ package struct ChatFeature {
     private func request(in state: State) -> AssistantRequest {
         let conversation = state.conversation.id
         let asked = state.conversation.messages.last
-        return AssistantRequest(
-            messages: state.conversation.messages, draft: state.conversation.draft, problem: state.problem,
+        var request = AssistantRequest(
+            messages: Array(state.conversation.unsummarized), draft: state.conversation.draft, problem: state.problem,
             workspace: state.workspace, now: now, timeZone: timeZone,
             writes: AssistantWrites(conversation: conversation) { [store] operation in
                 try await store.save(operation).workspace
@@ -884,6 +954,8 @@ package struct ChatFeature {
             attachments: (asked?.attachments ?? []).compactMap { attachment in
                 attachments.file(attachment, conversation).map { ModelAttachment(attachment.kind, file: $0) }
             })
+        request.summary = state.conversation.summary?.summary.text
+        return request
     }
 
     /// Checks the draft against the records as they are now.

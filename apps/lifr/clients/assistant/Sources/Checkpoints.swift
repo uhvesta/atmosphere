@@ -149,6 +149,8 @@ extension Conversation {
         guard copy.messages.last?.id == id else { return nil }
         var fork = Conversation(id: forkID, createdAt: now)
         fork.messages = copy.messages
+        let kept = Set(copy.messages.map(\.id))
+        fork.summaries = summaries.filter { kept.contains($0.key) }
         fork.isSynced = isSynced
         fork.name = String(localized: "\(title) (fork)")
         return fork

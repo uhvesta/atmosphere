@@ -20,6 +20,10 @@ package struct AssistantClient: Sendable {
     package var draftSkill: @Sendable (_ description: String) async throws -> SkillDraft
     /// A short title for a conversation with these messages.
     package var suggestTitle: @Sendable (_ messages: [ChatMessage]) async throws -> String
+    /// A short summary of `messages`, which follow the summary `earlier`
+    /// when there is one, to send in their place once a conversation is
+    /// longer than the model reads.
+    package var compact: @Sendable (_ messages: [ChatMessage], _ earlier: String?) async throws -> String
     /// Loads the model ahead of the first message, so the first answer
     /// starts sooner. Does nothing when it's loaded or can't run.
     package var prewarm: @Sendable () -> Void = {}
@@ -161,6 +165,9 @@ package struct AssistantRequest: Hashable, Sendable {
     /// The most characters of conversation sent at full size: more for a
     /// model with a larger window. See `AssistantPrompt.historyBudget(for:)`.
     package var historyBudget = AssistantPrompt.historyBudget
+    /// What the assistant wrote of the conversation before `messages`, sent
+    /// ahead of them.
+    package var summary: String?
 
     package init(
         messages: [ChatMessage], draft: Plan? = nil, problem: String? = nil, workspace: Workspace, now: Date,
@@ -277,12 +284,18 @@ package struct AssistantReply: Hashable, Sendable {
     /// What the model thought before answering, and how long it took, for
     /// a model that says.
     package var thinking: ModelThinking?
+    /// How many of the request's messages the model didn't get, as they
+    /// didn't fit: older ones, which a summary can stand in for.
+    package var leftOut = 0
 
-    package init(text: String, plan: Plan? = nil, isComplete: Bool = false, thinking: ModelThinking? = nil) {
+    package init(
+        text: String, plan: Plan? = nil, isComplete: Bool = false, thinking: ModelThinking? = nil, leftOut: Int = 0
+    ) {
         self.text = text
         self.plan = plan
         self.isComplete = isComplete
         self.thinking = thinking
+        self.leftOut = leftOut
     }
 }
 
@@ -426,6 +439,7 @@ extension AssistantClient {
             },
             draftSkill: { _ in .example },
             suggestTitle: { _ in "Planning the week" },
+            compact: { _, _ in AssistantPrompt.exampleSummary },
             prewarm: {},
             inputs: { inputs })
     }
