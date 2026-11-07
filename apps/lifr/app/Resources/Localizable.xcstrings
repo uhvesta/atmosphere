@@ -32,6 +32,9 @@
     "%@ Nothing changed. Send a message and the assistant will fix the draft." : {
 
     },
+    "%@ Try again in a moment." : {
+
+    },
     "%@ deleted it, and it was changed here." : {
 
     },
@@ -519,6 +522,9 @@
     "Changed %@" : {
 
     },
+    "Changes older than 90 days can be looked at but not reverted." : {
+
+    },
     "Changes save at once, and each can be undone from the conversation or Activity." : {
 
     },
@@ -685,6 +691,9 @@
 
     },
     "Couldn't save the skill" : {
+
+    },
+    "Couldn't show older changes" : {
 
     },
     "Couldn't undo" : {
@@ -1296,6 +1305,9 @@
     "No changes match." : {
 
     },
+    "No changes older than 90 days." : {
+
+    },
     "No connected apps" : {
 
     },
@@ -1357,6 +1369,9 @@
 
     },
     "OK" : {
+
+    },
+    "Older changes can be looked at but not reverted" : {
 
     },
     "Older messages no longer fit what the model reads. Compact them into a summary it keeps." : {
@@ -1679,6 +1694,9 @@
 
     },
     "Show as" : {
+
+    },
+    "Show changes older than 90 days" : {
 
     },
     "Shown" : {

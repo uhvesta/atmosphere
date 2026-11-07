@@ -30,9 +30,22 @@ package struct ActivityView: View {
                     Text("No changes match.").foregroundStyle(.secondary)
                 }
                 ForEach(rows) { row in
-                    ActivityRowView(row: row)
-                        .contextMenu { actions(row) }
-                        .swipeActions(allowsFullSwipe: false) { actions(row) }
+                    if row.canRevert {
+                        ActivityRowView(row: row)
+                            .contextMenu { actions(row) }
+                            .swipeActions(allowsFullSwipe: false) { actions(row) }
+                    } else {
+                        ActivityRowView(row: row)
+                    }
+                }
+            } footer: {
+                if store.archived == nil {
+                    Button("Show changes older than 90 days") { store.send(.olderTapped) }
+                        .accessibilityHint("Older changes can be looked at but not reverted")
+                } else if store.archived?.isEmpty == true {
+                    Text("No changes older than 90 days.")
+                } else {
+                    Text("Changes older than 90 days can be looked at but not reverted.")
                 }
             }
         }

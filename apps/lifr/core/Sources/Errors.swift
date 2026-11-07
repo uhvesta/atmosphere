@@ -67,6 +67,9 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
             "\"\(time)\" isn't a time of day. Use 24-hour HH:MM, such as 09:30."
         case .dueTimeWithoutDueDate:
             "A due time needs a due date. Set the due date too, or clear the time."
+        case .notFound(.change, let id):
+            "No change that can still be reverted matches \(id). Changes older than 90 days stay in Activity but "
+                + "can't be reverted; a newer one may not have synced to this device yet."
         case .notFound(let entity, let id):
             "No \(entity.rawValue) matches \(id). It may have been deleted or not synced to this device yet."
         case .projectInDifferentAvenue:

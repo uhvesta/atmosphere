@@ -28,7 +28,7 @@ enum NoteField: String, Hashable, Codable, Sendable {
     case title, body, folder, position, deletedAt, name
 }
 
-enum NoteValue: Hashable, Sendable {
+enum NoteValue: Hashable, Codable, Sendable {
     case text(String)
     case number(Int)
     case folder(UUID)

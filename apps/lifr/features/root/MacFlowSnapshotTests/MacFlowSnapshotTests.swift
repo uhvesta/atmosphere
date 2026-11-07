@@ -569,6 +569,8 @@ final class MacFlowSnapshotTests: XCTestCase {
         await flow.step("sync-failed")
         store.send(.settings(.activityTapped))
         await flow.step("activity")
+        store.send(.settings(.activity(.presented(.olderTapped))))
+        await flow.step("activity-older")
         store.send(.settings(.activity(.dismiss)))
         store.send(.settings(.modelsTapped))
         await flow.step("models")

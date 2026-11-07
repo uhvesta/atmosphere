@@ -22,6 +22,7 @@ import LifrTaskDetail
 import LifrTaskList
 import LifrToday
 import LifrUpcoming
+import OSLog
 
 /// The whole app: the iPhone's tabs or the Mac's sidebar, with quick add,
 /// the sync banner and the approval sheet over them. It loads the records
@@ -336,7 +337,17 @@ package struct RootFeature {
             switch action {
             case .task:
                 var effects: [Effect<Action>] = [
-                    .run { [store] send in await send(.loaded(Result { try await store.load() })) },
+                    // Changes too old to undo are packed first, so loading
+                    // leaves them out.
+                    .run { [store, now] send in
+                        do {
+                            try await store.archiveJournal(now.addingTimeInterval(-JournalEntry.undoWindow))
+                        } catch {
+                            Logger(subsystem: "lifr", category: "store").error(
+                                "\(String(describing: error), privacy: .public)")
+                        }
+                        await send(.loaded(Result { try await store.load() }))
+                    },
                     .run { [store] send in
                         for await update in await store.updates() { await send(.updated(update)) }
                     },

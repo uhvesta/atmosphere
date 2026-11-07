@@ -16,6 +16,7 @@
 [text] "Added task “Buy oat milk”, Nov 3 at 10:00 AM, Shortcuts, Buy oat milk · Code: — → WD0Z, Buy oat milk · Title: — → Buy oat milk, Buy oat milk · Details: — → , Buy oat milk · Status: — → To Do, Buy oat milk · Priority: — → None, Buy oat milk · Due date: — → 2026-11-03, Buy oat milk · Avenue: — → Health, Buy oat milk · Labels: — → "
 [header, text] "Today"
 [button] "Buy oat milk" value: "To Do, Today, HEALTH-WD0Z"
+[button] "Show changes older than 90 days" hint: "Older changes can be looked at but not reverted"
 [button] "Search"
 [button, selected] "Today"
 [button] "Upcoming"

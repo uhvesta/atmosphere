@@ -11,6 +11,28 @@ package typealias FieldChange = JournalKit.FieldChange<RecordValue>
 package typealias RecordID = JournalKit.RecordID<RecordKind>
 /// A part of an entry that reverting left as it is, and why.
 package typealias SkippedRevert = JournalKit.SkippedRevert<RecordValue>
+/// A journal entry kept once it's too old to undo: the fields it changed.
+package typealias ArchivedEntry = JournalKit.ArchivedEntry<RecordValue, Actor>
+/// What one step of an archived entry changed.
+package typealias ArchivedStep = JournalKit.ArchivedStep<RecordValue>
+/// A month of archived journal entries.
+package typealias JournalMonth = JournalKit.JournalMonth
+
+extension JournalEntry {
+    /// How long a change can be undone. Older entries are archived as the
+    /// fields they changed, and kept.
+    package static let undoWindow: TimeInterval = 90 * 24 * 60 * 60
+}
+
+extension Workspace {
+    /// Takes the journal entries made before `cutoff` out, and returns them
+    /// as the fields they changed.
+    package mutating func archiveJournal(before cutoff: Date) -> [ArchivedEntry] {
+        let (kept, archived) = journal.archiving(before: cutoff)
+        journal = kept
+        return archived.values.flatMap { $0 }
+    }
+}
 
 package enum RecordKind: String, Hashable, Codable, Sendable, CaseIterable {
     case avenue, project, task, label, comment, reminder, settings

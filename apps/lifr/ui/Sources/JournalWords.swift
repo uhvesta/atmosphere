@@ -89,6 +89,70 @@ package struct JournalWords {
         step.record.kind == .settings ? String(localized: "Settings") : title(step)
     }
 
+    // MARK: - Archived
+
+    /// `fields(of:hiding:)` for an archived entry's steps.
+    package func fields(of steps: [ArchivedStep], hiding: Set<Field> = []) -> [FieldWords] {
+        let hidden = Self.hidden.union(hiding)
+        return steps.flatMap { step in
+            let record = name(step)
+            return step.fields.filter { !hidden.contains($0.field) }.map { change in
+                FieldWords(
+                    record: record, field: change.field.title, before: change.before.map(text),
+                    after: change.after.map(text))
+            }
+        }
+    }
+
+    /// `summary(of:reverts:)` for an archived entry's steps.
+    package func summary(of steps: [ArchivedStep], reverts: Int = 0) -> String {
+        if reverts > 0 {
+            return reverts == 1
+                ? String(localized: "Reverted a change") : String(localized: "Reverted \(reverts) changes")
+        }
+        guard let first = steps.first else { return String(localized: "No change") }
+        var text = "\(verb(first)) \(first.record.kind.noun)"
+        if first.record.kind != .settings { text += " “\(name(first))”" }
+        return steps.count == 1 ? text : text + " and \(steps.count - 1) more"
+    }
+
+    private func verb(_ step: ArchivedStep) -> String {
+        switch step.change {
+        case .added: return String(localized: "Added")
+        case .removed: return String(localized: "Removed")
+        case .changed:
+            guard let deleted = step.fields.first(where: { $0.field == .deletedAt }) else {
+                return String(localized: "Changed")
+            }
+            switch (deleted.before, deleted.after, step.record.kind) {
+            case (nil, _?, .comment): return String(localized: "Deleted")
+            case (nil, _?, _): return String(localized: "Trashed")
+            case (_?, nil, _): return String(localized: "Restored")
+            default: return String(localized: "Changed")
+            }
+        }
+    }
+
+    /// The name the step gave the record, or else its name now.
+    private func name(_ step: ArchivedStep) -> String {
+        let id = step.record.id
+        switch step.record.kind {
+        case .settings: return String(localized: "Settings")
+        case .comment, .reminder:
+            let task = step.fields.first { $0.field == .task }.flatMap { $0.after ?? $0.before }
+            guard case .record(_, let taskID)? = task, let title = workspace.tasks[taskID]?.title else {
+                return "a task"
+            }
+            return title
+        case .avenue, .project, .task, .label:
+            let named = step.fields.first { $0.field == .title || $0.field == .name }
+            guard case .text(let text)? = named.flatMap({ $0.after ?? $0.before }) else {
+                return name(of: step.record.kind, id)
+            }
+            return text
+        }
+    }
+
     /// A value as people read it: records by name, times as dates.
     private func text(_ value: FieldValue) -> String {
         switch value {

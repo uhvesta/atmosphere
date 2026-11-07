@@ -47,7 +47,8 @@ final class Harness: Sendable {
                     try await inner.save(operation)
                 }
             },
-            updates: inner.updates, importSynced: inner.importSynced)
+            updates: inner.updates, importSynced: inner.importSynced, archiveJournal: inner.archiveJournal,
+            archivedJournal: inner.archivedJournal)
         _ = try await store.createAvenue(key: "HEALTH", name: "Health")
         self.grants = .inMemory(grants)
         let peer = OSAllocatedUnfairLock<Result<Peer, APIError>>(initialState: .success(peer))

@@ -79,6 +79,8 @@ package struct ActivityRow: Identifiable, Hashable, Sendable {
     package var isReverted: Bool
     /// This entry reverts others.
     package var isRevert: Bool
+    /// The entry is still in the undo window. Older ones are archived.
+    package var canRevert = true
 
     /// A field of a record, before and after, in words.
     package typealias Change = JournalWords.FieldWords
@@ -94,6 +96,8 @@ package struct ActivityFeature {
         package var author: ActivityAuthor?
         package var kind: RecordKind?
         package var period = ActivityPeriod.all
+        /// The entries too old to undo, once the person asks for them.
+        package var archived: [ArchivedEntry]?
         @Presents package var confirm: ConfirmationDialogState<Confirm>?
         @Presents package var alert: AlertState<Never>?
 
@@ -101,18 +105,31 @@ package struct ActivityFeature {
             self.workspace = workspace
         }
 
-        /// The entries that match the filters, newest first.
+        /// The entries that match the filters, newest first, then the
+        /// archived ones once they're loaded.
         package func rows(now: Date, calendar: Calendar) -> [ActivityRow] {
             let start = period.start(now: now, calendar: calendar)
-            let reverted = Set(workspace.journal.flatMap(\.reverts))
-            return workspace.journal.reversed()
-                .filter { entry in
-                    if let author, ActivityAuthor(entry.actor) != author { return false }
-                    if let kind, !entry.steps.contains(where: { $0.record.kind == kind }) { return false }
-                    if let start, entry.at < start { return false }
-                    return true
-                }
+            let older = archived ?? []
+            let reverted = Set(workspace.journal.flatMap(\.reverts) + older.flatMap(\.reverts))
+            func matches(_ actor: Actor, _ at: Date, _ kinds: [RecordKind]) -> Bool {
+                if let author, ActivityAuthor(actor) != author { return false }
+                if let kind, !kinds.contains(kind) { return false }
+                if let start, at < start { return false }
+                return true
+            }
+            let words = JournalWords(workspace) { actor in self.author(actor) }
+            let recent = workspace.journal.reversed()
+                .filter { matches($0.actor, $0.at, $0.steps.map(\.record.kind)) }
                 .map { row($0, isReverted: reverted.contains($0.id)) }
+            let archivedRows = older.reversed()
+                .filter { matches($0.actor, $0.at, $0.steps.map(\.record.kind)) }
+                .map { entry in
+                    ActivityRow(
+                        id: entry.id, summary: words.summary(of: entry.steps, reverts: entry.reverts.count),
+                        author: author(entry.actor), at: entry.at, changes: words.fields(of: entry.steps),
+                        isReverted: reverted.contains(entry.id), isRevert: !entry.reverts.isEmpty, canRevert: false)
+                }
+            return recent + archivedRows
         }
 
         private func row(_ entry: JournalEntry, isReverted: Bool) -> ActivityRow {
@@ -141,6 +158,8 @@ package struct ActivityFeature {
         case binding(BindingAction<State>)
         case revertTapped(UUID)
         case revertSinceTapped(UUID)
+        case olderTapped
+        case olderLoaded(Result<[ArchivedEntry], any Error>)
         case confirm(PresentationAction<Confirm>)
         case saved(Result<Saved, any Error>)
         case alert(PresentationAction<Never>)
@@ -171,6 +190,23 @@ package struct ActivityFeature {
                 state.confirm = confirmation(
                     ids, in: state.workspace, title: String(localized: "Revert \(ids.count) changes, back to this one?")
                 )
+                return .none
+
+            case .olderTapped:
+                return .run { [store] send in
+                    await send(.olderLoaded(Result { try await store.archivedJournal() }))
+                }
+
+            case .olderLoaded(.success(let entries)):
+                state.archived = entries
+                return .none
+
+            case .olderLoaded(.failure(let error)):
+                state.alert = AlertState {
+                    TextState("Couldn't show older changes")
+                } message: {
+                    TextState("\(error.localizedDescription) Try again in a moment.")
+                }
                 return .none
 
             case .confirm(.presented(.revert(let ids))):

@@ -20,6 +20,7 @@ extension StoreClient {
     ) -> (client: Self, sync: InMemorySync) {
         let records = Records(workspace)
         let sync = InMemorySync(records: records, actor: actor)
+        let archived = LockIsolated<[ArchivedEntry]>([])
 
         let client = StoreClient(
             load: { records.value },
@@ -31,7 +32,12 @@ extension StoreClient {
                     workspace.importSynced(
                         records: changes.records, journal: changes.journal, history: changes.history)
                 }
-            }
+            },
+            archiveJournal: { cutoff in
+                let packed = records.update { $0.archiveJournal(before: cutoff) }
+                archived.withValue { $0 = $0.merging(packed) }
+            },
+            archivedJournal: { archived.value }
         )
         return (client, sync)
     }

@@ -97,6 +97,9 @@ public struct FieldChange<Record: Journaled>: Hashable, Sendable {
     }
 }
 
+/// Saved in an archive, when the record's values can be.
+extension FieldChange: Codable where Record.Value: Codable {}
+
 extension Sequence {
     /// The entries undone: reverted by an entry that isn't undone itself.
     public func undone<Record, Author>() -> Set<UUID> where Element == JournalEntry<Record, Author> {

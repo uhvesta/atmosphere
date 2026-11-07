@@ -23,6 +23,12 @@ package struct StoreClient: Sendable {
     /// entry of its own, reconciles the records, and sends the result to
     /// `updates`.
     package var importSynced: @Sendable (_ changes: SyncedChanges) async throws -> Update
+    /// Packs the journal entries made before `cutoff` into monthly archives
+    /// of the fields they changed, which take far less room. They can't be
+    /// reverted after, and `load` leaves them out.
+    package var archiveJournal: @Sendable (_ cutoff: Date) async throws -> Void = { _ in }
+    /// Every archived journal entry, oldest first.
+    package var archivedJournal: @Sendable () async throws -> [ArchivedEntry] = { [] }
 }
 
 /// Records, journal entries and history events another device sent.

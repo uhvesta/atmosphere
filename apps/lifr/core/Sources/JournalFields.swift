@@ -51,7 +51,7 @@ package enum Field: String, Hashable, Codable, Sendable, CaseIterable {
 }
 
 /// A field's value, typed, so it can be shown and compared without parsing.
-package enum FieldValue: Hashable, Sendable {
+package enum FieldValue: Hashable, Codable, Sendable {
     case text(String)
     case number(Int)
     case day(CalendarDate)

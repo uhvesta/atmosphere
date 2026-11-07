@@ -24,7 +24,7 @@ import SwiftData
 let models: [any PersistentModel.Type] = [
     StoredAvenue.self, StoredProject.self, StoredTask.self, StoredLabel.self, StoredComment.self,
     StoredReminder.self, StoredHistoryEvent.self, StoredSettings.self, StoredJournalEntry.self,
-    StoredConversation.self, StoredSkill.self,
+    StoredConversation.self, StoredSkill.self, StoredJournalArchive.self,
 ]
 
 @Model
@@ -177,6 +177,19 @@ final class StoredJournalEntry {
     var reverts: Data?
     /// `[JournalStep]` as JSON.
     @Attribute(.allowsCloudEncryption) var steps: Data?
+
+    init(id: UUID) { self.id = id }
+}
+
+/// A month of journal entries too old to undo, as the fields they changed.
+/// Never deleted: entries archived later in the same month are merged in.
+@Model
+final class StoredJournalArchive {
+    var id = UUID()
+    /// `JournalMonth`, such as "2026-07".
+    var month = ""
+    /// `[ArchivedEntry]`, oldest first, compressed together.
+    @Attribute(.allowsCloudEncryption) var entries: Data?
 
     init(id: UUID) { self.id = id }
 }

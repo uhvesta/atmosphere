@@ -120,6 +120,77 @@ final class LiveStoreTests: XCTestCase {
         XCTAssertEqual(journal.last?.reverts, [entry])
     }
 
+    /// Renames a task at `now` plus `days`, as `device`.
+    private func rename(
+        _ id: LifrTask.ID, to title: String, after days: Double, device: String = "Test", in store: LiveStore
+    ) async throws -> UUID {
+        let saved = try await store.save(
+            in: context(device: device, after: days * 86_400),
+            { (workspace, context) throws(LifrError) in try workspace.edit(id, .init(title: title), in: context) })
+        return try XCTUnwrap(saved.change.entry)
+    }
+
+    func testChangesOlderThanTheCutoffAreArchivedAsTheFieldsTheyChanged() async throws {
+        let container = try LiveStore.inMemory()
+        let store = LiveStore(modelContainer: container)
+        try await store.insert(.sample(now: now, timeZone: .gmt))
+        let plants = try task("Water the plants", in: try await store.load())
+        let old = try await rename(plants.id, to: "Water the ferns", after: 0, in: store)
+        let recent = try await rename(plants.id, to: "Water the palms", after: 100, in: store)
+
+        try await store.archiveJournal(before: now.addingTimeInterval(50 * 86_400))
+
+        let reopened = LiveStore(modelContainer: container)
+        let workspace = try await reopened.load()
+        XCTAssertEqual(workspace.journal.map(\.id), [recent])
+        XCTAssertEqual(workspace.tasks[plants.id]?.title, "Water the palms")
+        let archived = try await reopened.archivedJournal()
+        XCTAssertEqual(archived.map(\.id), [old])
+        XCTAssertEqual(
+            archived.first?.steps.first?.fields,
+            [FieldChange(field: .title, before: .text("Water the plants"), after: .text("Water the ferns"))])
+    }
+
+    func testArchivingTheSameMonthAgainAddsToItsArchive() async throws {
+        let container = try LiveStore.inMemory()
+        let store = LiveStore(modelContainer: container)
+        try await store.insert(.sample(now: now, timeZone: .gmt))
+        let plants = try task("Water the plants", in: try await store.load())
+        let first = try await rename(plants.id, to: "Water the ferns", after: 0, in: store)
+        try await store.archiveJournal(before: now.addingTimeInterval(3600))
+        let second = try await rename(plants.id, to: "Water the palms", after: 0.5, in: store)
+
+        try await store.archiveJournal(before: now.addingTimeInterval(86_400))
+        try await store.archiveJournal(before: now.addingTimeInterval(86_400))
+
+        let archives = try ModelContext(container).fetch(FetchDescriptor<StoredJournalArchive>())
+        XCTAssertEqual(archives.map(\.month), ["2026-11"])
+        let archived = try await store.archivedJournal()
+        let journal = try await store.load().journal
+        XCTAssertEqual(archived.map(\.id), [first, second])
+        XCTAssertEqual(journal, [])
+    }
+
+    func testAnArchivedChangeCantBeReverted() async throws {
+        let container = try LiveStore.inMemory()
+        let store = LiveStore(modelContainer: container)
+        try await store.insert(.sample(now: now, timeZone: .gmt))
+        let plants = try task("Water the plants", in: try await store.load())
+        let old = try await rename(plants.id, to: "Water the ferns", after: 0, in: store)
+        try await store.archiveJournal(before: now.addingTimeInterval(86_400))
+
+        let revert: StoreOperation = { (workspace, context) throws(LifrError) in
+            try workspace.revert([old], in: context)
+        }
+        do {
+            _ = try await store.save(in: context(after: 2 * 86_400), revert)
+            XCTFail("Reverting an archived change saved")
+        } catch {
+            let workspace = try await store.load()
+            XCTAssertEqual(workspace.tasks[plants.id]?.title, "Water the ferns")
+        }
+    }
+
     func testAJournalWrittenAsPlainJSONStillLoads() async throws {
         let container = try LiveStore.inMemory()
         try await LiveStore(modelContainer: container).insert(.sample(now: now, timeZone: .gmt))

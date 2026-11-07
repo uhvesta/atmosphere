@@ -77,6 +77,51 @@ package actor LiveStore: ModelActor {
         return fixes
     }
 
+    /// Moves the journal entries made before `cutoff` into each month's
+    /// archive, as the fields they changed, in one save. Entries this
+    /// version can't read stay as they are, and so do archives it can't
+    /// read: a new archive for that month is added beside one.
+    package func archiveJournal(before cutoff: Date) throws(LiveStoreError) {
+        do {
+            let old = try modelContext.fetch(
+                FetchDescriptor<StoredJournalEntry>(predicate: #Predicate { $0.at < cutoff }))
+            let readable = old.compactMap { model in (journal[model.id] ?? model.record).map { (model, $0) } }
+            guard !readable.isEmpty else { return }
+            let archives = try modelContext.fetch(FetchDescriptor<StoredJournalArchive>())
+            let months = Dictionary(grouping: readable.map { $0.1.archived }) { JournalMonth(containing: $0.at) }
+            for (month, entries) in months {
+                let stored = archives.filter { $0.month == month.description }
+                    .compactMap { model in model.archived.map { (model, $0) } }
+                let merged = stored.flatMap(\.1).merging(entries)
+                let archive = stored.first?.0 ?? StoredJournalArchive(id: UUID())
+                if stored.isEmpty {
+                    archive.month = month.description
+                    modelContext.insert(archive)
+                }
+                try archive.write(merged)
+                for (model, _) in stored.dropFirst() { modelContext.delete(model) }
+            }
+            for (model, entry) in readable {
+                modelContext.delete(model)
+                journal[entry.id] = nil
+            }
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw .archiveFailed(error)
+        }
+    }
+
+    /// Every archived journal entry this version can read, oldest first.
+    package func archivedJournal() throws(LiveStoreError) -> [ArchivedEntry] {
+        do {
+            return try modelContext.fetch(FetchDescriptor<StoredJournalArchive>())
+                .compactMap(\.archived).reduce([]) { $0.merging($1) }
+        } catch {
+            throw .loadFailed(error)
+        }
+    }
+
     /// Adds every record in `workspace` that isn't stored yet, and changes
     /// none that are, such as fixtures in tests.
     package func insert(_ workspace: Workspace) throws(LiveStoreError) {
@@ -261,6 +306,7 @@ package enum LiveStoreError: Error, LocalizedError, CustomStringConvertible {
     case openFailed(any Error)
     case loadFailed(any Error)
     case saveFailed(any Error)
+    case archiveFailed(any Error)
 
     package var description: String {
         switch self {
@@ -274,6 +320,10 @@ package enum LiveStoreError: Error, LocalizedError, CustomStringConvertible {
         case .saveFailed(let error):
             "Lifr couldn't save the change, so nothing changed: \(error). Check that this device has free "
                 + "storage, then try again."
+        case .archiveFailed(let error):
+            "Lifr couldn't pack changes older than 90 days to save room: \(error). Nothing was removed, and "
+                + "they can still be undone; Lifr tries again the next time it opens. If this keeps happening, "
+                + "check that this device has free storage."
         }
     }
 

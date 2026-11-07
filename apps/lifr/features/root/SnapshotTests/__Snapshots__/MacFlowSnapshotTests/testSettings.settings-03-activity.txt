@@ -13,6 +13,8 @@
     [Row/OutlineRow] ""
     [Row/OutlineRow] ""
       [StaticText] "" value: "No changes match."
+    [Row/OutlineRow] ""
+      [Button] "Show changes older than 90 days" help: "Older changes can be looked at but not reverted"
   [Toolbar] ""
     [Button] "Back" id: chevron.backward
   [Button/CloseButton] ""

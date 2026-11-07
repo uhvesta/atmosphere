@@ -203,6 +203,18 @@ extension StoredHistoryEvent {
     }
 }
 
+extension StoredJournalArchive {
+    /// `nil` for an archive this version can't read, such as one a newer
+    /// version wrote.
+    var archived: [ArchivedEntry]? {
+        entries.flatMap { try? Blob.decode([ArchivedEntry].self, from: $0) }
+    }
+
+    func write(_ archived: [ArchivedEntry]) throws {
+        entries = try Blob.encode(archived)
+    }
+}
+
 extension StoredJournalEntry {
     /// `nil` for an entry this version can't read, such as one a newer
     /// version wrote with a kind of record it doesn't know.

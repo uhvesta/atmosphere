@@ -99,7 +99,9 @@ extension StoreClient {
                 let update = Update(workspace: try await store.load(), fixes: fixes)
                 store.imported.yield(update)
                 return update
-            }
+            },
+            archiveJournal: { cutoff in try await store.archiveJournal(before: cutoff) },
+            archivedJournal: { try await store.archivedJournal() }
         )
     }
 }

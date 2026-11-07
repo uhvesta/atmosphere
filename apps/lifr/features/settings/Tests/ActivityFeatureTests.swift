@@ -47,6 +47,31 @@ final class ActivityFeatureTests: XCTestCase {
             [["Run 5 km", "Title", "Run", "Run 5 km"], ["Run 5 km", "Priority", "None", "High"]])
     }
 
+    func testChangesOlderThanTheUndoWindowShowOnceAskedForAndCantBeReverted() async throws {
+        let (activity, _) = try await activity()
+        let client = StoreClient.inMemory(activity.state.workspace)
+        try await client.archiveJournal(now.addingTimeInterval(1))
+        let workspace = try await client.load()
+        let store = TestStore(initialState: ActivityFeature.State(workspace: workspace)) {
+            ActivityFeature()
+        } withDependencies: {
+            $0.store = client
+        }
+        store.exhaustivity = .off
+        XCTAssertEqual(store.state.rows(now: now, calendar: .current), [])
+
+        await store.send(.olderTapped)
+        await store.receive(\.olderLoaded)
+
+        let rows = store.state.rows(now: now, calendar: .current)
+        XCTAssertEqual(rows.map(\.summary), ["Changed task “Run 10 km”", "Changed task “Run 5 km”"])
+        XCTAssertEqual(rows.map(\.author), ["Claude Code · MCP", "Mac"])
+        XCTAssertEqual(
+            rows[1].changes.map { [$0.record, $0.field, $0.before, $0.after] },
+            [["Run 5 km", "Title", "Run", "Run 5 km"], ["Run 5 km", "Priority", "None", "High"]])
+        XCTAssertEqual(rows.map(\.canRevert), [false, false])
+    }
+
     func testFiltersByAuthorRecordAndDate() async throws {
         let (store, _) = try await activity()
 
