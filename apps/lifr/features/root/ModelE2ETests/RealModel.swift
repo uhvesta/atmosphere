@@ -142,6 +142,21 @@ final class RealModel {
             .sorted { $0.code < $1.code }
     }
 
+    /// Applies what the last reply asks to change, as tapping Apply on its
+    /// card does, and waits for it to be saved.
+    func applyProposal(file: StaticString = #filePath, line: UInt = #line) async throws {
+        let id = try XCTUnwrap(conversation, "Open a chat first", file: file, line: line)
+        let reply = try XCTUnwrap(chatState?.conversation.messages.last, "No reply", file: file, line: line)
+        _ = try XCTUnwrap(
+            chatState?.proposal(of: reply.id), "The model asked to change nothing: \(reply.text)", file: file,
+            line: line)
+        store.send(.conversations(.chats(.element(id: id, action: .applyTapped(messageID: reply.id)))))
+        try await until("the changes are applied", timeout: .seconds(10)) {
+            self.chatState.map { $0.applying == nil && $0.proposal(of: reply.id)?.decision != nil } ?? false
+        }
+        XCTAssertNil(chatState?.alert, "The changes couldn't be applied", file: file, line: line)
+    }
+
     private func currentDraft(in id: UUID) -> Plan? { store.conversations.chats[id: id]?.conversation.draft }
 
     /// The IDs of the tasks not deleted.
@@ -162,8 +177,8 @@ final class RealModel {
         try workspace.avenues[task.avenueID]?.key.rawValue
     }
 
-    /// Waits up to a few seconds for `done`, without failing: a change
-    /// the model made shows in the app's records once they reload.
+    /// Waits up to a few seconds for `done`, without failing: an applied
+    /// change shows in the app's records once they reload.
     func settled(_ done: () throws -> Bool) async {
         let deadline = ContinuousClock().now + .seconds(5)
         while ContinuousClock().now < deadline, (try? done()) != true {

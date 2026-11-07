@@ -298,7 +298,9 @@ final class LiteRTTurnTests: XCTestCase {
 }
 
 final class ModelHostTests: XCTestCase {
-    private func model(_ id: ModelID, memory: Int64 = 1_000_000_000, cpu: Int64 = 0) -> InstalledModel {
+    private func model(
+        _ id: ModelID, memory: Int64 = 1_000_000_000, cpu: Int64 = 0, profile: ModelProfile = .standard
+    ) -> InstalledModel {
         InstalledModel(
             spec: ModelSpec(
                 id: id, name: id.rawValue, summary: "", runtime: .liteRT,
@@ -306,7 +308,7 @@ final class ModelHostTests: XCTestCase {
                     repo: "org/model", commit: String(repeating: "a", count: 40),
                     files: [ModelFile(path: "m.litertlm", size: 10, digest: .sha256(String(repeating: "b", count: 64)))]
                 ), contextTokens: 8_192, memoryBytes: memory, cpuMemoryBytes: cpu,
-                license: ""),
+                license: "", profile: profile),
             directory: URL(filePath: "/nonexistent"), installedAt: Date(timeIntervalSince1970: 0))
     }
 
@@ -521,6 +523,16 @@ final class ModelHostTests: XCTestCase {
         _ = try await host.run(larger, plain)
 
         XCTAssertEqual(loads.value, ["a", "a"])
+    }
+
+    func testAModelLoadsWhereItsProfileSaysItRunsBest() async throws {
+        let backends = Locked<[ModelBackend]>([])
+        let host = host(backends: backends)
+
+        _ = try await host.run(model("a", profile: ModelProfile(onScreen: .cpu)), plain)
+        _ = try await host.run(model("b"), plain)
+
+        XCTAssertEqual(backends.value, [.cpu, .gpu])
     }
 
     func testALargerWindowNeedsMoreMemoryAndASmallerOneLess() {
@@ -753,6 +765,28 @@ final class LiteRTRuntimeTests: XCTestCase {
 
         XCTAssertEqual(decoded.inputs, [])
         XCTAssertEqual(ModelCatalog.entry(for: decoded)?.inputs, [.image, .audio])
+    }
+
+    func testAModelDownloadedBeforeProfilesRunsAsTheCatalogSays() throws {
+        let manifest = try JSONEncoder().encode(ModelCatalog.gemma4E2B)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: manifest) as? [String: Any])
+        json["profile"] = nil
+        let decoded = try JSONDecoder().decode(
+            ModelSpec.self, from: JSONSerialization.data(withJSONObject: json))
+
+        XCTAssertEqual(decoded.profile, .standard)
+        XCTAssertEqual(ModelCatalog.entry(for: decoded)?.profile, ModelCatalog.gemma4E2B.profile)
+    }
+
+    func testAProfileIsKeptInTheManifest() throws {
+        let profile = ModelProfile(
+            onScreen: .cpu, gpuActivations: .full, speculation: .adaptive, cpuThreads: 4, sampling: .greedy)
+        var spec = ModelCatalog.gemma4E2B
+        spec.profile = profile
+
+        let decoded = try JSONDecoder().decode(ModelSpec.self, from: JSONEncoder().encode(spec))
+
+        XCTAssertEqual(decoded.profile, profile)
     }
 
     func testAModelDownloadedBeforeItsCPUFigureTakesTheCatalogs() throws {

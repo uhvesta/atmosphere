@@ -130,7 +130,7 @@ public actor ModelHost {
     /// loaded already.
     public func engine(for model: InstalledModel) async throws(ModelRuntimeError) -> any LiteRTEngine {
         idleTimer?.cancel()
-        let backend: ModelBackend = inBackground ? .cpu : .gpu
+        let backend: ModelBackend = inBackground ? .cpu : model.spec.profile.onScreen
         // A model loaded at another window is loaded again, once its turns
         // are done.
         if let loaded, loaded.is(model), loaded.backend == backend || !turns.isEmpty { return loaded.engine }

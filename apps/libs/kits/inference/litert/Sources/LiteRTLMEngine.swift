@@ -8,24 +8,34 @@ import LiteRTLM
 /// or on the CPU while the app answers in the background.
 public struct LiteRTLMEngine: LiteRTEngine {
     let engine: Engine
-    /// Whether each turn takes the likeliest next token, rather than the
-    /// model's own sampling.
-    let greedy: Bool
+    /// How each turn picks its tokens; nil for the model's own way.
+    let sampling: ModelProfile.Sampling?
     /// What it runs on.
     var backend: ModelBackend = .gpu
 
-    /// Loads `model`'s `.litertlm` file to run on `backend`. LiteRT-LM keeps
-    /// the GPU's compiled programs in Caches, so the next load is quicker.
+    /// Loads `model`'s `.litertlm` file to run on `backend`, as its
+    /// profile says it runs best. LiteRT-LM keeps the GPU's compiled
+    /// programs in Caches, so the next load is quicker.
     @Sendable public static func load(_ model: InstalledModel, on backend: ModelBackend)
         async throws(ModelRuntimeError) -> any LiteRTEngine
     {
-        try await load(model, on: backend, greedy: false)
+        try await load(model, on: backend, profile: model.spec.profile)
     }
 
     /// Loads `model`, taking the likeliest token at each step with
     /// `greedy`, so a turn reads the same each time on one Mac. The GPU's
     /// arithmetic still differs between machines.
     public static func load(_ model: InstalledModel, on backend: ModelBackend = .gpu, greedy: Bool)
+        async throws(ModelRuntimeError) -> any LiteRTEngine
+    {
+        var profile = model.spec.profile
+        if greedy { profile.sampling = .greedy }
+        return try await load(model, on: backend, profile: profile)
+    }
+
+    /// Loads `model` to run on `backend` as `profile` says, such as to
+    /// measure one profile against another.
+    public static func load(_ model: InstalledModel, on backend: ModelBackend, profile: ModelProfile)
         async throws(ModelRuntimeError) -> any LiteRTEngine
     {
         guard let file = model.spec.source?.files.first(where: { $0.path.hasSuffix(".litertlm") }) else {
@@ -35,27 +45,25 @@ public struct LiteRTLMEngine: LiteRTEngine {
         guard FileManager.default.fileExists(atPath: path) else { throw .unavailable(.notDownloaded) }
         do {
             let cache = try cacheDirectory(model.id)
-            // Gemma's vision encoder runs where the model does and its
-            // audio encoder on the CPU, as Google runs them; each loads
-            // only for a model that reads photos or recordings.
+            let cpu: Backend = .cpu(threadCount: profile.cpuThreads)
             let main: Backend =
                 switch backend {
                 case .gpu: .gpu
-                case .cpu: .cpu()
+                case .cpu: cpu
                 }
+            func place(_ encoder: ModelProfile.Encoder) -> Backend { encoder == .cpu ? cpu : main }
+            // Each encoder loads only for a model that reads photos or
+            // listens to recordings.
             let config = try EngineConfig(
                 modelPath: path, backend: main,
-                visionBackend: model.spec.inputs.contains(.image) ? main : nil,
-                audioBackend: model.spec.inputs.contains(.audio) ? .cpu() : nil,
+                visionBackend: model.spec.inputs.contains(.image) ? place(profile.vision) : nil,
+                audioBackend: model.spec.inputs.contains(.audio) ? place(profile.audio) : nil,
                 maxNumTokens: model.window, cacheDir: cache.path,
-                // On the GPU, Gemma 4's half-precision activations garble
-                // digits once a prompt is past about 2,000 tokens, writing
-                // a date such as 2026-11-06 as 20026-111-06 (LiteRT-LM
-                // issue 2814). Full precision writes them as the CPU does.
-                activationDataType: backend == .gpu ? .float32 : nil)
+                activationDataType: backend == .gpu && profile.gpuActivations == .full ? .float32 : nil,
+                speculativeDecodingConfig: SpeculativeDecodingConfig(mode: mode(profile.speculation)))
             let engine = Engine(engineConfig: config)
             try await engine.initialize()
-            return LiteRTLMEngine(engine: engine, greedy: greedy, backend: backend)
+            return LiteRTLMEngine(engine: engine, sampling: profile.sampling, backend: backend)
         } catch {
             throw runtimeError(error)
         }
@@ -63,7 +71,9 @@ public struct LiteRTLMEngine: LiteRTEngine {
 
     public func chat(instructions: String, constrained: Bool) async throws(ModelRuntimeError) -> any LiteRTChat {
         do {
-            let sampler = greedy ? try SamplerConfig(topK: 1, topP: 1, temperature: 0) : nil
+            let sampler = try sampling.map {
+                try SamplerConfig(topK: $0.topK, topP: $0.topP, temperature: $0.temperature)
+            }
             let conversation = try await engine.createConversation(
                 with: ConversationConfig(
                     systemMessage: Message(instructions, role: .system), samplerConfig: sampler,
@@ -71,6 +81,14 @@ public struct LiteRTLMEngine: LiteRTEngine {
             return LiteRTLMChat(conversation: conversation, backend: backend)
         } catch {
             throw runtimeError(error)
+        }
+    }
+
+    private static func mode(_ speculation: ModelProfile.Speculation) -> SpeculativeDecodingMode {
+        switch speculation {
+        case .off: .off
+        case .adaptive: .adaptive
+        case .on: .on
         }
     }
 

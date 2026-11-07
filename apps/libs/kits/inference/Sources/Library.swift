@@ -108,11 +108,13 @@ public struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
     /// The memory each token of window takes past `contextTokens`, for an
     /// estimate of a larger one. Zero when unknown.
     public var memoryBytesPerToken: Int64
+    /// How it runs best.
+    public var profile: ModelProfile
 
     public init(
         id: ModelID, name: String, summary: String, runtime: RuntimeKind, source: ModelSource?, contextTokens: Int,
         memoryBytes: Int64, cpuMemoryBytes: Int64 = 0, license: String, inputs: Set<ModelInput> = [],
-        contextChoices: [Int] = [], memoryBytesPerToken: Int64 = 0
+        contextChoices: [Int] = [], memoryBytesPerToken: Int64 = 0, profile: ModelProfile = .standard
     ) {
         self.id = id
         self.name = name
@@ -126,16 +128,17 @@ public struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
         self.inputs = inputs
         self.contextChoices = contextChoices
         self.memoryBytesPerToken = memoryBytesPerToken
+        self.profile = profile
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, summary, runtime, source, contextTokens, memoryBytes, cpuMemoryBytes, license, inputs,
-            contextChoices,
-            memoryBytesPerToken
+            contextChoices, memoryBytesPerToken, profile
     }
 
-    /// Reads manifests written before models had inputs as text only, and
-    /// before they had a CPU figure or a choice of window as unknown.
+    /// Reads manifests written before models had inputs as text only;
+    /// before they had a CPU figure or a choice of window as unknown; and
+    /// before they had a profile with the standard one.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(ModelID.self, forKey: .id)
@@ -150,20 +153,21 @@ public struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
         inputs = try container.decodeIfPresent(Set<ModelInput>.self, forKey: .inputs) ?? []
         contextChoices = try container.decodeIfPresent([Int].self, forKey: .contextChoices) ?? []
         memoryBytesPerToken = try container.decodeIfPresent(Int64.self, forKey: .memoryBytesPerToken) ?? 0
+        profile = try container.decodeIfPresent(ModelProfile.self, forKey: .profile) ?? .standard
     }
 
     /// The bytes to download; zero for Apple's model.
     public var downloadSize: Int64 { source?.totalSize ?? 0 }
 
-    /// The memory it takes on the GPU with a window of `window` tokens:
-    /// the measured figure, moved by what each token past `contextTokens`
-    /// takes, and never under half the measured figure. Zero when unknown.
     /// `window` as a choice to keep for `spec`: nil when it's the model's
     /// own window or one it doesn't offer.
     public static func choice(_ window: Int, of spec: ModelSpec) -> Int? {
         window != spec.contextTokens && spec.contextChoices.contains(window) ? window : nil
     }
 
+    /// The memory it takes on the GPU with a window of `window` tokens:
+    /// the measured figure, moved by what each token past `contextTokens`
+    /// takes, and never under half the measured figure. Zero when unknown.
     public func memoryBytes(at window: Int) -> Int64 {
         guard memoryBytes > 0 else { return 0 }
         let more = Int64(window - contextTokens) * memoryBytesPerToken

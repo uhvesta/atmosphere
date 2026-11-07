@@ -2,8 +2,9 @@ import LifrCore
 import XCTest
 
 /// The requests people make most, on the real model, each checked by what
-/// got saved rather than by the model's words. The draft is added as the
-/// model left it: a draft the person would have to fix is a failure.
+/// got saved rather than by the model's words. The draft is added, and
+/// changes to existing tasks applied, as the model left them: anything the
+/// person would have to fix is a failure.
 ///
 /// The sample records are as of Tuesday 2026-11-03, so Friday is
 /// 2026-11-06 and next Monday 2026-11-09.
@@ -125,6 +126,7 @@ final class RequestsOnRealModelTests: XCTestCase {
         try await model.chat()
         let plumber = try model.task(titled: "Call the plumber")
         try await model.send("Rename “Call the plumber” to “Call the electrician”")
+        try await model.applyProposal()
         await model.settled { try model.workspace.tasks[plumber.id]?.title == "Call the electrician" }
         XCTAssertEqual(try model.workspace.tasks[plumber.id]?.title, "Call the electrician")
         XCTAssertNil(model.draft, "A draft for a rename")
@@ -135,6 +137,7 @@ final class RequestsOnRealModelTests: XCTestCase {
         try await model.chat()
         let passport = try model.task(titled: "Renew passport")
         try await model.send("Move “Renew passport” to WORK")
+        try await model.applyProposal()
         await model.settled { try model.workspace.tasks[passport.id]?.avenueID != passport.avenueID }
         let moved = try XCTUnwrap(try model.workspace.tasks[passport.id])
         XCTAssertEqual(try model.avenue(of: moved), "WORK")
@@ -146,6 +149,7 @@ final class RequestsOnRealModelTests: XCTestCase {
         try await model.chat()
         let plants = try model.task(titled: "Water the plants")
         try await model.send("I watered the plants, mark it done")
+        try await model.applyProposal()
         await model.settled { try model.workspace.tasks[plants.id]?.status == .done }
         XCTAssertEqual(try model.workspace.tasks[plants.id]?.status, .done)
     }
@@ -155,6 +159,7 @@ final class RequestsOnRealModelTests: XCTestCase {
         try await model.chat()
         let physio = try model.task(titled: "Book physio appointment")
         try await model.send("Push “Book physio appointment” to next Monday")
+        try await model.applyProposal()
         await model.settled { try model.workspace.tasks[physio.id]?.dueDate != physio.dueDate }
         XCTAssertEqual(try model.workspace.tasks[physio.id]?.dueDate?.description, "2026-11-09")
     }
