@@ -27,6 +27,12 @@ _ICLOUD = """\t<key>com.apple.developer.icloud-container-identifiers</key>
 \t</array>
 """
 
+# TestFlight and App Store builds must use CloudKit's Production
+# environment; Xcode adds this when it exports one.
+_PRODUCTION = """\t<key>com.apple.developer.icloud-container-environment</key>
+\t<string>Production</string>
+"""
+
 # macOS only runs sandboxed extensions, such as the widgets.
 _SANDBOX = """\t<key>com.apple.security.app-sandbox</key>
 \t<true/>
@@ -50,6 +56,8 @@ def _lifr_entitlements_impl(ctx):
         keys += _APP_GROUP.format(IOS_APP_GROUP)
     if ICLOUD_CONTAINER and ctx.attr.icloud:
         keys += _ICLOUD.format(ICLOUD_CONTAINER)
+        if ctx.attr.production:
+            keys += _PRODUCTION
     if ctx.attr.microphone:
         keys += _MICROPHONE
     if ctx.attr.sandbox:
@@ -74,6 +82,10 @@ lifr_entitlements = rule(
         ),
         "microphone": attr.bool(
             doc = "Whether to let the Mac app, under the hardened runtime, record from the microphone.",
+        ),
+        "production": attr.bool(
+            doc = "Whether iCloud uses CloudKit's Production environment, as TestFlight and App Store " +
+                  "builds must. Off, it uses Development.",
         ),
         "sandbox": attr.bool(
             doc = "Whether to sandbox it, which macOS requires of the widgets' extension.",

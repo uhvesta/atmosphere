@@ -1,5 +1,5 @@
 load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
-load("@lifr_identity//:defs.bzl", "BUNDLE_ID", "IOS_APP_GROUP", "TEAM_ID")
+load("@lifr_identity//:defs.bzl", "BUNDLE_ID", "ICLOUD_CONTAINER", "IOS_APP_GROUP", "TEAM_ID")
 load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
 load("@rules_apple//apple:ios.bzl", "ios_application")
 load("@rules_apple//apple:macos.bzl", "macos_application")
@@ -58,12 +58,15 @@ ios_application(
         "//apps/lifr:is_signed": [":ios_signing_check"],
         "//conditions:default": [],
     }),
-    # The App Group the widgets read Today from, only when user.bazelrc
-    # sets one: it needs an explicit App ID's profile.
+    # The App Group the widgets read Today from, when user.bazelrc sets
+    # one: it needs an explicit App ID's profile. TestFlight builds also
+    # get iCloud when it sets a container; the team's wildcard development
+    # profile can't grant it.
     entitlements = select({
+        "//apps/lifr:is_app_store": ":ios_app_store_entitlements",
         "//apps/lifr:is_signed": ":ios_app_group",
         "//conditions:default": None,
-    }) if IOS_APP_GROUP else None,
+    }) if IOS_APP_GROUP or ICLOUD_CONTAINER else None,
     # Today on the Home Screen.
     extensions = ["//apps/lifr/widgets:ios"],
     families = ["iphone"],
@@ -154,6 +157,12 @@ lifr_entitlements(
     name = "ios_app_group",
     icloud = False,
     ios_app_group = True,
+)
+
+lifr_entitlements(
+    name = "ios_app_store_entitlements",
+    ios_app_group = True,
+    production = True,
 )
 
 # The team's development profile for the iPhone app. iCloud needs an

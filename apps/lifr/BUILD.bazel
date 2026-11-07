@@ -31,12 +31,16 @@ bool_flag(
     build_setting_default = False,
 )
 
-# A device build for the App Store: more specific than the device
-# constraint alone, so it wins the profile select().
+# A signed device build for the App Store: more specific than the device
+# constraint or signing alone, so it wins the profile and entitlements
+# select()s.
 config_setting(
     name = "is_app_store",
     constraint_values = ["@apple_support//constraints:device"],
-    flag_values = {":app_store": "true"},
+    flag_values = {
+        ":app_store": "true",
+        ":signed": "true",
+    },
     visibility = [
         "//apps/lifr/app:__pkg__",
         "//apps/lifr/widgets:__pkg__",
