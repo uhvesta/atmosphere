@@ -34,6 +34,7 @@
   [Button] "Use a Skill" id: sparkles
   [TextField] ""
   [Button, disabled] "Send" id: arrow.up.circle.fill
+  [Unknown] "Skill: Add"
   [StaticText] "" value: "Add a task to buy milk tomorrow, in HOME"
   [Button] "Thoughts · ‹time› on the GPU" help: "Shows the thinking"
   ‹model text›
