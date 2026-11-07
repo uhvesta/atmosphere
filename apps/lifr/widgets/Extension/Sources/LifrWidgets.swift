@@ -30,29 +30,37 @@ struct TodayEntry: TimelineEntry {
     var glance: TodayGlance?
 }
 
-/// Reads what the app last wrote. The app redraws the widgets after each
-/// change, so the timeline only asks again in case it missed one.
+/// Reads what the app last wrote: Today, and what it will be after
+/// midnight, so the widget turns over without the app. The app redraws the
+/// widgets after each change, so the timeline only asks again once the
+/// days it has run out.
 struct TodayProvider: TimelineProvider {
     func placeholder(in context: Context) -> TodayEntry {
-        TodayEntry(date: Date(), glance: TodayGlance(asOf: Date(), rows: [], locked: true))
+        TodayEntry(
+            date: Date(),
+            glance: TodayGlance(asOf: Date(), from: .distantPast, until: .distantFuture, rows: [], locked: true))
     }
 
     func getSnapshot(in context: Context, completion: @escaping (TodayEntry) -> Void) {
-        completion(entry())
+        let now = Date()
+        completion(TodayEntry(date: now, glance: glance()?.at(now)))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<TodayEntry>) -> Void) {
-        let entry = entry()
-        let next = Calendar.current.startOfDay(for: entry.date).addingTimeInterval(24 * 60 * 60)
-        completion(Timeline(entries: [entry], policy: .after(next)))
+        let now = Date()
+        let days = glance()?.days.filter { $0.until > now } ?? []
+        let entries = days.map { TodayEntry(date: max($0.from, now), glance: $0) }
+        // Past the last day only the app knows Today: say to open it.
+        let end = days.last?.until ?? Calendar.current.startOfDay(for: now).addingTimeInterval(24 * 60 * 60)
+        completion(Timeline(entries: entries + [TodayEntry(date: max(end, now), glance: nil)], policy: .after(end)))
     }
 
-    private func entry() -> TodayEntry {
+    private func glance() -> TodayGlance? {
         do throws(GlanceError) {
-            return TodayEntry(date: Date(), glance: try GlanceFile.shared?.read())
+            return try GlanceFile.shared?.read()
         } catch {
             Logger(subsystem: "lifr", category: "widgets").error("\(error.description, privacy: .public)")
-            return TodayEntry(date: Date(), glance: nil)
+            return nil
         }
     }
 }

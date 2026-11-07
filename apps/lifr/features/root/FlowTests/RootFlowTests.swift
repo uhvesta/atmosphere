@@ -306,6 +306,12 @@ final class RootFlowTests: XCTestCase {
         XCTAssertEqual(written.value?.overdue, 1)
         XCTAssertEqual(Set(written.value?.rows.map(\.title) ?? []), ["Long run", "Stretch"])
         XCTAssertEqual(written.value?.rows.first { $0.id == stretch.id }?.isOverdue, true)
+        // From midnight, today's open task is overdue too.
+        let midnight = try XCTUnwrap(written.value?.until)
+        let tomorrow = try XCTUnwrap(written.value?.at(midnight))
+        XCTAssertEqual(tomorrow.count, 2)
+        XCTAssertEqual(tomorrow.overdue, 2)
+        XCTAssertNil(written.value?.at(midnight.addingTimeInterval(2 * 86_400)))
 
         let now = now
         let shortcuts = Shortcuts(
@@ -327,6 +333,7 @@ final class RootFlowTests: XCTestCase {
         XCTAssertEqual(written.value?.isLocked, true)
         XCTAssertEqual(written.value?.count, 1)
         XCTAssertEqual(written.value?.rows, [])
+        XCTAssertEqual(written.value?.later.first?.rows, [], "tomorrow's titles stay hidden too")
 
         await phone.send(.settings(.lockToggled(false)))
         await phone.receive(\.settings.lockConfirmed)

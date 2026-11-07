@@ -49,20 +49,21 @@ final class WidgetSnapshotTests: XCTestCase {
     }
 
     func testToday() {
-        let glance = TodayGlance(asOf: now, rows: rows, locked: false)
+        let glance = TodayGlance(asOf: now, from: now, until: now + 86_400, rows: rows, locked: false)
         assertWidget(glance, .small, named: "small")
         assertWidget(glance, .medium, named: "medium")
         assertWidget(glance, .large, named: "large")
     }
 
     func testLocked() {
-        let glance = TodayGlance(asOf: now, rows: rows, locked: true)
+        let glance = TodayGlance(asOf: now, from: now, until: now + 86_400, rows: rows, locked: true)
         assertWidget(glance, .small, named: "small")
         assertWidget(glance, .medium, named: "medium")
     }
 
     func testNothingDue() {
-        assertWidget(TodayGlance(asOf: now, rows: [], locked: false), .medium, named: "medium")
+        assertWidget(
+            TodayGlance(asOf: now, from: now, until: now + 86_400, rows: [], locked: false), .medium, named: "medium")
     }
 
     func testBeforeLifrWroteToday() {

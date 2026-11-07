@@ -726,15 +726,26 @@ package struct RootFeature {
             ])
     }
 
-    /// Gives the widgets Today as `state` has it: the titles, or only how
-    /// many while the lock is on.
+    /// Gives the widgets Today as `state` has it, and tomorrow's for after
+    /// midnight: the titles, or only how many while the lock is on.
     private func writeGlance(_ state: State) -> Effect<Action> {
         guard let workspace = state.workspace else { return .none }
-        let rows = TaskQuery.today.sections(workspace, now, timeZone).flatMap(\.rows).map { row in
-            let isOverdue = if case .overdue = row.due { true } else { false }
-            return TodayGlance.Row(id: row.id, title: row.title, code: row.code, isOverdue: isOverdue)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let start = calendar.startOfDay(for: now)
+        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: start),
+            let after = calendar.date(byAdding: .day, value: 2, to: start)
+        else { return .none }
+        func rows(at date: Date) -> [TodayGlance.Row] {
+            TaskQuery.today.sections(workspace, date, timeZone).flatMap(\.rows).map { row in
+                let isOverdue = if case .overdue = row.due { true } else { false }
+                return TodayGlance.Row(id: row.id, title: row.title, code: row.code, isOverdue: isOverdue)
+            }
         }
-        let today = TodayGlance(asOf: now, rows: rows, locked: state.locksApp)
+        let next = TodayGlance(
+            asOf: now, from: tomorrow, until: after, rows: rows(at: tomorrow), locked: state.locksApp)
+        let today = TodayGlance(
+            asOf: now, from: start, until: tomorrow, rows: rows(at: now), locked: state.locksApp, later: [next])
         return .run { [glance] _ in await glance.write(today) }
             .cancellable(id: CancelID.glance)
     }

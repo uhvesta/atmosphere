@@ -517,7 +517,8 @@ final class MacFlowSnapshotTests: XCTestCase {
     }
 
     /// The widgets follow Today as it changes in the app and from Shortcuts,
-    /// and show only how many while the lock is on.
+    /// show only how many while the lock is on, and turn over at midnight
+    /// with the app closed.
     func testWidgets() async throws {
         let (store, flow) = app("widgets")
         let home = FlowRecorder("widgets-home", WidgetBoardView(board: widgets), size: CGSize(width: 640, height: 480))
@@ -531,6 +532,11 @@ final class MacFlowSnapshotTests: XCTestCase {
         XCTAssertEqual(widgets.glance?.rows, [])
         store.send(.settings(.lockToggled(false)))
         await home.step("unlocked")
+        let midnight = try XCTUnwrap(widgets.glance?.until)
+        widgets.date = midnight
+        await home.step("after-midnight")
+        let milk = try XCTUnwrap(widgets.glance?.at(midnight)?.rows.first { $0.title == "Buy oat milk" })
+        XCTAssertTrue(milk.isOverdue)
         home.finish()
         flow.finish()
     }
@@ -540,6 +546,9 @@ final class MacFlowSnapshotTests: XCTestCase {
 @MainActor @Observable
 private final class WidgetBoard {
     var glance: TodayGlance?
+    /// When the Home Screen is looked at, as the widget's timeline would
+    /// show it then; nil for when the app wrote it.
+    var date: Date?
 
     nonisolated init() {}
 
@@ -567,7 +576,7 @@ private struct WidgetBoardView: View {
     }
 
     private func widget(_ size: TodayWidgetView.Size, width: CGFloat) -> some View {
-        TodayWidgetView(glance: board.glance, size: size)
+        TodayWidgetView(glance: board.date.map { board.glance?.at($0) } ?? board.glance, size: size)
             .padding(16)
             .frame(width: width, height: 170)
             .background(Color.white, in: RoundedRectangle(cornerRadius: 22))
