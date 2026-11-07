@@ -99,6 +99,9 @@
     "%@ tok/s" : {
 
     },
+    "%@ tokens" : {
+
+    },
     "%@ wants to use your tasks through Lifr." : {
 
     },
@@ -257,6 +260,9 @@
 
     },
     "A larger window keeps more of a conversation and uses more memory." : {
+
+    },
+    "A larger window remembers more of the chat and takes more memory." : {
 
     },
     "A task" : {
@@ -639,6 +645,9 @@
     "Connected apps" : {
 
     },
+    "Context Window" : {
+
+    },
     "Context window" : {
 
     },
@@ -742,6 +751,12 @@
 
     },
     "Declined" : {
+
+    },
+    "Default (%@)" : {
+
+    },
+    "Default (On)" : {
 
     },
     "Delete" : {
@@ -1151,6 +1166,12 @@
     "Lock with passcode" : {
 
     },
+    "Long" : {
+
+    },
+    "Long thinks up to four times as long before it answers, for harder questions." : {
+
+    },
     "Look back at what's done, overdue and stalled." : {
 
     },
@@ -1200,6 +1221,12 @@
 
     },
     "Message" : {
+
+    },
+    "Model" : {
+
+    },
+    "Model, Thinking and Context Window" : {
 
     },
     "Models" : {
@@ -1422,13 +1449,22 @@
     "OK" : {
 
     },
+    "Off" : {
+
+    },
     "Older changes can be looked at but not reverted" : {
 
     },
     "Older messages no longer fit what the model reads. Compact them into a summary it keeps." : {
 
     },
+    "On" : {
+
+    },
     "One field was changed again since, so it stays as it is now." : {
+
+    },
+    "Only for this chat. Download more models in Settings › Models." : {
 
     },
     "Open" : {
@@ -1998,7 +2034,13 @@
     "They're deleted on this device and from iCloud. Tasks the assistant added or changed stay." : {
 
     },
+    "Thinking" : {
+
+    },
     "Thinking…" : {
+
+    },
+    "This Chat's Model" : {
 
     },
     "This Mac" : {
@@ -2116,6 +2158,9 @@
 
     },
     "Use automatically" : {
+
+    },
+    "Use the Defaults" : {
 
     },
     "Use when" : {

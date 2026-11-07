@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrAssistantClient
+import LifrModelsClient
 import LifrSkills
 import XCTest
 
@@ -12,6 +13,7 @@ final class SkillsFeatureTests: XCTestCase {
         } withDependencies: {
             $0.skills = client
             $0.assistant = .scripted()
+            $0.models = InMemoryModelLibrary().client
         }
         store.exhaustivity = .off
         await store.send(.task)
@@ -140,13 +142,43 @@ final class SkillsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.editor?.summary, SkillDraft.example.summary)
     }
 
+    func testADraftRunsOnTheModelPickedForItWithoutChangingTheDefault() async throws {
+        let library = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B])
+        let used = LockIsolated<[ModelID?]>([])
+        let store = TestStore(initialState: SkillsFeature.State()) {
+            SkillsFeature()
+        } withDependencies: {
+            $0.skills = .inMemory()
+            $0.assistant = .scripted()
+            $0.assistant.draftSkill = { _, model in
+                used.withValue { $0.append(model) }
+                return .example
+            }
+            $0.models = library.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.newTapped)
+        await store.send(.editor(.presented(.assistTapped)))
+        await store.receive(\.editor.presented.modelsLoaded)
+        XCTAssertEqual(store.state.editor?.models.map(\.id), [.apple, ModelCatalog.gemma4E2B.id])
+        await store.send(.editor(.presented(.binding(.set(\.model, ModelCatalog.gemma4E2B.id)))))
+        await store.send(.editor(.presented(.binding(.set(\.request, "Review my week")))))
+        await store.send(.editor(.presented(.draftTapped)))
+        await store.receive(\.editor.presented.drafted)
+
+        XCTAssertEqual(used.value, [ModelCatalog.gemma4E2B.id])
+        XCTAssertEqual(library.client.selection(.skills), .apple)
+    }
+
     func testWhenTheAssistantCantDraftItSaysWhyAndKeepsTheFields() async throws {
         let store = TestStore(initialState: SkillsFeature.State()) {
             SkillsFeature()
         } withDependencies: {
             $0.skills = .inMemory()
-            $0.assistant.availability = { .available }
-            $0.assistant.draftSkill = { _ in throw AssistantError.declined }
+            $0.assistant.availability = { _ in .available }
+            $0.assistant.draftSkill = { _, _ in throw AssistantError.declined }
+            $0.models = InMemoryModelLibrary().client
         }
         store.exhaustivity = .off
 

@@ -1,4 +1,5 @@
 [button] "Conversations" id: BackButton
+[button] "Model" hint: "Model, Thinking and Context Window"
 [button, notEnabled] "More"
 [header] "New conversation"
 [button] "Sheet Grabber" value: "Half screen" hint: "Double tap to expand the sheet."

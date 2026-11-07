@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import LifrModelsClient
 import SwiftUI
 
 struct RenameView: View {
@@ -14,6 +15,12 @@ struct RenameView: View {
                     Text("Leave it empty to use the first message.")
                 }
                 Section {
+                    Picker("Model", selection: $store.model) {
+                        Text("Default (\(store.standard?.name ?? "…"))").tag(ModelID?.none)
+                        ForEach(store.models) { model in
+                            Text(model.name).tag(ModelID?.some(model.id))
+                        }
+                    }
                     Button {
                         store.send(.suggestTapped)
                     } label: {

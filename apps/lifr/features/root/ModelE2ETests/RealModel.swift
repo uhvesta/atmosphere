@@ -45,7 +45,7 @@ final class RealModel {
             $0.session = InMemorySession().client
             $0.reminders = RemindersClient.inMemory().client
             $0.sync = .off
-            $0.assistant = .live(runtime: { _ in LoggedRuntime(base: EngineRuntime(model: model, host: host)) })
+            $0.assistant = .live(runtime: { _, _ in LoggedRuntime(base: EngineRuntime(model: model, host: host)) })
             $0.attachments = .inMemory()
             $0.continuousClock = ContinuousClock()
             $0.conversations = .inMemory()

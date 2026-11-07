@@ -84,18 +84,18 @@ enum EngineTurn {
         journal: Journal, partial: @escaping @Sendable (JSONValue) -> Void
     ) async throws(ModelRuntimeError) -> JSONValue {
         let thought = turn.thinking
-        let thinks = thought != nil
+        let thinks = thought == nil ? nil : turn.thinkingTokens
         guard turn.tools.isEmpty else {
             return try await withTools(turn, answer: answer, chat: chat, chats: chats, journal: journal)
         }
         guard let answer else {
             let text = try await chat.send(
-                turn.prompt, attachments: turn.attachments, format: nil, thinks: thinks, thought: thought
+                turn.prompt, attachments: turn.attachments, format: nil, thinkingTokens: thinks, thought: thought
             ) { partial(.string($0)) }
             return .string(text)
         }
         let text = try await chat.send(
-            turn.prompt, attachments: turn.attachments, format: JSONSchema.text(answer), thinks: thinks,
+            turn.prompt, attachments: turn.attachments, format: JSONSchema.text(answer), thinkingTokens: thinks,
             thought: thought, partial: { _ in })
         return try parse(text)
     }
@@ -127,7 +127,8 @@ enum EngineTurn {
             }
             let thinks = turn.thinking != nil && round == min(done.count, toolRounds)
             let text = try await chat.send(
-                message, attachments: attachments, format: format, thinks: thinks, thought: thought,
+                message, attachments: attachments, format: format, thinkingTokens: thinks ? turn.thinkingTokens : nil,
+                thought: thought,
                 partial: { _ in })
             let written = try parse(text)
             attachments = []

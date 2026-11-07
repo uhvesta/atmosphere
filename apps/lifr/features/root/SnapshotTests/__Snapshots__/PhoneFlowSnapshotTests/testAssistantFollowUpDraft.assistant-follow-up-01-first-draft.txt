@@ -1,4 +1,5 @@
 [button] "Conversations" id: BackButton
+[button] "Model" hint: "Model, Thinking and Context Window"
 [button] "More"
 [header] "Add a Fitness Avenue"
 [text] "Add a Fitness Avenue"

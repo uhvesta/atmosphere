@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrAssistantClient
+import LifrModelsClient
 
 /// The assistant's skills: turn any on or off, and write your own.
 @Reducer
@@ -135,6 +136,13 @@ package struct SkillEditor {
         package var isDrafting = false
         /// Why the assistant couldn't write the skill.
         package var draftProblem: String?
+        /// The model that drafts it this time, or nil for the one picked
+        /// for skills in Settings.
+        package var model: ModelID?
+        /// Apple's model and the downloaded ones, once they're looked up.
+        package var models: [RunnableModel] = []
+        /// The model picked for skills in Settings.
+        package var standard: ModelID?
 
         package init(taken: Set<String>) {
             self.taken = taken
@@ -192,6 +200,7 @@ package struct SkillEditor {
         case binding(BindingAction<State>)
         case toolToggled(AssistantTool, Bool)
         case assistTapped
+        case modelsLoaded([RunnableModel], standard: ModelID)
         case draftTapped
         case drafted(Result<SkillDraft, any Error>)
         case saveTapped
@@ -204,6 +213,7 @@ package struct SkillEditor {
     }
 
     @Dependency(\.assistant) private var assistant
+    @Dependency(\.models) private var models
 
     package init() {}
 
@@ -213,8 +223,18 @@ package struct SkillEditor {
             switch action {
             case .assistTapped:
                 state.assists = true
-                let availability = assistant.availability()
-                state.draftProblem = availability == .available ? nil : availability.description
+                checkAvailability(&state)
+                return .run { [models] send in
+                    await send(.modelsLoaded(await models.runnable(), standard: models.selection(.skills)))
+                }
+
+            case .modelsLoaded(let runnable, let standard):
+                state.models = runnable
+                state.standard = standard
+                return .none
+
+            case .binding(\.model):
+                checkAvailability(&state)
                 return .none
 
             case .draftTapped:
@@ -222,8 +242,9 @@ package struct SkillEditor {
                 state.isDrafting = true
                 state.draftProblem = nil
                 let request = state.request.trimmingCharacters(in: .whitespacesAndNewlines)
+                let model = state.model
                 return .run { [assistant] send in
-                    await send(.drafted(Result { try await assistant.draftSkill(request) }))
+                    await send(.drafted(Result { try await assistant.draftSkill(request, model) }))
                 }
 
             case .drafted(.success(let draft)):
@@ -253,6 +274,12 @@ package struct SkillEditor {
                 return .none
             }
         }
+    }
+
+    /// Says why the model that drafts can't run now, if it can't.
+    private func checkAvailability(_ state: inout State) {
+        let availability = assistant.availability(ModelChoice(model: state.model ?? state.standard))
+        state.draftProblem = availability == .available ? nil : availability.description
     }
 }
 

@@ -134,15 +134,11 @@ public struct LiteRTLMEngine: ModelEngine {
 
 /// One LiteRT-LM conversation.
 struct LiteRTLMChat: EngineChat {
-    /// The most a turn thinks before it answers, in tokens: about 20
-    /// seconds on an iPhone 17 Pro's GPU.
-    static let thinkingTokens = 512
-
     let conversation: Conversation
     let backend: ModelBackend
 
     func send(
-        _ message: String, attachments: [ModelAttachment], format: String?, thinks: Bool,
+        _ message: String, attachments: [ModelAttachment], format: String?, thinkingTokens: Int?,
         thought: (@Sendable (ModelThinking) -> Void)?, partial: @escaping @Sendable (String) -> Void
     ) async throws(ModelRuntimeError) -> String {
         let clock = ContinuousClock()
@@ -158,7 +154,8 @@ struct LiteRTLMChat: EngineChat {
                     }
                 } + [.text(message)]
             // Off unless asked for: Gemma 4 can think by default.
-            let thinking = ThinkingConfig(enableThinking: thinks, thinkingTokenBudget: Self.thinkingTokens)
+            let thinking = ThinkingConfig(
+                enableThinking: thinkingTokens != nil, thinkingTokenBudget: thinkingTokens ?? 0)
             let chunks = conversation.sendMessageStream(
                 Message(contents: contents), thinkingConfig: thinking, responseFormat: responseFormat)
             // A stream stops giving chunks as soon as the task reading it is

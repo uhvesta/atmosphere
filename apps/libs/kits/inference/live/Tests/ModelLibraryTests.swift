@@ -435,6 +435,24 @@ final class ModelLibraryTests: XCTestCase {
         XCTAssertEqual(library().installed().first?.window, offered.contextTokens)
     }
 
+    func testAChoiceRunsItsModelAtItsWindowAndLeavesTheDefaultsAlone() async throws {
+        var offered = spec()
+        offered.contextChoices = [4_096, 16_384]
+        let library = library()
+        let model = try await library.download(offered)
+        let runtimes = runtimes(library)
+
+        let chosen = runtimes.runtime(for: .assistant, choice: ModelChoice(model: model.id, window: 16_384))
+        let offList = runtimes.runtime(for: .assistant, choice: ModelChoice(model: model.id, window: 1_000))
+
+        XCTAssertEqual((chosen as? EngineRuntime)?.model.window, 16_384)
+        XCTAssertEqual(chosen.budget.window, 16_384)
+        XCTAssertEqual((offList as? EngineRuntime)?.model.window, offered.contextTokens)
+        XCTAssertTrue(runtimes.runtime(for: .assistant) is AppleRuntime)
+        XCTAssertEqual(library.installed().first?.window, offered.contextTokens)
+        XCTAssertEqual(runtimes.selection.model(for: .assistant), .apple)
+    }
+
     func testAModelWithNoChoiceKeepsItsWindow() async throws {
         let model = try await library().download(spec())
 

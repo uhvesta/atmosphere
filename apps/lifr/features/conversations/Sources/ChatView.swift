@@ -84,6 +84,9 @@ package struct ChatView: View {
             }
             .sheetLayout(height: 520)
         }
+        .sheet(item: $store.scope(state: \.model, action: \.model)) { store in
+            ChatModelView(store: store)
+        }
         .sheet(isPresented: $store.editsDraft) {
             if let draft = store.conversation.draft {
                 NavigationStack {
@@ -115,6 +118,9 @@ package struct ChatView: View {
         }
         #if os(iOS)
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    modelButton
+                }
                 // One menu, as more buttons fold into the bar's overflow.
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu("More", systemImage: "ellipsis.circle") {
@@ -142,6 +148,12 @@ package struct ChatView: View {
                     withAnimation { proxy.scrollTo(id, anchor: .center) }
                 }
         }
+    }
+
+    /// Opens what the conversation runs on, also before its first message.
+    private var modelButton: some View {
+        Button("Model", systemImage: "cpu") { store.send(.modelTapped) }
+            .help("Model, Thinking and Context Window")
     }
 
     /// Opens the bar to find words in the messages shown.
@@ -356,6 +368,7 @@ package struct ChatView: View {
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
                 Group {
+                    modelButton
                     findButton
                     compactButton
                     checkpointButtons

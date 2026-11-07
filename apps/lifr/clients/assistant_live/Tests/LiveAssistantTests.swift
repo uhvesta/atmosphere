@@ -63,7 +63,7 @@ final class LiveAssistantTests: XCTestCase {
     func testTheAnswerStreamsAndEndsWithTheWholePlan() async {
         let model = ScriptedRuntime(steps: [ScriptedRuntime.answer(turn, partials: [["message": "Here's"]])])
 
-        let (replies, error) = await replies(.live(runtime: { _ in model }), request("Plan the garden"))
+        let (replies, error) = await replies(.live(runtime: { _, _ in model }), request("Plan the garden"))
 
         XCTAssertNil(error)
         XCTAssertEqual(replies.first?.text, "Here's")
@@ -80,11 +80,11 @@ final class LiveAssistantTests: XCTestCase {
         var request = request("What's this?")
         request.attachments = [photo]
 
-        let (_, error) = await replies(.live(runtime: { _ in model }), request)
+        let (_, error) = await replies(.live(runtime: { _, _ in model }), request)
 
         XCTAssertNil(error)
         XCTAssertEqual(model.turns.map(\.attachments), [[photo]])
-        XCTAssertEqual(AssistantClient.live(runtime: { _ in model }).inputs(), [.image])
+        XCTAssertEqual(AssistantClient.live(runtime: { _, _ in model }).inputs(.defaults), [.image])
     }
 
     func testARecordingToAModelThatCantListenSaysPickAnother() async {
@@ -92,7 +92,7 @@ final class LiveAssistantTests: XCTestCase {
         var request = request("")
         request.attachments = [ModelAttachment(.audio, file: URL(filePath: "/tmp/note.wav"))]
 
-        let (replies, error) = await replies(.live(runtime: { _ in model }), request)
+        let (replies, error) = await replies(.live(runtime: { _, _ in model }), request)
 
         XCTAssertEqual(replies, [])
         XCTAssertEqual(error, .cantRead(.audio))
@@ -101,7 +101,7 @@ final class LiveAssistantTests: XCTestCase {
     func testAnUnreadableAnswerIsAskedForAgain() async {
         let model = ScriptedRuntime(steps: [ScriptedRuntime.fail(.decodingFailure), ScriptedRuntime.answer(turn)])
 
-        let (replies, error) = await replies(.live(runtime: { _ in model }), request("Plan the garden"))
+        let (replies, error) = await replies(.live(runtime: { _, _ in model }), request("Plan the garden"))
 
         XCTAssertNil(error)
         XCTAssertNotNil(replies.last?.plan)
@@ -122,7 +122,7 @@ final class LiveAssistantTests: XCTestCase {
         ])
 
         let (replies, error) = await replies(
-            .live(runtime: { _ in model }), request("Add a task to buy milk, in HOME", workspace: records.workspace))
+            .live(runtime: { _, _ in model }), request("Add a task to buy milk, in HOME", workspace: records.workspace))
 
         XCTAssertNil(error)
         XCTAssertEqual(replies.last?.plan?.tasks.map(\.title), ["buy milk"])
@@ -140,7 +140,7 @@ final class LiveAssistantTests: XCTestCase {
         ])
 
         let (replies, error) = await replies(
-            .live(runtime: { _ in model }), request("Add a task to buy milk, in HOME", workspace: records.workspace))
+            .live(runtime: { _, _ in model }), request("Add a task to buy milk, in HOME", workspace: records.workspace))
 
         XCTAssertNil(error)
         XCTAssertNil(replies.last?.plan)
@@ -153,7 +153,7 @@ final class LiveAssistantTests: XCTestCase {
             ScriptedRuntime.answer("I'd add Water plants. Send it again for a plan."),
         ])
 
-        let (replies, error) = await replies(.live(runtime: { _ in model }), request("Plan the garden"))
+        let (replies, error) = await replies(.live(runtime: { _, _ in model }), request("Plan the garden"))
 
         XCTAssertNil(error)
         XCTAssertEqual(replies.last?.text, "I'd add Water plants. Send it again for a plan.")
@@ -167,7 +167,7 @@ final class LiveAssistantTests: XCTestCase {
     func testWhenEvenPlainTextCantBeReadItSaysSo() async {
         let model = ScriptedRuntime(steps: Array(repeating: ScriptedRuntime.fail(.decodingFailure), count: 3))
 
-        let (_, error) = await replies(.live(runtime: { _ in model }), request("Plan the garden"))
+        let (_, error) = await replies(.live(runtime: { _, _ in model }), request("Plan the garden"))
 
         XCTAssertEqual(error, .unreadable)
     }
@@ -186,7 +186,7 @@ final class LiveAssistantTests: XCTestCase {
         ])
 
         let (replies, error) = await replies(
-            .live(runtime: { _ in model }),
+            .live(runtime: { _, _ in model }),
             request("Note that rent is paid", workspace: records.workspace, writes: store, skill: .review))
 
         XCTAssertNil(error)
@@ -209,9 +209,9 @@ final class LiveAssistantTests: XCTestCase {
                 then: ScriptedRuntime.fail(.interrupted(.background)))
         ])
 
-        let (_, before) = await replies(.live(runtime: { _ in unsaved }), request("Plan the garden"))
+        let (_, before) = await replies(.live(runtime: { _, _ in unsaved }), request("Plan the garden"))
         let (_, after) = await replies(
-            .live(runtime: { _ in saved }),
+            .live(runtime: { _, _ in saved }),
             request("Note that rent is paid", workspace: records.workspace, writes: store, skill: .review))
 
         XCTAssertEqual(before, .interrupted(.memory))
@@ -225,7 +225,7 @@ final class LiveAssistantTests: XCTestCase {
         let model = ScriptedRuntime(steps: Array(repeating: ScriptedRuntime.fail(.exceededContext), count: 3))
         let request = request("Plan the garden")
 
-        let (_, error) = await replies(.live(runtime: { _ in model }), request)
+        let (_, error) = await replies(.live(runtime: { _, _ in model }), request)
 
         XCTAssertEqual(error, .tooLong)
         XCTAssertEqual(
@@ -246,7 +246,7 @@ final class LiveAssistantTests: XCTestCase {
         ])
 
         let (replies, error) = await replies(
-            .live(runtime: { _ in model }),
+            .live(runtime: { _, _ in model }),
             request("Note that rent is paid", workspace: records.workspace, writes: store, skill: .review))
 
         XCTAssertNil(error)
@@ -263,7 +263,7 @@ final class LiveAssistantTests: XCTestCase {
             }
         ])
 
-        let (replies, error) = await replies(.live(runtime: { _ in model }), request("Plan the garden"))
+        let (replies, error) = await replies(.live(runtime: { _, _ in model }), request("Plan the garden"))
 
         XCTAssertNil(error)
         XCTAssertEqual(replies.first?.thinking, ModelThinking(text: "Plants need water.", processor: .gpu))
@@ -275,11 +275,33 @@ final class LiveAssistantTests: XCTestCase {
     func testNamingAConversationDoesntWaitForThinking() async throws {
         let model = ScriptedRuntime(steps: [ScriptedRuntime.answer("Garden plans")])
 
-        _ = try await AssistantClient.live(runtime: { _ in model }).suggestTitle([
-            ChatMessage(id: UUID(), role: .person, text: "Plan the garden", at: now)
-        ])
+        _ = try await AssistantClient.live(runtime: { _, _ in model }).suggestTitle(
+            [
+                ChatMessage(id: UUID(), role: .person, text: "Plan the garden", at: now)
+            ], nil)
 
         XCTAssertNil(model.turns.first?.thinking)
+    }
+
+    func testAChatRunsOnItsOwnModelAndThinksAsLongAsItAsks() async {
+        let model = ScriptedRuntime(steps: [ScriptedRuntime.answer(turn), ScriptedRuntime.answer(turn)])
+        let asked = LockIsolated<[ModelChoice]>([])
+        let client = AssistantClient.live { _, choice in
+            asked.withValue { $0.append(choice) }
+            return model
+        }
+        var long = request("Plan the garden")
+        long.model = ModelChoice(model: "qwen3.5-2b", thinking: .long, window: 16_384)
+        var off = long
+        off.model.thinking = .off
+
+        _ = await replies(client, long)
+        _ = await replies(client, off)
+
+        XCTAssertEqual(asked.value, [long.model, off.model])
+        XCTAssertEqual(model.turns.first?.thinkingTokens, 2_048)
+        XCTAssertNotNil(model.turns.first?.thinking)
+        XCTAssertNil(model.turns.last?.thinking)
     }
 
     func testAModelWithALargerWindowGetsTheFullRequest() async {
@@ -290,8 +312,8 @@ final class LiveAssistantTests: XCTestCase {
         let large = ScriptedRuntime(
             budget: ContextBudget(window: 32_768, reservedForAnswer: 2_048), steps: [ScriptedRuntime.answer(turn)])
 
-        _ = await replies(.live(runtime: { _ in small }), request)
-        _ = await replies(.live(runtime: { _ in large }), request)
+        _ = await replies(.live(runtime: { _, _ in small }), request)
+        _ = await replies(.live(runtime: { _, _ in large }), request)
 
         XCTAssertEqual(large.turns.first?.prompt, AssistantPrompt.prompt(request, size: .full))
         XCTAssertNotEqual(small.turns.first?.prompt, AssistantPrompt.prompt(request, size: .full))
@@ -321,7 +343,7 @@ final class LiveAssistantTests: XCTestCase {
         ])
 
         let (replies, error) = await replies(
-            .live(runtime: { _ in model }),
+            .live(runtime: { _, _ in model }),
             request(
                 "Move Renew passport to WORK and pay rent is done", workspace: records.workspace, writes: store,
                 skill: .change))
@@ -348,7 +370,7 @@ final class LiveAssistantTests: XCTestCase {
         ])
 
         let (replies, error) = await replies(
-            .live(runtime: { _ in model }),
+            .live(runtime: { _, _ in model }),
             request("Rename “Pay rent” to “Pay the rent”", workspace: records.workspace, writes: store, skill: .change))
 
         XCTAssertNil(error)
@@ -366,7 +388,7 @@ final class LiveAssistantTests: XCTestCase {
         ])
 
         let (replies, _) = await replies(
-            .live(runtime: { _ in model }),
+            .live(runtime: { _, _ in model }),
             request("Move pay rent to garden", workspace: records.workspace, writes: store, skill: .change))
 
         let text = try XCTUnwrap(replies.last?.text)
@@ -386,7 +408,7 @@ final class LiveAssistantTests: XCTestCase {
         ])
 
         let (replies, _) = await replies(
-            .live(runtime: { _ in model }), request("Mark rent done", workspace: records.workspace, skill: .change))
+            .live(runtime: { _, _ in model }), request("Mark rent done", workspace: records.workspace, skill: .change))
 
         let saved = try await applied(replies, to: store)
         XCTAssertEqual(saved.tasks[rent.id]?.status, .todo)
@@ -407,7 +429,7 @@ final class LiveAssistantTests: XCTestCase {
         ])
 
         let (replies, error) = await replies(
-            .live(runtime: { _ in model }),
+            .live(runtime: { _, _ in model }),
             request(
                 "Rename the half marathon to “Spring half marathon”, due 2026-12-06", workspace: records.workspace,
                 writes: store, skill: .change))
@@ -433,7 +455,7 @@ final class LiveAssistantTests: XCTestCase {
         ])
 
         let (replies, _) = await replies(
-            .live(runtime: { _ in model }),
+            .live(runtime: { _, _ in model }),
             request("Complete the half marathon", workspace: records.workspace, writes: store, skill: .change))
 
         let text = try XCTUnwrap(replies.last?.text)
@@ -453,7 +475,7 @@ final class LiveAssistantTests: XCTestCase {
         ])
 
         let (replies, _) = await replies(
-            .live(runtime: { _ in model }),
+            .live(runtime: { _, _ in model }),
             request("Pay rent is done", workspace: records.workspace, writes: store, skill: .change))
 
         let codes = model.turns.first.map { Self.changeCodes(in: $0.schema) }
@@ -467,7 +489,7 @@ final class LiveAssistantTests: XCTestCase {
         let model = ScriptedRuntime(steps: [ScriptedRuntime.answer(["message": "Added."])])
 
         _ = await replies(
-            .live(runtime: { _ in model }),
+            .live(runtime: { _, _ in model }),
             request("Add buy eggs", workspace: records.workspace, writes: store, skill: .change))
 
         XCTAssertEqual(model.turns.first.map { Self.changeCodes(in: $0.schema) }, [])
@@ -499,7 +521,7 @@ final class LiveAssistantTests: XCTestCase {
         let model = ScriptedRuntime(steps: [step])
 
         let (replies, error) = await replies(
-            .live(runtime: { _ in model }), request("What's due?", workspace: records.workspace, skill: .query))
+            .live(runtime: { _, _ in model }), request("What's due?", workspace: records.workspace, skill: .query))
 
         XCTAssertNil(error)
         XCTAssertEqual(replies.last?.text, "You have one.")
@@ -509,7 +531,7 @@ final class LiveAssistantTests: XCTestCase {
     func testWithoutWritesTheModelGetsOnlyReadingTools() async {
         let model = ScriptedRuntime(steps: [ScriptedRuntime.answer(turn)])
 
-        _ = await replies(.live(runtime: { _ in model }), request("Mark rent done", skill: .review))
+        _ = await replies(.live(runtime: { _, _ in model }), request("Mark rent done", skill: .review))
 
         let names = Set(model.turns.first?.tools.map(\.name) ?? [])
         XCTAssertEqual(names, ["findTasks", "getTask", "overview", "recentActivity"])
@@ -517,21 +539,21 @@ final class LiveAssistantTests: XCTestCase {
 
     func testAnUnavailableModelSaysWhy() async {
         let model = ScriptedRuntime(status: .notEnabled, steps: [])
-        let client = AssistantClient.live(runtime: { _ in model })
+        let client = AssistantClient.live(runtime: { _, _ in model })
 
         let (replies, error) = await replies(client, request("Plan the garden"))
 
-        XCTAssertEqual(client.availability(), .notEnabled)
+        XCTAssertEqual(client.availability(.defaults), .notEnabled)
         XCTAssertEqual(error, .unavailable(.notEnabled))
         XCTAssertTrue(model.turns.isEmpty)
-        client.prewarm()
+        client.prewarm(.defaults)
         XCTAssertEqual(model.prewarmCount, 0)
     }
 
     func testACancelledAnswerEndsQuietly() async {
         let model = ScriptedRuntime(steps: [ScriptedRuntime.fail(.cancelled)])
 
-        let (replies, error) = await replies(.live(runtime: { _ in model }), request("Plan the garden"))
+        let (replies, error) = await replies(.live(runtime: { _, _ in model }), request("Plan the garden"))
 
         XCTAssertNil(error)
         XCTAssertTrue(replies.isEmpty)
@@ -545,7 +567,7 @@ final class LiveAssistantTests: XCTestCase {
         for (thrown, expected) in cases {
             let model = ScriptedRuntime(steps: [ScriptedRuntime.fail(thrown)])
 
-            let (replies, error) = await replies(.live(runtime: { _ in model }), request("Plan the garden"))
+            let (replies, error) = await replies(.live(runtime: { _, _ in model }), request("Plan the garden"))
 
             XCTAssertEqual(error, expected)
         }
@@ -555,7 +577,7 @@ final class LiveAssistantTests: XCTestCase {
         let first = ScriptedRuntime(steps: [ScriptedRuntime.answer(turn)])
         let second = ScriptedRuntime(steps: [ScriptedRuntime.answer(turn)])
         let current = LockIsolated(first)
-        let client = AssistantClient.live(runtime: { _ in current.value })
+        let client = AssistantClient.live(runtime: { _, _ in current.value })
 
         _ = await replies(client, request("Plan the garden"))
         current.setValue(second)
@@ -574,7 +596,7 @@ final class LiveAssistantTests: XCTestCase {
             ])
         ])
         let titles = ScriptedRuntime(steps: [ScriptedRuntime.answer("Garden plans")])
-        let client = AssistantClient.live { use in
+        let client = AssistantClient.live { use, _ in
             switch use {
             case .assistant: chat
             case .skills: skills
@@ -584,8 +606,9 @@ final class LiveAssistantTests: XCTestCase {
         }
 
         _ = await replies(client, request("Plan the garden"))
-        _ = try await client.draftSkill("review my week")
-        _ = try await client.suggestTitle([ChatMessage(id: UUID(), role: .person, text: "Plan the garden", at: now)])
+        _ = try await client.draftSkill("review my week", nil)
+        _ = try await client.suggestTitle(
+            [ChatMessage(id: UUID(), role: .person, text: "Plan the garden", at: now)], nil)
 
         XCTAssertEqual(chat.turns.count, 1)
         XCTAssertEqual(skills.turns.count, 1)
@@ -600,7 +623,7 @@ final class LiveAssistantTests: XCTestCase {
             ])
         ])
 
-        let draft = try await AssistantClient.live(runtime: { _ in model }).draftSkill("review my week")
+        let draft = try await AssistantClient.live(runtime: { _, _ in model }).draftSkill("review my week", nil)
 
         XCTAssertEqual(draft.name, "Weekly review")
         XCTAssertEqual(draft.tools, [.overview, .findTasks])
@@ -611,7 +634,7 @@ final class LiveAssistantTests: XCTestCase {
     func testWithoutASkillTheModelJustTalks() async {
         let model = ScriptedRuntime(steps: [ScriptedRuntime.answer("Hi! What's on your mind?")])
 
-        let (replies, error) = await replies(.live(runtime: { _ in model }), request("Hello", skill: nil))
+        let (replies, error) = await replies(.live(runtime: { _, _ in model }), request("Hello", skill: nil))
 
         XCTAssertNil(error)
         XCTAssertEqual(replies.last?.text, "Hi! What's on your mind?")
@@ -625,8 +648,8 @@ final class LiveAssistantTests: XCTestCase {
         let model = ScriptedRuntime(steps: [ScriptedRuntime.answer(["skill": "breakdown"])])
         let messages = [ChatMessage(id: UUID(), role: .person, text: "Dentist, taxes, gym, call mum", at: now)]
 
-        let picked = try await AssistantClient.live(runtime: { _ in model }).pickSkill(
-            messages, [.query, .breakdown], nil)
+        let picked = try await AssistantClient.live(runtime: { _, _ in model }).pickSkill(
+            messages, [.query, .breakdown], nil, .defaults)
 
         XCTAssertEqual(picked, "breakdown")
         XCTAssertNotNil(model.turns.first?.schema)
@@ -636,12 +659,12 @@ final class LiveAssistantTests: XCTestCase {
         let model = ScriptedRuntime(steps: [
             ScriptedRuntime.answer(["skill": "none"]), ScriptedRuntime.answer(["skill": "undo"]),
         ])
-        let client = AssistantClient.live(runtime: { _ in model })
+        let client = AssistantClient.live(runtime: { _, _ in model })
         let messages = [ChatMessage(id: UUID(), role: .person, text: "Hi", at: now)]
 
-        let none = try await client.pickSkill(messages, [.query], nil)
-        let other = try await client.pickSkill(messages, [.query], nil)
-        let empty = try await client.pickSkill(messages, [], nil)
+        let none = try await client.pickSkill(messages, [.query], nil, .defaults)
+        let other = try await client.pickSkill(messages, [.query], nil, .defaults)
+        let empty = try await client.pickSkill(messages, [], nil, .defaults)
 
         XCTAssertNil(none)
         XCTAssertNil(other)
@@ -652,9 +675,10 @@ final class LiveAssistantTests: XCTestCase {
     func testATitleIsTheModelsFirstLine() async throws {
         let model = ScriptedRuntime(steps: [ScriptedRuntime.answer("Title: Garden plans.\nMore")])
 
-        let title = try await AssistantClient.live(runtime: { _ in model }).suggestTitle([
-            ChatMessage(id: UUID(), role: .person, text: "Plan the garden", at: now)
-        ])
+        let title = try await AssistantClient.live(runtime: { _, _ in model }).suggestTitle(
+            [
+                ChatMessage(id: UUID(), role: .person, text: "Plan the garden", at: now)
+            ], nil)
 
         XCTAssertEqual(title, "Garden plans")
     }
@@ -666,12 +690,12 @@ final class LiveAssistantTests: XCTestCase {
             ChatMessage(id: UUID(), role: .assistant, text: "Here's a plan.", at: now),
         ]
         let used = LockIsolated<[ModelUse]>([])
-        let client = AssistantClient.live { use in
+        let client = AssistantClient.live { use, _ in
             used.withValue { $0.append(use) }
             return model
         }
 
-        let summary = try await client.compact(messages, "They moved in.")
+        let summary = try await client.compact(messages, "They moved in.", .defaults)
 
         XCTAssertEqual(summary, "They planned the garden.")
         XCTAssertEqual(used.value, [.assistant])
@@ -690,7 +714,7 @@ final class LiveAssistantTests: XCTestCase {
                     text: String(repeating: "Message \(index) ", count: 10), at: now)
             } + long.messages
 
-        let (replies, error) = await replies(.live(runtime: { _ in model }), long)
+        let (replies, error) = await replies(.live(runtime: { _, _ in model }), long)
 
         XCTAssertNil(error)
         XCTAssertGreaterThan(replies.last?.leftOut ?? 0, 0)

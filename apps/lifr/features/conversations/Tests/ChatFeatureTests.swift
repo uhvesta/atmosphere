@@ -37,10 +37,10 @@ final class ChatFeatureTests: XCTestCase {
             $0.store = .inMemory(workspace, actor: .user(device: "iPhone", surface: .iPhone))
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
-            $0.assistant.availability = { .available }
-            $0.assistant.pickSkill = { _, _, _ in nil }
-            $0.assistant.prewarm = { prewarmed.withValue { $0 += 1 } }
-            $0.assistant.inputs = { inputs }
+            $0.assistant.availability = { _ in .available }
+            $0.assistant.pickSkill = { _, _, _, _ in nil }
+            $0.assistant.prewarm = { _ in prewarmed.withValue { $0 += 1 } }
+            $0.assistant.inputs = { _ in inputs }
             $0.attachments = attachments
             $0.recorder = recorder
             $0.continuousClock = clock
@@ -88,6 +88,75 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.binding(.set(\.input, text)))
         await store.send(.sendTapped)
         await store.skipReceivedActions(strict: false)
+    }
+
+    func testAChatsModelThinkingAndWindowGoWithEachMessageAndChangeAfterTheFact() async throws {
+        let (workspace, _) = home()
+        let asked = LockIsolated<[ModelChoice]>([])
+        let library = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small])
+        let store = chat(workspace) { request in
+            asked.withValue { $0.append(request.model) }
+            return AssistantReply(text: "OK.", isComplete: true)
+        }
+        store.dependencies.models = library.client
+        let qwen = ModelCatalog.qwen35Small.id
+
+        // Picked before the first message.
+        await store.send(.modelTapped)
+        await store.send(.model(.presented(.task)))
+        await store.receive(\.model.presented.loaded)
+        XCTAssertEqual(store.state.model?.models.map(\.id), [.apple, qwen])
+        await store.send(.model(.presented(.binding(.set(\.model, qwen)))))
+        await store.send(.model(.presented(.binding(.set(\.choice.thinking, .long)))))
+        await store.send(.model(.presented(.binding(.set(\.choice.window, 16_384)))))
+        await store.send(.model(.dismiss))
+        await send("Plan the week", in: store)
+
+        // Changed after it, for the next message.
+        await store.send(.modelTapped)
+        await store.send(.model(.presented(.binding(.set(\.choice.thinking, .off)))))
+        await store.send(.model(.dismiss))
+        await send("And the weekend", in: store)
+
+        XCTAssertEqual(
+            asked.value,
+            [
+                ModelChoice(model: qwen, thinking: .long, window: 16_384),
+                ModelChoice(model: qwen, thinking: .off, window: 16_384),
+            ])
+        XCTAssertEqual(store.state.conversation.context.model.thinking, .off)
+        XCTAssertEqual(library.client.selection(.assistant), .apple)
+    }
+
+    func testAWindowTheNewModelDoesntOfferGoesBackToItsOwn() async {
+        let library = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small])
+        let store = TestStore(initialState: ChatModelFeature.State(choice: .defaults)) {
+            ChatModelFeature()
+        } withDependencies: {
+            $0.models = library.client
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.binding(.set(\.model, ModelCatalog.qwen35Small.id)))
+        await store.send(.binding(.set(\.choice.window, 32_768)))
+
+        await store.send(.binding(.set(\.model, .apple)))
+
+        XCTAssertNil(store.state.choice.window)
+        await store.send(.resetTapped)
+        XCTAssertEqual(store.state.choice, .defaults)
+    }
+
+    func testAForkRunsOnTheSameModelAsItsChat() throws {
+        var conversation = Conversation(id: conversationID, createdAt: now)
+        conversation.context.model = ModelChoice(model: ModelCatalog.qwen35Small.id, thinking: .off)
+        let message = ChatMessage(id: UUID(1), role: .person, text: "Plan the week", at: now)
+        conversation.messages = [message]
+
+        let fork = try XCTUnwrap(conversation.fork(at: message.id, as: UUID(2), now: now))
+
+        XCTAssertEqual(fork.context.model, conversation.context.model)
     }
 
     func testAPhotoAndARecordingGoWithTheNextMessageToTheModel() async throws {
@@ -831,7 +900,7 @@ final class ChatFeatureTests: XCTestCase {
             sent.withValue { $0.append(request.skill) }
             return AssistantReply(text: "Which first?", isComplete: true)
         }
-        store.dependencies.assistant.pickSkill = { _, skills, _ in
+        store.dependencies.assistant.pickSkill = { _, skills, _, _ in
             offered.setValue(skills.map(\.id))
             return "breakdown"
         }
@@ -866,7 +935,7 @@ final class ChatFeatureTests: XCTestCase {
             sent.withValue { $0.append(request.skill) }
             return AssistantReply(text: "OK.", isComplete: true)
         }
-        store.dependencies.assistant.pickSkill = { _, _, _ in
+        store.dependencies.assistant.pickSkill = { _, _, _, _ in
             picks.withValue { $0 += 1 }
             return "query"
         }
@@ -890,7 +959,7 @@ final class ChatFeatureTests: XCTestCase {
         }
         let picks = LockIsolated<[String?]>(["breakdown", nil])
         let drafting = LockIsolated<[String?]>([])
-        store.dependencies.assistant.pickSkill = { _, _, skill in
+        store.dependencies.assistant.pickSkill = { _, _, skill, _ in
             drafting.withValue { $0.append(skill) }
             return picks.withValue { $0.removeFirst() }
         }
@@ -910,7 +979,7 @@ final class ChatFeatureTests: XCTestCase {
             sent.withValue { $0.append(request.skill) }
             return AssistantReply(text: "Hi!", isComplete: true)
         }
-        store.dependencies.assistant.pickSkill = { _, _, _ in throw AssistantError.busy }
+        store.dependencies.assistant.pickSkill = { _, _, _, _ in throw AssistantError.busy }
 
         await send("Hello", in: store)
 
@@ -1539,14 +1608,14 @@ final class ChatFeatureTests: XCTestCase {
         let store = TestStore(initialState: RenameFeature.State(chat("Plan the week"))) {
             RenameFeature()
         } withDependencies: {
-            $0.assistant.suggestTitle = { _ in "Weekly plan" }
+            $0.assistant.suggestTitle = { _, _ in "Weekly plan" }
         }
         store.exhaustivity = .off
         await store.send(.suggestTapped)
         await store.receive(\.suggested.success)
         XCTAssertEqual(store.state.name, "Weekly plan")
 
-        store.dependencies.assistant.suggestTitle = { _ in throw AssistantError.busy }
+        store.dependencies.assistant.suggestTitle = { _, _ in throw AssistantError.busy }
         await store.send(.suggestTapped)
         await store.receive(\.suggested.failure)
         XCTAssertEqual(store.state.name, "Weekly plan")
@@ -1563,15 +1632,41 @@ final class ChatFeatureTests: XCTestCase {
         }
         store.exhaustivity = .off
         await store.send(.task)
-        await store.receive(\.suggesterFound)
+        await store.receive(\.modelsLoaded)
         XCTAssertEqual(store.state.suggester?.name, ModelCatalog.apple.name)
         XCTAssertEqual(store.state.suggester?.isApple, true)
 
         await library.client.select(ModelCatalog.gemma4E2B.id, .assistant)
         await store.send(.task)
-        await store.receive(\.suggesterFound)
+        await store.receive(\.modelsLoaded)
         XCTAssertEqual(store.state.suggester?.name, ModelCatalog.gemma4E2B.name)
         XCTAssertEqual(store.state.suggester?.isApple, false)
+    }
+
+    func testARenameSuggestsWithTheModelPickedForItAndKeepsTheDefault() async {
+        let library = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B])
+        let used = LockIsolated<[ModelID?]>([])
+        let store = TestStore(initialState: RenameFeature.State(chat("Plan the week"))) {
+            RenameFeature()
+        } withDependencies: {
+            $0.models = library.client
+            $0.assistant.suggestTitle = { _, model in
+                used.withValue { $0.append(model) }
+                return "Weekly plan"
+            }
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.receive(\.modelsLoaded)
+        XCTAssertEqual(store.state.models.map(\.id), [.apple, ModelCatalog.gemma4E2B.id])
+
+        await store.send(.binding(.set(\.model, ModelCatalog.gemma4E2B.id)))
+        XCTAssertEqual(store.state.suggester?.name, ModelCatalog.gemma4E2B.name)
+        await store.send(.suggestTapped)
+        await store.receive(\.suggested.success)
+
+        XCTAssertEqual(used.value, [ModelCatalog.gemma4E2B.id])
+        XCTAssertEqual(library.client.selection(.titles), .apple)
     }
 
     func testTheAssistantNamesANewConversationOnlyWhenTurnedOn() async throws {

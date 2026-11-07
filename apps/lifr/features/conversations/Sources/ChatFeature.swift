@@ -71,6 +71,8 @@ package struct ChatFeature {
         package var findsSkill = false
         package var skillQuery = ""
         @Presents package var manageSkills: SkillsFeature.State?
+        /// What the conversation runs on, being picked.
+        @Presents package var model: ChatModelFeature.State?
         /// Whether the draft's editor is open.
         package var editsDraft = false
         /// The proposal being edited, before it's checked again.
@@ -229,6 +231,10 @@ package struct ChatFeature {
         case clearSkillTapped
         case manageSkillsTapped
         case manageSkills(PresentationAction<SkillsFeature.Action>)
+        /// Opens what the conversation runs on, to pick another model,
+        /// thinking or window for it.
+        case modelTapped
+        case model(PresentationAction<ChatModelFeature.Action>)
         case sendTapped
         /// Stops the reply being written, keeping what it has written.
         case stopTapped
@@ -382,9 +388,9 @@ package struct ChatFeature {
         Reduce { state, action in
             switch action {
             case .task:
-                state.availability = assistant.availability()
+                state.availability = assistant.availability(state.conversation.context.model)
                 state.today = CalendarDate(now, in: timeZone)
-                state.inputs = assistant.inputs()
+                state.inputs = assistant.inputs(state.conversation.context.model)
                 let conversation = state.conversation.id
                 state.elsewhere = Set(
                     state.conversation.messages.flatMap(\.attachments)
@@ -416,6 +422,22 @@ package struct ChatFeature {
             case .manageSkillsTapped:
                 state.findsSkill = false
                 state.manageSkills = SkillsFeature.State()
+                return .none
+
+            case .modelTapped:
+                state.model = ChatModelFeature.State(choice: state.conversation.context.model)
+                return .none
+
+            case .model(.presented):
+                // Each change applies to the next message.
+                guard let choice = state.model?.choice, choice != state.conversation.context.model else {
+                    return .none
+                }
+                state.conversation.context.model = choice
+                state.availability = assistant.availability(choice)
+                state.inputs = assistant.inputs(choice)
+                // The new model loads once the person writes.
+                state.warmed = false
                 return .none
 
             case .manageSkills(.dismiss):
@@ -650,7 +672,7 @@ package struct ChatFeature {
                 return .merge(
                     reload,
                     .run { [assistant] send in
-                        await send(.named(Result { try await assistant.suggestTitle(messages) }))
+                        await send(.named(Result { try await assistant.suggestTitle(messages, nil) }))
                     })
 
             case .named(let result):
@@ -882,7 +904,7 @@ package struct ChatFeature {
             case .binding(\.input):
                 if !state.warmed, !state.input.isEmpty, state.availability == .available {
                     state.warmed = true
-                    assistant.prewarm()
+                    assistant.prewarm(state.conversation.context.model)
                 }
                 return .none
 
@@ -945,12 +967,13 @@ package struct ChatFeature {
                 }
                 return .none
 
-            case .binding, .alert, .manageSkills, .delegate:
+            case .binding, .alert, .manageSkills, .model, .delegate:
                 return .none
             }
         }
         .ifLet(\.$alert, action: \.alert)
         .ifLet(\.$manageSkills, action: \.manageSkills) { SkillsFeature() }
+        .ifLet(\.$model, action: \.model) { ChatModelFeature() }
     }
 
     /// Summarizes the messages before the last two, after the newest
@@ -960,8 +983,10 @@ package struct ChatFeature {
         guard let through = messages.last?.id else { return .none }
         state.compacting = true
         let earlier = state.conversation.summary?.summary.text
+        let choice = state.conversation.context.model
         return .run { [assistant] send in
-            await send(.compacted(through: through, Result { try await assistant.compact(messages, earlier) }))
+            await send(
+                .compacted(through: through, Result { try await assistant.compact(messages, earlier, choice) }))
         }
     }
 
@@ -985,8 +1010,9 @@ package struct ChatFeature {
             if let pick, let messageID {
                 // A pick that fails leaves the message without a skill, to
                 // answer as it is.
-                let id =
-                    await (try? assistant.pickSkill(request.messages, pick.candidates, pick.kept?.id)) ?? pick.kept?.id
+                let picked = try? await assistant.pickSkill(
+                    request.messages, pick.candidates, pick.kept?.id, request.model)
+                let id = picked ?? pick.kept?.id
                 if let id, let skill = (pick.candidates + (pick.kept.map { [$0] } ?? [])).first(where: { $0.id == id })
                 {
                     request.skill = skill
@@ -1146,6 +1172,7 @@ package struct ChatFeature {
                 attachments.file(attachment, conversation).map { ModelAttachment(attachment.kind, file: $0) }
             })
         request.summary = state.conversation.summary?.summary.text
+        request.model = state.conversation.context.model
         return request
     }
 

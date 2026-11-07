@@ -27,10 +27,10 @@ final class ChatCompactionTests: XCTestCase {
             $0.store = .inMemory(Workspace(), actor: .user(device: "iPhone", surface: .iPhone))
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
-            $0.assistant.availability = { .available }
-            $0.assistant.pickSkill = { _, _, _ in nil }
-            $0.assistant.prewarm = {}
-            $0.assistant.inputs = { [] }
+            $0.assistant.availability = { _ in .available }
+            $0.assistant.pickSkill = { _, _, _, _ in nil }
+            $0.assistant.prewarm = { _ in }
+            $0.assistant.inputs = { _ in [] }
             $0.assistant.reply = { request in
                 asked.withValue { $0.append(request) }
                 return AssistantReplies { continuation in
@@ -38,7 +38,7 @@ final class ChatCompactionTests: XCTestCase {
                     continuation.finish()
                 }
             }
-            $0.assistant.compact = { messages, earlier in
+            $0.assistant.compact = { messages, earlier, _ in
                 compacted.withValue { $0.append((messages, earlier)) }
                 return try summary()
             }

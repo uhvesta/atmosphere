@@ -1,4 +1,5 @@
 [button] "Conversations" id: BackButton
+[button] "Model" hint: "Model, Thinking and Context Window"
 [button, notEnabled] "More"
 [header] "New conversation"
 [text] "Ask about your tasks, change them, or plan what to add."

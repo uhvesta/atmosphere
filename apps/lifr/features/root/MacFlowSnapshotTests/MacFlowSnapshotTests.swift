@@ -101,8 +101,8 @@ final class MacFlowSnapshotTests: XCTestCase {
             budget: ContextBudget(window: 32_768, reservedForAnswer: 2_048),
             steps: answers.map { ScriptedRuntime.answer($0) })
         let titles = ScriptedRuntime(steps: [ScriptedRuntime.answer("Groceries")])
-        var client = AssistantClient.live(runtime: { $0 == .assistant ? model : titles })
-        client.pickSkill = { _, _, _ in skill }
+        var client = AssistantClient.live(runtime: { use, _ in use == .assistant ? model : titles })
+        client.pickSkill = { _, _, _, _ in skill }
         return client
     }
 
@@ -242,6 +242,30 @@ final class MacFlowSnapshotTests: XCTestCase {
         store.send(.conversations(.archiveTapped(id)))
         store.send(.conversations(.archiveShown(true)))
         await flow.step("archive")
+        flow.finish()
+    }
+
+    /// Picking what one chat runs on: the Model sheet before the first
+    /// message, Gemma thinking Long with a larger window, then the chat.
+    /// Settings keeps its default.
+    func testChatModel() async throws {
+        let (store, flow) = app("chat-model")
+        store.send(.selected(.conversations))
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        store.send(.conversations(.chats(.element(id: id, action: .modelTapped))))
+        await flow.step("defaults")
+        let sheet = { (action: ChatModelFeature.Action) in
+            _ = store.send(.conversations(.chats(.element(id: id, action: .model(.presented(action))))))
+        }
+        let gemma = ModelCatalog.gemma4E2B.id
+        sheet(.binding(.set(\.model, gemma)))
+        let long = ModelChoice(model: gemma, thinking: .long, window: 16_384)
+        sheet(.binding(.set(\.choice, long)))
+        await flow.step("picked")
+        store.send(.conversations(.chats(.element(id: id, action: .model(.dismiss)))))
+        await flow.step("chat")
+        XCTAssertEqual(store.conversations.chats[id: id]?.conversation.context.model, long)
         flow.finish()
     }
 

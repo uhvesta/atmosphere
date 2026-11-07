@@ -102,7 +102,7 @@ private enum Storage {
     } withDependencies: {
         $0.store = client
         $0.reminders = .live()
-        $0.assistant = .live(runtime: { use in models.runtime(for: use) })
+        $0.assistant = .live(runtime: { use, choice in models.runtime(for: use, choice: choice) })
         $0.relatedWords = .live(
             selected: { models.selection.model(for: .search) }, runtime: { models.runtime(for: .search) })
         $0.models = models.client

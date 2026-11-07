@@ -1,6 +1,7 @@
 import ChatUI
 import ComposableArchitecture
 import LifrAssistantClient
+import LifrModelsClient
 import LifrUI
 import SwiftUI
 
@@ -154,6 +155,13 @@ package struct SkillEditorView: View {
                     prompt: Text("Every Friday, show what I finished and what's overdue"), axis: .vertical
                 )
                 .lineLimit(2...5)
+                Picker("Model", selection: $store.model) {
+                    Text("Default (\(store.models.first { $0.id == store.standard }?.name ?? "…"))")
+                        .tag(ModelID?.none)
+                    ForEach(store.models) { model in
+                        Text(model.name).tag(ModelID?.some(model.id))
+                    }
+                }
                 Button {
                     store.send(.draftTapped)
                 } label: {

@@ -70,8 +70,6 @@ public struct LlamaEngine: ModelEngine {
 /// One conversation with a llama.cpp model. Its history stays in the
 /// session until it's let go of.
 final class LlamaChat: EngineChat {
-    /// The most a turn thinks before it answers, in tokens.
-    static let thinkingTokens = 512
     /// How a turn picks its tokens when the model's profile doesn't say.
     static let sampling = ModelProfile.Sampling(topK: 40, topP: 0.95, temperature: 0.7)
 
@@ -90,7 +88,7 @@ final class LlamaChat: EngineChat {
     }
 
     func send(
-        _ message: String, attachments: [ModelAttachment], format: String?, thinks: Bool,
+        _ message: String, attachments: [ModelAttachment], format: String?, thinkingTokens: Int?,
         thought: (@Sendable (ModelThinking) -> Void)?, partial: @escaping @Sendable (String) -> Void
     ) async throws(ModelRuntimeError) -> String {
         if attachments.contains(where: { $0.kind == .audio }) { throw .unsupportedInput(.audio) }
@@ -103,7 +101,8 @@ final class LlamaChat: EngineChat {
         }
         let start = ContinuousClock.now
         let turn = Turn(
-            id: id, instructions: instructions, message: message, images: images, grammar: grammar, thinks: thinks,
+            id: id, instructions: instructions, message: message, images: images, grammar: grammar,
+            thinkingTokens: thinkingTokens,
             stop: stop, thought: thought, partial: partial)
         let (answer, reasoning) = try await session.run(stoppedBy: stop) { session throws(ModelRuntimeError) in
             try turn.run(on: session)
@@ -126,13 +125,17 @@ private struct Turn: Sendable {
     var message: String
     var images: [URL]
     var grammar: String?
-    var thinks: Bool
+    /// The most the model thinks for, or nil when it answers straight away.
+    var thinkingTokens: Int?
     var stop: LlamaStop
     var thought: (@Sendable (ModelThinking) -> Void)?
     var partial: @Sendable (String) -> Void
 
     /// The answer, and the reasoning to show for it, if the model showed
     /// any.
+    /// Whether the turn asked the model to think.
+    private var thinks: Bool { thinkingTokens != nil }
+
     func run(on session: LlamaSession) throws(ModelRuntimeError) -> (String, String?) {
         try prompt(on: session)
         let thinking = session.profile.thinking
@@ -182,7 +185,8 @@ private struct Turn: Sendable {
     ) throws(ModelRuntimeError) -> String? {
         let sampler = try session.sampler(grammar: nil, sampling: sampling)
         var bytes: [UInt8] = []
-        for _ in 0..<LlamaChat.thinkingTokens {
+        // A model that thinks when not asked to gets the usual budget.
+        for _ in 0..<(thinkingTokens ?? ThinkingLevel.on.tokens ?? 0) {
             if stop.isStopped { throw .cancelled }
             guard session.room > 8 else { throw .exceededContext }
             let (token, ends) = session.next(sampler)

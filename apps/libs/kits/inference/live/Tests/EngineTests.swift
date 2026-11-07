@@ -11,7 +11,10 @@ final class FakeChat: EngineChat, @unchecked Sendable {
         var message: String
         var format: String?
         var attachments: [ModelAttachment] = []
-        var thinks = false
+        /// The most the model was asked to think for, if at all.
+        var thinkingTokens: Int?
+
+        var thinks: Bool { thinkingTokens != nil }
     }
 
     let sent = Locked<[Sent]>([])
@@ -30,12 +33,13 @@ final class FakeChat: EngineChat, @unchecked Sendable {
     }
 
     func send(
-        _ message: String, attachments: [ModelAttachment], format: String?, thinks: Bool,
+        _ message: String, attachments: [ModelAttachment], format: String?, thinkingTokens: Int?,
         thought: (@Sendable (ModelThinking) -> Void)?, partial: @escaping @Sendable (String) -> Void
     ) async throws(ModelRuntimeError) -> String {
         sent.withValue {
-            $0.append(Sent(message: message, format: format, attachments: attachments, thinks: thinks))
+            $0.append(Sent(message: message, format: format, attachments: attachments, thinkingTokens: thinkingTokens))
         }
+        let thinks = thinkingTokens != nil
         // A model thinking on the GPU for a second about each message.
         if thinks { thought?(ModelThinking(text: "About \(message)", processor: .gpu)) }
         let written = try await reply(message, format)
@@ -137,6 +141,18 @@ final class EngineTurnTests: XCTestCase {
         XCTAssertEqual(thoughts.value.first?.duration, nil, "it streams before it's done")
         XCTAssertEqual(
             thoughts.value.last, ModelThinking(text: "About Hi", duration: .seconds(1), processor: .gpu))
+    }
+
+    func testATurnThinksForAsLongAsItAsks() async throws {
+        let chat = FakeChat(["Hello there", "Hello again"])
+        var turn = ModelTurn(instructions: "", prompt: "Hi")
+        turn.thinking = { _ in }
+
+        _ = try await EngineTurn.respond(to: turn, on: FakeEngine(chat: chat)) { _ in }
+        turn.thinkingTokens = 2_048
+        _ = try await EngineTurn.respond(to: turn, on: FakeEngine(chat: chat)) { _ in }
+
+        XCTAssertEqual(chat.sent.value.map(\.thinkingTokens), [512, 2_048])
     }
 
     func testATurnThatDoesntWantThinkingAsksForNone() async throws {

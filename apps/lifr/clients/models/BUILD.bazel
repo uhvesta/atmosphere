@@ -21,6 +21,7 @@ swift_library(
         "//apps/lifr/features/conversations:__pkg__",
         "//apps/lifr/features/root:__pkg__",
         "//apps/lifr/features/settings:__pkg__",
+        "//apps/lifr/features/skills:__pkg__",
     ],
     deps = [
         "//apps/libs/kits/inference",

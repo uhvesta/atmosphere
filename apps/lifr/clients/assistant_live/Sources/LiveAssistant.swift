@@ -6,26 +6,34 @@ import LifrModelsClient
 import Synchronization
 
 extension AssistantClient {
-    /// The assistant on the model `runtime` returns for each use, asked
-    /// again for each request so a change of model applies to the next
-    /// message. Nothing leaves the device.
-    package static func live(runtime: @escaping @Sendable (ModelUse) -> any ModelRuntime) -> AssistantClient {
+    /// The assistant on the model `runtime` returns for each use, or for
+    /// what a conversation picked in its place, asked again for each
+    /// request so a change of model applies to the next message. Nothing
+    /// leaves the device.
+    package static func live(
+        runtime: @escaping @Sendable (ModelUse, ModelChoice) -> any ModelRuntime
+    ) -> AssistantClient {
         AssistantClient(
-            availability: { AssistantAvailability(runtime(.assistant).status) },
-            reply: { request in LiveAssistant.reply(to: request, on: runtime(.assistant)) },
-            draftSkill: { description in try await LiveAssistant.draftSkill(description, on: runtime(.skills)) },
-            pickSkill: { messages, skills, drafting in
-                try await LiveAssistant.pickSkill(messages, skills, drafting: drafting, on: runtime(.assistant))
+            availability: { choice in AssistantAvailability(runtime(.assistant, choice).status) },
+            reply: { request in LiveAssistant.reply(to: request, on: runtime(.assistant, request.model)) },
+            draftSkill: { description, model in
+                try await LiveAssistant.draftSkill(description, on: runtime(.skills, ModelChoice(model: model)))
             },
-            suggestTitle: { messages in try await LiveAssistant.suggestTitle(messages, on: runtime(.titles)) },
-            compact: { messages, earlier in
-                try await LiveAssistant.compact(messages, earlier: earlier, on: runtime(.assistant))
+            pickSkill: { messages, skills, drafting, choice in
+                try await LiveAssistant.pickSkill(
+                    messages, skills, drafting: drafting, on: runtime(.assistant, choice))
             },
-            prewarm: {
-                let model = runtime(.assistant)
+            suggestTitle: { messages, model in
+                try await LiveAssistant.suggestTitle(messages, on: runtime(.titles, ModelChoice(model: model)))
+            },
+            compact: { messages, earlier, choice in
+                try await LiveAssistant.compact(messages, earlier: earlier, on: runtime(.assistant, choice))
+            },
+            prewarm: { choice in
+                let model = runtime(.assistant, choice)
                 if model.status == .available { model.prewarm() }
             },
-            inputs: { runtime(.assistant).inputs })
+            inputs: { choice in runtime(.assistant, choice).inputs })
     }
 }
 
@@ -182,7 +190,7 @@ enum LiveAssistant {
             schemaInPrompt: size.schemaInPrompt,
             attachments: request.attachments)
         let draftsPlans = request.draftsPlans
-        turn.thinking = thoughts.attempt(continuation)
+        think(&turn, request, thoughts, continuation)
         let answer = try await model.respond(to: turn) { partial in
             let reply = AssistantPrompt.reply(from: partial, isComplete: false, draftsPlans: draftsPlans)
             thoughts.yield(reply, continuation)
@@ -265,7 +273,7 @@ enum LiveAssistant {
         var turn = ModelTurn(
             instructions: instructions,
             prompt: AssistantPrompt.prompt(request, size: size), attachments: request.attachments)
-        turn.thinking = thoughts.attempt(continuation)
+        think(&turn, request, thoughts, continuation)
         let answer = try await model.respond(to: turn) { partial in
             thoughts.yield(AssistantReply(text: partial.plainText, isComplete: false), continuation)
         }
@@ -274,6 +282,17 @@ enum LiveAssistant {
                 text: answer.plainText, isComplete: true, thinking: thoughts.value,
                 leftOut: AssistantPrompt.leftOut(request, size: size)))
         continuation.finish()
+    }
+
+    /// Has the model think before `turn` as long as the conversation asks,
+    /// or not at all.
+    private static func think(
+        _ turn: inout ModelTurn, _ request: AssistantRequest, _ thoughts: Thoughts,
+        _ continuation: AssistantReplies.Continuation
+    ) {
+        guard let tokens = request.model.thinkingLevel.tokens else { return }
+        turn.thinking = thoughts.attempt(continuation)
+        turn.thinkingTokens = tokens
     }
 
     static func draftSkill(_ description: String, on model: any ModelRuntime) async throws -> SkillDraft {

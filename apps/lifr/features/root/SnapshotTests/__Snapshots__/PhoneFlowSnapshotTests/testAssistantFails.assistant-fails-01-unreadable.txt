@@ -1,4 +1,5 @@
 [button] "Conversations" id: BackButton
+[button] "Model" hint: "Model, Thinking and Context Window"
 [button] "More"
 [header] "Plan my week"
 [text] "Plan my week"

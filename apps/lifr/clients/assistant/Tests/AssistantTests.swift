@@ -3,6 +3,7 @@ import Foundation
 import LifrAPI
 import LifrAssistantClient
 import LifrCore
+import LifrModelsClient
 import LifrStoreClient
 import XCTest
 
@@ -192,7 +193,7 @@ final class AssistantTests: XCTestCase {
         for try await reply in client.reply(request) { replies.append(reply) }
 
         XCTAssertEqual(replies, [AssistantReply(text: AssistantReply.example.text), AssistantReply.example])
-        XCTAssertEqual(client.availability(), .available)
+        XCTAssertEqual(client.availability(.defaults), .available)
     }
 
     func testASuggestedTitleIsItsFirstLineWithoutQuotesOrALabel() {
@@ -200,6 +201,16 @@ final class AssistantTests: XCTestCase {
         XCTAssertEqual(AssistantPrompt.title(from: "  “Race day”  "), "Race day")
         XCTAssertNil(AssistantPrompt.title(from: "\"\""))
         XCTAssertEqual(AssistantPrompt.title(from: String(repeating: "a", count: 60))?.count, 40)
+    }
+
+    func testAConversationSavedBeforeItHadAModelOfItsOwnFollowsTheDefaults() throws {
+        let old = Data(#"{"changes":[],"added":[]}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(AssistantContext.self, from: old).model, .defaults)
+
+        var conversation = Conversation(id: UUID(), createdAt: now)
+        conversation.context.model = ModelChoice(model: "qwen3.5-2b", thinking: .long, window: 16_384)
+        let kept = try JSONDecoder().decode(Conversation.self, from: JSONEncoder().encode(conversation))
+        XCTAssertEqual(kept.context.model, conversation.context.model)
     }
 
     func testAConversationSavedBeforeNamesHasNone() throws {

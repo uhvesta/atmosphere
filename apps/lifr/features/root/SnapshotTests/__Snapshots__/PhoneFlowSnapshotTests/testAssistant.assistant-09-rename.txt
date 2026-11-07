@@ -1,4 +1,5 @@
 [button] "Conversations" id: BackButton
+[button] "Model" hint: "Model, Thinking and Context Window"
 [button] "More"
 [header] "Tidy my weekend"
 [button] "Cancel"
@@ -8,8 +9,9 @@
 [text] "Tidy my weekend"
 [text] "Leave it empty to use the first message."
 [text] "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
-[button] "Suggest with Apple Intelligence"
+[button] "Model, Default (Apple Intelligence)"
 [button] "Undo"
+[button] "Suggest with Apple Intelligence"
 [button] "Retry" hint: "Write this reply again"
 [text] "Added 2 tasks to Home"
 [button] "Undo"

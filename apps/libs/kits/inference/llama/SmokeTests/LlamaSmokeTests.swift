@@ -12,7 +12,7 @@ final class LlamaSmokeTests: XCTestCase {
             let chat = try await engine.chat(instructions: "Answer in one short sentence.", constrained: false)
 
             let answer = try await chat.send(
-                "What is the capital of France?", attachments: [], format: nil, thinks: false, thought: nil,
+                "What is the capital of France?", attachments: [], format: nil, thinkingTokens: nil, thought: nil,
                 partial: { _ in })
 
             XCTAssertTrue(answer.localizedCaseInsensitiveContains("paris"), "\(backend): \(answer)")
@@ -28,7 +28,8 @@ final class LlamaSmokeTests: XCTestCase {
             """#
 
         let answer = try await chat.send(
-            "A task: walk the dog for half an hour.", attachments: [], format: schema, thinks: false, thought: nil,
+            "A task: walk the dog for half an hour.", attachments: [], format: schema, thinkingTokens: nil,
+            thought: nil,
             partial: { _ in })
 
         let object = try XCTUnwrap(
@@ -43,10 +44,11 @@ final class LlamaSmokeTests: XCTestCase {
         let thoughts = LockIsolated<[ModelThinking]>([])
 
         _ = try await chat.send(
-            "My cat is called Miso. Say hello to her.", attachments: [], format: nil, thinks: true,
+            "My cat is called Miso. Say hello to her.", attachments: [], format: nil, thinkingTokens: 512,
             thought: { thinking in thoughts.withValue { $0.append(thinking) } }, partial: { _ in })
         let answer = try await chat.send(
-            "What is my cat called?", attachments: [], format: nil, thinks: false, thought: nil, partial: { _ in })
+            "What is my cat called?", attachments: [], format: nil, thinkingTokens: nil, thought: nil, partial: { _ in }
+        )
 
         XCTAssertFalse(thoughts.value.isEmpty)
         XCTAssertTrue(answer.localizedCaseInsensitiveContains("miso"), answer)

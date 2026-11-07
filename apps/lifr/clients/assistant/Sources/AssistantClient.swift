@@ -9,34 +9,39 @@ import LifrModelsClient
 /// live version runs Apple's on-device model, so nothing leaves the device.
 @DependencyClient
 package struct AssistantClient: Sendable {
+    // Each takes what the conversation runs on in place of the defaults.
+
     /// Whether this device can run the assistant now.
-    package var availability: @Sendable () -> AssistantAvailability = { .deviceNotEligible }
+    package var availability: @Sendable (_ choice: ModelChoice) -> AssistantAvailability = { _ in .deviceNotEligible }
     /// The assistant's answer to the last message in `request`, as it's
     /// written: each element is the whole answer so far, the last one complete.
     package var reply: @Sendable (_ request: AssistantRequest) -> AssistantReplies = { _ in
         AssistantReplies { $0.finish(throwing: AssistantError.unavailable(.deviceNotEligible)) }
     }
     /// A skill written from the person's description of it, for them to
-    /// review before saving.
-    package var draftSkill: @Sendable (_ description: String) async throws -> SkillDraft
+    /// review before saving, by `model` or the one picked for skills.
+    package var draftSkill: @Sendable (_ description: String, _ model: ModelID?) async throws -> SkillDraft
     /// Which of `skills` fits the last message in `messages`, by ID, or nil
     /// when none does and the assistant should answer as it is.
     ///
     /// `drafting` is the skill drafting the plan open in the chat, if one is.
     package var pickSkill:
-        @Sendable (_ messages: [ChatMessage], _ skills: [Skill], _ drafting: String?) async throws -> String?
-    /// A short title for a conversation with these messages.
-    package var suggestTitle: @Sendable (_ messages: [ChatMessage]) async throws -> String
+        @Sendable (_ messages: [ChatMessage], _ skills: [Skill], _ drafting: String?, _ choice: ModelChoice)
+            async throws -> String?
+    /// A short title for a conversation with these messages, by `model` or
+    /// the one picked for titles.
+    package var suggestTitle: @Sendable (_ messages: [ChatMessage], _ model: ModelID?) async throws -> String
     /// A short summary of `messages`, which follow the summary `earlier`
     /// when there is one, to send in their place once a conversation is
     /// longer than the model reads.
-    package var compact: @Sendable (_ messages: [ChatMessage], _ earlier: String?) async throws -> String
+    package var compact:
+        @Sendable (_ messages: [ChatMessage], _ earlier: String?, _ choice: ModelChoice) async throws -> String
     /// Loads the model ahead of the first message, so the first answer
     /// starts sooner. Does nothing when it's loaded or can't run.
-    package var prewarm: @Sendable () -> Void = {}
+    package var prewarm: @Sendable (_ choice: ModelChoice) -> Void = { _ in }
     /// What the model picked for the assistant reads besides text, such as
     /// photos and recordings.
-    package var inputs: @Sendable () -> Set<ModelInput> = { [] }
+    package var inputs: @Sendable (_ choice: ModelChoice) -> Set<ModelInput> = { _ in [] }
 }
 
 /// Each reply as it's written, the last one complete.
@@ -78,8 +83,8 @@ package enum AssistantAvailability: Hashable, Sendable, CustomStringConvertible 
                 + "pick another model there."
         case .notEnoughMemory(let needed, let available):
             "The model picked for the assistant needs about \(Self.bytes(needed)) of memory and Lifr has "
-                + "\(Self.bytes(available)) free now. Close other apps and try again, or pick a smaller model in "
-                + "Settings › Models."
+                + "\(Self.bytes(available)) free now. Close other apps and try again, or pick a smaller model or "
+                + "context window for this chat, or in Settings › Models."
         }
     }
 
@@ -180,6 +185,8 @@ package struct AssistantRequest: Hashable, Sendable {
     /// What the assistant wrote of the conversation before `messages`, sent
     /// ahead of them.
     package var summary: String?
+    /// What the conversation runs on in place of the defaults.
+    package var model = ModelChoice.defaults
 
     package init(
         messages: [ChatMessage], draft: Plan? = nil, problem: String? = nil, workspace: Workspace, now: Date,
@@ -457,7 +464,7 @@ extension AssistantClient {
     ) -> AssistantClient {
         let next = LockIsolated(0)
         return AssistantClient(
-            availability: { .available },
+            availability: { _ in .available },
             reply: { _ in
                 let reply = next.withValue { index in
                     defer { index += 1 }
@@ -471,12 +478,12 @@ extension AssistantClient {
                     continuation.finish()
                 }
             },
-            draftSkill: { _ in .example },
-            pickSkill: { _, _, _ in nil },
-            suggestTitle: { _ in "Planning the week" },
-            compact: { _, _ in AssistantPrompt.exampleSummary },
-            prewarm: {},
-            inputs: { inputs })
+            draftSkill: { _, _ in .example },
+            pickSkill: { _, _, _, _ in nil },
+            suggestTitle: { _, _ in "Planning the week" },
+            compact: { _, _, _ in AssistantPrompt.exampleSummary },
+            prewarm: { _ in },
+            inputs: { _ in inputs })
     }
 
     /// This client, but its replies to the calls `failures` numbers, from

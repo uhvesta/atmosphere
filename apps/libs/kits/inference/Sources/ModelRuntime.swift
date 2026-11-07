@@ -42,6 +42,8 @@ public struct ModelTurn: Sendable {
     /// the wait, such as naming a conversation, and the model answers
     /// straight away.
     public var thinking: (@Sendable (ModelThinking) -> Void)?
+    /// The most tokens the model thinks for when `thinking` is set.
+    public var thinkingTokens = 512
 
     public init(
         instructions: String, prompt: String, tools: [ModelTool] = [], schema: ModelSchema? = nil,

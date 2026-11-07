@@ -73,8 +73,8 @@ final class AttachmentTests: XCTestCase {
     }
 
     func testTheScriptedAssistantReadsOnlyWhatItsToldTo() {
-        XCTAssertEqual(AssistantClient.scripted().inputs(), [])
-        XCTAssertEqual(AssistantClient.scripted(inputs: [.image]).inputs(), [.image])
+        XCTAssertEqual(AssistantClient.scripted().inputs(.defaults), [])
+        XCTAssertEqual(AssistantClient.scripted(inputs: [.image]).inputs(.defaults), [.image])
     }
 
     func testInMemoryAttachmentsAreGoneWithTheirConversation() async throws {

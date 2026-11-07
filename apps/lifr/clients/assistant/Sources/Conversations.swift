@@ -2,6 +2,7 @@ import ChatKit
 import ComposableArchitecture
 import Foundation
 import LifrCore
+import LifrModelsClient
 
 /// One conversation with the assistant: ChatKit's, with Lifr's draft and
 /// Undo kept beside its messages.
@@ -17,17 +18,22 @@ package struct AssistantContext: ConversationContext {
     package var changes: [UUID: [UUID]] = [:]
     /// The journal entries of plans added from the draft card.
     package var added: [UUID] = []
+    /// The model it runs on, how long that thinks and its window, in place
+    /// of the defaults in Settings.
+    package var model = ModelChoice.defaults
 
     package init() {}
 
-    private enum CodingKeys: String, CodingKey { case draft, changes, added }
+    private enum CodingKeys: String, CodingKey { case draft, changes, added, model }
 
-    /// Conversations saved before drafts or Undo read with none.
+    /// Conversations saved before drafts, Undo or a model of their own
+    /// read with none.
     package init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         draft = try container.decodeIfPresent(Plan.self, forKey: .draft)
         changes = try container.decodeIfPresent([UUID: [UUID]].self, forKey: .changes) ?? [:]
         added = try container.decodeIfPresent([UUID].self, forKey: .added) ?? []
+        model = try container.decodeIfPresent(ModelChoice.self, forKey: .model) ?? .defaults
     }
 }
 
@@ -50,9 +56,11 @@ extension ChatKit.Conversation where Message == ChatMessage, Context == Assistan
 
     /// A new conversation of the messages up to `id`, on this one's branch
     /// to it, that doesn't share its Undo or draft: the tasks those
-    /// changed belong to this one.
+    /// changed belong to this one. It runs on the same model.
     package func fork(at id: UUID, as forkID: UUID, now: Date) -> Conversation? {
-        fork(at: id, as: forkID, now: now, name: String(localized: "\(title) (fork)"))
+        var fork = fork(at: id, as: forkID, now: now, name: String(localized: "\(title) (fork)"))
+        fork?.context.model = context.model
+        return fork
     }
 }
 

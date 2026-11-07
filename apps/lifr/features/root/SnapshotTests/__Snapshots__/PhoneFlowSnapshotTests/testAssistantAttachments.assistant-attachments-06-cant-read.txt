@@ -1,4 +1,5 @@
 [button] "Conversations" id: BackButton
+[button] "Model" hint: "Model, Thinking and Context Window"
 [button] "More"
 [header] "What plant is this?"
 [text] "Photo"

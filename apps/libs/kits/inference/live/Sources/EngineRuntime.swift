@@ -74,10 +74,16 @@ public struct ModelRuntimes<Use: ModelUseCase>: Sendable {
         self.bench = bench
     }
 
-    public func runtime(for use: Use) -> any ModelRuntime {
-        let id = selection.model(for: use)
+    /// What `use` runs on, or what `choice` picks in place of it: its
+    /// model, at its window. The person's defaults stay as they are.
+    public func runtime(for use: Use, choice: ModelChoice = .defaults) -> any ModelRuntime {
+        let id = choice.model ?? selection.model(for: use)
         guard id != .apple else { return AppleRuntime() }
-        guard let model = library.installed().first(where: { $0.id == id }) else { return Missing() }
+        guard var model = library.installed().first(where: { $0.id == id }) else { return Missing() }
+        if let window = choice.window, window == model.spec.contextTokens || model.spec.contextChoices.contains(window)
+        {
+            model.chosenWindow = window
+        }
         switch model.spec.runtime {
         case .apple: return AppleRuntime()
         case .liteRT, .llama: return EngineRuntime(model: model, host: host)
