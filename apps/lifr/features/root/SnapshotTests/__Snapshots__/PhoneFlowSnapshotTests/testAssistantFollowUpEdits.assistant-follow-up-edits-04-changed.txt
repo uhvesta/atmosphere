@@ -1,10 +1,13 @@
 [button] "Conversations" id: BackButton
 [button] "More"
 [header] "Add a task to buy milk, in HOME"
+[element] "Skill: Add"
 [text] "Add a task to buy milk, in HOME"
 [text] "I added a task to buy milk in HOME."
+[element] "Skill: Add"
 [text] "Also add buy eggs"
 [text] "I added a task to buy eggs in HOME."
+[element] "Skill: Add"
 [text] "Change that to Friday"
 [text] "I moved buy milk to Friday."
 [button] "Retry" hint: "Write this reply again"

@@ -12,6 +12,7 @@ import SwiftUI
 package struct SettingsView: View {
     @Bindable package var store: StoreOf<SettingsFeature>
     @Shared(.namesConversations) private var namesConversations
+    @Shared(.picksSkills) private var picksSkills
     @Shared(.compactsConversations) private var compactsConversations
 
     package init(store: StoreOf<SettingsFeature>) {
@@ -39,6 +40,7 @@ package struct SettingsView: View {
                 Text("Every change, who made it, and from where. Any of them can be reverted.")
             }
             Section {
+                Toggle("Pick a skill automatically", isOn: Binding($picksSkills))
                 Toggle("Name conversations", isOn: Binding($namesConversations))
                 Toggle("Compact long conversations", isOn: Binding($compactsConversations))
                 Button("Instructions") { store.send(.instructionsTapped) }
@@ -48,7 +50,9 @@ package struct SettingsView: View {
                 Text("Assistant")
             } footer: {
                 Text(
-                    "Names each new conversation after its first reply, on this device, with the model picked "
+                    "Picking a skill asks the model which skill fits each message you send without one, among "
+                        + "those marked Use Automatically in Skills; with none, the assistant just talks. Names each "
+                        + "new conversation after its first reply, on this device, with the model picked "
                         + "in Models. Names you give are kept. Compacting summarizes older messages once they no "
                         + "longer fit what the model reads; without it, a chat offers Compact then. Conversations "
                         + "stay on this device unless you sync them: swipe right on one in Conversations. "

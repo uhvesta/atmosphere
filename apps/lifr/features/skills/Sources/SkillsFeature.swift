@@ -20,6 +20,8 @@ package struct SkillsFeature {
         case task
         case loaded(Result<[Skill], any Error>)
         case toggled(String, Bool)
+        /// Whether Lifr may pick the skill by itself was changed.
+        case autoPicksToggled(String, Bool)
         case newTapped
         case editTapped(String)
         case deleteTapped([String])
@@ -45,6 +47,12 @@ package struct SkillsFeature {
             case .toggled(let id, let on):
                 guard let index = state.skills.firstIndex(where: { $0.id == id }) else { return .none }
                 state.skills[index].isOn = on
+                let skill = state.skills[index]
+                return save { try await $0.save(skill) }
+
+            case .autoPicksToggled(let id, let on):
+                guard let index = state.skills.firstIndex(where: { $0.id == id }) else { return .none }
+                state.skills[index].autoPicks = on
                 let skill = state.skills[index]
                 return save { try await $0.save(skill) }
 
@@ -117,6 +125,8 @@ package struct SkillEditor {
         package var instructions = ""
         package var tools: Set<AssistantTool> = [.findTasks, .getTask, .overview]
         package var draftsPlans = false
+        package var autoPicks = false
+        package var useWhen = ""
         /// Whether the person asked for the assistant's help, which is off
         /// until they do.
         package var assists = false
@@ -137,6 +147,8 @@ package struct SkillEditor {
             instructions = skill.instructions
             tools = skill.tools
             draftsPlans = skill.draftsPlans
+            autoPicks = skill.autoPicks
+            useWhen = skill.useWhen
         }
 
         /// The skill as written, or nil when it can't be saved yet.
@@ -144,16 +156,19 @@ package struct SkillEditor {
             let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !instructions.isEmpty else { return nil }
             let summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            let useWhen = useWhen.trimmingCharacters(in: .whitespacesAndNewlines)
             if var skill = editing {
                 skill.summary = summary
                 skill.instructions = instructions
                 skill.tools = tools
                 skill.draftsPlans = draftsPlans
+                skill.autoPicks = autoPicks
+                skill.useWhen = useWhen
                 return skill
             }
             return Skill(
                 userNamed: name, summary: summary, instructions: instructions, tools: tools,
-                draftsPlans: draftsPlans)
+                draftsPlans: draftsPlans, autoPicks: autoPicks, useWhen: useWhen)
         }
 
         /// Why the skill can't be saved, once there's something to say.

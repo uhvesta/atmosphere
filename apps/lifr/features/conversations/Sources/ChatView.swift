@@ -896,6 +896,8 @@ private struct MessageView: View {
                 Label(skill, systemImage: "sparkles")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.tint)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(Text("Skill: \(skill)"))
             }
             ForEach(message.attachments) { attachment in
                 AttachmentChip(attachment: attachment, elsewhere: elsewhere.contains(attachment.id))

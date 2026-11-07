@@ -1,6 +1,7 @@
 [button] "Conversations" id: BackButton
 [button] "More"
 [header] "I called the plumber"
+[element] "Skill: Change"
 [text] "I called the plumber"
 [text] "I'd mark it done."
 [text] "Changed task “Call the plumber”"
@@ -9,6 +10,7 @@
 [text] "Done"
 [image] "to"
 [text] "Declined"
+[element] "Skill: Change"
 [text] "Mark “Call the plumber” done"
 [text] "I'd mark it done."
 [text] "Changed task “Call the plumber”"

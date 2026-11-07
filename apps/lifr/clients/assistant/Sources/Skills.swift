@@ -27,10 +27,16 @@ package struct Skill: Identifiable, Hashable, Codable, Sendable {
     package var draftsPlans: Bool
     /// Off skills can't be picked.
     package var isOn: Bool
+    /// Whether Lifr may pick the skill for a message by itself, when
+    /// Settings › Assistant › Pick a skill automatically is on.
+    package var autoPicks: Bool
+    /// When the skill fits a message, for picking it automatically: "the
+    /// person lists things they have to do".
+    package var useWhen: String
 
     package init(
         id: String, summary: String, instructions: String, tools: Set<AssistantTool>, draftsPlans: Bool,
-        isOn: Bool = true
+        isOn: Bool = true, autoPicks: Bool = false, useWhen: String = ""
     ) {
         self.id = id
         self.summary = summary
@@ -38,6 +44,28 @@ package struct Skill: Identifiable, Hashable, Codable, Sendable {
         self.tools = tools
         self.draftsPlans = draftsPlans
         self.isOn = isOn
+        self.autoPicks = autoPicks
+        self.useWhen = useWhen
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, summary, instructions, tools, draftsPlans, isOn, autoPicks, useWhen
+    }
+
+    /// Skills saved before automatic picking read as the built-in's default,
+    /// or not picked automatically for the person's own.
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decode(String.self, forKey: .id)
+        let builtIn = Self.builtIn.first { $0.id == id }
+        self.init(
+            id: id, summary: try container.decode(String.self, forKey: .summary),
+            instructions: try container.decode(String.self, forKey: .instructions),
+            tools: try container.decode(Set<AssistantTool>.self, forKey: .tools),
+            draftsPlans: try container.decode(Bool.self, forKey: .draftsPlans),
+            isOn: try container.decode(Bool.self, forKey: .isOn),
+            autoPicks: try container.decodeIfPresent(Bool.self, forKey: .autoPicks) ?? builtIn?.autoPicks ?? false,
+            useWhen: try container.decodeIfPresent(String.self, forKey: .useWhen) ?? builtIn?.useWhen ?? "")
     }
 
     package static let userPrefix = "user:"
@@ -46,13 +74,13 @@ package struct Skill: Identifiable, Hashable, Codable, Sendable {
     /// "user:weekly-review". Nil when the name has no letters or digits.
     package init?(
         userNamed name: String, summary: String, instructions: String, tools: Set<AssistantTool>,
-        draftsPlans: Bool
+        draftsPlans: Bool, autoPicks: Bool = false, useWhen: String = ""
     ) {
         let words = name.lowercased().split { !$0.isLetter && !$0.isNumber }
         guard !words.isEmpty else { return nil }
         self.init(
             id: Self.userPrefix + words.joined(separator: "-"), summary: summary, instructions: instructions,
-            tools: tools, draftsPlans: draftsPlans)
+            tools: tools, draftsPlans: draftsPlans, autoPicks: autoPicks, useWhen: useWhen)
     }
 
     package var isUser: Bool { id.hasPrefix(Self.userPrefix) }
@@ -67,14 +95,37 @@ package struct Skill: Identifiable, Hashable, Codable, Sendable {
         instructions: """
             Answer the person's questions about their tasks from what the tools return. Don't propose a plan.
             """,
-        tools: [.findTasks, .getTask, .overview, .recentActivity], draftsPlans: false)
+        tools: [.findTasks, .getTask, .overview, .recentActivity], draftsPlans: false, autoPicks: true,
+        useWhen: "the person asks about their tasks, Projects or Avenues: what's due, what's left, what's in one")
 
     package static let add = Skill(
         id: "add", summary: String(localized: "Plan new tasks, Projects and Avenues."),
         instructions: """
             Help the person plan what to add. Ask what's missing, then put the whole plan in "plan".
             """,
-        tools: [.findTasks, .getTask], draftsPlans: true)
+        tools: [.findTasks, .getTask], draftsPlans: true, autoPicks: true,
+        useWhen: "the person names one or a few clear things to add, or answers about a plan being drafted")
+
+    package static let change = Skill(
+        id: "change", summary: String(localized: "Rename, move, reschedule or finish tasks and Projects."),
+        instructions: """
+            Change the tasks or Projects the person means: put each change in "changes", or in \
+            "projectChanges" for a Project, and say in a sentence what you'd change.
+            """,
+        tools: [.findTasks, .getTask, .updateTasks, .updateProjects], draftsPlans: false, autoPicks: true,
+        useWhen: "the person wants existing tasks or Projects renamed, moved, rescheduled, reprioritised or finished")
+
+    package static let breakdown = Skill(
+        id: "breakdown", summary: String(localized: "Turn a brain dump into a plan."),
+        instructions: """
+            The person is dumping what's on their mind. First understand it: ask short questions, one or two at \
+            a time, about what's unclear: what each thing is, which Avenue or Project it belongs in, what has to \
+            come first, and any deadlines. Leave "plan" out while you're still asking. Once you understand, plan \
+            it in "plan": tasks in the order to do them, with steps as Sub tasks, and a Project where several \
+            tasks serve one goal.
+            """,
+        tools: [.findTasks], draftsPlans: true, autoPicks: true,
+        useWhen: "the person dumps many things they have to do, or a big goal that needs breaking into steps")
 
     package static let tidy = Skill(
         id: "tidy", summary: String(localized: "Clean up titles, priorities, dates and labels."),
@@ -82,7 +133,8 @@ package struct Skill: Identifiable, Hashable, Codable, Sendable {
             Help tidy existing tasks: clearer titles, missing priorities and due dates, consistent labels. \
             Say what you'd change first, and put it in "changes" once the person agrees.
             """,
-        tools: [.findTasks, .getTask, .overview, .updateTasks, .updateProjects], draftsPlans: false)
+        tools: [.findTasks, .getTask, .overview, .updateTasks, .updateProjects], draftsPlans: false,
+        useWhen: "the person asks to clean up or tidy their tasks")
 
     package static let review = Skill(
         id: "review", summary: String(localized: "Look back at what's done, overdue and stalled."),
@@ -90,7 +142,8 @@ package struct Skill: Identifiable, Hashable, Codable, Sendable {
             Review the person's week with them: what got done, what's overdue, and what has stalled. Suggest \
             what to drop or move, and add a comment to a task when they ask.
             """,
-        tools: [.findTasks, .getTask, .overview, .recentActivity, .addComment], draftsPlans: false)
+        tools: [.findTasks, .getTask, .overview, .recentActivity, .addComment], draftsPlans: false,
+        useWhen: "the person asks to look back over their week")
 
     package static let undo = Skill(
         id: "undo", summary: String(localized: "Put back recent changes."),
@@ -98,9 +151,18 @@ package struct Skill: Identifiable, Hashable, Codable, Sendable {
             Help the person put back changes. Find them with recentActivity, say which you'd revert, and \
             revert them once the person agrees.
             """,
-        tools: [.recentActivity, .revert], draftsPlans: false)
+        tools: [.recentActivity, .revert], draftsPlans: false,
+        useWhen: "the person wants a recent change put back")
 
-    package static let builtIn: [Skill] = [.query, .add, .tidy, .review, .undo]
+    package static let builtIn: [Skill] = [.query, .add, .change, .breakdown, .tidy, .review, .undo]
+
+    /// Whether every answer must hold a plan: the Add skill.
+    package var requiresPlan: Bool { id == Self.add.id }
+    /// Whether answers must hold changes to tasks or Projects: the Change skill.
+    package var requiresChange: Bool { id == Self.change.id }
+    /// Whether the skill plans Projects itself, so the person needn't ask
+    /// for one by name: the Break down skill.
+    package var suggestsProjects: Bool { id == Self.breakdown.id }
 
     // MARK: - Search
 
@@ -192,12 +254,16 @@ extension SkillsClient {
 extension Skill {
     /// The built-in skills with their stored on or off, then the stored
     /// skills of the person's by ID. Stored copies of built-ins only count
-    /// for `isOn`, so their instructions always come from this version.
+    /// for `isOn` and `autoPicks`, so their instructions always come from
+    /// this version.
     package static func merged(stored: [Skill]) -> [Skill] {
         let byID = Dictionary(stored.map { ($0.id, $0) }) { $1 }
         let builtIn = Self.builtIn.map { skill in
             var skill = skill
-            skill.isOn = byID[skill.id]?.isOn ?? true
+            if let stored = byID[skill.id] {
+                skill.isOn = stored.isOn
+                skill.autoPicks = stored.autoPicks
+            }
             return skill
         }
         return builtIn + stored.filter(\.isUser).sorted { $0.id < $1.id }

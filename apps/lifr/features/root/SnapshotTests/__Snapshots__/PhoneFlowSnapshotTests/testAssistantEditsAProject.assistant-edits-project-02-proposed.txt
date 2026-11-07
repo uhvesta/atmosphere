@@ -1,6 +1,7 @@
 [button] "Conversations" id: BackButton
 [button] "More"
 [header] "Rename the Half marathon to “Spring hal…"
+[element] "Skill: Change"
 [text] "Rename the Half marathon to “Spring half marathon”, due 2026-12-06"
 [text] "I renamed it to Spring half marathon, due 6 December."
 [text] "Changed Project “Spring half marathon”"

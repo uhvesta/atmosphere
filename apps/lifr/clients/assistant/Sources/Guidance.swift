@@ -33,8 +33,8 @@ package struct Guidance: Hashable, Codable, Sendable {
 
     /// Lifr's own opening.
     package static let defaultText = """
-        You help the person plan what to add to Lifr, their task manager. Ask short questions when you need \
-        to, then propose a plan. Keep "message" to one to three sentences; the plan shows the details.
+        You're the assistant in Lifr, the person's task manager. Be brief and plain, and ask when something \
+        isn't clear.
         """
 
     /// The most characters, so the instructions still fit the on-device

@@ -11,14 +11,16 @@ final class FollowUpTests: XCTestCase {
     /// 2026-11-03 10:00 UTC, a Tuesday.
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
 
-    private func request(_ texts: String..., draft: Plan? = nil, problem: String? = nil) -> AssistantRequest {
+    private func request(
+        _ texts: String..., draft: Plan? = nil, problem: String? = nil, skill: Skill = .add
+    ) -> AssistantRequest {
         var records = RecordsBuilder(now: now, timeZone: .gmt)
         let home = records.avenue("HOME", "Home")
         records.task("Call the plumber", in: home)
         return AssistantRequest(
             messages: texts.map { ChatMessage(id: UUID(), role: .person, text: $0, at: now) }, draft: draft,
             problem: problem, workspace: records.workspace, now: now, timeZone: .gmt,
-            writes: AssistantWrites(conversation: UUID()))
+            writes: AssistantWrites(conversation: UUID()), skill: skill)
     }
 
     private let milk = Plan(tasks: [.init(title: "buy milk", place: "HOME")])
@@ -129,17 +131,10 @@ final class FollowUpTests: XCTestCase {
 
     // MARK: - What a message asks for
 
-    func testAddingAndChangingMessagesAskForAPlanButQuestionsDont() {
-        XCTAssertTrue(AssistantPrompt.asksForPlan(request("Remove the second one")))
-        XCTAssertTrue(AssistantPrompt.asksForPlan(request("Please add a task to buy milk")))
-        XCTAssertFalse(AssistantPrompt.asksForPlan(request("Can you add a task?")))
-        XCTAssertFalse(AssistantPrompt.asksForPlan(request("What's due today")))
-    }
-
-    func testAMessageAsksForAChangeWhenItNamesATaskAndAChange() {
-        XCTAssertTrue(AssistantPrompt.asksForChange(request("Push call the plumber to Friday")))
-        XCTAssertFalse(AssistantPrompt.asksForChange(request("Tell me about the plumber")))
-        XCTAssertFalse(AssistantPrompt.asksForChange(request("Move the dentist to Friday")))
+    func testChangingMustChangeATaskTheMessageMeans() {
+        XCTAssertTrue(AssistantPrompt.asksForChange(request("Push call the plumber to Friday", skill: .change)))
+        XCTAssertFalse(AssistantPrompt.asksForChange(request("Move the dentist to Friday", skill: .change)))
+        XCTAssertFalse(AssistantPrompt.asksForChange(request("Push call the plumber to Friday", skill: .query)))
     }
 
     // MARK: - Plans the model gets wrong

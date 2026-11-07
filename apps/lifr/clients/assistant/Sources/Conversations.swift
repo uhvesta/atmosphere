@@ -145,6 +145,13 @@ extension SharedKey where Self == AppStorageKey<Bool>.Default {
     package static var namesConversations: Self {
         Self[.appStorage("lifrNamesConversations"), default: false]
     }
+
+    /// Whether Lifr picks a skill for a message sent without one, among
+    /// the skills that are on and may be picked automatically. Without a
+    /// skill the assistant just talks.
+    package static var picksSkills: Self {
+        Self[.appStorage("lifrPicksSkills"), default: true]
+    }
 }
 
 /// Keeps each conversation on this device, or in iCloud when it's synced.

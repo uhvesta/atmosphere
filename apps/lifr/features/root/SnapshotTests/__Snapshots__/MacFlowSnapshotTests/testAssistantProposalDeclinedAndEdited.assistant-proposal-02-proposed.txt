@@ -34,6 +34,7 @@
   [Button] "Use a Skill" id: sparkles
   [TextField] ""
   [Button, disabled] "Send" id: arrow.up.circle.fill
+  [Unknown] "Skill: Change"
   [StaticText] "" value: "I called the plumber"
   [StaticText] "" value: "I'd mark it done."
   [StaticText] "" value: "Changed task “Call the plumber”"

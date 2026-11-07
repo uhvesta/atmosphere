@@ -61,7 +61,8 @@ package enum AssistantPrompt {
     package static func estimatedTokens(_ request: AssistantRequest, size: Size) -> Int {
         estimatedTokens(instructions(request, size: size)) + estimatedTokens(prompt(request, size: size))
             + tools(request, size: size).count * tokensPerTool
-            + (size.schemaInPrompt ? schemaTokens + (request.changesTasks ? changesSchemaTokens : 0) : 0)
+            + (size.schemaInPrompt && request.skill != nil
+                ? schemaTokens + (request.changesTasks ? changesSchemaTokens : 0) : 0)
             + attachedTokens(request)
     }
 
@@ -86,34 +87,17 @@ package enum AssistantPrompt {
         return Size.allCases.filter { $0 >= first }
     }
 
-    /// The tools sent at `size`: every allowed one at full size, or with a
-    /// skill; otherwise the reading tools, and the others only when the
-    /// last message asks for what they do. A message that asks to add
-    /// something or change a task gets no reading tools at any size: a
-    /// small model calls them anyway, and loses its way.
-    /// updateTasks and updateProjects aren't tools the model calls: their
-    /// changes come in the answer, as `changes` and `projectChanges`.
+    /// The tools sent: those the skill allows, none without one. A skill
+    /// that must add something or change a task gets no reading tools: a
+    /// small model calls them anyway, and loses its way; the prompt lists
+    /// the tasks it may mean. updateTasks and updateProjects aren't tools
+    /// the model calls: their changes come in the answer, as `changes` and
+    /// `projectChanges`.
     package static func tools(_ request: AssistantRequest, size: Size) -> Set<AssistantTool> {
         let allowed = request.allowedTools.subtracting([.updateTasks, .updateProjects])
-        guard request.skill == nil else { return allowed }
-        let reads = !asksForChange(request) && !asksForPlan(request)
-        guard size != .full || !reads else { return allowed }
-        let words = lastWords(request)
-        let picked = AssistantTool.allCases.filter { tool in
-            switch tool {
-            case .findTasks, .getTask, .overview: reads
-            case .recentActivity, .revert: !words.isDisjoint(with: undoWords)
-            case .updateTasks, .updateProjects: false
-            case .addComment: !words.isDisjoint(with: commentWords)
-            }
-        }
-        return allowed.intersection(picked)
+        guard let skill = request.skill, skill.requiresPlan || skill.requiresChange else { return allowed }
+        return allowed.filter(\.writes)
     }
-
-    private static let undoWords: Set<String> = [
-        "undo", "revert", "back", "changed", "change", "changes", "activity", "recent", "happened", "did",
-    ]
-    private static let commentWords: Set<String> = ["comment", "note", "notes", "remark"]
 
     package static func instructions(_ request: AssistantRequest, size: Size = .full) -> String {
         instructions(
@@ -130,12 +114,12 @@ package enum AssistantPrompt {
         request.changesTasks ? meantTasks(request) : []
     }
 
-    /// Whether the last message asks to change a task the prompt lists,
-    /// such as "mark it done" or "move … to WORK". Then the answer must
-    /// have a change, and the reading tools aren't sent: the list has the
-    /// codes, and a search only takes the model off course.
+    /// Whether the answer must change a task the prompt lists: the skill
+    /// is Change and the last message may mean one. Then the reading tools
+    /// aren't sent: the list has the codes, and a search only takes the
+    /// model off course.
     package static func asksForChange(_ request: AssistantRequest) -> Bool {
-        !changeable(request).isEmpty && !lastWords(request).isDisjoint(with: changeWords)
+        request.skill?.requiresChange == true && !changeable(request).isEmpty
     }
 
     /// The existing Projects the model may change in this answer: those
@@ -144,44 +128,26 @@ package enum AssistantPrompt {
         request.changesProjects ? meantProjects(request) : []
     }
 
-    /// Whether the last message asks to change a Project the prompt lists,
-    /// such as "archive the half marathon" or "rename … to …". Then the
-    /// answer must have a Project change, unless it may mean a task too.
+    /// Whether the answer may change a Project the prompt lists: the skill
+    /// is Change and the last message may mean one. Then the answer must
+    /// have a Project change, unless it may mean a task too.
     package static func asksForProjectChange(_ request: AssistantRequest) -> Bool {
-        !changeableProjects(request).isEmpty
-            && !lastWords(request).isDisjoint(with: changeWords.union(projectChangeWords))
+        request.skill?.requiresChange == true && !changeableProjects(request).isEmpty
     }
 
-    private static let projectChangeWords: Set<String> = [
-        "archive", "restore", "describe", "description", "details", "goal",
-    ]
-
-    private static let changeWords: Set<String> = [
-        "rename", "call", "move", "put", "mark", "done", "finish", "finished", "complete", "completed", "tick",
-        "push", "reschedule", "postpone", "delay", "change", "due", "priority", "urgent", "reopen", "won't",
-    ]
-
-    /// Whether the last message asks to add something or change the plan,
-    /// such as "add…", "also…" or "remove the second one", rather than
-    /// asking a question.
+    /// Whether the answer must hold a plan, or changes to the current one:
+    /// the skill is Add.
     package static func asksForPlan(_ request: AssistantRequest) -> Bool {
-        let text = request.messages.last?.text ?? ""
-        guard !text.contains("?") else { return false }
-        let words = text.lowercased().split { !$0.isLetter && $0 != "'" }.map(String.init)
-        return words.first.map(planWords.contains) == true || words.contains("add")
+        request.draftsPlans && request.skill?.requiresPlan == true
     }
-
-    private static let planWords: Set<String> = [
-        "add", "also", "make", "create", "plus", "remove", "delete", "drop", "change", "set", "and", "then",
-        "actually", "instead", "new",
-    ]
 
     /// `plan` with each new Project the person didn't ask for made a task,
     /// its tasks the Sub tasks: a small model makes a Project of a task
-    /// with steps. Projects are kept with a skill, when a message of the
-    /// person's says project or goal, or when the draft has them already.
+    /// with steps. Projects are kept with Break down or a skill of the
+    /// person's, when a message of the person's says project or goal, or
+    /// when the draft has them already.
     package static func withAskedProjects(_ plan: Plan, _ request: AssistantRequest) -> Plan {
-        guard request.skill == nil else { return plan }
+        if let skill = request.skill, skill.suggestsProjects || skill.isUser { return plan }
         let asked = request.messages.contains { message in
             message.role == .person && !Set(words(message.text)).isDisjoint(with: ["project", "goal"])
         }
@@ -219,6 +185,8 @@ package enum AssistantPrompt {
         var text = """
             \(request.guidance)
 
+            Keep "message" to one to three sentences; a plan or changes show the details.
+
             Records:
             - Avenues are areas of life, with a KEY such as HEALTH.
             - Projects are goals inside an Avenue, with their own tasks.
@@ -228,7 +196,7 @@ package enum AssistantPrompt {
             - Give each top-level task a "place": an Avenue KEY or "KEY/Project name" from the list below. Use \
             the one the person names; when they name none, the one that fits best. To add a Sub task to an \
             existing task the prompt lists, give "parent", its code.
-            - Steps of a new task go in its "subtasks". Only make a Project when the person asks for one.
+            - Steps of a new task go in its "subtasks". \(projectRule(request))
             - Only add an Avenue when none below fits and the person agrees.
             - Only fill in what the person said: no dates, priorities, reminders, labels, details or extra tasks \
             they didn't ask for.
@@ -293,10 +261,23 @@ package enum AssistantPrompt {
         }
         if let skill = request.skill {
             text +=
-                "\n\nFor this message the person picked the skill \(skill.title). Follow it:\n"
+                "\n\nFor this message, use the skill \(skill.title):\n"
                 + skill.instructions
         }
         return text
+    }
+
+    /// When the plan may have a Project.
+    private static func projectRule(_ request: AssistantRequest) -> String {
+        request.skill?.suggestsProjects == true
+            ? "Make a Project where several tasks serve one goal."
+            : "Only make a Project when the person asks for one."
+    }
+
+    /// The instructions for talking without a skill: the person's guidance
+    /// and today's date, so the model answers as it would anywhere.
+    package static func chatInstructions(_ request: AssistantRequest) -> String {
+        "\(request.guidance)\n\nToday is \(request.today), a \(weekday(request.today))."
     }
 
     /// The instructions for a plain-text answer, used when the model's
@@ -324,6 +305,7 @@ package enum AssistantPrompt {
             case (.assistant, _): "You: " + said
             }
         }.joined(separator: "\n")
+        guard request.skill != nil else { return text + "\n\nAnswer the person's last message." }
         let meant = meantTasks(request)
         if !meant.isEmpty {
             text +=
@@ -562,6 +544,39 @@ package enum AssistantPrompt {
     }
 
     /// The skill in the model's answer, or nil when it has no instructions.
+    /// What the model is told to pick a skill for the last message with:
+    /// each of `skills` by ID, and when to use it.
+    package static func pickInstructions(_ skills: [Skill]) -> String {
+        "Pick the skill that fits the person's last message, or \"\(noSkill)\" when none does, such as for "
+            + "small talk or a question that isn't about their tasks. When the last message answers or follows "
+            + "up on the one before, keep that message's skill.\nSkills:\n"
+            + skills.map { "- \($0.id): use when \($0.useWhen.isEmpty ? $0.summary : $0.useWhen)" }
+            .joined(separator: "\n")
+    }
+
+    /// The pick for no skill.
+    package static let noSkill = "none"
+
+    /// The last few messages, newest last, for the model to pick a skill by.
+    package static func pickPrompt(_ messages: [ChatMessage]) -> String {
+        messages.suffix(3).map { message in
+            let who =
+                switch (message.role, message.skill) {
+                case (.person, let skill?): "Person, with the skill \(skill)"
+                case (.person, nil): "Person"
+                case (.assistant, _): "Assistant"
+                }
+            return "\(who): \(message.text.prefix(600))"
+        }
+        .joined(separator: "\n")
+    }
+
+    /// The skill the model picked, if it's one of `skills`.
+    package static func pickedSkill(from answer: JSONValue, in skills: [Skill]) -> String? {
+        guard let id = answer["skill"]?.text?.trimmingCharacters(in: .whitespaces) else { return nil }
+        return skills.first { $0.id.caseInsensitiveCompare(id) == .orderedSame }?.id
+    }
+
     package static func skillDraft(from answer: JSONValue) -> SkillDraft? {
         guard let instructions = answer["instructions"]?.text else { return nil }
         return SkillDraft(

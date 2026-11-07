@@ -15,11 +15,15 @@ package struct SkillsView: View {
             Section {
                 ForEach(store.skills.filter { !$0.isUser }) { skill in
                     toggle(skill)
+                        .contextMenu { autoPicks(skill) }
                 }
             } header: {
                 Text("Built in")
             } footer: {
-                Text("Pick a skill for a message to tell the assistant what to do and which tools it may use.")
+                Text(
+                    "Pick a skill for a message to tell the assistant what to do and which tools it may use. Skills "
+                        + "marked Automatic are picked for you when Settings › Assistant › Pick a skill "
+                        + "automatically is on; touch and hold one to change that.")
             }
             Section {
                 ForEach(store.skills.filter(\.isUser)) { skill in
@@ -31,6 +35,7 @@ package struct SkillsView: View {
                         }
                         .contextMenu {
                             Button("Edit") { store.send(.editTapped(skill.id)) }
+                            autoPicks(skill)
                             Button("Delete", role: .destructive) { store.send(.deleteTapped([skill.id])) }
                         }
                 }
@@ -56,10 +61,16 @@ package struct SkillsView: View {
         ) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(skill.title)
-                Text(skill.summary)
+                Text(skill.autoPicks ? "\(skill.summary) Automatic." : skill.summary)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private func autoPicks(_ skill: Skill) -> some View {
+        Button(skill.autoPicks ? "Don't Use Automatically" : "Use Automatically") {
+            store.send(.autoPicksToggled(skill.id, !skill.autoPicks))
         }
     }
 }
@@ -111,6 +122,20 @@ package struct SkillEditorView: View {
                     Text("The assistant may")
                 } footer: {
                     Text("Changes save at once, and each can be undone from the conversation or Activity.")
+                }
+                Section {
+                    Toggle("Use automatically", isOn: $store.autoPicks)
+                    if store.autoPicks {
+                        TextField(
+                            "Use when", text: $store.useWhen,
+                            prompt: Text("I ask to look back over my week"), axis: .vertical
+                        )
+                        .lineLimit(1...4)
+                    }
+                } footer: {
+                    Text(
+                        "When Pick a skill automatically is on in Settings, Lifr picks this skill for a message that "
+                            + "fits Use When, or its summary if that's empty.")
                 }
             }
             .disabled(store.isDrafting)

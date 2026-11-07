@@ -747,6 +747,9 @@
     "Dismiss" : {
 
     },
+    "Don't Use Automatically" : {
+
+    },
     "Done" : {
 
     },
@@ -901,6 +904,9 @@
 
     },
     "Hugging Face link" : {
+
+    },
+    "I ask to look back over my week" : {
 
     },
     "In 1 hour" : {
@@ -1399,6 +1405,9 @@
     "Pick a list" : {
 
     },
+    "Pick a skill automatically" : {
+
+    },
     "Pick a skill for a message to tell the assistant what to do and which tools it may use." : {
 
     },
@@ -1511,6 +1520,9 @@
 
     },
     "Rename" : {
+
+    },
+    "Rename, move, reschedule or finish tasks and Projects." : {
 
     },
     "Renew" : {
@@ -1676,6 +1688,9 @@
 
     },
     "Signed as" : {
+
+    },
+    "Skill: %@" : {
 
     },
     "Skills" : {
@@ -1945,6 +1960,9 @@
     "Try other words, or clear the filters." : {
 
     },
+    "Turn a brain dump into a plan." : {
+
+    },
     "Turn into a Task" : {
 
     },
@@ -1993,7 +2011,16 @@
     "Urgent" : {
 
     },
+    "Use Automatically" : {
+
+    },
     "Use a Skill" : {
+
+    },
+    "Use automatically" : {
+
+    },
+    "Use when" : {
 
     },
     "Uses about %@ of memory. A larger window keeps more of a conversation." : {

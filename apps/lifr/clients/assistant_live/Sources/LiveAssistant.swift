@@ -14,6 +14,9 @@ extension AssistantClient {
             availability: { AssistantAvailability(runtime(.assistant).status) },
             reply: { request in LiveAssistant.reply(to: request, on: runtime(.assistant)) },
             draftSkill: { description in try await LiveAssistant.draftSkill(description, on: runtime(.skills)) },
+            pickSkill: { messages, skills in
+                try await LiveAssistant.pickSkill(messages, skills, on: runtime(.assistant))
+            },
             suggestTitle: { messages in try await LiveAssistant.suggestTitle(messages, on: runtime(.titles)) },
             compact: { messages, earlier in
                 try await LiveAssistant.compact(messages, earlier: earlier, on: runtime(.assistant))
@@ -119,6 +122,11 @@ enum LiveAssistant {
         _ request: AssistantRequest, _ size: AssistantPrompt.Size, _ tools: AssistantTools, _ model: any ModelRuntime,
         _ thoughts: Thoughts, _ continuation: AssistantReplies.Continuation
     ) async throws {
+        // Without a skill, the assistant just talks.
+        guard request.skill != nil else {
+            return try await plain(
+                request, size, instructions: AssistantPrompt.chatInstructions(request), model, thoughts, continuation)
+        }
         tools.resultBudget = size.toolResultBudget
         var forgot = false
         for attempt in 1...2 {
@@ -137,7 +145,8 @@ enum LiveAssistant {
         // Plain text has no tools, so it asks to change nothing.
         tools.discardProposal()
         do {
-            try await plain(request, size, model, thoughts, continuation)
+            try await plain(
+                request, size, instructions: AssistantPrompt.plainInstructions(request), model, thoughts, continuation)
         } catch ModelRuntimeError.decodingFailure {
             throw AssistantError.unreadable
         }
@@ -245,14 +254,15 @@ enum LiveAssistant {
     /// An answer that was asked for new things and added none of them.
     private struct ForgotTasks: Error {}
 
-    /// One answer as plain text, without tools or a plan: what's left when
-    /// the structured answer can't be read.
+    /// One answer as plain text, without tools or a plan: the answer
+    /// without a skill, and what's left when the structured answer can't
+    /// be read.
     private static func plain(
-        _ request: AssistantRequest, _ size: AssistantPrompt.Size, _ model: any ModelRuntime, _ thoughts: Thoughts,
-        _ continuation: AssistantReplies.Continuation
+        _ request: AssistantRequest, _ size: AssistantPrompt.Size, instructions: String, _ model: any ModelRuntime,
+        _ thoughts: Thoughts, _ continuation: AssistantReplies.Continuation
     ) async throws {
         var turn = ModelTurn(
-            instructions: AssistantPrompt.plainInstructions(request),
+            instructions: instructions,
             prompt: AssistantPrompt.prompt(request, size: size), attachments: request.attachments)
         turn.thinking = thoughts.attempt(continuation)
         let answer = try await model.respond(to: turn) { partial in
@@ -276,6 +286,23 @@ enum LiveAssistant {
                 throw AssistantError.failed("it didn't write any instructions")
             }
             return draft
+        } catch let error as ModelRuntimeError {
+            throw AssistantError(error)
+        }
+    }
+
+    static func pickSkill(_ messages: [ChatMessage], _ skills: [Skill], on model: any ModelRuntime) async throws
+        -> String?
+    {
+        guard !skills.isEmpty else { return nil }
+        let availability = AssistantAvailability(model.status)
+        guard availability == .available else { throw AssistantError.unavailable(availability) }
+        do {
+            let turn = ModelTurn(
+                instructions: AssistantPrompt.pickInstructions(skills), prompt: AssistantPrompt.pickPrompt(messages),
+                schema: Shapes.pick(skills.map(\.id)))
+            let answer = try await model.respond(to: turn) { _ in }
+            return AssistantPrompt.pickedSkill(from: answer, in: skills)
         } catch let error as ModelRuntimeError {
             throw AssistantError(error)
         }

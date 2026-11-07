@@ -38,6 +38,7 @@ package struct ChatFeature {
         /// Whether the assistant is naming the conversation.
         package var naming = false
         @Shared(.namesConversations) package var namesConversations
+        @Shared(.picksSkills) package var picksSkills
         @Shared(.compactsConversations) package var compactsConversations
         /// How many older messages the model didn't get with the last
         /// message, as they didn't fit: the chat then offers Compact.
@@ -244,6 +245,9 @@ package struct ChatFeature {
         case removeAttachmentTapped(UUID)
         /// Lifr is back on screen: send a stopped reply's request again.
         case resume
+        /// Lifr picked the skill `id` for the message `messageID`, sent
+        /// without one.
+        case skillPicked(messageID: UUID, id: String)
         case replied(AssistantReply)
         case replyFailed(any Error)
         /// The thinking of the reply `messageID` was opened or closed, or of
@@ -594,6 +598,15 @@ package struct ChatFeature {
                 // A reply still being written carries on by itself.
                 guard state.stopped, let request = state.waiting else { return .none }
                 return reply(request, in: &state)
+
+            case .skillPicked(let messageID, let id):
+                guard let index = state.conversation.messages.firstIndex(where: { $0.id == messageID }) else {
+                    return .none
+                }
+                state.conversation.messages[index].skill = id
+                let skill = state.skills.first { $0.id == id }
+                if state.waiting?.messages.last?.id == messageID { state.waiting?.skill = skill }
+                return .none
 
             case .replied(let reply):
                 guard reply.isComplete else {
@@ -955,7 +968,9 @@ package struct ChatFeature {
     /// Writes the reply to `request`, with background time so it keeps
     /// going when the person leaves Lifr. Until it's complete, `waiting`
     /// keeps the request for `resume`.
-    private func reply(_ request: AssistantRequest, in state: inout State) -> Effect<Action> {
+    private func reply(
+        _ request: AssistantRequest, picking pick: SkillPick? = nil, for messageID: UUID? = nil, in state: inout State
+    ) -> Effect<Action> {
         state.waiting = request
         state.stopped = false
         if state.replying == nil {
@@ -967,6 +982,16 @@ package struct ChatFeature {
             // The default when the person's can't be read; the
             // Instructions screen says why.
             request.guidance = (try? await guidance.load().text) ?? Guidance.defaultText
+            if let pick, let messageID {
+                // A pick that fails leaves the message without a skill, to
+                // answer as it is.
+                let id = await (try? assistant.pickSkill(request.messages, pick.candidates)) ?? pick.kept?.id
+                if let id, let skill = (pick.candidates + (pick.kept.map { [$0] } ?? [])).first(where: { $0.id == id })
+                {
+                    request.skill = skill
+                    await send(.skillPicked(messageID: messageID, id: id))
+                }
+            }
             try await backgroundTime.run("Answering") { [request] progressed in
                 try await Self.watch(
                     request, assistant: assistant, clock: clock, returns: backgroundTime.returns
@@ -1088,9 +1113,22 @@ package struct ChatFeature {
             state.editing = nil
         }
         state.failure = nil
+        let id = uuid()
         state.conversation.append(
-            ChatMessage(id: uuid(), role: .person, text: text, at: now, skill: skill?.id, attachments: sent))
-        return reply(request(in: state), in: &state)
+            ChatMessage(id: id, role: .person, text: text, at: now, skill: skill?.id, attachments: sent))
+        guard skill == nil, state.picksSkills else { return reply(request(in: state), in: &state) }
+        return reply(request(in: state), picking: pickable(in: state), for: id, in: &state)
+    }
+
+    /// The skills Lifr may pick for a message, and the one to keep when it
+    /// picks none while a plan is being drafted: the last the person's
+    /// messages used, so answers about the plan still change it.
+    private func pickable(in state: State) -> SkillPick {
+        let candidates = state.skills.filter { $0.isOn && $0.autoPicks }
+        let drafting = !(state.conversation.draft?.isEmpty ?? true)
+        let last = state.conversation.messages.dropLast().last { $0.role == .person && $0.skill != nil }?.skill
+        let kept = drafting ? last.flatMap { id in state.skills.first { $0.id == id && $0.isOn } } : nil
+        return SkillPick(candidates: candidates, kept: kept)
     }
 
     /// The request for a reply to the last message shown, the person's,
@@ -1116,6 +1154,13 @@ package struct ChatFeature {
             state.workspace.problem(with: plan, timeZone: timeZone, now: now)?.description
         }
     }
+}
+
+/// The skills Lifr may pick for a message sent without one, and the one it
+/// keeps when it picks none.
+private struct SkillPick: Sendable {
+    var candidates: [Skill]
+    var kept: Skill?
 }
 
 extension ModelThinking {

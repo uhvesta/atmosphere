@@ -1,6 +1,7 @@
 [button] "Conversations" id: BackButton
 [button] "More"
 [header] "Push “Call the plumber” to next Monday"
+[element] "Skill: Change"
 [text] "Push “Call the plumber” to next Monday"
 [text] "I moved Call the plumber to next Monday."
 [text] "Changed task “Call the plumber”"

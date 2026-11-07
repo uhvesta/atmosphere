@@ -28,6 +28,7 @@ final class ChatCompactionTests: XCTestCase {
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
             $0.assistant.availability = { .available }
+            $0.assistant.pickSkill = { _, _ in nil }
             $0.assistant.prewarm = {}
             $0.assistant.inputs = { [] }
             $0.assistant.reply = { request in

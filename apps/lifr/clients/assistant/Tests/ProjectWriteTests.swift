@@ -147,7 +147,7 @@ final class ProjectWriteTests: XCTestCase {
         let (records, _, _, _) = health()
         var request = AssistantRequest(
             messages: [ChatMessage(id: UUID(), role: .person, text: text, at: now)], workspace: records.workspace,
-            now: now, timeZone: .gmt)
+            now: now, timeZone: .gmt, skill: .change)
         if writes { request.writes = AssistantWrites(conversation: conversation) }
         return request
     }
@@ -159,9 +159,9 @@ final class ProjectWriteTests: XCTestCase {
         XCTAssertEqual(AssistantPrompt.meantProjects(request("Add a task to run 5k")).map(\.place), [])
     }
 
-    func testAskingToArchiveAProjectAsksForAProjectChange() {
+    func testChangingAProjectTheMessageMeansAsksForAProjectChange() {
         XCTAssertTrue(AssistantPrompt.asksForProjectChange(request("Archive the half marathon")))
-        XCTAssertFalse(AssistantPrompt.asksForProjectChange(request("How is the half marathon going?")))
+        XCTAssertFalse(AssistantPrompt.asksForProjectChange(request("Archive the dentist")))
         XCTAssertFalse(
             AssistantPrompt.asksForProjectChange(request("Archive the half marathon", writes: false)),
             "without writes nothing can change")

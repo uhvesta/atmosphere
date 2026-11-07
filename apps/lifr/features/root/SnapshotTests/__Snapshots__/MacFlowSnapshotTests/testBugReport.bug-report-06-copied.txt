@@ -56,7 +56,7 @@
     [StaticText] "" value: "Each piece of text from your tasks and chats becomes a placeholder, and screenshots are left out. What you write above is kept."
     [Heading] "Recorded"
     [StaticText] "" value: "Steps"
-    [StaticText] "" value: "6"
+    [StaticText] "" value: "7"
     [StaticText] "" value: "Screenshots"
     [StaticText] "" value: "0"
     [StaticText] "" value: "Device"

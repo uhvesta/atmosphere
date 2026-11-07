@@ -328,12 +328,15 @@ final class PhoneFlowSnapshotTests: XCTestCase {
     /// The assistant as the app has it, on a model that gives these
     /// `answers` in turn: what Gemma 4 E2B answered on a device, so what
     /// Lifr does with them runs as it does there.
-    private func gemma(_ answers: [JSONValue]) -> AssistantClient {
+    /// Lifr picks `skill` for each message sent without one.
+    private func gemma(_ answers: [JSONValue], picking skill: String = Skill.add.id) -> AssistantClient {
         let model = ScriptedRuntime(
             budget: ContextBudget(window: 32_768, reservedForAnswer: 2_048),
             steps: answers.map { ScriptedRuntime.answer($0) })
         let titles = ScriptedRuntime(steps: [ScriptedRuntime.answer("Groceries")])
-        return .live(runtime: { $0 == .assistant ? model : titles })
+        var client = AssistantClient.live(runtime: { $0 == .assistant ? model : titles })
+        client.pickSkill = { _, _ in skill }
+        return client
     }
 
     private func send(_ text: String, in id: Conversation.ID, of store: StoreOf<RootFeature>) {
@@ -509,6 +512,59 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// A brain dump sent without a skill: Lifr picks Break down, the
+    /// assistant asks what it needs to, and once answered plans a Project
+    /// for the move, its tasks in order with steps, and a task on its own.
+    func testAssistantBreaksDownABrainDump() async throws {
+        let (store, flow) = app(
+            "assistant-breakdown",
+            assistant: gemma(
+                [
+                    ["message": "Is the move by a date, and is the deposit for the new flat or the old one?"],
+                    [
+                        "plan": [
+                            "projects": [["name": "Move flat", "avenue": "HOME", "due": "2026-12-05"]],
+                            "tasks": [
+                                [
+                                    "title": "Get the old deposit back", "place": "HOME/Move flat",
+                                    "due": "2026-11-20",
+                                    "subtasks": [["title": "Photograph each room"], ["title": "Email the landlord"]],
+                                ],
+                                ["title": "Book a van", "place": "HOME/Move flat", "due": "2026-11-27"],
+                                [
+                                    "title": "Pack", "place": "HOME/Move flat", "due": "2026-12-04",
+                                    "subtasks": [["title": "Buy boxes"], ["title": "Pack the kitchen last"]],
+                                ],
+                                ["title": "Call mum", "place": "HOME"],
+                            ],
+                        ],
+                        "message": "Here's the move as a Project, in order, and calling your mum on its own.",
+                    ],
+                ], picking: Skill.breakdown.id))
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        await flow.step("new-chat", image: false)
+        send("ugh I have to move flat, get the deposit sorted, pack, book a van, and call mum", in: id, of: store)
+        await flow.step("asks")
+        let asked = try XCTUnwrap(store.conversations.chats[id: id])
+        XCTAssertEqual(asked.conversation.messages.first?.skill, Skill.breakdown.id)
+        XCTAssertNil(asked.conversation.draft, "it asks before it plans")
+
+        send("By 5 December, and it's the old flat's deposit", in: id, of: store)
+        await flow.step("planned")
+        let planned = try XCTUnwrap(store.conversations.chats[id: id])
+        XCTAssertEqual(planned.conversation.draft?.projects.map(\.name), ["Move flat"])
+        XCTAssertEqual(
+            planned.conversation.draft?.tasks.map(\.title),
+            ["Get the old deposit back", "Book a van", "Pack", "Call mum"])
+        XCTAssertNil(planned.problem)
+        flow.tap("Add")
+        await flow.step("added")
+        XCTAssertNotNil(store.workspace?.projects.values.first { $0.name == "Move flat" }, "the Project wasn't added")
+        flow.finish()
+    }
+
     /// Pushing a task to next Monday, where the model works the date out
     /// as the Saturday before: the task is due the Monday the person named.
     func testAssistantReschedulesToTheDayNamed() async throws {
@@ -517,12 +573,13 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         let code = JSONValue.string(workspace.displayCode(of: plumber))
         let (store, flow) = app(
             "assistant-reschedule", workspace: workspace,
-            assistant: gemma([
+            assistant: gemma(
                 [
-                    "changes": [["code": code, "due": "2026-11-07"]],
-                    "message": "I moved Call the plumber to next Monday.",
-                ]
-            ]))
+                    [
+                        "changes": [["code": code, "due": "2026-11-07"]],
+                        "message": "I moved Call the plumber to next Monday.",
+                    ]
+                ], picking: Skill.change.id))
         store.tab = .conversations
         store.send(.conversations(.newTapped))
         let id = try XCTUnwrap(store.conversations.openID)
@@ -545,12 +602,13 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         let code = JSONValue.string(workspace.displayCode(of: plumber))
         let (store, flow) = app(
             "assistant-rename", workspace: workspace,
-            assistant: gemma([
+            assistant: gemma(
                 [
-                    "changes": [["code": code, "status": "todo", "rename": "Call the plumber"]],
-                    "message": "I renamed the task to Call the electrician.",
-                ]
-            ]))
+                    [
+                        "changes": [["code": code, "status": "todo", "rename": "Call the plumber"]],
+                        "message": "I renamed the task to Call the electrician.",
+                    ]
+                ], picking: Skill.change.id))
         store.tab = .conversations
         store.send(.conversations(.newTapped))
         let id = try XCTUnwrap(store.conversations.openID)
@@ -574,14 +632,15 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         let marathon = try XCTUnwrap(workspace.projects.values.first { $0.name == "Half marathon" })
         let (store, flow) = app(
             "assistant-edits-project", workspace: workspace,
-            assistant: gemma([
+            assistant: gemma(
                 [
-                    "projectChanges": [
-                        ["project": "HEALTH/Half marathon", "rename": "Spring half marathon", "due": "2026-12-06"]
-                    ],
-                    "message": "I renamed it to Spring half marathon, due 6 December.",
-                ]
-            ]))
+                    [
+                        "projectChanges": [
+                            ["project": "HEALTH/Half marathon", "rename": "Spring half marathon", "due": "2026-12-06"]
+                        ],
+                        "message": "I renamed it to Spring half marathon, due 6 December.",
+                    ]
+                ], picking: Skill.change.id))
         store.tab = .conversations
         store.send(.conversations(.newTapped))
         let id = try XCTUnwrap(store.conversations.openID)
@@ -610,7 +669,8 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         let plumber = try XCTUnwrap(workspace.tasks.values.first { $0.title == "Call the plumber" })
         let code = JSONValue.string(workspace.displayCode(of: plumber))
         let done: JSONValue = ["changes": [["code": code, "status": "done"]], "message": "I'd mark it done."]
-        let (store, flow) = app("assistant-proposal", workspace: workspace, assistant: gemma([done, done]))
+        let (store, flow) = app(
+            "assistant-proposal", workspace: workspace, assistant: gemma([done, done], picking: Skill.change.id))
         store.tab = .conversations
         store.send(.conversations(.newTapped))
         let id = try XCTUnwrap(store.conversations.openID)

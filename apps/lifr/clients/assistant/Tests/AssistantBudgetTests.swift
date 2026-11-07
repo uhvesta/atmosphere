@@ -10,7 +10,7 @@ final class AssistantBudgetTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
 
     private func request(
-        _ texts: [String], draft: Plan? = nil, skill: Skill? = nil, workspace: Workspace = Workspace()
+        _ texts: [String], draft: Plan? = nil, skill: Skill? = .add, workspace: Workspace = Workspace()
     ) -> AssistantRequest {
         AssistantRequest(
             messages: texts.enumerated().map { index, text in
@@ -92,24 +92,21 @@ final class AssistantBudgetTests: XCTestCase {
         XCTAssertFalse(prompt.contains("Plan the garden"))
     }
 
-    func testFullSizeSendsEveryAllowedTool() {
+    func testASkillsToolsAreSentAndItsChangesComeInTheAnswer() {
         XCTAssertEqual(
-            AssistantPrompt.tools(request(["What's due?"]), size: .full),
-            Set(AssistantTool.allCases).subtracting([.updateTasks, .updateProjects]), "their changes are in the answer")
+            AssistantPrompt.tools(request(["Tidy up"], skill: .tidy), size: .full), [.findTasks, .getTask, .overview],
+            "their changes are in the answer")
     }
 
-    func testSmallerSizesSendTheToolsTheMessageNeeds() {
-        let question = AssistantPrompt.tools(request(["What's due this week?"]), size: .smaller)
-        XCTAssertEqual(question, [.findTasks, .getTask, .overview])
+    func testWithoutASkillNoToolsAreSent() {
+        for size in AssistantPrompt.Size.allCases {
+            XCTAssertEqual(AssistantPrompt.tools(request(["What's due?"], skill: nil), size: size), [])
+        }
+    }
 
-        let change = AssistantPrompt.tools(request(["Mark HOME-0003 done"]), size: .smaller)
-        XCTAssertFalse(change.contains(.revert))
-
-        let undo = AssistantPrompt.tools(request(["Undo that"]), size: .smallest)
-        XCTAssertTrue(undo.isSuperset(of: [.recentActivity, .revert]))
-
-        let comment = AssistantPrompt.tools(request(["Add a note to the rent task"]), size: .smaller)
-        XCTAssertTrue(comment.contains(.addComment))
+    func testAddingAndChangingSendNoReadingTools() {
+        XCTAssertEqual(AssistantPrompt.tools(request(["Add milk"], skill: .add), size: .full), [])
+        XCTAssertEqual(AssistantPrompt.tools(request(["Mark HOME-0003 done"], skill: .change), size: .full), [])
     }
 
     func testASkillKeepsItsToolsAtEverySize() {

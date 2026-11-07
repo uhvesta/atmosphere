@@ -97,7 +97,7 @@ final class AssistantTests: XCTestCase {
         let request = AssistantRequest(
             messages: [ChatMessage(id: UUID(), role: .person, text: "Add laundry", at: now)],
             draft: Plan(tasks: [.init(title: "Laundry", place: "HOME")]), problem: "no such label",
-            workspace: records.workspace, now: now, timeZone: .gmt)
+            workspace: records.workspace, now: now, timeZone: .gmt, skill: .add)
 
         let prompt = AssistantPrompt.prompt(request)
 
@@ -111,7 +111,7 @@ final class AssistantTests: XCTestCase {
         let home = records.avenue("HOME", "Home")
         let request = AssistantRequest(
             messages: [ChatMessage(id: UUID(), role: .person, text: "What's left at home?", at: now)],
-            workspace: records.workspace, now: now, timeZone: .gmt)
+            workspace: records.workspace, now: now, timeZone: .gmt, skill: .query)
 
         let instructions = AssistantPrompt.plainInstructions(request)
 

@@ -38,6 +38,7 @@ final class ChatFeatureTests: XCTestCase {
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
             $0.assistant.availability = { .available }
+            $0.assistant.pickSkill = { _, _ in nil }
             $0.assistant.prewarm = { prewarmed.withValue { $0 += 1 } }
             $0.assistant.inputs = { inputs }
             $0.attachments = attachments
@@ -818,6 +819,98 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.skillChoices.map(\.id), ["tidy"])
         await store.send(.pickSkillTapped("query"))
         XCTAssertNil(store.state.picked)
+    }
+
+    // MARK: - Picking a skill
+
+    func testAMessageSentWithoutASkillGetsTheOneLifrPicksAmongTheAutomaticOnes() async {
+        let (workspace, _) = home()
+        let offered = LockIsolated<[String]>([])
+        let sent = LockIsolated<[Skill?]>([])
+        let store = chat(workspace) { request in
+            sent.withValue { $0.append(request.skill) }
+            return AssistantReply(text: "Which first?", isComplete: true)
+        }
+        store.dependencies.assistant.pickSkill = { _, skills in
+            offered.setValue(skills.map(\.id))
+            return "breakdown"
+        }
+
+        await send("Dentist, taxes, gym, call mum", in: store)
+
+        XCTAssertEqual(Set(offered.value), Set(Skill.builtIn.filter(\.autoPicks).map(\.id)))
+        XCTAssertFalse(offered.value.contains("undo"))
+        XCTAssertEqual(sent.value, [.breakdown])
+        XCTAssertEqual(store.state.conversation.messages.first?.skill, "breakdown", "its pill shows")
+    }
+
+    func testWhenLifrPicksNoSkillTheAssistantJustTalks() async {
+        let (workspace, _) = home()
+        let sent = LockIsolated<[Skill?]>([])
+        let store = chat(workspace) { request in
+            sent.withValue { $0.append(request.skill) }
+            return AssistantReply(text: "Hi!", isComplete: true)
+        }
+
+        await send("Hello", in: store)
+
+        XCTAssertEqual(sent.value, [nil])
+        XCTAssertEqual(store.state.conversation.messages.first?.skill, nil)
+    }
+
+    func testASkillPickedByHandOrPickingTurnedOffAsksNothing() async {
+        let (workspace, _) = home()
+        let picks = LockIsolated(0)
+        let sent = LockIsolated<[Skill?]>([])
+        let store = chat(workspace) { request in
+            sent.withValue { $0.append(request.skill) }
+            return AssistantReply(text: "OK.", isComplete: true)
+        }
+        store.dependencies.assistant.pickSkill = { _, _ in
+            picks.withValue { $0 += 1 }
+            return "query"
+        }
+
+        await store.send(.pickSkillTapped("review"))
+        await send("How was my week?", in: store)
+        store.state.$picksSkills.withLock { $0 = false }
+        await send("And today?", in: store)
+
+        XCTAssertEqual(picks.value, 0)
+        XCTAssertEqual(sent.value, [.review, nil])
+    }
+
+    func testWhilePlanningAnAnswerKeepsTheSkillWhenLifrPicksNone() async {
+        let (workspace, _) = home()
+        let sent = LockIsolated<[Skill?]>([])
+        let store = chat(workspace) { request in
+            sent.withValue { $0.append(request.skill) }
+            return AssistantReply(
+                text: "Here's a plan.", plan: Plan(tasks: [.init(title: "Taxes", place: "HOME")]), isComplete: true)
+        }
+        let picks = LockIsolated<[String?]>(["breakdown", nil])
+        store.dependencies.assistant.pickSkill = { _, _ in picks.withValue { $0.removeFirst() } }
+
+        await send("Taxes and the dentist", in: store)
+        await send("Taxes first", in: store)
+
+        XCTAssertEqual(sent.value, [.breakdown, .breakdown])
+        XCTAssertEqual(store.state.conversation.messages.map(\.skill), ["breakdown", nil, "breakdown", nil])
+    }
+
+    func testAFailedPickAnswersWithoutASkill() async {
+        let (workspace, _) = home()
+        let sent = LockIsolated<[Skill?]>([])
+        let store = chat(workspace) { request in
+            sent.withValue { $0.append(request.skill) }
+            return AssistantReply(text: "Hi!", isComplete: true)
+        }
+        store.dependencies.assistant.pickSkill = { _, _ in throw AssistantError.busy }
+
+        await send("Hello", in: store)
+
+        XCTAssertEqual(sent.value, [nil])
+        XCTAssertEqual(store.state.conversation.messages.last?.text, "Hi!")
     }
 
     // MARK: - Checkpoints

@@ -18,6 +18,9 @@ package struct AssistantClient: Sendable {
     /// A skill written from the person's description of it, for them to
     /// review before saving.
     package var draftSkill: @Sendable (_ description: String) async throws -> SkillDraft
+    /// Which of `skills` fits the last message in `messages`, by ID, or nil
+    /// when none does and the assistant should answer as it is.
+    package var pickSkill: @Sendable (_ messages: [ChatMessage], _ skills: [Skill]) async throws -> String?
     /// A short title for a conversation with these messages.
     package var suggestTitle: @Sendable (_ messages: [ChatMessage]) async throws -> String
     /// A short summary of `messages`, which follow the summary `earlier`
@@ -190,10 +193,10 @@ package struct AssistantRequest: Hashable, Sendable {
         self.attachments = attachments
     }
 
-    /// The tools the skill allows, or every tool without one. Tools that
-    /// change records need `writes`.
+    /// The tools the skill allows, or none without one: then the assistant
+    /// just talks. Tools that change records need `writes`.
     package var allowedTools: Set<AssistantTool> {
-        let tools = skill?.tools ?? Set(AssistantTool.allCases)
+        let tools = skill?.tools ?? []
         return writes == nil ? tools.filter { !$0.writes } : tools
     }
 
@@ -205,9 +208,8 @@ package struct AssistantRequest: Hashable, Sendable {
     /// `projectChanges`.
     package var changesProjects: Bool { allowedTools.contains(.updateProjects) }
 
-    /// Whether the assistant may propose a plan: without a skill, or when
-    /// the skill drafts plans.
-    package var draftsPlans: Bool { skill?.draftsPlans ?? true }
+    /// Whether the assistant may propose a plan: when the skill drafts them.
+    package var draftsPlans: Bool { skill?.draftsPlans ?? false }
 
     package var today: CalendarDate { CalendarDate(now, in: timeZone) }
     package var lookup: AssistantLookup { AssistantLookup(workspace) }
@@ -465,6 +467,7 @@ extension AssistantClient {
                 }
             },
             draftSkill: { _ in .example },
+            pickSkill: { _, _ in nil },
             suggestTitle: { _ in "Planning the week" },
             compact: { _, _ in AssistantPrompt.exampleSummary },
             prewarm: {},

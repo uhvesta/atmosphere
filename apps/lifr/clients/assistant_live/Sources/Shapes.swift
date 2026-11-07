@@ -136,6 +136,13 @@ enum Shapes {
             ModelProperty("draftsPlans", "Whether it adds new tasks, Projects or Avenues.", .bool),
         ])
 
+    /// The pick of one of `ids`, or none.
+    static func pick(_ ids: [String]) -> ModelSchema {
+        .object(
+            name: "Pick",
+            [ModelProperty("skill", "The skill to use.", .choice(name: "SkillID", ids + [AssistantPrompt.noSkill]))])
+    }
+
     /// The answer to a message: the changes made to the existing tasks
     /// with `codes`, the plan of new things, then what to say about them.
     /// A change may move a task to one of `places`. The answer must have

@@ -31,6 +31,38 @@ final class SkillsFeatureTests: XCTestCase {
         XCTAssertEqual(stored.first { $0.id == "undo" }?.isOn, false)
     }
 
+    func testWhetherABuiltInIsPickedAutomaticallyIsKept() async throws {
+        let client = SkillsClient.inMemory()
+        let store = await skills(client)
+
+        await store.send(.autoPicksToggled("breakdown", false))
+        await store.receive(\.saved)
+        await store.send(.autoPicksToggled("undo", true))
+        await store.receive(\.saved)
+
+        let stored = try await client.load()
+        XCTAssertEqual(stored.first { $0.id == "breakdown" }?.autoPicks, false)
+        XCTAssertEqual(stored.first { $0.id == "undo" }?.autoPicks, true)
+    }
+
+    func testANewSkillCanBePickedAutomaticallyWhenItFits() async throws {
+        let client = SkillsClient.inMemory()
+        let store = await skills(client)
+
+        await store.send(.newTapped)
+        await store.send(.editor(.presented(.binding(.set(\.name, "Weekly review")))))
+        await store.send(.editor(.presented(.binding(.set(\.instructions, "Go through the week.")))))
+        await store.send(.editor(.presented(.binding(.set(\.autoPicks, true)))))
+        await store.send(.editor(.presented(.binding(.set(\.useWhen, " I ask about my week ")))))
+        await store.send(.editor(.presented(.saveTapped)))
+        await store.skipReceivedActions()
+
+        let stored = try await client.load()
+        let saved = try XCTUnwrap(stored.first { $0.id == "user:weekly-review" })
+        XCTAssertTrue(saved.autoPicks)
+        XCTAssertEqual(saved.useWhen, "I ask about my week")
+    }
+
     func testANewSkillIsSavedUnderItsUserID() async throws {
         let client = SkillsClient.inMemory()
         let store = await skills(client)

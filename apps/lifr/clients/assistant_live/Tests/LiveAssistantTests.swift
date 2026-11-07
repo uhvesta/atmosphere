@@ -13,14 +13,14 @@ final class LiveAssistantTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
     private let conversation = UUID()
 
-    /// A request with the person's `text`, which can propose changes when
-    /// it `writes` to a store the person applies them to.
-    private func request(_ text: String, workspace: Workspace = Workspace(), writes: StoreClient? = nil)
-        -> AssistantRequest
-    {
+    /// A request with the person's `text` and `skill`, which can propose
+    /// changes when it `writes` to a store the person applies them to.
+    private func request(
+        _ text: String, workspace: Workspace = Workspace(), writes: StoreClient? = nil, skill: Skill? = .add
+    ) -> AssistantRequest {
         AssistantRequest(
             messages: [ChatMessage(id: UUID(), role: .person, text: text, at: now)], workspace: workspace, now: now,
-            timeZone: .gmt, writes: writes.map { _ in AssistantWrites(conversation: conversation) })
+            timeZone: .gmt, writes: writes.map { _ in AssistantWrites(conversation: conversation) }, skill: skill)
     }
 
     /// Applies what the last reply proposed to `store`, as the person does,
@@ -187,7 +187,7 @@ final class LiveAssistantTests: XCTestCase {
 
         let (replies, error) = await replies(
             .live(runtime: { _ in model }),
-            request("Note that rent is paid", workspace: records.workspace, writes: store))
+            request("Note that rent is paid", workspace: records.workspace, writes: store, skill: .review))
 
         XCTAssertNil(error)
         XCTAssertEqual(model.turns.count, 2)
@@ -212,7 +212,7 @@ final class LiveAssistantTests: XCTestCase {
         let (_, before) = await replies(.live(runtime: { _ in unsaved }), request("Plan the garden"))
         let (_, after) = await replies(
             .live(runtime: { _ in saved }),
-            request("Note that rent is paid", workspace: records.workspace, writes: store))
+            request("Note that rent is paid", workspace: records.workspace, writes: store, skill: .review))
 
         XCTAssertEqual(before, .interrupted(.memory))
         XCTAssertEqual(after, .interrupted(.background))
@@ -247,7 +247,7 @@ final class LiveAssistantTests: XCTestCase {
 
         let (replies, error) = await replies(
             .live(runtime: { _ in model }),
-            request("Note that rent is paid", workspace: records.workspace, writes: store))
+            request("Note that rent is paid", workspace: records.workspace, writes: store, skill: .review))
 
         XCTAssertNil(error)
         XCTAssertEqual(model.turns.count, 2)
@@ -322,7 +322,9 @@ final class LiveAssistantTests: XCTestCase {
 
         let (replies, error) = await replies(
             .live(runtime: { _ in model }),
-            request("Move Renew passport to WORK and pay rent is done", workspace: records.workspace, writes: store))
+            request(
+                "Move Renew passport to WORK and pay rent is done", workspace: records.workspace, writes: store,
+                skill: .change))
 
         XCTAssertNil(error)
         XCTAssertNil(replies.last?.plan, "the moved task would be added again")
@@ -347,7 +349,7 @@ final class LiveAssistantTests: XCTestCase {
 
         let (replies, error) = await replies(
             .live(runtime: { _ in model }),
-            request("Rename “Pay rent” to “Pay the rent”", workspace: records.workspace, writes: store))
+            request("Rename “Pay rent” to “Pay the rent”", workspace: records.workspace, writes: store, skill: .change))
 
         XCTAssertNil(error)
         let saved = try await applied(replies, to: store)
@@ -365,7 +367,7 @@ final class LiveAssistantTests: XCTestCase {
 
         let (replies, _) = await replies(
             .live(runtime: { _ in model }),
-            request("Move pay rent to garden", workspace: records.workspace, writes: store))
+            request("Move pay rent to garden", workspace: records.workspace, writes: store, skill: .change))
 
         let text = try XCTUnwrap(replies.last?.text)
         XCTAssertTrue(text.hasPrefix("Moved it."))
@@ -384,7 +386,7 @@ final class LiveAssistantTests: XCTestCase {
         ])
 
         let (replies, _) = await replies(
-            .live(runtime: { _ in model }), request("Mark rent done", workspace: records.workspace))
+            .live(runtime: { _ in model }), request("Mark rent done", workspace: records.workspace, skill: .change))
 
         let saved = try await applied(replies, to: store)
         XCTAssertEqual(saved.tasks[rent.id]?.status, .todo)
@@ -408,7 +410,7 @@ final class LiveAssistantTests: XCTestCase {
             .live(runtime: { _ in model }),
             request(
                 "Rename the half marathon to “Spring half marathon”, due 2026-12-06", workspace: records.workspace,
-                writes: store))
+                writes: store, skill: .change))
 
         XCTAssertNil(error)
         XCTAssertEqual(replies.last?.text, "Renamed it and set it for 6 December.")
@@ -432,7 +434,7 @@ final class LiveAssistantTests: XCTestCase {
 
         let (replies, _) = await replies(
             .live(runtime: { _ in model }),
-            request("Complete the half marathon", workspace: records.workspace, writes: store))
+            request("Complete the half marathon", workspace: records.workspace, writes: store, skill: .change))
 
         let text = try XCTUnwrap(replies.last?.text)
         XCTAssertTrue(text.hasPrefix("Completed it."))
@@ -451,7 +453,8 @@ final class LiveAssistantTests: XCTestCase {
         ])
 
         let (replies, _) = await replies(
-            .live(runtime: { _ in model }), request("Pay rent is done", workspace: records.workspace, writes: store))
+            .live(runtime: { _ in model }),
+            request("Pay rent is done", workspace: records.workspace, writes: store, skill: .change))
 
         let codes = model.turns.first.map { Self.changeCodes(in: $0.schema) }
         XCTAssertEqual(codes, [records.workspace.displayCode(of: rent)])
@@ -464,7 +467,8 @@ final class LiveAssistantTests: XCTestCase {
         let model = ScriptedRuntime(steps: [ScriptedRuntime.answer(["message": "Added."])])
 
         _ = await replies(
-            .live(runtime: { _ in model }), request("Add buy eggs", workspace: records.workspace, writes: store))
+            .live(runtime: { _ in model }),
+            request("Add buy eggs", workspace: records.workspace, writes: store, skill: .change))
 
         XCTAssertEqual(model.turns.first.map { Self.changeCodes(in: $0.schema) }, [])
     }
@@ -495,7 +499,7 @@ final class LiveAssistantTests: XCTestCase {
         let model = ScriptedRuntime(steps: [step])
 
         let (replies, error) = await replies(
-            .live(runtime: { _ in model }), request("What's due?", workspace: records.workspace))
+            .live(runtime: { _ in model }), request("What's due?", workspace: records.workspace, skill: .query))
 
         XCTAssertNil(error)
         XCTAssertEqual(replies.last?.text, "You have one.")
@@ -505,7 +509,7 @@ final class LiveAssistantTests: XCTestCase {
     func testWithoutWritesTheModelGetsOnlyReadingTools() async {
         let model = ScriptedRuntime(steps: [ScriptedRuntime.answer(turn)])
 
-        _ = await replies(.live(runtime: { _ in model }), request("Mark rent done"))
+        _ = await replies(.live(runtime: { _ in model }), request("Mark rent done", skill: .review))
 
         let names = Set(model.turns.first?.tools.map(\.name) ?? [])
         XCTAssertEqual(names, ["findTasks", "getTask", "overview", "recentActivity"])
@@ -602,6 +606,46 @@ final class LiveAssistantTests: XCTestCase {
         XCTAssertEqual(draft.tools, [.overview, .findTasks])
         XCTAssertFalse(draft.draftsPlans)
         XCTAssertNotNil(model.turns.first?.schema)
+    }
+
+    func testWithoutASkillTheModelJustTalks() async {
+        let model = ScriptedRuntime(steps: [ScriptedRuntime.answer("Hi! What's on your mind?")])
+
+        let (replies, error) = await replies(.live(runtime: { _ in model }), request("Hello", skill: nil))
+
+        XCTAssertNil(error)
+        XCTAssertEqual(replies.last?.text, "Hi! What's on your mind?")
+        XCTAssertNil(replies.last?.plan)
+        XCTAssertEqual(model.turns.count, 1)
+        XCTAssertNil(model.turns.first?.schema)
+        XCTAssertEqual(model.turns.first?.tools.count, 0)
+    }
+
+    func testASkillIsPickedFromTheModelsAnswer() async throws {
+        let model = ScriptedRuntime(steps: [ScriptedRuntime.answer(["skill": "breakdown"])])
+        let messages = [ChatMessage(id: UUID(), role: .person, text: "Dentist, taxes, gym, call mum", at: now)]
+
+        let picked = try await AssistantClient.live(runtime: { _ in model }).pickSkill(messages, [.query, .breakdown])
+
+        XCTAssertEqual(picked, "breakdown")
+        XCTAssertNotNil(model.turns.first?.schema)
+    }
+
+    func testPickingNoneOrASkillNotOfferedPicksNothing() async throws {
+        let model = ScriptedRuntime(steps: [
+            ScriptedRuntime.answer(["skill": "none"]), ScriptedRuntime.answer(["skill": "undo"]),
+        ])
+        let client = AssistantClient.live(runtime: { _ in model })
+        let messages = [ChatMessage(id: UUID(), role: .person, text: "Hi", at: now)]
+
+        let none = try await client.pickSkill(messages, [.query])
+        let other = try await client.pickSkill(messages, [.query])
+        let empty = try await client.pickSkill(messages, [])
+
+        XCTAssertNil(none)
+        XCTAssertNil(other)
+        XCTAssertNil(empty)
+        XCTAssertEqual(model.turns.count, 2, "with no skills to pick, the model isn't asked")
     }
 
     func testATitleIsTheModelsFirstLine() async throws {

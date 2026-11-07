@@ -34,6 +34,7 @@
   [Button] "Use a Skill" id: sparkles
   [TextField] ""
   [Button, disabled] "Send" id: arrow.up.circle.fill
+  [Unknown] "Skill: Change"
   [StaticText] "" value: "Rename the Half marathon to “Spring half marathon”, due 2026-12-06"
   [StaticText] "" value: "I renamed it to Spring half marathon, due 6 December."
   [StaticText] "" value: "Changed Project “Spring half marathon”"

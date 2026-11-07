@@ -178,7 +178,7 @@ final class AssistantWriteTests: XCTestCase {
     }
 
     func testThePromptOffersChangesOnlyWithWrites() {
-        let request = AssistantRequest(messages: [], workspace: Workspace(), now: now, timeZone: .gmt)
+        let request = AssistantRequest(messages: [], workspace: Workspace(), now: now, timeZone: .gmt, skill: .change)
         var writing = request
         writing.writes = AssistantWrites(conversation: conversation)
 
@@ -265,7 +265,7 @@ final class MeantTasksTests: XCTestCase {
         records.task("Book physio appointment", in: home)
         return AssistantRequest(
             messages: [ChatMessage(id: UUID(), role: .person, text: text, at: now)], workspace: records.workspace,
-            now: now, timeZone: .gmt)
+            now: now, timeZone: .gmt, skill: .change)
     }
 
     func testTheTasksAMessageNamesAreListedWithTheirCodes() {
