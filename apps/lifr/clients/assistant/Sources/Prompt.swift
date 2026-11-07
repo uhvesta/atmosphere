@@ -1,3 +1,4 @@
+import ChatKit
 import Foundation
 import LifrAPI
 import LifrCore
@@ -398,12 +399,7 @@ package enum AssistantPrompt {
     /// The model's answer as a summary: trimmed, and cut at a sentence's end
     /// to `summaryLimit`. Nil when it wrote nothing.
     package static func summary(from answer: String) -> String? {
-        let text = answer.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return nil }
-        guard text.count > summaryLimit else { return text }
-        let cut = String(text.prefix(summaryLimit))
-        guard let end = cut.lastIndex(where: { ".!?".contains($0) }) else { return cut + "…" }
-        return String(cut[...end])
+        ChatSummary.text(from: answer, limit: summaryLimit)
     }
 
     /// What the scripted assistant summarizes any conversation as.
@@ -487,16 +483,7 @@ package enum AssistantPrompt {
     /// last message is always kept, cut from the front when it's too long
     /// by itself.
     package static func history(_ messages: [ChatMessage], budget: Int = historyBudget) -> [ChatMessage] {
-        guard var last = messages.last else { return [] }
-        if last.text.count > budget { last.text = String(last.text.suffix(budget)) }
-        var kept = [last]
-        var used = last.text.count
-        for message in messages.dropLast().reversed() {
-            used += message.text.count
-            guard used <= budget else { break }
-            kept.append(message)
-        }
-        return kept.reversed()
+        messages.newest(fitting: budget)
     }
 
     private static func weekday(_ date: CalendarDate) -> String {
@@ -536,14 +523,9 @@ package enum AssistantPrompt {
     /// a "Title:" label or a final full stop, cut to 40 characters. Nil
     /// when nothing is left.
     package static func title(from answer: String) -> String? {
-        var line = answer.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
-        if line.lowercased().hasPrefix("title:") { line = String(line.dropFirst(6)) }
-        line = line.trimmingCharacters(in: .whitespaces.union(CharacterSet(charactersIn: "\"'“”‘’*.")))
-        guard !line.isEmpty else { return nil }
-        return line.count > 40 ? String(line.prefix(39)) + "…" : line
+        Conversation.name(from: answer)
     }
 
-    /// The skill in the model's answer, or nil when it has no instructions.
     /// What the model is told to pick a skill for the last message with:
     /// each of `skills` by ID, and when to use it.
     package static func pickInstructions(_ skills: [Skill]) -> String {
@@ -579,10 +561,10 @@ package enum AssistantPrompt {
 
     /// The skill the model picked, if it's one of `skills`.
     package static func pickedSkill(from answer: JSONValue, in skills: [Skill]) -> String? {
-        guard let id = answer["skill"]?.text?.trimmingCharacters(in: .whitespaces) else { return nil }
-        return skills.first { $0.id.caseInsensitiveCompare(id) == .orderedSame }?.id
+        answer["skill"]?.text.flatMap { Skill.named($0, in: skills)?.id }
     }
 
+    /// The skill in the model's answer, or nil when it has no instructions.
     package static func skillDraft(from answer: JSONValue) -> SkillDraft? {
         guard let instructions = answer["instructions"]?.text else { return nil }
         return SkillDraft(

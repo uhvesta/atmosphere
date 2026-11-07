@@ -1,0 +1,47 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# AssistantKit: what an app's assistant can do. Skills, generic over the
+# app's tools, with search and the built-ins kept up to date; and proposals,
+# generic over the app's actions, that the person applies or declines
+# before anything is saved. Plain Swift with Foundation, so it builds with
+# the hermetic toolchains, Linux included.
+swift_library(
+    name = "assistant",
+    srcs = glob(["Sources/*.swift"]),
+    copts = [
+        "-swift-version",
+        "6",
+    ],
+    module_name = "AssistantKit",
+    visibility = ["//apps:__subpackages__"],
+)
+
+# Given/then tests on a small sample assistant, run with TestingKit.
+swift_binary(
+    name = "assistant_tests",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    copts = [
+        "-swift-version",
+        "6",
+    ],
+    deps = [
+        ":assistant",
+        "//apps/libs/kits/testing",
+    ],
+)
+
+sh_test(
+    name = "assistant_test",
+    srcs = ["//apps/libs/kits/testing:run_tests.sh"],
+    args = ["$(rootpath :assistant_tests)"],
+    data = [":assistant_tests"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

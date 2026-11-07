@@ -1,3 +1,4 @@
+import AssistantKit
 import Foundation
 import LifrCore
 
@@ -14,23 +15,9 @@ package enum AssistantAction: Hashable, Codable, Sendable {
 
 /// What the assistant asked to change in one reply. Nothing of it is
 /// saved until the person applies it, as one change Undo reverts.
-package struct Proposal: Hashable, Codable, Sendable {
-    package var actions: [AssistantAction]
-    /// What the actions change, record by record, as the records were when
-    /// they were proposed or last edited.
-    package var steps: [JournalStep]
-    package var decision: Decision?
+package typealias Proposal = AssistantKit.Proposal<AssistantAction, JournalStep>
 
-    package enum Decision: String, Hashable, Codable, Sendable {
-        case applied, declined
-    }
-
-    package init(actions: [AssistantAction], steps: [JournalStep], decision: Decision? = nil) {
-        self.actions = actions
-        self.steps = steps
-        self.decision = decision
-    }
-
+extension AssistantKit.Proposal where Action == AssistantAction, Step == JournalStep {
     /// How many of the actions revert earlier changes.
     package var reverts: Int {
         actions.reduce(0) { count, action in

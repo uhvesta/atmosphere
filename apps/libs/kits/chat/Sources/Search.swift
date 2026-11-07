@@ -3,13 +3,13 @@ import Foundation
 /// What a person searches their conversations for: words, and when the
 /// messages were written, read from phrases such as "last week", "in
 /// October", "yesterday", "on Friday" or "3 days ago".
-package struct ConversationQuery: Hashable, Sendable {
+public struct ConversationQuery: Hashable, Sendable {
     /// What's searched for besides when, as typed.
-    package var words: [String]
+    public var words: [String]
     /// When the messages were written; nil when the query doesn't say.
-    package var during: DateInterval?
+    public var during: DateInterval?
 
-    package init(words: [String], during: DateInterval? = nil) {
+    public init(words: [String], during: DateInterval? = nil) {
         self.words = words
         self.during = during
     }
@@ -17,7 +17,7 @@ package struct ConversationQuery: Hashable, Sendable {
     /// Reads `text`, taking dates from `now` in `calendar`. Only the first
     /// time it names counts; the words around it, such as "in" or "on",
     /// are left out with it.
-    package init(_ text: String, now: Date, calendar: Calendar) {
+    public init(_ text: String, now: Date, calendar: Calendar) {
         let typed = text.split(whereSeparator: \.isWhitespace).map(String.init)
         let plain = typed.map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) }
         var words: [String] = []
@@ -39,13 +39,13 @@ package struct ConversationQuery: Hashable, Sendable {
     }
 
     /// Whether there's nothing to search for.
-    package var isEmpty: Bool { words.isEmpty && during == nil }
+    public var isEmpty: Bool { words.isEmpty && during == nil }
 
     /// The words, as one phrase.
-    package var text: String { words.joined(separator: " ") }
+    public var text: String { words.joined(separator: " ") }
 
     /// Whether `text` has every word, ignoring case and accents.
-    package func matches(_ text: String) -> Bool {
+    public func matches(_ text: String) -> Bool {
         let text = text.folded
         return !words.isEmpty && words.allSatisfy { text.contains($0.folded) }
     }
@@ -132,15 +132,15 @@ package struct ConversationQuery: Hashable, Sendable {
 
 extension Conversation {
     /// Where a search found a conversation.
-    package struct Match: Hashable, Sendable {
+    public struct Match: Hashable, Sendable {
         /// The message that has what was searched for; nil when its name
         /// does.
-        package var message: ChatMessage?
+        public var message: Message?
         /// Whether it was found by words related to what was searched for,
         /// rather than the words themselves.
-        package var isRelated: Bool
+        public var isRelated: Bool
 
-        package init(message: ChatMessage?, isRelated: Bool = false) {
+        public init(message: Message?, isRelated: Bool = false) {
             self.message = message
             self.isRelated = isRelated
         }
@@ -151,7 +151,7 @@ extension Conversation {
     /// query says. Failing that, the newest such message with one of the
     /// `related` words or phrases, whole. With only a time, the newest
     /// message from then. Nil when there's none.
-    package func match(_ query: ConversationQuery, related: [String] = []) -> Match? {
+    public func match(_ query: ConversationQuery, related: [String] = []) -> Match? {
         guard !query.isEmpty else { return nil }
         let written = (messages + hidden).enumerated()
             .filter { !$0.element.text.isEmpty && query.during?.contains($0.element.at) != false }

@@ -1125,7 +1125,7 @@ package struct ChatFeature {
     /// picks none while a plan is being drafted: the last the person's
     /// messages used, so answers about the plan still change it.
     private func pickable(in state: State) -> SkillPick {
-        let candidates = state.skills.filter { $0.isOn && $0.autoPicks }
+        let candidates = Skill.pickable(state.skills)
         let drafting = !(state.conversation.draft?.isEmpty ?? true)
         let last = state.conversation.messages.dropLast().last { $0.role == .person && $0.skill != nil }?.skill
         let kept = drafting ? last.flatMap { id in state.skills.first { $0.id == id && $0.isOn } } : nil

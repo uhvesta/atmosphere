@@ -1,3 +1,4 @@
+import ChatKit
 import ComposableArchitecture
 import Foundation
 import LifrAPI
@@ -88,8 +89,8 @@ package enum AssistantAvailability: Hashable, Sendable, CustomStringConvertible 
 }
 
 /// One message in a conversation.
-package struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
-    package enum Role: String, Hashable, Codable, Sendable { case person, assistant }
+package struct ChatMessage: ChatEntry {
+    package typealias Role = ChatRole
 
     package var id: UUID
     package var role: Role
@@ -143,6 +144,7 @@ package struct ChatMessage: Identifiable, Hashable, Codable, Sendable {
         try container.encodeIfPresent(skill, forKey: .skill)
         if !attachments.isEmpty { try container.encode(attachments, forKey: .attachments) }
         try container.encodeIfPresent(thinking, forKey: .thinking)
+        try container.encodeIfPresent(proposal, forKey: .proposal)
     }
 }
 

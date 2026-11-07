@@ -6,7 +6,9 @@ load("@rules_swift//swift:swift_library.bzl", "swift_library")
 # the prompt, the lookup tools and a scripted version for tests and
 # previews. The live one, on the person's chosen model, is
 # //apps/lifr/clients/assistant_live, which features never depend on.
-# Conversations are kept by ConversationsClient, whose live version is in
+# Conversations (ChatKit's, with what Lifr keeps beside them) and skills
+# and proposals (AssistantKit's, over Lifr's tools and actions) are
+# specialised here. Conversations are kept by ConversationsClient, whose live version is in
 # //apps/lifr/clients/store_live.
 swift_library(
     name = "assistant",
@@ -21,6 +23,8 @@ swift_library(
         "//apps/lifr/features:__subpackages__",
     ],
     deps = [
+        "//apps/libs/kits/assistant",
+        "//apps/libs/kits/chat",
         "//apps/lifr/api",
         "//apps/lifr/clients/models",
         "//apps/lifr/core",

@@ -34,6 +34,14 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(read.thinking, thinking)
     }
 
+    func testWhatAReplyAskedToChangeIsKeptWithItsDecision() throws {
+        let proposal = Proposal(
+            actions: [.comment(code: "HOME-0001", text: "Done")], steps: [], decision: .applied)
+        let message = ChatMessage(id: UUID(), role: .assistant, text: "Added.", at: now, proposal: proposal)
+        let read = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(message))
+        XCTAssertEqual(read.proposal, proposal)
+    }
+
     func testAttachmentsAreKeptWithTheMessage() throws {
         let message = ChatMessage(
             id: UUID(), role: .person, text: "What's this?", at: now, attachments: [photo, recording])

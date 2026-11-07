@@ -1,134 +1,58 @@
+import ChatKit
 import ComposableArchitecture
 import Foundation
 import LifrCore
 
-/// One conversation with the assistant.
-package struct Conversation: Identifiable, Hashable, Codable, Sendable {
-    package var id: UUID
-    /// The messages shown, from the first to where the conversation is now.
-    /// Change them with `append` and `go(to:)`, which keep the branches.
-    package var messages: [ChatMessage] = []
-    /// The messages not shown: those after the point the person went back
-    /// to, and those of other branches.
-    package var hidden: [ChatMessage] = []
-    /// The message each one follows. One missing follows the one before it
-    /// in `messages`, as in conversations kept before branches.
-    package var parents: [UUID: UUID] = [:]
-    /// The message last shown after each one, which going forward follows.
-    package var latest: [UUID: UUID] = [:]
+/// One conversation with the assistant: ChatKit's, with Lifr's draft and
+/// Undo kept beside its messages.
+package typealias Conversation = ChatKit.Conversation<ChatMessage, AssistantContext>
+package typealias ChatSummary = ChatKit.ChatSummary
+package typealias ConversationQuery = ChatKit.ConversationQuery
+
+/// What Lifr keeps with a conversation besides its messages.
+package struct AssistantContext: ConversationContext {
     /// The plan on the draft card.
     package var draft: Plan?
     /// The journal entries each assistant message saved, for its Undo.
     package var changes: [UUID: [UUID]] = [:]
     /// The journal entries of plans added from the draft card.
     package var added: [UUID] = []
-    package var createdAt: Date
-    /// When the person archived it; nil while it's in the main list.
-    package var archivedAt: Date?
-    /// Whether it's kept in iCloud. Conversations start on this device.
-    package var isSynced = false
-    /// The title the person or the assistant gave it; nil for the first
-    /// message.
-    package var name: String?
-    /// Whether the person gave it its name, which the assistant then never
-    /// replaces.
-    package var isNamedByHand = false
-    /// What the assistant wrote of the conversation, each kept under the
-    /// last message it covers. A summary goes with every branch through
-    /// that message, as what came before it is the same on each.
-    package var summaries: [UUID: ChatSummary] = [:]
 
-    package init(id: UUID, createdAt: Date) {
-        self.id = id
-        self.createdAt = createdAt
-    }
+    package init() {}
 
-    /// Its name, or else the person's first message, cut short.
-    package var title: String {
-        if let name, !name.isEmpty { return name }
-        guard let first = messages.first(where: { $0.role == .person && !$0.text.isEmpty })?.text else {
-            return "New conversation"
-        }
-        return first.count > 40 ? String(first.prefix(39)) + "…" : first
-    }
+    private enum CodingKeys: String, CodingKey { case draft, changes, added }
 
-    /// When its last message was written, on any branch: going back
-    /// doesn't make a conversation older.
-    package var updatedAt: Date { (messages + hidden).map(\.at).max() ?? createdAt }
-
-    package var isArchived: Bool { archivedAt != nil }
-}
-
-extension Conversation {
-    private enum CodingKeys: String, CodingKey {
-        case id, messages, hidden, parents, latest, draft, changes, added, createdAt, archivedAt, isSynced, name
-        case isNamedByHand, summaries
-    }
-
-    /// Conversations saved before archiving, per-conversation syncing,
-    /// names and branches read as in the main list, on this device, unnamed
-    /// and in one line.
+    /// Conversations saved before drafts or Undo read with none.
     package init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(UUID.self, forKey: .id)
-        messages = try container.decodeIfPresent([ChatMessage].self, forKey: .messages) ?? []
-        hidden = try container.decodeIfPresent([ChatMessage].self, forKey: .hidden) ?? []
-        parents = try container.decodeIfPresent([UUID: UUID].self, forKey: .parents) ?? [:]
-        latest = try container.decodeIfPresent([UUID: UUID].self, forKey: .latest) ?? [:]
         draft = try container.decodeIfPresent(Plan.self, forKey: .draft)
         changes = try container.decodeIfPresent([UUID: [UUID]].self, forKey: .changes) ?? [:]
         added = try container.decodeIfPresent([UUID].self, forKey: .added) ?? []
-        createdAt = try container.decode(Date.self, forKey: .createdAt)
-        archivedAt = try container.decodeIfPresent(Date.self, forKey: .archivedAt)
-        isSynced = try container.decodeIfPresent(Bool.self, forKey: .isSynced) ?? false
-        name = try container.decodeIfPresent(String.self, forKey: .name)
-        isNamedByHand = try container.decodeIfPresent(Bool.self, forKey: .isNamedByHand) ?? false
-        summaries = try container.decodeIfPresent([UUID: ChatSummary].self, forKey: .summaries) ?? [:]
-    }
-
-    /// The newest summary of the messages shown, and the message it ends
-    /// at: nil when none of them is summarized.
-    package var summary: (through: UUID, summary: ChatSummary)? {
-        for message in messages.reversed() {
-            if let summary = summaries[message.id] { return (message.id, summary) }
-        }
-        return nil
-    }
-
-    /// The messages shown after the newest summary: all of them without one.
-    package var unsummarized: ArraySlice<ChatMessage> {
-        guard let through = summary?.through, let index = messages.firstIndex(where: { $0.id == through }) else {
-            return messages[...]
-        }
-        return messages[(index + 1)...]
-    }
-
-    /// The messages a new summary would cover: those after the newest one
-    /// but the last two, which stay as they were written so the model
-    /// sees the latest exchange word for word.
-    package var compactable: ArraySlice<ChatMessage> { unsummarized.dropLast(Self.keptWhole) }
-
-    /// The messages a summary leaves as they are.
-    package static let keptWhole = 2
-
-    /// Names it as the person typed it; an empty name goes back to the
-    /// first message and lets the assistant name it again.
-    package mutating func rename(_ text: String) {
-        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        name = text.isEmpty ? nil : text
-        isNamedByHand = !text.isEmpty
     }
 }
 
-/// What the assistant wrote of a conversation up to one message, sent in
-/// place of those messages so a long conversation fits the model.
-package struct ChatSummary: Hashable, Codable, Sendable {
-    package var text: String
-    package var at: Date
+extension ChatKit.Conversation where Message == ChatMessage, Context == AssistantContext {
+    /// Every point to go to, on every branch, oldest first, with the task
+    /// changes its replies saved that can still be undone.
+    package var checkpoints: [Checkpoint] { checkpoints(changes: { context.changes[$0]?.count ?? 0 }) }
 
-    package init(text: String, at: Date) {
-        self.text = text
-        self.at = at
+    /// The replies shown now that going to `id` would hide, and that saved
+    /// changes still to undo.
+    package func changedReplies(hiddenGoingTo id: UUID) -> [UUID] {
+        changedReplies(hiddenGoingTo: id, changed: { context.changes[$0]?.isEmpty == false })
+    }
+
+    /// The replies shown now that writing the message `id` again would
+    /// hide, and that saved changes still to undo.
+    package func changedReplies(hiddenGoingBefore id: UUID) -> [UUID] {
+        changedReplies(hiddenGoingBefore: id, changed: { context.changes[$0]?.isEmpty == false })
+    }
+
+    /// A new conversation of the messages up to `id`, on this one's branch
+    /// to it, that doesn't share its Undo or draft: the tasks those
+    /// changed belong to this one.
+    package func fork(at id: UUID, as forkID: UUID, now: Date) -> Conversation? {
+        fork(at: id, as: forkID, now: now, name: String(localized: "\(title) (fork)"))
     }
 }
 
