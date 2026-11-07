@@ -1,0 +1,56 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# SyncKit: syncs an app's JournalKit records between devices. It merges what
+# other devices changed, holds what can't merge for the person to review, and
+# sends the rest. The cloud is two closures, so an app can use CloudKit
+# (//apps/libs/kits/sync/cloudkit) or the in-memory one here for tests and
+# previews. Plain Swift, so it builds with the hermetic toolchains.
+swift_library(
+    name = "sync",
+    srcs = glob(["Sources/*.swift"]),
+    copts = [
+        "-swift-version",
+        "6",
+    ],
+    module_name = "SyncKit",
+    visibility = ["//apps:__subpackages__"],
+    deps = ["//apps/libs/kits/journal"],
+)
+
+# The sample notebook the tests sync, for the CloudKit target's tests.
+exports_files(
+    ["Tests/Devices.swift"],
+    visibility = ["//apps/libs/kits/sync/cloudkit:__pkg__"],
+)
+
+# Given/then tests: two devices of JournalKit's sample notes app sharing an
+# in-memory cloud, run with TestingKit.
+swift_binary(
+    name = "sync_tests",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]) + ["//apps/libs/kits/journal:Tests/Notes.swift"],
+    copts = [
+        "-swift-version",
+        "6",
+    ],
+    deps = [
+        ":sync",
+        "//apps/libs/kits/journal",
+        "//apps/libs/kits/testing",
+    ],
+)
+
+sh_test(
+    name = "sync_test",
+    srcs = ["//apps/libs/kits/testing:run_tests.sh"],
+    args = ["$(rootpath :sync_tests)"],
+    data = [":sync_tests"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

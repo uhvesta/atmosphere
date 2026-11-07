@@ -1,12 +1,11 @@
-import ComposableArchitecture
 import Foundation
 
-/// A cloud in memory that several devices share, for tests and flow
-/// snapshots. Like CloudKit, it refuses a record a device sends when another
-/// device changed it since the sender last fetched it.
-package final class InMemoryCloud: Sendable {
+/// A cloud in memory that several devices share, for tests and previews.
+/// Like CloudKit, it refuses a record a device sends when another device
+/// changed it since the sender last fetched it.
+public final class InMemoryCloud<Snapshot: SyncSnapshot>: Sendable {
     private struct Stored {
-        var change: CloudChange
+        var change: CloudChange<Snapshot>
         var version: Int
     }
 
@@ -21,18 +20,18 @@ package final class InMemoryCloud: Sendable {
         var offline: Set<String> = []
     }
 
-    private let state = LockIsolated(State())
+    private let state = Locked(State())
 
-    package init() {}
+    public init() {}
 
     /// The cloud as `device` sees it.
-    package func connection(device: String) -> Cloud {
+    public func connection(device: String) -> Cloud<Snapshot> {
         Cloud(
-            fetch: { [state] () throws -> [CloudChange] in
+            fetch: { [state] () throws -> [CloudChange<Snapshot>] in
                 try state.withValue { state in
                     guard !state.offline.contains(device) else { throw SyncError.unreachable("offline") }
                     let start = state.fetched[device] ?? 0
-                    var changes: [String: CloudChange] = [:]
+                    var changes: [String: CloudChange<Snapshot>] = [:]
                     var order: [String] = []
                     for (name, version) in state.log[start...] {
                         guard let stored = state.items[name], stored.version == version else { continue }
@@ -45,10 +44,10 @@ package final class InMemoryCloud: Sendable {
                     return order.compactMap { changes[$0] }
                 }
             },
-            send: { [state] items throws -> [CloudChange] in
+            send: { [state] items throws -> [CloudChange<Snapshot>] in
                 try state.withValue { state in
                     guard !state.offline.contains(device) else { throw SyncError.unreachable("offline") }
-                    var refused: [CloudChange] = []
+                    var refused: [CloudChange<Snapshot>] = []
                     for item in items {
                         let name = item.name
                         let current = state.items[name]
@@ -71,14 +70,14 @@ package final class InMemoryCloud: Sendable {
     }
 
     /// Whether `device` can reach the cloud.
-    package func setOnline(_ online: Bool, device: String) {
+    public func setOnline(_ online: Bool, device: String) {
         state.withValue { state in
             if online { state.offline.remove(device) } else { state.offline.insert(device) }
         }
     }
 
     /// Every item the cloud has, by name, for tests.
-    package var items: [String: CloudItem] {
+    public var items: [String: CloudItem<Snapshot>] {
         state.value.items.mapValues(\.change.item)
     }
 }

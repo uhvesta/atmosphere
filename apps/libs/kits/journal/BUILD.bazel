@@ -17,6 +17,12 @@ swift_library(
     visibility = ["//apps:__subpackages__"],
 )
 
+# The sample notes app the tests use, for kits built on this one.
+exports_files(
+    ["Tests/Notes.swift"],
+    visibility = ["//apps/libs/kits:__subpackages__"],
+)
+
 # Given/then tests on a small sample app, run with TestingKit.
 swift_binary(
     name = "journal_tests",

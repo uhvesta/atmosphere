@@ -1,38 +1,43 @@
 import CloudKit
 import Foundation
-import LifrSyncClient
 import OSLog
+import SyncKit
 
 /// The cloud through a CKSyncEngine in the private database. Syncing runs
 /// when the Syncer asks, not on the engine's own schedule, so every change
 /// that arrives goes through the merge.
-actor CloudKitCloud: CKSyncEngineDelegate {
+actor CloudKitCloud<Snapshot: SyncSnapshot>: CKSyncEngineDelegate {
     private let container: CKContainer
     private let device: String
     private let storage: EngineFile.Storage
-    private let logger = Logger(subsystem: "lifr", category: "sync")
+    private let records: CloudRecord<Snapshot>
+    private let logger: Logger
     private var file: EngineFile?
     private var syncEngine: CKSyncEngine?
     private var isZoneReady = false
 
     /// What the current fetch received, by name, latest last.
-    private var fetched: [String: CloudChange] = [:]
+    private var fetched: [String: CloudChange<Snapshot>] = [:]
     private var fetchOrder: [String] = []
     /// What the current send is saving, by name.
-    private var sending: [String: CloudItem] = [:]
+    private var sending: [String: CloudItem<Snapshot>] = [:]
     /// What the current send had refused, with the server's version.
-    private var refused: [CloudChange] = []
+    private var refused: [CloudChange<Snapshot>] = []
     /// Records to send again, such as one the server no longer has.
     private var retry: Set<String> = []
     private var sendFailure: SyncError?
 
-    init(container: CKContainer, device: String, storage: EngineFile.Storage) {
+    /// Syncs through `zone` in the private database of `container`.
+    /// `subsystem` names the app in the log.
+    init(container: CKContainer, zone: String, device: String, storage: EngineFile.Storage, subsystem: String) {
         self.container = container
         self.device = device
         self.storage = storage
+        records = CloudRecord(zone: zone)
+        logger = Logger(subsystem: subsystem, category: "sync")
     }
 
-    nonisolated var cloud: Cloud {
+    nonisolated var cloud: Cloud<Snapshot> {
         Cloud(
             fetch: { try await self.fetch() },
             send: { items in try await self.send(items) })
@@ -40,7 +45,7 @@ actor CloudKitCloud: CKSyncEngineDelegate {
 
     // MARK: Cloud
 
-    private func fetch() async throws(SyncError) -> [CloudChange] {
+    private func fetch() async throws(SyncError) -> [CloudChange<Snapshot>] {
         let engine = try await ready()
         fetched = [:]
         fetchOrder = []
@@ -55,7 +60,7 @@ actor CloudKitCloud: CKSyncEngineDelegate {
         return changes
     }
 
-    private func send(_ items: [CloudItem]) async throws(SyncError) -> [CloudChange] {
+    private func send(_ items: [CloudItem<Snapshot>]) async throws(SyncError) -> [CloudChange<Snapshot>] {
         guard !items.isEmpty else { return [] }
         let engine = try await ready()
         sending = Dictionary(items.map { ($0.name, $0) }, uniquingKeysWith: { $1 })
@@ -70,7 +75,7 @@ actor CloudKitCloud: CKSyncEngineDelegate {
         // A second round for records the server lost, or a zone it lost.
         for _ in 0..<2 where !names.isEmpty {
             retry = []
-            engine.state.add(pendingRecordZoneChanges: names.map { .saveRecord(CloudRecord.id($0)) })
+            engine.state.add(pendingRecordZoneChanges: names.map { .saveRecord(records.id($0)) })
             do {
                 try await engine.sendChanges()
             } catch {
@@ -107,7 +112,7 @@ actor CloudKitCloud: CKSyncEngineDelegate {
                 let name = record.recordID.recordName
                 updateSystemFields(of: record)
                 do {
-                    let (change, deviceID) = try CloudRecord.change(record)
+                    let (change, deviceID) = try records.change(record)
                     guard deviceID != file?.deviceID else { continue }
                     if fetched[name] == nil { fetchOrder.append(name) }
                     fetched[name] = change
@@ -116,15 +121,15 @@ actor CloudKitCloud: CKSyncEngineDelegate {
                 }
             }
             for deletion in changes.deletions {
-                // Lifr never deletes a record, only sends it as removed.
+                // Sync never deletes a record, only sends it as removed.
                 update(\.systemFields[deletion.recordID.recordName], to: nil)
             }
 
         case .fetchedDatabaseChanges(let changes):
-            if changes.deletions.contains(where: { $0.zoneID == CloudRecord.zone }) {
-                // The person deleted Lifr's iCloud data in Settings. What's
-                // on this device is sent again on the next sync.
-                logger.notice("Lifr's iCloud zone was deleted")
+            if changes.deletions.contains(where: { $0.zoneID == records.zone }) {
+                // The person deleted the app's iCloud data in Settings.
+                // What's on this device is sent again on the next sync.
+                logger.notice("The app's iCloud zone was deleted")
                 update(\.systemFields, to: [:])
                 isZoneReady = false
             }
@@ -141,7 +146,7 @@ actor CloudKitCloud: CKSyncEngineDelegate {
                     }
                     updateSystemFields(of: server)
                     do {
-                        refused.append(try CloudRecord.change(server).change)
+                        refused.append(try records.change(server).change)
                     } catch {
                         logger.error("\(error.description, privacy: .public)")
                         sendFailure = .refused(error.description)
@@ -181,7 +186,7 @@ actor CloudKitCloud: CKSyncEngineDelegate {
     private func record(named name: String) -> CKRecord? {
         guard let item = sending[name], let file else { return nil }
         do {
-            return try CloudRecord.record(
+            return try records.record(
                 item, device: device, deviceID: file.deviceID, systemFields: file.systemFields[name])
         } catch {
             logger.error("\(error.description, privacy: .public)")
@@ -227,7 +232,7 @@ actor CloudKitCloud: CKSyncEngineDelegate {
     private func ensureZone() async throws(SyncError) {
         do {
             _ = try await container.privateCloudDatabase.modifyRecordZones(
-                saving: [CKRecordZone(zoneID: CloudRecord.zone)], deleting: [])
+                saving: [CKRecordZone(zoneID: records.zone)], deleting: [])
             isZoneReady = true
         } catch {
             throw SyncError(error)
@@ -235,7 +240,7 @@ actor CloudKitCloud: CKSyncEngineDelegate {
     }
 
     private func updateSystemFields(of record: CKRecord) {
-        update(\.systemFields[record.recordID.recordName], to: CloudRecord.systemFields(of: record))
+        update(\.systemFields[record.recordID.recordName], to: CloudRecord<Snapshot>.systemFields(of: record))
     }
 
     private func update<Value>(_ path: WritableKeyPath<EngineFile, Value>, to value: Value) {

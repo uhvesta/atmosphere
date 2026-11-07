@@ -1,22 +1,22 @@
-import CloudKit
 import Foundation
 import LifrStoreClient
 import LifrSyncClient
+import SyncKit
+import SyncKitCloudKit
 
 extension SyncClient {
-    /// Syncs `store` through the iCloud container `container`, naming this
-    /// device `device` to the others. With no container, such as a build
-    /// signed without a team, every sync says it isn't set up.
+    /// Syncs `store` through the iCloud container `container`, in the
+    /// private database's "Lifr" zone, naming this device `device` to the
+    /// others. With no container, such as a build signed without a team,
+    /// every sync says it isn't set up.
     package static func live(container: String, store: StoreClient, device: String) -> Self {
-        guard !container.isEmpty else { return failing(.notSetUp) }
-        let files: SyncFiles
         do {
-            files = try SyncFiles.onDisk()
+            return .syncing(
+                try CloudKitSync.syncer(
+                    container: container, zone: "Lifr", device: device, subsystem: "lifr", store: .lifr(store)))
         } catch {
             return failing(error)
         }
-        let cloud = CloudKitCloud(container: CKContainer(identifier: container), device: device, storage: files.engine)
-        return .syncing(Syncer(cloud: cloud.cloud, store: store, storage: files.ledger))
     }
 
     /// Never syncs, and says why.

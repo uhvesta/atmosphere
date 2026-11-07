@@ -1,0 +1,46 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# SyncKit through CloudKit: a CKSyncEngine in the private database's zone,
+# each item encrypted end to end, and what sync last saw kept in files on
+# this device. Only an app's entry point uses it; features depend on
+# //apps/libs/kits/sync.
+swift_library(
+    name = "cloudkit",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "SyncKitCloudKit",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps:__subpackages__"],
+    deps = ["//apps/libs/kits/sync"],
+)
+
+# The record encoding, error mapping and files, on macOS, for JournalKit's
+# sample notes app. CloudKit itself needs a signed app and an iCloud account,
+# so it's tried by hand.
+swift_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]) + [
+        "//apps/libs/kits/journal:Tests/Notes.swift",
+        "//apps/libs/kits/sync:Tests/Devices.swift",
+    ],
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":cloudkit",
+        "//apps/libs/kits/journal",
+        "//apps/libs/kits/sync",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

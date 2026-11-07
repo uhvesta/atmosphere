@@ -1,53 +1,54 @@
 import CloudKit
 import Foundation
-import LifrCore
-import LifrSyncClient
+import JournalKit
+import SyncKit
 import XCTest
 
-@testable import LifrSyncLive
+@testable import SyncKitCloudKit
 
 final class CloudRecordTests: XCTestCase {
-    private let item = CloudItem.record(RecordID(.task, UUID()), nil)
+    private let item = CloudItem<Notebook>.record(RecordID(.note, UUID()), nil)
+    private let records = CloudRecord<Notebook>(zone: "Notes")
 
     func testRecordRoundTrips() throws {
         let deviceID = UUID()
-        let record = try CloudRecord.record(item, device: "Mac", deviceID: deviceID, systemFields: nil)
-        XCTAssertEqual(record.recordID, CloudRecord.id(item.name))
-        XCTAssertEqual(record.recordType, CloudRecord.type)
+        let record = try records.record(item, device: "Mac", deviceID: deviceID, systemFields: nil)
+        XCTAssertEqual(record.recordID, records.id(item.name))
+        XCTAssertEqual(record.recordType, CloudRecord<Notebook>.type)
 
-        let (change, sender) = try CloudRecord.change(record)
+        let (change, sender) = try records.change(record)
         XCTAssertEqual(change, CloudChange(item, from: "Mac"))
         XCTAssertEqual(sender, deviceID)
     }
 
     func testRecordKeepsItsSystemFields() throws {
-        let first = try CloudRecord.record(item, device: "Mac", deviceID: UUID(), systemFields: nil)
-        let fields = CloudRecord.systemFields(of: first)
-        let again = try CloudRecord.record(item, device: "Mac", deviceID: UUID(), systemFields: fields)
+        let first = try records.record(item, device: "Mac", deviceID: UUID(), systemFields: nil)
+        let fields = CloudRecord<Notebook>.systemFields(of: first)
+        let again = try records.record(item, device: "Mac", deviceID: UUID(), systemFields: fields)
         XCTAssertEqual(again.recordID, first.recordID)
         XCTAssertEqual(again.creationDate, first.creationDate)
     }
 
     func testRecordWithNothingInItIsRejected() {
-        let record = CKRecord(recordType: CloudRecord.type, recordID: CloudRecord.id(item.name))
-        XCTAssertThrowsError(try CloudRecord.change(record)) { error in
+        let record = CKRecord(recordType: CloudRecord<Notebook>.type, recordID: records.id(item.name))
+        XCTAssertThrowsError(try records.change(record)) { error in
             guard case .noPayload = error as? CloudRecordError else { return XCTFail("\(error)") }
         }
     }
 
     func testRecordHoldingAnotherItemIsRejected() throws {
-        let record = try CloudRecord.record(item, device: "Mac", deviceID: UUID(), systemFields: nil)
-        let other = CKRecord(recordType: CloudRecord.type, recordID: CloudRecord.id("task/other"))
+        let record = try records.record(item, device: "Mac", deviceID: UUID(), systemFields: nil)
+        let other = CKRecord(recordType: CloudRecord<Notebook>.type, recordID: records.id("note/other"))
         other.encryptedValues["payload"] = record.encryptedValues["payload"]
-        XCTAssertThrowsError(try CloudRecord.change(other)) { error in
+        XCTAssertThrowsError(try records.change(other)) { error in
             guard case .misnamed = error as? CloudRecordError else { return XCTFail("\(error)") }
         }
     }
 
     func testUnreadablePayloadIsRejected() {
-        let record = CKRecord(recordType: CloudRecord.type, recordID: CloudRecord.id(item.name))
+        let record = CKRecord(recordType: CloudRecord<Notebook>.type, recordID: records.id(item.name))
         record.encryptedValues["payload"] = Data("not json".utf8)
-        XCTAssertThrowsError(try CloudRecord.change(record)) { error in
+        XCTAssertThrowsError(try records.change(record)) { error in
             guard case .decodeFailed = error as? CloudRecordError else { return XCTFail("\(error)") }
         }
     }
@@ -81,31 +82,31 @@ final class SyncFilesTests: XCTestCase {
 
     func testNothingSavedLoadsEmpty() throws {
         let files = try SyncFiles(folder: folder)
-        XCTAssertEqual(try files.ledger.load(), SyncLedger())
+        XCTAssertEqual(try files.ledger(of: Notebook.self).load(), SyncLedger<Notebook>())
         XCTAssertTrue(try files.engine.load().systemFields.isEmpty)
     }
 
     func testLedgerAndEngineRoundTrip() throws {
         let files = try SyncFiles(folder: folder)
-        var ledger = SyncLedger()
+        var ledger = SyncLedger<Notebook>()
         ledger.lastSynced = Date(timeIntervalSince1970: 1_793_700_000)
         ledger.sent = [UUID()]
-        try files.ledger.save(ledger)
+        try files.ledger(of: Notebook.self).save(ledger)
 
         var engine = EngineFile()
-        engine.systemFields = ["task/1": Data([1, 2, 3])]
+        engine.systemFields = ["note/1": Data([1, 2, 3])]
         try files.engine.save(engine)
 
         let reopened = try SyncFiles(folder: folder)
-        XCTAssertEqual(try reopened.ledger.load(), ledger)
+        XCTAssertEqual(try reopened.ledger(of: Notebook.self).load(), ledger)
         let loaded = try reopened.engine.load()
         XCTAssertEqual(loaded.deviceID, engine.deviceID)
         XCTAssertEqual(loaded.systemFields, engine.systemFields)
     }
 
-    func testFilesAreReadableOnlyByLifr() throws {
+    func testFilesAreReadableOnlyByTheApp() throws {
         let files = try SyncFiles(folder: folder)
-        try files.ledger.save(SyncLedger())
+        try files.ledger(of: Notebook.self).save(SyncLedger<Notebook>())
         let attributes = try FileManager.default.attributesOfItem(atPath: folder.appending(path: "Ledger.json").path)
         XCTAssertEqual(attributes[.posixPermissions] as? Int, 0o600)
         let folderAttributes = try FileManager.default.attributesOfItem(atPath: folder.path)
@@ -115,14 +116,18 @@ final class SyncFilesTests: XCTestCase {
     func testDamagedFileFailsInsteadOfStartingOver() throws {
         let files = try SyncFiles(folder: folder)
         try Data("{".utf8).write(to: folder.appending(path: "Ledger.json"))
-        XCTAssertThrowsError(try files.ledger.load()) { error in
+        XCTAssertThrowsError(try files.ledger(of: Notebook.self).load()) { error in
             guard case .ledgerFailed = error as? SyncError else { return XCTFail("\(error)") }
         }
     }
 
-    func testClientWithoutAContainerSaysItIsNotSetUp() async {
-        let client = SyncClient.live(container: "", store: .init(), device: "Mac")
-        let state = await client.sync()
-        XCTAssertEqual(state.status, .failed(.notSetUp))
+    func testSyncerWithoutAContainerIsNotSetUp() {
+        let store = SyncStore<Notebook>(
+            load: { Notebook() }, importSynced: { _ in Notebook() }, resolve: { _ in })
+        XCTAssertThrowsError(
+            try CloudKitSync.syncer(container: "", zone: "Notes", device: "Mac", subsystem: "notes", store: store)
+        ) { error in
+            XCTAssertEqual(error as? SyncError, .notSetUp)
+        }
     }
 }

@@ -1,5 +1,5 @@
 import TestingKit
 
-runSuites([
+await runSuites([
     ("Blobs", blobTests())
 ])

@@ -1,6 +1,6 @@
 import TestingKit
 
-runSuites([
+await runSuites([
     ("Access", accessTests()),
     ("Rules", ruleTests()),
     ("Requests", requestTests()),

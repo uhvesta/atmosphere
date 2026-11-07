@@ -1,11 +1,11 @@
 load("@rules_apple//apple:macos.bzl", "macos_unit_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
-# The sync client: merging records with other devices, holding what can't
-# merge for review, and sending the rest. This package has the definition,
-# the merge bookkeeping and an in-memory cloud that two in-memory stores
-# share, for tests and flow snapshots. The CloudKit one is
-# //apps/lifr/clients/sync_live, which features never depend on.
+# The sync client: Lifr's records synced through SyncKit, which merges them
+# with other devices, holds what can't merge for review, and sends the rest.
+# Tests and flow snapshots share SyncKit's in-memory cloud between two
+# in-memory stores. The CloudKit one is //apps/lifr/clients/sync_live, which
+# features never depend on.
 swift_library(
     name = "sync",
     package_name = "lifr",
@@ -18,6 +18,7 @@ swift_library(
         "//apps/lifr/features:__subpackages__",
     ],
     deps = [
+        "//apps/libs/kits/sync",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
@@ -32,6 +33,7 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     deps = [
         ":sync",
+        "//apps/libs/kits/sync",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

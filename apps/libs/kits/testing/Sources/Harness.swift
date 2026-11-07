@@ -8,11 +8,21 @@ import Foundation
 /// One given/then check.
 public struct TestCase {
     let name: String
-    let body: () throws -> Void
+    let body: () async throws -> Void
 
     public init(_ name: String, _ body: @escaping () throws -> Void) {
         self.name = name
         self.body = body
+    }
+
+    private init(named name: String, body: @escaping () async throws -> Void) {
+        self.name = name
+        self.body = body
+    }
+
+    /// A case that awaits, such as one that talks to an actor.
+    public static func async(_ name: String, _ body: @escaping () async throws -> Void) -> Self {
+        Self(named: name, body: body)
     }
 }
 
@@ -67,12 +77,12 @@ public func expectError<E: Error & Equatable, T>(
 }
 
 /// Runs every case, prints PASS or FAIL for each, and exits.
-public func runSuites(_ suites: [(String, [TestCase])]) -> Never {
+public func runSuites(_ suites: [(String, [TestCase])]) async -> Never {
     var failures = 0
     for (suite, tests) in suites {
         for test in tests {
             do {
-                try test.body()
+                try await test.body()
                 print("PASS \(suite): \(test.name)")
             } catch {
                 failures += 1

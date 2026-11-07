@@ -1,52 +1,59 @@
 import CloudKit
 import Foundation
-import LifrSyncClient
+import SyncKit
 
 /// How an item is kept in CloudKit: one record per item, named as the item
 /// is, with the item and the device that sent it in encrypted fields, so
 /// iCloud never sees what's in them.
-enum CloudRecord {
-    static let type = "Item"
-    static let zone = CKRecordZone.ID(zoneName: "Lifr", ownerName: CKCurrentUserDefaultName)
+struct CloudRecord<Snapshot: SyncSnapshot>: Sendable {
+    static var type: String { "Item" }
 
-    private static let payload = "payload"
-    private static let device = "device"
-    private static let deviceID = "deviceID"
+    private static var payload: String { "payload" }
+    private static var device: String { "device" }
+    private static var deviceID: String { "deviceID" }
 
-    static func id(_ name: String) -> CKRecord.ID {
+    /// The zone in the private database that holds the app's records.
+    let zone: CKRecordZone.ID
+
+    init(zone: String) {
+        self.zone = CKRecordZone.ID(zoneName: zone, ownerName: CKCurrentUserDefaultName)
+    }
+
+    func id(_ name: String) -> CKRecord.ID {
         CKRecord.ID(recordName: name, zoneID: zone)
     }
 
     /// `item` in a record. `systemFields`, from the last save or fetch,
     /// carries the change tag CloudKit checks, so a record another device
     /// changed since is refused instead of overwritten.
-    static func record(
-        _ item: CloudItem, device: String, deviceID: UUID, systemFields: Data?
+    func record(
+        _ item: CloudItem<Snapshot>, device: String, deviceID: UUID, systemFields: Data?
     ) throws(CloudRecordError) -> CKRecord {
-        let record = systemFields.flatMap(decodeSystemFields) ?? CKRecord(recordType: type, recordID: id(item.name))
+        let record =
+            systemFields.flatMap(Self.decodeSystemFields) ?? CKRecord(recordType: Self.type, recordID: id(item.name))
         do {
-            record.encryptedValues[payload] = try JSONEncoder().encode(item)
+            record.encryptedValues[Self.payload] = try JSONEncoder().encode(item)
         } catch {
             throw .encodeFailed(item.name, error)
         }
-        record.encryptedValues[self.device] = device
-        record.encryptedValues[self.deviceID] = deviceID.uuidString
+        record.encryptedValues[Self.device] = device
+        record.encryptedValues[Self.deviceID] = deviceID.uuidString
         return record
     }
 
     /// The item in `record`, and which device sent it.
-    static func change(_ record: CKRecord) throws(CloudRecordError) -> (change: CloudChange, deviceID: UUID?) {
+    func change(_ record: CKRecord) throws(CloudRecordError) -> (change: CloudChange<Snapshot>, deviceID: UUID?) {
         let name = record.recordID.recordName
-        guard let data = record.encryptedValues[payload] as? Data else { throw .noPayload(name) }
-        let item: CloudItem
+        guard let data = record.encryptedValues[Self.payload] as? Data else { throw .noPayload(name) }
+        let item: CloudItem<Snapshot>
         do {
-            item = try JSONDecoder().decode(CloudItem.self, from: data)
+            item = try JSONDecoder().decode(CloudItem<Snapshot>.self, from: data)
         } catch {
             throw .decodeFailed(name, error)
         }
         guard item.name == name else { throw .misnamed(name, item.name) }
-        let device = record.encryptedValues[self.device] as? String ?? String(localized: "another device")
-        let deviceID = (record.encryptedValues[self.deviceID] as? String).flatMap(UUID.init(uuidString:))
+        let device = record.encryptedValues[Self.device] as? String ?? String(localized: "another device")
+        let deviceID = (record.encryptedValues[Self.deviceID] as? String).flatMap(UUID.init(uuidString:))
         return (CloudChange(item, from: device), deviceID)
     }
 
@@ -78,11 +85,11 @@ enum CloudRecordError: Error, CustomStringConvertible {
         case .encodeFailed(let name, let error):
             "Couldn't encode \(name) for iCloud (\(error.localizedDescription))."
         case .noPayload(let name):
-            "iCloud's \(name) has nothing in it, so it was skipped. A newer Lifr on another device may have "
-                + "written it; update Lifr here."
+            "iCloud's \(name) has nothing in it, so it was skipped. A newer version of the app on another "
+                + "device may have written it; update the app here."
         case .decodeFailed(let name, let error):
-            "Couldn't read iCloud's \(name) (\(error.localizedDescription)), so it was skipped. A newer Lifr "
-                + "on another device may have written it; update Lifr here."
+            "Couldn't read iCloud's \(name) (\(error.localizedDescription)), so it was skipped. A newer "
+                + "version of the app on another device may have written it; update the app here."
         case .misnamed(let name, let inside):
             "iCloud's \(name) holds \(inside) instead, so it was skipped."
         }

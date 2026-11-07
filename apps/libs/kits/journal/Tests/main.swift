@@ -1,6 +1,6 @@
 import TestingKit
 
-runSuites([
+await runSuites([
     ("Journal", journalTests()),
     ("Revert", revertTests()),
     ("Merge", mergeTests()),

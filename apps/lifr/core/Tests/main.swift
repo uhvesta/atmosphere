@@ -1,6 +1,6 @@
 import TestingKit
 
-runSuites([
+await runSuites([
     ("Identifiers", identifierTests()),
     ("Dates", dateTests()),
     ("Hierarchy", hierarchyTests()),

@@ -1,9 +1,9 @@
 import CloudKit
 import Foundation
-import LifrSyncClient
+import SyncKit
 
 /// Where sync keeps what it last saw: a folder in Application Support,
-/// readable only by Lifr, kept out of backups so a device restored from
+/// readable only by the app, kept out of backups so a device restored from
 /// one starts sync afresh instead of passing for the old device.
 struct SyncFiles: Sendable {
     let folder: URL
@@ -35,10 +35,12 @@ struct SyncFiles: Sendable {
         }
     }
 
-    var ledger: LedgerStorage {
+    func ledger<Snapshot: SyncSnapshot>(of _: Snapshot.Type = Snapshot.self) -> LedgerStorage<Snapshot> {
         let url = folder.appending(path: "Ledger.json")
         return LedgerStorage(
-            load: { () throws -> SyncLedger in try Self.read(SyncLedger.self, at: url) ?? SyncLedger() },
+            load: { () throws -> SyncLedger<Snapshot> in
+                try Self.read(SyncLedger<Snapshot>.self, at: url) ?? SyncLedger()
+            },
             save: { ledger in try Self.write(ledger, to: url) })
     }
 
