@@ -47,6 +47,7 @@
       [RadioButton/Segment] "Board" value: "0"
     [MenuButton] "Add" help: "Add a task or Project" id: plus
     [Button] "New Project"
+    [Button] "Edit Avenue"
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""

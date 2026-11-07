@@ -184,6 +184,21 @@ func journalTests() -> [TestCase] {
             try expectEqual(fixture.get(task).title, "Run 5 km")
             try expectEqual(revert.skipped, [])
         },
+        TestCase("given an edit undone with undo, then its entry is undone until the undo is reverted") {
+            let fixture = try Fixture()
+            let task = try fixture.task("Run")
+            let rename = try fixture.perform { workspace, context throws(LifrError) in
+                try workspace.edit(task.id, .init(title: "Run 5 km"), in: context)
+            }
+            let edited = try rename.entry.unwrap()
+            try expectEqual(fixture.workspace.undoneEntries, [])
+            let undo = try fixture.perform { workspace, context in workspace.undo(rename, in: context) }
+            try expectEqual(fixture.get(task).title, "Run")
+            try expectEqual(fixture.workspace.undoneEntries, [edited])
+            _ = try fixture.revert([undo.entry])
+            try expectEqual(fixture.get(task).title, "Run 5 km")
+            try expectEqual(fixture.workspace.undoneEntries, [try undo.entry.unwrap()])
+        },
         TestCase("given an unknown entry, when it's reverted, then notFound and nothing changes") {
             let fixture = try Fixture()
             let before = fixture.workspace

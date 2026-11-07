@@ -87,6 +87,24 @@ package struct ChatFeature {
         package init(conversation: Conversation, workspace: Workspace) {
             self.conversation = conversation
             self.workspace = workspace
+            forgetUndone()
+        }
+
+        /// Shows `workspace`, letting go of replies' changes it undid
+        /// elsewhere, such as with the Undo toast or ⌘Z.
+        package mutating func show(_ workspace: Workspace) {
+            self.workspace = workspace
+            forgetUndone()
+        }
+
+        /// Lets go of replies' changes that were all undone, so they don't
+        /// offer Undo again.
+        private mutating func forgetUndone() {
+            guard !conversation.changes.isEmpty else { return }
+            let undone = workspace.undoneEntries
+            for (message, entries) in conversation.changes where undone.isSuperset(of: entries) {
+                conversation.changes[message] = nil
+            }
         }
 
         package var id: UUID { conversation.id }

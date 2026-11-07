@@ -232,6 +232,16 @@ extension Workspace {
         return change
     }
 
+    /// The entries undone: reverted by an entry that isn't undone itself.
+    package var undoneEntries: Set<UUID> {
+        var undone: Set<UUID> = []
+        for entry in journal.sorted(by: { ($0.at, $0.id.uuidString) > ($1.at, $1.id.uuidString) })
+        where !undone.contains(entry.id) {
+            undone.formUnion(entry.reverts)
+        }
+        return undone
+    }
+
     /// The entries made since `date`, newest first, for "revert everything
     /// since".
     package func entries(since date: Date) -> [JournalEntry] {

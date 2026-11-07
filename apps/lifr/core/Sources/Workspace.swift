@@ -524,6 +524,7 @@ package struct Workspace: Hashable, Codable, Sendable {
     /// it created. History is kept, with an `undo` event per restored task.
     package mutating func undo(_ change: Change, in context: Context) -> Change {
         var undone = Change()
+        undone.reverts = change.entry.map { [$0] } ?? []
         for (id, previous) in change.previous.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
             let current = tasks[id]
             undone.previous[id] = current

@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import LifrAssistantClient
 import LifrBugReport
+import LifrConversations
 import LifrCore
 import LifrGlance
 import LifrGlanceClient
@@ -42,7 +43,7 @@ final class MacFlowSnapshotTests: XCTestCase {
     private func app(
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
         inputs: Set<ModelInput> = [], lock: LockClient = .always(),
-        session: InMemorySession = InMemorySession(),
+        session: InMemorySession = InMemorySession(), assistant: AssistantClient? = nil,
         settings: Bool = false
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
@@ -56,7 +57,7 @@ final class MacFlowSnapshotTests: XCTestCase {
             $0.session = session.client
             $0.reminders = RemindersClient.inMemory().client
             $0.sync = sync
-            $0.assistant = .scripted(replies, inputs: inputs)
+            $0.assistant = assistant ?? .scripted(replies, inputs: inputs)
             $0.attachments = .inMemory()
             $0.recorder = .scripted(RecorderClient.Recording(data: Data([1]), seconds: 6))
             // The assistant never stalls in a flow.
@@ -89,6 +90,11 @@ final class MacFlowSnapshotTests: XCTestCase {
             : FlowRecorder(name, RootView(store: store).environment(\.timeZone, .gmt))
         store.send(.task)
         return (store, flow)
+    }
+
+    private func send(_ text: String, in id: Conversation.ID, of store: StoreOf<RootFeature>) {
+        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, text))))))
+        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
     }
 
     /// Runs `body` as Shortcuts or Siri would, on the open app's records,
@@ -207,12 +213,14 @@ final class MacFlowSnapshotTests: XCTestCase {
     /// Asking about a photo and a recording, with a model that reads both:
     /// attaching each, sending them, the reply, then a model that can't.
     func testAssistantAttachments() async throws {
-        let (store, flow) = app(
-            "assistant-attachments",
-            replies: [
+        let assistant = AssistantClient.scripted(
+            [
                 AssistantReply(text: "A Boston fern. Water it when the top of the soil is dry.", isComplete: true)
             ],
-            inputs: [.image, .audio])
+            inputs: [.image, .audio]
+        )
+        .failing([2: .cantRead(.audio)])
+        let (store, flow) = app("assistant-attachments", assistant: assistant)
         store.send(.selected(.conversations))
         store.send(.conversations(.newTapped))
         let id = try XCTUnwrap(store.conversations.openID)
@@ -227,26 +235,55 @@ final class MacFlowSnapshotTests: XCTestCase {
         await flow.step("attached")
         store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
         await flow.step("replied")
-        store.send(
-            .conversations(.chats(.element(id: id, action: .replyFailed(AssistantError.cantRead(.audio))))))
+        store.send(.conversations(.chats(.element(id: id, action: .recordTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .recordTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "And this one?"))))))
+        // Stopping attaches the recording once it's saved.
+        for _ in 0..<100 where store.conversations.chats[id: id]?.canSend != true {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
         await flow.step("cant-read")
+        XCTAssertNotNil(store.conversations.chats[id: id]?.failure)
         flow.finish()
     }
 
-    /// The assistant failing: an answer it couldn't read.
+    /// The assistant failing to answer, then Retry writing the reply, the
+    /// message edited to write it again beside the old, and a message too
+    /// long to answer, which Retry can't help.
     func testAssistantFails() async throws {
-        let (store, flow) = app("assistant-fails")
+        let assistant = AssistantClient.scripted([
+            AssistantReply(text: "Start with the urgent tasks, then the ones due this week.", isComplete: true),
+            AssistantReply(text: "Keep Saturday for the garden and Sunday free.", isComplete: true),
+        ])
+        .failing([1: .unreadable(saved: false), 4: .tooLong(saved: false)])
+        let (store, flow) = app("assistant-fails", assistant: assistant)
         store.send(.selected(.conversations))
         store.send(.conversations(.newTapped))
         let id = try XCTUnwrap(store.conversations.openID)
-        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "Plan my week"))))))
-        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
-        store.send(
-            .conversations(.chats(.element(id: id, action: .replyFailed(AssistantError.unreadable(saved: false))))))
+        func chat(_ action: ChatFeature.Action) { store.send(.conversations(.chats(.element(id: id, action: action)))) }
+        send("Plan my week", in: id, of: store)
         await flow.step("unreadable")
-        store.send(
-            .conversations(.chats(.element(id: id, action: .replyFailed(AssistantError.tooLong(saved: false))))))
+        let asked = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last)
+        XCTAssertNotNil(store.conversations.chats[id: id]?.failure)
+
+        chat(.retryTapped(messageID: asked.id))
+        await flow.step("retried")
+        XCTAssertEqual(store.conversations.chats[id: id]?.conversation.messages.count, 2)
+
+        time.withValue { $0 += 60 }
+        chat(.editTapped(messageID: asked.id))
+        await flow.step("editing")
+        chat(.binding(.set(\.input, "Plan my weekend")))
+        chat(.sendTapped)
+        await flow.step("edited")
+        let edited = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.first)
+        XCTAssertEqual(store.conversations.chats[id: id]?.conversation.branches(at: edited.id).count, 2)
+
+        send("Add a task for every day of the year", in: id, of: store)
         await flow.step("too-long")
+        let long = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last)
+        XCTAssertEqual(store.conversations.chats[id: id]?.canRetry(long), false)
         flow.finish()
     }
 

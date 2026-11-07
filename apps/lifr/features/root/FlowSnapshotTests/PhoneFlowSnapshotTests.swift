@@ -644,12 +644,14 @@ final class PhoneFlowSnapshotTests: XCTestCase {
     /// Asking about a photo and a recording, with a model that reads both:
     /// attaching each, sending them, the reply, then a model that can't.
     func testAssistantAttachments() async throws {
-        let (store, flow) = app(
-            "assistant-attachments",
-            replies: [
+        let assistant = AssistantClient.scripted(
+            [
                 AssistantReply(text: "A Boston fern. Water it when the top of the soil is dry.", isComplete: true)
             ],
-            inputs: [.image, .audio])
+            inputs: [.image, .audio]
+        )
+        .failing([2: .cantRead(.audio)])
+        let (store, flow) = app("assistant-attachments", assistant: assistant)
         store.tab = .conversations
         store.send(.conversations(.newTapped))
         let id = try XCTUnwrap(store.conversations.openID)
@@ -664,9 +666,16 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         await flow.step("attached")
         store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
         await flow.step("replied")
-        store.send(
-            .conversations(.chats(.element(id: id, action: .replyFailed(AssistantError.cantRead(.audio))))))
+        store.send(.conversations(.chats(.element(id: id, action: .recordTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .recordTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "And this one?"))))))
+        // Stopping attaches the recording once it's saved.
+        for _ in 0..<100 where store.conversations.chats[id: id]?.canSend != true {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
         await flow.step("cant-read")
+        XCTAssertNotNil(store.conversations.chats[id: id]?.failure)
         flow.finish()
     }
 
@@ -701,26 +710,11 @@ final class PhoneFlowSnapshotTests: XCTestCase {
     /// message edited to write it again beside the old, and a message too
     /// long to answer, which Retry can't help.
     func testAssistantFails() async throws {
-        let calls = LockIsolated(0)
-        var assistant = AssistantClient.scripted([
+        let assistant = AssistantClient.scripted([
             AssistantReply(text: "Start with the urgent tasks, then the ones due this week.", isComplete: true),
             AssistantReply(text: "Keep Saturday for the garden and Sunday free.", isComplete: true),
         ])
-        let scripted = assistant.reply
-        assistant.reply = { request in
-            let call = calls.withValue { count in
-                count += 1
-                return count
-            }
-            let failure: AssistantError? =
-                switch call {
-                case 1: .unreadable(saved: false)
-                case 4: .tooLong(saved: false)
-                default: nil
-                }
-            guard let failure else { return scripted(request) }
-            return AssistantReplies { $0.finish(throwing: failure) }
-        }
+        .failing([1: .unreadable(saved: false), 4: .tooLong(saved: false)])
         let (store, flow) = app("assistant-fails", assistant: assistant)
         store.tab = .conversations
         store.send(.conversations(.newTapped))

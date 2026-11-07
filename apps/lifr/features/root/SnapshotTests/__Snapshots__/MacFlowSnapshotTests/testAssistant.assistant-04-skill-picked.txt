@@ -26,6 +26,10 @@
   [Button] "New conversation"
   [Outline] ""
   [Heading] "New conversation"
+  [Button, disabled] "Find in Conversation" help: "Find in Conversation"
+  [Button, disabled] "Back" help: "Go back to the message before"
+  [Button, disabled] "Forward" help: "Go forward to the message after"
+  [Button, disabled] "All Checkpoints" help: "Every point to go back or forward to"
   [Button] "Rename" help: "Rename"
   [Button] "Review" help: "Picks another skill"
   [Button] "Remove Review" id: xmark.circle.fill
@@ -42,6 +46,8 @@
       [RadioButton/Segment] "Archived" value: "0"
     [MenuButton] "Add" help: "Add a task or Project" id: plus
     [Button] "New conversation"
+    [TextField/SearchField] ""
+      [Button] "Search"
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""

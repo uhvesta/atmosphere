@@ -426,6 +426,22 @@ extension AssistantClient {
             prewarm: {},
             inputs: { inputs })
     }
+
+    /// This client, but its replies to the calls `failures` numbers, from
+    /// 1, fail with the error given for each.
+    package func failing(_ failures: [Int: AssistantError]) -> AssistantClient {
+        var client = self
+        let calls = LockIsolated(0)
+        client.reply = { [reply] request in
+            let call = calls.withValue { count in
+                count += 1
+                return count
+            }
+            guard let failure = failures[call] else { return reply(request) }
+            return AssistantReplies { $0.finish(throwing: failure) }
+        }
+        return client
+    }
 }
 
 extension AssistantReply {

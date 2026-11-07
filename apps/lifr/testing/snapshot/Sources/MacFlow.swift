@@ -34,7 +34,8 @@
         /// `name` names the flow's references. A step waits at most
         /// `timeout` for the screen to settle. With `redactsModelText`, each
         /// run of what a real model wrote is one `‹model text›` line, since
-        /// its words differ from one GPU to the next; a screen still showing
+        /// its words differ from one GPU to the next, and how long it
+        /// thought is `‹time›`; a screen still showing
         /// "Thinking…" or an error doesn't match one that shows a reply.
         package init(
             _ name: String, _ view: some View, size: CGSize = CGSize(width: 1180, height: 760),
@@ -263,12 +264,18 @@
             }
             var depth = depth
             if let line = describe(element, role: role) {
-                lines.append(String(repeating: "  ", count: depth) + line)
+                lines.append(String(repeating: "  ", count: depth) + (redacts ? redactingTime(line) : line))
                 depth += 1
             }
             for child in attribute(element, kAXChildrenAttribute) as? [AXUIElement] ?? [] {
                 visit(child, depth: depth, redacts: redacts, into: &lines)
             }
+        }
+
+        /// `line` without how long a real model thought, which differs from
+        /// one run to the next.
+        private static func redactingTime(_ line: String) -> String {
+            line.replacing(/Thoughts · [^"]*?(?= on the |")/, with: "Thoughts · ‹time›")
         }
 
         /// The element's line, or nil for an unnamed container.

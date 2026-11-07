@@ -25,12 +25,17 @@
     [Row/OutlineRow] ""
       [Button] "Tidy my weekend, Nov 3 at 10:00 AM, Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add., Draft to review"
   [Heading] "Tidy my weekend"
+  [Button] "Find in Conversation" help: "Find in Conversation"
+  [Button, disabled] "Back" help: "Go back to the message before"
+  [Button, disabled] "Forward" help: "Go forward to the message after"
+  [Button] "All Checkpoints" help: "Every point to go back or forward to"
   [Button] "Rename" help: "Rename"
   [Button] "Use a Skill" id: sparkles
   [TextField] ""
   [Button, disabled] "Send" id: arrow.up.circle.fill
   [StaticText] "" value: "Tidy my weekend"
   [StaticText] "" value: "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
+  [Button] "Retry" help: "Write this reply again"
   [Heading] "Draft"
   [StaticText] "" value: "6 tasks"
   [StaticText] "" value: "Clean up living room, Sat, Nov 7 · Home"
@@ -49,6 +54,8 @@
       [RadioButton/Segment] "Archived" value: "0"
     [MenuButton] "Add" help: "Add a task or Project" id: plus
     [Button] "New conversation"
+    [TextField/SearchField] ""
+      [Button] "Search"
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""

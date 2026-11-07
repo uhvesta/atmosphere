@@ -33,6 +33,8 @@
       [RadioButton/Segment] "Archived" value: "0"
     [MenuButton] "Add" help: "Add a task or Project" id: plus
     [Button] "New conversation"
+    [TextField/SearchField] ""
+      [Button] "Search"
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""

@@ -328,6 +328,30 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertNil(store.state.conversation.changes[reply.id])
     }
 
+    func testAReplysChangesUndoneElsewhereNoLongerOfferUndo() async throws {
+        let (workspace, rent) = home()
+        let context = Context(actor: .user(device: "Mac", surface: .mac), now: now)
+        var changed = workspace
+        let done = try changed.perform(in: context) { workspace, context throws(LifrError) in
+            try workspace.setStatus(.done, of: rent.id, in: context)
+        }
+        let entry = try XCTUnwrap(done.entry)
+        let reply = ChatMessage(id: UUID(9), role: .assistant, text: "Marked it done.", at: now)
+        var conversation = Conversation(id: conversationID, createdAt: now)
+        conversation.messages = [reply]
+        conversation.changes[reply.id] = [entry]
+        var state = ChatFeature.State(conversation: conversation, workspace: changed)
+
+        var undone = changed
+        undone.perform(in: context) { workspace, context in workspace.undo(done, in: context) }
+        state.show(undone)
+        XCTAssertNil(state.conversation.changes[reply.id])
+        XCTAssertEqual(state.workspace.tasks[rent.id]?.status, .todo)
+
+        let reopened = ChatFeature.State(conversation: conversation, workspace: undone)
+        XCTAssertNil(reopened.conversation.changes[reply.id])
+    }
+
     func testAReplysThinkingIsKeptClosedAndOpensAndClosesWithItsChevron() async throws {
         let (workspace, _) = home()
         let thinking = ModelThinking(text: "Rent is due.", duration: .seconds(4), processor: .gpu)

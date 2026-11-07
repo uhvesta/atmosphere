@@ -82,7 +82,7 @@ package struct ConversationsFeature {
 
         package mutating func show(_ workspace: Workspace) {
             self.workspace = workspace
-            for id in chats.ids { chats[id: id]?.workspace = workspace }
+            for id in chats.ids { chats[id: id]?.show(workspace) }
         }
 
         /// Opens `conversation`, keeping its chat if it's still working.

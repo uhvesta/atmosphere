@@ -25,12 +25,18 @@
     [Row/OutlineRow] ""
       ‹model text›
   [Heading] "Add a task to buy milk tomorrow, in HOME"
+  [Button] "Find in Conversation" help: "Find in Conversation"
+  [Button, disabled] "Back" help: "Go back to the message before"
+  [Button, disabled] "Forward" help: "Go forward to the message after"
+  [Button] "All Checkpoints" help: "Every point to go back or forward to"
   [Button] "Rename" help: "Rename"
   [Button] "Use a Skill" id: sparkles
   [TextField] ""
   [Button, disabled] "Send" id: arrow.up.circle.fill
   [StaticText] "" value: "Add a task to buy milk tomorrow, in HOME"
+  [Button] "Thoughts · ‹time› on the GPU" help: "Shows the thinking"
   ‹model text›
+  [Button] "Retry" help: "Write this reply again"
   [Toolbar] ""
     [Button] "Hide Sidebar"
     [RadioGroup] "Show"
@@ -38,6 +44,8 @@
       [RadioButton/Segment] "Archived" value: "0"
     [MenuButton] "Add" help: "Add a task or Project" id: plus
     [Button] "New conversation"
+    [TextField/SearchField] ""
+      [Button] "Search"
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""

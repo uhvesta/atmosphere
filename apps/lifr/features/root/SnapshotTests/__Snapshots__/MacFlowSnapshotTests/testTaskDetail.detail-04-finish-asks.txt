@@ -93,6 +93,7 @@
   [StaticText] "" value: "Add a comment"
   [TextField] ""
   [Button, disabled] "Send comment" id: paperplane.fill
+  [Button] "Move to Trash"
   [Toolbar] ""
     [Button] "Hide Sidebar"
     [MenuButton] "Add" help: "Add a task or Project" id: plus
