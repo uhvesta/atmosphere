@@ -1,7 +1,7 @@
 ▿ 2 elements
   ▿ SyncReviewRow
     - device: "Mac"
-    ▿ id: RecordID
+    ▿ id: RecordID<RecordKind>
       - id: 00000000-0000-0000-0000-000000000401
       - kind: RecordKind.task
     ▿ kind: Kind
@@ -19,7 +19,7 @@
     - title: "Task “Buy race gels and salt”"
   ▿ SyncReviewRow
     - device: "Mac"
-    ▿ id: RecordID
+    ▿ id: RecordID<RecordKind>
       - id: 00000000-0000-0000-0000-000000000501
       - kind: RecordKind.task
     ▿ kind: Kind

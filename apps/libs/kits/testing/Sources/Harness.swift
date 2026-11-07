@@ -6,11 +6,11 @@ import Foundation
 // check fails.
 
 /// One given/then check.
-package struct TestCase {
+public struct TestCase {
     let name: String
     let body: () throws -> Void
 
-    package init(_ name: String, _ body: @escaping () throws -> Void) {
+    public init(_ name: String, _ body: @escaping () throws -> Void) {
         self.name = name
         self.body = body
     }
@@ -24,14 +24,14 @@ struct Failure: Error, CustomStringConvertible {
     var description: String { "\(file):\(line): \(message)" }
 }
 
-package func expect(
+public func expect(
     _ condition: Bool, _ message: @autoclosure () -> String = "expectation failed",
     file: StaticString = #filePath, line: UInt = #line
 ) throws {
     if !condition { throw Failure(message: message(), file: file, line: line) }
 }
 
-package func expectEqual<T: Equatable>(
+public func expectEqual<T: Equatable>(
     _ actual: T, _ expected: T,
     file: StaticString = #filePath, line: UInt = #line
 ) throws {
@@ -42,7 +42,7 @@ package func expectEqual<T: Equatable>(
 
 extension Optional {
     /// The value, or a failed check when there's none.
-    package func unwrap(
+    public func unwrap(
         _ message: @autoclosure () -> String = "expected a value", file: StaticString = #filePath, line: UInt = #line
     ) throws -> Wrapped {
         guard let self else { throw Failure(message: message(), file: file, line: line) }
@@ -51,7 +51,7 @@ extension Optional {
 }
 
 /// Checks that `body` throws `expected`.
-package func expectError<E: Error & Equatable, T>(
+public func expectError<E: Error & Equatable, T>(
     _ expected: E, file: StaticString = #filePath, line: UInt = #line,
     _ body: () throws -> T
 ) throws {
@@ -67,7 +67,7 @@ package func expectError<E: Error & Equatable, T>(
 }
 
 /// Runs every case, prints PASS or FAIL for each, and exits.
-package func runSuites(_ suites: [(String, [TestCase])]) -> Never {
+public func runSuites(_ suites: [(String, [TestCase])]) -> Never {
     var failures = 0
     for (suite, tests) in suites {
         for test in tests {

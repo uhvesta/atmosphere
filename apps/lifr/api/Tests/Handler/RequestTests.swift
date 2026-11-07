@@ -1,7 +1,7 @@
 import Foundation
 import LifrAPI
 import LifrCore
-import LifrTesting
+import TestingKit
 
 func requestTests() -> [TestCase] {
     [

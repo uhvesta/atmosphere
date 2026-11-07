@@ -2,13 +2,13 @@ import CZstd
 import Foundation
 
 /// How a blob's value is written before it's compressed.
-package enum BlobEncoding: UInt8, Hashable, Sendable {
+public enum BlobEncoding: UInt8, Hashable, Sendable {
     case json = 1
     // 2 is kept for protocol buffers.
 }
 
 /// How a blob's payload is compressed.
-package enum BlobCodec: UInt8, Hashable, Sendable {
+public enum BlobCodec: UInt8, Hashable, Sendable {
     case none = 0
     case zstd = 1
 }
@@ -16,26 +16,26 @@ package enum BlobCodec: UInt8, Hashable, Sendable {
 /// What a blob says about its own bytes, so a reader can tell any variant
 /// it knows from one it doesn't, and formats can change without migrating
 /// what's already saved.
-package struct BlobFormat: Hashable, Sendable {
-    package var encoding: BlobEncoding
-    package var codec: BlobCodec
+public struct BlobFormat: Hashable, Sendable {
+    public var encoding: BlobEncoding
+    public var codec: BlobCodec
     /// The zstd dictionary the payload was compressed with; 0 for none.
-    package var dictionary: UInt64
+    public var dictionary: UInt64
 
-    package init(encoding: BlobEncoding, codec: BlobCodec, dictionary: UInt64 = 0) {
+    public init(encoding: BlobEncoding, codec: BlobCodec, dictionary: UInt64 = 0) {
         self.encoding = encoding
         self.codec = codec
         self.dictionary = dictionary
     }
 
-    /// What Lifr writes now: JSON, compressed with zstd at its highest level.
-    package static let current = BlobFormat(encoding: .json, codec: .zstd)
-    /// What Lifr wrote before blobs had a header: plain JSON.
-    package static let legacy = BlobFormat(encoding: .json, codec: .none)
+    /// What `encode` writes by default: JSON, compressed with zstd at its highest level.
+    public static let current = BlobFormat(encoding: .json, codec: .zstd)
+    /// What came before blobs had a header: plain JSON.
+    public static let legacy = BlobFormat(encoding: .json, codec: .none)
 }
 
 /// Why a blob couldn't be written or read.
-package enum BlobError: Error, CustomStringConvertible {
+public enum BlobError: Error, CustomStringConvertible {
     /// The value couldn't be encoded.
     case encodeFailed(any Error)
     /// The bytes decompressed, but don't hold the type asked for.
@@ -53,39 +53,39 @@ package enum BlobError: Error, CustomStringConvertible {
     /// The bytes have neither a blob header nor JSON, or end early.
     case unreadable
 
-    package var description: String {
+    public var description: String {
         switch self {
         case .encodeFailed(let error):
-            "Lifr couldn't save this record (\(error)). Nothing was changed; try again, and report it if it keeps "
+            "A record couldn't be saved (\(error)). Nothing was changed; try again, and report it if it keeps "
                 + "happening."
         case .decodeFailed(let error):
-            "Lifr couldn't read a saved record (\(error)). It may have been written by a newer Lifr: update Lifr "
-                + "on this device. If it's up to date, report it; the record is left as it is."
+            "A saved record couldn't be read (\(error)). It may have been written by a newer version of the app: "
+                + "update the app on this device. If it's up to date, report it; the record is left as it is."
         case .compressFailed(let reason):
-            "Lifr couldn't compress a record (\(reason)). Nothing was changed; try again."
+            "A record couldn't be compressed (\(reason)). Nothing was changed; try again."
         case .decompressFailed(let reason):
             "A saved record is damaged (\(reason)) and can't be read. It's left as it is; other records still work."
         case .unknownEncoding(let byte):
-            "A saved record uses an encoding (\(byte)) this version of Lifr doesn't know. Update Lifr on this "
-                + "device to read it; it's left as it is until then."
+            "A saved record uses an encoding (\(byte)) this version of the app doesn't know. Update the "
+                + "app on this device to read it; it's left as it is until then."
         case .unknownCodec(let byte):
-            "A saved record uses a compression (\(byte)) this version of Lifr doesn't know. Update Lifr on this "
-                + "device to read it; it's left as it is until then."
+            "A saved record uses a compression (\(byte)) this version of the app doesn't know. Update the "
+                + "app on this device to read it; it's left as it is until then."
         case .unknownDictionary(let id):
-            "A saved record was compressed with a dictionary (\(id)) this version of Lifr doesn't have. Update "
-                + "Lifr on this device to read it; it's left as it is until then."
+            "A saved record was compressed with a dictionary (\(id)) this version of the app doesn't have. "
+                + "Update the app on this device to read it; it's left as it is until then."
         case .unreadable:
             "A saved record is damaged and can't be read. It's left as it is; other records still work."
         }
     }
 }
 
-/// The one way Lifr turns values into the bytes it persists and back.
+/// Turns values into the bytes an app persists, and back.
 ///
-/// A blob is "LB", an encoding byte, a codec byte, the dictionary ID as a
-/// varint, then the payload. Bytes without the header that start with `{`
-/// or `[` are JSON from before blobs had one.
-package enum Blob {
+/// A blob is "LB" (for Lifr, where it started), an encoding byte, a codec
+/// byte, the dictionary ID as a varint, then the payload. Bytes without the
+/// header that start with `{` or `[` are JSON from before blobs had one.
+public enum Blob {
     static let magic: [UInt8] = [UInt8(ascii: "L"), UInt8(ascii: "B")]
     /// zstd's highest level: the blobs are small and written rarely, so
     /// size matters more than time.
@@ -93,7 +93,7 @@ package enum Blob {
 
     /// `value` in `format`. A compressed payload that isn't smaller than
     /// the plain one is stored uncompressed, which the header records.
-    package static func encode(_ value: some Encodable, as format: BlobFormat = .current) throws(BlobError) -> Data {
+    public static func encode(_ value: some Encodable, as format: BlobFormat = .current) throws(BlobError) -> Data {
         let payload: Data
         do {
             switch format.encoding {
@@ -121,7 +121,7 @@ package enum Blob {
     }
 
     /// The `T` in `data`, in any format this version knows.
-    package static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws(BlobError) -> T {
+    public static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws(BlobError) -> T {
         let (format, start) = try header(of: data)
         var payload = Data(data[start...])
         switch format.codec {
@@ -138,7 +138,7 @@ package enum Blob {
     }
 
     /// How `data` was written: `.legacy` for headerless JSON.
-    package static func format(of data: Data) throws(BlobError) -> BlobFormat {
+    public static func format(of data: Data) throws(BlobError) -> BlobFormat {
         try header(of: data).format
     }
 
@@ -198,8 +198,8 @@ package enum Blob {
         return output
     }
 
-    /// Frames Lifr writes record their size; one that doesn't, or claims
-    /// more than `limit`, isn't one of Lifr's.
+    /// Frames `encode` writes record their size; one that doesn't, or
+    /// claims more than `limit`, wasn't written here.
     private static let limit: UInt64 = 256 << 20
 
     private static func decompress(_ input: Data) throws(BlobError) -> Data {

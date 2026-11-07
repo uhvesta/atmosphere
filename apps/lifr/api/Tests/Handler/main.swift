@@ -1,4 +1,4 @@
-import LifrTesting
+import TestingKit
 
 runSuites([
     ("Access", accessTests()),

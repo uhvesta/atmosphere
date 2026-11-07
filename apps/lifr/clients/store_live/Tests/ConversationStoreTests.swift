@@ -1,6 +1,6 @@
+import BlobKit
 import Foundation
 import LifrAssistantClient
-import LifrBlob
 import LifrCore
 import SwiftData
 import XCTest

@@ -15,9 +15,10 @@ swift_library(
     ],
     module_name = "LifrCore",
     visibility = ["//apps/lifr:__subpackages__"],
+    deps = ["//apps/libs/kits/journal"],
 )
 
-# Given/then tests for each rule, run with //apps/lifr/testing's harness.
+# Given/then tests for each rule, run with TestingKit.
 swift_binary(
     name = "core_tests",
     package_name = "lifr",
@@ -29,13 +30,13 @@ swift_binary(
     ],
     deps = [
         ":core",
-        "//apps/lifr/testing",
+        "//apps/libs/kits/testing",
     ],
 )
 
 sh_test(
     name = "core_test",
-    srcs = ["//apps/lifr/testing:run_tests.sh"],
+    srcs = ["//apps/libs/kits/testing:run_tests.sh"],
     args = ["$(rootpath :core_tests)"],
     data = [":core_tests"],
 )

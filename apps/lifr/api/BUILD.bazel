@@ -61,7 +61,7 @@ exports_files(
     visibility = ["//apps/lifr/cli:__pkg__"],
 )
 
-# Given/then tests for the handler, run with //apps/lifr/testing's harness.
+# Given/then tests for the handler, run with TestingKit.
 swift_binary(
     name = "handler_tests",
     package_name = "lifr",
@@ -76,14 +76,14 @@ swift_binary(
     ],
     deps = [
         ":api",
+        "//apps/libs/kits/testing",
         "//apps/lifr/core",
-        "//apps/lifr/testing",
     ],
 )
 
 sh_test(
     name = "handler_test",
-    srcs = ["//apps/lifr/testing:run_tests.sh"],
+    srcs = ["//apps/libs/kits/testing:run_tests.sh"],
     args = ["$(rootpath :handler_tests)"],
     data = [":handler_tests"],
 )

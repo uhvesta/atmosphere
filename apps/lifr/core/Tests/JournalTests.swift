@@ -1,6 +1,6 @@
 import Foundation
 import LifrCore
-import LifrTesting
+import TestingKit
 
 extension Fixture {
     /// Runs `operation` the way the stores do, so it gets a journal entry.

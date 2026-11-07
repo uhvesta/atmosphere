@@ -1,6 +1,6 @@
 import Foundation
 import LifrCore
-import LifrTesting
+import TestingKit
 
 /// A workspace with a HEALTH Avenue and a project in it, plus a context whose
 /// IDs, codes and clock are fixed so every run is the same.
@@ -69,11 +69,11 @@ final class Fixture {
     }
 }
 
-/// `LifrTesting.expectError` for Core's errors, so cases can be written as
+/// `TestingKit.expectError` for Core's errors, so cases can be written as
 /// `.openSubtasks(...)`.
 func expectError<T>(
     _ expected: LifrError, file: StaticString = #filePath, line: UInt = #line,
     _ body: () throws -> T
 ) throws {
-    try LifrTesting.expectError(expected, file: file, line: line, body)
+    try TestingKit.expectError(expected, file: file, line: line, body)
 }

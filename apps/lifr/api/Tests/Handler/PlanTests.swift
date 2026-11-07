@@ -1,7 +1,7 @@
 import Foundation
 import LifrAPI
 import LifrCore
-import LifrTesting
+import TestingKit
 
 private func plan(_ body: String) -> JSONValue {
     ["plan": .string("# Lifr plan v1\n" + body), "timeZone": "UTC"]

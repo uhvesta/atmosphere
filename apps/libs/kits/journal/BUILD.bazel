@@ -1,0 +1,46 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# JournalKit: a history of every change to an app's records, that can be
+# reverted field by field and merged with another device's. Generic over the
+# app's `Journaled` records. Plain Swift with Foundation, so it builds with
+# the hermetic toolchains, Linux included.
+swift_library(
+    name = "journal",
+    srcs = glob(["Sources/*.swift"]),
+    copts = [
+        "-swift-version",
+        "6",
+    ],
+    module_name = "JournalKit",
+    visibility = ["//apps:__subpackages__"],
+)
+
+# Given/then tests on a small sample app, run with TestingKit.
+swift_binary(
+    name = "journal_tests",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    copts = [
+        "-swift-version",
+        "6",
+    ],
+    deps = [
+        ":journal",
+        "//apps/libs/kits/testing",
+    ],
+)
+
+sh_test(
+    name = "journal_test",
+    srcs = ["//apps/libs/kits/testing:run_tests.sh"],
+    args = ["$(rootpath :journal_tests)"],
+    data = [":journal_tests"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

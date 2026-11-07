@@ -1,82 +1,24 @@
 import Foundation
+import JournalKit
 
-/// One operation's changes to the records, with who made them. Written once,
-/// never changed: reverting an entry appends another, so it can be reverted
-/// too.
-package struct JournalEntry: Identifiable, Hashable, Codable, Sendable {
-    package var id: UUID
-    package var actor: Actor
-    package var at: Date
-    /// The assistant conversation the change was made in.
-    package var conversation: UUID?
-    /// The entries this one reverts, newest first.
-    package var reverts: [UUID]
-    package var steps: [JournalStep]
-
-    package init(
-        id: UUID, actor: Actor, at: Date, conversation: UUID? = nil, reverts: [UUID] = [], steps: [JournalStep]
-    ) {
-        self.id = id
-        self.actor = actor
-        self.at = at
-        self.conversation = conversation
-        self.reverts = reverts
-        self.steps = steps
-    }
-}
-
-/// One record as it was before and after an operation. `before` is nil for
-/// a record the operation added, `after` for one it removed.
-package struct JournalStep: Hashable, Codable, Sendable {
-    package var before: RecordValue?
-    package var after: RecordValue?
-
-    package init(before: RecordValue?, after: RecordValue?) {
-        precondition(before != nil || after != nil, "A step needs the record before or after")
-        self.before = before
-        self.after = after
-    }
-
-    package var record: RecordID { after?.id ?? before?.id ?? .settings }
-
-    /// The fields that differ, in the order people see them.
-    package var fields: [FieldChange] {
-        let old = before?.fieldValues ?? [:]
-        let new = after?.fieldValues ?? [:]
-        return RecordValue.fields(of: record.kind).compactMap { field in
-            old[field] == new[field] ? nil : FieldChange(field: field, before: old[field], after: new[field])
-        }
-    }
-}
-
-/// A field of a record before and after. A value is nil when the field
-/// was empty, or the record wasn't there.
-package struct FieldChange: Hashable, Sendable {
-    package var field: Field
-    package var before: FieldValue?
-    package var after: FieldValue?
-    package init(field: Field, before: FieldValue?, after: FieldValue?) {
-        self.field = field
-        self.before = before
-        self.after = after
-    }
-}
+/// One operation's changes to the records, with who made them.
+package typealias JournalEntry = JournalKit.JournalEntry<RecordValue, Actor>
+/// One record as it was before and after an operation.
+package typealias JournalStep = JournalKit.JournalStep<RecordValue>
+/// A field of a record before and after.
+package typealias FieldChange = JournalKit.FieldChange<RecordValue>
+/// Which record: its kind and ID.
+package typealias RecordID = JournalKit.RecordID<RecordKind>
+/// A part of an entry that reverting left as it is, and why.
+package typealias SkippedRevert = JournalKit.SkippedRevert<RecordValue>
 
 package enum RecordKind: String, Hashable, Codable, Sendable, CaseIterable {
     case avenue, project, task, label, comment, reminder, settings
 }
 
-package struct RecordID: Hashable, Codable, Sendable {
-    package var kind: RecordKind
-    package var id: UUID
-
-    package init(_ kind: RecordKind, _ id: UUID) {
-        self.kind = kind
-        self.id = id
-    }
-
+extension JournalKit.RecordID where Kind == RecordKind {
     /// Settings are one record with no ID of their own.
-    package static let settings = RecordID(.settings, UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)))
+    package static var settings: Self { Self(.settings, UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))) }
 }
 
 /// Any record, for the journal.
@@ -99,28 +41,6 @@ package enum RecordValue: Hashable, Codable, Sendable {
         case .reminder(let record): RecordID(.reminder, record.id)
         case .settings: .settings
         }
-    }
-}
-
-/// A part of an entry that reverting left as it is, and why.
-package struct SkippedRevert: Hashable, Sendable {
-    package enum Reason: Hashable, Sendable {
-        /// The field was changed again since, so reverting would overwrite that.
-        case changedSince
-        /// The record is gone, such as a task purged from the trash.
-        case gone
-        /// The record would be removed, but other records still use it.
-        case inUse
-    }
-
-    package var record: RecordID
-    /// The field, when only one was skipped.
-    package var field: Field?
-    package var reason: Reason
-    package init(record: RecordID, field: Field?, reason: Reason) {
-        self.record = record
-        self.field = field
-        self.reason = reason
     }
 }
 
@@ -154,10 +74,7 @@ extension Workspace {
         func diff<Record: Equatable>(
             _ old: [UUID: Record], _ new: [UUID: Record], _ value: (Record) -> RecordValue
         ) -> [JournalStep] {
-            Set(old.keys).union(new.keys).sorted { $0.uuidString < $1.uuidString }.compactMap { id in
-                guard old[id] != new[id] else { return nil }
-                return JournalStep(before: old[id].map(value), after: new[id].map(value))
-            }
+            JournalStep.steps(from: old, to: new, as: value)
         }
         var steps = diff(before.avenues, avenues, RecordValue.avenue)
         steps += diff(before.labels, labels, RecordValue.label)
@@ -215,7 +132,7 @@ extension Workspace {
     package mutating func revert(_ entryIDs: [UUID], in context: Context) throws(LifrError) -> Change {
         let byID = Dictionary(journal.map { ($0.id, $0) }) { first, _ in first }
         for id in entryIDs where byID[id] == nil { throw .notFound(.change, id.uuidString) }
-        let entries = entryIDs.compactMap { byID[$0] }.sorted { ($0.at, $0.id.uuidString) > ($1.at, $1.id.uuidString) }
+        let entries = entryIDs.compactMap { byID[$0] }.sorted(by: JournalEntry.newestFirst)
         var change = Change()
         change.reverts = entries.map(\.id)
         let before = self
@@ -233,41 +150,30 @@ extension Workspace {
     }
 
     /// The entries undone: reverted by an entry that isn't undone itself.
-    package var undoneEntries: Set<UUID> {
-        var undone: Set<UUID> = []
-        for entry in journal.sorted(by: { ($0.at, $0.id.uuidString) > ($1.at, $1.id.uuidString) })
-        where !undone.contains(entry.id) {
-            undone.formUnion(entry.reverts)
-        }
-        return undone
-    }
+    package var undoneEntries: Set<UUID> { journal.undone() }
 
     /// The entries made since `date`, newest first, for "revert everything
     /// since".
-    package func entries(since date: Date) -> [JournalEntry] {
-        journal.filter { $0.at >= date }.sorted { ($0.at, $0.id.uuidString) > ($1.at, $1.id.uuidString) }
-    }
+    package func entries(since date: Date) -> [JournalEntry] { journal.made(since: date) }
 
     /// The entries made in an assistant conversation, newest first.
     package func entries(inConversation conversation: UUID) -> [JournalEntry] {
-        journal.filter { $0.conversation == conversation }
-            .sorted { ($0.at, $0.id.uuidString) > ($1.at, $1.id.uuidString) }
+        journal.made(inConversation: conversation)
     }
 
     private mutating func revert(_ step: JournalStep, in context: Context, _ change: inout Change) {
         let record = step.record
-        let current = value(of: record)
-        switch (step.before, step.after, current) {
-        case (nil, _, nil):
-            return  // Added, and already gone.
-        case (nil, _, let current?):
+        switch step.revert(current: value(of: record)) {
+        case .nothing:
+            return
+        case .remove(let current):
             remove(current, in: context, &change)
-        case (let before?, nil, nil):
-            set(record, to: before)  // Removed by the entry: put it back.
-        case (_?, _, nil):
+        case .restore(let before):
+            set(record, to: before)
+        case .gone:
             change.skipped.append(SkippedRevert(record: record, field: nil, reason: .gone))
-        case (let before?, let after, let current?):
-            let merged = Self.merge(current: current, from: after, to: before, record: record, &change)
+        case .update(let merged, let skipped):
+            change.skipped += skipped.map { SkippedRevert(record: record, field: $0, reason: .changedSince) }
             if let merged { set(record, to: merged) }
         }
     }
@@ -313,25 +219,6 @@ extension Workspace {
         case .settings:
             break
         }
-    }
-
-    /// `current` with each field that went from `from` to `to` put back to
-    /// `to`, unless it has changed since. `nil` when nothing changes.
-    private static func merge(
-        current: RecordValue, from: RecordValue?, to: RecordValue, record: RecordID, _ change: inout Change
-    ) -> RecordValue? {
-        let old = from?.fieldValues ?? [:]
-        let new = to.fieldValues
-        let now = current.fieldValues
-        var merged = current
-        for field in RecordValue.fields(of: record.kind) where old[field] != new[field] && now[field] != new[field] {
-            guard now[field] == old[field] else {
-                change.skipped.append(SkippedRevert(record: record, field: field, reason: .changedSince))
-                continue
-            }
-            merged = merged.copying(field, from: to)
-        }
-        return merged == current ? nil : merged
     }
 
     /// Bumps a reverted task's activity and writes its history, so the

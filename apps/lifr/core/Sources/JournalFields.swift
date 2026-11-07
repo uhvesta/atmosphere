@@ -1,4 +1,5 @@
 import Foundation
+import JournalKit
 
 /// A field the journal compares and reverts. The times every change bumps
 /// (`updatedAt`, `lastActivityAt`) aren't fields: they never count as
@@ -166,9 +167,9 @@ extension Settings {
     ]
 }
 
-extension RecordValue {
+extension RecordValue: Journaled {
     /// The record's fields that have a value.
-    var fieldValues: [Field: FieldValue] {
+    package var fieldValues: [Field: FieldValue] {
         func values<Record>(_ fields: [RecordField<Record>], _ record: Record) -> [Field: FieldValue] {
             Dictionary(
                 uniqueKeysWithValues: fields.compactMap { field in field.value(record).map { (field.field, $0) } })
@@ -185,7 +186,7 @@ extension RecordValue {
     }
 
     /// The fields of `kind`'s records, in the order people see them.
-    static func fields(of kind: RecordKind) -> [Field] {
+    package static func fields(of kind: RecordKind) -> [Field] {
         switch kind {
         case .avenue: Avenue.fields.map(\.field)
         case .project: Project.fields.map(\.field)
@@ -199,7 +200,7 @@ extension RecordValue {
 
     /// This record with `field` copied from `other`, a version of the
     /// same record.
-    func copying(_ field: Field, from other: RecordValue) -> RecordValue {
+    package func copying(_ field: Field, from other: RecordValue) -> RecordValue {
         func copy<Record>(_ fields: [RecordField<Record>], _ from: Record, _ to: Record) -> Record {
             var to = to
             fields.first { $0.field == field }?.copy(from, &to)

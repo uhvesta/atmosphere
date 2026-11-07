@@ -1,6 +1,6 @@
 import Foundation
 import LifrAPI
-import LifrTesting
+import TestingKit
 
 func wireTests() -> [TestCase] {
     [

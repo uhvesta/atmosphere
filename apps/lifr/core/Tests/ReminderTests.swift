@@ -1,6 +1,6 @@
 import Foundation
 import LifrCore
-import LifrTesting
+import TestingKit
 
 func reminderTests() -> [TestCase] {
     [

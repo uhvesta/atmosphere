@@ -1,6 +1,6 @@
 import Foundation
 import LifrCore
-import LifrTesting
+import TestingKit
 
 /// A task as both devices last agreed on it, to change on each side.
 private func base() throws -> (Fixture, LifrTask) {

@@ -1,4 +1,4 @@
-import LifrTesting
+import TestingKit
 
 runSuites([
     ("Identifiers", identifierTests()),
@@ -14,5 +14,6 @@ runSuites([
     ("Repairing plans", planRepairTests()),
     ("Projects and Avenues", projectAndAvenueTests()),
     ("Journal", journalTests()),
+    ("Saved formats", savedFormatTests()),
     ("Merging synced records", mergeTests()),
 ])

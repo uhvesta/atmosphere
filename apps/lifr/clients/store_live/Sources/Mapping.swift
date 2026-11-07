@@ -1,5 +1,5 @@
+import BlobKit
 import Foundation
-import LifrBlob
 import LifrCore
 
 // Converting between the stored models and Core's records.

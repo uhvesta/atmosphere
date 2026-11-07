@@ -1,6 +1,6 @@
+import BlobKit
 import ComposableArchitecture
 import Foundation
-import LifrBlob
 import LifrCore
 import LifrStoreClient
 import SwiftData

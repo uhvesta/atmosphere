@@ -1,7 +1,7 @@
 import Foundation
-import LifrTesting
+import TestingKit
 
-@testable import LifrBlob
+@testable import BlobKit
 
 private struct Note: Codable, Equatable {
     var title: String

@@ -1,6 +1,6 @@
 import LifrAPI
 import LifrCore
-import LifrTesting
+import TestingKit
 
 private func problem(_ text: String) -> PlanFileError? {
     do {

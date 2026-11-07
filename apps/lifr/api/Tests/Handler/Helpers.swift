@@ -1,7 +1,7 @@
 import Foundation
 import LifrAPI
 import LifrCore
-import LifrTesting
+import TestingKit
 
 extension RPCResponse {
     /// The result as `type`, or a failure naming the error.

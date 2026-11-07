@@ -1,22 +1,23 @@
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
-# The given/then harness every hermetic Lifr test binary uses.
+# TestingKit: given/then checks as a plain test binary, for code that
+# builds with the hermetic toolchains, Linux included. Run a binary with
+# run_tests.sh.
 swift_library(
     name = "testing",
-    package_name = "lifr",
     testonly = True,
     srcs = glob(["Sources/*.swift"]),
     copts = [
         "-swift-version",
         "6",
     ],
-    module_name = "LifrTesting",
-    visibility = ["//apps/lifr:__subpackages__"],
+    module_name = "TestingKit",
+    visibility = ["//apps:__subpackages__"],
 )
 
 exports_files(
     ["run_tests.sh"],
-    visibility = ["//apps/lifr:__subpackages__"],
+    visibility = ["//apps:__subpackages__"],
 )
 
 filegroup(

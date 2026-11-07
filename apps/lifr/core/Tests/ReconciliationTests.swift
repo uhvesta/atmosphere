@@ -1,6 +1,6 @@
 import Foundation
 import LifrCore
-import LifrTesting
+import TestingKit
 
 /// Two devices that changed the same records offline, then synced: per
 /// record, the version written last wins on both.

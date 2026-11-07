@@ -1,7 +1,7 @@
+import BlobKit
 import ComposableArchitecture
 import Foundation
 import LifrAssistantClient
-import LifrBlob
 import OSLog
 import SwiftData
 
