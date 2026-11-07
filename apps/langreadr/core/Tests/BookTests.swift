@@ -34,6 +34,24 @@ func bookTests() -> [TestCase] {
             book.translate(into: Language("en"))
             try expectEqual(book.annotations[first]?.translation, "I am a student.")
         },
+        TestCase("given a chat kept before chats picked a model, then it follows the defaults") {
+            let paragraph = Paragraph(text: "Hola, buenos días.")
+            var chat = AnchoredChat(
+                passage: try Passage(in: paragraph, from: 0, to: 4).unwrap(), createdAt: Date(timeIntervalSince1970: 0))
+            chat.model = ChatModel(model: "gemma", thinking: "long", window: 8_192)
+            var fields = try JSONSerialization.jsonObject(with: JSONEncoder().encode(chat)) as? [String: Any] ?? [:]
+            fields["model"] = nil
+            let old = try JSONDecoder().decode(AnchoredChat.self, from: JSONSerialization.data(withJSONObject: fields))
+            try expectEqual(old.model, ChatModel())
+            try expectEqual(old.passage, chat.passage)
+        },
+        TestCase("given a chat that picked a model, then it keeps it") {
+            let paragraph = Paragraph(text: "Hola, buenos días.")
+            var chat = AnchoredChat(
+                passage: try Passage(in: paragraph, from: 0, to: 4).unwrap(), createdAt: Date(timeIntervalSince1970: 0))
+            chat.model = ChatModel(model: "gemma", thinking: "long", window: 8_192)
+            try expectEqual(try JSONDecoder().decode(AnchoredChat.self, from: JSONEncoder().encode(chat)), chat)
+        },
         TestCase("given a passage picked backwards, then it reads forwards, trimmed") {
             let paragraph = Paragraph(text: "Hola, buenos días.")
             let passage = try Passage(in: paragraph, from: 17, to: 5).unwrap()

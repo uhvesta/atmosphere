@@ -16,6 +16,7 @@ package struct LibraryFeature {
         /// The book being read.
         @Presents package var reader: ReaderFeature.State?
         @Presents package var alert: AlertState<Never>?
+        @Presents package var settings: SettingsFeature.State?
 
         package init(books: IdentifiedArrayOf<Book> = []) { self.books = books }
     }
@@ -34,6 +35,8 @@ package struct LibraryFeature {
         case importing(PresentationAction<ImportFeature.Action>)
         case reader(PresentationAction<ReaderFeature.Action>)
         case alert(PresentationAction<Never>)
+        case settingsTapped
+        case settings(PresentationAction<SettingsFeature.Action>)
     }
 
     @Dependency(\.shelf) private var shelf
@@ -132,12 +135,16 @@ package struct LibraryFeature {
             case .saveFailed(let error):
                 state.alert = Self.alert(error.description)
                 return .none
-            case .importing, .reader, .alert:
+            case .settingsTapped:
+                state.settings = SettingsFeature.State()
+                return .none
+            case .importing, .reader, .alert, .settings:
                 return .none
             }
         }
         .ifLet(\.$importing, action: \.importing) { ImportFeature() }
         .ifLet(\.$reader, action: \.reader) { ReaderFeature() }
+        .ifLet(\.$settings, action: \.settings) { SettingsFeature() }
         .onChange(of: \.reader?.book) { _, book in
             Reduce { state, _ in
                 guard let book, state.books[id: book.id] != book else { return .none }

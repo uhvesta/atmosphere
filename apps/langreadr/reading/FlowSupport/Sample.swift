@@ -3,6 +3,7 @@ import Foundation
 import InferenceKit
 import JSONKit
 import LangReadrCore
+import LangReadrModels
 import LangReadrReading
 import LangReadrServicesFake
 
@@ -50,7 +51,8 @@ enum Sample {
 
     static var runtime: ScriptedRuntime { ScriptedRuntime(steps: Array(repeating: answer, count: 100)) }
 
-    /// A library with nothing in it yet, reading in English.
+    /// A library with nothing in it yet, reading in English, with one
+    /// model downloaded beside Apple's.
     @MainActor
     static func library() -> StoreOf<LibraryFeature> {
         Store(initialState: LibraryFeature.State()) {
@@ -59,6 +61,7 @@ enum Sample {
             $0.shelf = .inMemory()
             $0.tutor = Tutor(runtime: runtime, reader: Language("en"))
             $0.readerServices = .fake()
+            $0.models = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small]).client
             $0.date.now = Date(timeIntervalSince1970: 1_793_700_000)
             $0.uuid = .incrementing
         }

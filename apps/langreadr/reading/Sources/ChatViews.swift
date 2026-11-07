@@ -35,12 +35,17 @@ struct PassageChatView: View {
         #endif
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Done") { store.send(.doneTapped) } }
+            ToolbarItem(placement: .automatic) {
+                Button("Model", systemImage: "cpu") { store.send(.modelTapped) }
+                    .help("Model, Thinking and Context Window")
+            }
             if store.compact {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Open in chat") { store.send(.openFullTapped) }
                 }
             }
         }
+        .sheet(item: $store.scope(state: \.model, action: \.model)) { ChatModelView(store: $0) }
     }
 }
 

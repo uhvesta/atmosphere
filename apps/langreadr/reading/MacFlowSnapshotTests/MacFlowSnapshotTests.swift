@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import FlowKit
 import LangReadrCore
+import LangReadrModels
 import LangReadrReading
 import SwiftUI
 import XCTest
@@ -35,6 +36,33 @@ final class MacFlowSnapshotTests: XCTestCase {
         reader.send(.destination(.presented(.chat(.sendTapped))))
         try await Sample.waitFor { reader.destination?.chat?.reply == nil }
         await flow.step("replied")
+        flow.finish()
+    }
+
+    /// Settings › Models, then a passage chat's own model.
+    func testPickingModels() async throws {
+        let library = Sample.library()
+        let flow = FlowRecorder("models", LangReadrView(store: library))
+        library.send(.settingsTapped)
+        try await Sample.waitFor { library.settings != nil }
+        await flow.step("settings")
+        library.send(.settings(.dismiss))
+        let reader = try await Sample.importStory(into: library)
+        let paragraph = try XCTUnwrap(reader.book.paragraphs.first)
+        let words = reader.words[paragraph.id] ?? []
+        reader.send(.binding(.set(\.isHighlighting, true)))
+        reader.send(.wordTapped(paragraph: paragraph.id, try XCTUnwrap(words.first)))
+        reader.send(.wordTapped(paragraph: paragraph.id, try XCTUnwrap(words.first { $0.text == "mercado" })))
+        reader.send(.askTapped)
+        reader.send(.destination(.presented(.chat(.modelTapped))))
+        try await Sample.waitFor { reader.destination?.chat?.model?.models.isEmpty == false }
+        await flow.step("chat-model")
+        let model: (ChatModelFeature.Action) -> ReaderFeature.Action = {
+            .destination(.presented(.chat(.model(.presented($0)))))
+        }
+        reader.send(model(.binding(.set(\.model, ModelCatalog.qwen35Small.id))))
+        reader.send(model(.binding(.set(\.choice.thinking, .long))))
+        await flow.step("chat-model-picked")
         flow.finish()
     }
 }

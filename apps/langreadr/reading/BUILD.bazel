@@ -3,9 +3,10 @@ load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load("//apps/libs/kits/flow:defs.bzl", "flow_host_app", "flow_snapshot_test")
 
 # LangReadr's screens: the library, the reader with its words to tap, the
-# word card, and chats about passages. TCA reducers with SwiftUI views
-# built from ChatUI; the model's work is in Tutor. Needs Xcode: build with
-# `--config=xcode`. In Swift 5 mode, like the other apps' features.
+# word card, chats about passages, and Settings with the models they run
+# on. TCA reducers with SwiftUI views built from ChatUI; the model's work
+# is in Tutor. Needs Xcode: build with `--config=xcode`. In Swift 5 mode,
+# like the other apps' features.
 swift_library(
     name = "reading",
     package_name = "langreadr",
@@ -15,6 +16,7 @@ swift_library(
     visibility = ["//apps/langreadr:__subpackages__"],
     deps = [
         "//apps/langreadr/core",
+        "//apps/langreadr/models",
         "//apps/langreadr/services",
         "//apps/libs/kits/chat",
         "//apps/libs/kits/chatui",
@@ -34,6 +36,7 @@ swift_library(
     deps = [
         ":reading",
         "//apps/langreadr/core",
+        "//apps/langreadr/models",
         "//apps/langreadr/services",
         "//apps/langreadr/services:fake",
         "//apps/libs/kits/chat",
@@ -53,6 +56,7 @@ macos_unit_test(
 _FLOW_DEPS = [
     ":reading",
     "//apps/langreadr/core",
+    "//apps/langreadr/models",
     "//apps/langreadr/services:fake",
     "//apps/libs/kits/inference",
     "//apps/libs/kits/json",

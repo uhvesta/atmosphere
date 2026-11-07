@@ -75,6 +75,12 @@ struct LibraryView: View {
             }
         }
         .navigationTitle("Library")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Settings", systemImage: "gearshape") { store.send(.settingsTapped) }
+            }
+        }
+        .sheet(item: $store.scope(state: \.settings, action: \.settings)) { SettingsView(store: $0) }
         .task { await store.send(.task).finish() }
         .safeAreaInset(edge: .bottom) { importBar }
         .sheet(item: $store.scope(state: \.importing, action: \.importing)) { ImportSheet(store: $0) }

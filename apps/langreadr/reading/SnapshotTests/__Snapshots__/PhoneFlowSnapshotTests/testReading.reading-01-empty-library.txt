@@ -1,3 +1,4 @@
+[button] "Settings"
 [header] "Library"
 [text] "Nothing to read yet"
 [text] "Import text, a photo, a web page or a file in the language you're learning."

@@ -3,18 +3,28 @@ import Foundation
 import InferenceKit
 import JSONKit
 import LangReadrCore
+import LangReadrModels
 
 /// What the reader asks the model: translations, readings, what words mean
 /// and replies about passages. Each answer is held to the shape it needs.
 public struct Tutor: Sendable {
-    public let runtime: any ModelRuntime
+    /// What each use runs on, or what a chat picked in place of it.
+    package let runtime: @Sendable (ModelUse, ModelChoice) -> any ModelRuntime
     /// The person's own language, which the model writes in.
     public let reader: Language
 
-    public init(runtime: any ModelRuntime, reader: Language) {
+    package init(runtime: @escaping @Sendable (ModelUse, ModelChoice) -> any ModelRuntime, reader: Language) {
         self.runtime = runtime
         self.reader = reader
     }
+
+    /// A tutor that runs everything on `runtime`.
+    public init(runtime: any ModelRuntime, reader: Language) {
+        self.init(runtime: { _, _ in runtime }, reader: reader)
+    }
+
+    /// What translating, readings and words run on.
+    private var reading: any ModelRuntime { runtime(.reading, .defaults) }
 
     /// `text`, written in `language`, in the reader's language.
     public func translate(_ text: String, from language: Language) async throws(ModelRuntimeError) -> String {
@@ -24,7 +34,7 @@ public struct Tutor: Sendable {
                 Write only the translation, with no notes.
                 """,
             prompt: text)
-        return try await Self.text(runtime.respond(to: turn) { _ in })
+        return try await Self.text(reading.respond(to: turn) { _ in })
     }
 
     /// `text` in Latin letters, read as a native speaker of `language`
@@ -37,7 +47,7 @@ public struct Tutor: Sendable {
                 Keep the punctuation. Write only the romanization.
                 """,
             prompt: text)
-        return try await Self.text(runtime.respond(to: turn) { _ in })
+        return try await Self.text(reading.respond(to: turn) { _ in })
     }
 
     /// What `word` means, and what it means in `sentence`.
@@ -58,7 +68,7 @@ public struct Tutor: Sendable {
                     ModelProperty("meaning", "Its usual meanings, a few words each, separated by semicolons"),
                     ModelProperty("inSentence", "What it means in this sentence, in one sentence"),
                 ]))
-        let answer = try await runtime.respond(to: turn) { _ in }
+        let answer = try await reading.respond(to: turn) { _ in }
         guard case .object(let fields) = answer, case .string(let meaning)? = fields["meaning"] else {
             throw .failed("the model's answer had no meaning for \(word)")
         }
@@ -74,12 +84,14 @@ public struct Tutor: Sendable {
     public func reply(
         in chat: AnchoredChat, about book: ChatBook, partial: @escaping @Sendable (String) -> Void
     ) async throws(ModelRuntimeError) -> String {
-        let budget = runtime.budget.room * 3
+        let choice = ModelChoice(chat.model)
+        let model = runtime(.chat, choice)
+        let budget = model.budget.room * 3
         let context = book.paragraph ?? chat.passage.text
         let transcript = chat.conversation.messages.newest(fitting: max(400, budget - context.count - 600))
             .map { "\($0.role == .person ? "Reader" : "You"): \($0.text)" }
             .joined(separator: "\n\n")
-        let turn = ModelTurn(
+        var turn = ModelTurn(
             instructions: """
                 You help someone who speaks \(name(reader)) read \(name(book.language)). They're reading \
                 “\(book.title)” and asking about this passage: “\(chat.passage.text)”, from the paragraph: \
@@ -87,8 +99,13 @@ public struct Tutor: Sendable {
                 where they ask, and quote the \(name(book.language)) you explain.
                 """,
             prompt: transcript)
+        if let tokens = choice.thinkingLevel.tokens {
+            // The chat shows only the reply, so what it thinks isn't kept.
+            turn.thinking = { _ in }
+            turn.thinkingTokens = tokens
+        }
         return try await Self.text(
-            runtime.respond(to: turn) { value in
+            model.respond(to: turn) { value in
                 if case .string(let text) = value { partial(text) }
             })
     }

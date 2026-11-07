@@ -3,6 +3,7 @@
 [button] "Highlight" value: "0"
 [button] "More"
 [button] "Done"
+[button] "Model" hint: "Model, Thinking and Context Window"
 [header] "Chat"
 [header] "El mercado"
 [text] "“Hola amigo. ¿Vamos al mercado”"

@@ -2,7 +2,8 @@ load("@rules_apple//apple:ios.bzl", "ios_application")
 load("@rules_apple//apple:macos.bzl", "macos_application")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
-# LangReadr for the iPhone and the Mac, on Apple's on-device model. Unsigned
+# LangReadr for the iPhone and the Mac, on Apple's on-device model or one
+# downloaded from Hugging Face. Unsigned
 # for now, with a placeholder bundle ID: it runs on simulators and this Mac
 # until it has an App ID of its own. Needs Xcode: build with
 # `--config=xcode`.
@@ -18,10 +19,17 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     deps = [
         "//apps/langreadr/core",
+        "//apps/langreadr/models",
         "//apps/langreadr/reading",
+        "//apps/libs/kits/inference",
+        "//apps/libs/kits/inference/litert",
         "//apps/libs/kits/inference/live",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
-    ],
+    ] + select({
+        # llama.cpp's framework has no Simulator build.
+        "@apple_support//constraints:simulator": [],
+        "//conditions:default": ["//apps/libs/kits/inference/llama"],
+    }),
 )
 
 ios_application(

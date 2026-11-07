@@ -25,6 +25,7 @@
     [Button] "muy"
     [Button] "bien"
   [Toolbar] ""
+    [Button] "Settings"
     [Button] "Hide Sidebar"
     [CheckBox/Toggle] "Translate" value: "0"
     [CheckBox/Toggle] "Highlight" value: "0"

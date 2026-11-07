@@ -1,3 +1,4 @@
+[button] "Settings"
 [button] "Cancel"
 [button, notEnabled] "Import"
 [header] "Library"

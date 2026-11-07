@@ -49,11 +49,41 @@ public struct ReaderMessage: ChatEntry {
 public struct AnchoredChat: Identifiable, Hashable, Codable, Sendable {
     public var passage: Passage
     public var conversation: Conversation<ReaderMessage, NoContext>
+    /// What it runs on in place of the defaults.
+    public var model: ChatModel
 
     public var id: UUID { conversation.id }
 
     public init(passage: Passage, createdAt: Date) {
         self.passage = passage
         conversation = Conversation(id: UUID(), createdAt: createdAt)
+        model = ChatModel()
+    }
+
+    private enum CodingKeys: String, CodingKey { case passage, conversation, model }
+
+    /// A chat kept before chats picked their model follows the defaults.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        passage = try container.decode(Passage.self, forKey: .passage)
+        conversation = try container.decode(Conversation<ReaderMessage, NoContext>.self, forKey: .conversation)
+        model = try container.decodeIfPresent(ChatModel.self, forKey: .model) ?? ChatModel()
+    }
+}
+
+/// The model a chat picked, how long it thinks and its window, as kept
+/// with the book. Each nil follows the default.
+public struct ChatModel: Hashable, Codable, Sendable {
+    /// The model's ID.
+    public var model: String?
+    /// How long it thinks: off, on or long.
+    public var thinking: String?
+    /// Its window in tokens.
+    public var window: Int?
+
+    public init(model: String? = nil, thinking: String? = nil, window: Int? = nil) {
+        self.model = model
+        self.thinking = thinking
+        self.window = window
     }
 }

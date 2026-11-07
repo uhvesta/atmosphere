@@ -28,6 +28,7 @@
     [Button] "bien"
     [StaticText] "" value: "The bread is warm and smells very good."
   [Toolbar] ""
+    [Button] "Settings"
     [Button] "Hide Sidebar"
     [CheckBox/Toggle] "Translate" value: "1"
     [CheckBox/Toggle] "Highlight" value: "0"
@@ -43,5 +44,6 @@
     [StaticText] "" value: "“Vamos” is “we go” of ir, and as a question it means “shall we go?”. “Al” is a + el: “to the”."
     [TextField] ""
     [Button, disabled] "Send" id: arrow.up.circle.fill
+    [Button] "Model" help: "Model, Thinking and Context Window"
     [Button] "Done"
     [Button] "Open in chat"

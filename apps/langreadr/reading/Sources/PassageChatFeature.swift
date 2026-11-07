@@ -18,6 +18,8 @@ package struct PassageChatFeature {
         /// The reply as it's written; nil when none is.
         package var reply: String?
         package var problem: String?
+        /// The sheet picking what the chat runs on.
+        @Presents package var model: ChatModelFeature.State?
 
         package var id: UUID { chat.id }
 
@@ -30,12 +32,14 @@ package struct PassageChatFeature {
         package var canSend: Bool { reply == nil && !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
-    package enum Action: BindableAction, Equatable {
+    package enum Action: BindableAction {
         case binding(BindingAction<State>)
         case sendTapped
         case stopTapped
         case openFullTapped
         case doneTapped
+        case modelTapped
+        case model(PresentationAction<ChatModelFeature.Action>)
         case partial(String)
         case replied(Result<String, ModelRuntimeError>)
         case delegate(Delegate)
@@ -78,6 +82,14 @@ package struct PassageChatFeature {
                 return .none
             case .doneTapped:
                 return .run { _ in await dismiss() }
+            case .modelTapped:
+                state.model = ChatModelFeature.State(choice: ModelChoice(state.chat.model))
+                return .none
+            case .model:
+                // Kept as it's picked, so the next message runs on it.
+                guard let choice = state.model?.choice.kept, choice != state.chat.model else { return .none }
+                state.chat.model = choice
+                return .send(.delegate(.changed(state.chat)))
             case .partial(let text):
                 if state.reply != nil { state.reply = text }
                 return .none
@@ -91,6 +103,7 @@ package struct PassageChatFeature {
                 return .none
             }
         }
+        .ifLet(\.$model, action: \.model) { ChatModelFeature() }
     }
 
     /// Writes the reply to the last message, sending it as it's written.

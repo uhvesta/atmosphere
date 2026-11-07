@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import FlowKit
 import LangReadrCore
+import LangReadrModels
 import LangReadrReading
 import SwiftUI
 import XCTest
@@ -41,6 +42,40 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         await flow.step("replied")
         flow.tap("Open in chat")
         await flow.step("chat")
+        flow.finish()
+    }
+
+    /// Settings › Models, then picking a passage chat's own model, how
+    /// long it thinks and its window. The toolbar's Settings and Model
+    /// buttons go through the store.
+    func testPickingModels() async throws {
+        let library = Sample.library()
+        let flow = FlowRecorder("models", LangReadrView(store: library))
+        library.send(.settingsTapped)
+        try await Sample.waitFor { library.settings != nil }
+        await flow.step("settings")
+        flow.tap("Models")
+        try await Sample.waitFor { library.settings?.models.choices.count == 2 }
+        await flow.step("models")
+        library.send(.settings(.dismiss))
+        let reader = try await Sample.importStory(into: library)
+        reader.send(.binding(.set(\.isHighlighting, true)))
+        await flow.step("highlighting")
+        flow.tap("Hola")
+        flow.tap("mercado")
+        await flow.step("passage-picked")
+        flow.tap("Ask")
+        await flow.step("ask")
+        flow.tap("Open in chat")
+        reader.send(.destination(.presented(.chat(.modelTapped))))
+        try await Sample.waitFor { reader.destination?.chat?.model?.models.isEmpty == false }
+        await flow.step("chat-model")
+        let model: (ChatModelFeature.Action) -> ReaderFeature.Action = {
+            .destination(.presented(.chat(.model(.presented($0)))))
+        }
+        reader.send(model(.binding(.set(\.model, ModelCatalog.qwen35Small.id))))
+        reader.send(model(.binding(.set(\.choice.thinking, .long))))
+        await flow.step("chat-model-picked")
         flow.finish()
     }
 }
