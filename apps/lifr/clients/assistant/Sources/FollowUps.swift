@@ -73,6 +73,34 @@ extension AssistantPrompt {
         return plan
     }
 
+    /// The plan without a task a small model writes twice under another
+    /// title, such as "Plan the team offsite" then "Team offsite planning":
+    /// a later task in the same Avenue with the same Sub tasks as an earlier
+    /// one. Its Project may differ, as the copy is often a Project nobody
+    /// asked for. A new Project whose tasks are just a planned task's Sub
+    /// tasks in its Avenue is such a copy too, and goes.
+    package static func withoutRepeatedTasks(_ plan: Plan) -> Plan {
+        func key(_ avenue: String?, _ tasks: [Plan.TaskDraft]) -> [String] {
+            let avenue = (avenue ?? "").split(separator: "/").first.map { $0.lowercased() } ?? ""
+            return [avenue] + tasks.map { $0.title.lowercased().trimmingCharacters(in: .whitespaces) }.sorted()
+        }
+        func withoutRepeats(_ tasks: [Plan.TaskDraft]) -> [Plan.TaskDraft] {
+            var seen: Set<[String]> = []
+            return tasks.filter { task in
+                guard !task.subtasks.isEmpty else { return true }
+                return seen.insert(key(task.place, task.subtasks)).inserted
+            }
+        }
+        var plan = plan
+        plan.tasks = withoutRepeats(plan.tasks)
+        let steps = Set(plan.tasks.filter { !$0.subtasks.isEmpty }.map { key($0.place, $0.subtasks) })
+        plan.projects.removeAll { !$0.tasks.isEmpty && steps.contains(key($0.avenue, $0.tasks)) }
+        for index in plan.projects.indices {
+            plan.projects[index].tasks = withoutRepeats(plan.projects[index].tasks)
+        }
+        return plan
+    }
+
     /// The draft's tasks as a numbered list in `draftTitles` order, with
     /// what they have: written as a plan, a small model copies it back.
     static func draftList(_ draft: Plan) -> String {

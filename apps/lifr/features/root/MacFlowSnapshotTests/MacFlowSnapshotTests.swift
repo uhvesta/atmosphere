@@ -102,7 +102,7 @@ final class MacFlowSnapshotTests: XCTestCase {
             steps: answers.map { ScriptedRuntime.answer($0) })
         let titles = ScriptedRuntime(steps: [ScriptedRuntime.answer("Groceries")])
         var client = AssistantClient.live(runtime: { $0 == .assistant ? model : titles })
-        client.pickSkill = { _, _ in skill }
+        client.pickSkill = { _, _, _ in skill }
         return client
     }
 

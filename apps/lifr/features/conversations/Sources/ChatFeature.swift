@@ -985,7 +985,8 @@ package struct ChatFeature {
             if let pick, let messageID {
                 // A pick that fails leaves the message without a skill, to
                 // answer as it is.
-                let id = await (try? assistant.pickSkill(request.messages, pick.candidates)) ?? pick.kept?.id
+                let id =
+                    await (try? assistant.pickSkill(request.messages, pick.candidates, pick.kept?.id)) ?? pick.kept?.id
                 if let id, let skill = (pick.candidates + (pick.kept.map { [$0] } ?? [])).first(where: { $0.id == id })
                 {
                     request.skill = skill

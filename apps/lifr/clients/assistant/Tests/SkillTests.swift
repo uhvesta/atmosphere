@@ -169,6 +169,9 @@ final class SkillTests: XCTestCase {
         ])
         XCTAssertTrue(prompt.contains("breakdown"))
         XCTAssertTrue(prompt.contains("Taxes"))
+        let drafting = AssistantPrompt.pickPrompt([], drafting: "add")
+        XCTAssertTrue(drafting.contains("add"), "while a plan is drafted, the picker hears its skill")
+        XCTAssertFalse(AssistantPrompt.pickPrompt([]).contains("add"))
     }
 
     // MARK: - Built in

@@ -119,7 +119,8 @@ final class RealModel {
         XCTAssertNil(chat.alert, "The model couldn't reply to “\(text)”", file: file, line: line)
         let reply = try XCTUnwrap(chat.conversation.messages.last)
         XCTAssertEqual(reply.role, .assistant, "No reply to “\(text)”", file: file, line: line)
-        print("“\(text)” → \(reply.text)\nDraft: \(chat.conversation.draft.map(PlanFile.write) ?? "none")")
+        let skill = chat.conversation.messages.last { $0.role == .person }?.skill ?? "none"
+        print("“\(text)” [\(skill)] → \(reply.text)\nDraft: \(chat.conversation.draft.map(PlanFile.write) ?? "none")")
     }
 
     /// Adds the draft as the model left it, and returns the tasks it added.

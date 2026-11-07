@@ -167,4 +167,36 @@ final class FollowUpTests: XCTestCase {
         XCTAssertEqual(unsaid.projects.first?.tasks, [])
         XCTAssertEqual(said, plan)
     }
+
+    func testATaskWrittenTwiceWithTheSameSubTasksIsAddedOnce() {
+        let steps: [Plan.TaskDraft] = [.init(title: "Book a venue"), .init(title: "Send the invites")]
+        let plan = Plan(tasks: [
+            .init(title: "Plan the team offsite", subtasks: steps, place: "WORK/Team offsite"),
+            .init(title: "Team offsite planning", subtasks: steps.reversed(), place: "WORK"),
+            .init(title: "Plan the party", subtasks: steps, place: "HOME"),
+            .init(title: "Buy milk", place: "HOME"),
+            .init(title: "Buy milk", place: "HOME"),
+        ])
+
+        let repaired = AssistantPrompt.withoutRepeatedTasks(plan)
+
+        XCTAssertEqual(
+            repaired.tasks.map(\.title), ["Plan the team offsite", "Plan the party", "Buy milk", "Buy milk"])
+    }
+
+    func testANewProjectHoldingATasksSubTasksIsLeftOut() {
+        let steps: [Plan.TaskDraft] = [.init(title: "Book a venue"), .init(title: "Send the invites")]
+        let plan = Plan(
+            projects: [
+                .init(name: "Team offsite planning", avenue: "WORK", tasks: steps),
+                .init(name: "Party", avenue: "HOME", tasks: steps),
+                .init(name: "Garden", avenue: "WORK"),
+            ],
+            tasks: [.init(title: "Plan the team offsite", subtasks: steps, place: "WORK/Team offsite")])
+
+        let repaired = AssistantPrompt.withoutRepeatedTasks(plan)
+
+        XCTAssertEqual(repaired.projects.map(\.name), ["Party", "Garden"])
+        XCTAssertEqual(repaired.tasks.map(\.title), ["Plan the team offsite"])
+    }
 }

@@ -625,7 +625,8 @@ final class LiveAssistantTests: XCTestCase {
         let model = ScriptedRuntime(steps: [ScriptedRuntime.answer(["skill": "breakdown"])])
         let messages = [ChatMessage(id: UUID(), role: .person, text: "Dentist, taxes, gym, call mum", at: now)]
 
-        let picked = try await AssistantClient.live(runtime: { _ in model }).pickSkill(messages, [.query, .breakdown])
+        let picked = try await AssistantClient.live(runtime: { _ in model }).pickSkill(
+            messages, [.query, .breakdown], nil)
 
         XCTAssertEqual(picked, "breakdown")
         XCTAssertNotNil(model.turns.first?.schema)
@@ -638,9 +639,9 @@ final class LiveAssistantTests: XCTestCase {
         let client = AssistantClient.live(runtime: { _ in model })
         let messages = [ChatMessage(id: UUID(), role: .person, text: "Hi", at: now)]
 
-        let none = try await client.pickSkill(messages, [.query])
-        let other = try await client.pickSkill(messages, [.query])
-        let empty = try await client.pickSkill(messages, [])
+        let none = try await client.pickSkill(messages, [.query], nil)
+        let other = try await client.pickSkill(messages, [.query], nil)
+        let empty = try await client.pickSkill(messages, [], nil)
 
         XCTAssertNil(none)
         XCTAssertNil(other)

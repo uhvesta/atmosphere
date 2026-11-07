@@ -558,8 +558,10 @@ package enum AssistantPrompt {
     package static let noSkill = "none"
 
     /// The last few messages, newest last, for the model to pick a skill by.
-    package static func pickPrompt(_ messages: [ChatMessage]) -> String {
-        messages.suffix(3).map { message in
+    /// With `drafting`, says a plan is being drafted with that skill, which
+    /// a message about the plan keeps.
+    package static func pickPrompt(_ messages: [ChatMessage], drafting: String? = nil) -> String {
+        let conversation = messages.suffix(3).map { message in
             let who =
                 switch (message.role, message.skill) {
                 case (.person, let skill?): "Person, with the skill \(skill)"
@@ -569,6 +571,10 @@ package enum AssistantPrompt {
             return "\(who): \(message.text.prefix(600))"
         }
         .joined(separator: "\n")
+        guard let drafting else { return conversation }
+        return conversation + "\n\nA plan is being drafted with the skill \(drafting). Pick \(drafting) when the "
+            + "last message adds to that plan or changes or removes something in it, such as \"also add…\", "
+            + "\"change that to Friday\" or \"remove the second one\"."
     }
 
     /// The skill the model picked, if it's one of `skills`.

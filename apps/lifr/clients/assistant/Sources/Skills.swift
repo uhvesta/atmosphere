@@ -104,7 +104,7 @@ package struct Skill: Identifiable, Hashable, Codable, Sendable {
             Help the person plan what to add. Ask what's missing, then put the whole plan in "plan".
             """,
         tools: [.findTasks, .getTask], draftsPlans: true, autoPicks: true,
-        useWhen: "the person names one or a few clear things to add, or answers about a plan being drafted")
+        useWhen: "the person names one or a few new things to add, or answers about a plan being drafted")
 
     package static let change = Skill(
         id: "change", summary: String(localized: "Rename, move, reschedule or finish tasks and Projects."),
@@ -113,7 +113,10 @@ package struct Skill: Identifiable, Hashable, Codable, Sendable {
             "projectChanges" for a Project, and say in a sentence what you'd change.
             """,
         tools: [.findTasks, .getTask, .updateTasks, .updateProjects], draftsPlans: false, autoPicks: true,
-        useWhen: "the person wants existing tasks or Projects renamed, moved, rescheduled, reprioritised or finished")
+        useWhen: """
+            the person wants tasks or Projects they already have renamed, moved, rescheduled or reprioritised, \
+            or marked done, such as "I did…" or "mark it done"
+            """)
 
     package static let breakdown = Skill(
         id: "breakdown", summary: String(localized: "Turn a brain dump into a plan."),

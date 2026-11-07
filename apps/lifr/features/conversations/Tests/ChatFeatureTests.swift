@@ -38,7 +38,7 @@ final class ChatFeatureTests: XCTestCase {
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
             $0.assistant.availability = { .available }
-            $0.assistant.pickSkill = { _, _ in nil }
+            $0.assistant.pickSkill = { _, _, _ in nil }
             $0.assistant.prewarm = { prewarmed.withValue { $0 += 1 } }
             $0.assistant.inputs = { inputs }
             $0.attachments = attachments
@@ -831,7 +831,7 @@ final class ChatFeatureTests: XCTestCase {
             sent.withValue { $0.append(request.skill) }
             return AssistantReply(text: "Which first?", isComplete: true)
         }
-        store.dependencies.assistant.pickSkill = { _, skills in
+        store.dependencies.assistant.pickSkill = { _, skills, _ in
             offered.setValue(skills.map(\.id))
             return "breakdown"
         }
@@ -866,7 +866,7 @@ final class ChatFeatureTests: XCTestCase {
             sent.withValue { $0.append(request.skill) }
             return AssistantReply(text: "OK.", isComplete: true)
         }
-        store.dependencies.assistant.pickSkill = { _, _ in
+        store.dependencies.assistant.pickSkill = { _, _, _ in
             picks.withValue { $0 += 1 }
             return "query"
         }
@@ -889,12 +889,17 @@ final class ChatFeatureTests: XCTestCase {
                 text: "Here's a plan.", plan: Plan(tasks: [.init(title: "Taxes", place: "HOME")]), isComplete: true)
         }
         let picks = LockIsolated<[String?]>(["breakdown", nil])
-        store.dependencies.assistant.pickSkill = { _, _ in picks.withValue { $0.removeFirst() } }
+        let drafting = LockIsolated<[String?]>([])
+        store.dependencies.assistant.pickSkill = { _, _, skill in
+            drafting.withValue { $0.append(skill) }
+            return picks.withValue { $0.removeFirst() }
+        }
 
         await send("Taxes and the dentist", in: store)
         await send("Taxes first", in: store)
 
         XCTAssertEqual(sent.value, [.breakdown, .breakdown])
+        XCTAssertEqual(drafting.value, [nil, "breakdown"], "the picker hears which skill is drafting the plan")
         XCTAssertEqual(store.state.conversation.messages.map(\.skill), ["breakdown", nil, "breakdown", nil])
     }
 
@@ -905,7 +910,7 @@ final class ChatFeatureTests: XCTestCase {
             sent.withValue { $0.append(request.skill) }
             return AssistantReply(text: "Hi!", isComplete: true)
         }
-        store.dependencies.assistant.pickSkill = { _, _ in throw AssistantError.busy }
+        store.dependencies.assistant.pickSkill = { _, _, _ in throw AssistantError.busy }
 
         await send("Hello", in: store)
 

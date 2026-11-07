@@ -14,8 +14,8 @@ extension AssistantClient {
             availability: { AssistantAvailability(runtime(.assistant).status) },
             reply: { request in LiveAssistant.reply(to: request, on: runtime(.assistant)) },
             draftSkill: { description in try await LiveAssistant.draftSkill(description, on: runtime(.skills)) },
-            pickSkill: { messages, skills in
-                try await LiveAssistant.pickSkill(messages, skills, on: runtime(.assistant))
+            pickSkill: { messages, skills, drafting in
+                try await LiveAssistant.pickSkill(messages, skills, drafting: drafting, on: runtime(.assistant))
             },
             suggestTitle: { messages in try await LiveAssistant.suggestTitle(messages, on: runtime(.titles)) },
             compact: { messages, earlier in
@@ -227,7 +227,8 @@ enum LiveAssistant {
             throw ForgotTasks()
         }
         reply.plan = reply.plan.map {
-            AssistantPrompt.withoutRestatedGoals(AssistantPrompt.withAskedProjects($0, request), request)
+            AssistantPrompt.withoutRepeatedTasks(
+                AssistantPrompt.withoutRestatedGoals(AssistantPrompt.withAskedProjects($0, request), request))
         }
         if let draft = request.draft, !draftTitles.isEmpty {
             reply.plan = AssistantPrompt.followUp(
@@ -291,7 +292,9 @@ enum LiveAssistant {
         }
     }
 
-    static func pickSkill(_ messages: [ChatMessage], _ skills: [Skill], on model: any ModelRuntime) async throws
+    static func pickSkill(
+        _ messages: [ChatMessage], _ skills: [Skill], drafting: String? = nil, on model: any ModelRuntime
+    ) async throws
         -> String?
     {
         guard !skills.isEmpty else { return nil }
@@ -299,7 +302,8 @@ enum LiveAssistant {
         guard availability == .available else { throw AssistantError.unavailable(availability) }
         do {
             let turn = ModelTurn(
-                instructions: AssistantPrompt.pickInstructions(skills), prompt: AssistantPrompt.pickPrompt(messages),
+                instructions: AssistantPrompt.pickInstructions(skills),
+                prompt: AssistantPrompt.pickPrompt(messages, drafting: drafting),
                 schema: Shapes.pick(skills.map(\.id)))
             let answer = try await model.respond(to: turn) { _ in }
             return AssistantPrompt.pickedSkill(from: answer, in: skills)

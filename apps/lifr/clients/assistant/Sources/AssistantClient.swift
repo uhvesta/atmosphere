@@ -20,7 +20,10 @@ package struct AssistantClient: Sendable {
     package var draftSkill: @Sendable (_ description: String) async throws -> SkillDraft
     /// Which of `skills` fits the last message in `messages`, by ID, or nil
     /// when none does and the assistant should answer as it is.
-    package var pickSkill: @Sendable (_ messages: [ChatMessage], _ skills: [Skill]) async throws -> String?
+    ///
+    /// `drafting` is the skill drafting the plan open in the chat, if one is.
+    package var pickSkill:
+        @Sendable (_ messages: [ChatMessage], _ skills: [Skill], _ drafting: String?) async throws -> String?
     /// A short title for a conversation with these messages.
     package var suggestTitle: @Sendable (_ messages: [ChatMessage]) async throws -> String
     /// A short summary of `messages`, which follow the summary `earlier`
@@ -467,7 +470,7 @@ extension AssistantClient {
                 }
             },
             draftSkill: { _ in .example },
-            pickSkill: { _, _ in nil },
+            pickSkill: { _, _, _ in nil },
             suggestTitle: { _ in "Planning the week" },
             compact: { _, _ in AssistantPrompt.exampleSummary },
             prewarm: {},

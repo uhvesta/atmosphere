@@ -335,7 +335,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
             steps: answers.map { ScriptedRuntime.answer($0) })
         let titles = ScriptedRuntime(steps: [ScriptedRuntime.answer("Groceries")])
         var client = AssistantClient.live(runtime: { $0 == .assistant ? model : titles })
-        client.pickSkill = { _, _ in skill }
+        client.pickSkill = { _, _, _ in skill }
         return client
     }
 
@@ -406,7 +406,8 @@ final class PhoneFlowSnapshotTests: XCTestCase {
     /// Drafts the model gets a little wrong, which Lifr puts right before
     /// they show: a new Project that's there already with a task restating
     /// its goal and blank dates, then a new Avenue whose task's steps have
-    /// one twice and a due date of none.
+    /// one twice and a due date of none, then a task with steps that the
+    /// model writes again as a Project nobody asked for.
     func testAssistantRepairsDrafts() async throws {
         let (store, flow) = app(
             "assistant-repairs",
@@ -448,6 +449,24 @@ final class PhoneFlowSnapshotTests: XCTestCase {
                     ],
                     "message": "Here's a Garden Avenue with a task to plant tomatoes.",
                 ],
+                [
+                    "message": "I added a task to plan the team offsite.",
+                    "plan": [
+                        "avenues": [["key": "WORK", "name": "Work"]],
+                        "projects": [
+                            [
+                                "name": "Team Offsite Planning", "avenue": "WORK",
+                                "tasks": [["title": "Book a venue"], ["title": "Send the invites"]],
+                            ]
+                        ],
+                        "tasks": [
+                            [
+                                "title": "Plan the team offsite", "place": "WORK/Team Offsite",
+                                "subtasks": [["title": "Book a venue"], ["title": "Send the invites"]],
+                            ]
+                        ],
+                    ],
+                ],
             ]))
         store.tab = .conversations
         store.send(.conversations(.newTapped))
@@ -472,6 +491,11 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.tap("Add")
         await flow.step("garden-added", image: false)
         XCTAssertNotNil(store.workspace?.avenues.values.first { $0.key.rawValue == "GARDEN" }, "Garden wasn't added")
+
+        send("Add a task to plan the team offsite in WORK: book a venue, send the invites", in: id, of: store)
+        await flow.step("offsite-draft")
+        XCTAssertEqual(draftTitles(id, in: store), ["Plan the team offsite"])
+        XCTAssertEqual(store.conversations.chats[id: id]?.conversation.draft?.projects, [])
         flow.finish()
     }
 
