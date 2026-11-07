@@ -25,13 +25,13 @@ import JSONKit
 /// that, and keeps what it had done.
 public actor ModelHost {
     public typealias Loader =
-        @Sendable (InstalledModel, ModelBackend) async throws(ModelRuntimeError) -> any LiteRTEngine
+        @Sendable (InstalledModel, ModelBackend) async throws(ModelRuntimeError) -> any ModelEngine
 
     private struct Loaded {
         var id: ModelID
         var window: Int
         var backend: ModelBackend
-        var engine: any LiteRTEngine
+        var engine: any ModelEngine
 
         func `is`(_ model: InstalledModel) -> Bool { id == model.id && window == model.window }
     }
@@ -40,7 +40,7 @@ public actor ModelHost {
         var id: ModelID
         var window: Int
         var backend: ModelBackend
-        var task: Task<Result<any LiteRTEngine, ModelRuntimeError>, Never>
+        var task: Task<Result<any ModelEngine, ModelRuntimeError>, Never>
 
         func `is`(_ model: InstalledModel) -> Bool { id == model.id && window == model.window }
     }
@@ -82,6 +82,17 @@ public actor ModelHost {
         self.answersInBackground = answersInBackground
     }
 
+    /// Loads each model with its own engine, of `engines`: those the app is
+    /// built with. A model whose engine isn't among them fails to load,
+    /// saying so.
+    public static func loading(with engines: [RuntimeKind: Loader]) -> Loader {
+        { model, backend async throws(ModelRuntimeError) in
+            let kind = model.spec.runtime
+            guard let load = engines[kind] else { throw .engineMissing(kind) }
+            return try await load(model, backend)
+        }
+    }
+
     /// The model that's loaded, if any.
     public var loadedModel: ModelID? { loaded?.id }
 
@@ -93,12 +104,12 @@ public actor ModelHost {
     /// carry on from what it had done.
     public nonisolated func run(
         _ model: InstalledModel,
-        _ body: @escaping @Sendable (any LiteRTEngine) async throws(ModelRuntimeError) -> JSONValue
+        _ body: @escaping @Sendable (any ModelEngine) async throws(ModelRuntimeError) -> JSONValue
     ) async throws(ModelRuntimeError) -> JSONValue {
         while true {
             await untilAllowed()
             guard !Task.isCancelled else { throw .cancelled }
-            let engine: any LiteRTEngine
+            let engine: any ModelEngine
             do {
                 engine = try await self.engine(for: model)
             } catch .interrupted(.background) {
@@ -128,7 +139,7 @@ public actor ModelHost {
 
     /// Loads `model` where it can run now, unloading any other, unless it's
     /// loaded already.
-    public func engine(for model: InstalledModel) async throws(ModelRuntimeError) -> any LiteRTEngine {
+    public func engine(for model: InstalledModel) async throws(ModelRuntimeError) -> any ModelEngine {
         idleTimer?.cancel()
         let backend: ModelBackend = inBackground ? .cpu : model.spec.profile.onScreen
         // A model loaded at another window is loaded again, once its turns
@@ -171,10 +182,10 @@ public actor ModelHost {
 
     /// Loads `model` on `backend`, as the one loaded once it's done.
     private func start(_ model: InstalledModel, on backend: ModelBackend) async throws(ModelRuntimeError)
-        -> any LiteRTEngine
+        -> any ModelEngine
     {
         let load = load
-        let task = Task { () async -> Result<any LiteRTEngine, ModelRuntimeError> in
+        let task = Task { () async -> Result<any ModelEngine, ModelRuntimeError> in
             do throws(ModelRuntimeError) {
                 return .success(try await load(model, backend))
             } catch {

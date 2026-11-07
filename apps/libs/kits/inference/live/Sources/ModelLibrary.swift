@@ -168,6 +168,7 @@ public final class ModelLibrary: Sendable {
             spec.contextChoices = entry.contextChoices
             spec.memoryBytesPerToken = entry.memoryBytesPerToken
             spec.profile = entry.profile
+            spec.variants = entry.variants
         }
         return InstalledModel(spec: spec, directory: directory, installedAt: manifest.installedAt)
     }

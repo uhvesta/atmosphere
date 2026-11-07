@@ -59,10 +59,16 @@ public enum ModelCatalog {
     /// past 32K the memory is more than an iPhone leaves an app.
     static let gemmaWindows = [4_096, 8_192, 16_384, 32_768]
 
-    /// The catalog's entry for a model downloaded from it, by ID and
-    /// commit: what it can read, and the memory it takes, may be newer than
-    /// the manifest says.
+    /// The catalog's entry for a model downloaded from it, by ID, engine and
+    /// commit, running as the variant downloaded: what it can read, and the
+    /// memory it takes, may be newer than the manifest says.
     public static func entry(for spec: ModelSpec) -> ModelSpec? {
-        all.first { $0.id == spec.id && $0.source?.commit == spec.source?.commit }
+        for entry in all where entry.id == spec.id {
+            let matching = entry.variants.first {
+                $0.runtime == spec.runtime && $0.source?.commit == spec.source?.commit
+            }
+            if let matching { return entry.running(matching) }
+        }
+        return nil
     }
 }

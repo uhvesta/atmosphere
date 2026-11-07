@@ -245,3 +245,59 @@ final class ModelThinkingTests: XCTestCase {
         XCTAssertNil(ModelThinking(text: "So far").then(ModelThinking(text: "more")).duration)
     }
 }
+
+final class ModelVariantTests: XCTestCase {
+    private let commit = String(repeating: "c", count: 40)
+
+    private func file(_ path: String) -> ModelSource {
+        ModelSource(
+            repo: "org/model", commit: commit,
+            files: [ModelFile(path: path, size: 10, digest: .sha256(String(repeating: "d", count: 64)))])
+    }
+
+    private var twoWays: ModelSpec {
+        ModelSpec(
+            id: "two-ways", name: "Two ways", summary: "", contextTokens: 4_096, license: "",
+            variants: [
+                ModelVariant(runtime: .liteRT, quantization: "int4", source: file("a.litertlm"), memoryBytes: 1_000),
+                ModelVariant(runtime: .liteRT, quantization: "int8", source: file("b.litertlm"), memoryBytes: 2_000),
+            ])
+    }
+
+    func testAModelWithVariantsRunsAsTheFirst() {
+        let spec = twoWays
+
+        XCTAssertEqual(spec.source, file("a.litertlm"))
+        XCTAssertEqual(spec.memoryBytes, 1_000)
+        XCTAssertEqual(spec.variant.quantization, "int4")
+    }
+
+    func testRunningAnotherVariantTakesItsFilesAndMemory() throws {
+        let other = try XCTUnwrap(twoWays.variants.last)
+        let spec = twoWays.running(other)
+
+        XCTAssertEqual(spec.source, file("b.litertlm"))
+        XCTAssertEqual(spec.memoryBytes, 2_000)
+        XCTAssertEqual(spec.variant, other)
+        XCTAssertEqual(spec.variants.count, 2)
+    }
+
+    func testAManifestFromBeforeVariantsHasOnlyItsOwn() throws {
+        let manifest = try JSONEncoder().encode(ModelCatalog.gemma4E2B)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: manifest) as? [String: Any])
+        json["variants"] = nil
+        let decoded = try JSONDecoder().decode(ModelSpec.self, from: JSONSerialization.data(withJSONObject: json))
+
+        XCTAssertEqual(decoded, ModelCatalog.gemma4E2B)
+        XCTAssertEqual(decoded.variants, [decoded.variant])
+    }
+
+    func testTheCatalogKnowsADownloadedModelByItsEngineAndCommit() throws {
+        let entry = try XCTUnwrap(ModelCatalog.entry(for: ModelCatalog.gemma4E4B))
+        var elsewhere = ModelCatalog.gemma4E4B
+        elsewhere.source?.commit = commit
+
+        XCTAssertEqual(entry.source, ModelCatalog.gemma4E4B.source)
+        XCTAssertNil(ModelCatalog.entry(for: elsewhere))
+    }
+}

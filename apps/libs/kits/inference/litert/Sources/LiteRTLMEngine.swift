@@ -6,7 +6,7 @@ import LiteRTLM
 
 /// LiteRT-LM's engine for one downloaded model, on the GPU through Metal,
 /// or on the CPU while the app answers in the background.
-public struct LiteRTLMEngine: LiteRTEngine {
+public struct LiteRTLMEngine: ModelEngine {
     let engine: Engine
     /// How each turn picks its tokens; nil for the model's own way.
     let sampling: ModelProfile.Sampling?
@@ -17,7 +17,7 @@ public struct LiteRTLMEngine: LiteRTEngine {
     /// profile says it runs best. LiteRT-LM keeps the GPU's compiled
     /// programs in Caches, so the next load is quicker.
     @Sendable public static func load(_ model: InstalledModel, on backend: ModelBackend)
-        async throws(ModelRuntimeError) -> any LiteRTEngine
+        async throws(ModelRuntimeError) -> any ModelEngine
     {
         try await load(model, on: backend, profile: model.spec.profile)
     }
@@ -26,7 +26,7 @@ public struct LiteRTLMEngine: LiteRTEngine {
     /// `greedy`, so a turn reads the same each time on one Mac. The GPU's
     /// arithmetic still differs between machines.
     public static func load(_ model: InstalledModel, on backend: ModelBackend = .gpu, greedy: Bool)
-        async throws(ModelRuntimeError) -> any LiteRTEngine
+        async throws(ModelRuntimeError) -> any ModelEngine
     {
         var profile = model.spec.profile
         if greedy { profile.sampling = .greedy }
@@ -36,7 +36,7 @@ public struct LiteRTLMEngine: LiteRTEngine {
     /// Loads `model` to run on `backend` as `profile` says, such as to
     /// measure one profile against another.
     public static func load(_ model: InstalledModel, on backend: ModelBackend, profile: ModelProfile)
-        async throws(ModelRuntimeError) -> any LiteRTEngine
+        async throws(ModelRuntimeError) -> any ModelEngine
     {
         guard let file = model.spec.source?.files.first(where: { $0.path.hasSuffix(".litertlm") }) else {
             throw .unavailable(.notDownloaded)
@@ -69,7 +69,7 @@ public struct LiteRTLMEngine: LiteRTEngine {
         }
     }
 
-    public func chat(instructions: String, constrained: Bool) async throws(ModelRuntimeError) -> any LiteRTChat {
+    public func chat(instructions: String, constrained: Bool) async throws(ModelRuntimeError) -> any EngineChat {
         do {
             let sampler = try sampling.map {
                 try SamplerConfig(topK: $0.topK, topP: $0.topP, temperature: $0.temperature)
@@ -103,7 +103,7 @@ public struct LiteRTLMEngine: LiteRTEngine {
 }
 
 /// One LiteRT-LM conversation.
-struct LiteRTLMChat: LiteRTChat {
+struct LiteRTLMChat: EngineChat {
     /// The most a turn thinks before it answers, in tokens: about 20
     /// seconds on an iPhone 17 Pro's GPU.
     static let thinkingTokens = 512

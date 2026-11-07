@@ -119,9 +119,11 @@ private enum Storage {
     /// The models downloaded to this device, and the one that's loaded.
     nonisolated static let models: ModelRuntimes<ModelUse> = {
         let host = ModelHost(
-            load: { model, backend async throws(ModelRuntimeError) in
-                try await LiteRTLMEngine.load(model, on: backend)
-            }, answersInBackground: { Shared(.answersInBackground).wrappedValue })
+            load: ModelHost.loading(with: [
+                .liteRT: { model, backend async throws(ModelRuntimeError) in
+                    try await LiteRTLMEngine.load(model, on: backend)
+                }
+            ]), answersInBackground: { Shared(.answersInBackground).wrappedValue })
         Task { await host.observeSystem() }
         let library = ModelLibrary.live()
         library.resumeUnfinished()

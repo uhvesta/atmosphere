@@ -2,34 +2,12 @@ import Foundation
 import InferenceKit
 import JSONKit
 
-/// A loaded LiteRT-LM model. Each turn gets a conversation of its own.
-public protocol LiteRTEngine: Sendable {
-    /// A new conversation that follows `instructions`. `constrained` when
-    /// its answers will be held to a JSON schema.
-    func chat(instructions: String, constrained: Bool) async throws(ModelRuntimeError) -> any LiteRTChat
-}
-
-/// One conversation with a loaded LiteRT-LM model.
-public protocol LiteRTChat: Sendable {
-    /// What the model writes back to `message` and its `attachments`, held
-    /// to the JSON schema `format` when there is one. `partial` gets the
-    /// answer as far as it's written, each time it grows. With `thinks`,
-    /// the model reasons before it answers. `thought` gets that reasoning
-    /// as it grows, then how long the answer took.
-    func send(
-        _ message: String, attachments: [ModelAttachment], format: String?, thinks: Bool,
-        thought: (@Sendable (ModelThinking) -> Void)?, partial: @escaping @Sendable (String) -> Void
-    ) async throws(ModelRuntimeError) -> String
-    /// Stops the answer being written.
-    func cancel()
-}
-
-/// How a turn runs on a LiteRT-LM model. LiteRT-LM's own tools are Swift
-/// types known when the app is built, so the app describes the turn's tools in
-/// the instructions instead, and holds each answer to a schema that's
-/// either a call to one of them or the answer itself. Gemma follows it
-/// because decoding can't leave the schema.
-enum LiteRTTurn {
+/// How a turn runs on a downloaded model, whatever engine loaded it. The
+/// engines' own tools are known when the app is built, if they have any, so
+/// the app describes the turn's tools in the instructions instead, and holds
+/// each answer to a schema that's either a call to one of them or the answer
+/// itself. The models follow it because decoding can't leave the schema.
+enum EngineTurn {
     /// Tool calls one turn may make before it must answer.
     static let toolRounds = 5
 
@@ -55,7 +33,7 @@ enum LiteRTTurn {
     }
 
     static func respond(
-        to turn: ModelTurn, on engine: any LiteRTEngine, journal: Journal = Journal(),
+        to turn: ModelTurn, on engine: any ModelEngine, journal: Journal = Journal(),
         partial: @escaping @Sendable (JSONValue) -> Void
     ) async throws(ModelRuntimeError) -> JSONValue {
         let answer = turn.schema.map(JSONSchema.value)
@@ -78,18 +56,18 @@ enum LiteRTTurn {
 
     /// The conversations of one turn, of which the latest is answering.
     private final class Chats: Sendable {
-        private let engine: any LiteRTEngine
+        private let engine: any ModelEngine
         private let instructions: String
         private let constrained: Bool
-        private let latest = Locked<(any LiteRTChat)?>(nil)
+        private let latest = Locked<(any EngineChat)?>(nil)
 
-        init(engine: any LiteRTEngine, instructions: String, constrained: Bool) {
+        init(engine: any ModelEngine, instructions: String, constrained: Bool) {
             self.engine = engine
             self.instructions = instructions
             self.constrained = constrained
         }
 
-        func new() async throws(ModelRuntimeError) -> any LiteRTChat {
+        func new() async throws(ModelRuntimeError) -> any EngineChat {
             let chat = try await engine.chat(instructions: instructions, constrained: constrained)
             latest.setValue(chat)
             if Task.isCancelled { chat.cancel() }
@@ -102,7 +80,7 @@ enum LiteRTTurn {
     }
 
     private static func answering(
-        _ turn: ModelTurn, answer: JSONSchema.Node?, chat: any LiteRTChat, chats: Chats,
+        _ turn: ModelTurn, answer: JSONSchema.Node?, chat: any EngineChat, chats: Chats,
         journal: Journal, partial: @escaping @Sendable (JSONValue) -> Void
     ) async throws(ModelRuntimeError) -> JSONValue {
         let thought = turn.thinking
@@ -123,7 +101,7 @@ enum LiteRTTurn {
     }
 
     private static func withTools(
-        _ turn: ModelTurn, answer: JSONSchema.Node?, chat first: any LiteRTChat, chats: Chats, journal: Journal
+        _ turn: ModelTurn, answer: JSONSchema.Node?, chat first: any EngineChat, chats: Chats, journal: Journal
     ) async throws(ModelRuntimeError) -> JSONValue {
         var chat = first
         let calling = JSONSchema.text(step(tools: turn.tools, answer: answer))
@@ -255,7 +233,7 @@ enum LiteRTTurn {
     }
 }
 
-/// The JSON Schema LiteRT-LM holds an answer to, for a `ModelSchema`.
+/// The JSON Schema an engine holds an answer to, for a `ModelSchema`.
 /// The decoder writes an object's properties in the order the schema
 /// lists them, so objects keep the order they're declared in: a task's
 /// title and place come before the fields that are only sometimes filled.

@@ -63,7 +63,7 @@ extension AssistantError {
         case .simulatorHost(let reason): self = .simulatorHost(reason)
         case .interrupted(let reason): self = .interrupted(AssistantInterruption(reason))
         case .unsupportedInput(let kind): self = .cantRead(kind)
-        case .decodingFailure, .cancelled, .failed: self = .failed(error.description)
+        case .decodingFailure, .cancelled, .engineMissing, .failed: self = .failed(error.description)
         }
     }
 }

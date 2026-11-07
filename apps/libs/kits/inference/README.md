@@ -9,9 +9,9 @@ model it uses.
 
 | Target | What it has |
 | --- | --- |
-| `//apps/libs/kits/inference` | `ModelRuntime`, context budgets, the catalog, Hugging Face links and hashes, which model each use runs on, the downloads in progress, and `ScriptedRuntime` for tests and previews. |
+| `//apps/libs/kits/inference` | `ModelRuntime`, `ModelEngine`, context budgets, the catalog, Hugging Face links and hashes, which model each use runs on, the downloads in progress, and `ScriptedRuntime` for tests and previews. |
 | `//apps/libs/kits/inference/live` | Apple's model through Foundation Models, downloaded models through `ModelHost`, and `ModelLibrary`, which downloads, verifies, stores and deletes models. |
-| `//apps/libs/kits/inference/litert` | LiteRT-LM on the GPU, through Google's prebuilt framework. |
+| `//apps/libs/kits/inference/litert` | LiteRT-LM, a `ModelEngine`, on the GPU through Google's prebuilt framework. |
 
 Features depend on the first target. Only the app's entry point uses the
 other two. All three need Xcode, so build with `--config=xcode`.
@@ -49,7 +49,8 @@ let runtime = ScriptedRuntime(steps: [{ _, _ in "Tidied." }])
   records how long the model thought and whether it ran on the GPU or the
   CPU.
 - `ModelSpec` and `ModelCatalog` describe the models you can download and
-  their files. `ModelLink` reads a Hugging Face link, and `FileDigest`
+  their files. A model can have several `ModelVariant`s, such as one for
+  each engine or quantization; a device downloads one. `ModelLink` reads a Hugging Face link, and `FileDigest`
   checks each file's SHA-256.
 - `ModelSelection` remembers which model the person picked for each
   `ModelUseCase`.
@@ -57,6 +58,11 @@ let runtime = ScriptedRuntime(steps: [{ _, _ in "Tidied." }])
   background. It checks each file against its hash, keeps models in
   Application Support, and resumes unfinished downloads. `DownloadBoard`
   streams their progress.
+- `ModelEngine` is what every engine for downloaded models implements:
+  it loads a model's files and opens a conversation for each turn. The
+  turn's tools and schema are handled once, in live, for every engine.
+  `ModelHost.loading(with:)` loads each model with its own engine, of
+  those the app is built with.
 - `ModelHost` (in live) keeps one downloaded model loaded. It unloads the
   model when the system runs low on memory. On iOS, it moves the model off
   the GPU when the app goes to the background. Before loading a model, it

@@ -6,7 +6,7 @@ import XCTest
 @testable import InferenceKitLive
 
 /// A conversation that writes what `reply` says for each message.
-final class FakeChat: LiteRTChat, @unchecked Sendable {
+final class FakeChat: EngineChat, @unchecked Sendable {
     struct Sent: Equatable {
         var message: String
         var format: String?
@@ -47,24 +47,24 @@ final class FakeChat: LiteRTChat, @unchecked Sendable {
     func cancel() { cancelled.setValue(true) }
 }
 
-struct FakeEngine: LiteRTEngine {
+struct FakeEngine: ModelEngine {
     let chat: FakeChat
     let instructions = Locked<[String]>([])
 
-    func chat(instructions: String, constrained: Bool) async throws(ModelRuntimeError) -> any LiteRTChat {
+    func chat(instructions: String, constrained: Bool) async throws(ModelRuntimeError) -> any EngineChat {
         self.instructions.withValue { $0.append(instructions) }
         return chat
     }
 }
 
-final class LiteRTTurnTests: XCTestCase {
+final class EngineTurnTests: XCTestCase {
     private let reply = ModelSchema.object(name: "Reply", [ModelProperty("text", "What to say.")])
 
     func testAPlainTurnIsTheTextWritten() async throws {
         let chat = FakeChat(["Hello there"])
         let partials = Locked<[JSONValue]>([])
 
-        let answer = try await LiteRTTurn.respond(
+        let answer = try await EngineTurn.respond(
             to: ModelTurn(instructions: "Be brief.", prompt: "Hi"), on: FakeEngine(chat: chat)
         ) { partial in partials.withValue { $0.append(partial) } }
 
@@ -76,7 +76,7 @@ final class LiteRTTurnTests: XCTestCase {
     func testAnAnswerWithASchemaIsHeldToIt() async throws {
         let chat = FakeChat([#"{"text":"Done"}"#])
 
-        let answer = try await LiteRTTurn.respond(
+        let answer = try await EngineTurn.respond(
             to: ModelTurn(instructions: "", prompt: "Hi", schema: reply), on: FakeEngine(chat: chat)
         ) { _ in }
 
@@ -98,7 +98,7 @@ final class LiteRTTurnTests: XCTestCase {
             #"{"answer":{"text":"It's Buy milk."}}"#,
         ])
 
-        let answer = try await LiteRTTurn.respond(
+        let answer = try await EngineTurn.respond(
             to: ModelTurn(instructions: "", prompt: "What's HOME-0001?", tools: [tool], schema: reply),
             on: FakeEngine(chat: chat)
         ) { _ in }
@@ -117,7 +117,7 @@ final class LiteRTTurnTests: XCTestCase {
             ModelAttachment(.audio, file: URL(filePath: "/b.wav")),
         ]
 
-        _ = try await LiteRTTurn.respond(
+        _ = try await EngineTurn.respond(
             to: ModelTurn(instructions: "", prompt: "What's this?", tools: [tool], attachments: attachments),
             on: FakeEngine(chat: chat)
         ) { _ in }
@@ -131,7 +131,7 @@ final class LiteRTTurnTests: XCTestCase {
         var turn = ModelTurn(instructions: "", prompt: "Hi")
         turn.thinking = { thought in thoughts.withValue { $0.append(thought) } }
 
-        _ = try await LiteRTTurn.respond(to: turn, on: FakeEngine(chat: chat)) { _ in }
+        _ = try await EngineTurn.respond(to: turn, on: FakeEngine(chat: chat)) { _ in }
 
         XCTAssertEqual(chat.sent.value.map(\.thinks), [true])
         XCTAssertEqual(thoughts.value.first?.duration, nil, "it streams before it's done")
@@ -144,7 +144,7 @@ final class LiteRTTurnTests: XCTestCase {
 
         let turn = ModelTurn(instructions: "", prompt: "Hi")
 
-        _ = try await LiteRTTurn.respond(to: turn, on: FakeEngine(chat: chat)) { _ in }
+        _ = try await EngineTurn.respond(to: turn, on: FakeEngine(chat: chat)) { _ in }
 
         XCTAssertEqual(chat.sent.value.map(\.thinks), [false])
     }
@@ -159,7 +159,7 @@ final class LiteRTTurnTests: XCTestCase {
         var turn = ModelTurn(instructions: "", prompt: "What's due?", tools: [tool], schema: reply)
         turn.thinking = { thought in thoughts.withValue { $0.append(thought) } }
 
-        _ = try await LiteRTTurn.respond(to: turn, on: FakeEngine(chat: chat)) { _ in }
+        _ = try await EngineTurn.respond(to: turn, on: FakeEngine(chat: chat)) { _ in }
 
         XCTAssertEqual(chat.sent.value.map(\.thinks), [true, false])
         XCTAssertEqual(thoughts.value.last?.text, "About What's due?")
@@ -176,7 +176,7 @@ final class LiteRTTurnTests: XCTestCase {
         var turn = ModelTurn(instructions: "Be brief.", prompt: "What's due?", tools: [tool], attachments: photo)
         turn.thinking = { _ in }
 
-        let answer = try await LiteRTTurn.respond(to: turn, on: engine) { _ in }
+        let answer = try await EngineTurn.respond(to: turn, on: engine) { _ in }
 
         XCTAssertEqual(answer, .string("Buy milk."))
         XCTAssertEqual(engine.instructions.value.count, 2)
@@ -193,7 +193,7 @@ final class LiteRTTurnTests: XCTestCase {
         let chat = FakeChat([#"{"tool":"overview","arguments":{}}"#, #"{"answer":"Nothing."}"#])
         let engine = FakeEngine(chat: chat)
 
-        _ = try await LiteRTTurn.respond(
+        _ = try await EngineTurn.respond(
             to: ModelTurn(instructions: "", prompt: "What's due?", tools: [tool]), on: engine
         ) { _ in }
 
@@ -205,7 +205,7 @@ final class LiteRTTurnTests: XCTestCase {
         let tool = ModelTool(name: "overview", description: "", parameters: []) { _ in "" }
         let chat = FakeChat([#"{"answer":"Nothing's due."}"#])
 
-        let answer = try await LiteRTTurn.respond(
+        let answer = try await EngineTurn.respond(
             to: ModelTurn(instructions: "", prompt: "Anything due?", tools: [tool]), on: FakeEngine(chat: chat)
         ) { _ in }
 
@@ -224,19 +224,19 @@ final class LiteRTTurnTests: XCTestCase {
             (format ?? "").contains("\"tool\"") ? #"{"tool":"overview","arguments":{}}"# : #"{"answer":"Done."}"#
         }
 
-        let answer = try await LiteRTTurn.respond(
+        let answer = try await EngineTurn.respond(
             to: ModelTurn(instructions: "", prompt: "Hi", tools: [tool]), on: FakeEngine(chat: chat)
         ) { _ in }
 
         XCTAssertEqual(answer, .string("Done."))
-        XCTAssertEqual(calls.value, LiteRTTurn.toolRounds)
+        XCTAssertEqual(calls.value, EngineTurn.toolRounds)
     }
 
     func testAnAnswerThatIsntJSONOrCallsAnUnknownToolCantBeRead() async {
         let tool = ModelTool(name: "overview", description: "", parameters: []) { _ in "" }
         for written in ["Sure! Here it is", #"{"tool":"deleteEverything","arguments":{}}"#, #"{"other":1}"#] {
             do {
-                _ = try await LiteRTTurn.respond(
+                _ = try await EngineTurn.respond(
                     to: ModelTurn(instructions: "", prompt: "Hi", tools: [tool], schema: reply),
                     on: FakeEngine(chat: FakeChat([written]))
                 ) { _ in }
@@ -253,7 +253,7 @@ final class LiteRTTurnTests: XCTestCase {
             ModelTool(name: "revert", description: "Undo.", parameters: []) { _ in "" },
         ]
 
-        let instructions = LiteRTTurn.instructions(ModelTurn(instructions: "Be brief.", prompt: "", tools: tools))
+        let instructions = EngineTurn.instructions(ModelTurn(instructions: "Be brief.", prompt: "", tools: tools))
 
         XCTAssertTrue(instructions.hasPrefix("Be brief."))
         XCTAssertTrue(instructions.contains("findTasks"))
@@ -298,6 +298,31 @@ final class LiteRTTurnTests: XCTestCase {
 }
 
 final class ModelHostTests: XCTestCase {
+    func testAModelLoadsWithItsOwnEngine() async throws {
+        let loaded = Locked<[ModelID]>([])
+        let load = ModelHost.loading(with: [
+            .liteRT: { model, _ throws(ModelRuntimeError) in
+                loaded.withValue { $0.append(model.id) }
+                return FakeEngine(chat: FakeChat(["hi"]))
+            }
+        ])
+
+        _ = try await load(model("a"), .gpu)
+
+        XCTAssertEqual(loaded.value, ["a"])
+    }
+
+    func testAModelWhoseEngineIsntBuiltInSaysSo() async {
+        let load = ModelHost.loading(with: [:])
+
+        do {
+            _ = try await load(model("a"), .gpu)
+            XCTFail("loaded without an engine")
+        } catch {
+            XCTAssertEqual(error, .engineMissing(.liteRT))
+        }
+    }
+
     private func model(
         _ id: ModelID, memory: Int64 = 1_000_000_000, cpu: Int64 = 0, profile: ModelProfile = .standard
     ) -> InstalledModel {
@@ -465,11 +490,11 @@ final class ModelHostTests: XCTestCase {
         }
         let host = host(chat: chat)
         let turn = ModelTurn(instructions: "", prompt: "Add a task", tools: [tool])
-        let journal = LiteRTTurn.Journal()
+        let journal = EngineTurn.Journal()
 
         let running = Task {
             try await host.run(model("a")) { engine async throws(ModelRuntimeError) in
-                try await LiteRTTurn.respond(to: turn, on: engine, journal: journal) { _ in }
+                try await EngineTurn.respond(to: turn, on: engine, journal: journal) { _ in }
             }
         }
         var events = started.stream.makeAsyncIterator()
@@ -486,8 +511,8 @@ final class ModelHostTests: XCTestCase {
         XCTAssertTrue(resumed.contains("Added HOME-0002."))
     }
 
-    private func plain(_ engine: any LiteRTEngine) async throws(ModelRuntimeError) -> JSONValue {
-        try await LiteRTTurn.respond(to: ModelTurn(instructions: "", prompt: "Hi"), on: engine) { _ in }
+    private func plain(_ engine: any ModelEngine) async throws(ModelRuntimeError) -> JSONValue {
+        try await EngineTurn.respond(to: ModelTurn(instructions: "", prompt: "Hi"), on: engine) { _ in }
     }
 
     func testAModelLoadsOnceForEveryTurn() async throws {
@@ -695,10 +720,10 @@ final class ModelHostTests: XCTestCase {
     }
 }
 
-final class LiteRTRuntimeTests: XCTestCase {
+final class EngineRuntimeTests: XCTestCase {
     func testAModelWhoseFilesAreGoneIsntDownloaded() {
         let spec = ModelCatalog.gemma4E2B
-        let runtime = LiteRTRuntime(
+        let runtime = EngineRuntime(
             model: InstalledModel(spec: spec, directory: URL(filePath: "/nonexistent"), installedAt: Date()),
             host: ModelHost(load: { _, _ throws(ModelRuntimeError) in throw .failed("no") }))
 
@@ -706,7 +731,7 @@ final class LiteRTRuntimeTests: XCTestCase {
     }
 
     func testABiggerWindowKeepsMoreForTheAnswer() {
-        let runtime = LiteRTRuntime(
+        let runtime = EngineRuntime(
             model: InstalledModel(spec: ModelCatalog.gemma4E2B, directory: URL(filePath: "/"), installedAt: Date()),
             host: ModelHost(load: { _, _ throws(ModelRuntimeError) in throw .failed("no") }))
 
@@ -716,7 +741,7 @@ final class LiteRTRuntimeTests: XCTestCase {
     }
 
     func testThePickedWindowIsTheModelsBudget() {
-        let runtime = LiteRTRuntime(
+        let runtime = EngineRuntime(
             model: InstalledModel(
                 spec: ModelCatalog.gemma4E2B, directory: URL(filePath: "/"), installedAt: Date(), chosenWindow: 32_768),
             host: ModelHost(load: { _, _ throws(ModelRuntimeError) in throw .failed("no") }))
@@ -741,7 +766,7 @@ final class LiteRTRuntimeTests: XCTestCase {
                     at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try Data().write(to: url)
             }
-            let runtime = LiteRTRuntime(
+            let runtime = EngineRuntime(
                 model: InstalledModel(spec: spec, directory: directory, installedAt: Date()), host: host)
             do {
                 let answer = try await runtime.respond(to: photo) { _ in }

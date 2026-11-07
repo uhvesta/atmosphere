@@ -2,9 +2,9 @@ import Foundation
 import InferenceKit
 import JSONKit
 
-/// A downloaded model, run by LiteRT-LM through `host`: on the GPU, or on
-/// the CPU while it answers in the background.
-public struct LiteRTRuntime: ModelRuntime {
+/// A downloaded model, run through `host` by the engine that loads it: on
+/// the GPU, or on the CPU while it answers in the background.
+public struct EngineRuntime: ModelRuntime {
     public let model: InstalledModel
     public let host: ModelHost
 
@@ -43,9 +43,9 @@ public struct LiteRTRuntime: ModelRuntime {
         guard status == .available else { throw .unavailable(status) }
         if let kind = turn.unreadable(by: inputs) { throw .unsupportedInput(kind) }
         // Kept across the host's restarts of the turn, so it carries on.
-        let journal = LiteRTTurn.Journal()
+        let journal = EngineTurn.Journal()
         return try await host.run(model) { engine async throws(ModelRuntimeError) in
-            try await LiteRTTurn.respond(to: turn, on: engine, journal: journal, partial: partial)
+            try await EngineTurn.respond(to: turn, on: engine, journal: journal, partial: partial)
         }
     }
 }
@@ -73,7 +73,7 @@ public struct ModelRuntimes<Use: ModelUseCase>: Sendable {
         guard let model = library.installed().first(where: { $0.id == id }) else { return Missing() }
         switch model.spec.runtime {
         case .apple: return AppleRuntime()
-        case .liteRT: return LiteRTRuntime(model: model, host: host)
+        case .liteRT: return EngineRuntime(model: model, host: host)
         }
     }
 

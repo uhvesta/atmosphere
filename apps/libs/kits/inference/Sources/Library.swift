@@ -16,12 +16,20 @@ public struct ModelID: Hashable, Codable, Sendable, RawRepresentable, Expressibl
     public static let apple: ModelID = "apple"
 }
 
-/// What runs a model.
+/// What runs a model: Apple's own, or the engine that loads its files.
 public enum RuntimeKind: String, Hashable, Codable, Sendable, CaseIterable {
     /// Apple's on-device model, through Foundation Models.
     case apple
     /// Google's LiteRT-LM, for `.litertlm` files.
     case liteRT
+
+    /// Its name, for the person.
+    public var name: String {
+        switch self {
+        case .apple: "Apple Intelligence"
+        case .liteRT: "LiteRT-LM"
+        }
+    }
 }
 
 /// How to check a downloaded file.
@@ -79,7 +87,38 @@ public struct ModelSource: Hashable, Codable, Sendable {
     }
 }
 
-/// A model the app can run, and what it takes.
+/// One way to run a model: the engine, the files it loads, and what they
+/// take. A model can have several, such as one file for each engine or
+/// quantization, of which a device downloads one.
+public struct ModelVariant: Hashable, Codable, Sendable {
+    public var runtime: RuntimeKind
+    /// How its weights are stored, such as Q4_K_M; empty when the files
+    /// don't say.
+    public var quantization: String
+    /// The files to download; nil for Apple's model.
+    public var source: ModelSource?
+    /// As `ModelSpec` says of its own.
+    public var memoryBytes: Int64
+    public var cpuMemoryBytes: Int64
+    public var memoryBytesPerToken: Int64
+    public var profile: ModelProfile
+
+    public init(
+        runtime: RuntimeKind, quantization: String = "", source: ModelSource?, memoryBytes: Int64,
+        cpuMemoryBytes: Int64 = 0, memoryBytesPerToken: Int64 = 0, profile: ModelProfile = .standard
+    ) {
+        self.runtime = runtime
+        self.quantization = quantization
+        self.source = source
+        self.memoryBytes = memoryBytes
+        self.cpuMemoryBytes = cpuMemoryBytes
+        self.memoryBytesPerToken = memoryBytesPerToken
+        self.profile = profile
+    }
+}
+
+/// A model the app can run, and what it takes. Its own fields describe the
+/// variant it runs as; `variants` lists every one it has.
 public struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
     public var id: ModelID
     /// Such as Gemma 4 E2B.
@@ -110,11 +149,14 @@ public struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
     public var memoryBytesPerToken: Int64
     /// How it runs best.
     public var profile: ModelProfile
+    /// Every way it can run, its own among them.
+    public var variants: [ModelVariant]
 
     public init(
         id: ModelID, name: String, summary: String, runtime: RuntimeKind, source: ModelSource?, contextTokens: Int,
         memoryBytes: Int64, cpuMemoryBytes: Int64 = 0, license: String, inputs: Set<ModelInput> = [],
-        contextChoices: [Int] = [], memoryBytesPerToken: Int64 = 0, profile: ModelProfile = .standard
+        contextChoices: [Int] = [], memoryBytesPerToken: Int64 = 0, profile: ModelProfile = .standard,
+        quantization: String = ""
     ) {
         self.id = id
         self.name = name
@@ -129,16 +171,57 @@ public struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
         self.contextChoices = contextChoices
         self.memoryBytesPerToken = memoryBytesPerToken
         self.profile = profile
+        variants = []
+        variants = [variant(quantization: quantization)]
+    }
+
+    /// A model with several variants, running as the first of them.
+    public init(
+        id: ModelID, name: String, summary: String, contextTokens: Int, license: String,
+        inputs: Set<ModelInput> = [], contextChoices: [Int] = [], variants: [ModelVariant]
+    ) {
+        let first = variants.first ?? ModelVariant(runtime: .apple, source: nil, memoryBytes: 0)
+        self.init(
+            id: id, name: name, summary: summary, runtime: first.runtime, source: first.source,
+            contextTokens: contextTokens, memoryBytes: first.memoryBytes, cpuMemoryBytes: first.cpuMemoryBytes,
+            license: license, inputs: inputs, contextChoices: contextChoices,
+            memoryBytesPerToken: first.memoryBytesPerToken, profile: first.profile, quantization: first.quantization)
+        if !variants.isEmpty { self.variants = variants }
+    }
+
+    /// The variant it runs as.
+    public var variant: ModelVariant {
+        let own = variant(quantization: "")
+        return variants.first { $0.runtime == own.runtime && $0.source == own.source } ?? own
+    }
+
+    /// The same model, running as `variant`.
+    public func running(_ variant: ModelVariant) -> ModelSpec {
+        var spec = self
+        spec.runtime = variant.runtime
+        spec.source = variant.source
+        spec.memoryBytes = variant.memoryBytes
+        spec.cpuMemoryBytes = variant.cpuMemoryBytes
+        spec.memoryBytesPerToken = variant.memoryBytesPerToken
+        spec.profile = variant.profile
+        return spec
+    }
+
+    private func variant(quantization: String) -> ModelVariant {
+        ModelVariant(
+            runtime: runtime, quantization: quantization, source: source, memoryBytes: memoryBytes,
+            cpuMemoryBytes: cpuMemoryBytes, memoryBytesPerToken: memoryBytesPerToken, profile: profile)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, summary, runtime, source, contextTokens, memoryBytes, cpuMemoryBytes, license, inputs,
-            contextChoices, memoryBytesPerToken, profile
+            contextChoices, memoryBytesPerToken, profile, variants
     }
 
     /// Reads manifests written before models had inputs as text only;
     /// before they had a CPU figure or a choice of window as unknown; and
-    /// before they had a profile with the standard one.
+    /// before they had a profile with the standard one; and before models
+    /// had variants as having only their own.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(ModelID.self, forKey: .id)
@@ -154,6 +237,8 @@ public struct ModelSpec: Identifiable, Hashable, Codable, Sendable {
         contextChoices = try container.decodeIfPresent([Int].self, forKey: .contextChoices) ?? []
         memoryBytesPerToken = try container.decodeIfPresent(Int64.self, forKey: .memoryBytesPerToken) ?? 0
         profile = try container.decodeIfPresent(ModelProfile.self, forKey: .profile) ?? .standard
+        variants = []
+        variants = try container.decodeIfPresent([ModelVariant].self, forKey: .variants) ?? [variant(quantization: "")]
     }
 
     /// The bytes to download; zero for Apple's model.

@@ -148,11 +148,12 @@ public enum ModelResolution {
         default:
             break
         }
-        if let known = catalog.first(where: {
-            $0.source?.repo == link.repo && $0.source?.files.map(\.path) == [file.path]
-                && $0.source?.files.first?.digest == file.digest
-        }) {
-            return known
+        for known in catalog {
+            let same = known.variants.first {
+                $0.source?.repo == link.repo && $0.source?.files.map(\.path) == [file.path]
+                    && $0.source?.files.first?.digest == file.digest
+            }
+            if let same { return known.running(same) }
         }
         let name = (file.name as NSString).deletingPathExtension
         return ModelSpec(

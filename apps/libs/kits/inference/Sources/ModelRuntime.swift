@@ -234,6 +234,9 @@ public enum ModelRuntimeError: Error, Hashable, Sendable, CustomStringConvertibl
     case interrupted(ModelInterruption)
     /// The Simulator couldn't reach the Mac's model.
     case simulatorHost(String)
+    /// The model needs an engine this build of the app doesn't have, as for
+    /// one downloaded by a build that had it.
+    case engineMissing(RuntimeKind)
     /// Anything else the runtime reported.
     case failed(String)
 
@@ -263,6 +266,9 @@ public enum ModelRuntimeError: Error, Hashable, Sendable, CustomStringConvertibl
         case .simulatorHost(let reason):
             "The Simulator couldn't reach the Mac's model (\(reason)). Use a Simulator runtime with the same "
                 + "version as macOS, or a device."
+        case .engineMissing(let engine):
+            "This version of the app can't run \(engine.name) models. Pick another model in Settings, or delete "
+                + "this one and download it again in a version of the app that runs it."
         case .failed(let reason):
             "The model stopped: \(reason). Send the message again; if it keeps failing, restart the app."
         }
