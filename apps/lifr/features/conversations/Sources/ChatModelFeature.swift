@@ -25,8 +25,6 @@ package struct ChatModelFeature {
             return models.first { $0.id == id }
         }
 
-        package var standardName: String? { models.first { $0.id == standard }?.name }
-
         /// The model picked for the conversation, or nil for the default.
         /// A model that was deleted reads as the default.
         package var model: ModelID? {

@@ -6,7 +6,8 @@ load("@rules_swift//swift:swift_library.bzl", "swift_library")
 # and closures, with no store: messages with their thinking, branches and
 # summaries; the message field, find bar and notices; checkpoints; the
 # conversation list's rows and search snippets; skills to pick and turn on;
-# a proposal's card and editor; the change log's rows; models to download;
+# a proposal's card and editor; the change log's rows; the Models screen,
+# with models to download, and the model one chat or sheet runs on;
 # and a compact chat to put inside another screen. Their words are looked
 # up in the app's String Catalog. Needs Xcode for SwiftUI: build with
 # `--config=xcode`. In Swift 5 mode, like the apps' views: SwiftUI's

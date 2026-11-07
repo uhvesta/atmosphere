@@ -12,7 +12,11 @@ package struct ModelsView: View {
     }
 
     package var body: some View {
-        Form {
+        ModelsForm(
+            app: "Lifr", models: store.downloadable, entry: entry, actions: actions, link: $store.link,
+            sha256: $store.sha256, addError: store.addError, isAdding: store.isAdding, canAdd: store.canAdd,
+            add: { store.send(.addTapped) }
+        ) {
             Section {
                 ForEach(ModelUse.allCases, id: \.self) { use in
                     Picker(
@@ -32,6 +36,7 @@ package struct ModelsView: View {
                     Text("Built-in search adds related words from the system's word lists, with no model.")
                 }
             }
+        } options: {
             #if os(iOS)
                 // The Mac doesn't suspend apps, so a model there always
                 // goes on answering.
@@ -44,85 +49,24 @@ package struct ModelsView: View {
                             + "Screen. Off, the model stops and carries on where it was when you come back.")
                 }
             #endif
-            Section {
-                ForEach(store.downloadable) { model in
-                    ModelRow(model: model, store: store)
-                }
-            } header: {
-                Text("Models")
-            } footer: {
-                Text(
-                    "Measure a downloaded model to see how fast it runs here, and how much memory and CPU it "
-                        + "takes, on the GPU and on the CPU. Lifr then runs it where it's fastest, unless you pick.")
-            }
-            Section {
-                TextField("Hugging Face link", text: $store.link)
-                    .textContentType(.URL)
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                    #endif
-                TextField("SHA-256 (optional)", text: $store.sha256)
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                    #endif
-                if let error = store.addError {
-                    Text(error).foregroundStyle(.red)
-                }
-                Button {
-                    store.send(.addTapped)
-                } label: {
-                    if store.isAdding {
-                        ProgressView()
-                    } else {
-                        Text("Download model")
-                    }
-                }
-                .disabled(!store.canAdd)
-            } header: {
-                Text("From Hugging Face")
-            } footer: {
-                Text(
-                    "Paste the link to a .litertlm or .gguf model, such as one from litert-community. Lifr pins "
-                        + "it to the current commit and checks every file. Give the SHA-256 its publisher lists to "
-                        + "be sure it's theirs.")
-            }
         }
-        .navigationTitle("Models")
         .task { await store.send(.task).finish() }
         .confirmationDialog($store.scope(state: \.remove, action: \.remove))
         .alert($store.scope(state: \.alert, action: \.alert))
     }
-}
 
-/// A model to download, with what the store says of it.
-private struct ModelRow: View {
-    let model: ModelSpec
-    let store: StoreOf<ModelsFeature>
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            row
-            if store.installed.contains(model.id), store.downloads[model.id] == nil,
-                let tuning = store.tunings[model.id]
-            {
-                ModelTuningView(
-                    tuning, isMeasuring: store.measuring.contains(model.id), error: store.measureErrors[model.id],
-                    measure: { store.send(.measureTapped(model.id)) },
-                    pick: { store.send(.backendPicked($0, for: model.id)) })
-            }
-        }
+    private func entry(_ model: ModelSpec) -> ModelEntryState {
+        ModelEntryState(
+            download: store.downloads[model.id], isInstalled: store.installed.contains(model.id),
+            window: store.windows[model.id] ?? model.contextTokens, tuning: store.tunings[model.id],
+            isMeasuring: store.measuring.contains(model.id), measureError: store.measureErrors[model.id])
     }
 
-    private var row: some View {
-        ChatUI.ModelRow(
-            model, download: store.downloads[model.id], isInstalled: store.installed.contains(model.id),
-            window: store.windows[model.id] ?? model.contextTokens,
-            pickWindow: { store.send(.windowPicked($0, for: model.id)) },
-            start: { store.send(.downloadTapped(model.id)) }, pause: { store.send(.pauseTapped(model.id)) },
-            remove: { store.send(.removeTapped(model.id)) })
+    private var actions: ModelEntryActions {
+        ModelEntryActions(
+            start: { store.send(.downloadTapped($0)) }, pause: { store.send(.pauseTapped($0)) },
+            remove: { store.send(.removeTapped($0)) }, pickWindow: { store.send(.windowPicked($0, for: $1)) },
+            measure: { store.send(.measureTapped($0)) }, pickBackend: { store.send(.backendPicked($0, for: $1)) })
     }
 }
 
