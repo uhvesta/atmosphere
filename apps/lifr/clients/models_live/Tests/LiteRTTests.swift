@@ -635,6 +635,47 @@ final class ModelHostTests: XCTestCase {
         XCTAssertNil(unloaded)
     }
 
+    func testAReleasedModelLeavesMemoryOnceItsTurnEnds() async throws {
+        let started = AsyncStream.makeStream(of: Void.self)
+        let finish = AsyncStream.makeStream(of: Void.self)
+        let chat = FakeChat { _, _ throws(ModelRuntimeError) in
+            started.continuation.yield()
+            for await _ in finish.stream { break }
+            return "done"
+        }
+        let host = host(chat: chat)
+
+        let turn = Task { try await host.run(model("a"), plain) }
+        var events = started.stream.makeAsyncIterator()
+        _ = await events.next()
+        await host.release(model: "a")
+        let during = await host.loadedModel
+        finish.continuation.yield()
+        _ = try await turn.value
+        await host.release(model: "a")
+        let after = await host.loadedModel
+
+        XCTAssertEqual(during, "a")
+        XCTAssertNil(after)
+    }
+
+    func testAModelNoUseRunsOnLeavesMemory() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let host = host()
+        let runtimes = ModelRuntimes(library: ModelLibrary(root: root, session: .shared), host: host)
+        await runtimes.client.select("a", .assistant)
+        _ = try await host.run(model("a"), plain)
+
+        await runtimes.client.select("b", .titles)
+        let kept = await host.loadedModel
+        await runtimes.client.select(.apple, .assistant)
+        let released = await host.loadedModel
+
+        XCTAssertEqual(kept, "a")
+        XCTAssertNil(released)
+    }
+
     func testAModelFitsWithHeadroomToSpare() {
         XCTAssertTrue(MemoryPlan.fits(1_450_000_000, available: 2_000_000_000))
         XCTAssertFalse(MemoryPlan.fits(1_600_000_000, available: 2_000_000_000))

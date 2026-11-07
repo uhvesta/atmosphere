@@ -80,6 +80,22 @@ package struct ModelRuntimes: Sendable {
             await host.unload(model: id)
             try await delete(id)
         }
+        // Memory isn't held for a model at a window it no longer runs at,
+        // or one no use runs on.
+        let setWindow = client.setWindow
+        client.setWindow = { id, window in
+            await setWindow(id, window)
+            await host.release(model: id)
+        }
+        let select = client.select
+        let library = library
+        client.select = { id, use in
+            await select(id, use)
+            guard let loaded = await host.loadedModel,
+                !ModelUse.allCases.contains(where: { library.selection(for: $0) == loaded })
+            else { return }
+            await host.release(model: loaded)
+        }
         return client
     }
 

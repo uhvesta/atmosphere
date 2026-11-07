@@ -209,6 +209,14 @@ package actor ModelHost {
         idleTimer = nil
     }
 
+    /// Unloads `id` if it's loaded and answering nothing, as when the person
+    /// picks another window for it or stops using it. A turn running on it
+    /// finishes first; the model then goes when it's idle.
+    package func release(model id: ModelID) {
+        guard turns.isEmpty, loaded?.id == id || loading?.id == id else { return }
+        unload(nil)
+    }
+
     /// Unloads `id` if it's loaded, as before its files are deleted.
     package func unload(model id: ModelID) {
         if loaded?.id == id || loading?.id == id { unload(nil) }
