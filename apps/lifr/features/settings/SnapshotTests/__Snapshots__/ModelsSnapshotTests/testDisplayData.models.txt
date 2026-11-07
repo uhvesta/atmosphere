@@ -4,11 +4,31 @@
       - rawValue: "apple"
     ▿ gemma-4-e2b
       - rawValue: "gemma-4-e2b"
-  ▿ downloadable: 3 elements
+  ▿ downloadable: 13 elements
     ▿ gemma-4-e2b
       - rawValue: "gemma-4-e2b"
     ▿ gemma-4-e4b
       - rawValue: "gemma-4-e4b"
+    ▿ qwen3.5-0.8b
+      - rawValue: "qwen3.5-0.8b"
+    ▿ qwen3.5-2b
+      - rawValue: "qwen3.5-2b"
+    ▿ qwen3.5-4b
+      - rawValue: "qwen3.5-4b"
+    ▿ qwen3.5-9b
+      - rawValue: "qwen3.5-9b"
+    ▿ lfm3-1.7b
+      - rawValue: "lfm3-1.7b"
+    ▿ lfm3-vl-2b
+      - rawValue: "lfm3-vl-2b"
+    ▿ lfm2.5-1.2b-thinking
+      - rawValue: "lfm2.5-1.2b-thinking"
+    ▿ lfm2.5-8b-a1b
+      - rawValue: "lfm2.5-8b-a1b"
+    ▿ granite-4.2-3b
+      - rawValue: "granite-4.2-3b"
+    ▿ granite-4.2-8b
+      - rawValue: "granite-4.2-8b"
     ▿ hf/litert-community/Qwen3-0.6B/Qwen3-0.6B.litertlm
       - rawValue: "hf/litert-community/Qwen3-0.6B/Qwen3-0.6B.litertlm"
   ▿ selected: 4 elements

@@ -85,9 +85,9 @@ package struct ModelsView: View {
                 Text("From Hugging Face")
             } footer: {
                 Text(
-                    "Paste the link to a .litertlm model, such as one from litert-community. Lifr pins it to the "
-                        + "current commit and checks every file. Give the SHA-256 its publisher lists to be sure "
-                        + "it's theirs.")
+                    "Paste the link to a .litertlm or .gguf model, such as one from litert-community. Lifr pins "
+                        + "it to the current commit and checks every file. Give the SHA-256 its publisher lists to "
+                        + "be sure it's theirs.")
             }
         }
         .navigationTitle("Models")

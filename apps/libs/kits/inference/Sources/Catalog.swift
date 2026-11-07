@@ -1,7 +1,7 @@
 /// The models the app offers without a link, each pinned to a commit and its
 /// files' SHA-256, as Hugging Face listed them.
 public enum ModelCatalog {
-    public static let all: [ModelSpec] = [apple, gemma4E2B, gemma4E4B]
+    public static let all: [ModelSpec] = [apple, gemma4E2B, gemma4E4B] + gguf
 
     /// The context the app gives a model it knows nothing about.
     public static let defaultContextTokens = 4_096

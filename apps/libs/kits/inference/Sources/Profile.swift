@@ -19,10 +19,15 @@ public struct ModelProfile: Hashable, Codable, Sendable {
     public var cpuThreads: Int?
     /// How it picks each token; nil for the model's own settings.
     public var sampling: Sampling?
+    /// How the app tells it to think before it answers, or not to, for an
+    /// engine that writes the model's prompt itself; nil for a model that
+    /// doesn't think, or whose runtime knows how.
+    public var thinking: Thinking?
 
     public init(
         onScreen: ModelBackend = .gpu, gpuActivations: Activations = .half, vision: Encoder = .withModel,
-        audio: Encoder = .cpu, speculation: Speculation = .off, cpuThreads: Int? = nil, sampling: Sampling? = nil
+        audio: Encoder = .cpu, speculation: Speculation = .off, cpuThreads: Int? = nil, sampling: Sampling? = nil,
+        thinking: Thinking? = nil
     ) {
         self.onScreen = onScreen
         self.gpuActivations = gpuActivations
@@ -31,6 +36,7 @@ public struct ModelProfile: Hashable, Codable, Sendable {
         self.speculation = speculation
         self.cpuThreads = cpuThreads
         self.sampling = sampling
+        self.thinking = thinking
     }
 
     /// What a model runs with when nothing's known about it: the GPU at
@@ -81,5 +87,23 @@ public struct ModelProfile: Hashable, Codable, Sendable {
         /// The likeliest token each time, so a turn reads the same on one
         /// device.
         public static let greedy = Sampling(topK: 1, topP: 1, temperature: 0)
+    }
+
+    /// What starts a model's answer so that it thinks first, or doesn't,
+    /// and what it writes when it's done thinking.
+    public struct Thinking: Hashable, Codable, Sendable {
+        /// Written where the answer starts, for it to think.
+        public var on: String
+        /// Written there for it to answer straight away; nil for a model
+        /// that always thinks.
+        public var off: String?
+        /// What it writes when it's done thinking, such as </think>.
+        public var end: String
+
+        public init(on: String, off: String?, end: String) {
+            self.on = on
+            self.off = off
+            self.end = end
+        }
     }
 }

@@ -144,6 +144,20 @@ litert_lm = use_repo_rule("//apps/libs/kits/inference/litert:litert_lm.bzl", "li
 
 litert_lm(name = "litert_lm")
 
+# llama.cpp, which runs downloaded GGUF models for Lifr: its prebuilt
+# framework for iPhones and Macs, pinned by SHA-256. See
+# apps/libs/kits/inference/llama/llama_cpp.bzl.
+llama_cpp = use_repo_rule("//apps/libs/kits/inference/llama:llama_cpp.bzl", "llama_cpp")
+
+llama_cpp(name = "llama_cpp")
+
+# Qwen3.5 0.8B, as Lifr's catalog pins it, for llama.cpp's smoke test. Only
+# that manual test fetches it. See
+# apps/libs/kits/inference/llama/test_model.bzl.
+gguf_test_model = use_repo_rule("//apps/libs/kits/inference/llama:test_model.bzl", "gguf_test_model")
+
+gguf_test_model(name = "llama_test_model")
+
 # Gemma 4 E2B, as Lifr's catalog pins it, for the assistant's end-to-end
 # test on a real model. Only that manual test fetches it. See
 # apps/libs/kits/inference/litert/test_model.bzl.

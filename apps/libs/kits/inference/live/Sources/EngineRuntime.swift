@@ -80,7 +80,7 @@ public struct ModelRuntimes<Use: ModelUseCase>: Sendable {
         guard let model = library.installed().first(where: { $0.id == id }) else { return Missing() }
         switch model.spec.runtime {
         case .apple: return AppleRuntime()
-        case .liteRT: return EngineRuntime(model: model, host: host)
+        case .liteRT, .llama: return EngineRuntime(model: model, host: host)
         }
     }
 

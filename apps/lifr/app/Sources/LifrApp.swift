@@ -1,6 +1,8 @@
 import AppIntents
 import ComposableArchitecture
+import InferenceKit
 import InferenceKitLiteRT
+import InferenceKitLive
 import LifrAPI
 import LifrAssistantClient
 import LifrAssistantLive
@@ -22,6 +24,10 @@ import LifrStoreLive
 import LifrSyncClient
 import LifrSyncLive
 import SwiftUI
+
+#if canImport(InferenceKitLlama)
+    import InferenceKitLlama
+#endif
 
 #if canImport(UIKit)
     import UIKit
@@ -118,16 +124,30 @@ private enum Storage {
 
     /// The models downloaded to this device, and the one that's loaded.
     nonisolated static let models: ModelRuntimes<ModelUse> = {
+        var loaders: [RuntimeKind: ModelHost.Loader] = [
+            .liteRT: { model, backend async throws(ModelRuntimeError) in
+                try await LiteRTLMEngine.load(model, on: backend)
+            }
+        ]
+        var measures: [RuntimeKind: Bench.Measure] = [.liteRT: LiteRTLMEngine.measure]
+        // llama.cpp has no build for the Simulator, whose models run on
+        // the Mac. A closure that throws a type crashes the compiler when
+        // it's stored straight into a dictionary's subscript, so each gets
+        // its type first.
+        #if canImport(InferenceKitLlama)
+            let llama: ModelHost.Loader = { model, backend async throws(ModelRuntimeError) in
+                try await LlamaEngine.load(model, on: backend)
+            }
+            let measure: Bench.Measure = LlamaEngine.measure
+            loaders[.llama] = llama
+            measures[.llama] = measure
+        #endif
         let host = ModelHost(
-            load: ModelHost.loading(with: [
-                .liteRT: { model, backend async throws(ModelRuntimeError) in
-                    try await LiteRTLMEngine.load(model, on: backend)
-                }
-            ]), answersInBackground: { Shared(.answersInBackground).wrappedValue })
+            load: ModelHost.loading(with: loaders), answersInBackground: { Shared(.answersInBackground).wrappedValue })
         Task { await host.observeSystem() }
         let library = ModelLibrary.live()
         library.resumeUnfinished()
-        let bench = Bench(measure: Bench.measuring(with: [.liteRT: LiteRTLMEngine.measure]))
+        let bench = Bench(measure: Bench.measuring(with: measures))
         return ModelRuntimes(library: library, host: host, bench: bench)
     }()
 

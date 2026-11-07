@@ -1,0 +1,109 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load(":test_model.bzl", "QWEN35_TINY")
+
+# Downloaded GGUF models run by llama.cpp on the GPU or the CPU, through its
+# prebuilt framework from llama_cpp.bzl. The framework has no slice for the
+# iOS Simulator, so this builds for devices and Macs, and the app leaves it
+# out of Simulator builds. It needs a model, so it's checked by building and
+# by hand; what runs a turn is in //apps/libs/kits/inference/live, tested
+# with a fake engine.
+swift_library(
+    name = "llama",
+    package_name = "inference",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "InferenceKitLlama",
+    target_compatible_with = ["//bazel/xcode"] + select({
+        "@apple_support//constraints:simulator": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    visibility = ["//apps:__subpackages__"],
+    deps = [
+        ":grammar",
+        "//apps/libs/kits/inference",
+        "@llama_cpp//:llama",
+    ],
+)
+
+# JSON Schema to llama.cpp's grammars. Plain Swift, so it's tested without
+# llama.cpp or a model.
+swift_library(
+    name = "grammar",
+    srcs = glob(["Grammar/*.swift"]),
+    copts = [
+        "-swift-version",
+        "6",
+    ],
+    module_name = "InferenceKitGrammar",
+)
+
+# Which answers each schema's grammar takes, on macOS.
+swift_library(
+    name = "grammar_tests_lib",
+    testonly = True,
+    srcs = glob(["GrammarTests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":grammar"],
+)
+
+macos_unit_test(
+    name = "grammar_tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":grammar_tests_lib"],
+)
+
+# Where the smoke test's model is, and the SHA-256 Bazel checked it
+# against, for the test to find it and check the catalog pins the same file.
+genrule(
+    name = "test_model_swift",
+    testonly = True,
+    srcs = ["@llama_test_model//:{}".format(QWEN35_TINY.path)],
+    outs = ["TestModel.swift"],
+    cmd = """cat > $@ <<'EOF'
+enum TestModel {{
+    static let runfile = "$(rlocationpath @llama_test_model//:{path})"
+    static let sha256 = "{sha256}"
+}}
+EOF""".format(
+        path = QWEN35_TINY.path,
+        sha256 = QWEN35_TINY.sha256,
+    ),
+)
+
+swift_library(
+    name = "smoke_tests_lib",
+    testonly = True,
+    srcs = glob(["SmokeTests/*.swift"]) + [":test_model_swift"],
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":llama",
+        "//apps/libs/kits/inference",
+    ],
+)
+
+# llama.cpp on a real model, Qwen3.5 0.8B on this Mac's GPU and CPU: an
+# answer, one held to a schema, thinking, a second turn and a measurement.
+# Manual: it downloads 530 MB and needs the Mac's GPU, which the sandbox
+# hides.
+macos_unit_test(
+    name = "smoke_test",
+    data = ["@llama_test_model//:{}".format(QWEN35_TINY.path)],
+    minimum_os_version = "15.0",
+    tags = [
+        "manual",
+        "no-sandbox",
+    ],
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":smoke_tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "llama_cpp.bzl",
+        "test_model.bzl",
+    ],
+    tags = ["starlark"],
+)

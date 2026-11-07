@@ -117,8 +117,9 @@ public struct HubTreeEntry: Decodable, Hashable, Sendable {
 /// Turns what Hugging Face lists into a model to download.
 public enum ModelResolution {
     /// The model at `link`: the one file a runtime can run, checked against
-    /// `sha256` when the person gave one. A file in the catalog comes back
-    /// as its catalog entry.
+    /// `sha256` when the person gave one, and for a GGUF model the vision
+    /// encoder beside it, if the repository has one. A file in the catalog
+    /// comes back as its catalog entry.
     public static func spec(
         _ link: ModelLink, info: HubModelInfo, tree: [HubTreeEntry], sha256 given: String?,
         catalog: [ModelSpec] = ModelCatalog.all
@@ -150,21 +151,41 @@ public enum ModelResolution {
         }
         for known in catalog {
             let same = known.variants.first {
-                $0.source?.repo == link.repo && $0.source?.files.map(\.path) == [file.path]
+                $0.source?.repo == link.repo && $0.source?.files.first?.path == file.path
                     && $0.source?.files.first?.digest == file.digest
             }
             if let same { return known.running(same) }
         }
         let name = (file.name as NSString).deletingPathExtension
+        let runtime = runtime(of: file.path)
+        // llama.cpp reads photos through a separate file, which the
+        // repository names mmproj; the smallest when there are several.
+        let encoder =
+            runtime == .llama
+            ? files.filter { isEncoder($0.path) }.min { $0.size < $1.size }.map(\.file) : nil
         return ModelSpec(
-            id: ModelID(rawValue: "hf/\(link.repo)/\(file.path)"), name: name, summary: link.repo, runtime: .liteRT,
-            source: ModelSource(repo: link.repo, commit: info.sha, files: [file]),
-            contextTokens: ModelCatalog.defaultContextTokens, memoryBytes: 0, license: info.license ?? "")
+            id: ModelID(rawValue: "hf/\(link.repo)/\(file.path)"), name: name, summary: link.repo, runtime: runtime,
+            source: ModelSource(repo: link.repo, commit: info.sha, files: [file] + (encoder.map { [$0] } ?? [])),
+            contextTokens: ModelCatalog.defaultContextTokens, memoryBytes: 0, license: info.license ?? "",
+            inputs: encoder == nil ? [] : [.image])
     }
 
     /// Whether a runtime the app has can run the file.
     static func runnable(_ path: String) -> Bool {
-        path.lowercased().hasSuffix(".litertlm")
+        let lowered = path.lowercased()
+        return lowered.hasSuffix(".litertlm") || (lowered.hasSuffix(".gguf") && !isEncoder(path))
+    }
+
+    /// The runtime that runs a file `runnable` accepts.
+    static func runtime(of path: String) -> RuntimeKind {
+        path.lowercased().hasSuffix(".gguf") ? .llama : .liteRT
+    }
+
+    /// Whether a GGUF file is a model's vision encoder, which llama.cpp
+    /// calls a multimodal projector, rather than the model.
+    package static func isEncoder(_ path: String) -> Bool {
+        let name = path.split(separator: "/").last.map(String.init) ?? path
+        return name.lowercased().hasSuffix(".gguf") && name.lowercased().contains("mmproj")
     }
 
     /// `text` as a SHA-256 in lowercase hex.

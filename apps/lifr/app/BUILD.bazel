@@ -20,7 +20,9 @@ swift_library(
     module_name = "LifrApp",
     target_compatible_with = ["//bazel/xcode"],
     deps = [
+        "//apps/libs/kits/inference",
         "//apps/libs/kits/inference/litert",
+        "//apps/libs/kits/inference/live",
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/assistant_live",
@@ -43,7 +45,11 @@ swift_library(
         "//apps/lifr/widgets:client",
         "//apps/lifr/widgets:glance",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
-    ],
+    ] + select({
+        # llama.cpp's framework has no Simulator build.
+        "@apple_support//constraints:simulator": [],
+        "//conditions:default": ["//apps/libs/kits/inference/llama"],
+    }),
 )
 
 ios_application(

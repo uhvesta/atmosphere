@@ -33,8 +33,8 @@ public enum ModelResolveError: Error, Hashable, Sendable, CustomStringConvertibl
             "\(link) doesn't name a model. Open the model's page on Hugging Face and paste its address, which "
                 + "has the organization and the model's name."
         case .noRunnableFile(let repo):
-            "\(repo) has no .litertlm file, which is the only kind the app can run. Look for a LiteRT-LM version of "
-                + "the model, such as in litert-community."
+            "\(repo) has no .litertlm or .gguf file, which are the kinds the app can run. Look for a LiteRT-LM "
+                + "version of the model, such as in litert-community, or a GGUF one."
         case .severalFiles(let repo, let files):
             "\(repo) has several model files (\(files.joined(separator: ", "))). Open the one you want on "
                 + "Hugging Face and paste the file's link."

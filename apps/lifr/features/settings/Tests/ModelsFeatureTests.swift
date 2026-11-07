@@ -33,7 +33,8 @@ final class ModelsFeatureTests: XCTestCase {
         await library.client.select(ModelCatalog.gemma4E2B.id, .assistant)
         let store = await models(library)
 
-        XCTAssertEqual(store.state.downloadable.map(\.id), [ModelCatalog.gemma4E2B.id, ModelCatalog.gemma4E4B.id])
+        XCTAssertEqual(
+            store.state.downloadable.map(\.id), ModelCatalog.all.filter { $0.runtime != .apple }.map(\.id))
         XCTAssertEqual(store.state.choices.map(\.id), [.apple, ModelCatalog.gemma4E2B.id])
         XCTAssertEqual(store.state.selected(for: .assistant), ModelCatalog.gemma4E2B.id)
         XCTAssertEqual(store.state.selected(for: .titles), ModelCatalog.gemma4E2B.id)

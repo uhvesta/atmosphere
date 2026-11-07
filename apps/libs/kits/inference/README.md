@@ -12,9 +12,10 @@ model it uses.
 | `//apps/libs/kits/inference` | `ModelRuntime`, `ModelEngine`, context budgets, the catalog, Hugging Face links and hashes, which model each use runs on, the downloads in progress, and `ScriptedRuntime` for tests and previews. |
 | `//apps/libs/kits/inference/live` | Apple's model through Foundation Models, downloaded models through `ModelHost`, `ModelLibrary`, which downloads, verifies, stores and deletes models, and `Bench`, which measures them. |
 | `//apps/libs/kits/inference/litert` | LiteRT-LM, a `ModelEngine`, on the GPU through Google's prebuilt framework. |
+| `//apps/libs/kits/inference/llama` | llama.cpp, a `ModelEngine` for `.gguf` models, on the GPU through Metal or on the CPU, through its prebuilt framework. It has no build for the iOS Simulator, so apps leave it out there. |
 
 Features depend on the first target. Only the app's entry point uses the
-other two. All three need Xcode, so build with `--config=xcode`.
+others. All of them need Xcode, so build with `--config=xcode`.
 
 ## Use it
 
@@ -49,7 +50,11 @@ let runtime = ScriptedRuntime(steps: [{ _, _ in "Tidied." }])
   records how long the model thought and whether it ran on the GPU or the
   CPU.
 - `ModelSpec` and `ModelCatalog` describe the models you can download and
-  their files. A model can have several `ModelVariant`s, such as one for
+  their files: Gemma 4 for LiteRT-LM, and Qwen3.5, LFM3, LFM2.5 and
+  Granite 4.2 as GGUF files at Q4_K_M for llama.cpp. A GGUF model's memory
+  is estimated from its file and its header until it's measured. A pasted
+  link to a `.gguf` file runs on llama.cpp, with the repository's smallest
+  vision encoder (`mmproj`) when it has one. A model can have several `ModelVariant`s, such as one for
   each engine or quantization; a device downloads one. `ModelLink` reads a Hugging Face link, and `FileDigest`
   checks each file's SHA-256.
 - `ModelSelection` remembers which model the person picked for each
@@ -86,4 +91,7 @@ Run the tests with `bazel test --config=xcode //apps/libs/kits/inference:tests`
 and `//apps/libs/kits/inference/live:tests`, on macOS. The live tests run
 downloads against a stub of Hugging Face and turns against a fake engine.
 A real model needs a device, so `litert` is checked by building it and by
-hand.
+hand. `llama`'s schema grammars are tested with
+`//apps/libs/kits/inference/llama:grammar_tests`, and its engine on Qwen3.5
+0.8B with the manual `//apps/libs/kits/inference/llama:smoke_test`, which
+downloads 530 MB as the catalog pins it.

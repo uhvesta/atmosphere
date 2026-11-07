@@ -124,13 +124,43 @@ final class ModelResolutionTests: XCTestCase {
     }
 
     func testARepositoryWithoutARunnableFileIsRefused() {
-        let readme = [HubTreeEntry(path: "model.gguf", size: 10, oid: "1111", sha256: sha)]
+        let readme = [
+            HubTreeEntry(path: "README.md", size: 10, oid: "1111", sha256: nil),
+            HubTreeEntry(path: "model.safetensors", size: 10, oid: "2222", sha256: sha),
+            HubTreeEntry(path: "mmproj-model-f16.gguf", size: 10, oid: "3333", sha256: sha),
+        ]
 
         XCTAssertThrowsError(
             try ModelResolution.spec(ModelLink(repo: "org/model"), info: info, tree: readme, sha256: nil, catalog: [])
         ) { error in
             XCTAssertEqual(error as? ModelResolveError, .noRunnableFile(repo: "org/model"))
         }
+    }
+
+    func testAGGUFRunsOnLlamaWithItsSmallestVisionEncoder() throws {
+        let gguf = [
+            HubTreeEntry(path: "model-Q4_K_M.gguf", size: 1_000, oid: "1111", sha256: sha),
+            HubTreeEntry(path: "mmproj-model-F16.gguf", size: 400, oid: "2222", sha256: sha),
+            HubTreeEntry(path: "mmproj-model-Q8_0.gguf", size: 200, oid: "3333", sha256: sha),
+        ]
+
+        let spec = try ModelResolution.spec(
+            ModelLink(repo: "org/model"), info: info, tree: gguf, sha256: nil, catalog: [])
+
+        XCTAssertEqual(spec.runtime, .llama)
+        XCTAssertEqual(spec.inputs, [.image])
+        XCTAssertEqual(spec.source?.files.map(\.path), ["model-Q4_K_M.gguf", "mmproj-model-Q8_0.gguf"])
+    }
+
+    func testAGGUFWithoutAnEncoderReadsOnlyText() throws {
+        let gguf = [HubTreeEntry(path: "model-Q4_K_M.gguf", size: 1_000, oid: "1111", sha256: sha)]
+
+        let spec = try ModelResolution.spec(
+            ModelLink(repo: "org/model"), info: info, tree: gguf, sha256: nil, catalog: [])
+
+        XCTAssertEqual(spec.runtime, .llama)
+        XCTAssertEqual(spec.inputs, [])
+        XCTAssertEqual(spec.source?.files.map(\.path), ["model-Q4_K_M.gguf"])
     }
 
     func testAGatedRepositoryIsRefused() {
@@ -212,6 +242,21 @@ final class ModelLibraryTypesTests: XCTestCase {
                 guard case .sha256(let digest) = file.digest else { return XCTFail("\(spec.name) has no SHA-256") }
                 XCTAssertEqual(digest.count, 64, spec.name)
             }
+        }
+    }
+
+    func testTheCatalogsGGUFModelsRunOnLlamaAndFitTheirEstimate() {
+        let gguf = ModelCatalog.all.filter { $0.runtime == .llama }
+
+        XCTAssertFalse(gguf.isEmpty)
+        for spec in gguf {
+            let files = spec.source?.files ?? []
+            let weights = files.reduce(0) { $0 + $1.size }
+            XCTAssertTrue(files.allSatisfy { $0.path.hasSuffix(".gguf") }, spec.name)
+            XCTAssertGreaterThan(spec.memoryBytes, weights, spec.name)
+            XCTAssertEqual(
+                spec.inputs.contains(.image), files.contains { ModelResolution.isEncoder($0.path) }, spec.name)
+            XCTAssertNotNil(spec.profile.thinking, spec.name)
         }
     }
 

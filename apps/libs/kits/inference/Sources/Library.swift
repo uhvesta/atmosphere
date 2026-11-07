@@ -22,12 +22,15 @@ public enum RuntimeKind: String, Hashable, Codable, Sendable, CaseIterable {
     case apple
     /// Google's LiteRT-LM, for `.litertlm` files.
     case liteRT
+    /// llama.cpp, for `.gguf` files.
+    case llama
 
     /// Its name, for the person.
     public var name: String {
         switch self {
         case .apple: "Apple Intelligence"
         case .liteRT: "LiteRT-LM"
+        case .llama: "llama.cpp"
         }
     }
 }
