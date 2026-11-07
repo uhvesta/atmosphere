@@ -109,7 +109,7 @@ lifr_snapshot_test(
 
 # The same flows on the Mac, in windows on this Mac: the accessibility tree
 # and an image of every window per step. Manual, since `bazel test` can't
-# read other windows: run it with //apps/lifr/testing/snapshot:run_mac.sh.
+# read other windows: run it with //apps/libs/kits/flow:run_mac.sh.
 lifr_snapshot_test(
     name = "mac_flow_snapshot_test",
     srcs = glob(["MacFlowSnapshotTests/*.swift"]),
@@ -149,7 +149,7 @@ EOF""".format(
 # words differ from one GPU to the next, so the trees leave them out and the
 # test checks what changed instead. Manual: it downloads 2.6 GB, takes
 # minutes, and needs what the Mac flows need. Run it with
-# //apps/lifr/testing/snapshot:run_mac.sh.
+# //apps/libs/kits/flow:run_mac.sh.
 lifr_snapshot_test(
     name = "model_e2e_test",
     srcs = glob(["ModelE2ETests/*.swift"]) + [":test_model_swift"],

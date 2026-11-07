@@ -9,7 +9,7 @@
     /// references, the accessibility tree and an image, so a reviewer can follow
     /// what the person sees from step to step.
     @MainActor
-    package final class FlowRecorder {
+    public final class FlowRecorder {
         private let window: UIWindow
         private let name: String
         /// The longest a step waits for the screen to settle before checking it
@@ -20,7 +20,7 @@
         /// Hosts `view` in a window the size of an iPhone 17. `name` names the
         /// flow's references. A step waits at most `timeout` for the screen to
         /// settle.
-        package init(
+        public init(
             _ name: String, _ view: some View, size: CGSize = CGSize(width: 402, height: 874),
             timeout: Duration = .seconds(5)
         ) {
@@ -37,7 +37,7 @@
 
         /// Lets the screen settle after a change, then checks it as the next
         /// step, `<flow>-<number>-<step>`.
-        package func step(
+        public func step(
             _ step: String, image: Bool = true, file: StaticString = #filePath, testName: String = #function,
             line: UInt = #line
         ) async {
@@ -65,7 +65,7 @@
         /// Activates the `occurrence`th element labelled `label`, in reading
         /// order, as VoiceOver does with a double tap, so the step goes
         /// through the screen's own controls and bindings.
-        package func tap(
+        public func tap(
             _ label: String, occurrence: Int = 0, file: StaticString = #filePath, line: UInt = #line
         ) {
             window.layoutIfNeeded()
@@ -83,7 +83,7 @@
         }
 
         /// Ends the flow, taking the screen down.
-        package func finish() {
+        public func finish() {
             window.isHidden = true
             window.rootViewController = nil
         }

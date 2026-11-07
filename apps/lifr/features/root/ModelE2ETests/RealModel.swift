@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import FlowKit
 import LifrAPI
 import LifrAssistantClient
 import LifrAssistantLive
@@ -12,7 +13,6 @@ import LifrModelsLive
 import LifrRemindersClient
 import LifrRoot
 import LifrSessionClient
-import LifrSnapshotTesting
 import LifrStoreClient
 import LifrSyncClient
 import XCTest
@@ -79,7 +79,7 @@ final class RealModel {
             """)
         let runfiles = try XCTUnwrap(
             ProcessInfo.processInfo.environment["TEST_SRCDIR"],
-            "Run this with apps/lifr/testing/snapshot/run_mac.sh, which says where Bazel put the model.")
+            "Run this with apps/libs/kits/flow/run_mac.sh, which says where Bazel put the model.")
         let path = URL(fileURLWithPath: runfiles).appending(path: TestModel.runfile)
         XCTAssertEqual(path.lastPathComponent, file.path)
         return InstalledModel(spec: spec, directory: path.deletingLastPathComponent(), installedAt: now)

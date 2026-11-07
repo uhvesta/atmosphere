@@ -6,7 +6,7 @@
     extension Snapshotting where Value == UIViewController, Format == String {
         /// The accessibility tree VoiceOver would read, one element per line, in
         /// reading order: traits, label, value, hint and identifier.
-        package static func accessibilityTree(size: CGSize = CGSize(width: 393, height: 852)) -> Snapshotting {
+        public static func accessibilityTree(size: CGSize = CGSize(width: 393, height: 852)) -> Snapshotting {
             SimplySnapshotting.lines.pullback { controller in
                 _ = AccessibilityTree.automation
                 let window = UIWindow(frame: CGRect(origin: .zero, size: size))
@@ -26,7 +26,7 @@
 
     extension Snapshotting where Value: SwiftUI.View, Format == String {
         /// The accessibility tree of a SwiftUI view, hosted at `size`.
-        package static func accessibilityTree(size: CGSize = CGSize(width: 393, height: 852)) -> Snapshotting {
+        public static func accessibilityTree(size: CGSize = CGSize(width: 393, height: 852)) -> Snapshotting {
             Snapshotting<UIViewController, String>.accessibilityTree(size: size).pullback { view in
                 UIHostingController(rootView: view)
             }
@@ -83,7 +83,7 @@
             if let identifiable = element as? UIAccessibilityIdentification,
                 let identifier = identifiable.accessibilityIdentifier, !identifier.isEmpty,
                 // What the app marks as written by the model.
-                identifier != "lifr.model-text"
+                identifier != modelTextIdentifier
             {
                 parts.append("id: \(identifier)")
             }

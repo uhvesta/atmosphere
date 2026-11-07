@@ -1,6 +1,6 @@
+import FlowKit
 import Foundation
 import LifrGlance
-import LifrSnapshotTesting
 import LifrWidgetViews
 import SnapshotTesting
 import SwiftUI

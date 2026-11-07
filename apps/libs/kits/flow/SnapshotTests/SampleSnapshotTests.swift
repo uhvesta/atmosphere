@@ -1,4 +1,4 @@
-import LifrSnapshotTesting
+import FlowKit
 import SnapshotTesting
 import SwiftUI
 import XCTest

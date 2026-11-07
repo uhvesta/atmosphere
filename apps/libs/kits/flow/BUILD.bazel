@@ -1,0 +1,63 @@
+load("@rules_apple//apple/testing/default_runner:ios_xctestrun_runner.bzl", "ios_xctestrun_runner")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load(":defs.bzl", "flow_snapshot_test")
+
+# FlowKit: snapshot tests of screens and of whole flows through them, as
+# images and as the accessibility tree in text. Use it through
+# flow_snapshot_test in defs.bzl. iOS and macOS; needs Xcode: run with
+# `--config=xcode`.
+swift_library(
+    name = "flow",
+    testonly = True,
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "FlowKit",
+    target_compatible_with = ["//bazel/xcode"] + select({
+        "@platforms//os:ios": [],
+        "@platforms//os:macos": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+    visibility = ["//apps:__subpackages__"],
+    deps = ["@swiftpkg_swift_snapshot_testing//:SnapshotTesting"],
+)
+
+# The default simulator for iOS snapshot tests. Every snapshot renders on
+# the same device and OS, so references don't drift between machines.
+ios_xctestrun_runner(
+    name = "iphone_17",
+    device_type = "iPhone 17",
+    os_version = "26.2",
+    visibility = ["//apps:__subpackages__"],
+)
+
+# The empty app flow_host_app builds.
+swift_library(
+    name = "host_lib",
+    testonly = True,
+    srcs = ["Host/Host.swift"],
+    module_name = "FlowKitHost",
+    target_compatible_with = [
+        "//bazel/xcode",
+        "@platforms//os:ios",
+    ],
+    visibility = ["//apps:__subpackages__"],
+)
+
+exports_files(
+    ["Host/Info.plist"],
+    visibility = ["//apps:__subpackages__"],
+)
+
+# Checks that the helper records, verifies, and catches a visual change.
+flow_snapshot_test(
+    name = "sample_test",
+    srcs = glob(["SnapshotTests/*.swift"]),
+)
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "defs.bzl",
+    ],
+    tags = ["starlark"],
+)

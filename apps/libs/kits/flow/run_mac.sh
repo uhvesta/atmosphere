@@ -25,12 +25,12 @@ bundle=$(mktemp -d)
 trap 'rm -rf "$bundle"' EXIT
 unzip -q "$runfiles/_main/$package/$name.zip" -d "$bundle"
 
-export LIFR_SNAPSHOTS=SnapshotTests/__Snapshots__
-export LIFR_SNAPSHOT_PACKAGE=$package
-export LIFR_SNAPSHOT_TARGET=$target
+export FLOWKIT_SNAPSHOTS=SnapshotTests/__Snapshots__
+export FLOWKIT_PACKAGE=$package
+export FLOWKIT_TARGET=$target
 export TEST_SRCDIR=$runfiles
 if [[ ${2:-} == record ]]; then
-  export LIFR_RECORD_SNAPSHOTS=1
+  export FLOWKIT_RECORD=1
 fi
 cd "$bundle"
 xcrun xctest "$bundle"/*.xctest

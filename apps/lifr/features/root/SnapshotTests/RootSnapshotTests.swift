@@ -1,7 +1,7 @@
 import ComposableArchitecture
+import FlowKit
 import LifrCore
 import LifrRoot
-import LifrSnapshotTesting
 import LifrStoreClient
 import SnapshotTesting
 import SwiftUI

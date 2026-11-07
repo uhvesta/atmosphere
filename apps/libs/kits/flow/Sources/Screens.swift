@@ -6,7 +6,7 @@
 
     /// The images every screen is checked in: the smallest and largest iPhones,
     /// light and dark, and the largest text size on the smallest one.
-    package enum ScreenImage: String, CaseIterable, Sendable {
+    public enum ScreenImage: String, CaseIterable, Sendable {
         case seLight = "se-light"
         case seDark = "se-dark"
         case proMaxLight = "pro-max-light"
@@ -33,7 +33,7 @@
     /// Checks `view` against one reference per `ScreenImage`, named
     /// `<name>-<image>`, for each of `images`.
     @MainActor
-    package func assertScreenImages(
+    public func assertScreenImages(
         of view: @autoclosure () -> some View, named name: String, images: [ScreenImage] = ScreenImage.allCases,
         file: StaticString = #filePath, testName: String = #function, line: UInt = #line
     ) {

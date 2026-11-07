@@ -1,9 +1,9 @@
 import ComposableArchitecture
+import FlowKit
 import LifrAssistantClient
 import LifrConversations
 import LifrCore
 import LifrModelsClient
-import LifrSnapshotTesting
 import LifrStoreClient
 import SnapshotTesting
 import SwiftUI

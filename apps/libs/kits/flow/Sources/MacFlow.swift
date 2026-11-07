@@ -19,7 +19,7 @@
     /// the terminal, needs Accessibility and Screen Recording access in
     /// System Settings › Privacy & Security.
     @MainActor
-    package final class FlowRecorder {
+    public final class FlowRecorder {
         private let window: NSWindow
         private let name: String
         /// The longest a step waits for the screen to settle before
@@ -37,7 +37,7 @@
         /// its words differ from one GPU to the next, and how long it
         /// thought is `‹time›`; a screen still showing
         /// "Thinking…" or an error doesn't match one that shows a reply.
-        package init(
+        public init(
             _ name: String, _ view: some View, size: CGSize = CGSize(width: 1180, height: 760),
             timeout: Duration = .seconds(5), redactsModelText: Bool = false
         ) {
@@ -68,7 +68,7 @@
 
         /// Lets the screen settle after a change, then checks it as the next
         /// step, `<flow>-<number>-<step>`.
-        package func step(
+        public func step(
             _ step: String, image: Bool = true, file: StaticString = #filePath, testName: String = #function,
             line: UInt = #line
         ) async {
@@ -99,24 +99,24 @@
         /// Throws when flows can't run here: while the screen is locked,
         /// macOS hides the session's windows, from the accessibility tree
         /// too, so every step would fail. Call it from the test's `setUp`.
-        package static func checkScreen() throws(ScreenError) {
+        public static func checkScreen() throws(ScreenError) {
             let session = CGSessionCopyCurrentDictionary() as? [String: Any]
             if session?["CGSSessionScreenIsLocked"] as? Bool == true { throw .locked }
         }
 
-        package enum ScreenError: LocalizedError, CustomStringConvertible {
+        public enum ScreenError: LocalizedError, CustomStringConvertible {
             case locked
 
-            package var errorDescription: String? { description }
+            public var errorDescription: String? { description }
 
-            package var description: String {
+            public var description: String {
                 "the screen is locked, and macOS hides a locked session's windows from the test. Unlock the Mac "
                     + "and run the test again."
             }
         }
 
         /// Ends the flow, closing its windows.
-        package func finish() {
+        public func finish() {
             for window in windows where window !== self.window { window.orderOut(nil) }
             window.close()
             window.contentViewController = nil
@@ -236,7 +236,7 @@
 
         /// What the app marks as written by the model. Its marker isn't
         /// shown.
-        private static let modelText = "lifr.model-text"
+        private static let modelText = modelTextIdentifier
         private static let redacted = "‹model text›"
 
         static func lines(redactingModelText redacts: Bool = false) -> [String] {

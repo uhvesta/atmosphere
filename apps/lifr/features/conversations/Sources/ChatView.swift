@@ -983,9 +983,9 @@ extension Binding {
 
 /// Marks what the model wrote, such as its replies and its drafts, so a
 /// test on a real model can leave out words that differ from one GPU to the
-/// next. Tests' accessibility trees don't show it.
+/// next. It's FlowKit's `modelTextIdentifier`, so flow steps don't show it.
 enum ModelText {
-    static let identifier = "lifr.model-text"
+    static let identifier = "model-text"
 }
 
 /// Copy and Select Text, for a message or its thoughts.

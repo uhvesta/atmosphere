@@ -1,65 +1,12 @@
 load("@lifr_identity//:defs.bzl", "FLOW_HOST_BUNDLE_ID")
-load("@rules_apple//apple:ios.bzl", "ios_application")
-load("@rules_apple//apple/testing/default_runner:ios_xctestrun_runner.bzl", "ios_xctestrun_runner")
-load("@rules_swift//swift:swift_library.bzl", "swift_library")
-load(":defs.bzl", "lifr_snapshot_test")
+load("//apps/libs/kits/flow:defs.bzl", "flow_host_app")
 
-# Snapshot testing for Lifr's screens: images, and the accessibility tree as
-# text. Use it through lifr_snapshot_test in defs.bzl. iOS and macOS; needs
-# Xcode: run with `--config=xcode`.
-swift_library(
-    name = "snapshot",
-    package_name = "lifr",
-    testonly = True,
-    srcs = glob(["Sources/*.swift"]),
-    module_name = "LifrSnapshotTesting",
-    target_compatible_with = ["//bazel/xcode"] + select({
-        "@platforms//os:ios": [],
-        "@platforms//os:macos": [],
-        "//conditions:default": ["@platforms//:incompatible"],
-    }),
-    visibility = ["//apps/lifr:__subpackages__"],
-    deps = ["@swiftpkg_swift_snapshot_testing//:SnapshotTesting"],
-)
-
-# Every snapshot renders on the same device and OS, so references don't drift
-# between machines.
-ios_xctestrun_runner(
-    name = "iphone_17",
-    device_type = "iPhone 17",
-    os_version = "26.2",
-    visibility = ["//apps/lifr:__subpackages__"],
-)
-
-swift_library(
-    name = "host_lib",
-    testonly = True,
-    srcs = ["Host/Host.swift"],
-    module_name = "LifrFlowHost",
-    target_compatible_with = [
-        "//bazel/xcode",
-        "@platforms//os:ios",
-    ],
-)
-
-# The app flow snapshot tests run in, for its window scene. See
-# lifr_snapshot_test's `hosted`.
-ios_application(
+# The app Lifr's hosted flow snapshot tests run in, for its window scene.
+# See lifr_snapshot_test in defs.bzl.
+flow_host_app(
     name = "host",
-    testonly = True,
     bundle_id = FLOW_HOST_BUNDLE_ID,
-    families = ["iphone"],
-    infoplists = ["Host/Info.plist"],
-    minimum_os_version = "18.0",
-    target_compatible_with = ["//bazel/xcode"],
     visibility = ["//apps/lifr:__subpackages__"],
-    deps = [":host_lib"],
-)
-
-# Checks that the helper records, verifies, and catches a visual change.
-lifr_snapshot_test(
-    name = "sample_test",
-    srcs = glob(["SnapshotTests/*.swift"]),
 )
 
 filegroup(
