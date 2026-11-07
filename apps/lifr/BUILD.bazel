@@ -16,6 +16,7 @@ config_setting(
     flag_values = {":signed": "true"},
     # rules_apple's macros check select() keys against their own package.
     visibility = [
+        "//apps/langreadr/app:__pkg__",
         "//apps/lifr/app:__pkg__",
         "//apps/lifr/cli:__pkg__",
         "//apps/lifr/widgets:__pkg__",
@@ -23,8 +24,8 @@ config_setting(
     ],
 )
 
-# Signs the iPhone app and its widgets for the App Store, to upload to
-# TestFlight, with the profiles tools/testflight makes. Set by
+# Signs the iPhone apps, Lifr's with its widgets, for the App Store, to
+# upload to TestFlight, with the profiles tools/testflight makes. Set by
 # --config=lifr_testflight in .bazelrc.
 bool_flag(
     name = "app_store",
@@ -42,6 +43,7 @@ config_setting(
         ":signed": "true",
     },
     visibility = [
+        "//apps/langreadr/app:__pkg__",
         "//apps/lifr/app:__pkg__",
         "//apps/lifr/widgets:__pkg__",
         "@rules_apple//apple:__pkg__",

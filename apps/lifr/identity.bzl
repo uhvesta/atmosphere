@@ -9,8 +9,11 @@ The team and bundle ID prefix aren't checked in. Set them in a gitignored
     common --repo_env=LIFR_ICLOUD_CONTAINER=iCloud.com.yourname.lifr
     # Optional: the iPhone App Group that the widgets read Today from.
     common --repo_env=LIFR_IOS_APP_GROUP=group.com.yourname.lifr
+    # Optional: LangReadr's bundle ID, if not <prefix>.langreadr.
+    common --repo_env=LANGREADR_BUNDLE_ID=com.yourname.langreadr
 
-`@lifr_identity//:defs.bzl` holds the values, for the bundle IDs, the App
+`@lifr_identity//:defs.bzl` holds the values, for Lifr's and LangReadr's
+bundle IDs, the App
 Group, the iCloud container, the provisioning profile and the generated
 Swift constants. Without
 them the apps build ad hoc as `com.example.lifr`, and signed configs stop
@@ -22,6 +25,7 @@ _PREFIX = "LIFR_BUNDLE_PREFIX"
 _DEFAULT_PREFIX = "com.example"
 _ICLOUD = "LIFR_ICLOUD_CONTAINER"
 _IOS_GROUP = "LIFR_IOS_APP_GROUP"
+_LANGREADR = "LANGREADR_BUNDLE_ID"
 
 def _valid_team(team):
     return len(team) == 10 and team.isalnum() and team.upper() == team
@@ -57,6 +61,9 @@ def _lifr_identity_impl(repository_ctx):
     if not _valid_prefix(prefix):
         fail("{} is \"{}\", which isn't a reverse-DNS prefix. Use something like com.yourname in user.bazelrc: common --repo_env={}=com.yourname".format(_PREFIX, prefix, _PREFIX))
     bundle_id = prefix + ".lifr"
+    langreadr = repository_ctx.getenv(_LANGREADR, "") or prefix + ".langreadr"
+    if not _valid_prefix(langreadr):
+        fail("{} is \"{}\", which isn't a bundle ID. Use a reverse-DNS ID like com.yourname.langreadr in user.bazelrc: common --repo_env={}=com.yourname.langreadr, or remove it to use {}.langreadr. Changing it later makes LangReadr a new app in App Store Connect.".format(_LANGREADR, langreadr, _LANGREADR, _PREFIX))
     repository_ctx.file("BUILD.bazel", "exports_files([\"defs.bzl\"])\n")
     repository_ctx.file("defs.bzl", "\n".join([
         '"""Generated from {} and {}. See //apps/lifr:identity.bzl."""'.format(_TEAM, _PREFIX),
@@ -73,12 +80,14 @@ def _lifr_identity_impl(repository_ctx):
         "# Empty unless user.bazelrc sets one: the iPhone widgets then have no data.",
         "IOS_APP_GROUP = {}".format(repr(ios_group)),
         "WIDGETS_BUNDLE_ID = {}".format(repr(bundle_id + ".widgets")),
+        "# {}, or the prefix and .langreadr.".format(_LANGREADR),
+        "LANGREADR_BUNDLE_ID = {}".format(repr(langreadr)),
         "",
     ]))
 
 lifr_identity = repository_rule(
     implementation = _lifr_identity_impl,
-    environ = [_TEAM, _PREFIX, _ICLOUD, _IOS_GROUP],
-    doc = "Writes @lifr_identity//:defs.bzl from LIFR_TEAM_ID, LIFR_BUNDLE_PREFIX, LIFR_ICLOUD_CONTAINER and " +
-          "LIFR_IOS_APP_GROUP.",
+    environ = [_TEAM, _PREFIX, _ICLOUD, _IOS_GROUP, _LANGREADR],
+    doc = "Writes @lifr_identity//:defs.bzl from LIFR_TEAM_ID, LIFR_BUNDLE_PREFIX, LIFR_ICLOUD_CONTAINER, " +
+          "LIFR_IOS_APP_GROUP and LANGREADR_BUNDLE_ID.",
 )

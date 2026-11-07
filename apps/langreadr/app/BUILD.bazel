@@ -1,15 +1,17 @@
+load("@lifr_identity//:defs.bzl", "LANGREADR_BUNDLE_ID", "TEAM_ID")
+load("@rules_apple//apple:apple.bzl", "local_provisioning_profile")
 load("@rules_apple//apple:ios.bzl", "ios_application")
 load("@rules_apple//apple:macos.bzl", "macos_application")
+load("@rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("//apps/lifr:signing.bzl", "lifr_entitlements")
 
 # LangReadr for the iPhone and the Mac, on Apple's on-device model or one
-# downloaded from Hugging Face. Unsigned
-# for now, with a placeholder bundle ID: it runs on simulators and this Mac
-# until it has an App ID of its own. Needs Xcode: build with
-# `--config=xcode`.
-
-# A placeholder until the App ID is reserved.
-_BUNDLE_ID = "local.langreadr"
+# downloaded from Hugging Face. Needs Xcode: build with `--config=xcode`.
+# Its bundle ID and team come from user.bazelrc, like Lifr's (see
+# apps/lifr/identity.bzl). Unsigned, it runs on simulators and this Mac;
+# --config=lifr_ios_device signs the iPhone app for a phone, and
+# //apps/langreadr/tools/testflight:upload for TestFlight.
 
 swift_library(
     name = "app_lib",
@@ -34,18 +36,71 @@ swift_library(
 
 ios_application(
     name = "ios",
-    bundle_id = _BUNDLE_ID,
+    app_icons = glob(["Resources/iOS.xcassets/**"]),
+    bundle_id = LANGREADR_BUNDLE_ID,
     bundle_name = "LangReadr",
+    # Stops a signed build that has no team in user.bazelrc.
+    codesign_inputs = select({
+        "//apps/lifr:is_signed": [":ios_signing_check"],
+        "//conditions:default": [],
+    }),
     families = ["iphone"],
-    infoplists = ["Info.plist"],
+    infoplists = [
+        "Info.plist",
+        "Info-iOS.plist",
+    ],
     minimum_os_version = "18.0",
+    # Any device build, so it runs on a phone; the simulator needs none.
+    # TestFlight uploads use the App Store one.
+    provisioning_profile = select({
+        "//apps/lifr:is_app_store": ":ios_app_store",
+        "@apple_support//constraints:device": ":ios_development",
+        "//conditions:default": None,
+    }),
     target_compatible_with = ["//bazel/xcode"],
+    version = ":ios_version",
     deps = [":app_lib"],
+)
+
+# The iPhone build number: 1, or the UTC date and time tools/testflight
+# passes with --embed_label=langreadr_<YYYYMMDD>_<HHMM>, so each upload is
+# newer than the last.
+apple_bundle_version(
+    name = "ios_version",
+    build_label_pattern = "langreadr_{day}_{time}",
+    build_version = "{day}.{time}",
+    capture_groups = {
+        "day": "\\d{1,8}",
+        "time": "\\d{1,4}",
+    },
+    fallback_build_label = "langreadr_1_0",
+    short_version_string = "0.1",
+)
+
+lifr_entitlements(
+    name = "ios_signing_check",
+    icloud = False,
+)
+
+# The team's development profile, for a phone.
+local_provisioning_profile(
+    name = "ios_development",
+    profile_name = "iOS Team Provisioning Profile: *",
+    team_id = TEAM_ID,
+)
+
+# The App Store profile tools/testflight makes and installs. Manual, so
+# `//apps/langreadr/...` builds before the first upload has made it.
+local_provisioning_profile(
+    name = "ios_app_store",
+    profile_name = "LangReadr App Store",
+    tags = ["manual"],
+    team_id = TEAM_ID,
 )
 
 macos_application(
     name = "macos",
-    bundle_id = _BUNDLE_ID,
+    bundle_id = LANGREADR_BUNDLE_ID,
     bundle_name = "LangReadr",
     infoplists = [
         "Info.plist",

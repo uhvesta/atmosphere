@@ -1,15 +1,19 @@
 #!/bin/sh
-# Builds the iPhone app for the App Store and uploads it to TestFlight.
+# Builds an iPhone app for the App Store and uploads it to TestFlight.
 # Makes what's missing on the way: the bundle IDs, an Apple Distribution
 # certificate in a keychain of its own, and the App Store profiles. The API
 # key comes from the Keychain (see setup.sh) and is only ever on a pipe,
 # except for the upload itself: altool reads it from a file, which lives in
 # a folder only you can open and is deleted when this ends.
+#
+# Each app's tools/testflight:upload passes, in order: the team, the asc
+# tool, the app's name, the --config that signs it for the App Store, its
+# ios_application label, the prefix of its --embed_label, then for the app
+# and each of its extensions "<bundle ID>|<name>|<profile name>|<profile
+# file>", the app first.
 set -eu
 
 service=lifr.app-store-connect
-app_profile="Lifr App Store"
-widgets_profile="Lifr Widgets App Store"
 profiles="$HOME/Library/MobileDevice/Provisioning Profiles"
 
 fail() {
@@ -17,11 +21,15 @@ fail() {
   exit 1
 }
 
-[ $# -eq 4 ] || fail "run it with bazel run --config=xcode //apps/lifr/tools/testflight:upload"
+[ $# -ge 7 ] || fail "run it with bazel run --config=xcode //apps/<app>/tools/testflight:upload"
 team=$1
-bundle=$2
-widgets=$3
-asc="$PWD/$4"
+asc="$PWD/$2"
+app=$3
+config=$4
+target=$5
+prefix=$6
+shift 6
+bundle=${1%%|*}
 [ "$team" != none ] || fail "set LIFR_TEAM_ID and LIFR_BUNDLE_PREFIX in user.bazelrc first (see apps/lifr/identity.bzl)."
 security find-generic-password -s "$service" >/dev/null 2>&1 ||
   fail "there's no App Store Connect key in the Keychain. Run setup first: bazel run //apps/lifr/tools/testflight:setup -- <.p8> <Key ID> <Issuer ID>"
@@ -34,8 +42,10 @@ chmod 700 "$scratch"
 trap 'rm -rf "$scratch"' EXIT
 
 echo "Registering the bundle IDs…"
-api register "$bundle" "Lifr" >/dev/null
-api register "$widgets" "Lifr Widgets" >/dev/null
+for signed in "$@"; do
+  rest=${signed#*|}
+  api register "${signed%%|*}" "${rest%%|*}" >/dev/null
+done
 
 # Signing uses a keychain of its own, so codesign never waits on a
 # Keychain prompt: its key is open to codesign from the start, and the
@@ -87,8 +97,11 @@ fi
 
 echo "Getting the App Store profiles…"
 mkdir -p "$profiles"
-api profile "$app_profile" "$bundle" "$certificate" "$profiles/lifr-app-store.mobileprovision"
-api profile "$widgets_profile" "$widgets" "$certificate" "$profiles/lifr-widgets-app-store.mobileprovision"
+for signed in "$@"; do
+  rest=${signed#*|}
+  rest=${rest#*|}
+  api profile "${rest%%|*}" "${signed%%|*}" "$certificate" "$profiles/${rest#*|}.mobileprovision"
+done
 
 echo "Checking the app is in App Store Connect…"
 api app "$bundle" >/dev/null
@@ -96,11 +109,11 @@ api app "$bundle" >/dev/null
 day=$(date -u +%Y%m%d)
 time=$(date -u +%H%M | sed 's/^0*//; s/^$/0/')
 build="$day.$time"
-echo "Building Lifr 1.0 ($build)…"
+echo "Building $app ($build)…"
 cd "$BUILD_WORKSPACE_DIRECTORY"
-label="lifr_${day}_$time"
-bazel build --config=lifr_testflight --embed_label="$label" //apps/lifr/app:ios
-ipa="$PWD/$(bazel cquery --config=lifr_testflight --embed_label="$label" --output=files //apps/lifr/app:ios 2>/dev/null |
+label="${prefix}_${day}_$time"
+bazel build --config="$config" --embed_label="$label" "$target"
+ipa="$PWD/$(bazel cquery --config="$config" --embed_label="$label" --output=files "$target" 2>/dev/null |
   grep '\.ipa$')"
 
 echo "Uploading…"

@@ -6,12 +6,20 @@ load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
 #   bazel run --config=xcode //apps/lifr/tools/testflight:upload
 # Once, first: store the App Store Connect API key in the login Keychain.
 #   bazel run --config=xcode //apps/lifr/tools/testflight:setup -- <.p8> <Key ID> <Issuer ID>
+# LangReadr's upload (//apps/langreadr/tools/testflight) runs the same
+# script and key with its own app.
 
 # The App Store Connect API calls upload.sh makes.
 swift_binary(
     name = "asc",
     srcs = ["main.swift"],
     target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/langreadr/tools/testflight:__pkg__"],
+)
+
+exports_files(
+    ["upload.sh"],
+    visibility = ["//apps/langreadr/tools/testflight:__pkg__"],
 )
 
 sh_binary(
@@ -19,14 +27,19 @@ sh_binary(
     srcs = ["setup.sh"],
 )
 
+# See upload.sh for what each argument is.
 sh_binary(
     name = "upload",
     srcs = ["upload.sh"],
     args = [
         TEAM_ID or "none",
-        BUNDLE_ID,
-        WIDGETS_BUNDLE_ID,
         "$(rootpath :asc)",
+        "Lifr",
+        "lifr_testflight",
+        "//apps/lifr/app:ios",
+        "lifr",
+        BUNDLE_ID + "|Lifr|Lifr App Store|lifr-app-store",
+        WIDGETS_BUNDLE_ID + "|Lifr Widgets|Lifr Widgets App Store|lifr-widgets-app-store",
     ],
     data = [":asc"],
     target_compatible_with = ["//bazel/xcode"],
