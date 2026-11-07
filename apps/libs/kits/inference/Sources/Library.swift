@@ -269,12 +269,22 @@ public struct InstalledModel: Identifiable, Hashable, Codable, Sendable {
     /// The window the person picked from `spec.contextChoices`, or nil for
     /// the model's own.
     public var chosenWindow: Int?
+    /// Where the person picked for it to run on screen, or nil for the
+    /// planner's pick.
+    public var pickedBackend: ModelBackend?
+    /// How fast it ran here, each time the person had it measured.
+    public var measurements: [ModelMeasurement]
 
-    public init(spec: ModelSpec, directory: URL, installedAt: Date, chosenWindow: Int? = nil) {
+    public init(
+        spec: ModelSpec, directory: URL, installedAt: Date, chosenWindow: Int? = nil,
+        pickedBackend: ModelBackend? = nil, measurements: [ModelMeasurement] = []
+    ) {
         self.spec = spec
         self.directory = directory
         self.installedAt = installedAt
         self.chosenWindow = chosenWindow
+        self.pickedBackend = pickedBackend
+        self.measurements = measurements
     }
 
     public var id: ModelID { spec.id }

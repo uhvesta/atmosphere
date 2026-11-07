@@ -69,6 +69,36 @@ public struct LiteRTLMEngine: ModelEngine {
         }
     }
 
+    /// Reads a fixed prompt of 256 tokens on `backend` and writes 128,
+    /// through LiteRT-LM's own benchmark, at `model`'s window and as its
+    /// profile says.
+    @Sendable public static func measure(_ model: InstalledModel, on backend: ModelBackend)
+        async throws(ModelRuntimeError) -> EngineSpeed
+    {
+        guard let file = model.spec.source?.files.first(where: { $0.path.hasSuffix(".litertlm") }) else {
+            throw .unavailable(.notDownloaded)
+        }
+        let path = model.location(of: file).path
+        guard FileManager.default.fileExists(atPath: path) else { throw .unavailable(.notDownloaded) }
+        let profile = model.spec.profile
+        do {
+            let cache = try cacheDirectory(model.id)
+            let cpu: Backend = .cpu(threadCount: profile.cpuThreads)
+            let info = try await benchmark(
+                modelPath: path, backend: backend == .gpu ? .gpu : cpu, prefillTokens: 256, decodeTokens: 128,
+                cacheDir: cache.path, prompt: "Plan a short week of tasks, one line each.",
+                maxNumTokens: model.window,
+                speculativeDecodingConfig: SpeculativeDecodingConfig(mode: mode(profile.speculation)))
+            return EngineSpeed(
+                prefillTokens: info.lastPrefillTokenCount, decodeTokens: info.lastDecodeTokenCount,
+                prefillTokensPerSecond: info.lastPrefillTokensPerSecond,
+                decodeTokensPerSecond: info.lastDecodeTokensPerSecond,
+                timeToFirstToken: info.timeToFirstTokenInSecond)
+        } catch {
+            throw runtimeError(error)
+        }
+    }
+
     public func chat(instructions: String, constrained: Bool) async throws(ModelRuntimeError) -> any EngineChat {
         do {
             let sampler = try sampling.map {

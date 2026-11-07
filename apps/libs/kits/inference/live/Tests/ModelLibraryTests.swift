@@ -273,6 +273,103 @@ final class ModelLibraryTests: XCTestCase {
         ModelSelection(file: library().selectionFile)
     }
 
+    // MARK: Tuning
+
+    private func bench(
+        failing: Set<ModelBackend> = [], footprints: Locked<[Int64]> = Locked([100, 900, 400]),
+        cpu: Locked<[Double]> = Locked([1, 4])
+    ) -> Bench {
+        Bench(
+            measure: { _, backend throws(ModelRuntimeError) in
+                if failing.contains(backend) { throw .failed("no \(backend)") }
+                return EngineSpeed(
+                    prefillTokens: 200, decodeTokens: 100, prefillTokensPerSecond: 500,
+                    decodeTokensPerSecond: backend == .gpu ? 30 : 12, timeToFirstToken: 0.4)
+            }, device: DeviceInfo(model: "Mac16,10", system: "26.7"),
+            footprint: { footprints.withValue { $0.count > 1 ? $0.removeFirst() : $0.first ?? 0 } },
+            cpuSeconds: { cpu.withValue { $0.count > 1 ? $0.removeFirst() : $0.first ?? 0 } },
+            now: { Date(timeIntervalSince1970: 0) }, interval: .seconds(3_600))
+    }
+
+    func testABenchMeasuresSpeedPeakMemoryAndCPUPerToken() async throws {
+        let library = library()
+        let model = try await library.download(spec())
+        let host = ModelHost(load: { _, _ throws(ModelRuntimeError) in throw .failed("no") })
+
+        let measured = try await bench().run(model, on: [.gpu], host: host)
+
+        let gpu = try XCTUnwrap(measured.first)
+        XCTAssertEqual(measured.count, 1)
+        XCTAssertEqual(gpu.backend, .gpu)
+        XCTAssertEqual(gpu.decodeTokensPerSecond, 30)
+        XCTAssertEqual(gpu.peakMemoryBytes, 800)
+        XCTAssertEqual(gpu.cpuSecondsPerToken, 3.0 / 300, accuracy: 1e-9)
+        XCTAssertEqual(gpu.device, "Mac16,10")
+    }
+
+    func testABackendThatFailsIsLeftOutAndAllFailingSaysWhy() async throws {
+        let library = library()
+        let model = try await library.download(spec())
+        let host = ModelHost(load: { _, _ throws(ModelRuntimeError) in throw .failed("no") })
+
+        let some = try await bench(failing: [.gpu]).run(model, on: [.gpu, .cpu], host: host)
+        XCTAssertEqual(some.map(\.backend), [.cpu])
+
+        do {
+            _ = try await bench(failing: [.gpu, .cpu]).run(model, on: [.gpu, .cpu], host: host)
+            XCTFail("measured nothing without saying so")
+        } catch {
+            XCTAssertEqual(error, .failed("no gpu"))
+        }
+    }
+
+    func testTuningIsKeptAcrossLaunchesAndGoesWithTheModel() async throws {
+        let runtimes = ModelRuntimes<Use>(
+            library: library(), host: ModelHost(load: { _, _ throws(ModelRuntimeError) in throw .failed("no") }),
+            bench: bench())
+        let model = try await runtimes.library.download(spec())
+
+        let first = try await runtimes.tune(model.id)
+        _ = try await runtimes.tune(model.id)
+        await runtimes.pick(.cpu, for: model.id)
+
+        let reopened = try XCTUnwrap(library().installed().first)
+        XCTAssertEqual(reopened.pickedBackend, .cpu)
+        XCTAssertEqual(reopened.measurements.map(\.backend).sorted { $0.rawValue < $1.rawValue }, [.cpu, .gpu])
+        XCTAssertEqual(first.count, 2)
+
+        try await runtimes.delete(model.id)
+        _ = try await runtimes.library.download(spec())
+        XCTAssertEqual(library().installed().first?.measurements, [])
+        XCTAssertNil(library().installed().first?.pickedBackend)
+    }
+
+    func testTuningShowsWhatWasMeasuredHereAndWhereItRuns() async throws {
+        var offered = spec()
+        offered.contextChoices = [4_096, 16_384]
+        let runtimes = ModelRuntimes<Use>(
+            library: library(),
+            host: ModelHost(
+                load: { _, _ throws(ModelRuntimeError) in throw .failed("no") },
+                device: DeviceInfo(model: "Mac16,10", system: "26.7")),
+            bench: bench())
+        let model = try await runtimes.library.download(offered)
+        _ = try await runtimes.tune(model.id)
+        _ = try await runtimes.tune(model.id)
+
+        let tuned = try XCTUnwrap(runtimes.tuning(for: model.id))
+        XCTAssertEqual(tuned.measurements.map(\.backend).sorted { $0.rawValue < $1.rawValue }, [.cpu, .gpu])
+        XCTAssertEqual(tuned.plan.backend, .gpu)
+        XCTAssertNil(tuned.picked)
+
+        await runtimes.pick(.cpu, for: model.id)
+        XCTAssertEqual(runtimes.tuning(for: model.id)?.plan, ModelPlanner.Plan(backend: .cpu, reason: .picked))
+
+        await runtimes.setWindow(16_384, for: model.id)
+        XCTAssertEqual(runtimes.tuning(for: model.id)?.measurements, [])
+        XCTAssertNil(runtimes.tuning(for: "hf/org/other/model.litertlm"))
+    }
+
     func testDeletingAModelRemovesItsFilesAndItsUses() async throws {
         let runtimes = runtimes(library())
         let model = try await runtimes.library.download(spec())

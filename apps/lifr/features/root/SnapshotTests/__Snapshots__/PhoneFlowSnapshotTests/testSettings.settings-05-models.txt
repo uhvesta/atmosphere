@@ -32,3 +32,6 @@
 [text] "Downloaded"
 [button] "Context window, 8K tokens"
 [text] "Uses about 1.45 GB of memory. A larger window keeps more of a conversation."
+[button] "Runs on, Automatic (GPU)"
+[text] "Runs on the GPU, where it does best on most devices. Measure it to see this one."
+[button] "Measure on this device"

@@ -87,6 +87,12 @@
         }
       }
     },
+    "%@ s" : {
+
+    },
+    "%@ tok/s" : {
+
+    },
     "%@ wants to use your tasks through Lifr." : {
 
     },
@@ -465,6 +471,9 @@
     "Attachment" : {
 
     },
+    "Automatic (%@)" : {
+
+    },
     "Avenue" : {
 
     },
@@ -499,6 +508,12 @@
 
     },
     "Built-in search adds related words from the system's word lists, with no model." : {
+
+    },
+    "CPU" : {
+
+    },
+    "CPU per token" : {
 
     },
     "Cancel" : {
@@ -858,6 +873,9 @@
     "Finished %@." : {
 
     },
+    "First word" : {
+
+    },
     "Forget Summary" : {
 
     },
@@ -871,6 +889,9 @@
 
     },
     "From Hugging Face" : {
+
+    },
+    "GPU" : {
 
     },
     "Give the skill a name with letters or digits." : {
@@ -1145,7 +1166,19 @@
     "Marks a task in Lifr as done." : {
 
     },
+    "Measure again" : {
+
+    },
+    "Measure on this device" : {
+
+    },
+    "Measuring, about a minute" : {
+
+    },
     "Medium" : {
+
+    },
+    "Memory" : {
 
     },
     "Message" : {
@@ -1480,6 +1513,9 @@
     "Read only" : {
 
     },
+    "Reads" : {
+
+    },
     "Record" : {
 
     },
@@ -1632,6 +1668,32 @@
     },
     "Runs on" : {
 
+    },
+    "Runs on the %@, as you picked." : {
+
+    },
+    "Runs on the %@, where it does best on most devices. Measure it to see this one." : {
+
+    },
+    "Runs on the %@: fastest here at %lldK tokens, %@ in %@, leaving the CPU free." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Runs on the %1$@: fastest here at %2$lldK tokens, %3$@ in %4$@, leaving the CPU free."
+          }
+        }
+      }
+    },
+    "Runs on the %@: fastest here at %lldK tokens, %@ in %@." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Runs on the %1$@: fastest here at %2$lldK tokens, %3$@ in %4$@."
+          }
+        }
+      }
     },
     "SHA-256 (optional)" : {
 
@@ -2096,6 +2158,9 @@
 
     },
     "Write this reply again" : {
+
+    },
+    "Writes" : {
 
     },
     "Writes a note for this skill" : {

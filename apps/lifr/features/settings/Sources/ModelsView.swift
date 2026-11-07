@@ -50,6 +50,10 @@ package struct ModelsView: View {
                 }
             } header: {
                 Text("Models")
+            } footer: {
+                Text(
+                    "Measure a downloaded model to see how fast it runs here, and how much memory and CPU it "
+                        + "takes, on the GPU and on the CPU. Lifr then runs it where it's fastest, unless you pick.")
             }
             Section {
                 TextField("Hugging Face link", text: $store.link)
@@ -99,6 +103,20 @@ private struct ModelRow: View {
     let store: StoreOf<ModelsFeature>
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            row
+            if store.installed.contains(model.id), store.downloads[model.id] == nil,
+                let tuning = store.tunings[model.id]
+            {
+                ModelTuningView(
+                    tuning, isMeasuring: store.measuring.contains(model.id), error: store.measureErrors[model.id],
+                    measure: { store.send(.measureTapped(model.id)) },
+                    pick: { store.send(.backendPicked($0, for: model.id)) })
+            }
+        }
+    }
+
+    private var row: some View {
         ChatUI.ModelRow(
             model, download: store.downloads[model.id], isInstalled: store.installed.contains(model.id),
             window: store.windows[model.id] ?? model.contextTokens,

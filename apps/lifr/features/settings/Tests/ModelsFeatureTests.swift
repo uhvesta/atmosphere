@@ -84,6 +84,75 @@ final class ModelsFeatureTests: XCTestCase {
         await store.skipInFlightEffects()
     }
 
+    func testMeasuringAModelShowsEachBackendAndRunsItOnTheFastest() async {
+        let library = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B])
+        let store = await models(library)
+        let id = ModelCatalog.gemma4E2B.id
+        XCTAssertEqual(store.state.tunings[id]?.plan.reason, .profile)
+        XCTAssertEqual(store.state.tunings[id]?.measurements, [])
+
+        await store.send(.measureTapped(id))
+        XCTAssertTrue(store.state.measuring.contains(id))
+        await store.receive(\.measured)
+
+        XCTAssertFalse(store.state.measuring.contains(id))
+        let tuning = store.state.tunings[id]
+        XCTAssertEqual(tuning?.measurements.map(\.backend), [.gpu, .cpu])
+        XCTAssertEqual(tuning?.plan.backend, .gpu)
+        await store.skipInFlightEffects()
+    }
+
+    func testPickingWhereAModelRunsIsKeptAndAutomaticGoesBack() async {
+        let library = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B])
+        let store = await models(library)
+        let id = ModelCatalog.gemma4E2B.id
+        await store.send(.measureTapped(id))
+        await store.receive(\.measured)
+
+        await store.send(.backendPicked(.cpu, for: id))
+        await store.receive(\.tuningChanged)
+        XCTAssertEqual(store.state.tunings[id]?.plan, ModelPlanner.Plan(backend: .cpu, reason: .picked))
+        XCTAssertEqual(library.client.tuning(id)?.picked, .cpu)
+
+        await store.send(.backendPicked(nil, for: id))
+        await store.receive(\.tuningChanged)
+        XCTAssertEqual(store.state.tunings[id]?.plan.backend, .gpu)
+        XCTAssertNil(library.client.tuning(id)?.picked)
+        await store.skipInFlightEffects()
+    }
+
+    func testAMeasurementThatFailsSaysWhyAndCanBeTriedAgain() async {
+        let library = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B])
+        let id = ModelCatalog.gemma4E2B.id
+        library.failNextTune(of: id, with: .failed("The GPU went away."))
+        let store = await models(library)
+
+        await store.send(.measureTapped(id))
+        await store.receive(\.measured)
+        XCTAssertNotNil(store.state.measureErrors[id])
+        XCTAssertEqual(store.state.tunings[id]?.measurements, [])
+
+        await store.send(.measureTapped(id))
+        XCTAssertNil(store.state.measureErrors[id])
+        await store.receive(\.measured)
+        XCTAssertEqual(store.state.tunings[id]?.measurements.count, 2)
+        await store.skipInFlightEffects()
+    }
+
+    func testANewWindowShowsNothingMeasuredAtIt() async {
+        let library = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B])
+        let store = await models(library)
+        let id = ModelCatalog.gemma4E2B.id
+        await store.send(.measureTapped(id))
+        await store.receive(\.measured)
+
+        await store.send(.windowPicked(32_768, for: id))
+        await store.receive(\.tuningChanged)
+        XCTAssertEqual(store.state.tunings[id]?.measurements, [])
+        XCTAssertEqual(store.state.tunings[id]?.plan.reason, .profile)
+        await store.skipInFlightEffects()
+    }
+
     func testADownloadFromALinkLeftUnfinishedCanBeResumedAfterARelaunch() async {
         let library = InMemoryModelLibrary()
         library.leaveUnfinished(pasted, received: 300)

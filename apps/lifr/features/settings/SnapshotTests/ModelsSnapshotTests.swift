@@ -6,8 +6,8 @@ import SnapshotTesting
 import SwiftUI
 import XCTest
 
-/// Models with Gemma 4 E2B downloaded at a 16K window and picked for
-/// writing skills, E4B downloading, and a model pasted from a link whose
+/// Models with Gemma 4 E2B downloaded at a 16K window, measured on the
+/// GPU and the CPU and picked for writing skills, E4B downloading, and a model pasted from a link whose
 /// file failed its check.
 @MainActor
 final class ModelsSnapshotTests: XCTestCase {
@@ -22,12 +22,27 @@ final class ModelsSnapshotTests: XCTestCase {
                     digest: .sha256("aa11bb22cc33dd44ee55ff6600aa11bb22cc33dd44ee55ff6600aa11bb22cc33"))
             ]), contextTokens: 4_096, memoryBytes: 900_000_000, license: "See its Hugging Face page")
 
+    /// Measured here at 16K: the GPU twice as fast and light on the CPU.
+    private static let measured: ModelTuning = {
+        func measurement(_ backend: ModelBackend, decode: Double, memory: Int64, cpu: Double) -> ModelMeasurement {
+            ModelMeasurement(
+                backend: backend, runtime: .liteRT, window: 16_384, device: "iPhone18,1", system: "27.0",
+                prefillTokensPerSecond: decode * 17, decodeTokensPerSecond: decode, timeToFirstToken: 0.6,
+                peakMemoryBytes: memory, cpuSecondsPerToken: cpu, measuredAt: Date(timeIntervalSince1970: 0))
+        }
+        let gpu = measurement(.gpu, decode: 24, memory: 3_328_599_654, cpu: 0.004)
+        return ModelTuning(
+            plan: ModelPlanner.Plan(backend: .gpu, reason: .measured(gpu)),
+            measurements: [gpu, measurement(.cpu, decode: 11, memory: 2_899_102_924, cpu: 0.31)])
+    }()
+
     private var models: ModelsFeature.State {
         var state = ModelsFeature.State()
         state.models = ModelCatalog.all + [Self.pasted]
         state.installed = [ModelCatalog.gemma4E2B.id]
         state.selection = [.skills: ModelCatalog.gemma4E2B.id]
         state.windows = [ModelCatalog.gemma4E2B.id: 16_384]
+        state.tunings = [ModelCatalog.gemma4E2B.id: Self.measured]
         state.downloads = [
             ModelCatalog.gemma4E4B.id: .downloading(received: 1_200_000_000, total: 3_659_530_240),
             Self.pasted.id: .failed(.digestMismatch(file: "Qwen3-0.6B.litertlm")),

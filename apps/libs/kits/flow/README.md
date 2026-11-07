@@ -56,6 +56,7 @@ References live next to the tests in `SnapshotTests/__Snapshots__/`.
   every window on screen, sheets included.
   - `step` waits for the screen to settle, then checks it.
   - `tap` (iOS) presses a control by its label, the way VoiceOver does.
+  - `scrollToEnd` (iOS) scrolls the longest list on screen to its end.
 - `assertSnapshot(of:as:named:)` checks a single view or value, and
   `assertScreenImages` checks a view at several screen sizes.
 - Text a model wrote changes from run to run. Give it the accessibility

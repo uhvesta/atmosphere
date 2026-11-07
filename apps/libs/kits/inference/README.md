@@ -10,7 +10,7 @@ model it uses.
 | Target | What it has |
 | --- | --- |
 | `//apps/libs/kits/inference` | `ModelRuntime`, `ModelEngine`, context budgets, the catalog, Hugging Face links and hashes, which model each use runs on, the downloads in progress, and `ScriptedRuntime` for tests and previews. |
-| `//apps/libs/kits/inference/live` | Apple's model through Foundation Models, downloaded models through `ModelHost`, and `ModelLibrary`, which downloads, verifies, stores and deletes models. |
+| `//apps/libs/kits/inference/live` | Apple's model through Foundation Models, downloaded models through `ModelHost`, `ModelLibrary`, which downloads, verifies, stores and deletes models, and `Bench`, which measures them. |
 | `//apps/libs/kits/inference/litert` | LiteRT-LM, a `ModelEngine`, on the GPU through Google's prebuilt framework. |
 
 Features depend on the first target. Only the app's entry point uses the
@@ -67,6 +67,16 @@ let runtime = ScriptedRuntime(steps: [{ _, _ in "Tidied." }])
   model when the system runs low on memory. On iOS, it moves the model off
   the GPU when the app goes to the background. Before loading a model, it
   checks with `MemoryPlan` that the model fits.
+- `Bench` (in live) measures a downloaded model when the person asks: a
+  short fixed prompt on each backend it fits on, with how fast it reads
+  and writes, how soon the first token comes, its peak memory and the CPU
+  time per token. `ModelLibrary` keeps each `ModelMeasurement` with the
+  model, along with the backend the person picked, and drops both with it.
+- `ModelPlanner` picks where a model runs on screen: the person's pick;
+  else the fastest measured on this device and system at its window that
+  fits in memory now, the lighter one when two are within a tenth; else
+  its profile's. `ModelRuntimes.tuning(for:)` returns the plan, the pick
+  and the measurements as a `ModelTuning`, for a settings screen.
 - Foundation Models is weakly linked, so apps still run on iOS 18 and
   macOS 15. There, Apple's model reports that the system is too old.
 

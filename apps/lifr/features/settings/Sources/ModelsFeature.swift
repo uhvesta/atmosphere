@@ -3,7 +3,9 @@ import Foundation
 import LifrModelsClient
 
 /// The models on this device: which one each use runs on, downloading one
-/// from the catalog or from a Hugging Face link, and removing one.
+/// from the catalog or from a Hugging Face link, removing one, and
+/// measuring how fast one runs here to pick whether it runs on the GPU or
+/// the CPU.
 /// Downloads go on when the screen closes, and show here when it opens.
 @Reducer
 package struct ModelsFeature {
@@ -16,6 +18,13 @@ package struct ModelsFeature {
         package var selection: [ModelUse: ModelID] = [:]
         /// The window each downloaded model runs at.
         package var windows: [ModelID: Int] = [:]
+        /// Where each downloaded model runs and why, and what was measured
+        /// of it here.
+        package var tunings: [ModelID: ModelTuning] = [:]
+        /// The models being measured now.
+        package var measuring: Set<ModelID> = []
+        /// Why measuring a model didn't finish.
+        package var measureErrors: [ModelID: String] = [:]
         /// The Hugging Face link being added, and its SHA-256 if given.
         package var link = ""
         package var sha256 = ""
@@ -55,13 +64,20 @@ package struct ModelsFeature {
     package enum Action: BindableAction {
         case binding(BindingAction<State>)
         case task
-        case loaded(installed: [InstalledModel], unfinished: [ModelSpec], selection: [ModelUse: ModelID])
+        case loaded(
+            installed: [InstalledModel], unfinished: [ModelSpec], selection: [ModelUse: ModelID],
+            tunings: [ModelID: ModelTuning])
         case downloadsChanged([ModelID: DownloadState])
         case picked(ModelID, for: ModelUse)
         case windowPicked(Int, for: ModelID)
         /// What each use runs on after a pick, as uses left unpicked
         /// follow the assistant.
         case selectionChanged([ModelUse: ModelID])
+        case measureTapped(ModelID)
+        case measured(ModelID, Result<ModelTuning?, ModelRuntimeError>)
+        case backendPicked(ModelBackend?, for: ModelID)
+        /// Where a model runs after a pick or a new window.
+        case tuningChanged(ModelID, ModelTuning?)
         case downloadTapped(ModelID)
         case downloaded(ModelID, Result<InstalledModel, ModelDownloadError>)
         case pauseTapped(ModelID)
@@ -90,12 +106,13 @@ package struct ModelsFeature {
                     }
                 }
 
-            case .loaded(let installed, let unfinished, let selection):
+            case .loaded(let installed, let unfinished, let selection, let tunings):
                 for spec in unfinished { state.add(spec) }
                 for model in installed { state.add(model.spec) }
                 state.installed = Set(installed.map(\.id))
                 state.windows = Dictionary(installed.map { ($0.id, $0.window) }) { first, _ in first }
                 state.selection = selection
+                state.tunings = tunings
                 return .none
 
             case .downloadsChanged(let downloads):
@@ -114,7 +131,44 @@ package struct ModelsFeature {
 
             case .windowPicked(let window, let id):
                 state.windows[id] = window
-                return .run { [library] _ in await library.setWindow(id, window) }
+                return .run { [library] send in
+                    await library.setWindow(id, window)
+                    await send(.tuningChanged(id, library.tuning(id)))
+                }
+
+            case .measureTapped(let id):
+                guard !state.measuring.contains(id) else { return .none }
+                state.measuring.insert(id)
+                state.measureErrors[id] = nil
+                return .run { [library] send in
+                    do throws(ModelRuntimeError) {
+                        try await library.tune(id)
+                        await send(.measured(id, .success(library.tuning(id))))
+                    } catch {
+                        await send(.measured(id, .failure(error)))
+                    }
+                }
+
+            case .measured(let id, .success(let tuning)):
+                state.measuring.remove(id)
+                state.tunings[id] = tuning
+                return .none
+
+            case .measured(let id, .failure(let error)):
+                state.measuring.remove(id)
+                state.measureErrors[id] = error.description
+                return .none
+
+            case .backendPicked(let backend, let id):
+                state.tunings[id]?.picked = backend
+                return .run { [library] send in
+                    await library.pickBackend(id, backend)
+                    await send(.tuningChanged(id, library.tuning(id)))
+                }
+
+            case .tuningChanged(let id, let tuning):
+                state.tunings[id] = tuning
+                return .none
 
             case .selectionChanged(let selection):
                 state.selection = selection
@@ -128,7 +182,7 @@ package struct ModelsFeature {
                 state.add(model.spec)
                 state.installed.insert(model.id)
                 state.windows[model.id] = model.window
-                return .none
+                return .run { [library] send in await send(.tuningChanged(model.id, library.tuning(model.id))) }
 
             case .downloaded(_, .failure):
                 // The download's row shows why, from `downloads`.
@@ -212,7 +266,11 @@ package struct ModelsFeature {
 
     private static func loaded(_ library: ModelLibraryClient) async -> Action {
         let installed = await library.installed()
-        return .loaded(installed: installed, unfinished: await library.unfinished(), selection: selection(library))
+        let tunings = Dictionary(
+            uniqueKeysWithValues: installed.compactMap { model in library.tuning(model.id).map { (model.id, $0) } })
+        return .loaded(
+            installed: installed, unfinished: await library.unfinished(), selection: selection(library),
+            tunings: tunings)
     }
 
     private static func selection(_ library: ModelLibraryClient) -> [ModelUse: ModelID] {

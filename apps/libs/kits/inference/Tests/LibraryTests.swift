@@ -301,3 +301,61 @@ final class ModelVariantTests: XCTestCase {
         XCTAssertNil(ModelCatalog.entry(for: elsewhere))
     }
 }
+
+final class ModelPlannerTests: XCTestCase {
+    private let model = InstalledModel(
+        spec: ModelCatalog.gemma4E2B, directory: URL(filePath: "/models/gemma"), installedAt: Date())
+
+    private func measured(
+        _ backend: ModelBackend, speed: Double, memory: Int64 = 1_000, cpu: Double = 0.001, system: String = "27.0"
+    ) -> ModelMeasurement {
+        ModelMeasurement(
+            backend: backend, runtime: .liteRT, window: model.window, device: "iPhone18,1", system: system,
+            prefillTokensPerSecond: speed * 10, decodeTokensPerSecond: speed, timeToFirstToken: 0.2,
+            peakMemoryBytes: memory, cpuSecondsPerToken: cpu, measuredAt: Date())
+    }
+
+    private func plan(
+        _ measurements: [ModelMeasurement], picked: ModelBackend? = nil, available: Int64 = .max
+    ) -> ModelPlanner.Plan {
+        ModelPlanner.plan(
+            model, picked: picked, measurements: measurements, device: "iPhone18,1", system: "27.0",
+            fits: { $0 <= available })
+    }
+
+    func testWithNothingMeasuredAModelRunsAsItsProfileSays() {
+        XCTAssertEqual(plan([]), ModelPlanner.Plan(backend: .gpu, reason: .profile))
+    }
+
+    func testTheFastestMeasuredBackendIsPicked() {
+        let cpu = measured(.cpu, speed: 30, cpu: 0.05)
+        let gpu = measured(.gpu, speed: 20)
+
+        XCTAssertEqual(plan([gpu, cpu]), ModelPlanner.Plan(backend: .cpu, reason: .measured(cpu)))
+    }
+
+    func testOfTwoAboutAsFastTheOneLighterOnTheCPUIsPicked() {
+        let cpu = measured(.cpu, speed: 21, cpu: 0.05)
+        let gpu = measured(.gpu, speed: 20, cpu: 0.002)
+
+        XCTAssertEqual(plan([cpu, gpu]).backend, .gpu)
+    }
+
+    func testABackendThatDoesntFitNowIsntPicked() {
+        let gpu = measured(.gpu, speed: 40, memory: 3_000)
+        let cpu = measured(.cpu, speed: 10, memory: 1_000)
+
+        XCTAssertEqual(plan([gpu, cpu], available: 2_000).backend, .cpu)
+    }
+
+    func testMeasurementsFromAnotherSystemDontCount() {
+        let old = measured(.cpu, speed: 40, system: "26.4")
+
+        XCTAssertEqual(plan([old]).reason, .profile)
+    }
+
+    func testThePersonsPickWins() {
+        XCTAssertEqual(
+            plan([measured(.gpu, speed: 40)], picked: .cpu), ModelPlanner.Plan(backend: .cpu, reason: .picked))
+    }
+}

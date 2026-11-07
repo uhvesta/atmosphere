@@ -50,6 +50,7 @@ public actor ModelHost {
     private let idle: Duration
     private let sleep: @Sendable (Duration) async throws -> Void
     private let answersInBackground: @Sendable () -> Bool
+    private let device: DeviceInfo
 
     private var loaded: Loaded?
     private var loading: Loading?
@@ -69,12 +70,14 @@ public actor ModelHost {
     ///   - answersInBackground: Whether a turn goes on, on the CPU, while
     ///     the app is in the background. Off, it waits for the app to be
     ///     back on screen.
+    ///   - device: The device measurements must be from to count.
     public init(
         load: @escaping Loader, memory: @escaping @Sendable () -> Int64 = MemoryPlan.available,
         idle: Duration = .seconds(300),
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
-        answersInBackground: @escaping @Sendable () -> Bool = { false }
+        answersInBackground: @escaping @Sendable () -> Bool = { false }, device: DeviceInfo = .current
     ) {
+        self.device = device
         self.load = load
         self.memory = memory
         self.idle = idle
@@ -91,6 +94,35 @@ public actor ModelHost {
             guard let load = engines[kind] else { throw .engineMissing(kind) }
             return try await load(model, backend)
         }
+    }
+
+    /// Where `model` runs while the app is on screen, and why: the person's
+    /// pick, what was measured fastest here among what fits in memory now,
+    /// or its profile's.
+    public nonisolated func plan(for model: InstalledModel) -> ModelPlanner.Plan {
+        let available = memory()
+        return ModelPlanner.plan(
+            model, picked: model.pickedBackend, measurements: model.measurements, device: device.model,
+            system: device.system, fits: { MemoryPlan.fits($0, available: available) })
+    }
+
+    /// Where `model` runs and why, the person's pick, and what was measured
+    /// of it on this device at its window.
+    public nonisolated func tuning(for model: InstalledModel) -> ModelTuning {
+        let here = model.measurements
+            .filter { $0.describes(model, device: device.model, system: device.system) }
+            .sorted { $0.measuredAt > $1.measuredAt }
+        var latest: [ModelMeasurement] = []
+        for measurement in here where !latest.contains(where: { $0.backend == measurement.backend }) {
+            latest.append(measurement)
+        }
+        return ModelTuning(plan: plan(for: model), picked: model.pickedBackend, measurements: latest)
+    }
+
+    /// Whether `model` fits on `backend` in the memory the system leaves
+    /// the app now, with nothing else loaded.
+    public nonisolated func fits(_ model: InstalledModel, on backend: ModelBackend) -> Bool {
+        MemoryPlan.fits(MemoryPlan.needed(model, on: backend), available: memory())
     }
 
     /// The model that's loaded, if any.
@@ -141,7 +173,7 @@ public actor ModelHost {
     /// loaded already.
     public func engine(for model: InstalledModel) async throws(ModelRuntimeError) -> any ModelEngine {
         idleTimer?.cancel()
-        let backend: ModelBackend = inBackground ? .cpu : model.spec.profile.onScreen
+        let backend: ModelBackend = inBackground ? .cpu : plan(for: model).backend
         // A model loaded at another window is loaded again, once its turns
         // are done.
         if let loaded, loaded.is(model), loaded.backend == backend || !turns.isEmpty { return loaded.engine }

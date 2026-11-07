@@ -21,6 +21,9 @@ extension ModelRuntimes where Use == ModelUse {
             downloads: { [library] in library.downloads() },
             pause: { [library] id in await library.pause(id) },
             delete: { [self] id throws(ModelStorageError) in try await delete(id) },
+            tune: { [self] id throws(ModelRuntimeError) in _ = try await tune(id) },
+            pickBackend: { [self] id, backend in await pick(backend, for: id) },
+            tuning: { [self] id in tuning(for: id) },
             selection: { [selection] use in selection.model(for: use) },
             select: { [self] id, use in await select(id, for: use) },
             setWindow: { [self] id, window in await setWindow(window, for: id) }

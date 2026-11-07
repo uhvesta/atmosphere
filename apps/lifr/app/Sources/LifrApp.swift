@@ -127,7 +127,8 @@ private enum Storage {
         Task { await host.observeSystem() }
         let library = ModelLibrary.live()
         library.resumeUnfinished()
-        return ModelRuntimes(library: library, host: host)
+        let bench = Bench(measure: Bench.measuring(with: [.liteRT: LiteRTLMEngine.measure]))
+        return ModelRuntimes(library: library, host: host, bench: bench)
     }()
 
     /// On the Mac, the local API that `lifr` connects to. The iPhone has no

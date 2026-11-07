@@ -58,13 +58,20 @@ public struct ModelRuntimes<Use: ModelUseCase>: Sendable {
     public let library: ModelLibrary
     public let selection: ModelSelection<Use>
     public let host: ModelHost
+    public let bench: Bench?
 
-    /// - Parameter selection: What each use runs on; by default kept in
-    ///   `selection.json` in the library's folder.
-    public init(library: ModelLibrary, selection: ModelSelection<Use>? = nil, host: ModelHost) {
+    /// - Parameters:
+    ///   - selection: What each use runs on; by default kept in
+    ///     `selection.json` in the library's folder.
+    ///   - bench: What measures a model when the person asks; nil when the
+    ///     app can't.
+    public init(
+        library: ModelLibrary, selection: ModelSelection<Use>? = nil, host: ModelHost, bench: Bench? = nil
+    ) {
         self.library = library
         self.selection = selection ?? ModelSelection(file: library.selectionFile)
         self.host = host
+        self.bench = bench
     }
 
     public func runtime(for use: Use) -> any ModelRuntime {
@@ -89,6 +96,37 @@ public struct ModelRuntimes<Use: ModelUseCase>: Sendable {
     public func setWindow(_ window: Int, for id: ModelID) async {
         library.setWindow(window, for: id)
         await host.release(model: id)
+    }
+
+    /// Measures `id` on each backend it fits on now, and keeps the
+    /// measurements for the planner. What's loaded is unloaded first.
+    public func tune(_ id: ModelID) async throws(ModelRuntimeError) -> [ModelMeasurement] {
+        guard let bench, let model = library.installed().first(where: { $0.id == id }) else {
+            throw .unavailable(.notDownloaded)
+        }
+        let backends = [ModelBackend.gpu, .cpu].filter { host.fits(model, on: $0) }
+        guard !backends.isEmpty else {
+            let needed = MemoryPlan.needed(model, on: .cpu)
+            let available = MemoryPlan.available()
+            throw .unavailable(
+                .notEnoughMemory(needed: needed + MemoryPlan.headroom(available), available: available))
+        }
+        let measured = try await bench.run(model, on: backends, host: host)
+        library.record(measured, for: id)
+        return measured
+    }
+
+    /// Runs `id` on `backend` while the app is on screen, or where the
+    /// planner picks with nil, from its next turn.
+    public func pick(_ backend: ModelBackend?, for id: ModelID) async {
+        library.pick(backend, for: id)
+        await host.release(model: id)
+    }
+
+    /// Where `id` runs on screen and why, and what was measured of it
+    /// here, if it's downloaded.
+    public func tuning(for id: ModelID) -> ModelTuning? {
+        library.installed().first { $0.id == id }.map(host.tuning)
     }
 
     /// Runs `use` on `id`, and lets go of the loaded model if no use runs

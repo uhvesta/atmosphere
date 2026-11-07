@@ -82,6 +82,27 @@
             }
         }
 
+        /// Scrolls the longest list on screen to its end, as a person would to
+        /// see the bottom of a long form.
+        public func scrollToEnd(file: StaticString = #filePath, line: UInt = #line) {
+            window.layoutIfNeeded()
+            let lists = Self.scrollViews(in: window).filter {
+                !$0.isHidden && $0.alpha > 0 && $0.convert($0.bounds, to: window).intersects(window.bounds)
+            }
+            guard let list = lists.max(by: { $0.contentSize.height < $1.contentSize.height }) else {
+                XCTFail("There's nothing on the screen that scrolls.", file: file, line: line)
+                return
+            }
+            let insets = list.adjustedContentInset
+            let end = max(-insets.top, list.contentSize.height + insets.bottom - list.bounds.height)
+            list.setContentOffset(CGPoint(x: list.contentOffset.x, y: end), animated: false)
+        }
+
+        private static func scrollViews(in view: UIView) -> [UIScrollView] {
+            let own = (view as? UIScrollView).map { [$0] } ?? []
+            return own + view.subviews.flatMap(scrollViews)
+        }
+
         /// Ends the flow, taking the screen down.
         public func finish() {
             window.isHidden = true

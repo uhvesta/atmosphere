@@ -38,7 +38,20 @@ package struct ModelLibraryClient: Sendable {
     package var delete: @Sendable (_ id: ModelID) async throws(ModelStorageError) -> Void = {
         _ throws(ModelStorageError) in
     }
+    /// Measures how fast `id` runs here on each backend it fits on, with a
+    /// short fixed prompt, and keeps what was measured for picking where it
+    /// runs. Unloads the loaded model first. Takes a minute or so.
+    package var tune: @Sendable (_ id: ModelID) async throws(ModelRuntimeError) -> Void = {
+        _ throws(ModelRuntimeError) in
+        throw .unavailable(.notDownloaded)
+    }
     // swiftlint:enable closure_parameter_position
+    /// Runs `id` on `backend` while Lifr is on screen, or where Lifr picks
+    /// from what was measured with nil, from its next answer.
+    package var pickBackend: @Sendable (_ id: ModelID, _ backend: ModelBackend?) async -> Void
+    /// Where `id` runs and why, and what was measured of it here, if it's
+    /// downloaded.
+    package var tuning: @Sendable (_ id: ModelID) -> ModelTuning? = { _ in nil }
     /// The model `use` runs on.
     package var selection: @Sendable (_ use: ModelUse) -> ModelID = { _ in .apple }
     package var select: @Sendable (_ id: ModelID, _ use: ModelUse) async -> Void
@@ -68,7 +81,11 @@ package final class InMemoryModelLibrary: Sendable {
         var selection: [ModelUse: ModelID] = [:]
         var failures: [ModelID: ModelDownloadError] = [:]
         var unfinished: [ModelID: ModelSpec] = [:]
+        var tuneFailures: [ModelID: ModelRuntimeError] = [:]
     }
+
+    /// The device measurements in memory are from.
+    private static let device = (model: "iPhone18,1", system: "27.0")
 
     private let state = LockIsolated(State())
     private let board = DownloadBoard()
@@ -101,6 +118,11 @@ package final class InMemoryModelLibrary: Sendable {
     package func leaveUnfinished(_ spec: ModelSpec, received: Int64) {
         state.withValue { $0.unfinished[spec.id] = spec }
         board.update { $0[spec.id] = .paused(received: received, total: spec.source?.totalSize ?? 0) }
+    }
+
+    /// Makes the next tune of `id` fail with `error`.
+    package func failNextTune(of id: ModelID, with error: ModelRuntimeError) {
+        state.withValue { $0.tuneFailures[id] = error }
     }
 
     /// Shows `download` for `id`, as a download in progress would.
@@ -150,6 +172,17 @@ package final class InMemoryModelLibrary: Sendable {
                 }
                 board.update { $0[id] = nil }
             },
+            tune: { [self] id throws(ModelRuntimeError) in
+                if let error = state.withValue({ $0.tuneFailures.removeValue(forKey: id) }) { throw error }
+                let found = state.withValue { state in
+                    guard let model = state.installed[id] else { return false }
+                    state.installed[id]?.measurements = Self.measured(model, at: now)
+                    return true
+                }
+                guard found else { throw .unavailable(.notDownloaded) }
+            },
+            pickBackend: { [state] id, backend in state.withValue { $0.installed[id]?.pickedBackend = backend } },
+            tuning: { [state] id in state.value.installed[id].map(Self.tuning) },
             selection: { [state] use in use.model(in: state.value.selection) },
             select: { [state] id, use in state.withValue { $0.selection[use] = id } },
             setWindow: { [state] id, window in
@@ -159,6 +192,33 @@ package final class InMemoryModelLibrary: Sendable {
                 }
             }
         )
+    }
+
+    /// A GPU that writes twice as fast as the CPU and leaves it free, and a
+    /// CPU that takes less memory.
+    private static func measured(_ model: InstalledModel, at now: Date) -> [ModelMeasurement] {
+        let variant = model.spec.variant
+        let gigabyte: Int64 = 1_073_741_824
+        return [
+            ModelMeasurement(
+                backend: .gpu, runtime: variant.runtime, quantization: variant.quantization, window: model.window,
+                device: device.model, system: device.system, prefillTokensPerSecond: 410,
+                decodeTokensPerSecond: 24, timeToFirstToken: 0.6, peakMemoryBytes: 31 * gigabyte / 10,
+                cpuSecondsPerToken: 0.004, measuredAt: now),
+            ModelMeasurement(
+                backend: .cpu, runtime: variant.runtime, quantization: variant.quantization, window: model.window,
+                device: device.model, system: device.system, prefillTokensPerSecond: 95,
+                decodeTokensPerSecond: 11, timeToFirstToken: 2.1, peakMemoryBytes: 27 * gigabyte / 10,
+                cpuSecondsPerToken: 0.31, measuredAt: now),
+        ]
+    }
+
+    private static func tuning(_ model: InstalledModel) -> ModelTuning {
+        let here = model.measurements.filter { $0.describes(model, device: device.model, system: device.system) }
+        let plan = ModelPlanner.plan(
+            model, picked: model.pickedBackend, measurements: here, device: device.model, system: device.system,
+            fits: { _ in true })
+        return ModelTuning(plan: plan, picked: model.pickedBackend, measurements: here)
     }
 
     private static func installed(_ spec: ModelSpec, at now: Date) -> InstalledModel {

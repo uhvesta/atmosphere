@@ -11,6 +11,16 @@ public final class ModelLibrary: Sendable {
         var downloads: [ModelID: Task<Result<InstalledModel, ModelDownloadError>, Never>] = [:]
         /// The window picked for each model that has a choice.
         var windows: [ModelID: Int] = [:]
+        /// Where each model runs and how fast it ran, for those the person
+        /// tuned.
+        var tuning: [ModelID: Tuning] = [:]
+    }
+
+    /// What's kept of a model's tuning: where the person picked for it to
+    /// run, and its measurements.
+    private struct Tuning: Codable {
+        var picked: ModelBackend?
+        var measurements: [ModelMeasurement] = []
     }
 
     private let root: URL
@@ -51,7 +61,11 @@ public final class ModelLibrary: Sendable {
         self.catalog = catalog
         self.now = now
         let windows = try? JSONDecoder().decode([ModelID: Int].self, from: Data(contentsOf: windowsFile))
-        state.withValue { $0.windows = windows ?? [:] }
+        let tuning = try? JSONDecoder().decode([ModelID: Tuning].self, from: Data(contentsOf: tuningFile))
+        state.withValue {
+            $0.windows = windows ?? [:]
+            $0.tuning = tuning ?? [:]
+        }
     }
 
     /// The library in Application Support, in a folder for the app on the
@@ -141,7 +155,7 @@ public final class ModelLibrary: Sendable {
     public func installed() -> [InstalledModel] {
         let manager = FileManager.default
         let folders = (try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
-        let windows = state.value.windows
+        let (windows, tuning) = state.withValue { ($0.windows, $0.tuning) }
         return folders.filter { !$0.lastPathComponent.hasPrefix(".") }.flatMap { model in
             let commits = (try? manager.contentsOfDirectory(at: model, includingPropertiesForKeys: nil)) ?? []
             return commits.compactMap(Self.manifest)
@@ -149,6 +163,8 @@ public final class ModelLibrary: Sendable {
         .map { model in
             var model = model
             model.chosenWindow = windows[model.id].flatMap { ModelSpec.choice($0, of: model.spec) }
+            model.pickedBackend = tuning[model.id]?.picked
+            model.measurements = tuning[model.id]?.measurements ?? []
             return model
         }
         .sorted { $0.installedAt < $1.installedAt }
@@ -379,6 +395,40 @@ public final class ModelLibrary: Sendable {
             }
         }
         board.update { $0[id] = nil }
+        saveTuning { $0[id] = nil }
+    }
+
+    // MARK: Tuning
+
+    /// Runs `id` on `backend` while the app is on screen, or where the
+    /// planner picks with nil.
+    public func pick(_ backend: ModelBackend?, for id: ModelID) {
+        saveTuning { $0[id, default: Tuning()].picked = backend }
+    }
+
+    /// Keeps `measurements` of `id`, in place of earlier ones of the same
+    /// backend, variant, window, device and system.
+    public func record(_ measurements: [ModelMeasurement], for id: ModelID) {
+        saveTuning { tuning in
+            var kept = tuning[id, default: Tuning()]
+            kept.measurements.removeAll { old in
+                measurements.contains {
+                    $0.backend == old.backend && $0.runtime == old.runtime && $0.quantization == old.quantization
+                        && $0.window == old.window && $0.device == old.device && $0.system == old.system
+                }
+            }
+            kept.measurements += measurements
+            tuning[id] = kept
+        }
+    }
+
+    private func saveTuning(_ change: (inout [ModelID: Tuning]) -> Void) {
+        let tuning = state.withValue { state in
+            change(&state.tuning)
+            return state.tuning
+        }
+        try? prepare(root)
+        try? JSONEncoder().encode(tuning).write(to: tuningFile, options: .atomic)
     }
 
     // MARK: Windows
@@ -400,6 +450,7 @@ public final class ModelLibrary: Sendable {
     /// Where `ModelRuntimes` keeps what each use runs on, by default.
     public var selectionFile: URL { root.appending(path: "selection.json", directoryHint: .notDirectory) }
     private var windowsFile: URL { root.appending(path: "windows.json", directoryHint: .notDirectory) }
+    private var tuningFile: URL { root.appending(path: "tuning.json", directoryHint: .notDirectory) }
 
     private func folder(_ id: ModelID) -> URL {
         root.appending(path: id.directoryName, directoryHint: .isDirectory)
