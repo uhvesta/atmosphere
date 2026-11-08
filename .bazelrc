@@ -99,3 +99,8 @@ common:rules_xcodeproj --config=xcode
 # Settings for this checkout only, such as LIFR_TEAM_ID and LIFR_BUNDLE_PREFIX
 # for signing Lifr. Gitignored; keep it last so it overrides the above.
 try-import %workspace%/user.bazelrc
+
+# Fetched repositories nobody has used for a week go, once Bazel has been
+# idle for a minute, so the shared repository cache doesn't grow forever.
+common --repo_contents_cache_gc_max_age=7d
+common --repo_contents_cache_gc_idle_delay=1m
