@@ -41,6 +41,7 @@
     [StaticText] "" value: "El mercado"
     [StaticText] "" value: "“Hola amigo. ¿Vamos al mercado”"
     [StaticText] "" value: "Ask what it means, how it's said, or why it's written this way."
+    [StaticText] "" value: "Listening…"
     [Button] "notes.md"
     [TextField] "" value: "What does this word mean?"
     [Button] "Add" help: "Add photos or files" id: plus

@@ -8,7 +8,7 @@ import LangReadrModels
 /// What the reader asks the model: translations, readings, what words mean
 /// and replies about passages. Each answer is held to the shape it needs.
 public struct Tutor: Sendable {
-    /// What each use runs on, or what a chat picked in place of it.
+    /// What each use runs on; chats run on what they picked in place of it.
     package let runtime: @Sendable (ModelUse, ModelChoice) -> any ModelRuntime
     /// The person's own language, which the model writes in.
     public let reader: Language
@@ -79,60 +79,6 @@ public struct Tutor: Sendable {
             inSentence: inSentence ?? "")
     }
 
-    /// The reply to the last message of `chat`, about a passage of `book`,
-    /// and how much of the model's window it took. `partial` gets the reply
-    /// as it's written.
-    public func reply(
-        in chat: AnchoredChat, about book: ChatBook, partial: @escaping @Sendable (String) -> Void
-    ) async throws(ModelRuntimeError) -> TutorReply {
-        let choice = ModelChoice(chat.model)
-        let model = runtime(.chat, choice)
-        let budget = model.budget.room * 3
-        let context = book.paragraph ?? chat.passage.text
-        let room = max(400, budget - context.count - 600)
-        // The files sent with the new message, in at most half the room;
-        // earlier ones were read with their own messages.
-        let files = Self.files(of: chat.conversation.messages.last, fitting: room / 2)
-        let transcript =
-            chat.conversation.messages.newest(fitting: room - files.count)
-            .map { "\($0.role == .person ? "Reader" : "You"): \($0.text)" }
-            .joined(separator: "\n\n") + files
-        let instructions = """
-            You help someone who speaks \(name(reader)) read \(name(book.language)). They're reading \
-            “\(book.title)” and asking about this passage: “\(chat.passage.text)”, from the paragraph: \
-            “\(context)”. Answer in \(name(reader)), briefly and plainly. Explain grammar and words \
-            where they ask, and quote the \(name(book.language)) you explain.
-            """
-        var turn = ModelTurn(instructions: instructions, prompt: transcript)
-        if let tokens = choice.thinkingLevel.tokens {
-            // The chat shows only the reply, so what it thinks isn't kept.
-            turn.thinking = { _ in }
-            turn.thinkingTokens = tokens
-        }
-        let text = try await Self.text(
-            model.respond(to: turn) { value in
-                if case .string(let text) = value { partial(text) }
-            })
-        // About three bytes a token, as the transcript was cut to fit.
-        let used = (instructions.utf8.count + transcript.utf8.count + text.utf8.count) / 3
-        return TutorReply(text: text, context: ContextUse(used: used, window: model.budget.window))
-    }
-
-    /// The text of the files sent with `message`, each after its name, cut
-    /// to `room` characters in all; empty when it has none.
-    static func files(of message: ReaderMessage?, fitting room: Int) -> String {
-        guard let message, message.role == .person, !message.files.isEmpty else { return "" }
-        var left = room
-        var written = ""
-        for file in message.files {
-            let text = String(file.text.prefix(max(0, left)))
-            left -= text.count
-            let cut = text.count < file.text.count ? ", cut short" : ""
-            written += "\n\n[The file \(file.name)\(cut):\n\(text)\n]"
-        }
-        return written
-    }
-
     private static let hepburn = ", in Hepburn romanization, with each kanji read as it is in its word"
 
     private func name(_ language: Language) -> String { language.name(in: Locale(identifier: "en")) }
@@ -145,18 +91,6 @@ public struct Tutor: Sendable {
     private static func text(_ answer: JSONValue) throws(ModelRuntimeError) -> String {
         guard case .string(let text) = answer else { throw .failed("the model answered with a value, not text") }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-}
-
-/// A reply in a chat about a passage.
-public struct TutorReply: Hashable, Sendable {
-    public var text: String
-    /// About how much of the model's window the chat took, with the reply.
-    public var context: ContextUse
-
-    public init(text: String, context: ContextUse) {
-        self.text = text
-        self.context = context
     }
 }
 
@@ -176,5 +110,34 @@ public struct ChatBook: Hashable, Sendable {
     public init(_ book: Book, chat: AnchoredChat) {
         self.init(
             title: book.title, language: book.language, paragraph: book.paragraph(chat.passage.paragraph)?.text)
+    }
+}
+
+extension ChatBook {
+    /// What the model is told in a chat about `passage`, for someone who
+    /// speaks `reader`.
+    func instructions(about passage: Passage, for reader: Language) -> String {
+        let english = Locale(identifier: "en")
+        let (theirs, book) = (reader.name(in: english), language.name(in: english))
+        return """
+            You help someone who speaks \(theirs) read \(book). They're reading “\(title)” and asking \
+            about this passage: “\(passage.text)”, from the paragraph: “\(paragraph ?? passage.text)”. \
+            Answer in \(theirs), briefly and plainly. Explain grammar and words where they ask, and \
+            quote the \(book) you explain.
+            """
+    }
+}
+
+extension ModelChoice {
+    /// What `chat` picked; anything it doesn't know follows the default.
+    package init(_ chat: ChatModel) {
+        self.init(
+            model: chat.model.map(ModelID.init(rawValue:)), thinking: chat.thinking.flatMap(ThinkingLevel.init),
+            window: chat.window)
+    }
+
+    /// As it's kept with the book.
+    package var kept: ChatModel {
+        ChatModel(model: model?.rawValue, thinking: thinking?.rawValue, window: window)
     }
 }

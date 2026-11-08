@@ -1,35 +1,39 @@
+import ChatUI
 import ComposableArchitecture
 import Foundation
-import LangReadrCore
-import LangReadrModels
+import ModelsClient
+import SwiftUI
 
-/// Picks what one chat about a passage runs on: its model, how long that thinks
-/// and its window. Each starts at the default from Settings, which this
-/// never changes, and picking the default goes back to following it. The
-/// next message uses what's picked.
+/// Picks what one chat runs on: its model, how long that thinks and its
+/// window. Each starts at the default for the chat's use in the Models
+/// screen, which this never changes, and picking the default goes back to
+/// following it. The next message uses what's picked.
 @Reducer
-package struct ChatModelFeature {
+public struct ChatModelFeature {
     @ObservableState
-    package struct State: Equatable {
-        package var choice: ModelChoice
+    public struct State: Equatable {
+        public var choice: ModelChoice
+        /// Which of the app's uses gives the default.
+        public var use: ModelUseKey
         /// Apple's model and the downloaded ones, once they're looked up.
-        package var models: [RunnableModel] = []
-        /// The chats' model in Settings.
-        package var standard: ModelID?
+        public var models: [RunnableModel] = []
+        /// The model the use runs on in the Models screen.
+        public var standard: ModelID?
 
-        package init(choice: ModelChoice) {
+        public init(choice: ModelChoice, use: ModelUseKey) {
             self.choice = choice
+            self.use = use
         }
 
         /// The model the chat runs on, once it's looked up.
-        package var current: RunnableModel? {
+        public var current: RunnableModel? {
             let id = choice.model ?? standard
             return models.first { $0.id == id }
         }
 
         /// The model picked for the chat, or nil for the default.
         /// A model that was deleted reads as the default.
-        package var model: ModelID? {
+        public var model: ModelID? {
             get { choice.model }
             set {
                 choice.model = newValue
@@ -41,7 +45,7 @@ package struct ChatModelFeature {
         }
     }
 
-    package enum Action: BindableAction {
+    public enum Action: BindableAction {
         case binding(BindingAction<State>)
         case task
         case loaded([RunnableModel], standard: ModelID)
@@ -51,15 +55,15 @@ package struct ChatModelFeature {
     @Dependency(\.models) private var models
     @Dependency(\.dismiss) private var dismiss
 
-    package init() {}
+    public init() {}
 
-    package var body: some ReducerOf<Self> {
+    public var body: some ReducerOf<Self> {
         BindingReducer()
         Reduce { state, action in
             switch action {
             case .task:
-                return .run { [models] send in
-                    await send(.loaded(await models.runnable(), standard: models.selection(.chat)))
+                return .run { [models, use = state.use] send in
+                    await send(.loaded(await models.runnable(), standard: models.selection(use)))
                 }
 
             case .loaded(let runnable, let standard):
@@ -80,16 +84,19 @@ package struct ChatModelFeature {
     }
 }
 
-extension ModelChoice {
-    /// What `chat` picked; anything it doesn't know follows the default.
-    package init(_ chat: ChatModel) {
-        self.init(
-            model: chat.model.map(ModelID.init(rawValue:)), thinking: chat.thinking.flatMap(ThinkingLevel.init),
-            window: chat.window)
+/// The sheet of what a chat runs on.
+public struct ChatModelView: View {
+    @Bindable var store: StoreOf<ChatModelFeature>
+
+    public init(store: StoreOf<ChatModelFeature>) {
+        self.store = store
     }
 
-    /// As it's kept with the book.
-    package var kept: ChatModel {
-        ChatModel(model: model?.rawValue, thinking: thinking?.rawValue, window: window)
+    public var body: some View {
+        ModelSheet(
+            model: $store.model, thinking: $store.choice.thinking, window: $store.choice.window, models: store.models,
+            standard: store.standard, done: { store.send(.doneTapped) }
+        )
+        .task { await store.send(.task).finish() }
     }
 }

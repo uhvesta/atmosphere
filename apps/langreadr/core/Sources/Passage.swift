@@ -30,51 +30,10 @@ public struct Passage: Hashable, Codable, Sendable {
     public func contains(_ offset: Int) -> Bool { offset >= start && offset < end }
 }
 
-/// A message in a chat about what the person is reading.
-public struct ReaderMessage: ChatEntry {
-    public var id: UUID
-    public var role: ChatRole
-    public var text: String
-    public var at: Date
-    /// The files sent with it, whose text the model read.
-    public var files: [ReaderFile]
-
-    public init(id: UUID = UUID(), role: ChatRole, text: String, at: Date, files: [ReaderFile] = []) {
-        self.id = id
-        self.role = role
-        self.text = text
-        self.at = at
-        self.files = files
-    }
-
-    private enum CodingKeys: String, CodingKey { case id, role, text, at, files }
-
-    /// A message kept before files could be sent has none.
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(UUID.self, forKey: .id)
-        role = try container.decode(ChatRole.self, forKey: .role)
-        text = try container.decode(String.self, forKey: .text)
-        at = try container.decode(Date.self, forKey: .at)
-        files = try container.decodeIfPresent([ReaderFile].self, forKey: .files) ?? []
-    }
-}
-
-/// A file sent with a message: its name and the text read from it.
-public struct ReaderFile: Hashable, Codable, Sendable {
-    public var name: String
-    public var text: String
-
-    public init(name: String, text: String) {
-        self.name = name
-        self.text = text
-    }
-}
-
 /// A conversation about a passage, kept with its book.
 public struct AnchoredChat: Identifiable, Hashable, Codable, Sendable {
     public var passage: Passage
-    public var conversation: Conversation<ReaderMessage, NoContext>
+    public var conversation: ChatThread
     /// What it runs on in place of the defaults.
     public var model: ChatModel
 
@@ -92,7 +51,7 @@ public struct AnchoredChat: Identifiable, Hashable, Codable, Sendable {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         passage = try container.decode(Passage.self, forKey: .passage)
-        conversation = try container.decode(Conversation<ReaderMessage, NoContext>.self, forKey: .conversation)
+        conversation = try container.decode(ChatThread.self, forKey: .conversation)
         model = try container.decodeIfPresent(ChatModel.self, forKey: .model) ?? ChatModel()
     }
 }

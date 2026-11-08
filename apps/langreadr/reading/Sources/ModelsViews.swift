@@ -49,16 +49,3 @@ package struct ModelsView: View {
         .formStyle(.grouped)
     }
 }
-
-/// What one chat about a passage runs on.
-struct ChatModelView: View {
-    @Bindable var store: StoreOf<ChatModelFeature>
-
-    var body: some View {
-        ModelSheet(
-            model: $store.model, thinking: $store.choice.thinking, window: $store.choice.window, models: store.models,
-            standard: store.standard, done: { store.send(.doneTapped) }
-        )
-        .task { await store.send(.task).finish() }
-    }
-}

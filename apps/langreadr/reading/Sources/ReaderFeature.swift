@@ -52,8 +52,10 @@ package struct ReaderFeature {
         package var canTransliterate: Bool { !Script.isLatin(book.paragraphs.first?.text ?? "") }
 
         /// The chat about a passage, open over the text.
-        fileprivate func chatting(_ chat: AnchoredChat, compact: Bool) -> Destination.State {
-            .chat(PassageChatFeature.State(chat: chat, book: ChatBook(book, chat: chat), compact: compact))
+        fileprivate func chatting(_ chat: AnchoredChat, compact: Bool, reader: Language) -> Destination.State {
+            .chat(
+                PassageChatFeature.State(
+                    chat: chat, book: ChatBook(book, chat: chat), compact: compact, reader: reader))
         }
 
         fileprivate func needsTranslation(_ paragraph: UUID) -> Bool {
@@ -179,7 +181,7 @@ package struct ReaderFeature {
                 return .none
             case .chatBubbleTapped(let paragraph):
                 guard let chat = state.book.chats(in: paragraph).last else { return .none }
-                state.destination = state.chatting(chat, compact: true)
+                state.destination = state.chatting(chat, compact: true, reader: tutor.reader)
                 return .none
             case .destination(.presented(.word(.delegate(.lookedUp(let note))))):
                 guard case .word(let card)? = state.destination else { return .none }
@@ -197,7 +199,7 @@ package struct ReaderFeature {
                 return .none
             case .destination(.presented(.chats(.chatTapped(let id)))):
                 guard let chat = state.book.chats.first(where: { $0.id == id }) else { return .none }
-                state.destination = state.chatting(chat, compact: false)
+                state.destination = state.chatting(chat, compact: false, reader: tutor.reader)
                 return .none
             case .destination:
                 return .none
@@ -264,7 +266,7 @@ package struct ReaderFeature {
 
     private func open(_ passage: Passage, _ state: inout State) {
         let chat = state.book.chat(about: passage, at: now)
-        state.destination = state.chatting(chat, compact: true)
+        state.destination = state.chatting(chat, compact: true, reader: tutor.reader)
     }
 
     /// The sentence of `text` that `word` is in.

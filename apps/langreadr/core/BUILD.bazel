@@ -31,6 +31,7 @@ swift_binary(
     ],
     deps = [
         ":core",
+        "//apps/libs/kits/chat",
         "//apps/libs/kits/testing",
     ],
 )

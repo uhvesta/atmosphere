@@ -1,4 +1,3 @@
-import CaptureKit
 import ComposableArchitecture
 import Foundation
 import InferenceKit
@@ -64,96 +63,7 @@ extension ShelfClient: DependencyKey {
     package static var testValue: ShelfClient { .inMemory() }
 }
 
-/// Writes what the reader says into the message field, on this device.
-package struct DictationClient: Sendable {
-    /// Asks for speech recognition and the microphone if LangReadr hasn't
-    /// yet, then listens. The stream has everything heard so far each time
-    /// it grows, and ends after `stop`. Throws `DictationError`.
-    package var start: @Sendable () async throws -> AsyncThrowingStream<String, any Error>
-    /// Stops listening; the stream ends with the last words.
-    package var stop: @Sendable () async -> Void
-
-    package init(
-        start: @escaping @Sendable () async throws -> AsyncThrowingStream<String, any Error>,
-        stop: @escaping @Sendable () async -> Void
-    ) {
-        self.start = start
-        self.stop = stop
-    }
-
-    /// The system's speech recognition, on the device only, in the
-    /// reader's language.
-    package static func live() -> Self {
-        let dictation = Dictation()
-        return DictationClient(start: { try await dictation.start() }, stop: { dictation.stop() })
-    }
-
-    /// Hears `heard`, one after another, then waits to be stopped: for
-    /// tests and previews.
-    package static func scripted(_ heard: [String] = ["What does", "What does this word mean?"]) -> Self {
-        let listening = LockIsolated<AsyncThrowingStream<String, any Error>.Continuation?>(nil)
-        return DictationClient(
-            start: {
-                let (stream, continuation) = AsyncThrowingStream.makeStream(of: String.self)
-                for words in heard { continuation.yield(words) }
-                listening.setValue(continuation)
-                return stream
-            },
-            stop: { listening.withValue { $0?.finish() } })
-    }
-
-    /// Dictation that isn't available, as with no on-device recognizer
-    /// for the reader's language.
-    package static func failing(_ error: DictationError) -> Self {
-        DictationClient(start: { throw error }, stop: {})
-    }
-}
-
-extension DictationClient: DependencyKey {
-    package static let liveValue = DictationClient.live()
-    package static var testValue: DictationClient { .failing(.unavailable(language: "en")) }
-}
-
-/// Reads the files the reader picks to send with a message, as their text.
-package struct FileReaderClient: Sendable {
-    /// Reads the file at `url`. Throws `FileError`.
-    package var read: @Sendable (_ url: URL) async throws -> PickedFile
-
-    package init(read: @escaping @Sendable (_ url: URL) async throws -> PickedFile) {
-        self.read = read
-    }
-
-    /// The most of a file's text a message sends.
-    package static let textLimit = 8_000
-
-    /// Reads `files`, by the URL's last path component: for tests and
-    /// previews.
-    package static func scripted(_ files: [String: PickedFile]) -> Self {
-        FileReaderClient { url in
-            guard let file = files[url.lastPathComponent] else {
-                throw FileError.unreadable(name: url.lastPathComponent, reason: "no such file")
-            }
-            return file
-        }
-    }
-}
-
-extension FileReaderClient: DependencyKey {
-    package static let liveValue = FileReaderClient { url in try PickedFile.read(url, limit: textLimit) }
-    package static var testValue: FileReaderClient { .scripted([:]) }
-}
-
 extension DependencyValues {
-    package var dictation: DictationClient {
-        get { self[DictationClient.self] }
-        set { self[DictationClient.self] = newValue }
-    }
-
-    package var fileReader: FileReaderClient {
-        get { self[FileReaderClient.self] }
-        set { self[FileReaderClient.self] = newValue }
-    }
-
     package var tutor: Tutor {
         get { self[TutorKey.self] }
         set { self[TutorKey.self] = newValue }

@@ -1,4 +1,5 @@
 import CaptureKit
+import ChatFeatures
 import ComposableArchitecture
 import Foundation
 import InferenceKit
@@ -46,7 +47,7 @@ enum Sample {
         if turn.prompt.hasPrefix("Word: ") {
             let word = turn.prompt.dropFirst(6).prefix { $0 != "\n" }
             value = words[String(word)] ?? ["meaning": "a word of the story", "inSentence": ""]
-        } else if turn.prompt.hasPrefix("Reader: ") {
+        } else if turn.prompt.hasPrefix("User: ") {
             value = .string(reply)
         } else {
             value = .string(translations[turn.prompt] ?? turn.prompt)
@@ -75,6 +76,7 @@ enum Sample {
         } withDependencies: {
             $0.shelf = .inMemory()
             $0.tutor = Tutor(runtime: runtime, reader: Language("en"))
+            $0.chatRuntime = .always(runtime)
             $0.readerServices = .fake()
             $0.speech = speech
             $0.models = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small]).client

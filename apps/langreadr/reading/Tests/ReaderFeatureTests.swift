@@ -1,3 +1,4 @@
+import ChatFeatures
 import ChatKit
 import ComposableArchitecture
 import Foundation
@@ -20,6 +21,7 @@ final class ReaderFeatureTests: XCTestCase {
             ReaderFeature()
         } withDependencies: {
             $0.tutor = tutor(steps)
+            $0.chatRuntime = .always(ScriptedRuntime(steps: steps))
             $0.readerServices = .fake()
             $0.speech.speak = { text, _ in spoken.withValue { $0.append(text) } }
             $0.date.now = epoch
@@ -109,16 +111,16 @@ final class ReaderFeatureTests: XCTestCase {
         await store.send(.binding(.set(\.isHighlighting, true)))
         await store.send(.wordTapped(paragraph: paragraph, hola))
         await store.send(.askTapped)
-        XCTAssertEqual(store.state.destination?.chat?.canSend, false)
+        XCTAssertEqual(store.state.destination?.chat?.thread.canSend, false)
 
-        await store.send(.destination(.presented(.chat(.binding(.set(\.input, "What does it mean?"))))))
-        await store.send(.destination(.presented(.chat(.sendTapped))))
-        await store.receive(\.destination.presented.chat.replied.success)
+        await store.send(.destination(.presented(.chat(.thread(.binding(.set(\.input, "What does it mean?")))))))
+        await store.send(.destination(.presented(.chat(.thread(.sendTapped)))))
+        await store.receive(\.destination.presented.chat.thread.replied.success)
         await store.settle()
         let messages = try store.state.book.chats.first.unwrap().conversation.messages
         XCTAssertEqual(messages.map(\.text), ["What does it mean?", "It's a greeting."])
         XCTAssertEqual(messages.map(\.role), [.person, .assistant])
-        XCTAssertNil(store.state.destination?.chat?.reply)
+        XCTAssertNil(store.state.destination?.chat?.thread.reply)
     }
 
     func testAnotherLanguageDropsWhatWasWrittenForTheOldOne() async throws {

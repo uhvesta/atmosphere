@@ -1,3 +1,4 @@
+import ChatFeatures
 import ComposableArchitecture
 import FlowKit
 import LangReadrCore
@@ -33,9 +34,9 @@ final class MacFlowSnapshotTests: XCTestCase {
         await flow.step("passage-picked")
         reader.send(.askTapped)
         await flow.step("ask")
-        reader.send(.destination(.presented(.chat(.binding(.set(\.input, "What does “vamos al” mean?"))))))
-        reader.send(.destination(.presented(.chat(.sendTapped))))
-        try await Sample.waitFor { reader.destination?.chat?.reply == nil }
+        reader.send(.destination(.presented(.chat(.thread(.binding(.set(\.input, "What does “vamos al” mean?")))))))
+        reader.send(.destination(.presented(.chat(.thread(.sendTapped)))))
+        try await Sample.waitFor { reader.destination?.chat?.thread.reply == nil }
         await flow.step("replied")
         flow.finish()
     }
@@ -54,20 +55,20 @@ final class MacFlowSnapshotTests: XCTestCase {
         reader.send(.wordTapped(paragraph: paragraph.id, try XCTUnwrap(words.first { $0.text == "mercado" })))
         reader.send(.askTapped)
         await flow.step("ask")
-        let chat = { (action: PassageChatFeature.Action) in
-            _ = reader.send(.destination(.presented(.chat(action))))
+        let chat = { (action: ChatThreadFeature.Action) in
+            _ = reader.send(.destination(.presented(.chat(.thread(action)))))
         }
         chat(.filesPicked(.success([URL(filePath: "/tmp/notes.md")])))
-        try await Sample.waitFor { reader.destination?.chat?.pending.isEmpty == false }
+        try await Sample.waitFor { reader.destination?.chat?.thread.pending.isEmpty == false }
         await flow.step("file")
         chat(.micTapped)
-        try await Sample.waitFor { reader.destination?.chat?.input.isEmpty == false }
+        try await Sample.waitFor { reader.destination?.chat?.thread.input.isEmpty == false }
         await flow.step("dictating")
         chat(.micTapped)
-        try await Sample.waitFor { reader.destination?.chat?.dictatedAfter == nil }
+        try await Sample.waitFor { reader.destination?.chat?.thread.dictatedAfter == nil }
         await flow.step("dictated")
         chat(.sendTapped)
-        try await Sample.waitFor { reader.destination?.chat?.reply == nil }
+        try await Sample.waitFor { reader.destination?.chat?.thread.reply == nil }
         await flow.step("replied")
         flow.finish()
     }
@@ -88,11 +89,11 @@ final class MacFlowSnapshotTests: XCTestCase {
         reader.send(.wordTapped(paragraph: paragraph.id, try XCTUnwrap(words.first)))
         reader.send(.wordTapped(paragraph: paragraph.id, try XCTUnwrap(words.first { $0.text == "mercado" })))
         reader.send(.askTapped)
-        reader.send(.destination(.presented(.chat(.modelTapped))))
-        try await Sample.waitFor { reader.destination?.chat?.model?.models.isEmpty == false }
+        reader.send(.destination(.presented(.chat(.thread(.modelTapped)))))
+        try await Sample.waitFor { reader.destination?.chat?.thread.modelSheet?.models.isEmpty == false }
         await flow.step("chat-model")
         let model: (ChatModelFeature.Action) -> ReaderFeature.Action = {
-            .destination(.presented(.chat(.model(.presented($0)))))
+            .destination(.presented(.chat(.thread(.modelSheet(.presented($0))))))
         }
         reader.send(model(.binding(.set(\.model, ModelCatalog.qwen35Small.id))))
         reader.send(model(.binding(.set(\.choice.thinking, .long))))

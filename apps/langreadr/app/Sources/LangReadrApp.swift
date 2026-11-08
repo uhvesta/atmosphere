@@ -1,3 +1,4 @@
+import ChatFeatures
 import ComposableArchitecture
 import Foundation
 import InferenceKit
@@ -88,6 +89,14 @@ extension TutorKey: DependencyKey {
     package static let liveValue = Tutor(
         runtime: { use, choice in Models.runtimes.runtime(for: use, choice: choice) },
         reader: Language(Locale.current.language.languageCode?.identifier ?? "en"))
+}
+
+/// A chat runs on the model picked for its use; a use LangReadr doesn't
+/// know runs on the chats' model.
+extension ChatRuntimeClient: DependencyKey {
+    public static let liveValue = ChatRuntimeClient { key, choice in
+        Models.runtimes.runtime(for: ModelUse(rawValue: key.rawValue) ?? .chat, choice: choice)
+    }
 }
 
 extension ModelLibraryClient: DependencyKey {

@@ -32,6 +32,8 @@
 [text] "Vamos is “we go” of ir, and as a question it means “shall we go?”."
 [text] "Al is a + el: “to the”."
 [text] "Hoy means “today”."
+[button] "Retry" hint: "Write this reply again"
+[button] "Speak" hint: "Read this reply aloud"
 [element] "" value: "Ask about it"
 [button] "Add" hint: "Add photos or files"
 [button] "Model" value: "Apple Intelligence" hint: "Model, Thinking and Context Window"

@@ -23,6 +23,7 @@ swift_library(
         "//apps/langreadr/core",
         "//apps/langreadr/models",
         "//apps/langreadr/reading",
+        "//apps/libs/features/chat",
         "//apps/libs/kits/inference",
         "//apps/libs/kits/inference/litert",
         "//apps/libs/kits/inference/live",

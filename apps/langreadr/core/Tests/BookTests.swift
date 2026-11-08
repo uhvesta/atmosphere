@@ -1,3 +1,4 @@
+import ChatKit
 import Foundation
 import LangReadrCore
 import TestingKit
@@ -78,7 +79,7 @@ func bookTests() -> [TestCase] {
             book.words[WordKey(paragraph: paragraph.id, word: "学生")] = WordNote(
                 word: "学生", transliteration: "xuéshēng", meaning: "student", inSentence: "I am one")
             var chat = book.chat(about: try Passage(in: paragraph, from: 2, to: 4).unwrap(), at: Date())
-            chat.conversation.messages.append(ReaderMessage(role: .person, text: "why?", at: Date()))
+            chat.conversation.messages.append(ThreadMessage(role: .person, text: "why?", at: Date()))
             book.save(chat)
             let data = try JSONEncoder().encode(book)
             try expectEqual(try JSONDecoder().decode(Book.self, from: data), book)

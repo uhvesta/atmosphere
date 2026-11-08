@@ -46,6 +46,8 @@
     [StaticText] "" value: "Vamos is “we go” of ir, and as a question it means “shall we go?”."
     [Unknown] "Al is a + el: “to the”."
     [Unknown] "Hoy means “today”."
+    [Button] "Retry" help: "Write this reply again"
+    [Button] "Speak" help: "Read this reply aloud"
     [TextField] ""
     [Button] "Add" help: "Add photos or files" id: plus
     [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"

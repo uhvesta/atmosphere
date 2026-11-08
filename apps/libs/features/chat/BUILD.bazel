@@ -1,0 +1,55 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# A chat with a model, shared by the apps: messages and replies as they're
+# written, thinking, stopping, writing a reply again, editing, branches,
+# finding words, files, dictation, reading aloud and each chat's own
+# model. The app says what the chat knows and which of its uses it runs
+# on, and adds what it shows under a reply. A TCA reducer with a view built
+# from ChatUI, whose words are looked up in the app's String Catalog.
+# Needs Xcode: build with `--config=xcode`. In Swift 5 mode, like the
+# apps' features.
+swift_library(
+    name = "chat",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "ChatFeatures",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps:__subpackages__"],
+    deps = [
+        "//apps/libs/features/models/client",
+        "//apps/libs/kits/capture",
+        "//apps/libs/kits/chat",
+        "//apps/libs/kits/chatui",
+        "//apps/libs/kits/inference",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# TestStore tests, on macOS, on scripted models.
+swift_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":chat",
+        "//apps/libs/features/models/client",
+        "//apps/libs/kits/capture",
+        "//apps/libs/kits/chat",
+        "//apps/libs/kits/inference",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

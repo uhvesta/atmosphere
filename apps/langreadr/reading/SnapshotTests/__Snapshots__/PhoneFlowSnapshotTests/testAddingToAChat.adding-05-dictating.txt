@@ -26,6 +26,7 @@
 [button] "bien"
 [text] "Ask what it means, how it's said, or why it's written this way."
 [button] "notes.md"
+[text] "Listening…"
 [element] "" value: "What does this word mean?"
 [button] "Add" hint: "Add photos or files"
 [button] "Model" value: "Apple Intelligence" hint: "Model, Thinking and Context Window"
