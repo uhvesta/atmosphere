@@ -54,7 +54,7 @@ public struct ConversationRow: View {
                         .font(.subheadline)
                         .foregroundStyle(.tint)
                 } else if let preview {
-                    Text(preview)
+                    Text(previewIsModel ? Markdown.plainText(preview) : preview)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)

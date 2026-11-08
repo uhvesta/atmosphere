@@ -69,6 +69,33 @@ enum Markdown {
         return string
     }
 
+    /// `text`'s words without its Markdown, on one line: what a list of
+    /// chats shows of a reply under its title.
+    static func plainText(_ text: String) -> String {
+        plainText(blocks(in: text))
+            .joined(separator: " ")
+            .split(whereSeparator: \.isNewline)
+            .joined(separator: " ")
+    }
+
+    private static func plainText(_ blocks: [MarkdownBlock]) -> [String] {
+        blocks.flatMap { block -> [String] in
+            switch block {
+            case .paragraph(let text), .heading(_, let text): [plainInline(text)]
+            case .code(_, let code): [code]
+            case .quote(let inner): plainText(inner)
+            case .list(let list): list.items.flatMap(plainText)
+            case .rule: []
+            case .table(let table):
+                ([table.header] + table.rows).map { $0.map(plainInline).joined(separator: " ") }
+            }
+        }
+    }
+
+    private static func plainInline(_ text: String) -> String {
+        String(inline(text).characters)
+    }
+
     /// `block` as it's shown while the model is still writing it: marks
     /// it has opened but not yet closed, such as `**` or a link's `[`, are
     /// closed or left out, so the rest of the reply doesn't flicker.

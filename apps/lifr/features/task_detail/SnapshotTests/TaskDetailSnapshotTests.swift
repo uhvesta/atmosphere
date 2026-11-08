@@ -37,6 +37,9 @@ final class TaskDetailSnapshotTests: XCTestCase {
             TaskDetailView(store: Store(initialState: state) { EmptyReducer() })
         }
         .environment(\.timeZone, .gmt)
+        // The date picker writes its date in the language and region
+        // given here, not whichever the simulator was last left in.
+        .environment(\.locale, Locale(identifier: "en_CA"))
     }
 
     func testDisplayData() {

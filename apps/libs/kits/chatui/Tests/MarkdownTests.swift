@@ -5,6 +5,26 @@ import TestingKit
 
 func markdownTests() -> [TestCase] {
     blockTests() + listTests() + tableTests() + inlineTests() + writingTests() + streamTests()
+        + plainTextTests()
+}
+
+private func plainTextTests() -> [TestCase] {
+    [
+        TestCase("given a reply in Markdown, then its plain words on one line") {
+            try expectEqual(
+                Markdown.plainText("## Planting\n\nStart with **Buy soil**,\nthen *plant*.\n\n1. Dig\n2. Water"),
+                "Planting Start with Buy soil, then plant. Dig Water")
+        },
+        TestCase("given code, quotes, rules and tables, then their text without the marks") {
+            try expectEqual(
+                Markdown.plainText(
+                    "> Note\n\n---\n\n```swift\nlet a = 1\n```\n\n| Task | Day |\n|---|---|\n| Soil | Sat |"),
+                "Note let a = 1 Task Day Soil Sat")
+        },
+        TestCase("given plain text, then it's unchanged") {
+            try expectEqual(Markdown.plainText("Buy soil on Saturday"), "Buy soil on Saturday")
+        },
+    ]
 }
 
 private func blockTests() -> [TestCase] {
