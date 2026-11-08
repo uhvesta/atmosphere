@@ -17,15 +17,26 @@ public struct SystemVoice: SpeechEngine {
         _ text: String, language: String, voice: String, audio: @escaping @Sendable (SpeechAudio) -> Void
     ) async throws(SpeechError) {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw .nothingToSay }
+        // With no voice for the language, the synthesizer reads the text in
+        // the default voice, which can't read it, rather than failing.
+        guard let voice = Self.voice(for: language) else { throw .systemVoiceFailed(language: language) }
         let writer = Writer()
         let wrote = await withTaskCancellationHandler {
             await withCheckedContinuation { (done: CheckedContinuation<Bool, Never>) in
-                writer.write(text, language: language, rate: rate, audio: audio) { done.resume(returning: $0) }
+                writer.write(text, voice: voice, rate: rate, audio: audio) { done.resume(returning: $0) }
             }
         } onCancel: {
             writer.stop()
         }
         guard wrote || Task.isCancelled else { throw .systemVoiceFailed(language: language) }
+    }
+
+    /// The system's voice for `language`, a BCP 47 tag: one for the tag
+    /// itself, else any installed voice of its base language.
+    static func voice(for language: String) -> AVSpeechSynthesisVoice? {
+        if let voice = AVSpeechSynthesisVoice(language: language) { return voice }
+        let base = VoiceModel.base(of: language)
+        return AVSpeechSynthesisVoice.speechVoices().first { VoiceModel.base(of: $0.language) == base }
     }
 }
 
@@ -40,11 +51,11 @@ private final class Writer: @unchecked Sendable {
     private var stopped = false
 
     func write(
-        _ text: String, language: String, rate: Float, audio: @escaping @Sendable (SpeechAudio) -> Void,
-        finish: @escaping (Bool) -> Void
+        _ text: String, voice: AVSpeechSynthesisVoice, rate: Float,
+        audio: @escaping @Sendable (SpeechAudio) -> Void, finish: @escaping (Bool) -> Void
     ) {
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: language)
+        utterance.voice = voice
         utterance.rate = min(
             max(AVSpeechUtteranceDefaultSpeechRate * rate, AVSpeechUtteranceMinimumSpeechRate),
             AVSpeechUtteranceMaximumSpeechRate)

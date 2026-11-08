@@ -1,3 +1,5 @@
+import Foundation
+
 /// Speech: text read aloud, in a language, in a voice the person picked.
 ///
 /// The system voice, the one the OS ships for each language, is always
@@ -168,10 +170,23 @@ public enum SpeechError: Error, Hashable, Sendable, CustomStringConvertible {
         case .nothingToSay:
             "There's nothing in this text the voice can say."
         case .systemVoiceFailed(let language):
-            "The system has no voice for \(language). Add one in the device's settings, under Accessibility, "
-                + "Spoken Content, Voices, or download a voice model that speaks it."
+            Self.noSystemVoice(language)
         case .audioUnavailable(let reason):
             "Audio couldn't start (\(reason)). Check that another app isn't holding the speaker, then try again."
         }
+    }
+
+    /// What to do when the system has no voice for `language`, which
+    /// depends on whether a voice model speaks it.
+    private static func noSystemVoice(_ language: String) -> String {
+        let name = Locale.current.localizedString(forLanguageCode: VoiceModel.base(of: language)) ?? language
+        if VoiceCatalog.all.contains(where: { $0.speaks(language) }) {
+            return "The system has no voice for \(name). Download a voice that speaks it in Settings, under "
+                + "Models, or add a system voice in the device's settings, under Accessibility, Spoken Content, "
+                + "Voices."
+        }
+        return "No voice on this device speaks \(name) yet: the system has none, and none of the voices to "
+            + "download speak it. If the device's settings, under Accessibility, Spoken Content, Voices, offer "
+            + "one, add it there."
     }
 }
