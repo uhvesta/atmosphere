@@ -64,6 +64,9 @@ package struct RootFeature {
         package let platform: Platform
         /// `nil` until the records load.
         package var workspace: Workspace?
+        /// The latest records shown, so a save's reply or an update that
+        /// arrives after later records is ignored.
+        package var saves = SaveOrder()
         package var tab = Tab.today
         package var selection: SidebarItem? = .today
         package var content = Content.list
@@ -203,7 +206,7 @@ package struct RootFeature {
         case binding(BindingAction<State>)
         /// The app launched: load the records and listen for changes.
         case task
-        case loaded(Result<Workspace, any Error>)
+        case loaded(Result<Snapshot, any Error>)
         /// Another device or process changed the records.
         case updated(Update)
         case appsLoaded([ConnectedApp])
@@ -346,7 +349,7 @@ package struct RootFeature {
                             Logger(subsystem: "lifr", category: "store").error(
                                 "\(String(describing: error), privacy: .public)")
                         }
-                        await send(.loaded(Result { try await store.load() }))
+                        await send(.loaded(Result { try await store.snapshot() }))
                     },
                     .run { [store] send in
                         for await update in await store.updates() { await send(.updated(update)) }
@@ -378,8 +381,8 @@ package struct RootFeature {
                 }
                 return .merge(effects)
 
-            case .loaded(.success(let workspace)):
-                let shown = show(workspace, in: &state)
+            case .loaded(.success(let snapshot)):
+                let shown = show(snapshot, in: &state)
                 guard let place = state.restoring else { return shown }
                 state.restoring = nil
                 let selects: Effect<Action> =
@@ -403,7 +406,7 @@ package struct RootFeature {
                 if !update.fixes.isEmpty {
                     state.syncBanner = SyncBanner(update.fixes, in: update.workspace)
                 }
-                return show(update.workspace, in: &state)
+                return show(update.snapshot, in: &state)
 
             case .appsLoaded(let apps), .sessionEvent(.appsChanged(let apps)):
                 state.apps = apps
@@ -429,8 +432,8 @@ package struct RootFeature {
                 state.apiSwitchError = message
                 return .none
 
-            case .sessionEvent(.recordsChanged(let workspace)):
-                return show(workspace, in: &state)
+            case .sessionEvent(.recordsChanged(let workspace, let number)):
+                return show(Snapshot(workspace, number: number), in: &state)
 
             case .sessionEvent(.approvalRequested(let request)):
                 if state.approval == nil {
@@ -538,7 +541,7 @@ package struct RootFeature {
             case .undone(.success(let saved)):
                 // Undoing isn't a change to undo in turn.
                 state.$lastChange.withLock { $0 = nil }
-                return show(saved.workspace, in: &state)
+                return show(saved.snapshot, in: &state)
 
             case .undone(.failure(let error)):
                 state.undoAlert = .failed("Couldn't undo", error)
@@ -593,23 +596,23 @@ package struct RootFeature {
 
             case .syncReview(.presented(.delegate(.resolved))):
                 // The choices were saved through sync, not a screen.
-                return .run { [store] send in await send(.loaded(Result { try await store.load() })) }
+                return .run { [store] send in await send(.loaded(Result { try await store.snapshot() })) }
 
             case .syncReview(.presented(.delegate(.finished))):
                 state.syncReview = nil
                 return .none
 
-            case .today(.delegate(.saved(let workspace))),
-                .upcoming(.list(.delegate(.saved(let workspace)))),
-                .procrastinated(.list(.delegate(.saved(let workspace)))),
-                .avenues(.delegate(.saved(let workspace))),
-                .search(.delegate(.saved(let workspace))),
-                .avenue(.delegate(.saved(let workspace))),
-                .board(.list(.delegate(.saved(let workspace)))),
-                .settings(.delegate(.saved(let workspace))),
-                .conversations(.delegate(.saved(let workspace))),
-                .quickAdd(.presented(.delegate(.saved(let workspace)))):
-                return show(workspace, in: &state)
+            case .today(.delegate(.saved(let snapshot))),
+                .upcoming(.list(.delegate(.saved(let snapshot)))),
+                .procrastinated(.list(.delegate(.saved(let snapshot)))),
+                .avenues(.delegate(.saved(let snapshot))),
+                .search(.delegate(.saved(let snapshot))),
+                .avenue(.delegate(.saved(let snapshot))),
+                .board(.list(.delegate(.saved(let snapshot)))),
+                .settings(.delegate(.saved(let snapshot))),
+                .conversations(.delegate(.saved(let snapshot))),
+                .quickAdd(.presented(.delegate(.saved(let snapshot)))):
+                return show(snapshot, in: &state)
 
             case .board(.addTapped):
                 guard let scope = state.board?.scope else { return .none }
@@ -716,21 +719,25 @@ package struct RootFeature {
         }
     }
 
-    /// Shows `workspace` on every screen, then schedules its reminders.
-    private func show(_ workspace: Workspace, in state: inout State) -> Effect<Action> {
+    /// Shows `snapshot`'s records on every screen, then schedules their
+    /// reminders. Saves made at once, and updates from sync, can arrive in
+    /// any order: records earlier than ones shown already are ignored.
+    private func show(_ snapshot: Snapshot, in state: inout State) -> Effect<Action> {
+        guard state.saves.isLatest(snapshot) else { return .none }
+        let workspace = snapshot.workspace
         state.workspace = workspace
         let effects: [Effect<Action>] = [
-            TodayFeature().reduce(into: &state.today, action: .list(.show(workspace))).map(Action.today),
-            UpcomingFeature().reduce(into: &state.upcoming, action: .list(.show(workspace))).map(Action.upcoming),
-            ProcrastinatedFeature().reduce(into: &state.procrastinated, action: .list(.show(workspace)))
+            TodayFeature().reduce(into: &state.today, action: .list(.show(snapshot))).map(Action.today),
+            UpcomingFeature().reduce(into: &state.upcoming, action: .list(.show(snapshot))).map(Action.upcoming),
+            ProcrastinatedFeature().reduce(into: &state.procrastinated, action: .list(.show(snapshot)))
                 .map(Action.procrastinated),
-            AvenuesFeature().reduce(into: &state.avenues, action: .show(workspace)).map(Action.avenues),
-            SearchFeature().reduce(into: &state.search, action: .list(.show(workspace))).map(Action.search),
+            AvenuesFeature().reduce(into: &state.avenues, action: .show(snapshot)).map(Action.avenues),
+            SearchFeature().reduce(into: &state.search, action: .list(.show(snapshot))).map(Action.search),
         ]
-        state.avenue?.show(workspace, now: now, timeZone: timeZone)
-        state.board?.list.show(workspace, now: now, timeZone: timeZone)
-        state.settings.show(workspace)
-        state.conversations.show(workspace)
+        state.avenue?.show(snapshot, now: now, timeZone: timeZone)
+        state.board?.list.show(snapshot, now: now, timeZone: timeZone)
+        state.settings.show(snapshot)
+        state.conversations.show(snapshot)
         let scheduled = workspace.scheduledReminders(now: now, timeZone: timeZone)
         return .merge(
             effects + [

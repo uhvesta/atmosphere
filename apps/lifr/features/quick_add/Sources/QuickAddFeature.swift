@@ -103,7 +103,7 @@ package struct QuickAddFeature {
 
         @CasePathable
         package enum Delegate {
-            case saved(Workspace)
+            case saved(Snapshot)
         }
     }
 
@@ -153,7 +153,7 @@ package struct QuickAddFeature {
                 if state.parent != nil {
                     state.addedSubtasks.append(state.title.trimmingCharacters(in: .whitespacesAndNewlines))
                     state.title = ""
-                    return .send(.delegate(.saved(saved.workspace)))
+                    return .send(.delegate(.saved(saved.snapshot)))
                 }
                 if let avenueID = state.avenueID {
                     state.$lastAvenue.withLock { $0 = avenueID.uuidString }
@@ -161,10 +161,10 @@ package struct QuickAddFeature {
                 if state.kind == .task, state.subtaskMode, let created {
                     state.parent = Choice(id: created.id, name: created.title)
                     state.title = ""
-                    return .send(.delegate(.saved(saved.workspace)))
+                    return .send(.delegate(.saved(saved.snapshot)))
                 }
                 return .run { [dismiss] send in
-                    await send(.delegate(.saved(saved.workspace)))
+                    await send(.delegate(.saved(saved.snapshot)))
                     await dismiss()
                 }
 

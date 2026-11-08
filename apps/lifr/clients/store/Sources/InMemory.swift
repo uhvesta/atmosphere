@@ -24,6 +24,7 @@ extension StoreClient {
 
         let client = StoreClient(
             load: { records.value },
+            snapshot: { records.snapshot },
             save: { operation in try records.save(operation, as: actor) },
             updates: { sync.stream() },
             importSynced: { changes in
@@ -61,9 +62,10 @@ package final class InMemorySync: Sendable {
     package func writer(as actor: Actor) -> StoreClient {
         var writer = StoreClient()
         writer.load = { [records] in records.value }
+        writer.snapshot = { [records] in records.snapshot }
         writer.save = { [records, continuations] operation in
             let saved = try records.save(operation, as: actor)
-            let update = Update(workspace: saved.workspace, fixes: [])
+            let update = Update(workspace: saved.workspace, fixes: [], number: saved.number)
             for continuation in continuations.value { continuation.yield(update) }
             return saved
         }
@@ -80,7 +82,7 @@ package final class InMemorySync: Sendable {
     /// then reconciles them at `now` and sends the result to `updates`.
     @discardableResult
     package func callAsFunction(now: Date, _ body: (inout Workspace) -> Void) -> Update {
-        let update = records.update { records in
+        let update = records.numbered { records, number in
             body(&records)
             var fixes: [Fix] = []
             let context = Context(actor: .system(device: actor.device, surface: actor.surface), now: now)
@@ -88,7 +90,7 @@ package final class InMemorySync: Sendable {
                 fixes = records.reconcile(in: context)
                 return Change()
             }
-            return Update(workspace: records, fixes: fixes)
+            return Update(workspace: records, fixes: fixes, number: number)
         }
         for continuation in continuations.value { continuation.yield(update) }
         return update
@@ -99,14 +101,16 @@ package final class InMemorySync: Sendable {
 private final class Records: @unchecked Sendable {
     private let lock = NSLock()
     private var workspace: Workspace
-    /// How many saves there have been, to number them.
-    private var saves = 0
+    /// How many saves and updates there have been, to number them.
+    private var changes = 0
 
     init(_ workspace: Workspace) {
         self.workspace = workspace
     }
 
     var value: Workspace { lock.withLock { workspace } }
+
+    var snapshot: Snapshot { lock.withLock { Snapshot(workspace, number: changes) } }
 
     /// Performs `operation` as `actor`, with the `date`, `uuid` and
     /// `withRandomNumberGenerator` dependencies.
@@ -117,13 +121,22 @@ private final class Records: @unchecked Sendable {
         let context = Context(
             actor: actor, now: now, newID: { uuid() },
             newCode: { random { TaskCode.random(using: &$0) } })
-        return try update { (records) throws(LifrError) -> Saved in
+        return try numbered { (records, number) throws(LifrError) -> Saved in
             var copy = records
             let change = try copy.perform(in: context, operation)
             records = copy
-            saves += 1
-            return Saved(workspace: copy, change: change, number: saves)
+            return Saved(workspace: copy, change: change, number: number)
         }
+    }
+
+    /// Runs `body` alone with the next number among the saves and updates,
+    /// which it takes only if `body` returns.
+    func numbered<T, E: Error>(_ body: (inout Workspace, Int) throws(E) -> T) throws(E) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        let result = try body(&workspace, changes + 1)
+        changes += 1
+        return result
     }
 
     func update<T, E: Error>(_ body: (inout Workspace) throws(E) -> T) throws(E) -> T {

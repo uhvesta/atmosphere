@@ -12,6 +12,10 @@ package typealias StoreOperation = @Sendable (inout Workspace, Context) throws(L
 package struct StoreClient: Sendable {
     /// Every record.
     package var load: @Sendable () async throws -> Workspace
+    /// Every record, numbered as the latest save or update they include,
+    /// for a screen that reloads after changes made outside it, such as the
+    /// assistant's. See `SaveOrder`.
+    package var snapshot: @Sendable () async throws -> Snapshot
     /// Runs `operation` on the records and saves what it changed, all or
     /// nothing. The named operations below are built on this.
     package var save: @Sendable (_ operation: StoreOperation) async throws -> Saved
@@ -51,9 +55,9 @@ package struct SyncedChanges: Hashable, Sendable {
 package struct Saved: Hashable, Sendable {
     package var workspace: Workspace
     package var change: Change
-    /// Where the save comes among the store's saves: a later one has a
-    /// larger number. Saves made at once can reply in any order, so this
-    /// tells which records are the latest. See `SaveOrder`.
+    /// Where the save comes among the store's saves and updates: a later
+    /// one has a larger number. Saves made at once can reply in any order,
+    /// so this tells which records are the latest. See `SaveOrder`.
     package var number: Int
 
     package init(workspace: Workspace, change: Change, number: Int = 0) {
@@ -61,21 +65,46 @@ package struct Saved: Hashable, Sendable {
         self.change = change
         self.number = number
     }
+
+    package var snapshot: Snapshot { Snapshot(workspace, number: number) }
 }
 
-/// The latest save a screen has shown, so a save's reply arriving after a
-/// later one's doesn't put back the records from before the later save.
+/// The records at a place in the store's order: after a save or an update,
+/// or as read with `snapshot`. Screens pass these to each other, so each
+/// can tell whether records are later than the ones it shows.
+package struct Snapshot: Hashable, Sendable {
+    package var workspace: Workspace
+    /// Where the records come among the store's saves and updates: later
+    /// records have a larger number. Records read with `load` come before
+    /// any, as 0.
+    package var number: Int
+
+    package init(_ workspace: Workspace, number: Int) {
+        self.workspace = workspace
+        self.number = number
+    }
+}
+
+/// The latest records a screen has shown, by their place in the store's
+/// order, so a save's reply or an update arriving after later records
+/// doesn't put back what was there before them.
 package struct SaveOrder: Hashable, Sendable {
-    private var shown = 0
+    /// The number of the latest records shown.
+    package private(set) var latest = 0
 
     package init() {}
 
-    /// Whether `saved` is as late as any save shown so far, noting it if so.
-    package mutating func isLatest(_ saved: Saved) -> Bool {
-        guard saved.number >= shown else { return false }
-        shown = saved.number
+    /// Whether records numbered `number` are as late as any shown so far,
+    /// noting them if so.
+    package mutating func isLatest(_ number: Int) -> Bool {
+        guard number >= latest else { return false }
+        latest = number
         return true
     }
+
+    package mutating func isLatest(_ saved: Saved) -> Bool { isLatest(saved.number) }
+
+    package mutating func isLatest(_ snapshot: Snapshot) -> Bool { isLatest(snapshot.number) }
 }
 
 /// The records after another device or process changed them.
@@ -84,11 +113,17 @@ package struct Update: Hashable, Sendable {
     /// What reconciling the imported records fixed, for the banner that
     /// explains it.
     package var fixes: [Fix]
+    /// Where the update comes among the store's saves and updates, as
+    /// `Saved.number`.
+    package var number: Int
 
-    package init(workspace: Workspace, fixes: [Fix] = []) {
+    package init(workspace: Workspace, fixes: [Fix] = [], number: Int = 0) {
         self.workspace = workspace
         self.fixes = fixes
+        self.number = number
     }
+
+    package var snapshot: Snapshot { Snapshot(workspace, number: number) }
 }
 
 extension StoreClient {

@@ -37,7 +37,7 @@ final class Harness: Sendable {
         let inner = StoreClient.inMemory(Workspace(), actor: .user(device: "Test Mac", surface: .mac))
         let now = now
         store = StoreClient(
-            load: inner.load,
+            load: inner.load, snapshot: inner.snapshot,
             save: { operation in
                 try await withDependencies {
                     $0.date.now = now

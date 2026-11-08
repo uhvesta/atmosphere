@@ -13,8 +13,8 @@ package actor LiveStore: ModelActor {
     package nonisolated let modelExecutor: any ModelExecutor
     /// Journal entries never change, so each is decoded once.
     private var journal: [UUID: JournalEntry] = [:]
-    /// How many saves there have been, to number them.
-    private var saves = 0
+    /// How many saves and updates there have been, to number them.
+    private var changes = 0
     /// What each sync import in this process changed, and each change an
     /// announcing client saved, for `updates`.
     nonisolated let imported = Broadcast<Update>()
@@ -43,8 +43,33 @@ package actor LiveStore: ModelActor {
         var after = before
         let change = try after.perform(in: context(), operation)
         try write(from: before, to: after)
-        saves += 1
-        return Saved(workspace: after, change: change, number: saves)
+        changes += 1
+        return Saved(workspace: after, change: change, number: changes)
+    }
+
+    /// Every record, numbered as the latest save or update they include.
+    package func snapshot() throws(LiveStoreError) -> Snapshot {
+        Snapshot(try load(), number: changes)
+    }
+
+    /// Reconciles after another process changed the store, and reads the
+    /// records it left, numbered after every save and update before.
+    package func reconciled(in context: @Sendable () -> Context) throws(LiveStoreError) -> Update {
+        let fixes = try reconcile(in: context)
+        let workspace = try load()
+        changes += 1
+        return Update(workspace: workspace, fixes: fixes, number: changes)
+    }
+
+    /// `importSynced`, and the records it left, numbered after every save
+    /// and update before.
+    package func update(
+        importing synced: SyncedChanges, in context: @Sendable () -> Context
+    ) throws(LiveStoreError) -> Update {
+        let fixes = try importSynced(synced, in: context)
+        let workspace = try load()
+        changes += 1
+        return Update(workspace: workspace, fixes: fixes, number: changes)
     }
 
     /// Fixes rule violations that sync brought in, as Core's `reconcile`

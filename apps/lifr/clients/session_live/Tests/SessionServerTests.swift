@@ -106,7 +106,7 @@ final class SessionServerTests: XCTestCase {
         }
         XCTAssertNil(response.error)
         let shown = try await next(events) {
-            if case .recordsChanged(let workspace) = $0 { workspace } else { nil }
+            if case .recordsChanged(let workspace, _) = $0 { workspace } else { nil }
         }
         let saved = try await harness.store.load()
         XCTAssertEqual(saved, shown)

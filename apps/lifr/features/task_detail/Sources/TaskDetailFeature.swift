@@ -115,9 +115,12 @@ package struct TaskDetailFeature {
             showsCommentsOnly ? timeline.filter(\.isComment) : timeline
         }
 
-        /// Shows `workspace`, keeping what the person is typing. False when
-        /// the task is gone, such as moved to the trash.
-        package mutating func refresh(from workspace: Workspace, now: Date, timeZone: TimeZone) -> Bool {
+        /// Shows `snapshot`'s records, keeping what the person is typing,
+        /// unless later ones are shown already. False when the task is gone,
+        /// such as moved to the trash.
+        package mutating func refresh(from snapshot: Snapshot, now: Date, timeZone: TimeZone) -> Bool {
+            guard saves.isLatest(snapshot) else { return true }
+            let workspace = snapshot.workspace
             guard var refreshed = State(id: id, workspace: workspace, now: now, timeZone: timeZone) else {
                 return false
             }
@@ -130,7 +133,7 @@ package struct TaskDetailFeature {
             // Keep what's being typed over what was saved.
             if title != row.title { refreshed.title = title }
             refreshed.detailsDraft = detailsDraft
-            if var subtask, subtask.refresh(from: workspace, now: now, timeZone: timeZone) {
+            if var subtask, subtask.refresh(from: snapshot, now: now, timeZone: timeZone) {
                 refreshed.subtask = subtask
             }
             self = refreshed
@@ -179,7 +182,7 @@ package struct TaskDetailFeature {
         @CasePathable
         package enum Delegate {
             /// The records changed; lists showing them should refresh.
-            case saved(Workspace)
+            case saved(Snapshot)
         }
     }
 
@@ -272,9 +275,9 @@ package struct TaskDetailFeature {
                 state.subtask = State(id: id, workspace: workspace, now: now, timeZone: timeZone)
                 return .none
 
-            case .subtask(.presented(.delegate(.saved(let workspace)))):
-                _ = state.refresh(from: workspace, now: now, timeZone: timeZone)
-                return .send(.delegate(.saved(workspace)))
+            case .subtask(.presented(.delegate(.saved(let snapshot)))):
+                _ = state.refresh(from: snapshot, now: now, timeZone: timeZone)
+                return .send(.delegate(.saved(snapshot)))
 
             case .subtaskToggled(let id):
                 guard let subtask = state.subtasks.first(where: { $0.id == id }) else { return .none }
@@ -341,14 +344,14 @@ package struct TaskDetailFeature {
                 return .none
 
             case .saved(.success(let saved)):
-                let isLatest = state.saves.isLatest(saved)
-                if isLatest, !state.refresh(from: saved.workspace, now: now, timeZone: timeZone) {
-                    return .send(.delegate(.saved(saved.workspace)))
+                let isLatest = saved.number >= state.saves.latest
+                guard state.refresh(from: saved.snapshot, now: now, timeZone: timeZone) else {
+                    return .send(.delegate(.saved(saved.snapshot)))
                 }
                 if let parentID = saved.change.reopenedParent, let parent = saved.workspace.tasks[parentID] {
                     state.banner = .reopened(parent, by: saved.change)
                 }
-                return isLatest ? .send(.delegate(.saved(saved.workspace))) : .none
+                return isLatest ? .send(.delegate(.saved(saved.snapshot))) : .none
 
             case .saved(.failure(let error)):
                 let subtasks = state.subtasks

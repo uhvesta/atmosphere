@@ -113,10 +113,12 @@ package struct ChatFeature {
             forgetUndone()
         }
 
-        /// Shows `workspace`, letting go of replies' changes it undid
-        /// elsewhere, such as with the Undo toast or ⌘Z.
-        package mutating func show(_ workspace: Workspace) {
-            self.workspace = workspace
+        /// Shows `snapshot`'s records, letting go of replies' changes they
+        /// undid elsewhere, such as with the Undo toast or ⌘Z, unless later
+        /// ones are shown already.
+        package mutating func show(_ snapshot: Snapshot) {
+            guard saves.isLatest(snapshot) else { return }
+            workspace = snapshot.workspace
             forgetUndone()
         }
 
@@ -282,7 +284,7 @@ package struct ChatFeature {
         /// The thinking of the reply `messageID` was opened or closed, or of
         /// the reply being written when nil.
         case thinkingToggled(messageID: UUID?)
-        case reloaded(messageID: UUID, Result<Workspace, any Error>)
+        case reloaded(messageID: UUID, Result<Snapshot, any Error>)
         case named(Result<String, any Error>)
         /// The title was tapped, to rename the conversation.
         case renameTapped
@@ -348,7 +350,7 @@ package struct ChatFeature {
 
         @CasePathable
         package enum Delegate {
-            case saved(Workspace)
+            case saved(Snapshot)
             case rename
             /// A new conversation forked from this one, to keep and open.
             case fork(Conversation)
@@ -704,7 +706,7 @@ package struct ChatFeature {
                     check(&state)
                 }
                 var reload: Effect<Action> = .run { [store] send in
-                    await send(.reloaded(messageID: id, Result { try await store.load() }))
+                    await send(.reloaded(messageID: id, Result { try await store.snapshot() }))
                 }
                 if state.compactsConversations, state.offersCompact { reload = .merge(reload, compact(&state)) }
                 guard state.namesConversations, !state.conversation.isNamedByHand, state.conversation.name == nil
@@ -830,16 +832,17 @@ package struct ChatFeature {
             case .forked(let fork):
                 return .send(.delegate(.fork(fork)))
 
-            case .reloaded(let messageID, .success(let workspace)):
+            case .reloaded(let messageID, .success(let snapshot)):
+                let workspace = snapshot.workspace
                 state.reloading = false
                 let known = Set(state.conversation.changes.values.joined()).union(state.conversation.added)
                 let new = workspace.entries(inConversation: state.conversation.id).map(\.id)
                     .filter { !known.contains($0) }
                 guard !new.isEmpty else { return .none }
                 state.conversation.changes[messageID] = new
-                state.workspace = workspace
+                if state.saves.isLatest(snapshot) { state.workspace = workspace }
                 check(&state)
-                return .send(.delegate(.saved(workspace)))
+                return .send(.delegate(.saved(snapshot)))
 
             case .reloaded(_, .failure):
                 // The assistant's changes are saved; the screens catch up on
@@ -874,11 +877,11 @@ package struct ChatFeature {
 
             case .applied(let id, .success(let saved)):
                 state.applying = nil
-                state.workspace = saved.workspace
+                if state.saves.isLatest(saved) { state.workspace = saved.workspace }
                 state.decide(id, .applied)
                 if let entry = saved.change.entry { state.conversation.changes[id, default: []].append(entry) }
                 check(&state)
-                return .send(.delegate(.saved(saved.workspace)))
+                return .send(.delegate(.saved(saved.snapshot)))
 
             case .applied(_, .failure(let error)):
                 state.applying = nil
@@ -1000,7 +1003,7 @@ package struct ChatFeature {
                     }
                 }
                 check(&state)
-                return isLatest ? .send(.delegate(.saved(saved.workspace))) : .none
+                return isLatest ? .send(.delegate(.saved(saved.snapshot))) : .none
 
             case .saved(.failure(let error)):
                 state.problem = String(describing: error)

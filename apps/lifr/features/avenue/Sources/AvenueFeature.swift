@@ -36,17 +36,20 @@ package struct AvenueFeature {
             }
         }
 
-        /// Shows `workspace` in the title, the Project's fields and the
-        /// list, such as after Undo or a sync.
-        package mutating func show(_ workspace: Workspace, now: Date, timeZone: TimeZone) {
-            refresh(from: workspace)
-            list.show(workspace, now: now, timeZone: timeZone)
+        /// Shows `snapshot`'s records in the list, the title and the
+        /// Project's fields, such as after Undo or a sync, unless later ones
+        /// are shown already.
+        package mutating func show(_ snapshot: Snapshot, now: Date, timeZone: TimeZone) {
+            list.show(snapshot, now: now, timeZone: timeZone)
+            refresh()
         }
 
-        /// Shows `workspace` in the title and the Project's fields.
-        mutating func refresh(from workspace: Workspace) {
-            title = Self.title(of: scope, in: workspace)
-            if project?.refresh(from: workspace) == false { project = nil }
+        /// Shows the list's records, the latest, in the title and the
+        /// Project's fields.
+        mutating func refresh() {
+            guard let snapshot = list.snapshot else { return }
+            title = Self.title(of: scope, in: snapshot.workspace)
+            if project?.refresh(from: snapshot) == false { project = nil }
         }
 
         static func title(of scope: AvenueScope, in workspace: Workspace) -> String {
@@ -76,7 +79,7 @@ package struct AvenueFeature {
 
         @CasePathable
         package enum Delegate {
-            case saved(Workspace)
+            case saved(Snapshot)
         }
     }
 
@@ -94,8 +97,8 @@ package struct AvenueFeature {
             case .groupingPicked(let grouping):
                 state.grouping = grouping
                 state.list.query = .scope(state.scope, by: grouping)
-                if let workspace = state.list.workspace {
-                    state.list.show(workspace, now: now, timeZone: timeZone)
+                if let snapshot = state.list.snapshot {
+                    state.list.show(snapshot, now: now, timeZone: timeZone)
                 }
                 return .none
 
@@ -115,23 +118,22 @@ package struct AvenueFeature {
                     await send(.list(.saved(Result { try await store.createProject(name, in: avenueID) })))
                 }
 
-            case .list(.show(let workspace)), .list(.loaded(.success(let workspace))):
-                state.refresh(from: workspace)
+            case .list(.show), .list(.loaded(.success)):
+                state.refresh()
                 return .none
 
-            case .list(.delegate(.saved(let workspace))):
-                state.refresh(from: workspace)
-                return .send(.delegate(.saved(workspace)))
+            case .list(.delegate(.saved(let snapshot))):
+                state.refresh()
+                return .send(.delegate(.saved(snapshot)))
 
             case .editAvenueTapped:
                 guard case .avenue(let id) = state.scope, let workspace = state.list.workspace else { return .none }
                 state.editAvenue = EditAvenueFeature.State(id: id, workspace: workspace)
                 return .none
 
-            case .project(.delegate(.saved(let workspace))), .editAvenue(.presented(.delegate(.saved(let workspace)))):
-                state.refresh(from: workspace)
-                state.list.show(workspace, now: now, timeZone: timeZone)
-                return .send(.delegate(.saved(workspace)))
+            case .project(.delegate(.saved(let snapshot))), .editAvenue(.presented(.delegate(.saved(let snapshot)))):
+                state.show(snapshot, now: now, timeZone: timeZone)
+                return .send(.delegate(.saved(snapshot)))
 
             case .binding, .list, .project, .editAvenue, .delegate:
                 return .none
@@ -229,17 +231,30 @@ package struct AvenuesFeature {
 
         package init() {}
 
+        /// The latest records shown, so earlier ones arriving late are ignored.
+        package var saves = SaveOrder()
+
         package init(workspace: Workspace) {
             self.workspace = workspace
             avenues = workspace.avenueRows
             archived = workspace.archivedRows
+        }
+
+        /// Shows `snapshot`'s records, and in the open Avenue, unless later
+        /// ones are shown already.
+        mutating func show(_ snapshot: Snapshot, now: Date, timeZone: TimeZone) {
+            guard saves.isLatest(snapshot) else { return }
+            workspace = snapshot.workspace
+            avenues = snapshot.workspace.avenueRows
+            archived = snapshot.workspace.archivedRows
+            avenue?.show(snapshot, now: now, timeZone: timeZone)
         }
     }
 
     package enum Action {
         case task
         case loaded(Result<Workspace, any Error>)
-        case show(Workspace)
+        case show(Snapshot)
         case opened(AvenueScope)
         case newAvenueTapped
         case avenue(PresentationAction<AvenueFeature.Action>)
@@ -249,7 +264,7 @@ package struct AvenuesFeature {
 
         @CasePathable
         package enum Delegate {
-            case saved(Workspace)
+            case saved(Snapshot)
         }
     }
 
@@ -266,11 +281,12 @@ package struct AvenuesFeature {
                 guard state.workspace == nil else { return .none }
                 return .run { [store] send in await send(.loaded(Result { try await store.load() })) }
 
-            case .loaded(.success(let workspace)), .show(let workspace):
-                state.workspace = workspace
-                state.avenues = workspace.avenueRows
-                state.archived = workspace.archivedRows
-                state.avenue?.show(workspace, now: now, timeZone: timeZone)
+            case .loaded(.success(let workspace)):
+                state.show(Snapshot(workspace, number: 0), now: now, timeZone: timeZone)
+                return .none
+
+            case .show(let snapshot):
+                state.show(snapshot, now: now, timeZone: timeZone)
                 return .none
 
             case .loaded(.failure(let error)):
@@ -286,12 +302,10 @@ package struct AvenuesFeature {
                 state.newAvenue = NewAvenueFeature.State()
                 return .none
 
-            case .avenue(.presented(.delegate(.saved(let workspace)))),
-                .newAvenue(.presented(.delegate(.saved(let workspace)))):
-                state.workspace = workspace
-                state.avenues = workspace.avenueRows
-                state.archived = workspace.archivedRows
-                return .send(.delegate(.saved(workspace)))
+            case .avenue(.presented(.delegate(.saved(let snapshot)))),
+                .newAvenue(.presented(.delegate(.saved(let snapshot)))):
+                state.show(snapshot, now: now, timeZone: timeZone)
+                return .send(.delegate(.saved(snapshot)))
 
             case .avenue, .newAvenue, .alert, .delegate:
                 return .none
@@ -325,7 +339,7 @@ package struct NewAvenueFeature {
 
         @CasePathable
         package enum Delegate {
-            case saved(Workspace)
+            case saved(Snapshot)
         }
     }
 
@@ -347,7 +361,7 @@ package struct NewAvenueFeature {
                 }
             case .added(.success(let saved)):
                 return .run { [dismiss] send in
-                    await send(.delegate(.saved(saved.workspace)))
+                    await send(.delegate(.saved(saved.snapshot)))
                     await dismiss()
                 }
             case .added(.failure(let error)):

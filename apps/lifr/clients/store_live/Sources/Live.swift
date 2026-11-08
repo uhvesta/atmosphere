@@ -45,11 +45,13 @@ extension LiveStore {
                     .map({ _ in () })
                 {
                     do {
-                        let fixes = try await reconcile(in: {
+                        let update = try await reconciled(in: {
                             Context(actor: .system(device: actor.device, surface: actor.surface), now: Date())
                         })
-                        if !fixes.isEmpty { logger.info("Reconciled \(fixes.count) records after a change") }
-                        continuation.yield(Update(workspace: try await load(), fixes: fixes))
+                        if !update.fixes.isEmpty {
+                            logger.info("Reconciled \(update.fixes.count) records after a change")
+                        }
+                        continuation.yield(update)
                     } catch {
                         logger.error(
                             "Reconciling after a change failed: \(String(describing: error), privacy: .public)")
@@ -86,17 +88,19 @@ extension StoreClient {
 
         return StoreClient(
             load: { try await store.load() },
+            snapshot: { try await store.snapshot() },
             save: { operation in
                 let saved = try await store.save(in: context(), operation)
-                if announces { store.imported.yield(Update(workspace: saved.workspace, fixes: [])) }
+                if announces {
+                    store.imported.yield(Update(workspace: saved.workspace, fixes: [], number: saved.number))
+                }
                 return saved
             },
             updates: { store.updates(as: actor) },
             importSynced: { changes in
-                let fixes = try await store.importSynced(changes) {
+                let update = try await store.update(importing: changes) {
                     Context(actor: .system(device: actor.device, surface: actor.surface), now: Date())
                 }
-                let update = Update(workspace: try await store.load(), fixes: fixes)
                 store.imported.yield(update)
                 return update
             },

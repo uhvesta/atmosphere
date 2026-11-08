@@ -59,10 +59,12 @@ package struct ProjectDetailFeature {
         /// A Project completes only once every task in it is closed.
         package var canComplete: Bool { status == .active && openCount == 0 }
 
-        /// Shows `workspace`, keeping what the person is typing. False when
-        /// the Project is gone.
-        package mutating func refresh(from workspace: Workspace) -> Bool {
-            guard var refreshed = State(id: id, workspace: workspace) else { return false }
+        /// Shows `snapshot`'s records, keeping what the person is typing,
+        /// unless later ones are shown already. False when the Project is
+        /// gone.
+        package mutating func refresh(from snapshot: Snapshot) -> Bool {
+            guard saves.isLatest(snapshot) else { return true }
+            guard var refreshed = State(id: id, workspace: snapshot.workspace) else { return false }
             if name != savedName { refreshed.name = name }
             if details != savedDetails { refreshed.details = details }
             refreshed.archive = archive
@@ -89,7 +91,7 @@ package struct ProjectDetailFeature {
 
         @CasePathable
         package enum Delegate {
-            case saved(Workspace)
+            case saved(Snapshot)
         }
     }
 
@@ -146,8 +148,8 @@ package struct ProjectDetailFeature {
                 // Saved, so what was typed is what's stored now.
                 state.name = state.name.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard state.saves.isLatest(saved) else { return .none }
-                _ = state.refresh(from: saved.workspace)
-                return .send(.delegate(.saved(saved.workspace)))
+                _ = state.refresh(from: saved.snapshot)
+                return .send(.delegate(.saved(saved.snapshot)))
 
             case .saved(.failure(let error)):
                 state.name = state.savedName

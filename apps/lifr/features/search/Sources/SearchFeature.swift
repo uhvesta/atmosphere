@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrCore
+import LifrStoreClient
 import LifrTaskList
 import LifrUI
 
@@ -185,7 +186,7 @@ package struct SearchFeature {
 
         @CasePathable
         package enum Delegate {
-            case saved(Workspace)
+            case saved(Snapshot)
         }
     }
 
@@ -215,8 +216,8 @@ package struct SearchFeature {
                 }
                 refilter(&state)
                 return .none
-            case .list(.delegate(.saved(let workspace))):
-                return .send(.delegate(.saved(workspace)))
+            case .list(.delegate(.saved(let snapshot))):
+                return .send(.delegate(.saved(snapshot)))
             case .binding:
                 refilter(&state)
                 return .none
@@ -229,8 +230,8 @@ package struct SearchFeature {
     /// Runs the list's query again for the current filter.
     private func refilter(_ state: inout State) {
         state.list.query = .search(state.filter)
-        if let workspace = state.list.workspace {
-            state.list.show(workspace, now: now, timeZone: timeZone)
+        if let snapshot = state.list.snapshot {
+            state.list.show(snapshot, now: now, timeZone: timeZone)
         }
     }
 }

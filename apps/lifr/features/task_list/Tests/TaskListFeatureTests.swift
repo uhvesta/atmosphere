@@ -145,7 +145,7 @@ final class TaskListFeatureTests: XCTestCase {
         var workspace = records.workspace
         _ = try? workspace.setStatus(
             .inProgress, of: stretch.id, in: Context(actor: .user(device: "Mac", surface: .mac), now: now))
-        await store.send(.show(workspace))
+        await store.send(.show(Snapshot(workspace, number: 1)))
 
         XCTAssertEqual(store.state.sections.map(\.id), ["inProgress"])
         XCTAssertEqual(store.state.detail?.row.status, .inProgress)

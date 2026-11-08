@@ -42,8 +42,8 @@ package final class InMemorySession: Sendable {
     }
 
     /// A connected app changed the records.
-    package func change(_ workspace: Workspace) {
-        send(.recordsChanged(workspace))
+    package func change(_ workspace: Workspace, number: Int) {
+        send(.recordsChanged(workspace, number: number))
     }
 
     /// A connected app made a request at `date`.

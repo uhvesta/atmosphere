@@ -2,6 +2,7 @@ import ComposableArchitecture
 import Foundation
 import LifrCore
 import LifrProcrastinated
+import LifrStoreClient
 import LifrTaskList
 import LifrUI
 
@@ -72,7 +73,7 @@ package struct TodayFeature {
         @CasePathable
         package enum Delegate {
             /// Today or the review changed the records.
-            case saved(Workspace)
+            case saved(Snapshot)
         }
     }
 
@@ -85,17 +86,17 @@ package struct TodayFeature {
         Scope(state: \.list, action: \.list) { TaskListFeature() }
         Reduce { state, action in
             switch action {
-            case .list(.show(let workspace)):
-                state.procrastinated?.list.show(workspace, now: now, timeZone: timeZone)
-                state.procrastinatedCount = TaskQuery.procrastinatedCount(in: workspace, now: now)
+            case .list(.show(let snapshot)):
+                state.procrastinated?.list.show(snapshot, now: now, timeZone: timeZone)
+                countProcrastinated(&state)
                 return .none
 
-            case .list(.delegate(.saved(let workspace))):
-                state.procrastinatedCount = TaskQuery.procrastinatedCount(in: workspace, now: now)
-                return .send(.delegate(.saved(workspace)))
+            case .list(.delegate(.saved(let snapshot))):
+                countProcrastinated(&state)
+                return .send(.delegate(.saved(snapshot)))
 
-            case .list(.loaded(.success(let workspace))):
-                state.procrastinatedCount = TaskQuery.procrastinatedCount(in: workspace, now: now)
+            case .list(.loaded(.success)):
+                countProcrastinated(&state)
                 return .none
 
             case .procrastinatedTapped:
@@ -103,15 +104,22 @@ package struct TodayFeature {
                 state.procrastinated = ProcrastinatedFeature.State(workspace: workspace, now: now, timeZone: timeZone)
                 return .none
 
-            case .procrastinated(.presented(.list(.delegate(.saved(let workspace))))):
-                state.list.show(workspace, now: now, timeZone: timeZone)
-                state.procrastinatedCount = TaskQuery.procrastinatedCount(in: workspace, now: now)
-                return .send(.delegate(.saved(workspace)))
+            case .procrastinated(.presented(.list(.delegate(.saved(let snapshot))))):
+                state.list.show(snapshot, now: now, timeZone: timeZone)
+                countProcrastinated(&state)
+                return .send(.delegate(.saved(snapshot)))
 
             case .list, .procrastinated, .delegate:
                 return .none
             }
         }
         .ifLet(\.$procrastinated, action: \.procrastinated) { ProcrastinatedFeature() }
+    }
+
+    /// Counts procrastinated tasks in the records the list shows: the
+    /// latest, as the list keeps only those.
+    private func countProcrastinated(_ state: inout State) {
+        guard let workspace = state.list.workspace else { return }
+        state.procrastinatedCount = TaskQuery.procrastinatedCount(in: workspace, now: now)
     }
 }

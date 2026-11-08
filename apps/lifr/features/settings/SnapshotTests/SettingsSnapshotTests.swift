@@ -18,7 +18,7 @@ final class SettingsSnapshotTests: XCTestCase {
 
     private var settings: SettingsFeature.State {
         var state = SettingsFeature.State(showsAgents: true)
-        state.show(.sample(now: now, timeZone: .gmt))
+        state.show(Snapshot(.sample(now: now, timeZone: .gmt), number: 0))
         state.apps = [
             ConnectedApp(
                 id: "com.anthropic.claude-code", grant: .agentDefault(client: "Claude Code", now: now),

@@ -154,6 +154,105 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testSavesFromTwoScreensThatReplyOutOfOrderEndWithTheLaterSave() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let stretch = records.task("Stretch", in: health, due: 3)
+        let replies = HeldReplies()
+        var held = replies.held.makeAsyncIterator()
+        let store = makeStore(.phone, store: replies.client(.inMemory(records.workspace)))
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        // Run is ticked off on Today, then Stretch on Upcoming.
+        await store.send(.today(.list(.toggled(run.id))))
+        guard let first = await held.next() else { return XCTFail("the save never ran") }
+        await store.send(.upcoming(.list(.toggled(stretch.id))))
+        guard let second = await held.next() else { return XCTFail("the save never ran") }
+        XCTAssertLessThan(first, second)
+
+        // Upcoming's save replies first.
+        replies.release(second)
+        await store.receive(\.upcoming.list.delegate.saved)
+        replies.release(first)
+        await store.receive(\.today.list.saved)
+        await store.skipReceivedActions(strict: false)
+
+        let workspaces = [store.state.workspace, store.state.today.list.workspace, store.state.upcoming.list.workspace]
+        for workspace in workspaces {
+            XCTAssertEqual(workspace?.tasks[run.id]?.status, .done)
+            XCTAssertEqual(workspace?.tasks[stretch.id]?.status, .done)
+        }
+        XCTAssertEqual(store.state.today.list.rows.map(\.title), [])
+        XCTAssertEqual(store.state.toast.map { Set($0.change.previous.keys) }, Set([stretch.id]))
+        await task.cancel()
+    }
+
+    func testASaveThatRepliesAfterASyncUpdateKeepsTheUpdate() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let stretch = records.task("Stretch", in: health, due: 0)
+        var mac = records
+        mac.setStatus(.inProgress, of: stretch)
+        let stretchOnMac = try XCTUnwrap(mac.workspace.tasks[stretch.id])
+        let (client, sync) = StoreClient.inMemorySyncing(records.workspace)
+        let replies = HeldReplies()
+        var held = replies.held.makeAsyncIterator()
+        let store = makeStore(.phone, store: replies.client(client))
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.today(.list(.toggled(run.id))))
+        guard let save = await held.next() else { return XCTFail("the save never ran") }
+        // The Mac's change arrives after the save, before its reply.
+        let update = sync(now: now) { $0.applySynced(tasks: [stretchOnMac]) }
+        XCTAssertLessThan(save, update.number)
+        await store.receive(\.updated)
+        replies.release(save)
+        await store.receive(\.today.list.saved)
+        await store.skipReceivedActions(strict: false)
+
+        for workspace in [store.state.workspace, store.state.today.list.workspace] {
+            XCTAssertEqual(workspace?.tasks[run.id]?.status, .done)
+            XCTAssertEqual(workspace?.tasks[stretch.id]?.status, .inProgress, "the update stays")
+        }
+        XCTAssertEqual(store.state.toast.map { Set($0.change.previous.keys) }, Set([run.id]))
+        await task.cancel()
+    }
+
+    func testAnUndoThatRepliesAfterASyncUpdateKeepsTheUpdate() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let stretch = records.task("Stretch", in: health, due: 0)
+        var mac = records
+        mac.setStatus(.inProgress, of: stretch)
+        let stretchOnMac = try XCTUnwrap(mac.workspace.tasks[stretch.id])
+        let (client, sync) = StoreClient.inMemorySyncing(records.workspace)
+        let replies = HeldReplies()
+        var held = replies.held.makeAsyncIterator()
+        let store = makeStore(.phone, store: replies.client(client))
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.today(.list(.toggled(run.id))))
+        guard let save = await held.next() else { return XCTFail("the save never ran") }
+        replies.release(save)
+        await store.receive(\.today.delegate.saved)
+        let toast = try XCTUnwrap(store.state.toast)
+
+        await store.send(.undoTapped(toast.id))
+        guard let undo = await held.next() else { return XCTFail("the undo never ran") }
+        // The Mac's change arrives after the undo, before its reply.
+        let update = sync(now: now) { $0.applySynced(tasks: [stretchOnMac]) }
+        XCTAssertLessThan(undo, update.number)
+        await store.receive(\.updated)
+        replies.release(undo)
+        await store.receive(\.undone)
+        await store.skipReceivedActions(strict: false)
+
+        for workspace in [store.state.workspace, store.state.today.list.workspace, store.state.search.list.workspace] {
+            XCTAssertEqual(workspace?.tasks[run.id]?.status, .todo, "the undo is in the update")
+            XCTAssertEqual(workspace?.tasks[stretch.id]?.status, .inProgress, "the update stays")
+        }
+        await task.cancel()
+    }
+
     func testASyncThatFixedSomethingShowsTheBannerUntilDismissed() async throws {
         let parent = records.task("Buy running shoes", in: health)
         // Offline, one device adds a Sub task while the other closes the parent.
@@ -440,7 +539,7 @@ final class RootFeatureTests: XCTestCase {
         } operation: {
             try await client.edit(run.id, Workspace.TaskEdit(title: "Run 5 km"))
         }
-        await store.send(.updated(Update(workspace: synced.workspace)))
+        await store.send(.updated(Update(workspace: synced.workspace, number: synced.number)))
 
         await store.send(.undoTapped(id))
         XCTAssertNotNil(store.state.undoAlert)
@@ -493,7 +592,7 @@ final class RootFeatureTests: XCTestCase {
             try await client.edit(
                 project: marathon.id, Workspace.ProjectEdit(dueDate: try CalendarDate(year: 2026, month: 12, day: 6)))
         }
-        await store.send(.updated(Update(workspace: synced.workspace)))
+        await store.send(.updated(Update(workspace: synced.workspace, number: synced.number)))
 
         await store.send(.undoTapped(id))
         XCTAssertNotNil(store.state.undoAlert)
@@ -711,5 +810,38 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.locksApp)
         XCTAssertNotNil(store.state.lockAlert)
         await task.cancel()
+    }
+}
+
+/// A store client whose saves are made as soon as they're asked for, in
+/// that order, but whose replies wait until the test releases them, by the
+/// save's number.
+private final class HeldReplies: Sendable {
+    /// The number of each save whose reply is waiting, as it starts to wait.
+    let held: AsyncStream<Int>
+    private let hold: AsyncStream<Int>.Continuation
+    private let waiting = LockIsolated<[Int: CheckedContinuation<Void, Never>]>([:])
+
+    init() {
+        (held, hold) = AsyncStream.makeStream()
+    }
+
+    func client(_ inner: StoreClient) -> StoreClient {
+        var client = inner
+        client.save = { [waiting, hold] operation in
+            let saved = try await inner.save(operation)
+            await withCheckedContinuation { continuation in
+                waiting.withValue { $0[saved.number] = continuation }
+                hold.yield(saved.number)
+            }
+            return saved
+        }
+        return client
+    }
+
+    /// Lets the reply to save `number` through.
+    func release(_ number: Int) {
+        let continuation = waiting.withValue { $0.removeValue(forKey: number) }
+        continuation?.resume()
     }
 }

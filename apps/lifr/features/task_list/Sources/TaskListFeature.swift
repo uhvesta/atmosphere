@@ -33,18 +33,23 @@ package struct TaskListFeature {
 
         package init(query: TaskQuery, workspace: Workspace, now: Date, timeZone: TimeZone) {
             self.query = query
-            show(workspace, now: now, timeZone: timeZone)
+            show(Snapshot(workspace, number: 0), now: now, timeZone: timeZone)
         }
 
         package var isEmpty: Bool { sections.allSatisfy(\.rows.isEmpty) }
 
         package var rows: [TaskRowData] { sections.flatMap(\.rows) }
 
-        /// Shows `workspace` through the query, and the open task with it.
-        package mutating func show(_ workspace: Workspace, now: Date, timeZone: TimeZone) {
-            self.workspace = workspace
-            sections = query.sections(workspace, now, timeZone).filter { !$0.rows.isEmpty }
-            if var detail, detail.refresh(from: workspace, now: now, timeZone: timeZone) {
+        /// The records shown, with their place in the store's order.
+        package var snapshot: Snapshot? { workspace.map { Snapshot($0, number: saves.latest) } }
+
+        /// Shows `snapshot`'s records through the query, and the open task
+        /// with them, unless later ones are shown already.
+        package mutating func show(_ snapshot: Snapshot, now: Date, timeZone: TimeZone) {
+            guard saves.isLatest(snapshot) else { return }
+            workspace = snapshot.workspace
+            sections = query.sections(snapshot.workspace, now, timeZone).filter { !$0.rows.isEmpty }
+            if var detail, detail.refresh(from: snapshot, now: now, timeZone: timeZone) {
                 self.detail = detail
             }
         }
@@ -55,7 +60,7 @@ package struct TaskListFeature {
         case task
         case loaded(Result<Workspace, any Error>)
         /// The records changed elsewhere, such as in another tab or a sync.
-        case show(Workspace)
+        case show(Snapshot)
         case rowTapped(UUID)
         case toggled(UUID)
         case rowAction(UUID, RowAction)
@@ -72,7 +77,7 @@ package struct TaskListFeature {
         @CasePathable
         package enum Delegate {
             /// This list changed the records; other lists should show them.
-            case saved(Workspace)
+            case saved(Snapshot)
         }
     }
 
@@ -91,8 +96,12 @@ package struct TaskListFeature {
                     await send(.loaded(Result { try await store.load() }))
                 }
 
-            case .loaded(.success(let workspace)), .show(let workspace):
-                state.show(workspace, now: now, timeZone: timeZone)
+            case .loaded(.success(let workspace)):
+                state.show(Snapshot(workspace, number: 0), now: now, timeZone: timeZone)
+                return .none
+
+            case .show(let snapshot):
+                state.show(snapshot, now: now, timeZone: timeZone)
                 return .none
 
             case .loaded(.failure(let error)):
@@ -145,14 +154,12 @@ package struct TaskListFeature {
                 return .none
 
             case .saved(.success(let saved)):
-                let isLatest = state.saves.isLatest(saved)
-                if isLatest {
-                    state.show(saved.workspace, now: now, timeZone: timeZone)
-                }
+                let isLatest = saved.number >= state.saves.latest
+                state.show(saved.snapshot, now: now, timeZone: timeZone)
                 if let parentID = saved.change.reopenedParent, let parent = saved.workspace.tasks[parentID] {
                     state.banner = .reopened(parent, by: saved.change)
                 }
-                return isLatest ? .send(.delegate(.saved(saved.workspace))) : .none
+                return isLatest ? .send(.delegate(.saved(saved.snapshot))) : .none
 
             case .saved(.failure(let error)):
                 let workspace = state.workspace
@@ -165,9 +172,9 @@ package struct TaskListFeature {
                 }
                 return .none
 
-            case .detail(.presented(.delegate(.saved(let workspace)))):
-                state.show(workspace, now: now, timeZone: timeZone)
-                return .send(.delegate(.saved(workspace)))
+            case .detail(.presented(.delegate(.saved(let snapshot)))):
+                state.show(snapshot, now: now, timeZone: timeZone)
+                return .send(.delegate(.saved(snapshot)))
 
             case .detail, .reschedule, .prompt, .statusPicker, .alert, .delegate:
                 return .none

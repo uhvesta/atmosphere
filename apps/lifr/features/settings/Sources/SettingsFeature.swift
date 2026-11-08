@@ -60,9 +60,13 @@ package struct SettingsFeature {
             self.showsAgents = showsAgents
         }
 
-        package mutating func show(_ workspace: Workspace) {
+        /// Shows `snapshot`'s records, here and in Activity, unless later
+        /// ones are shown already.
+        package mutating func show(_ snapshot: Snapshot) {
+            guard saves.isLatest(snapshot) else { return }
+            let workspace = snapshot.workspace
             self.workspace = workspace
-            activity?.workspace = workspace
+            activity?.show(snapshot)
             procrastinatedAfterDays = workspace.settings.procrastinatedAfterDays
             avenues = workspace.avenues.values
                 .filter { $0.archivedAt == nil }
@@ -112,7 +116,7 @@ package struct SettingsFeature {
 
         @CasePathable
         package enum Delegate {
-            case saved(Workspace)
+            case saved(Snapshot)
         }
     }
 
@@ -146,7 +150,7 @@ package struct SettingsFeature {
                 )
 
             case .loaded(.success(let workspace)):
-                state.show(workspace)
+                state.show(Snapshot(workspace, number: 0))
                 return .none
 
             case .appsLoaded(.success(let apps)), .event(.appsChanged(let apps)):
@@ -270,14 +274,14 @@ package struct SettingsFeature {
                 state.instructions = InstructionsFeature.State()
                 return .none
 
-            case .activity(.presented(.delegate(.saved(let workspace)))):
-                state.show(workspace)
-                return .send(.delegate(.saved(workspace)))
+            case .activity(.presented(.delegate(.saved(let snapshot)))):
+                state.show(snapshot)
+                return .send(.delegate(.saved(snapshot)))
 
             case .saved(.success(let saved)):
-                guard state.saves.isLatest(saved) else { return .none }
-                state.show(saved.workspace)
-                return .send(.delegate(.saved(saved.workspace)))
+                guard saved.number >= state.saves.latest else { return .none }
+                state.show(saved.snapshot)
+                return .send(.delegate(.saved(saved.snapshot)))
 
             case .loaded(.failure(let error)):
                 state.alert = .failed("Couldn't load your settings", error)

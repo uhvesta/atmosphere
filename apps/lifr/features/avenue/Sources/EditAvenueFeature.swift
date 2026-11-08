@@ -73,7 +73,7 @@ package struct EditAvenueFeature {
 
         @CasePathable
         package enum Delegate {
-            case saved(Workspace)
+            case saved(Snapshot)
         }
     }
 
@@ -123,7 +123,7 @@ package struct EditAvenueFeature {
                 let isLatest = state.saves.isLatest(saved)
                 return .run { [dismiss] send in
                     if isLatest {
-                        await send(.delegate(.saved(saved.workspace)))
+                        await send(.delegate(.saved(saved.snapshot)))
                     }
                     await dismiss()
                 }

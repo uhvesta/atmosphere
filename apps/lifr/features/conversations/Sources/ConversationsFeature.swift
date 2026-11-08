@@ -3,6 +3,7 @@ import Foundation
 import LifrAssistantClient
 import LifrCore
 import LifrSearchClient
+import LifrStoreClient
 
 /// The conversations with the assistant, newest first, and the open one.
 /// Each is kept as it changes, on this device until it's synced. Archived
@@ -16,6 +17,8 @@ package struct ConversationsFeature {
     package struct State: Equatable {
         package var conversations: IdentifiedArrayOf<Conversation> = []
         package var workspace = Workspace()
+        /// The latest records shown, so earlier ones arriving late are ignored.
+        package var saves = SaveOrder()
         /// The open chat, and chats whose replies are still being written.
         package var chats: IdentifiedArrayOf<ChatFeature.State> = []
         /// The ID of the chat on screen.
@@ -80,9 +83,12 @@ package struct ConversationsFeature {
         /// The chat on screen.
         package var chat: ChatFeature.State? { openID.flatMap { chats[id: $0] } }
 
-        package mutating func show(_ workspace: Workspace) {
-            self.workspace = workspace
-            for id in chats.ids { chats[id: id]?.show(workspace) }
+        /// Shows `snapshot`'s records, here and in each chat, unless later
+        /// ones are shown already.
+        package mutating func show(_ snapshot: Snapshot) {
+            guard saves.isLatest(snapshot) else { return }
+            workspace = snapshot.workspace
+            for id in chats.ids { chats[id: id]?.show(snapshot) }
         }
 
         /// Opens `conversation`, keeping its chat if it's still working.
@@ -178,7 +184,7 @@ package struct ConversationsFeature {
 
         @CasePathable
         package enum Delegate {
-            case saved(Workspace)
+            case saved(Snapshot)
         }
     }
 
@@ -365,9 +371,9 @@ package struct ConversationsFeature {
                 state.open(fork)
                 return save(fork)
 
-            case .chats(.element(_, .delegate(.saved(let workspace)))):
-                state.show(workspace)
-                return .send(.delegate(.saved(workspace)))
+            case .chats(.element(_, .delegate(.saved(let snapshot)))):
+                state.show(snapshot)
+                return .send(.delegate(.saved(snapshot)))
 
             case .chats, .rename, .confirm, .alert, .delegate:
                 return .none

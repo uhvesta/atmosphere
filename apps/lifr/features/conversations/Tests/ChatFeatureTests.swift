@@ -529,7 +529,7 @@ final class ChatFeatureTests: XCTestCase {
 
         var undone = changed
         undone.perform(in: context) { workspace, context in workspace.undo(done, in: context) }
-        state.show(undone)
+        state.show(Snapshot(undone, number: 1))
         XCTAssertNil(state.conversation.changes[reply.id])
         XCTAssertEqual(state.workspace.tasks[rent.id]?.status, .todo)
 

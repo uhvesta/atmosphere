@@ -63,8 +63,9 @@ package enum SessionEvent: Hashable, Sendable {
     /// Grants were used, connected or disconnected.
     case appsChanged([ConnectedApp])
     /// A connected app changed the records. The store's own updates only
-    /// cover other devices.
-    case recordsChanged(Workspace)
+    /// cover other devices. `number` is where its save comes among the
+    /// store's saves and updates, as the store's `Saved.number`.
+    case recordsChanged(Workspace, number: Int)
     /// The local API was turned on or off, here or from another window.
     case apiEnabledChanged(Bool)
 }

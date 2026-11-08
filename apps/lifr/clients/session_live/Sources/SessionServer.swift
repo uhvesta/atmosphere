@@ -376,7 +376,9 @@
                     change.actor = handler.context.actor
                     return change
                 }
-                if response.withLock({ $0?.error }) == nil { send(.recordsChanged(saved.workspace)) }
+                if response.withLock({ $0?.error }) == nil {
+                    send(.recordsChanged(saved.workspace, number: saved.number))
+                }
             } catch {
                 return .failure(
                     id: request.id,

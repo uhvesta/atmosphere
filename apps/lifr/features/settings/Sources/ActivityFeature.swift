@@ -103,6 +103,12 @@ package struct ActivityFeature {
         @Presents package var confirm: ConfirmationDialogState<Confirm>?
         @Presents package var alert: AlertState<Never>?
 
+        /// Shows `snapshot`'s records unless later ones are shown already.
+        package mutating func show(_ snapshot: Snapshot) {
+            guard saves.isLatest(snapshot) else { return }
+            workspace = snapshot.workspace
+        }
+
         package init(workspace: Workspace) {
             self.workspace = workspace
         }
@@ -169,7 +175,7 @@ package struct ActivityFeature {
 
         @CasePathable
         package enum Delegate {
-            case saved(Workspace)
+            case saved(Snapshot)
         }
     }
 
@@ -217,10 +223,8 @@ package struct ActivityFeature {
                 }
 
             case .saved(.success(let saved)):
-                let isLatest = state.saves.isLatest(saved)
-                if isLatest {
-                    state.workspace = saved.workspace
-                }
+                let isLatest = saved.number >= state.saves.latest
+                state.show(saved.snapshot)
                 if !saved.change.skipped.isEmpty {
                     state.alert = AlertState {
                         TextState("Some fields were kept")
@@ -228,7 +232,7 @@ package struct ActivityFeature {
                         TextState(Self.skipped(saved.change.skipped.count))
                     }
                 }
-                return isLatest ? .send(.delegate(.saved(saved.workspace))) : .none
+                return isLatest ? .send(.delegate(.saved(saved.snapshot))) : .none
 
             case .saved(.failure(let error)):
                 state.alert = AlertState {
