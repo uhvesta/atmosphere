@@ -38,6 +38,9 @@
     "%@ Try again in a moment." : {
 
     },
+    "%@ code" : {
+
+    },
     "%@ deleted it, and it was changed here." : {
 
     },
@@ -104,6 +107,16 @@
     },
     "%@ tokens" : {
 
+    },
+    "%@ used, %@ of %@ tokens" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ used, %2$@ of %3$@ tokens"
+          }
+        }
+      }
     },
     "%@ wants to use your tasks through Lifr." : {
 
@@ -609,6 +622,9 @@
     "Closed" : {
 
     },
+    "Code" : {
+
+    },
     "Color" : {
 
     },
@@ -670,6 +686,9 @@
 
     },
     "Copy All" : {
+
+    },
+    "Copy Code" : {
 
     },
     "Copy as TOML" : {
@@ -1453,6 +1472,9 @@
 
     },
     "Nothing is due today." : {
+
+    },
+    "Nothing used yet" : {
 
     },
     "Notifications are off" : {

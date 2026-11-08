@@ -21,7 +21,8 @@ import LifrWidgetViews
 import SwiftUI
 import XCTest
 
-/// The chat on the iPhone: checkpoints, attachments, dark mode, its model, thinking, failing, stopping and compacting.
+/// The chat on the iPhone: checkpoints, attachments, dark mode, its model, thinking, failing, stopping, Markdown
+/// and compacting.
 @MainActor
 final class PhoneChatFlowTests: PhoneFlowTestCase {
     /// Going back in a chat past a reply whose plan was added, keeping its
@@ -302,6 +303,74 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
             store.conversations.chats[id: id]?.conversation.messages.last?.text, "Keep Saturday for the garden.")
         flow.finish()
     }
+
+    /// A reply in Markdown: while it's written, its code block shows as
+    /// far as it's got; then a whole reply with headings, a nested list, a
+    /// quote, code with Copy, a rule and a table.
+    func testAssistantMarkdown() async throws {
+        var assistant = AssistantClient.scripted([
+            AssistantReply(text: Self.markdownReply, isComplete: true)
+        ])
+        let scripted = assistant.reply
+        let asked = LockIsolated(0)
+        assistant.reply = { request in
+            guard
+                asked.withValue({
+                    $0 += 1
+                    return $0
+                }) == 1
+            else { return scripted(request) }
+            return AssistantReplies { continuation in
+                let task = Task {
+                    continuation.yield(
+                        AssistantReply(text: "Start with **Buy soil**.\n\n```swift\nlet due = \"Satur"))
+                    try? await Task.sleep(for: .seconds(3600))
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        }
+        let (store, flow) = app("assistant-markdown", assistant: assistant)
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        send("Show me some code", in: id, of: store)
+        await flow.step("writing")
+        store.send(.conversations(.chats(.element(id: id, action: .stopTapped))))
+        store.send(.conversations(.closed))
+        store.send(.conversations(.newTapped))
+        let next = try XCTUnwrap(store.conversations.openID)
+        send("How do I plant the seedlings?", in: next, of: store)
+        await flow.step("replied")
+        XCTAssertEqual(store.conversations.chats[id: next]?.conversation.messages.last?.text, Self.markdownReply)
+        flow.finish()
+    }
+
+    static let markdownReply = """
+        ## Planting the seedlings
+
+        Start with **Buy soil**, then *plant* them. ~~Skip the shed~~ for now; see \
+        [the guide](https://example.com/garden) or run `water --morning`.
+
+        ### Steps
+        1. Dig a hole
+        2. Plant
+           - Tomatoes
+           - Basil
+
+        > Water them in the morning.
+
+        ```swift
+        let due = "Saturday"
+        ```
+
+        ---
+
+        | Task | Day |
+        |:-----|----:|
+        | Buy soil | Sat |
+        | Plant | Sun |
+        """
 
     /// A long conversation: the reply written without older messages
     /// offers Compact, which summarizes them; the summary is shown where

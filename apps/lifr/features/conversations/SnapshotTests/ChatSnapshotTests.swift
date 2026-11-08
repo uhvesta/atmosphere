@@ -100,6 +100,42 @@ final class ChatSnapshotTests: XCTestCase {
         return state
     }
 
+    /// A reply in Markdown with each kind of block and inline mark.
+    private var markdown: ChatFeature.State {
+        var conversation = Conversation(id: UUID(0), createdAt: now)
+        conversation.messages = [
+            ChatMessage(id: UUID(1), role: .person, text: "How do I plant the **seedlings**?", at: now),
+            ChatMessage(id: UUID(2), role: .assistant, text: Self.markdownReply, at: now),
+        ]
+        return ChatFeature.State(conversation: conversation, workspace: .sample(now: now, timeZone: .gmt))
+    }
+
+    static let markdownReply = """
+        ## Planting the seedlings
+
+        Start with **Buy soil**, then *plant* them. ~~Skip the shed~~ for now, and see \
+        [the guide](https://example.com/garden) or run `water --morning`.
+
+        ### Steps
+        1. Dig a hole
+        2. Plant
+           - Tomatoes
+           - Basil
+
+        > Water them in the morning.
+
+        ```swift
+        let due = "Saturday"
+        ```
+
+        ---
+
+        | Task | Day |
+        |:-----|----:|
+        | Buy soil | Sat |
+        | Plant | Sun |
+        """
+
     /// A chat with nothing in it yet and / typed, listing the skills.
     private var slash: ChatFeature.State {
         var state = ChatFeature.State(
@@ -140,6 +176,7 @@ final class ChatSnapshotTests: XCTestCase {
         assertScreenImages(of: screen(attachments(recording: true)), named: "recording", images: [.proMaxLight])
         assertScreenImages(of: screen(compacted), named: "compacted", images: [.proMaxLight, .proMaxDark])
         assertScreenImages(of: screen(slash), named: "slash", images: [.proMaxLight, .proMaxDark])
+        assertScreenImages(of: screen(markdown), named: "markdown", images: [.proMaxLight, .proMaxDark])
     }
 
     /// The sheet picking the chat's model, on Qwen3.5 thinking long.

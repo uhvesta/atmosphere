@@ -3,7 +3,7 @@ import InferenceKit
 import SwiftUI
 
 /// One message: the person's in a bubble on the trailing side, the
-/// assistant's as plain text, with what the model thought, the skill it
+/// assistant's as text in the Markdown it wrote, with what the model thought, the skill it
 /// was written for, what's attached and Undo for what it changed.
 public struct MessageView<Attachments: View>: View {
     let role: ChatRole
@@ -58,10 +58,10 @@ public struct MessageView<Attachments: View>: View {
                         .background(.tint.opacity(0.2), in: .rect(cornerRadius: 16))
                         .frame(maxWidth: 520, alignment: .trailing)
                 } else {
-                    // The assistant's words read as text, not a bubble.
-                    Text(text)
+                    // The assistant's words read as text, not a bubble,
+                    // in the Markdown it writes.
+                    MarkdownText(text: text)
                         .selectableOnMac()
-                        .accessibilityIdentifier(ModelText.identifier)
                 }
             }
             if canUndo {
@@ -182,8 +182,7 @@ public struct ReplyInProgress: View {
             .foregroundStyle(.secondary)
             .accessibilityElement(children: .combine)
         } else {
-            Text(text).foregroundStyle(.secondary)
-                .accessibilityIdentifier(ModelText.identifier)
+            MarkdownText(text: text, isWriting: true).foregroundStyle(.secondary)
         }
     }
 }

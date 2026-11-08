@@ -31,8 +31,13 @@ enum Sample {
         "pan": ["reading": "pahn", "meaning": "bread; loaf", "inSentence": "What's warm and smells good."],
     ]
 
-    static let reply =
-        "“Vamos” is “we go” of ir, and as a question it means “shall we go?”. “Al” is a + el: “to the”."
+    /// In Markdown, as a model writes it.
+    static let reply = """
+        **Vamos** is “we go” of *ir*, and as a question it means “shall we go?”.
+
+        - **Al** is *a* + *el*: “to the”.
+        - *Hoy* means “today”.
+        """
 
     /// Answers each turn by what it asks.
     private static let answer: ScriptedRuntime.Step = { turn, partial throws(ModelRuntimeError) in

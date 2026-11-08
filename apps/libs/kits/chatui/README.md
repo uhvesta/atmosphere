@@ -4,7 +4,10 @@ SwiftUI views for an app's assistant. Each view is built from plain data and
 closures and has no store, so it works with TCA, with an observable model,
 or in a preview. The views cover:
 
-- messages, with their thinking, branches and summaries
+- messages, with their thinking, branches and summaries, and the
+  assistant's replies shown as Markdown: headings, lists, quotes, code
+  with Copy, rules, tables and inline styles, read again only from the
+  last block as a reply is written
 - the message field, the find bar and notices
 - checkpoints
 - rows and search snippets for the conversation list
