@@ -26,20 +26,14 @@
       [Button] "Show me some code, Nov 3 at 10:00 AM, Replying…"
   [Heading] "Show me some code"
   [MenuButton] "Context Window" help: "Nothing used yet"
-  [Button] "Find in Conversation" help: "Find in Conversation"
-  [Button, disabled] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
-  [Button, disabled] "Back" help: "Go back to the message before"
-  [Button, disabled] "Forward" help: "Go forward to the message after"
-  [Button] "All Checkpoints" help: "Every point to go back or forward to"
-  [Button] "Rename" help: "Rename"
-  [TextField] ""
-  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
-  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
-  [Button] "Stop" help: "Stop the reply, keeping what it has written" id: stop.fill
   [StaticText] "" value: "Show me some code"
   [StaticText] "" value: "Start with Buy soil."
   [Button] "Copy Code"
   [StaticText] "swift code" value: "let due = "Satur"
+  [TextField] ""
+  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
+  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
+  [Button] "Stop" help: "Stop the reply, keeping what it has written" id: stop.fill
   [Toolbar] ""
     [Button] "Hide Sidebar"
     [RadioGroup] "Show"
