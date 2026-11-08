@@ -39,6 +39,15 @@ package enum ModelUse: String, ModelUseCase {
         case .skills, .titles: nil
         }
     }
+
+    /// Talking with the assistant and writing skills are chats; naming
+    /// conversations and searching are quick tasks.
+    package var purpose: TunePurpose {
+        switch self {
+        case .assistant, .skills: .chat
+        case .titles, .search: .quick
+        }
+    }
 }
 
 extension SharedKey where Self == AppStorageKey<Bool>.Default {

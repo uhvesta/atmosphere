@@ -51,6 +51,9 @@ package struct ModelsView: View {
             #endif
         }
         .task { await store.send(.task).finish() }
+        .navigationDestination(item: $store.scope(state: \.tune, action: \.tune)) { store in
+            TuneView(store: store)
+        }
         .confirmationDialog($store.scope(state: \.remove, action: \.remove))
         .alert($store.scope(state: \.alert, action: \.alert))
     }
@@ -70,7 +73,8 @@ package struct ModelsView: View {
         ModelEntryActions(
             start: { store.send(.downloadTapped($0)) }, pause: { store.send(.pauseTapped($0)) },
             remove: { store.send(.removeTapped($0)) }, pickWindow: { store.send(.windowPicked($0, for: $1)) },
-            measure: { store.send(.measureTapped($0)) }, pickBackend: { store.send(.backendPicked($0, for: $1)) })
+            measure: { store.send(.measureTapped($0)) }, pickBackend: { store.send(.backendPicked($0, for: $1)) },
+            tune: { store.send(.tuneTapped($0)) })
     }
 }
 

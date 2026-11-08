@@ -11,4 +11,6 @@ enum Use: String, ModelUseCase {
     }
 
     var standard: ModelID? { self == .assistant ? .apple : nil }
+
+    var purpose: TunePurpose { self == .titles ? .quick : .chat }
 }

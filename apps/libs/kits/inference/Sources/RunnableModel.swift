@@ -37,7 +37,9 @@ public struct RunnableModel: Hashable, Identifiable, Sendable {
 
     /// Apple's model, then each of `installed` but Apple's, by name.
     public static func list(_ installed: [InstalledModel]) -> [RunnableModel] {
-        let downloaded = installed.filter { $0.id != .apple }.map(RunnableModel.init)
+        var seen: Set<ModelID> = [.apple]
+        // A model downloaded in more than one format is one model to pick.
+        let downloaded = installed.filter { seen.insert($0.id).inserted }.map(RunnableModel.init)
         return [.apple] + downloaded.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 }

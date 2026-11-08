@@ -35,11 +35,13 @@ public struct ModelEntryActions {
     public var measure: (ModelID) -> Void
     /// Where it runs, or nil for the app to pick.
     public var pickBackend: (ModelBackend?, ModelID) -> Void
+    /// Opens the screen comparing its formats, engines and settings.
+    public var tune: (ModelID) -> Void
 
     public init(
         start: @escaping (ModelID) -> Void, pause: @escaping (ModelID) -> Void, remove: @escaping (ModelID) -> Void,
         pickWindow: @escaping (Int, ModelID) -> Void, measure: @escaping (ModelID) -> Void,
-        pickBackend: @escaping (ModelBackend?, ModelID) -> Void
+        pickBackend: @escaping (ModelBackend?, ModelID) -> Void, tune: @escaping (ModelID) -> Void
     ) {
         self.start = start
         self.pause = pause
@@ -47,6 +49,7 @@ public struct ModelEntryActions {
         self.pickWindow = pickWindow
         self.measure = measure
         self.pickBackend = pickBackend
+        self.tune = tune
     }
 }
 
@@ -102,7 +105,8 @@ public struct ModelsForm<Uses: View, Options: View>: View {
             } footer: {
                 Text(
                     "Measure a downloaded model to see how fast it runs here, and how much memory and CPU it "
-                        + "takes, on the GPU and on the CPU. \(app) then runs it where it's fastest, unless you pick.")
+                        + "takes, on the GPU and on the CPU. \(app) then runs it where it's fastest, unless you pick. "
+                        + "Tune it to compare its formats, engines and their settings side by side.")
             }
             Section {
                 TextField("Hugging Face link", text: $link)
@@ -157,6 +161,9 @@ private struct ModelEntry: View {
                 ModelTuningView(
                     tuning, isMeasuring: state.isMeasuring, error: state.measureError,
                     measure: { actions.measure(model.id) }, pick: { actions.pickBackend($0, model.id) })
+                Button("Tune for this device…") { actions.tune(model.id) }
+                    .buttonStyle(.borderless)
+                    .disabled(state.isMeasuring)
             }
         }
     }

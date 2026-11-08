@@ -52,6 +52,28 @@ package struct ModelLibraryClient: Sendable {
     /// Where `id` runs and why, and what was measured of it here, if it's
     /// downloaded.
     package var tuning: @Sendable (_ id: ModelID) -> ModelTuning? = { _ in nil }
+    /// The setups to compare for `id`: each of its downloaded formats on
+    /// each backend its engine has, at its window. Empty when it isn't
+    /// downloaded.
+    package var tuneCandidates: @Sendable (_ id: ModelID) -> [TuneCandidate] = { _ in [] }
+    /// Runs each of `candidates` in turn, unloading the loaded model
+    /// first, and keeps what's measured; `report` hears of each as it's
+    /// done. A candidate that fails is reported and the rest go on;
+    /// cancelling skips what's left.
+    package var compare:
+        @Sendable (
+            _ candidates: [TuneCandidate], _ report: @escaping @Sendable (TuneCandidate, TuneOutcome) async -> Void
+        ) async -> [TuneOutcome] = { candidates, _ in candidates.map { _ in .skipped } }
+    /// What was measured of `id`'s setups on this device, latest first.
+    package var tuneResults: @Sendable (_ id: ModelID) -> [TuneResult] = { _ in [] }
+    /// The setup the person picked for `id` for each purpose.
+    package var setups: @Sendable (_ id: ModelID) -> [TunePurpose: TunedSetup] = { _ in [:] }
+    /// Runs `id` as `setup` for the uses with `purpose`, or as Lifr picks
+    /// with nil, from its next answer.
+    package var pickSetup: @Sendable (_ setup: TunedSetup?, _ purpose: TunePurpose, _ id: ModelID) async -> Void
+    /// The formats of `id` in the catalog that aren't downloaded, to offer
+    /// for comparing. Nothing's downloaded until the person asks.
+    package var otherFormats: @Sendable (_ id: ModelID) -> [ModelVariant] = { _ in [] }
     /// The model `use` runs on.
     package var selection: @Sendable (_ use: ModelUse) -> ModelID = { _ in .apple }
     package var select: @Sendable (_ id: ModelID, _ use: ModelUse) async -> Void
@@ -82,6 +104,11 @@ package final class InMemoryModelLibrary: Sendable {
         var failures: [ModelID: ModelDownloadError] = [:]
         var unfinished: [ModelID: ModelSpec] = [:]
         var tuneFailures: [ModelID: ModelRuntimeError] = [:]
+        /// The formats downloaded besides the first of each model.
+        var formats: [ModelID: [InstalledModel]] = [:]
+        var tuneResults: [ModelID: [TuneResult]] = [:]
+        var setups: [ModelID: [TunePurpose: TunedSetup]] = [:]
+        var failingRuntimes: [RuntimeKind: ModelRuntimeError] = [:]
     }
 
     /// The device measurements in memory are from.
@@ -125,6 +152,11 @@ package final class InMemoryModelLibrary: Sendable {
         state.withValue { $0.tuneFailures[id] = error }
     }
 
+    /// Makes candidates on `runtime` fail with `error` when compared.
+    package func failComparing(on runtime: RuntimeKind, with error: ModelRuntimeError) {
+        state.withValue { $0.failingRuntimes[runtime] = error }
+    }
+
     /// Shows `download` for `id`, as a download in progress would.
     package func show(_ download: DownloadState?, for id: ModelID) {
         board.update { $0[id] = download }
@@ -150,7 +182,11 @@ package final class InMemoryModelLibrary: Sendable {
                 }
                 let model = Self.installed(spec, at: now)
                 state.withValue { state in
-                    state.installed[spec.id] = model
+                    if let first = state.installed[spec.id], first.spec.variant != spec.variant {
+                        state.formats[spec.id, default: []].append(model)
+                    } else {
+                        state.installed[spec.id] = model
+                    }
                     state.unfinished[spec.id] = nil
                 }
                 board.update { $0[spec.id] = nil }
@@ -167,6 +203,9 @@ package final class InMemoryModelLibrary: Sendable {
             delete: { [self] id throws(ModelStorageError) in
                 state.withValue { state in
                     state.installed[id] = nil
+                    state.formats[id] = nil
+                    state.tuneResults[id] = nil
+                    state.setups[id] = nil
                     state.unfinished[id] = nil
                     for (use, selected) in state.selection where selected == id { state.selection[use] = nil }
                 }
@@ -183,6 +222,23 @@ package final class InMemoryModelLibrary: Sendable {
             },
             pickBackend: { [state] id, backend in state.withValue { $0.installed[id]?.pickedBackend = backend } },
             tuning: { [state] id in state.value.installed[id].map(Self.tuning) },
+            tuneCandidates: { [state] id in
+                let variants = Self.variants(of: id, in: state.value)
+                return InferenceKit.tuneCandidates(for: variants, window: variants.first?.window ?? 0)
+            },
+            compare: { [self] candidates, report in await compare(candidates, report: report) },
+            tuneResults: { [state] id in
+                (state.value.tuneResults[id] ?? []).sorted { $0.measuredAt > $1.measuredAt }
+            },
+            setups: { [state] id in state.value.setups[id] ?? [:] },
+            pickSetup: { [state] setup, purpose, id in
+                state.withValue { $0.setups[id, default: [:]][purpose] = setup }
+            },
+            otherFormats: { [state, catalog] id in
+                let installed = Self.variants(of: id, in: state.value).map(\.spec.variant)
+                let entry = catalog.first { $0.id == id }
+                return (entry?.variants ?? []).filter { !installed.contains($0) && $0.runtime != .apple }
+            },
             selection: { [state] use in use.model(in: state.value.selection) },
             select: { [state] id, use in state.withValue { $0.selection[use] = id } },
             setWindow: { [state] id, window in
@@ -192,6 +248,70 @@ package final class InMemoryModelLibrary: Sendable {
                 }
             }
         )
+    }
+
+    private static func variants(of id: ModelID, in state: State) -> [InstalledModel] {
+        (state.installed[id].map { [$0] } ?? []) + (state.formats[id] ?? [])
+    }
+
+    /// Each candidate as the GPU and LiteRT-LM run faster here, and a less
+    /// precise setup answers a little apart from the most precise one.
+    private func compare(
+        _ candidates: [TuneCandidate], report: @Sendable (TuneCandidate, TuneOutcome) async -> Void
+    ) async -> [TuneOutcome] {
+        let reference = tuneReference(of: candidates)
+        var outcomes: [TuneOutcome] = []
+        for candidate in candidates {
+            let outcome = outcome(of: candidate, reference: reference)
+            if case .measured(let result) = outcome {
+                state.withValue { state in
+                    state.tuneResults[candidate.model, default: []].removeAll { $0.key == result.key }
+                    state.tuneResults[candidate.model, default: []].append(result)
+                }
+            }
+            outcomes.append(outcome)
+            await report(candidate, outcome)
+        }
+        return outcomes
+    }
+
+    private func outcome(of candidate: TuneCandidate, reference: TuneCandidate?) -> TuneOutcome {
+        let state = state.value
+        guard
+            let model = Self.variants(of: candidate.model, in: state).first(where: {
+                $0.spec.variant.runtime == candidate.runtime && $0.spec.variant.quantization == candidate.quantization
+            })
+        else { return .failed(.notDownloaded) }
+        do throws(EngineOptionsError) {
+            try candidate.options.validate(for: model.spec, on: candidate.runtime)
+        } catch {
+            return .failed(.invalidOptions(error))
+        }
+        if let error = state.failingRuntimes[candidate.runtime] { return .failed(.engine(error)) }
+        let gigabyte: Int64 = 1_073_741_824
+        let gpu = candidate.options.backend == .gpu
+        let fast = candidate.runtime == .liteRT ? 1.3 : 1.0
+        let saved: Int64 =
+            switch candidate.options.kvCache ?? .q8_0 {
+            case .f16: 0
+            case .q8_0: 2 * gigabyte / 10
+            case .q4_0: 3 * gigabyte / 10
+            }
+        let measurement = ModelMeasurement(
+            backend: candidate.options.backend, runtime: candidate.runtime, quantization: candidate.quantization,
+            window: candidate.options.window, device: Self.device.model, system: Self.device.system,
+            prefillTokensPerSecond: (gpu ? 410 : 95) * fast, decodeTokensPerSecond: (gpu ? 24 : 11) * fast,
+            timeToFirstToken: (gpu ? 0.6 : 2.1) / fast, peakMemoryBytes: (gpu ? 31 : 27) * gigabyte / 10 - saved,
+            cpuSecondsPerToken: gpu ? 0.004 : 0.31, cpuJoulesPerToken: gpu ? 0.012 : 0.85,
+            gpuSecondsPerToken: gpu ? 0.03 : 0, measuredAt: now)
+        let drift = Double(candidate.options.imprecision - (reference?.options.imprecision ?? 0)) * 0.04
+        let quality = reference.map {
+            TuneQuality(agreement: max(0, 1 - drift), isReference: $0 == candidate, reference: $0)
+        }
+        return .measured(
+            TuneResult(
+                key: candidate.key(device: Self.device.model, system: Self.device.system),
+                measurement: measurement, quality: quality))
     }
 
     /// A GPU that writes twice as fast as the CPU and leaves it free, and a

@@ -447,6 +447,8 @@ final class ModelLibraryTests: XCTestCase {
         XCTAssertEqual(runtime.model.options, cpu.options)
         XCTAssertEqual(runtimes.host.plan(for: runtime.model).backend, .cpu)
         XCTAssertEqual(relaunched.setups(for: model.id), [.chat: cpu])
+        let titles = try XCTUnwrap(relaunched.runtime(for: .titles) as? EngineRuntime)
+        XCTAssertNil(titles.model.options)
     }
 
     func testAFormatThatIsntDownloadedIsOfferedToCompare() async throws {

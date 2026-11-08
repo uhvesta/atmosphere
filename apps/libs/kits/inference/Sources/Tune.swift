@@ -174,7 +174,7 @@ public struct TunedSetup: Hashable, Codable, Sendable {
 }
 
 extension ModelUseCase {
-    /// What it's tuned for; chat unless the use says.
+    /// Chat, unless the use says.
     public var purpose: TunePurpose { .chat }
 }
 

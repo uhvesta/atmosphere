@@ -336,6 +336,9 @@ public protocol ModelUseCase: Hashable, Codable, Sendable, CaseIterable {
     /// The model this use runs on when the person hasn't picked one, if it
     /// doesn't follow another use's.
     var standard: ModelID? { get }
+    /// What the person tunes a model for this use for: chatting, or quick
+    /// tasks. Chat unless the use says.
+    var purpose: TunePurpose { get }
 }
 
 /// Where a download is.

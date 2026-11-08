@@ -179,6 +179,15 @@ final class TuneTests: XCTestCase {
         XCTAssertEqual(ModelCatalog.gemma4E2B.variants.map(\.runtime), [.liteRT, .llama])
     }
 
+    func testAModelInTwoFormatsIsOneToPick() {
+        let entry = ModelCatalog.gemma4E2B
+        let installed = entry.variants.map {
+            InstalledModel(spec: entry.running($0), directory: URL(filePath: "/"), installedAt: Date())
+        }
+
+        XCTAssertEqual(RunnableModel.list(installed).map(\.id), [.apple, entry.id])
+    }
+
     func testAProfileKeptBeforeMarkupReadsAsChatML() throws {
         let old = Data(
             #"{"onScreen":"gpu","gpuActivations":"half","vision":"withModel","audio":"cpu","speculation":"off"}"#.utf8)

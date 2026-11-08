@@ -24,6 +24,12 @@ extension ModelRuntimes where Use == ModelUse {
             tune: { [self] id throws(ModelRuntimeError) in _ = try await tune(id) },
             pickBackend: { [self] id, backend in await pick(backend, for: id) },
             tuning: { [self] id in tuning(for: id) },
+            tuneCandidates: { [self] id in tuneCandidates(for: id) },
+            compare: { [self] candidates, report in await tune(candidates, report: report) },
+            tuneResults: { [self] id in tuneResults(for: id) },
+            setups: { [self] id in setups(for: id) },
+            pickSetup: { [self] setup, purpose, id in await pick(setup, for: purpose, of: id) },
+            otherFormats: { [self] id in otherFormats(of: id) },
             selection: { [selection] use in selection.model(for: use) },
             select: { [self] id, use in await select(id, for: use) },
             setWindow: { [self] id, window in await setWindow(window, for: id) }

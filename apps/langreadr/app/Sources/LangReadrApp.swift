@@ -105,6 +105,12 @@ extension ModelLibraryClient: DependencyKey {
             tune: { id throws(ModelRuntimeError) in _ = try await models.tune(id) },
             pickBackend: { id, backend in await models.pick(backend, for: id) },
             tuning: { id in models.tuning(for: id) },
+            tuneCandidates: { id in models.tuneCandidates(for: id) },
+            compare: { candidates, report in await models.tune(candidates, report: report) },
+            tuneResults: { id in models.tuneResults(for: id) },
+            setups: { id in models.setups(for: id) },
+            pickSetup: { setup, purpose, id in await models.pick(setup, for: purpose, of: id) },
+            otherFormats: { id in models.otherFormats(of: id) },
             selection: { use in models.selection.model(for: use) },
             select: { id, use in await models.select(id, for: use) },
             setWindow: { id, window in await models.setWindow(window, for: id) }

@@ -103,6 +103,18 @@ final class ModelsFeatureTests: XCTestCase {
         await store.skipInFlightEffects()
     }
 
+    func testTuningOpensForADownloadedModelWithEveryFormatItComesIn() async {
+        let library = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B])
+        let store = await models(library)
+
+        await store.send(.tuneTapped(ModelCatalog.qwen35Tiny.id))
+        XCTAssertNil(store.state.tune)
+        await store.send(.tuneTapped(ModelCatalog.gemma4E2B.id))
+
+        XCTAssertEqual(store.state.tune?.model.variants.map(\.runtime), [.liteRT, .llama])
+        await store.skipInFlightEffects()
+    }
+
     func testPickingWhereAModelRunsIsKeptAndAutomaticGoesBack() async {
         let library = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B])
         let store = await models(library)

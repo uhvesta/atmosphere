@@ -31,6 +31,8 @@ package struct ModelsFeature {
         package var isAdding = false
         /// Why the link couldn't be added.
         package var addError: String?
+        /// Comparing a model's formats, engines and settings.
+        @Presents package var tune: TuneFeature.State?
         @Presents package var remove: ConfirmationDialogState<Remove>?
         @Presents package var alert: AlertState<Never>?
 
@@ -78,6 +80,8 @@ package struct ModelsFeature {
         case backendPicked(ModelBackend?, for: ModelID)
         /// Where a model runs after a pick or a new window.
         case tuningChanged(ModelID, ModelTuning?)
+        case tuneTapped(ModelID)
+        case tune(PresentationAction<TuneFeature.Action>)
         case downloadTapped(ModelID)
         case downloaded(ModelID, Result<InstalledModel, ModelDownloadError>)
         case pauseTapped(ModelID)
@@ -174,6 +178,20 @@ package struct ModelsFeature {
                 state.selection = selection
                 return .none
 
+            case .tuneTapped(let id):
+                guard state.installed.contains(id), let spec = state.models.first(where: { $0.id == id }) else {
+                    return .none
+                }
+                state.tune = TuneFeature.State(model: library.catalog().first { $0.id == id } ?? spec)
+                return .none
+
+            case .tune(.dismiss):
+                // A format downloaded there is listed here.
+                return reload()
+
+            case .tune:
+                return .none
+
             case .downloadTapped(let id):
                 guard let spec = state.models.first(where: { $0.id == id }) else { return .none }
                 return download(spec)
@@ -256,6 +274,7 @@ package struct ModelsFeature {
                 return .none
             }
         }
+        .ifLet(\.$tune, action: \.tune) { TuneFeature() }
         .ifLet(\.$remove, action: \.remove)
         .ifLet(\.$alert, action: \.alert)
     }
@@ -266,8 +285,10 @@ package struct ModelsFeature {
 
     private static func loaded(_ library: ModelLibraryClient) async -> Action {
         let installed = await library.installed()
+        // A model downloaded in two formats is listed once for each.
         let tunings = Dictionary(
-            uniqueKeysWithValues: installed.compactMap { model in library.tuning(model.id).map { (model.id, $0) } })
+            installed.compactMap { model in library.tuning(model.id).map { (model.id, $0) } }
+        ) { first, _ in first }
         return .loaded(
             installed: installed, unfinished: await library.unfinished(), selection: selection(library),
             tunings: tunings)

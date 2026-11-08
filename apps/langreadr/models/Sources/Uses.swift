@@ -25,6 +25,14 @@ package enum ModelUse: String, ModelUseCase {
         }
     }
 
+    /// Chats are chats; reading's lookups are quick tasks.
+    package var purpose: TunePurpose {
+        switch self {
+        case .chat: .chat
+        case .reading: .quick
+        }
+    }
+
     package var title: String {
         switch self {
         case .chat: String(localized: "Chats")
