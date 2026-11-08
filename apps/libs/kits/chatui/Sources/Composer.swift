@@ -304,24 +304,42 @@ public struct ModelPill: View {
     }
 }
 
-/// The microphone button of the composer, which records for the next
-/// message, or stops.
+/// The microphone button of the composer: it records for the next
+/// message, or for a model that doesn't listen, writes what the person
+/// says into the field. Tapped again, it stops.
 public struct MicButton: View {
-    let isRecording: Bool
+    /// What the microphone does.
+    public enum Mode: Hashable, Sendable {
+        /// Records a clip to send, for a model that listens.
+        case record
+        /// Writes what's said into the message field, on the device.
+        case dictate
+    }
+
+    let isOn: Bool
+    let mode: Mode
     let toggle: () -> Void
 
-    public init(isRecording: Bool, toggle: @escaping () -> Void) {
-        self.isRecording = isRecording
+    /// `isOn` is whether it's recording or dictating now.
+    public init(isOn: Bool, mode: Mode, toggle: @escaping () -> Void) {
+        self.isOn = isOn
+        self.mode = mode
         self.toggle = toggle
     }
 
     public var body: some View {
         Button(action: toggle) {
-            Label(isRecording ? "Stop Recording" : "Record", systemImage: isRecording ? "stop.fill" : "mic")
+            switch (mode, isOn) {
+            case (.record, false): Label("Record", systemImage: "mic")
+            case (.record, true): Label("Stop Recording", systemImage: "stop.fill")
+            case (.dictate, false): Label("Dictate", systemImage: "mic")
+            case (.dictate, true): Label("Stop Dictation", systemImage: "stop.fill")
+            }
         }
-        // Red while recording, like the system's own.
-        .buttonStyle(RoundButtonStyle(prominent: isRecording))
-        .tint(isRecording ? .red : nil)
+        // Red while it listens, like the system's own.
+        .buttonStyle(RoundButtonStyle(prominent: isOn))
+        .tint(isOn ? .red : nil)
+        .help(mode == .record ? "Record a clip for the model to hear" : "Dictate, on this device")
     }
 }
 
@@ -338,7 +356,7 @@ public struct ChatComposer<Top: View, Attach: View>: View {
     let submit: () -> Void
     let top: Top
     let attach: Attach
-    let attaches: Bool
+    let plus: Plus
     private var token: String?
     private var removeToken: () -> Void = {}
 
@@ -349,6 +367,16 @@ public struct ChatComposer<Top: View, Attach: View>: View {
         composer.token = name
         composer.removeToken = remove
         return composer
+    }
+
+    /// What + does.
+    enum Plus {
+        /// Opens the menu of `attach`.
+        case menu
+        /// Runs this, such as to open a sheet of what to add.
+        case action(() -> Void)
+        /// There's no +.
+        case none
     }
 
     /// `attach` is the menu + opens; `top` sits above the field.
@@ -364,7 +392,7 @@ public struct ChatComposer<Top: View, Attach: View>: View {
         self.submit = submit
         self.top = top()
         self.attach = attach()
-        attaches = true
+        plus = .menu
     }
 
     public var body: some View {
@@ -373,7 +401,8 @@ public struct ChatComposer<Top: View, Attach: View>: View {
             MessageField(text: $text, prompt: prompt, token: token, removeToken: removeToken, submit: submit)
                 .padding(.horizontal, 4)
             HStack(spacing: 8) {
-                if attaches {
+                switch plus {
+                case .menu:
                     Menu {
                         attach
                     } label: {
@@ -382,7 +411,15 @@ public struct ChatComposer<Top: View, Attach: View>: View {
                     .menuIndicator(.hidden)
                     .buttonStyle(RoundButtonStyle())
                     .fixedSize()
-                    .help("Attach a photo or use a skill")
+                    .help("Add photos or files")
+                case .action(let add):
+                    Button(action: add) {
+                        Label("Add", systemImage: "plus")
+                    }
+                    .buttonStyle(RoundButtonStyle())
+                    .help("Add photos or files")
+                case .none:
+                    EmptyView()
                 }
                 model
                 Spacer(minLength: 0)
@@ -401,10 +438,11 @@ public struct ChatComposer<Top: View, Attach: View>: View {
 }
 
 extension ChatComposer where Attach == EmptyView {
-    /// A composer with nothing to attach, and so no +.
+    /// A composer whose + runs `add`, such as to open a sheet of what to
+    /// add; with no `add`, there's nothing to attach, and so no +.
     public init(
         text: Binding<String>, prompt: Text? = nil, model: ModelPill?, mic: MicButton? = nil, send: SendButton,
-        submit: @escaping () -> Void, @ViewBuilder top: () -> Top
+        submit: @escaping () -> Void, add: (() -> Void)? = nil, @ViewBuilder top: () -> Top
     ) {
         _text = text
         self.prompt = prompt
@@ -414,7 +452,7 @@ extension ChatComposer where Attach == EmptyView {
         self.submit = submit
         self.top = top()
         attach = EmptyView()
-        attaches = false
+        plus = add.map { .action($0) } ?? .none
     }
 }
 

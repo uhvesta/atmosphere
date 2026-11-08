@@ -20,6 +20,7 @@ swift_library(
     visibility = ["//apps:__subpackages__"],
     deps = [
         "//apps/libs/kits/assistant",
+        "//apps/libs/kits/capture",
         "//apps/libs/kits/chat",
         "//apps/libs/kits/inference",
     ],

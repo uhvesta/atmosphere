@@ -13,6 +13,10 @@ public struct CompactChat<Message: ChatEntry, Empty: View>: View {
     @Binding var input: String
     let prompt: Text?
     let model: ModelPill?
+    let mic: MicButton?
+    let add: (() -> Void)?
+    let pending: [AttachmentChip]
+    let files: (Message) -> [String]
     let canSend: Bool
     let canStop: Bool
     let send: () -> Void
@@ -22,11 +26,15 @@ public struct CompactChat<Message: ChatEntry, Empty: View>: View {
     @State private var showsThinking = false
 
     /// `reply` is what's written of the reply so far, nil when none is
-    /// being written. `empty` shows before the first message.
+    /// being written. `empty` shows before the first message. `add` is
+    /// what + does, with no + without it; `pending` is what goes with the
+    /// next message, above the field, and `files` names the files sent
+    /// with each message.
     public init(
         messages: [Message], reply: String?, thinking: ModelThinking? = nil, input: Binding<String>,
-        prompt: Text? = nil, model: ModelPill? = nil, canSend: Bool, canStop: Bool, send: @escaping () -> Void,
-        stop: @escaping () -> Void, @ViewBuilder empty: () -> Empty
+        prompt: Text? = nil, model: ModelPill? = nil, mic: MicButton? = nil, add: (() -> Void)? = nil,
+        pending: [AttachmentChip] = [], files: @escaping (Message) -> [String] = { _ in [] }, canSend: Bool,
+        canStop: Bool, send: @escaping () -> Void, stop: @escaping () -> Void, @ViewBuilder empty: () -> Empty
     ) {
         self.messages = messages
         self.reply = reply
@@ -34,6 +42,10 @@ public struct CompactChat<Message: ChatEntry, Empty: View>: View {
         _input = input
         self.prompt = prompt
         self.model = model
+        self.mic = mic
+        self.add = add
+        self.pending = pending
+        self.files = files
         self.canSend = canSend
         self.canStop = canStop
         self.send = send
@@ -49,12 +61,19 @@ public struct CompactChat<Message: ChatEntry, Empty: View>: View {
                         empty
                     }
                     ForEach(messages) { message in
-                        MessageView(role: message.role, text: message.text) { selecting = TextToSelect(text: $0) }
-                            .contextMenu {
-                                if !message.text.isEmpty {
-                                    TextMenu(text: message.text) { selecting = TextToSelect(text: $0) }
+                        MessageView(
+                            role: message.role, text: message.text, select: { selecting = TextToSelect(text: $0) },
+                            attachments: {
+                                ForEach(files(message), id: \.self) { name in
+                                    AttachmentChip(verbatim: name, systemImage: "doc.text")
                                 }
                             }
+                        )
+                        .contextMenu {
+                            if !message.text.isEmpty {
+                                TextMenu(text: message.text) { selecting = TextToSelect(text: $0) }
+                            }
+                        }
                     }
                     if let reply {
                         ReplyInProgress(
@@ -67,9 +86,19 @@ public struct CompactChat<Message: ChatEntry, Empty: View>: View {
             }
             .defaultScrollAnchor(.bottom)
             ChatComposer(
-                text: $input, prompt: prompt, model: model,
+                text: $input, prompt: prompt, model: model, mic: mic,
                 send: SendButton(canSend: canSend, canStop: canStop, send: send, stop: stop),
-                submit: { if canSend { send() } }
+                submit: { if canSend { send() } }, add: add,
+                top: {
+                    if !pending.isEmpty {
+                        ScrollView(.horizontal) {
+                            HStack(spacing: 8) {
+                                ForEach(pending.indices, id: \.self) { pending[$0] }
+                            }
+                        }
+                        .scrollIndicators(.hidden)
+                    }
+                }
             )
             .padding(10)
         }

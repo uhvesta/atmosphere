@@ -1,0 +1,43 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@rules_swift//swift:swift_binary.bzl", "swift_binary")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# CaptureKit: what a chat takes in from the device, with no store: on-device
+# dictation into the message field, the person's recent photos, whether
+# there's a camera, and the text of files picked to send as context. Each
+# app wraps these in clients of its own. Needs Xcode for Speech and
+# PhotoKit: build with `--config=xcode`. In Swift 5 mode, as the audio
+# engine's tap runs off the main actor.
+swift_library(
+    name = "capture",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "CaptureKit",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps:__subpackages__"],
+)
+
+# Given/then tests of reading files' text.
+swift_binary(
+    name = "capture_tests",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":capture",
+        "//apps/libs/kits/testing",
+    ],
+)
+
+sh_test(
+    name = "capture_test",
+    srcs = ["//apps/libs/kits/testing:run_tests.sh"],
+    args = ["$(rootpath :capture_tests)"],
+    data = [":capture_tests"],
+    target_compatible_with = ["//bazel/xcode"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

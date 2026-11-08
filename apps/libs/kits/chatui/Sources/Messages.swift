@@ -229,7 +229,7 @@ public struct BranchSwitcher: View {
 /// A photo, recording or file: on the next message with a button to remove
 /// it, or on a sent one, saying when its file is on another device.
 public struct AttachmentChip: View {
-    let title: LocalizedStringKey
+    let title: Text
     let systemImage: String
     let elsewhere: Bool
     var remove: (() -> Void)?
@@ -237,7 +237,15 @@ public struct AttachmentChip: View {
     public init(
         _ title: LocalizedStringKey, systemImage: String, elsewhere: Bool = false, remove: (() -> Void)? = nil
     ) {
-        self.title = title
+        self.title = Text(title)
+        self.systemImage = systemImage
+        self.elsewhere = elsewhere
+        self.remove = remove
+    }
+
+    /// A chip titled as is, such as with a file's name.
+    public init(verbatim title: String, systemImage: String, elsewhere: Bool = false, remove: (() -> Void)? = nil) {
+        self.title = Text(verbatim: title)
         self.systemImage = systemImage
         self.elsewhere = elsewhere
         self.remove = remove
@@ -245,7 +253,11 @@ public struct AttachmentChip: View {
 
     public var body: some View {
         HStack(spacing: 6) {
-            Label(title, systemImage: systemImage)
+            Label {
+                title.lineLimit(1)
+            } icon: {
+                Image(systemName: systemImage)
+            }
             if elsewhere {
                 Text("Not on this device").foregroundStyle(.secondary)
             }
