@@ -45,9 +45,10 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
-    /// Adding to a chat about a passage: + with Add files, a file of notes
-    /// attached, the microphone writing what's said into the message until
-    /// it's tapped again, then the reply.
+    /// Adding to a chat about a passage: a file of notes picked with +, the
+    /// microphone writing what's said into the message until it's tapped
+    /// again, then the reply. + opens the system's file picker, which the
+    /// flow doesn't show.
     func testAddingToAChat() async throws {
         try await addingToAChat("adding", style: .light)
     }
@@ -71,8 +72,6 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         let chat = { (action: PassageChatFeature.Action) in
             _ = reader.send(.destination(.presented(.chat(action))))
         }
-        chat(.addContextTapped)
-        await flow.step("add-context", testName: test)
         chat(.filesPicked(.success([URL(filePath: "/tmp/notes.md")])))
         try await Sample.waitFor { reader.destination?.chat?.pending.isEmpty == false }
         await flow.step("file", testName: test)

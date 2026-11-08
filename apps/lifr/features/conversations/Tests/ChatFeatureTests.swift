@@ -301,6 +301,7 @@ final class ChatFeatureTests: XCTestCase {
         await store.receive(\.photosLoaded)
 
         XCTAssertTrue(store.state.addsContext)
+        XCTAssertFalse(store.state.picksFiles)
         XCTAssertEqual(store.state.photosAccess, .allowed)
         XCTAssertEqual(store.state.recentPhotos, recents)
         XCTAssertTrue(store.state.hasCamera)
@@ -334,7 +335,7 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.recentPhotos, [])
     }
 
-    func testPlusForAModelThatReadsOnlyTextDoesntAskForPhotos() async {
+    func testPlusForAModelThatReadsOnlyTextOpensTheFilePicker() async {
         let (workspace, _) = home()
         let asked = LockIsolated(false)
         var photos = PhotoLibraryClient.scripted([])
@@ -348,9 +349,39 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.addContextTapped)
         await store.skipReceivedActions(strict: false)
 
-        XCTAssertTrue(store.state.addsContext)
+        XCTAssertTrue(store.state.picksFiles)
+        XCTAssertFalse(store.state.addsContext, "There's no sheet holding only Add files")
         XCTAssertFalse(asked.value)
         XCTAssertEqual(store.state.recentPhotos, [])
+
+        await store.send(.filesPicked(.success([])))
+        XCTAssertFalse(store.state.picksFiles)
+    }
+
+    func testPlusFollowsTheModelPickedMidChat() async {
+        let (workspace, _) = home()
+        let library = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small])
+        let qwen = ModelCatalog.qwen35Small.id
+        let store = chat(workspace, photos: .scripted([])) { _ in AssistantReply(text: "", isComplete: true) }
+        store.dependencies.models = library.client
+        store.dependencies.assistant.inputs = { $0.model == qwen ? [.image] : [] }
+        await store.send(.task)
+        await store.skipReceivedActions(strict: false)
+
+        await store.send(.addContextTapped)
+        XCTAssertTrue(store.state.picksFiles)
+        await store.send(.filesPicked(.success([])))
+
+        await store.send(.modelTapped)
+        await store.send(.model(.presented(.task)))
+        await store.receive(\.model.presented.loaded)
+        await store.send(.model(.presented(.binding(.set(\.model, qwen)))))
+        await store.send(.model(.dismiss))
+
+        await store.send(.addContextTapped)
+        await store.receive(\.photosLoaded)
+        XCTAssertTrue(store.state.addsContext)
+        XCTAssertFalse(store.state.picksFiles)
     }
 
     func testATappedRecentPhotoIsAttachedAndTappedAgainTakenOff() async {

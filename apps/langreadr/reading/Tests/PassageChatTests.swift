@@ -60,12 +60,12 @@ final class PassageChatTests: XCTestCase {
         XCTAssertEqual(store.state.input, "")
     }
 
-    func testPlusOpensAndPickingFilesClosesIt() async throws {
+    func testPlusOpensTheFilePickerAndPickingFilesClosesIt() async throws {
         let store = try chat()
         await store.send(.addContextTapped)
-        XCTAssertTrue(store.state.addsContext)
+        XCTAssertTrue(store.state.picksFiles)
         await store.send(.filesPicked(.success([])))
-        XCTAssertFalse(store.state.addsContext)
+        XCTAssertFalse(store.state.picksFiles)
     }
 
     func testAFilesTextGoesWithTheMessageAndToTheModel() async throws {

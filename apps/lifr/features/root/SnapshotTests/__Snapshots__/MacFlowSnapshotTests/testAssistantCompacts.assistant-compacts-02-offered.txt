@@ -35,7 +35,7 @@
   [StaticText] "" value: "Older messages no longer fit what the model reads. Compact them into a summary it keeps."
   [Button] "Compact"
   [TextField] ""
-  [MenuButton] "Add" help: "Add photos or files" id: plus
+  [Button] "Add" help: "Add photos or files" id: plus
   [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
   [Button] "Dictate" help: "Dictate, on this device" id: mic
   [Button, disabled] "Send" id: arrow.up

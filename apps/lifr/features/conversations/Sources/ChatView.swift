@@ -21,7 +21,6 @@ package struct ChatView: View {
     @State private var photo: PhotosPickerItem?
     @State private var selecting: TextToSelect?
     @State private var picksPhoto = false
-    @State private var importsFiles = false
 
     package var body: some View {
         VStack(spacing: 0) {
@@ -404,7 +403,7 @@ package struct ChatView: View {
             field
                 .modifier(AddContext(store: store))
                 .fileImporter(
-                    isPresented: $importsFiles, allowedContentTypes: PickedFile.types(photos: readsPhotos),
+                    isPresented: $store.picksFiles, allowedContentTypes: PickedFile.types(photos: readsPhotos),
                     allowsMultipleSelection: true
                 ) { store.send(.filesPicked($0)) }
                 .photosPicker(
@@ -426,23 +425,33 @@ package struct ChatView: View {
 
     private var readsPhotos: Bool { store.inputs.contains(.image) }
 
-    /// The field. On the iPhone + opens a sheet of what to add; on the Mac
-    /// it's a menu.
+    /// The field. For a model that reads photos, + opens a sheet of what to
+    /// add on the iPhone and a menu on the Mac; for one that doesn't, it
+    /// opens the file picker.
     @ViewBuilder private var field: some View {
         let prompt = store.picked.map { _ in Text("Add details, or just send") }
-        #if os(iOS)
-            ChatComposer(
-                text: $store.input, prompt: prompt, model: modelPill, mic: mic, send: sendButton,
-                submit: { store.send(.sendTapped) }, add: { store.send(.addContextTapped) }, top: { composerTop }
-            )
-            .token(store.picked?.id) { store.send(.clearSkillTapped) }
+        #if os(macOS)
+            if readsPhotos {
+                ChatComposer(
+                    text: $store.input, prompt: prompt, model: modelPill, mic: mic, send: sendButton,
+                    submit: { store.send(.sendTapped) }, top: { composerTop }, attach: { attachMenu }
+                )
+                .token(store.picked?.id) { store.send(.clearSkillTapped) }
+            } else {
+                addingComposer(prompt: prompt)
+            }
         #else
-            ChatComposer(
-                text: $store.input, prompt: prompt, model: modelPill, mic: mic, send: sendButton,
-                submit: { store.send(.sendTapped) }, top: { composerTop }, attach: { attachMenu }
-            )
-            .token(store.picked?.id) { store.send(.clearSkillTapped) }
+            addingComposer(prompt: prompt)
         #endif
+    }
+
+    /// The field with a + that sends `addContextTapped`.
+    private func addingComposer(prompt: Text?) -> some View {
+        ChatComposer(
+            text: $store.input, prompt: prompt, model: modelPill, mic: mic, send: sendButton,
+            submit: { store.send(.sendTapped) }, add: { store.send(.addContextTapped) }, top: { composerTop }
+        )
+        .token(store.picked?.id) { store.send(.clearSkillTapped) }
     }
 
     /// Records for a model that listens; otherwise dictates into the field.
@@ -452,14 +461,12 @@ package struct ChatView: View {
         ) { store.send(.micTapped) }
     }
 
-    /// What + offers on the Mac: a photo, for a model that reads them, and
+    /// What + offers on the Mac for a model that reads photos: a photo, or
     /// files.
     @ViewBuilder private var attachMenu: some View {
-        if readsPhotos {
-            Button("Attach a Photo…", systemImage: "photo") { picksPhoto = true }
-                .disabled(store.attaching || store.recording)
-        }
-        Button("Add Files…", systemImage: "doc") { importsFiles = true }
+        Button("Attach a Photo…", systemImage: "photo") { picksPhoto = true }
+            .disabled(store.attaching || store.recording)
+        Button("Add Files…", systemImage: "doc") { store.picksFiles = true }
             .disabled(store.attaching || store.recording)
     }
 

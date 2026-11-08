@@ -105,6 +105,9 @@ package struct ChatFeature {
         package var dictatedAfter: String?
         /// Whether + shows what to add, on the iPhone.
         package var addsContext = false
+        /// Whether the file picker is open. + opens it straight away for a
+        /// model that doesn't read photos, as files are all it can add.
+        package var picksFiles = false
         /// Whether Lifr may show the person's recent photos in +.
         package var photosAccess: PhotosAccess = .notAsked
         /// The person's newest photos, for + to attach with a tap.
@@ -692,8 +695,11 @@ package struct ChatFeature {
                 return .none
 
             case .addContextTapped:
+                guard state.inputs.contains(.image) else {
+                    state.picksFiles = true
+                    return .none
+                }
                 state.addsContext = true
-                guard state.inputs.contains(.image) else { return .none }
                 return .run { [photoLibrary] send in
                     var access = photoLibrary.access()
                     // Asked the first time + opens, not before.
@@ -748,11 +754,13 @@ package struct ChatFeature {
 
             case .filesPicked(.failure(let error)):
                 state.addsContext = false
+                state.picksFiles = false
                 state.alert = Self.attachAlert(AttachmentError.unreadableFile(error.localizedDescription))
                 return .none
 
             case .filesPicked(.success(let urls)):
                 state.addsContext = false
+                state.picksFiles = false
                 guard !urls.isEmpty, !state.attaching else { return .none }
                 state.attaching = true
                 let conversation = state.conversation.id

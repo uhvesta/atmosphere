@@ -74,25 +74,16 @@ struct PassageChatView: View {
     }
 }
 
-/// + in a chat: on the iPhone a sheet with Add files, on the Mac the file
-/// picker itself. Chats read only text, so there are no photos.
+/// + in a chat: the file picker. Chats read only text, so there are no
+/// photos to offer.
 private struct AddFiles: ViewModifier {
     @Bindable var store: StoreOf<PassageChatFeature>
 
     func body(content: Content) -> some View {
-        #if os(iOS)
-            content.sheet(isPresented: $store.addsContext) {
-                AddContextSheet(
-                    photos: nil, fileTypes: PickedFile.types(photos: false), close: { store.addsContext = false },
-                    tapRecent: { _ in }, photoPicked: { _ in }, photoTaken: { _ in },
-                    filesPicked: { store.send(.filesPicked($0)) })
-            }
-        #else
-            content.fileImporter(
-                isPresented: $store.addsContext, allowedContentTypes: PickedFile.types(photos: false),
-                allowsMultipleSelection: true
-            ) { store.send(.filesPicked($0)) }
-        #endif
+        content.fileImporter(
+            isPresented: $store.picksFiles, allowedContentTypes: PickedFile.types(photos: false),
+            allowsMultipleSelection: true
+        ) { store.send(.filesPicked($0)) }
     }
 }
 

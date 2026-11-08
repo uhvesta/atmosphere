@@ -30,9 +30,9 @@ package struct PassageChatFeature {
         package var context: ContextUse?
         /// The files that go with the next message.
         package var pending: [ReaderFile] = []
-        /// Whether + is open: a sheet on the iPhone, the file picker on
-        /// the Mac.
-        package var addsContext = false
+        /// Whether the file picker is open. Chats read only text, so +
+        /// opens it straight away.
+        package var picksFiles = false
         /// Whether the microphone is writing what's said into the field.
         package var dictating = false
         /// What the field held when dictation started, which what's said
@@ -158,15 +158,15 @@ package struct PassageChatFeature {
                 state.problem = error.description
                 return .none
             case .addContextTapped:
-                state.addsContext = true
+                state.picksFiles = true
                 return .none
             case .filesPicked(.failure(let error)):
-                state.addsContext = false
+                state.picksFiles = false
                 state.problem = String(
                     localized: "Couldn't open that file: \(error.localizedDescription) Try picking it again.")
                 return .none
             case .filesPicked(.success(let urls)):
-                state.addsContext = false
+                state.picksFiles = false
                 guard !urls.isEmpty else { return .none }
                 return .run { [fileReader] send in
                     var read: [ReaderFile] = []

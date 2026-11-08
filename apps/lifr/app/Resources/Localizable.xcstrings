@@ -47,6 +47,9 @@
     "%@ has no settings of its own to change." : {
 
     },
+    "%@ has no text to read. A PDF of scanned pages has only pictures of its text: attach a photo of a page instead, or paste the text." : {
+
+    },
     "%@ is %@" : {
       "localizations" : {
         "en" : {
@@ -71,6 +74,29 @@
 
     },
     "%@ is a task of its own now, because its parents were Sub tasks of each other." : {
+
+    },
+    "%@ isn't allowed to recognize speech. Turn on %@ in System Settings › Privacy & Security › Speech Recognition, then tap the microphone again." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ isn't allowed to recognize speech. Turn on %2$@ in System Settings › Privacy & Security › Speech Recognition, then tap the microphone again."
+          }
+        }
+      }
+    },
+    "%@ isn't allowed to use the microphone. Turn on %@ in System Settings › Privacy & Security › Microphone, then tap the microphone again." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ isn't allowed to use the microphone. Turn on %2$@ in System Settings › Privacy & Security › Microphone, then tap the microphone again."
+          }
+        }
+      }
+    },
+    "%@ isn't text in UTF-8. Save it as UTF-8 text and add it again, or paste its text." : {
 
     },
     "%@ mJ" : {
@@ -815,7 +841,20 @@
     "Couldn't load your tasks" : {
 
     },
+    "Couldn't open %@ (%@). If it's in iCloud Drive or another app's storage, check it has downloaded, then add it again." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Couldn't open %1$@ (%2$@). If it's in iCloud Drive or another app's storage, check it has downloaded, then add it again."
+          }
+        }
+      }
+    },
     "Couldn't read it aloud" : {
+
+    },
+    "Couldn't read that photo (%@). If it's in iCloud, check you're online so it can download, then pick it again." : {
 
     },
     "Couldn't remove the model" : {
@@ -900,6 +939,9 @@
 
     },
     "Dictate, on this device" : {
+
+    },
+    "Dictation stopped (%@). Tap the microphone to try again; if another app is using the microphone, close it first." : {
 
     },
     "Didn't finish" : {
@@ -2220,6 +2262,9 @@
     "Tasks you add here, or move here, show up in this list." : {
 
     },
+    "That photo is no longer in your library, or access to it was turned off. Pick another." : {
+
+    },
     "That task isn't in Lifr any more. Pick another." : {
 
     },
@@ -2318,6 +2363,16 @@
     },
     "This Mac" : {
 
+    },
+    "This Mac can't dictate %@ on the device, and %@ doesn't send your voice anywhere else. In System Settings › Keyboard, turn on Dictation with %@ so it downloads, or type your message." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "This Mac can't dictate %1$@ on the device, and %2$@ doesn't send your voice anywhere else. In System Settings › Keyboard, turn on Dictation with %3$@ so it downloads, or type your message."
+          }
+        }
+      }
     },
     "This Mac has no login password, so Lifr can't lock. Set one in System Settings › Users & Groups, then turn the lock on." : {
 
