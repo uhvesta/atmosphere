@@ -179,11 +179,12 @@ final class ChatSnapshotTests: XCTestCase {
         assertScreenImages(of: screen(markdown), named: "markdown", images: [.proMaxLight, .proMaxDark])
     }
 
-    /// The sheet picking the chat's model, on Qwen3.5 thinking long.
+    /// The sheet picking the chat's model, on Qwen3.5 thinking long,
+    /// with skill picking off.
     func testModelSheet() throws {
         let sheet = ModelSheet(
             model: .constant(ModelCatalog.qwen35Small.id), thinking: .constant(.long), window: .constant(nil),
-            models: try models(), standard: .apple, done: {})
+            picksSkills: .constant(false), models: try models(), standard: .apple, done: {})
         assertScreenImages(of: sheet, named: "model", images: [.proMaxLight, .proMaxDark, .seLargestText])
     }
 }

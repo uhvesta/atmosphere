@@ -61,4 +61,7 @@
     [MenuButton] "Context Window" value: "16,384 tokens"
     [MenuButton] "Context Window" value: "16,384 tokens" id: chevron.up.chevron.down
     [StaticText] "" value: "A larger window remembers more of the chat and takes more memory."
+    [StaticText] "" value: "Pick a skill automatically"
+    [CheckBox/Switch] "" value: "1"
+    [StaticText] "" value: "Only for this chat. When it's off, a message uses a skill only if you pick one."
     [Button] "Close" id: xmark

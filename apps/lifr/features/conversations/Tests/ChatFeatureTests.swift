@@ -150,12 +150,14 @@ final class ChatFeatureTests: XCTestCase {
     func testAForkRunsOnTheSameModelAsItsChat() throws {
         var conversation = Conversation(id: conversationID, createdAt: now)
         conversation.context.model = ModelChoice(model: ModelCatalog.qwen35Small.id, thinking: .off)
+        conversation.context.picksSkills = false
         let message = ChatMessage(id: UUID(1), role: .person, text: "Plan the week", at: now)
         conversation.messages = [message]
 
         let fork = try XCTUnwrap(conversation.fork(at: message.id, as: UUID(2), now: now))
 
         XCTAssertEqual(fork.context.model, conversation.context.model)
+        XCTAssertEqual(fork.context.picksSkills, false)
     }
 
     func testAPhotoAndARecordingGoWithTheNextMessageToTheModel() async throws {
@@ -1198,6 +1200,64 @@ final class ChatFeatureTests: XCTestCase {
 
         XCTAssertEqual(picks.value, 0)
         XCTAssertEqual(sent.value, [.review, nil])
+    }
+
+    func testPickingTurnedOffInOneChatPicksOnlyWhatThePersonPicks() async {
+        let (workspace, _) = home()
+        let picks = LockIsolated(0)
+        let sent = LockIsolated<[Skill?]>([])
+        let store = chat(workspace) { request in
+            sent.withValue { $0.append(request.skill) }
+            return AssistantReply(text: "OK.", isComplete: true)
+        }
+        store.dependencies.assistant.pickSkill = { _, _, _, _ in
+            picks.withValue { $0 += 1 }
+            return "query"
+        }
+
+        await store.send(.modelTapped)
+        XCTAssertEqual(store.state.model?.picksSkillsHere, true, "it starts at Settings")
+        await store.send(.model(.presented(.binding(.set(\.picksSkillsHere, false)))))
+        await store.send(.model(.dismiss))
+        await send("How was my week?", in: store)
+        await store.send(.pickSkillTapped("review"))
+        await send("And today?", in: store)
+
+        XCTAssertEqual(picks.value, 0)
+        XCTAssertEqual(sent.value, [nil, .review])
+        XCTAssertEqual(store.state.conversation.context.picksSkills, false)
+        XCTAssertTrue(store.state.picksSkills, "Settings stays as it is")
+    }
+
+    func testPickingTurnedOnInOneChatPicksWhileSettingsDoesnt() async {
+        let (workspace, _) = home()
+        let sent = LockIsolated<[Skill?]>([])
+        let store = chat(workspace) { request in
+            sent.withValue { $0.append(request.skill) }
+            return AssistantReply(text: "OK.", isComplete: true)
+        }
+        store.dependencies.assistant.pickSkill = { _, _, _, _ in "query" }
+        store.state.$picksSkills.withLock { $0 = false }
+
+        await store.send(.modelTapped)
+        await store.send(.model(.presented(.binding(.set(\.picksSkillsHere, true)))))
+        await store.send(.model(.dismiss))
+        await send("How was my week?", in: store)
+
+        XCTAssertEqual(sent.value, [.query])
+    }
+
+    func testPickingSkillsTheWaySettingsDoesFollowsSettingsAgain() async {
+        let store = TestStore(initialState: ChatModelFeature.State(choice: .defaults, picksSkills: false)) {
+            ChatModelFeature()
+        }
+        store.exhaustivity = .off
+
+        await store.send(.binding(.set(\.picksSkillsHere, true)))
+
+        XCTAssertNil(store.state.picksSkills)
+        store.state.$standardPicksSkills.withLock { $0 = false }
+        XCTAssertFalse(store.state.picksSkillsHere)
     }
 
     func testWhilePlanningAnAnswerKeepsTheSkillWhenLifrPicksNone() async {

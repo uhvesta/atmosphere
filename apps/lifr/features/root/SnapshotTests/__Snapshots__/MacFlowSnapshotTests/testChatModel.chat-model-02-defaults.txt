@@ -53,4 +53,7 @@
     [Button, selected] "Apple Intelligence, Default, Built in, nothing to download"
     [Button] "Gemma 4 E2B, Small and quick"
     [StaticText] "" value: "Only for this chat. Download more models in Settings › Models."
+    [StaticText] "" value: "Pick a skill automatically"
+    [CheckBox/Switch] "" value: "1"
+    [StaticText] "" value: "Only for this chat. When it's off, a message uses a skill only if you pick one."
     [Button] "Close" id: xmark

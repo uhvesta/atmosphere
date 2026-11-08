@@ -48,6 +48,13 @@ func skillTests() -> [TestCase] {
             try expectEqual(NoteSkill.named(" TIDY", in: skills)?.id, "tidy")
             try expectEqual(NoteSkill.named("other", in: skills), nil)
         },
+        TestCase("given a chat's own choice, then it picks skills only when that or else the app's is on") {
+            let skills = NoteTool.builtInSkills
+            try expectEqual(NoteSkill.pickable(skills, chat: nil, app: true).map(\.id), ["ask"])
+            try expectEqual(NoteSkill.pickable(skills, chat: nil, app: false), [])
+            try expectEqual(NoteSkill.pickable(skills, chat: false, app: true), [])
+            try expectEqual(NoteSkill.pickable(skills, chat: true, app: false).map(\.id), ["ask"])
+        },
         TestCase("given a skill with a tool that writes, then it writes") {
             try expect(NoteTool.builtInSkills[1].writes)
             try expect(!NoteTool.builtInSkills[0].writes)

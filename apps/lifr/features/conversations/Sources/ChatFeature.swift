@@ -480,13 +480,17 @@ package struct ChatFeature {
                 return .none
 
             case .modelTapped:
-                state.model = ChatModelFeature.State(choice: state.conversation.context.model)
+                state.model = ChatModelFeature.State(
+                    choice: state.conversation.context.model, picksSkills: state.conversation.context.picksSkills)
                 return .none
 
             case .model(.presented):
                 if let sheet = state.model, !sheet.models.isEmpty {
                     state.models = sheet.models
                     state.standard = sheet.standard
+                }
+                if let sheet = state.model, sheet.picksSkills != state.conversation.context.picksSkills {
+                    state.conversation.context.picksSkills = sheet.picksSkills
                 }
                 // Each change applies to the next message.
                 guard let choice = state.model?.choice, choice != state.conversation.context.model else {
@@ -1263,7 +1267,9 @@ package struct ChatFeature {
         let id = uuid()
         state.conversation.append(
             ChatMessage(id: id, role: .person, text: text, at: now, skill: skill?.id, attachments: sent))
-        guard skill == nil, state.picksSkills else { return reply(request(in: state), in: &state) }
+        guard skill == nil, state.conversation.context.picksSkills ?? state.picksSkills else {
+            return reply(request(in: state), in: &state)
+        }
         return reply(request(in: state), picking: pickable(in: state), for: id, in: &state)
     }
 
@@ -1271,7 +1277,8 @@ package struct ChatFeature {
     /// picks none while a plan is being drafted: the last the person's
     /// messages used, so answers about the plan still change it.
     private func pickable(in state: State) -> SkillPick {
-        let candidates = Skill.pickable(state.skills)
+        let candidates = Skill.pickable(
+            state.skills, chat: state.conversation.context.picksSkills, app: state.picksSkills)
         let drafting = !(state.conversation.draft?.isEmpty ?? true)
         let last = state.conversation.messages.dropLast().last { $0.role == .person && $0.skill != nil }?.skill
         let kept = drafting ? last.flatMap { id in state.skills.first { $0.id == id && $0.isOn } } : nil

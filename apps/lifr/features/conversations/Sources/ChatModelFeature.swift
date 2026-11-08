@@ -1,9 +1,11 @@
 import ComposableArchitecture
 import Foundation
+import LifrAssistantClient
 import LifrModelsClient
 
 /// Picks what one conversation runs on: its model, how long that thinks
-/// and its window. Each starts at the default from Settings, which this
+/// and its window, and whether Lifr picks a skill for a message sent
+/// without one. Each starts at the default from Settings, which this
 /// never changes, and picking the default goes back to following it. The
 /// next message uses what's picked.
 @Reducer
@@ -11,13 +13,18 @@ package struct ChatModelFeature {
     @ObservableState
     package struct State: Equatable {
         package var choice: ModelChoice
+        /// Whether the conversation picks skills, or nil to follow Settings.
+        package var picksSkills: Bool?
         /// Apple's model and the downloaded ones, once they're looked up.
         package var models: [RunnableModel] = []
         /// The assistant's model in Settings.
         package var standard: ModelID?
+        /// Whether Lifr picks skills, in Settings.
+        @Shared(.picksSkills) package var standardPicksSkills
 
-        package init(choice: ModelChoice) {
+        package init(choice: ModelChoice, picksSkills: Bool? = nil) {
             self.choice = choice
+            self.picksSkills = picksSkills
         }
 
         /// The model the conversation runs on, once it's looked up.
@@ -37,6 +44,13 @@ package struct ChatModelFeature {
                     choice.window = nil
                 }
             }
+        }
+
+        /// Whether the conversation picks skills. Matching Settings goes
+        /// back to following it.
+        package var picksSkillsHere: Bool {
+            get { picksSkills ?? standardPicksSkills }
+            set { picksSkills = newValue == standardPicksSkills ? nil : newValue }
         }
     }
 

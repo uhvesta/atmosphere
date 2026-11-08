@@ -29,22 +29,28 @@ public struct ModelPicker: View {
 /// each with what it's good for and a check on the one it runs on, and
 /// under them how long it thinks and its window, each saying which is
 /// recommended. Picking the default of each goes back to following it.
+/// With `picksSkills`, a switch under them turns off picking a skill for
+/// a message by itself in this chat.
 public struct ModelSheet: View {
     @Binding var model: ModelID?
     @Binding var thinking: ThinkingLevel?
     @Binding var window: Int?
+    let picksSkills: Binding<Bool>?
     let models: [RunnableModel]
     let standard: ModelID?
     let done: () -> Void
 
     /// `models` are those it can run on, `standard` the default model.
+    /// `picksSkills` is whether the chat picks skills by itself, for an
+    /// app whose skills can be picked that way.
     public init(
-        model: Binding<ModelID?>, thinking: Binding<ThinkingLevel?>, window: Binding<Int?>, models: [RunnableModel],
-        standard: ModelID?, done: @escaping () -> Void
+        model: Binding<ModelID?>, thinking: Binding<ThinkingLevel?>, window: Binding<Int?>,
+        picksSkills: Binding<Bool>? = nil, models: [RunnableModel], standard: ModelID?, done: @escaping () -> Void
     ) {
         _model = model
         _thinking = thinking
         _window = window
+        self.picksSkills = picksSkills
         self.models = models
         self.standard = standard
         self.done = done
@@ -88,6 +94,13 @@ public struct ModelSheet: View {
                             recommended: current.window, title: Self.tokens)
                     } footer: {
                         Text("A larger window remembers more of the chat and takes more memory.")
+                    }
+                }
+                if let picksSkills {
+                    Section {
+                        Toggle("Pick a skill automatically", isOn: picksSkills)
+                    } footer: {
+                        Text("Only for this chat. When it's off, a message uses a skill only if you pick one.")
                     }
                 }
             }

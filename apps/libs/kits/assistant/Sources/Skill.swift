@@ -133,6 +133,13 @@ public struct Skill<Tool: SkillTool>: Identifiable, Hashable, Codable, Sendable 
         skills.filter { $0.isOn && $0.autoPicks }
     }
 
+    /// The skills that may be picked for a message by themselves in one
+    /// chat: none when picking is off there. `chat` is the chat's own
+    /// choice, and nil follows `app`, the app-wide one.
+    public static func pickable(_ skills: [Self], chat: Bool?, app: Bool) -> [Self] {
+        (chat ?? app) ? pickable(skills) : []
+    }
+
     /// The skill a model named, ignoring case, if it's one of `skills`.
     public static func named(_ id: String, in skills: [Self]) -> Self? {
         let id = id.trimmingCharacters(in: .whitespaces)

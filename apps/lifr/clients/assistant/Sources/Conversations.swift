@@ -21,19 +21,23 @@ package struct AssistantContext: ConversationContext {
     /// The model it runs on, how long that thinks and its window, in place
     /// of the defaults in Settings.
     package var model = ModelChoice.defaults
+    /// Whether Lifr picks a skill for a message sent without one, in place
+    /// of Settings. nil follows Settings.
+    package var picksSkills: Bool?
 
     package init() {}
 
-    private enum CodingKeys: String, CodingKey { case draft, changes, added, model }
+    private enum CodingKeys: String, CodingKey { case draft, changes, added, model, picksSkills }
 
-    /// Conversations saved before drafts, Undo or a model of their own
-    /// read with none.
+    /// Conversations saved before drafts, Undo, a model of their own or
+    /// their own skill picking read with none.
     package init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         draft = try container.decodeIfPresent(Plan.self, forKey: .draft)
         changes = try container.decodeIfPresent([UUID: [UUID]].self, forKey: .changes) ?? [:]
         added = try container.decodeIfPresent([UUID].self, forKey: .added) ?? []
         model = try container.decodeIfPresent(ModelChoice.self, forKey: .model) ?? .defaults
+        picksSkills = try container.decodeIfPresent(Bool.self, forKey: .picksSkills)
     }
 }
 
@@ -56,10 +60,12 @@ extension ChatKit.Conversation where Message == ChatMessage, Context == Assistan
 
     /// A new conversation of the messages up to `id`, on this one's branch
     /// to it, that doesn't share its Undo or draft: the tasks those
-    /// changed belong to this one. It runs on the same model.
+    /// changed belong to this one. It runs on the same model, and picks
+    /// skills the same way.
     package func fork(at id: UUID, as forkID: UUID, now: Date) -> Conversation? {
         var fork = fork(at: id, as: forkID, now: now, name: String(localized: "\(title) (fork)"))
         fork?.context.model = context.model
+        fork?.context.picksSkills = context.picksSkills
         return fork
     }
 }

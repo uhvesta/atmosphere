@@ -1635,6 +1635,9 @@
     "Only for this chat. Download more models in Settings › Models." : {
 
     },
+    "Only for this chat. When it's off, a message uses a skill only if you pick one." : {
+
+    },
     "Open" : {
 
     },

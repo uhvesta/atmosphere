@@ -35,7 +35,8 @@ proposal.decision = .applied
 
 - `Skill` holds instructions, the tools it may call, whether it drafts
   plans, whether it's on, and whether the assistant may pick it by itself
-  (`autoPicks` and `useWhen`). The person's own skills have IDs that start
+  (`autoPicks` and `useWhen`); `pickable(_:chat:app:)` lets one chat turn
+  that picking off or on. The person's own skills have IDs that start
   with `user:`. `SkillDraft` is a skill the assistant wrote from the
   person's description, for an editor to fill in.
 - `Skill.merged(stored:)` keeps whether the person turned each built-in

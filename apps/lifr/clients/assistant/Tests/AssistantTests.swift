@@ -213,6 +213,17 @@ final class AssistantTests: XCTestCase {
         XCTAssertEqual(kept.context.model, conversation.context.model)
     }
 
+    func testAConversationKeepsWhetherItPicksSkillsItself() throws {
+        let old = Data(#"{"changes":[],"added":[]}"#.utf8)
+        XCTAssertNil(try JSONDecoder().decode(AssistantContext.self, from: old).picksSkills)
+
+        var conversation = Conversation(id: UUID(), createdAt: now)
+        XCTAssertNil(conversation.context.picksSkills, "a new one follows Settings")
+        conversation.context.picksSkills = false
+        let kept = try JSONDecoder().decode(Conversation.self, from: JSONEncoder().encode(conversation))
+        XCTAssertEqual(kept.context.picksSkills, false)
+    }
+
     func testAConversationSavedBeforeNamesHasNone() throws {
         let old = Data(#"{"id":"\#(UUID())","createdAt":0}"#.utf8)
         let decoded = try JSONDecoder().decode(Conversation.self, from: old)

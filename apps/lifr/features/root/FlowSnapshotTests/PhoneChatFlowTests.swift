@@ -187,7 +187,8 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
     }
 
     /// Picking what one chat runs on: a new chat, its Model sheet before
-    /// the first message, Gemma thinking Long with a larger window, then the chat.
+    /// the first message, Gemma thinking Long with a larger window, skill
+    /// picking turned off for it, then the chat.
     /// Settings keeps its default.
     /// The chat in dark mode: its composer, the / list, a draft and the
     /// model sheet.
@@ -221,9 +222,13 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         let long = ModelChoice(model: gemma, thinking: .long, window: 16_384)
         sheet(.binding(.set(\.choice, long)))
         await flow.step("picked")
+        sheet(.binding(.set(\.picksSkillsHere, false)))
+        flow.scrollToEnd()
+        await flow.step("no-skill-picking")
         store.send(.conversations(.chats(.element(id: id, action: .model(.dismiss)))))
         await flow.step("chat")
         XCTAssertEqual(store.conversations.chats[id: id]?.conversation.context.model, long)
+        XCTAssertEqual(store.conversations.chats[id: id]?.conversation.context.picksSkills, false)
         flow.finish()
     }
 

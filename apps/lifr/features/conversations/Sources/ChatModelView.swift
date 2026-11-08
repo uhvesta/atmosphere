@@ -10,8 +10,9 @@ struct ChatModelView: View {
 
     var body: some View {
         ModelSheet(
-            model: $store.model, thinking: $store.choice.thinking, window: $store.choice.window, models: store.models,
-            standard: store.standard, done: { store.send(.doneTapped) }
+            model: $store.model, thinking: $store.choice.thinking, window: $store.choice.window,
+            picksSkills: $store.picksSkillsHere, models: store.models, standard: store.standard,
+            done: { store.send(.doneTapped) }
         )
         .task { await store.send(.task).finish() }
     }
