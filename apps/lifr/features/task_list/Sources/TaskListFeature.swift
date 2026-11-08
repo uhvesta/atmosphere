@@ -14,6 +14,8 @@ package struct TaskListFeature {
     @ObservableState
     package struct State: Equatable {
         package var query: TaskQuery
+        /// The latest save shown, so an earlier one's late reply is ignored.
+        package var saves = SaveOrder()
         /// `nil` until the records load.
         package var workspace: Workspace?
         package var sections: [TaskSection] = []
@@ -143,11 +145,14 @@ package struct TaskListFeature {
                 return .none
 
             case .saved(.success(let saved)):
-                state.show(saved.workspace, now: now, timeZone: timeZone)
+                let isLatest = state.saves.isLatest(saved)
+                if isLatest {
+                    state.show(saved.workspace, now: now, timeZone: timeZone)
+                }
                 if let parentID = saved.change.reopenedParent, let parent = saved.workspace.tasks[parentID] {
                     state.banner = .reopened(parent, by: saved.change)
                 }
-                return .send(.delegate(.saved(saved.workspace)))
+                return isLatest ? .send(.delegate(.saved(saved.workspace))) : .none
 
             case .saved(.failure(let error)):
                 let workspace = state.workspace

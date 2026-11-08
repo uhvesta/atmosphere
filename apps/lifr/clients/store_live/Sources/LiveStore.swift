@@ -13,6 +13,8 @@ package actor LiveStore: ModelActor {
     package nonisolated let modelExecutor: any ModelExecutor
     /// Journal entries never change, so each is decoded once.
     private var journal: [UUID: JournalEntry] = [:]
+    /// How many saves there have been, to number them.
+    private var saves = 0
     /// What each sync import in this process changed, and each change an
     /// announcing client saved, for `updates`.
     nonisolated let imported = Broadcast<Update>()
@@ -41,7 +43,8 @@ package actor LiveStore: ModelActor {
         var after = before
         let change = try after.perform(in: context(), operation)
         try write(from: before, to: after)
-        return Saved(workspace: after, change: change)
+        saves += 1
+        return Saved(workspace: after, change: change, number: saves)
     }
 
     /// Fixes rule violations that sync brought in, as Core's `reconcile`

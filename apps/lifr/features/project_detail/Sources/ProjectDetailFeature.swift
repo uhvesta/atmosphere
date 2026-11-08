@@ -13,6 +13,8 @@ package struct ProjectDetailFeature {
     @ObservableState
     package struct State: Equatable {
         package let id: UUID
+        /// The latest save shown, so an earlier one's late reply is ignored.
+        package var saves = SaveOrder()
         /// The name as typed; saved on submit.
         package var name: String
         package var savedName: String
@@ -65,6 +67,7 @@ package struct ProjectDetailFeature {
             if details != savedDetails { refreshed.details = details }
             refreshed.archive = archive
             refreshed.alert = alert
+            refreshed.saves = saves
             self = refreshed
             return true
         }
@@ -142,6 +145,7 @@ package struct ProjectDetailFeature {
             case .saved(.success(let saved)):
                 // Saved, so what was typed is what's stored now.
                 state.name = state.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard state.saves.isLatest(saved) else { return .none }
                 _ = state.refresh(from: saved.workspace)
                 return .send(.delegate(.saved(saved.workspace)))
 

@@ -12,6 +12,10 @@ visibility("//apps/...")
 _IOS = ["//bazel/xcode", "@platforms//os:ios"]
 _MACOS = ["//bazel/xcode", "@platforms//os:macos"]
 
+def _stem(path):
+    """The file name of `path` without its extension: `A/B.swift` is `B`."""
+    return path.rpartition("/")[2].rpartition(".")[0]
+
 def flow_snapshot_test(
         name,
         srcs,
@@ -24,8 +28,9 @@ def flow_snapshot_test(
         **kwargs):
     """Snapshot tests for one package, run on a pinned simulator or the Mac.
 
-    References live in `SnapshotTests/__Snapshots__/<test file>/` and are
-    copied into the test bundle. Verify with `bazel test --config=xcode`, and
+    References live in `SnapshotTests/__Snapshots__/<test file>/`, and each
+    test's bundle copies those of its own `srcs` alone, so recording one
+    test's references doesn't rerun the package's other tests. Verify with `bazel test --config=xcode`, and
     re-record with `bazel test --config=record_snapshots`, which writes into
     the source tree and fails so the run isn't mistaken for a pass.
 
@@ -54,7 +59,12 @@ def flow_snapshot_test(
     apple_resource_group(
         name = name + "_references",
         structured_resources = native.glob(
-            ["SnapshotTests/__Snapshots__/**"],
+            [
+                "SnapshotTests/__Snapshots__/{}/**".format(_stem(src))
+                for src in srcs
+                # Generated sources, given by label, have no references.
+                if not src.startswith((":", "//", "@"))
+            ],
             allow_empty = True,
         ),
         strip_structured_resources_prefixes = ["SnapshotTests"],

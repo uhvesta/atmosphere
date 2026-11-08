@@ -29,6 +29,8 @@ extension ConnectedApp {
 package struct SettingsFeature {
     @ObservableState
     package struct State: Equatable {
+        /// The latest save shown, so an earlier one's late reply is ignored.
+        package var saves = SaveOrder()
         /// Whether to show agent access, connected apps and the CLI. Only
         /// the Mac runs the CLI.
         package var showsAgents: Bool
@@ -273,6 +275,7 @@ package struct SettingsFeature {
                 return .send(.delegate(.saved(workspace)))
 
             case .saved(.success(let saved)):
+                guard state.saves.isLatest(saved) else { return .none }
                 state.show(saved.workspace)
                 return .send(.delegate(.saved(saved.workspace)))
 

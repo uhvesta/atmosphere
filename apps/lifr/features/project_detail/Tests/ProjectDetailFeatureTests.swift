@@ -43,6 +43,30 @@ final class ProjectDetailFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.canComplete)
     }
 
+    func testKeepsALaterSaveWhenAnEarlierOneRepliesAfterIt() async throws {
+        guard let store = detail() else { return }
+        let renamed = try workspace { try $0.edit(project: marathon.id, Workspace.ProjectEdit(name: "Spring half")) }
+        let due = try CalendarDate("2027-04-11")
+        let dated = try workspace(from: renamed) {
+            try $0.edit(project: marathon.id, Workspace.ProjectEdit(dueDate: .some(due)))
+        }
+
+        await store.send(.saved(.success(Saved(workspace: dated, change: Change(), number: 2))))
+        await store.send(.saved(.success(Saved(workspace: renamed, change: Change(), number: 1))))
+
+        XCTAssertEqual(store.state.dueDate, due)
+        XCTAssertEqual(store.state.savedName, "Spring half")
+    }
+
+    /// The records, or `base`, after `change`.
+    private func workspace(
+        from base: Workspace? = nil, _ change: (inout Workspace) throws -> Void
+    ) rethrows -> Workspace {
+        var workspace = base ?? records.workspace
+        try change(&workspace)
+        return workspace
+    }
+
     func testRenamesOnSubmitAndIgnoresABlankName() async throws {
         guard let store = detail() else { return }
 

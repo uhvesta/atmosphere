@@ -99,6 +99,8 @@ package final class InMemorySync: Sendable {
 private final class Records: @unchecked Sendable {
     private let lock = NSLock()
     private var workspace: Workspace
+    /// How many saves there have been, to number them.
+    private var saves = 0
 
     init(_ workspace: Workspace) {
         self.workspace = workspace
@@ -119,7 +121,8 @@ private final class Records: @unchecked Sendable {
             var copy = records
             let change = try copy.perform(in: context, operation)
             records = copy
-            return Saved(workspace: copy, change: change)
+            saves += 1
+            return Saved(workspace: copy, change: change, number: saves)
         }
     }
 

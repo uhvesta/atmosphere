@@ -20,6 +20,9 @@ package struct LastChange: Equatable, Sendable {
     /// Whether the toast offers Undo. Lists already offer it for a reopened
     /// parent, in their own banner.
     package var showsToast: Bool
+    /// Where its save comes among the store's saves, so an earlier save
+    /// that replies after it doesn't take its place.
+    package var number: Int
 
     /// `nil` for saves that change no task, Project or Avenue, such as a
     /// new comment, Settings or what an Avenue shares with apps, and for
@@ -35,6 +38,7 @@ package struct LastChange: Equatable, Sendable {
         guard !change.previous.isEmpty || place != nil else { return nil }
         self.id = id
         self.change = change
+        number = saved.number
         showsToast = change.reopenedParent == nil
         if let place, let entry = change.entry {
             self.entry = entry
@@ -146,7 +150,9 @@ extension StoreClient {
         client.save = { [save] operation in
             let saved = try await save(operation)
             if let entry = LastChange(saved, id: uuid()) {
-                lastChange.withLock { $0 = entry }
+                lastChange.withLock { last in
+                    if (last?.number ?? 0) <= entry.number { last = entry }
+                }
             } else if !saved.change.reverts.isEmpty {
                 // Undone elsewhere, such as on the assistant's reply.
                 lastChange.withLock { last in

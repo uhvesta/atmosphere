@@ -18,6 +18,8 @@ package struct ChatFeature {
     package struct State: Equatable, Identifiable {
         package var conversation: Conversation
         package var workspace: Workspace
+        /// The latest save shown, so an earlier one's late reply is ignored.
+        package var saves = SaveOrder()
         package var input = ""
         package var availability = AssistantAvailability.available
         /// The reply as it's written, until it's complete.
@@ -974,7 +976,10 @@ package struct ChatFeature {
                 }
 
             case .saved(.success(let saved)):
-                state.workspace = saved.workspace
+                let isLatest = state.saves.isLatest(saved)
+                if isLatest {
+                    state.workspace = saved.workspace
+                }
                 if !saved.change.reverts.isEmpty {
                     let reverted = Set(saved.change.reverts)
                     for (message, entries) in state.conversation.changes where reverted.isSuperset(of: entries) {
@@ -995,7 +1000,7 @@ package struct ChatFeature {
                     }
                 }
                 check(&state)
-                return .send(.delegate(.saved(saved.workspace)))
+                return isLatest ? .send(.delegate(.saved(saved.workspace))) : .none
 
             case .saved(.failure(let error)):
                 state.problem = String(describing: error)

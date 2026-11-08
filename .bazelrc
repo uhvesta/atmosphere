@@ -63,6 +63,9 @@ build:xcode --ios_multi_cpus=sim_arm64
 # the -defsym that rules_swift links plugins with, and the duplicate xxhash
 # symbols in rsync's lz4 and xxhash.
 build:xcode_toolchains --host_platform=//bazel/xcode:macos_arm64
+# Up to four tests at once, each on a simulator of its own: about what 16 GB
+# of memory holds alongside the build.
+test:xcode --local_test_jobs=4
 # Re-records snapshot references into the source tree (see
 # apps/libs/kits/flow/defs.bzl). The run fails by design; run the tests
 # again without this config to verify.

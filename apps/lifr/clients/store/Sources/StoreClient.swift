@@ -51,10 +51,30 @@ package struct SyncedChanges: Hashable, Sendable {
 package struct Saved: Hashable, Sendable {
     package var workspace: Workspace
     package var change: Change
+    /// Where the save comes among the store's saves: a later one has a
+    /// larger number. Saves made at once can reply in any order, so this
+    /// tells which records are the latest. See `SaveOrder`.
+    package var number: Int
 
-    package init(workspace: Workspace, change: Change) {
+    package init(workspace: Workspace, change: Change, number: Int = 0) {
         self.workspace = workspace
         self.change = change
+        self.number = number
+    }
+}
+
+/// The latest save a screen has shown, so a save's reply arriving after a
+/// later one's doesn't put back the records from before the later save.
+package struct SaveOrder: Hashable, Sendable {
+    private var shown = 0
+
+    package init() {}
+
+    /// Whether `saved` is as late as any save shown so far, noting it if so.
+    package mutating func isLatest(_ saved: Saved) -> Bool {
+        guard saved.number >= shown else { return false }
+        shown = saved.number
+        return true
     }
 }
 

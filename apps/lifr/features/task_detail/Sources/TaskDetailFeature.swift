@@ -14,6 +14,8 @@ package struct TaskDetailFeature {
     @ObservableState
     package struct State: Equatable {
         package let id: UUID
+        /// The latest save shown, so an earlier one's late reply is ignored.
+        package var saves = SaveOrder()
         package var row: TaskRowData
         package var details: String
         package var project: String?
@@ -124,6 +126,7 @@ package struct TaskDetailFeature {
             refreshed.newComment = newComment
             refreshed.newLabelName = newLabelName
             refreshed.banner = banner
+            refreshed.saves = saves
             // Keep what's being typed over what was saved.
             if title != row.title { refreshed.title = title }
             refreshed.detailsDraft = detailsDraft
@@ -338,13 +341,14 @@ package struct TaskDetailFeature {
                 return .none
 
             case .saved(.success(let saved)):
-                guard state.refresh(from: saved.workspace, now: now, timeZone: timeZone) else {
+                let isLatest = state.saves.isLatest(saved)
+                if isLatest, !state.refresh(from: saved.workspace, now: now, timeZone: timeZone) {
                     return .send(.delegate(.saved(saved.workspace)))
                 }
                 if let parentID = saved.change.reopenedParent, let parent = saved.workspace.tasks[parentID] {
                     state.banner = .reopened(parent, by: saved.change)
                 }
-                return .send(.delegate(.saved(saved.workspace)))
+                return isLatest ? .send(.delegate(.saved(saved.workspace))) : .none
 
             case .saved(.failure(let error)):
                 let subtasks = state.subtasks

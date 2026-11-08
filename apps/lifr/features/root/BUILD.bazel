@@ -91,21 +91,44 @@ lifr_snapshot_test(
 )
 
 # Each of a person's flows on the iPhone, step by step through the live
-# app: the accessibility tree and an image per step.
-lifr_snapshot_test(
+# app: the accessibility tree and an image per step. One test per area, so
+# the areas run side by side on simulators of their own; `:flow_snapshot_test`
+# runs them all.
+_PHONE_FLOWS = {
+    "assistant": "PhoneAssistantFlowTests",
+    "assistant_edits": "PhoneAssistantEditsFlowTests",
+    "chat": "PhoneChatFlowTests",
+    "settings": "PhoneSettingsFlowTests",
+    "tasks": "PhoneTasksFlowTests",
+    "today": "PhoneTodayFlowTests",
+    "widgets": "PhoneWidgetsFlowTests",
+}
+
+[
+    lifr_snapshot_test(
+        name = "flow_snapshot_test_" + area,
+        srcs = [
+            "FlowSnapshotTests/PhoneFlowTestCase.swift",
+            "FlowSnapshotTests/{}.swift".format(tests),
+        ],
+        hosted = True,
+        deps = [
+            ":root",
+            "//apps/lifr/clients/assistant",
+            "//apps/lifr/clients/assistant_live",
+            "//apps/lifr/clients/models",
+            "//apps/lifr/clients/search",
+            "//apps/lifr/features/shortcuts",
+            "//apps/lifr/widgets:views",
+            "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
+        ] + _DEPS,
+    )
+    for area, tests in _PHONE_FLOWS.items()
+]
+
+test_suite(
     name = "flow_snapshot_test",
-    srcs = glob(["FlowSnapshotTests/*.swift"]),
-    hosted = True,
-    deps = [
-        ":root",
-        "//apps/lifr/clients/assistant",
-        "//apps/lifr/clients/assistant_live",
-        "//apps/lifr/clients/models",
-        "//apps/lifr/clients/search",
-        "//apps/lifr/features/shortcuts",
-        "//apps/lifr/widgets:views",
-        "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
-    ] + _DEPS,
+    tests = [":flow_snapshot_test_" + area for area in _PHONE_FLOWS],
 )
 
 # The same flows on the Mac, in windows on this Mac: the accessibility tree

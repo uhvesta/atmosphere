@@ -23,6 +23,8 @@ package struct EditAvenueFeature {
     @ObservableState
     package struct State: Equatable {
         package let id: UUID
+        /// The latest save shown, so an earlier one's late reply is ignored.
+        package var saves = SaveOrder()
         package var name: String
         package var color: String
         package var symbol: String
@@ -118,8 +120,11 @@ package struct EditAvenueFeature {
                 return save { [id = state.id] in try await $0.restore(avenue: id) }
 
             case .saved(.success(let saved)):
+                let isLatest = state.saves.isLatest(saved)
                 return .run { [dismiss] send in
-                    await send(.delegate(.saved(saved.workspace)))
+                    if isLatest {
+                        await send(.delegate(.saved(saved.workspace)))
+                    }
                     await dismiss()
                 }
 

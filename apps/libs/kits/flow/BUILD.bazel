@@ -1,4 +1,5 @@
 load("@rules_apple//apple/testing/default_runner:ios_xctestrun_runner.bzl", "ios_xctestrun_runner")
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load(":defs.bzl", "flow_snapshot_test")
 
@@ -26,7 +27,23 @@ ios_xctestrun_runner(
     name = "iphone_17",
     device_type = "iPhone 17",
     os_version = "26.2",
+    # Each test gets a simulator of its own from a pool that stays booted,
+    # so tests run side by side.
+    clean_up_simulator_action = ":return_simulator",
+    create_simulator_action = ":lend_simulator",
     visibility = ["//apps:__subpackages__"],
+)
+
+# Lend iOS tests one of four booted simulators and take it back: see
+# simulators/lend.sh.
+sh_binary(
+    name = "lend_simulator",
+    srcs = ["simulators/lend.sh"],
+)
+
+sh_binary(
+    name = "return_simulator",
+    srcs = ["simulators/return.sh"],
 )
 
 # The empty app flow_host_app builds.

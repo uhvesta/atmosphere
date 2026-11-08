@@ -93,6 +93,8 @@ package struct ActivityFeature {
     @ObservableState
     package struct State: Equatable {
         package var workspace: Workspace
+        /// The latest save shown, so an earlier one's late reply is ignored.
+        package var saves = SaveOrder()
         package var author: ActivityAuthor?
         package var kind: RecordKind?
         package var period = ActivityPeriod.all
@@ -215,7 +217,10 @@ package struct ActivityFeature {
                 }
 
             case .saved(.success(let saved)):
-                state.workspace = saved.workspace
+                let isLatest = state.saves.isLatest(saved)
+                if isLatest {
+                    state.workspace = saved.workspace
+                }
                 if !saved.change.skipped.isEmpty {
                     state.alert = AlertState {
                         TextState("Some fields were kept")
@@ -223,7 +228,7 @@ package struct ActivityFeature {
                         TextState(Self.skipped(saved.change.skipped.count))
                     }
                 }
-                return .send(.delegate(.saved(saved.workspace)))
+                return isLatest ? .send(.delegate(.saved(saved.workspace))) : .none
 
             case .saved(.failure(let error)):
                 state.alert = AlertState {
