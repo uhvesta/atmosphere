@@ -309,7 +309,10 @@ package enum AssistantPrompt {
         text += "Conversation so far:\n"
         let kept = kept(request, size: size)
         text += kept.enumerated().map { index, message in
-            let said = said(message, attached: index == kept.count - 1 && !request.attachments.isEmpty)
+            let last = index == kept.count - 1
+            let said = said(
+                message, attached: last && !request.attachments.isEmpty,
+                fileText: last ? size.historyBudget(request.historyBudget) : 0)
             return switch (message.role, message.skill) {
             case (.person, let skill?): "Person, with the skill \(skill): " + said
             case (.person, nil): "Person: " + said
@@ -476,17 +479,35 @@ package enum AssistantPrompt {
 
     /// A message's text, with what was sent with it: the new message's
     /// photos and recordings are `attached` for the model to read; earlier
-    /// ones are only named.
-    private static func said(_ message: ChatMessage, attached: Bool) -> String {
+    /// ones are only named. Files' text follows, up to `fileText`
+    /// characters in all, and earlier files are only named.
+    private static func said(_ message: ChatMessage, attached: Bool, fileText: Int) -> String {
         guard !message.attachments.isEmpty else { return message.text }
         let photos = message.attachments.count { $0.kind == .image }
         let recordings = message.attachments.count { $0.kind == .audio }
+        let files = message.attachments.filter { $0.kind == .text }
+        var said = message.text
         let sent = [
             photos == 0 ? nil : photos == 1 ? "a photo" : "\(photos) photos",
             recordings == 0 ? nil : recordings == 1 ? "a recording" : "\(recordings) recordings",
         ].compactMap(\.self).joined(separator: " and ")
-        let note = attached ? "[sent with \(sent), attached]" : "[sent with \(sent), no longer shown]"
-        return message.text.isEmpty ? note : message.text + " " + note
+        if !sent.isEmpty {
+            let note = attached ? "[sent with \(sent), attached]" : "[sent with \(sent), no longer shown]"
+            said = said.isEmpty ? note : said + " " + note
+        }
+        var room = fileText
+        for file in files {
+            let name = file.name ?? "a file"
+            let text = String((file.text ?? "").prefix(max(0, room)))
+            room -= text.count
+            let cut = text.count < (file.text ?? "").count
+            let note =
+                text.isEmpty
+                ? "[sent with the file \(name), no longer shown]"
+                : "\n[the file \(name)\(cut ? ", cut short" : ""):\n\(text)\n]"
+            said = said.isEmpty ? note.trimmingCharacters(in: .newlines) : said + (text.isEmpty ? " " : "") + note
+        }
+        return said
     }
 
     /// The newest messages that fit `budget` characters, oldest first. The

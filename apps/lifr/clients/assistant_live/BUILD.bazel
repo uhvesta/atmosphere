@@ -16,6 +16,7 @@ swift_library(
         "//apps/lifr/features/root:__pkg__",
     ],
     deps = [
+        "//apps/libs/kits/capture",
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/models",

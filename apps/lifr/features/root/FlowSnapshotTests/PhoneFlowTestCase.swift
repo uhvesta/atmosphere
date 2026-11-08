@@ -1,3 +1,4 @@
+import CaptureKit
 import ComposableArchitecture
 import FlowKit
 import LifrAPI
@@ -46,6 +47,7 @@ class PhoneFlowTestCase: XCTestCase {
     func app(
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
         inputs: Set<ModelInput> = [], lock: LockClient = .always(), assistant: AssistantClient? = nil,
+        photos: PhotoLibraryClient = .denied, files: [String: PickedFile] = [:],
         tab: RootFeature.Tab = .today, style: UIUserInterfaceStyle = .light, speech: SpeechClient = .inMemory
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
@@ -65,6 +67,9 @@ class PhoneFlowTestCase: XCTestCase {
             $0.assistant = assistant ?? .scripted(replies, inputs: inputs)
             $0.attachments = .inMemory()
             $0.recorder = .scripted(RecorderClient.Recording(data: Data([1]), seconds: 6))
+            $0.dictation = .scripted()
+            $0.photoLibrary = photos
+            $0.fileReader = .scripted(files)
             $0.continuousClock = clock
             $0.relatedWords = .scripted(["garden", "lawn"])
             $0.conversations = .inMemory()
@@ -91,6 +96,21 @@ class PhoneFlowTestCase: XCTestCase {
         let flow = FlowRecorder(name, RootView(store: store).environment(\.timeZone, .gmt), style: style)
         store.send(.task)
         return (store, flow)
+    }
+
+    /// Recent photos to show in + , each a square of one colour.
+    func recentPhotos(_ colors: [UIColor] = [.systemTeal, .systemOrange, .systemPink, .systemIndigo])
+        -> [RecentPhoto]
+    {
+        colors.enumerated().map { index, color in
+            let image = UIGraphicsImageRenderer(size: CGSize(width: 120, height: 120)).jpegData(
+                withCompressionQuality: 0.9
+            ) { context in
+                color.setFill()
+                context.fill(CGRect(x: 0, y: 0, width: 120, height: 120))
+            }
+            return RecentPhoto(id: "photo-\(index)", thumbnail: image)
+        }
     }
 
     /// Runs `body` as Shortcuts or Siri would, on the open app's records,

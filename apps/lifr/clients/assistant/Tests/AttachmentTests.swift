@@ -15,7 +15,9 @@ final class AttachmentTests: XCTestCase {
             messages: [ChatMessage(id: UUID(), role: .person, text: "", at: now, attachments: attachments)],
             workspace: Workspace(), now: now, timeZone: .gmt,
             attachments: onDevice
-                ? attachments.map { ModelAttachment($0.kind, file: URL(filePath: "/tmp/\($0.id)")) } : [])
+                ? attachments.compactMap { attachment in
+                    attachment.kind.input.map { ModelAttachment($0, file: URL(filePath: "/tmp/\(attachment.id)")) }
+                } : [])
     }
 
     func testAMessageSavedBeforeAttachmentsReadsAsHavingNone() throws {
@@ -70,6 +72,36 @@ final class AttachmentTests: XCTestCase {
         XCTAssertNotEqual(
             AssistantPrompt.prompt(request([photo], onDevice: true)),
             AssistantPrompt.prompt(request([], onDevice: true)))
+    }
+
+    func testAFilesTextGoesToTheModelWithTheNewMessage() {
+        let notes = ChatAttachment(id: UUID(), name: "notes.md", text: "Repot the fern in spring.")
+        XCTAssertTrue(AssistantPrompt.prompt(request([notes], onDevice: false)).contains("Repot the fern in spring."))
+    }
+
+    func testAnEarlierFilesTextIsntSentAgain() {
+        let notes = ChatAttachment(id: UUID(), name: "notes.md", text: "Repot the fern in spring.")
+        let earlier = ChatMessage(id: UUID(), role: .person, text: "Read this", at: now, attachments: [notes])
+        let reply = ChatMessage(id: UUID(), role: .assistant, text: "Done.", at: now)
+        let next = ChatMessage(id: UUID(), role: .person, text: "And now?", at: now)
+        let request = AssistantRequest(
+            messages: [earlier, reply, next], workspace: Workspace(), now: now, timeZone: .gmt)
+        XCTAssertFalse(AssistantPrompt.prompt(request).contains("Repot the fern in spring."))
+    }
+
+    func testAFilesTextIsCutToFitTheModel() {
+        let long = ChatAttachment(id: UUID(), name: "long.txt", text: String(repeating: "fern ", count: 2_000))
+        let prompt = AssistantPrompt.prompt(request([long], onDevice: false))
+        XCTAssertLessThan(prompt.count, long.text?.count ?? 0)
+    }
+
+    func testAFilesTextIsKeptWithTheMessageAndSavedPhotosStillRead() throws {
+        let notes = ChatAttachment(id: UUID(), name: "notes.md", text: "Repot the fern.")
+        let message = ChatMessage(id: UUID(), role: .person, text: "", at: now, attachments: [photo, notes])
+        let read = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(message))
+        XCTAssertEqual(read, message)
+        let saved = Data(#"{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","kind":"image"}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(ChatAttachment.self, from: saved).kind, .image)
     }
 
     func testTheScriptedAssistantReadsOnlyWhatItsToldTo() {

@@ -1,4 +1,5 @@
 import AssistantKit
+import CaptureKit
 import ChatUI
 import ComposableArchitecture
 import LifrAssistantClient
@@ -20,6 +21,7 @@ package struct ChatView: View {
     @State private var photo: PhotosPickerItem?
     @State private var selecting: TextToSelect?
     @State private var picksPhoto = false
+    @State private var importsFiles = false
 
     package var body: some View {
         VStack(spacing: 0) {
@@ -399,38 +401,66 @@ package struct ChatView: View {
                     }
                 }
             }
-            ChatComposer(
-                text: $store.input, prompt: store.picked.map { _ in Text("Add details, or just send") },
-                model: modelPill,
-                mic: store.inputs.contains(.audio)
-                    ? MicButton(isRecording: store.recording) { store.send(.recordTapped) } : nil,
-                send: sendButton, submit: { store.send(.sendTapped) },
-                top: { composerTop }, attach: { attachMenu }
-            )
-            .token(store.picked?.id) { store.send(.clearSkillTapped) }
-            .photosPicker(
-                isPresented: $picksPhoto, selection: $photo, matching: .images, preferredItemEncoding: .compatible
-            )
-            .onChange(of: photo) { _, item in
-                guard let item else { return }
-                photo = nil
-                Task {
-                    guard let data = try? await item.loadTransferable(type: Data.self) else {
-                        store.send(.attached(.failure(AttachmentError.unreadablePhoto)))
-                        return
+            field
+                .modifier(AddContext(store: store))
+                .fileImporter(
+                    isPresented: $importsFiles, allowedContentTypes: PickedFile.types(photos: readsPhotos),
+                    allowsMultipleSelection: true
+                ) { store.send(.filesPicked($0)) }
+                .photosPicker(
+                    isPresented: $picksPhoto, selection: $photo, matching: .images, preferredItemEncoding: .compatible
+                )
+                .onChange(of: photo) { _, item in
+                    guard let item else { return }
+                    photo = nil
+                    Task {
+                        guard let data = try? await item.loadTransferable(type: Data.self) else {
+                            store.send(.attached(.failure(AttachmentError.unreadablePhoto)))
+                            return
+                        }
+                        store.send(.photoPicked(data))
                     }
-                    store.send(.photoPicked(data))
                 }
-            }
         }
     }
 
-    /// What + offers: a photo, for a model that reads them.
+    private var readsPhotos: Bool { store.inputs.contains(.image) }
+
+    /// The field. On the iPhone + opens a sheet of what to add; on the Mac
+    /// it's a menu.
+    @ViewBuilder private var field: some View {
+        let prompt = store.picked.map { _ in Text("Add details, or just send") }
+        #if os(iOS)
+            ChatComposer(
+                text: $store.input, prompt: prompt, model: modelPill, mic: mic, send: sendButton,
+                submit: { store.send(.sendTapped) }, add: { store.send(.addContextTapped) }, top: { composerTop }
+            )
+            .token(store.picked?.id) { store.send(.clearSkillTapped) }
+        #else
+            ChatComposer(
+                text: $store.input, prompt: prompt, model: modelPill, mic: mic, send: sendButton,
+                submit: { store.send(.sendTapped) }, top: { composerTop }, attach: { attachMenu }
+            )
+            .token(store.picked?.id) { store.send(.clearSkillTapped) }
+        #endif
+    }
+
+    /// Records for a model that listens; otherwise dictates into the field.
+    private var mic: MicButton {
+        MicButton(
+            isOn: store.recording || store.dictating, mode: store.inputs.contains(.audio) ? .record : .dictate
+        ) { store.send(.micTapped) }
+    }
+
+    /// What + offers on the Mac: a photo, for a model that reads them, and
+    /// files.
     @ViewBuilder private var attachMenu: some View {
-        if store.inputs.contains(.image) {
-            Button("Attach a Photo", systemImage: "photo") { picksPhoto = true }
+        if readsPhotos {
+            Button("Attach a Photo…", systemImage: "photo") { picksPhoto = true }
                 .disabled(store.attaching || store.recording)
         }
+        Button("Add Files…", systemImage: "doc") { importsFiles = true }
+            .disabled(store.attaching || store.recording)
     }
 
     /// Above the field: that a message is being edited, and what's
@@ -447,7 +477,7 @@ package struct ChatView: View {
             }
             .padding(.horizontal, 4)
         }
-        if !store.pending.isEmpty || store.attaching || store.recording {
+        if !store.pending.isEmpty || store.attaching || store.recording || store.dictating {
             attachments
         }
     }
@@ -460,6 +490,11 @@ package struct ChatView: View {
                         .foregroundStyle(.red)
                         .font(.callout)
                     Button("Cancel") { store.send(.cancelRecordingTapped) }
+                        .font(.callout)
+                }
+                if store.dictating {
+                    Label("Listening… Tap stop when you're done.", systemImage: "waveform")
+                        .foregroundStyle(.red)
                         .font(.callout)
                 }
                 ForEach(store.pending) { attachment in
@@ -490,6 +525,39 @@ package struct ChatView: View {
     }
 }
 
+/// + on the iPhone: the camera and recent photos, for a model that reads
+/// them, and Add files, in a sheet.
+private struct AddContext: ViewModifier {
+    @Bindable var store: StoreOf<ChatFeature>
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+            content.sheet(isPresented: $store.addsContext) {
+                AddContextSheet(
+                    photos: store.inputs.contains(.image)
+                        ? AddContextSheet.Photos(
+                            access: store.photosAccess, recents: store.recentPhotos,
+                            attached: Set(store.attachedRecents.keys), camera: store.hasCamera)
+                        : nil,
+                    fileTypes: PickedFile.types(photos: store.inputs.contains(.image)),
+                    close: { store.addsContext = false },
+                    tapRecent: { store.send(.recentPhotoTapped($0)) },
+                    photoPicked: { data in
+                        if let data {
+                            store.send(.photoPicked(data))
+                        } else {
+                            store.send(.attached(.failure(AttachmentError.unreadablePhoto)))
+                        }
+                    },
+                    photoTaken: { store.send(.photoTaken($0)) },
+                    filesPicked: { store.send(.filesPicked($0)) })
+            }
+        #else
+            content
+        #endif
+    }
+}
+
 extension ChatAttachment {
     /// The attachment's chip: on the next message with a button to remove
     /// it, or on a sent one, saying when its file is on another device.
@@ -499,6 +567,8 @@ extension ChatAttachment {
         case .audio:
             AttachmentChip(
                 "Recording, \(seconds ?? 0) s", systemImage: "waveform", elsewhere: elsewhere, remove: remove)
+        case .text:
+            AttachmentChip(verbatim: name ?? "File", systemImage: "doc.text", remove: remove)
         }
     }
 }

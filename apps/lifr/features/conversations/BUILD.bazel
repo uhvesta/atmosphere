@@ -13,6 +13,7 @@ swift_library(
     visibility = ["//apps/lifr/features/root:__pkg__"],
     deps = [
         "//apps/libs/kits/assistant",
+        "//apps/libs/kits/capture",
         "//apps/libs/kits/chatui",
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
@@ -35,6 +36,7 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     deps = [
         ":conversations",
+        "//apps/libs/kits/capture",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/models",
         "//apps/lifr/clients/search",
@@ -58,6 +60,7 @@ lifr_snapshot_test(
     srcs = glob(["SnapshotTests/*.swift"]),
     deps = [
         ":conversations",
+        "//apps/libs/kits/capture",
         "//apps/libs/kits/chatui",
         "//apps/libs/kits/inference",
         "//apps/lifr/clients/assistant",

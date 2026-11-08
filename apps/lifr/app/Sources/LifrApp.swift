@@ -116,6 +116,9 @@ private enum Storage {
         $0.attachments = .onDisk()
         $0.recorder = .live()
         $0.speech = speech
+        $0.dictation = .live()
+        $0.photoLibrary = .live()
+        $0.fileReader = .live
         $0.session = session
         $0.sync = sync
         $0.lock = .live()

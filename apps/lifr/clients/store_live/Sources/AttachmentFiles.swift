@@ -48,7 +48,8 @@ struct AttachmentFiles: Sendable {
     func save(
         _ data: Data, kind: ModelInput, seconds: Int?, conversation: UUID, id: UUID = UUID()
     ) throws(AttachmentError) -> ChatAttachment {
-        let attachment = ChatAttachment(id: id, kind: kind, seconds: kind == .audio ? seconds : nil)
+        let attachment = ChatAttachment(
+            id: id, kind: ChatAttachment.Kind(kind), seconds: kind == .audio ? seconds : nil)
         let contents: Data
         switch kind {
         case .image:
@@ -96,8 +97,10 @@ struct AttachmentFiles: Sendable {
         }
     }
 
-    /// The attachment's file, or nil when it isn't on this device.
+    /// The attachment's file, or nil when it isn't on this device or, for
+    /// a file's text, has none of its own.
     func file(_ attachment: ChatAttachment, conversation: UUID) -> URL? {
+        guard attachment.kind != .text else { return nil }
         let url = url(attachment, conversation: conversation)
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }

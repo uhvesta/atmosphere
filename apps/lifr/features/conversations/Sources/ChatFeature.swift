@@ -1,3 +1,4 @@
+import CaptureKit
 import ComposableArchitecture
 import Foundation
 import LifrAssistantClient
@@ -96,6 +97,23 @@ package struct ChatFeature {
         package var attaching = false
         /// Whether the microphone is recording for the next message.
         package var recording = false
+        /// Whether the microphone is writing what the person says into the
+        /// field, for a model that doesn't listen.
+        package var dictating = false
+        /// What was in the field before dictation started, which what's
+        /// heard follows; nil once dictation has ended.
+        package var dictatedAfter: String?
+        /// Whether + shows what to add, on the iPhone.
+        package var addsContext = false
+        /// Whether Lifr may show the person's recent photos in +.
+        package var photosAccess: PhotosAccess = .notAsked
+        /// The person's newest photos, for + to attach with a tap.
+        package var recentPhotos: [RecentPhoto] = []
+        /// The recent photos attached to the next message, with the ID
+        /// each is attached as.
+        package var attachedRecents: [RecentPhoto.ID: UUID] = [:]
+        /// Whether there's a camera to take a photo with.
+        package var hasCamera = false
         /// Attachments of this conversation whose files aren't on this
         /// device, such as those sent from another one.
         package var elsewhere: Set<UUID> = []
@@ -257,7 +275,9 @@ package struct ChatFeature {
         package var canStop: Bool { waiting != nil }
 
         package var canSend: Bool {
-            availability == .available && replying == nil && waiting == nil && !attaching && !recording && !compacting
+            availability == .available && replying == nil && waiting == nil && !attaching && !recording
+                && dictatedAfter == nil
+                && !compacting
                 && (picked != nil || !pending.isEmpty
                     || !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
@@ -289,12 +309,31 @@ package struct ChatFeature {
         /// A suggestion in an empty chat: sent as the person's message.
         case suggestionTapped(String)
         case editDraftTapped
+        /// + on the iPhone: shows the camera and recent photos, for a model
+        /// that reads them, and Add files.
+        case addContextTapped
+        case photosLoaded(access: PhotosAccess, recents: [RecentPhoto], camera: Bool)
+        /// Attaches a recent photo, or takes it off if it's attached.
+        case recentPhotoTapped(RecentPhoto.ID)
+        case recentPhotoAttached(RecentPhoto.ID, Result<ChatAttachment, any Error>)
         /// A photo the person picked, in any format the system reads.
         case photoPicked(Data)
-        /// Starts recording, or stops and attaches the recording.
-        case recordTapped
+        /// A photo the person took with the camera.
+        case photoTaken(Data)
+        /// Files the person picked: photos are attached as photos, others
+        /// as their text.
+        case filesPicked(Result<[URL], any Error>)
+        case filesAttached([ChatAttachment], failures: [String])
+        /// The microphone: for a model that listens, starts recording or
+        /// stops and attaches the recording; otherwise starts or stops
+        /// dictation.
+        case micTapped
         case cancelRecordingTapped
         case recordingStarted(Result<Void, any Error>)
+        /// Everything heard since dictation started.
+        case dictated(String)
+        case dictationEnded
+        case dictationFailed(any Error)
         case attached(Result<ChatAttachment, any Error>)
         case removeAttachmentTapped(UUID)
         /// Lifr is back on screen: send a stopped reply's request again.
@@ -417,7 +456,7 @@ package struct ChatFeature {
         package var retries: Bool
     }
 
-    private enum CancelID { case reply, recording, speech }
+    private enum CancelID { case reply, recording, speech, dictation }
 
     /// How long the assistant may write nothing before Lifr stops waiting:
     /// it gives up between one and two of these after the last progress.
@@ -431,6 +470,9 @@ package struct ChatFeature {
     @Dependency(\.attachments) private var attachments
     @Dependency(\.recorder) private var recorder
     @Dependency(\.speech) private var speech
+    @Dependency(\.dictation) private var dictation
+    @Dependency(\.photoLibrary) private var photoLibrary
+    @Dependency(\.fileReader) private var fileReader
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
     @Dependency(\.uuid) private var uuid
@@ -450,7 +492,7 @@ package struct ChatFeature {
                 let conversation = state.conversation.id
                 state.elsewhere = Set(
                     state.conversation.messages.flatMap(\.attachments)
-                        .filter { attachments.file($0, conversation) == nil }.map(\.id))
+                        .filter { $0.kind != .text && attachments.file($0, conversation) == nil }.map(\.id))
                 return .run { [skillsClient, library] send in
                     await send(.modelsLoaded(await library.runnable(), standard: library.selection(.assistant)))
                     // Without the person's skills, the built-ins still work.
@@ -649,7 +691,54 @@ package struct ChatFeature {
                 state.editsDraft = true
                 return .none
 
-            case .photoPicked(let data):
+            case .addContextTapped:
+                state.addsContext = true
+                guard state.inputs.contains(.image) else { return .none }
+                return .run { [photoLibrary] send in
+                    var access = photoLibrary.access()
+                    // Asked the first time + opens, not before.
+                    if access == .notAsked { access = await photoLibrary.requestAccess() }
+                    let recents = access == .allowed ? await photoLibrary.recents() : []
+                    await send(.photosLoaded(access: access, recents: recents, camera: await photoLibrary.hasCamera()))
+                }
+
+            case .photosLoaded(let access, let recents, let camera):
+                state.photosAccess = access
+                state.recentPhotos = recents
+                state.hasCamera = camera
+                return .none
+
+            case .recentPhotoTapped(let id):
+                if let attached = state.attachedRecents[id] {
+                    return remove(attached, in: &state)
+                }
+                guard state.inputs.contains(.image), !state.attaching else { return .none }
+                state.attaching = true
+                let conversation = state.conversation.id
+                return .run { [attachments, photoLibrary] send in
+                    await send(
+                        .recentPhotoAttached(
+                            id,
+                            Result {
+                                let data = try await photoLibrary.photo(id)
+                                return try await attachments.save(data, .image, nil, conversation)
+                            }))
+                }
+
+            case .recentPhotoAttached(let id, .success(let attachment)):
+                state.attaching = false
+                state.pending.append(attachment)
+                state.attachedRecents[id] = attachment.id
+                return .none
+
+            case .recentPhotoAttached(_, .failure(let error)):
+                state.attaching = false
+                state.alert = Self.attachAlert(error)
+                return .none
+
+            case .photoPicked(let data), .photoTaken(let data):
+                // The library and the camera cover +, so it closes for them.
+                state.addsContext = false
                 guard state.inputs.contains(.image), !state.attaching else { return .none }
                 state.attaching = true
                 let conversation = state.conversation.id
@@ -657,7 +746,55 @@ package struct ChatFeature {
                     await send(.attached(Result { try await attachments.save(data, .image, nil, conversation) }))
                 }
 
-            case .recordTapped where state.recording:
+            case .filesPicked(.failure(let error)):
+                state.addsContext = false
+                state.alert = Self.attachAlert(AttachmentError.unreadableFile(error.localizedDescription))
+                return .none
+
+            case .filesPicked(.success(let urls)):
+                state.addsContext = false
+                guard !urls.isEmpty, !state.attaching else { return .none }
+                state.attaching = true
+                let conversation = state.conversation.id
+                let photos = state.inputs.contains(.image)
+                return .run { [attachments, fileReader, uuid] send in
+                    var attached: [ChatAttachment] = []
+                    var failures: [String] = []
+                    for url in urls {
+                        do {
+                            switch try await fileReader.read(url) {
+                            case .photo(let data) where photos:
+                                attached.append(try await attachments.save(data, .image, nil, conversation))
+                            case .photo:
+                                failures.append(
+                                    String(
+                                        localized: """
+                                            The model of this chat can't read photos, so \
+                                            \(url.lastPathComponent) wasn't attached. Pick a model that reads \
+                                            them, or attach a text file.
+                                            """))
+                            case .text(let file):
+                                attached.append(ChatAttachment(id: uuid(), name: file.name, text: file.text))
+                            }
+                        } catch {
+                            failures.append(String(describing: error))
+                        }
+                    }
+                    await send(.filesAttached(attached, failures: failures))
+                }
+
+            case .filesAttached(let attached, let failures):
+                state.attaching = false
+                state.pending += attached
+                if !failures.isEmpty {
+                    state.alert = Self.attachAlert(AttachmentError.unreadableFile(failures.joined(separator: "\n\n")))
+                }
+                return .none
+
+            case .micTapped where !state.inputs.contains(.audio):
+                return dictate(in: &state)
+
+            case .micTapped where state.recording:
                 state.recording = false
                 state.attaching = true
                 let conversation = state.conversation.id
@@ -673,8 +810,8 @@ package struct ChatFeature {
                                 }))
                     })
 
-            case .recordTapped:
-                guard state.inputs.contains(.audio), !state.attaching else { return .none }
+            case .micTapped:
+                guard !state.attaching else { return .none }
                 state.recording = true
                 return .run { [recorder] send in
                     await send(.recordingStarted(Result { try await recorder.start() }))
@@ -694,6 +831,28 @@ package struct ChatFeature {
                 state.recording = false
                 return .merge(.cancel(id: CancelID.recording), .run { [recorder] _ in await recorder.cancel() })
 
+            case .dictated(let heard):
+                guard let before = state.dictatedAfter else { return .none }
+                state.input = before.isEmpty || heard.isEmpty ? before + heard : before + " " + heard
+                return .none
+
+            case .dictationEnded:
+                state.dictating = false
+                state.dictatedAfter = nil
+                return .none
+
+            case .dictationFailed(let error):
+                state.dictating = false
+                state.dictatedAfter = nil
+                state.alert = AlertState {
+                    TextState("Couldn't dictate")
+                } actions: {
+                    ButtonState(role: .cancel) { TextState("OK") }
+                } message: {
+                    TextState(String(describing: error))
+                }
+                return .none
+
             case .attached(.success(let attachment)):
                 state.attaching = false
                 state.pending.append(attachment)
@@ -705,10 +864,7 @@ package struct ChatFeature {
                 return .none
 
             case .removeAttachmentTapped(let id):
-                guard let attachment = state.pending.first(where: { $0.id == id }) else { return .none }
-                state.pending.removeAll { $0.id == id }
-                let conversation = state.conversation.id
-                return .run { [attachments] _ in await attachments.remove(attachment, conversation) }
+                return remove(id, in: &state)
 
             case .stopTapped:
                 guard state.canStop else { return .none }
@@ -1187,6 +1343,41 @@ package struct ChatFeature {
         }
     }
 
+    /// Takes the attachment `id` off the next message, and deletes its file.
+    private func remove(_ id: UUID, in state: inout State) -> Effect<Action> {
+        guard let attachment = state.pending.first(where: { $0.id == id }) else { return .none }
+        state.pending.removeAll { $0.id == id }
+        state.attachedRecents = state.attachedRecents.filter { $0.value != id }
+        let conversation = state.conversation.id
+        return .run { [attachments] _ in await attachments.remove(attachment, conversation) }
+    }
+
+    /// Starts writing what the person says into the field after what's
+    /// there, or stops, keeping what's written.
+    private func dictate(in state: inout State) -> Effect<Action> {
+        if state.dictating {
+            // The last words still come, until the dictation ends.
+            state.dictating = false
+            return .run { [dictation] _ in await dictation.stop() }
+        }
+        guard state.dictatedAfter == nil else { return .none }
+        state.dictating = true
+        state.dictatedAfter = state.input.trimmingCharacters(in: .whitespacesAndNewlines)
+        return .run { [dictation] send in
+            do {
+                for try await heard in try await dictation.start() {
+                    await send(.dictated(heard))
+                }
+                await send(.dictationEnded)
+            } catch is CancellationError {
+                await send(.dictationEnded)
+            } catch {
+                await send(.dictationFailed(error))
+            }
+        }
+        .cancellable(id: CancelID.dictation, cancelInFlight: true)
+    }
+
     private static func attachAlert(_ error: any Error) -> AlertState<Action.Alert> {
         AlertState {
             TextState("Couldn't attach that")
@@ -1297,6 +1488,7 @@ package struct ChatFeature {
         state.skill = nil
         var sent = state.pending
         state.pending = []
+        state.attachedRecents = [:]
         if let editing = state.editing {
             // The new message keeps what was attached to the old one.
             let old = (state.conversation.messages + state.conversation.hidden).first { $0.id == editing }
@@ -1337,7 +1529,9 @@ package struct ChatFeature {
             writes: AssistantWrites(conversation: conversation),
             skill: asked?.skill.flatMap { id in state.skills.first { $0.id == id } },
             attachments: (asked?.attachments ?? []).compactMap { attachment in
-                attachments.file(attachment, conversation).map { ModelAttachment(attachment.kind, file: $0) }
+                attachment.kind.input.flatMap { input in
+                    attachments.file(attachment, conversation).map { ModelAttachment(input, file: $0) }
+                }
             })
         request.summary = state.conversation.summary?.summary.text
         request.model = state.conversation.context.model

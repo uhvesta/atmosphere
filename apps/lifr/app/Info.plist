@@ -17,7 +17,13 @@
 	<key>NSFaceIDUsageDescription</key>
 	<string>Lifr uses Face ID to unlock, when you turn on its lock in Settings.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Lifr records what you say for the assistant to hear, when you tap Record in a chat. The recording stays on this device.</string>
+	<string>Lifr listens when you tap the microphone in a chat: to record a clip for the assistant to hear, or to write what you say into your message. What you say stays on this device.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Lifr writes what you say into your message when you tap the microphone in a chat. Your speech is recognized on this device and isn't sent anywhere.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Lifr opens the camera when you tap Camera in a chat, to take a photo for the assistant to look at. The photo stays on this device.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Lifr shows your recent photos when you tap + in a chat, so you can attach one for the assistant to look at. Only the photos you attach are used, and they stay on this device.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Avesta Barzegar</string>
 </dict>

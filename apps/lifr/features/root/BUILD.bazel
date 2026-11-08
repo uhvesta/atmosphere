@@ -114,6 +114,7 @@ _PHONE_FLOWS = {
         hosted = True,
         deps = [
             ":root",
+            "//apps/libs/kits/capture",
             "//apps/lifr/clients/assistant",
             "//apps/lifr/clients/assistant_live",
             "//apps/lifr/clients/models",
@@ -141,6 +142,7 @@ lifr_snapshot_test(
     tags = ["manual"],
     deps = [
         ":root",
+        "//apps/libs/kits/capture",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/assistant_live",
         "//apps/lifr/clients/models",

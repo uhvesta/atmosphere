@@ -1,3 +1,4 @@
+import CaptureKit
 import ComposableArchitecture
 import FlowKit
 import LifrAPI
@@ -47,7 +48,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
         inputs: Set<ModelInput> = [], lock: LockClient = .always(),
         session: InMemorySession = InMemorySession(), assistant: AssistantClient? = nil,
-        settings: Bool = false, speech: SpeechClient = .inMemory
+        files: [String: PickedFile] = [:], settings: Bool = false, speech: SpeechClient = .inMemory
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
         let ids = LockIsolated(1000)
@@ -63,6 +64,9 @@ final class MacFlowSnapshotTests: XCTestCase {
             $0.assistant = assistant ?? .scripted(replies, inputs: inputs)
             $0.attachments = .inMemory()
             $0.recorder = .scripted(RecorderClient.Recording(data: Data([1]), seconds: 6))
+            $0.dictation = .scripted()
+            $0.fileReader = .scripted(files)
+            $0.photoLibrary = .denied
             // The assistant never stalls in a flow.
             $0.continuousClock = TestClock()
             $0.conversations = .inMemory()
@@ -323,16 +327,16 @@ final class MacFlowSnapshotTests: XCTestCase {
         await flow.step("new")
         store.send(.conversations(.chats(.element(id: id, action: .photoPicked(Data([1]))))))
         await flow.step("photo", image: false)
-        store.send(.conversations(.chats(.element(id: id, action: .recordTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
         await flow.step("recording")
-        store.send(.conversations(.chats(.element(id: id, action: .recordTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
         store.send(
             .conversations(.chats(.element(id: id, action: .binding(.set(\.input, "What plant is this?"))))))
         await flow.step("attached")
         store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
         await flow.step("replied")
-        store.send(.conversations(.chats(.element(id: id, action: .recordTapped))))
-        store.send(.conversations(.chats(.element(id: id, action: .recordTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
         store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "And this one?"))))))
         // Stopping attaches the recording once it's saved.
         for _ in 0..<100 where store.conversations.chats[id: id]?.canSend != true {

@@ -2,28 +2,72 @@ import ComposableArchitecture
 import Foundation
 import LifrModelsClient
 
-/// A photo or recording the person sent with a message. Only this record
-/// goes with the conversation when it syncs: the file stays on the device
-/// it was sent from.
+/// A photo, recording or file the person sent with a message. Only this
+/// record goes with the conversation when it syncs: a photo's or
+/// recording's file stays on the device it was sent from. A file's text is
+/// in the record itself, so it goes too.
 package struct ChatAttachment: Identifiable, Hashable, Codable, Sendable {
     package var id: UUID
-    /// A photo or a recording.
-    package var kind: ModelInput
+    /// A photo, a recording or a file's text.
+    package var kind: Kind
     /// How long a recording is, in whole seconds.
     package var seconds: Int?
+    /// A file's name, as the person sees it.
+    package var name: String?
+    /// A file's text, which goes to the model as context.
+    package var text: String?
 
-    package init(id: UUID, kind: ModelInput, seconds: Int? = nil) {
+    /// What's attached.
+    package enum Kind: String, Hashable, Codable, Sendable {
+        case image
+        case audio
+        /// Text from a file, such as a note, Markdown or a PDF.
+        case text
+
+        package init(_ input: ModelInput) {
+            switch input {
+            case .image: self = .image
+            case .audio: self = .audio
+            }
+        }
+
+        /// What the model takes it as; nil for text, which goes in the
+        /// prompt.
+        package var input: ModelInput? {
+            switch self {
+            case .image: .image
+            case .audio: .audio
+            case .text: nil
+            }
+        }
+    }
+
+    package init(id: UUID, kind: Kind, seconds: Int? = nil) {
         self.id = id
         self.kind = kind
         self.seconds = seconds
     }
 
+    /// A file's text, named as the file is.
+    package init(id: UUID, name: String, text: String) {
+        self.id = id
+        kind = .text
+        self.name = name
+        self.text = text
+    }
+
+    /// The most text kept from a file, in characters. The prompt keeps as
+    /// much of it as fits the model.
+    package static let textLimit = 8_000
+
     /// A cautious count of the tokens the model reads for it: Gemma reads a
-    /// photo as up to 280 tokens, and a recording as about 25 a second.
+    /// photo as up to 280 tokens, and a recording as about 25 a second. A
+    /// file's text is counted with the prompt it's in.
     package var estimatedTokens: Int {
         switch kind {
         case .image: 280
         case .audio: 25 * max(1, seconds ?? RecorderClient.limit)
+        case .text: 0
         }
     }
 }
@@ -38,6 +82,8 @@ package enum AttachmentError: Error, Hashable, Sendable, CustomStringConvertible
     case recordingFailed(String)
     /// Saving or reading the file on this device failed.
     case storageFailed(String)
+    /// A file couldn't be attached, with why and what to do, for the person.
+    case unreadableFile(String)
 
     package var description: String {
         switch self {
@@ -64,6 +110,8 @@ package enum AttachmentError: Error, Hashable, Sendable, CustomStringConvertible
                     The recording stopped (\(reason)). Record again; if another app is using the microphone, \
                     close it first.
                     """)
+        case .unreadableFile(let why):
+            why
         case .storageFailed(let reason):
             String(
                 localized: """
@@ -111,7 +159,7 @@ extension AttachmentsClient {
                     return UUID(uuidString: String(format: "A77AC400-0000-0000-0000-%012d", count)) ?? UUID()
                 }
                 stored.withValue { _ = $0[conversation, default: []].insert(id) }
-                return ChatAttachment(id: id, kind: kind, seconds: seconds)
+                return ChatAttachment(id: id, kind: ChatAttachment.Kind(kind), seconds: seconds)
             },
             file: { attachment, conversation in
                 guard stored.value[conversation]?.contains(attachment.id) == true else { return nil }

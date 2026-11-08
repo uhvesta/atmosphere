@@ -165,16 +165,16 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         await flow.step("new")
         store.send(.conversations(.chats(.element(id: id, action: .photoPicked(Data([1]))))))
         await flow.step("photo", image: false)
-        store.send(.conversations(.chats(.element(id: id, action: .recordTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
         await flow.step("recording")
-        store.send(.conversations(.chats(.element(id: id, action: .recordTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
         store.send(
             .conversations(.chats(.element(id: id, action: .binding(.set(\.input, "What plant is this?"))))))
         await flow.step("attached")
         store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
         await flow.step("replied")
-        store.send(.conversations(.chats(.element(id: id, action: .recordTapped))))
-        store.send(.conversations(.chats(.element(id: id, action: .recordTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
         store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "And this one?"))))))
         // Stopping attaches the recording once it's saved.
         for _ in 0..<100 where store.conversations.chats[id: id]?.canSend != true {

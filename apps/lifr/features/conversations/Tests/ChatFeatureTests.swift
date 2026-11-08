@@ -1,3 +1,4 @@
+import CaptureKit
 import ComposableArchitecture
 import Foundation
 import LifrAssistantClient
@@ -26,6 +27,8 @@ final class ChatFeatureTests: XCTestCase {
         _ workspace: Workspace, clock: TestClock<Duration> = TestClock(),
         prewarmed: LockIsolated<Int> = LockIsolated(0), inputs: Set<ModelInput> = [],
         attachments: AttachmentsClient = .inMemory(), recorder: RecorderClient = .scripted(),
+        dictation: DictationClient = .scripted(), photos: PhotoLibraryClient = .denied,
+        files: [String: PickedFile] = [:],
         answer: @escaping @Sendable (AssistantRequest) async throws -> AssistantReply
     ) -> TestStoreOf<ChatFeature> {
         let store = TestStore(
@@ -44,6 +47,9 @@ final class ChatFeatureTests: XCTestCase {
             $0.assistant.inputs = { _ in inputs }
             $0.attachments = attachments
             $0.recorder = recorder
+            $0.dictation = dictation
+            $0.photoLibrary = photos
+            $0.fileReader = .scripted(files)
             $0.continuousClock = clock
             $0.assistant.reply = { request in
                 AssistantReplies { continuation in
@@ -171,11 +177,11 @@ final class ChatFeatureTests: XCTestCase {
 
         await store.send(.photoPicked(Data([1])))
         await store.skipReceivedActions(strict: false)
-        await store.send(.recordTapped)
+        await store.send(.micTapped)
         await store.skipReceivedActions(strict: false)
         XCTAssertTrue(store.state.recording)
         XCTAssertFalse(store.state.canSend)
-        await store.send(.recordTapped)
+        await store.send(.micTapped)
         await store.skipReceivedActions(strict: false)
         XCTAssertEqual(store.state.pending.map(\.kind), [.image, .audio])
         XCTAssertEqual(store.state.pending.last?.seconds, 4)
@@ -191,17 +197,275 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.conversation.messages.last?.text, "A fern.")
     }
 
-    func testAModelThatReadsOnlyTextOffersNoAttachments() async {
+    func testAModelThatReadsOnlyTextTakesNoPhotosOrRecordings() async {
         let (workspace, _) = home()
         let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
         await store.send(.task)
 
         await store.send(.photoPicked(Data([1])))
-        await store.send(.recordTapped)
+        await store.send(.micTapped)
         await store.skipReceivedActions(strict: false)
 
         XCTAssertEqual(store.state.pending, [])
         XCTAssertFalse(store.state.recording)
+        await store.send(.micTapped)
+    }
+
+    func testTheMicRecordsForAModelThatListensAndDictatesForOneThatDoesnt() async {
+        let (workspace, _) = home()
+        let listens = chat(workspace, inputs: [.audio]) { _ in AssistantReply(text: "", isComplete: true) }
+        await listens.send(.task)
+        await listens.send(.micTapped)
+        XCTAssertTrue(listens.state.recording)
+        XCTAssertFalse(listens.state.dictating)
+        await listens.send(.cancelRecordingTapped)
+
+        let reads = chat(workspace, inputs: [.image]) { _ in AssistantReply(text: "", isComplete: true) }
+        await reads.send(.task)
+        await reads.send(.micTapped)
+        XCTAssertTrue(reads.state.dictating)
+        XCTAssertFalse(reads.state.recording)
+        await reads.send(.micTapped)
+        await reads.receive(\.dictationEnded)
+    }
+
+    func testDictationWritesWhatsHeardAfterWhatsTypedUntilStopped() async {
+        let (workspace, _) = home()
+        let store = chat(workspace, dictation: .scripted(["Move my run", "Move my run to Friday"])) { _ in
+            AssistantReply(text: "", isComplete: true)
+        }
+        await store.send(.task)
+        await store.send(.binding(.set(\.input, "Note: ")))
+
+        await store.send(.micTapped)
+        await store.receive(\.dictated)
+        await store.receive(\.dictated)
+
+        XCTAssertEqual(store.state.input, "Note: Move my run to Friday")
+        XCTAssertTrue(store.state.dictating)
+        XCTAssertFalse(store.state.canSend)
+
+        await store.send(.micTapped)
+        await store.receive(\.dictationEnded)
+
+        XCTAssertFalse(store.state.dictating)
+        XCTAssertEqual(store.state.input, "Note: Move my run to Friday")
+        XCTAssertTrue(store.state.canSend)
+    }
+
+    func testDictationThatCantRunOnTheDeviceSaysWhyAndLeavesTheField() async {
+        let (workspace, _) = home()
+        var dictation = DictationClient.scripted()
+        dictation.start = { throw DictationError.unavailable(language: "English") }
+        let store = chat(workspace, dictation: dictation) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.task)
+        await store.send(.binding(.set(\.input, "Buy milk")))
+
+        await store.send(.micTapped)
+        await store.receive(\.dictationFailed)
+
+        XCTAssertFalse(store.state.dictating)
+        XCTAssertEqual(store.state.input, "Buy milk")
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertTrue(store.state.canSend)
+    }
+
+    func testDictationThatStopsPartWayKeepsWhatWasHeardAndSaysWhy() async {
+        let (workspace, _) = home()
+        let (stream, continuation) = AsyncThrowingStream.makeStream(of: String.self)
+        var dictation = DictationClient.scripted()
+        dictation.start = { stream }
+        let store = chat(workspace, dictation: dictation) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.task)
+
+        await store.send(.micTapped)
+        continuation.yield("Water the")
+        await store.receive(\.dictated)
+        continuation.finish(throwing: DictationError.failed("the microphone stopped"))
+        await store.receive(\.dictationFailed)
+
+        XCTAssertEqual(store.state.input, "Water the")
+        XCTAssertFalse(store.state.dictating)
+        XCTAssertNotNil(store.state.alert)
+    }
+
+    func testPlusShowsTheRecentPhotosAndCameraForAModelThatReadsThem() async {
+        let (workspace, _) = home()
+        let recents = [RecentPhoto(id: "fern", thumbnail: Data([1])), RecentPhoto(id: "desk", thumbnail: Data([2]))]
+        let store = chat(workspace, inputs: [.image], photos: .scripted(recents, camera: true)) { _ in
+            AssistantReply(text: "", isComplete: true)
+        }
+        await store.send(.task)
+
+        await store.send(.addContextTapped)
+        await store.receive(\.photosLoaded)
+
+        XCTAssertTrue(store.state.addsContext)
+        XCTAssertEqual(store.state.photosAccess, .allowed)
+        XCTAssertEqual(store.state.recentPhotos, recents)
+        XCTAssertTrue(store.state.hasCamera)
+
+        await store.send(.binding(.set(\.addsContext, false)))
+        XCTAssertFalse(store.state.addsContext)
+    }
+
+    func testPlusAsksForThePhotosTheFirstTimeAndShowsNoneWhenRefused() async {
+        let (workspace, _) = home()
+        let asked = LockIsolated(0)
+        var photos = PhotoLibraryClient.denied
+        photos.access = { asked.value == 0 ? .notAsked : .denied }
+        photos.requestAccess = {
+            asked.withValue { $0 += 1 }
+            return .denied
+        }
+        let store = chat(workspace, inputs: [.image], photos: photos) { _ in
+            AssistantReply(text: "", isComplete: true)
+        }
+        await store.send(.task)
+
+        await store.send(.addContextTapped)
+        await store.receive(\.photosLoaded)
+        await store.send(.binding(.set(\.addsContext, false)))
+        await store.send(.addContextTapped)
+        await store.receive(\.photosLoaded)
+
+        XCTAssertEqual(asked.value, 1)
+        XCTAssertEqual(store.state.photosAccess, .denied)
+        XCTAssertEqual(store.state.recentPhotos, [])
+    }
+
+    func testPlusForAModelThatReadsOnlyTextDoesntAskForPhotos() async {
+        let (workspace, _) = home()
+        let asked = LockIsolated(false)
+        var photos = PhotoLibraryClient.scripted([])
+        photos.requestAccess = {
+            asked.setValue(true)
+            return .allowed
+        }
+        let store = chat(workspace, photos: photos) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.task)
+
+        await store.send(.addContextTapped)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertTrue(store.state.addsContext)
+        XCTAssertFalse(asked.value)
+        XCTAssertEqual(store.state.recentPhotos, [])
+    }
+
+    func testATappedRecentPhotoIsAttachedAndTappedAgainTakenOff() async {
+        let (workspace, _) = home()
+        let recents = [RecentPhoto(id: "fern", thumbnail: Data([1]))]
+        let store = chat(workspace, inputs: [.image], photos: .scripted(recents)) { _ in
+            AssistantReply(text: "", isComplete: true)
+        }
+        await store.send(.task)
+        await store.send(.addContextTapped)
+        await store.receive(\.photosLoaded)
+
+        await store.send(.recentPhotoTapped("fern"))
+        await store.receive(\.recentPhotoAttached)
+
+        XCTAssertEqual(store.state.pending.map(\.kind), [.image])
+        XCTAssertEqual(Set(store.state.attachedRecents.keys), ["fern"])
+        XCTAssertTrue(store.state.addsContext)
+
+        await store.send(.recentPhotoTapped("fern"))
+
+        XCTAssertEqual(store.state.pending, [])
+        XCTAssertEqual(store.state.attachedRecents, [:])
+    }
+
+    func testARecentPhotoRemovedFromItsChipShowsAsNotAttached() async throws {
+        let (workspace, _) = home()
+        let store = chat(
+            workspace, inputs: [.image], photos: .scripted([RecentPhoto(id: "fern", thumbnail: Data([1]))])
+        ) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.task)
+        await store.send(.recentPhotoTapped("fern"))
+        await store.receive(\.recentPhotoAttached)
+        let photo = try XCTUnwrap(store.state.pending.first)
+
+        await store.send(.removeAttachmentTapped(photo.id))
+
+        XCTAssertEqual(store.state.attachedRecents, [:])
+    }
+
+    func testAPhotoFromTheCameraIsAttachedAndClosesPlus() async {
+        let (workspace, _) = home()
+        let store = chat(workspace, inputs: [.image]) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.task)
+        await store.send(.addContextTapped)
+        await store.skipReceivedActions(strict: false)
+
+        await store.send(.photoTaken(Data([1])))
+        await store.receive(\.attached)
+
+        XCTAssertFalse(store.state.addsContext)
+        XCTAssertEqual(store.state.pending.map(\.kind), [.image])
+    }
+
+    func testPickedFilesAttachTheirTextAndPhotosAndTheTextGoesToTheModel() async throws {
+        let (workspace, _) = home()
+        let asked = LockIsolated<AssistantRequest?>(nil)
+        let notes = try FileText(name: "notes.md", text: "Repot the fern in spring.", limit: 100)
+        let store = chat(
+            workspace, inputs: [.image], files: ["notes.md": .text(notes), "fern.jpg": .photo(Data([1]))]
+        ) { request in
+            asked.setValue(request)
+            return AssistantReply(text: "In spring.", isComplete: true)
+        }
+        await store.send(.task)
+        await store.send(.addContextTapped)
+        await store.skipReceivedActions(strict: false)
+
+        await store.send(
+            .filesPicked(.success([URL(filePath: "/picked/notes.md"), URL(filePath: "/picked/fern.jpg")])))
+        await store.receive(\.filesAttached)
+
+        XCTAssertFalse(store.state.addsContext)
+        XCTAssertEqual(store.state.pending.map(\.kind), [.text, .image])
+        XCTAssertEqual(store.state.pending.first?.name, "notes.md")
+        XCTAssertNil(store.state.alert)
+
+        await store.send(.sendTapped)
+        await store.skipReceivedActions(strict: false)
+
+        let sent = try XCTUnwrap(store.state.conversation.messages.first)
+        XCTAssertEqual(sent.attachments.map(\.kind), [.text, .image])
+        // Only the photo is a file for the model; the text is in the prompt.
+        XCTAssertEqual(asked.value?.attachments.map(\.kind), [.image])
+        XCTAssertTrue(
+            try AssistantPrompt.prompt(XCTUnwrap(asked.value)).contains("Repot the fern in spring."))
+    }
+
+    func testAPhotoFileForAModelThatReadsOnlyTextIsntAttachedAndSaysWhy() async throws {
+        let (workspace, _) = home()
+        let notes = try FileText(name: "notes.md", text: "Repot the fern.", limit: 100)
+        let store = chat(workspace, files: ["notes.md": .text(notes), "fern.jpg": .photo(Data([1]))]) { _ in
+            AssistantReply(text: "", isComplete: true)
+        }
+        await store.send(.task)
+
+        await store.send(
+            .filesPicked(.success([URL(filePath: "/picked/notes.md"), URL(filePath: "/picked/fern.jpg")])))
+        await store.receive(\.filesAttached)
+
+        XCTAssertEqual(store.state.pending.map(\.kind), [.text])
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertFalse(store.state.attaching)
+    }
+
+    func testAFileThatCantBeReadSaysSoAndAttachesNothing() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.task)
+
+        await store.send(.filesPicked(.success([URL(filePath: "/picked/scan.pdf")])))
+        await store.receive(\.filesAttached)
+
+        XCTAssertEqual(store.state.pending, [])
+        XCTAssertNotNil(store.state.alert)
     }
 
     func testARemovedAttachmentIsntSentOrKept() async throws {
@@ -245,7 +509,7 @@ final class ChatFeatureTests: XCTestCase {
         }
         await store.send(.task)
 
-        await store.send(.recordTapped)
+        await store.send(.micTapped)
         await store.skipReceivedActions(strict: false)
 
         XCTAssertFalse(store.state.recording)
@@ -257,7 +521,7 @@ final class ChatFeatureTests: XCTestCase {
         let store = chat(workspace, inputs: [.audio]) { _ in AssistantReply(text: "", isComplete: true) }
         await store.send(.task)
 
-        await store.send(.recordTapped)
+        await store.send(.micTapped)
         await store.skipReceivedActions(strict: false)
         await store.send(.cancelRecordingTapped)
         await store.skipReceivedActions(strict: false)

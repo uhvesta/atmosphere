@@ -24,6 +24,7 @@ swift_library(
     ],
     deps = [
         "//apps/libs/kits/assistant",
+        "//apps/libs/kits/capture",
         "//apps/libs/kits/chat",
         "//apps/lifr/api",
         "//apps/lifr/clients/models",
