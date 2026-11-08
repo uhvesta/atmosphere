@@ -11,13 +11,18 @@ public struct RunnableModel: Hashable, Identifiable, Sendable {
     /// The windows it can run at, smallest first. Empty when it offers no
     /// choice, as with Apple's.
     public var windows: [Int]
+    /// What it reads besides text, such as photos.
+    public var inputs: Set<ModelInput>
 
-    public init(id: ModelID, name: String, summary: String = "", window: Int, windows: [Int]) {
+    public init(
+        id: ModelID, name: String, summary: String = "", window: Int, windows: [Int], inputs: Set<ModelInput> = []
+    ) {
         self.id = id
         self.name = name
         self.summary = summary
         self.window = window
         self.windows = windows
+        self.inputs = inputs
     }
 
     /// Whether it can think before it answers. Apple's model can't.
@@ -28,7 +33,7 @@ public struct RunnableModel: Hashable, Identifiable, Sendable {
         let windows = Set(spec.contextChoices + [spec.contextTokens])
         self.init(
             id: spec.id, name: spec.name, summary: spec.summary, window: model.window,
-            windows: spec.contextChoices.isEmpty ? [] : windows.sorted())
+            windows: spec.contextChoices.isEmpty ? [] : windows.sorted(), inputs: spec.inputs)
     }
 
     public static let apple = RunnableModel(

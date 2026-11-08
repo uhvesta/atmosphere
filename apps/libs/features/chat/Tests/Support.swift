@@ -2,6 +2,7 @@ import CaptureKit
 import ChatKit
 import ComposableArchitecture
 import Foundation
+import ImageIO
 import InferenceKit
 import ModelsClient
 
@@ -32,8 +33,8 @@ final class Runs: Sendable {
     let asked = LockIsolated<[ModelUseKey]>([])
     let choices = LockIsolated<[ModelChoice]>([])
 
-    init(_ steps: [ScriptedRuntime.Step]) {
-        runtime = ScriptedRuntime(steps: steps)
+    init(_ steps: [ScriptedRuntime.Step], inputs: Set<ModelInput> = []) {
+        runtime = ScriptedRuntime(inputs: inputs, steps: steps)
     }
 
     var client: ChatRuntimeClient {
@@ -55,7 +56,8 @@ extension InMemoryModelLibrary {
 func chat(
     _ runs: Runs, thread: ChatThread = ChatThread(id: UUID(999), createdAt: epoch), model: ModelChoice = .defaults,
     library: InMemoryModelLibrary = InMemoryModelLibrary(), dictation: DictationClient = .scripted(),
-    files: [String: PickedFile] = [:], speech: SpeechClient = .inMemory
+    files: [String: PickedFile] = [:], speech: SpeechClient = .inMemory, photos: PhotoLibraryClient = .denied,
+    kept: ChatPhotosClient = .inMemory()
 ) -> TestStoreOf<ChatThreadFeature> {
     let store = TestStore(
         initialState: ChatThreadFeature.State(
@@ -70,6 +72,8 @@ func chat(
         $0.dictation = dictation
         $0.fileReader = .scripted(files)
         $0.speech = speech
+        $0.photoLibrary = photos
+        $0.chatPhotos = kept
     }
     store.exhaustivity = .off
     return store
@@ -88,6 +92,24 @@ extension TestStoreOf<ChatThreadFeature> {
 }
 
 struct Missing: Error {}
+
+/// A small PNG with a little metadata, as a camera or the library gives.
+func photo(side: Int = 8) throws -> Data {
+    guard
+        let context = CGContext(
+            data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    else { throw Missing() }
+    context.setFillColor(CGColor(red: 0.2, green: 0.6, blue: 0.3, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: side, height: side))
+    guard let image = context.makeImage() else { throw Missing() }
+    let data = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(data as CFMutableData, "public.png" as CFString, 1, nil)
+    else { throw Missing() }
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else { throw Missing() }
+    return data as Data
+}
 
 extension Optional {
     func unwrap() throws -> Wrapped {

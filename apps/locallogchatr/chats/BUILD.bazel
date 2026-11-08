@@ -1,0 +1,96 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("//apps/libs/kits/flow:defs.bzl", "flow_host_app", "flow_snapshot_test")
+
+# LocalLogChatr's screens: the chats on the device, each on the shared
+# chat, and Settings with the models they run on. TCA reducers with
+# SwiftUI views built from ChatUI. Needs Xcode: build with
+# `--config=xcode`. In Swift 5 mode, like the other apps' features.
+swift_library(
+    name = "chats",
+    package_name = "locallogchatr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LocalLogChatrChats",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/locallogchatr/app:__pkg__"],
+    deps = [
+        "//apps/libs/features/chat",
+        "//apps/libs/features/models",
+        "//apps/libs/kits/blob",
+        "//apps/libs/kits/chat",
+        "//apps/libs/kits/chatui",
+        "//apps/libs/kits/inference",
+        "//apps/locallogchatr/models",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# TestStore tests of the chats on a scripted model, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "locallogchatr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":chats",
+        "//apps/libs/features/chat",
+        "//apps/libs/kits/chat",
+        "//apps/libs/kits/inference",
+        "//apps/libs/kits/json",
+        "//apps/locallogchatr/models",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+_FLOW_DEPS = [
+    ":chats",
+    "//apps/libs/features/chat",
+    "//apps/libs/features/models",
+    "//apps/libs/kits/capture",
+    "//apps/libs/kits/chat",
+    "//apps/libs/kits/inference",
+    "//apps/libs/kits/json",
+    "//apps/locallogchatr/models",
+    "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+]
+
+# The app the iPhone flows run in, for its window scene. Simulators only.
+flow_host_app(
+    name = "host",
+    bundle_id = "local.locallogchatr.flowhost",
+)
+
+# Chatting on the iPhone, step by step: references in
+# SnapshotTests/__Snapshots__. Record with --config=record_snapshots.
+flow_snapshot_test(
+    name = "flow_snapshot_test",
+    package_name = "locallogchatr",
+    srcs = glob(["FlowSnapshotTests/*.swift"]) + ["FlowSupport/Sample.swift"],
+    host = ":host",
+    deps = _FLOW_DEPS,
+)
+
+# The same on the Mac. Manual, since `bazel test` can't read other windows:
+# run it with //apps/libs/kits/flow:run_mac.sh.
+flow_snapshot_test(
+    name = "mac_flow_snapshot_test",
+    package_name = "locallogchatr",
+    srcs = glob(["MacFlowSnapshotTests/*.swift"]) + ["FlowSupport/Sample.swift"],
+    mac = True,
+    tags = ["manual"],
+    deps = _FLOW_DEPS,
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

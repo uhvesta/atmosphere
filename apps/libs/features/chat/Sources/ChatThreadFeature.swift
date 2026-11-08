@@ -8,16 +8,18 @@ import NaturalLanguage
 /// A chat with a model, for an app to put anywhere: the person writes, the
 /// model replies as it writes and can think first, and each reply can be
 /// stopped, written again or read aloud. Editing a message or writing a
-/// reply again keeps the old one on its own branch. Files and dictation
-/// go with the next message, and each chat picks its own model.
+/// reply again keeps the old one on its own branch. Photos, files and
+/// dictation go with the next message, and each chat picks its own model.
 ///
 /// The app says what the chat knows in `instructions`, which use's model
 /// it runs on by default, and keeps the thread when it's `changed`.
 @Reducer
 public struct ChatThreadFeature {
     @ObservableState
-    public struct State: Equatable {
+    public struct State: Equatable, Identifiable {
         public var thread: ChatThread
+        /// The thread's, so an app can keep several chats side by side.
+        public var id: UUID { thread.id }
         /// What the chat runs on in place of its use's default.
         public var model: ModelChoice
         /// Which of the app's uses gives the default model.
@@ -45,9 +47,28 @@ public struct ChatThreadFeature {
         public var context: ContextUse?
         /// The files that go with the next message.
         public var pending: [ThreadFile] = []
-        /// Whether the file picker is open. Chats read only text, so +
-        /// opens it straight away.
+        /// The photos that go with the next message.
+        public var pendingPhotos: [ThreadPhoto] = []
+        /// Whether the file picker is open. + opens it straight away for a
+        /// model that reads only text.
         public var picksFiles = false
+        /// Whether + shows the camera, recent photos and files, on the
+        /// iPhone, for a model that reads photos.
+        public var addsContext = false
+        /// Whether the app may show the person's recent photos in +.
+        public var photosAccess: PhotosAccess = .notAsked
+        /// The person's newest photos, for + to attach with a tap.
+        public var recentPhotos: [RecentPhoto] = []
+        /// The recent photos attached to the next message, with the photo
+        /// each became.
+        public var attachedRecents: [RecentPhoto.ID: UUID] = [:]
+        /// Whether there's a camera to take a photo with.
+        public var hasCamera = false
+        /// Whether a photo is being kept for the next message.
+        public var attaching = false
+        /// The file of each photo in the chat that's on this device, to
+        /// show it.
+        public var photoFiles: [UUID: URL] = [:]
         /// Whether the microphone is writing what's said into the field.
         public var dictating = false
         /// What the field held when dictation started, which what's said
@@ -71,9 +92,13 @@ public struct ChatThreadFeature {
         }
 
         public var canSend: Bool {
-            reply == nil && dictatedAfter == nil
-                && (!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pending.isEmpty)
+            reply == nil && dictatedAfter == nil && !attaching
+                && (!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pending.isEmpty
+                    || !pendingPhotos.isEmpty)
         }
+
+        /// Whether the chat's model reads photos, so + offers them.
+        public var readsPhotos: Bool { current?.inputs.contains(.image) == true }
 
         /// Whether the chat can go to another branch or write a reply
         /// again: not while one is written.
@@ -129,9 +154,22 @@ public struct ChatThreadFeature {
         case modelSheet(PresentationAction<ChatModelFeature.Action>)
         case progressed(ReplyProgress)
         case replied(Result<ChatReply, ModelRuntimeError>)
+        /// + on the iPhone, or for a model that reads only text: the
+        /// camera, recent photos and files, or the file picker.
         case addContextTapped
+        case photosLoaded(access: PhotosAccess, recents: [RecentPhoto], camera: Bool)
+        /// Attaches a recent photo, or takes it off if it's attached.
+        case recentPhotoTapped(RecentPhoto.ID)
+        /// A photo the person picked, in any format the system reads; nil
+        /// when it couldn't be read.
+        case photoPicked(Data?)
+        /// A photo the person took with the camera.
+        case photoTaken(Data)
+        case photoAttached(ThreadPhoto, recent: RecentPhoto.ID?)
+        case photoFailed(String)
+        case removePhotoTapped(UUID)
         case filesPicked(Result<[URL], any Error>)
-        case filesRead([ThreadFile], failures: [String])
+        case filesRead([ThreadFile], photos: [ThreadPhoto], failures: [String])
         case removeFileTapped(Int)
         case micTapped
         case dictated(String)
@@ -155,6 +193,8 @@ public struct ChatThreadFeature {
     @Dependency(\.uuid) private var uuid
     @Dependency(\.dictation) private var dictation
     @Dependency(\.fileReader) private var fileReader
+    @Dependency(\.photoLibrary) private var photoLibrary
+    @Dependency(\.chatPhotos) private var chatPhotos
 
     public init() {}
 
@@ -171,6 +211,9 @@ public struct ChatThreadFeature {
                 return .none
 
             case .task:
+                for photo in (state.thread.messages + state.thread.hidden).flatMap(\.photos) {
+                    state.photoFiles[photo.id] = chatPhotos.file(photo, state.thread.id)
+                }
                 return .run { [library, use = state.use] send in
                     await send(.modelsLoaded(await library.runnable(), standard: library.selection(use)))
                 }
@@ -313,43 +356,127 @@ public struct ChatThreadFeature {
                 return .none
 
             case .addContextTapped:
-                state.picksFiles = true
+                guard state.readsPhotos else {
+                    state.picksFiles = true
+                    return .none
+                }
+                state.addsContext = true
+                return .run { [photoLibrary] send in
+                    var access = photoLibrary.access()
+                    // Asked the first time + opens, not before.
+                    if access == .notAsked { access = await photoLibrary.requestAccess() }
+                    let recents = access == .allowed ? await photoLibrary.recents() : []
+                    await send(.photosLoaded(access: access, recents: recents, camera: await photoLibrary.hasCamera()))
+                }
+
+            case .photosLoaded(let access, let recents, let camera):
+                state.photosAccess = access
+                state.recentPhotos = recents
+                state.hasCamera = camera
                 return .none
 
+            case .recentPhotoTapped(let id):
+                if let attached = state.attachedRecents[id] {
+                    return remove(photo: attached, in: &state)
+                }
+                guard state.readsPhotos, !state.attaching else { return .none }
+                state.attaching = true
+                return .run { [photoLibrary, chatPhotos, chat = state.thread.id] send in
+                    do throws(PhotoLibraryError) {
+                        let data = try await photoLibrary.photo(id)
+                        do throws(ChatPhotoError) {
+                            await send(.photoAttached(try await chatPhotos.save(data, chat), recent: id))
+                        } catch {
+                            await send(.photoFailed(error.description))
+                        }
+                    } catch {
+                        await send(.photoFailed(error.description))
+                    }
+                }
+
+            case .photoPicked(let data?), .photoTaken(let data):
+                // The library and the camera cover +, so it closes for them.
+                state.addsContext = false
+                guard state.readsPhotos, !state.attaching else { return .none }
+                state.attaching = true
+                return .run { [chatPhotos, chat = state.thread.id] send in
+                    do throws(ChatPhotoError) {
+                        await send(.photoAttached(try await chatPhotos.save(data, chat), recent: nil))
+                    } catch {
+                        await send(.photoFailed(error.description))
+                    }
+                }
+
+            case .photoPicked(nil):
+                state.addsContext = false
+                state.problem = ChatPhotoError.unreadable.description
+                return .none
+
+            case .photoAttached(let photo, let recent):
+                state.attaching = false
+                state.pendingPhotos.append(photo)
+                state.photoFiles[photo.id] = chatPhotos.file(photo, state.thread.id)
+                if let recent { state.attachedRecents[recent] = photo.id }
+                return .none
+
+            case .photoFailed(let problem):
+                state.attaching = false
+                state.problem = problem
+                return .none
+
+            case .removePhotoTapped(let id):
+                return remove(photo: id, in: &state)
+
             case .filesPicked(.failure(let error)):
+                state.addsContext = false
                 state.picksFiles = false
                 state.problem = String(
                     localized: "Couldn't open that file: \(error.localizedDescription) Try picking it again.")
                 return .none
 
             case .filesPicked(.success(let urls)):
+                state.addsContext = false
                 state.picksFiles = false
-                guard !urls.isEmpty else { return .none }
-                return .run { [fileReader] send in
+                guard !urls.isEmpty, !state.attaching else { return .none }
+                state.attaching = true
+                let photos = state.readsPhotos
+                let model = state.current?.name ?? String(localized: "This chat's model")
+                return .run { [fileReader, chatPhotos, chat = state.thread.id] send in
                     var read: [ThreadFile] = []
+                    var kept: [ThreadPhoto] = []
                     var failures: [String] = []
                     for url in urls {
                         do {
                             switch try await fileReader.read(url) {
                             case .text(let file):
                                 read.append(ThreadFile(name: file.name, text: file.text))
+                            case .photo(let data) where photos:
+                                do throws(ChatPhotoError) {
+                                    kept.append(try await chatPhotos.save(data, chat))
+                                } catch {
+                                    failures.append(error.description)
+                                }
                             case .photo:
                                 failures.append(
                                     String(
                                         localized: """
-                                            \(url.lastPathComponent) is a photo, and this chat reads only text. \
-                                            Add a text, Markdown or PDF file instead.
+                                            \(url.lastPathComponent) is a photo, and \(model) reads only text. Pick \
+                                            a model that reads photos with the model button, or add a text, \
+                                            Markdown or PDF file.
                                             """))
                             }
                         } catch {
                             failures.append(String(describing: error))
                         }
                     }
-                    await send(.filesRead(read, failures: failures))
+                    await send(.filesRead(read, photos: kept, failures: failures))
                 }
 
-            case .filesRead(let files, let failures):
+            case .filesRead(let files, let photos, let failures):
+                state.attaching = false
                 state.pending += files
+                state.pendingPhotos += photos
+                for photo in photos { state.photoFiles[photo.id] = chatPhotos.file(photo, state.thread.id) }
                 state.problem = failures.isEmpty ? nil : failures.joined(separator: "\n")
                 return .none
 
@@ -412,15 +539,21 @@ public struct ChatThreadFeature {
         state.input = ""
         state.problem = nil
         var files = state.pending
+        var photos = state.pendingPhotos
         state.pending = []
+        state.pendingPhotos = []
+        state.attachedRecents = [:]
         if let editing = state.editing {
-            // The new message keeps the files sent with the old one.
+            // The new message keeps the photos and files sent with the old
+            // one.
             let old = (state.thread.messages + state.thread.hidden).first { $0.id == editing }
             files = (old?.files ?? []) + files
+            photos = (old?.photos ?? []) + photos
             state.thread.go(before: editing)
             state.editing = nil
         }
-        state.thread.append(ThreadMessage(id: uuid(), role: .person, text: text, at: now, files: files))
+        state.thread.append(
+            ThreadMessage(id: uuid(), role: .person, text: text, at: now, files: files, photos: photos))
         return .merge(changed(state), write(&state))
     }
 
@@ -431,8 +564,15 @@ public struct ChatThreadFeature {
         state.showsReplyThinking = false
         let model = chatRuntime.runtime(state.use, state.model)
         let tokens = state.model.thinkingLevel.tokens
+        // The newest photos sent, so the model can be asked about them
+        // again, for a model that reads them.
+        let sent = state.thread.messages.last { !$0.photos.isEmpty }
+        let photos =
+            model.inputs.contains(.image)
+            ? (sent?.photos ?? []).compactMap { chatPhotos.file($0, state.thread.id) } : []
         let turn = ReplyTurn(
-            thread: state.thread, instructions: state.instructions, budget: model.budget, thinkingTokens: tokens)
+            thread: state.thread, instructions: state.instructions, budget: model.budget, thinkingTokens: tokens,
+            photos: photos, photosFrom: sent?.id)
         return .run { send in
             let (updates, continuation) = AsyncStream.makeStream(
                 of: ReplyProgress.self, bufferingPolicy: .bufferingNewest(8))
@@ -459,6 +599,15 @@ public struct ChatThreadFeature {
         // Thinking open while the reply was written stays open.
         if shows, thinking != nil { state.shownThinking.insert(id) }
         return changed(state)
+    }
+
+    /// Takes `photo` off the next message, and deletes it.
+    private func remove(photo id: UUID, in state: inout State) -> Effect<Action> {
+        guard let index = state.pendingPhotos.firstIndex(where: { $0.id == id }) else { return .none }
+        let photo = state.pendingPhotos.remove(at: index)
+        state.photoFiles[id] = nil
+        state.attachedRecents = state.attachedRecents.filter { $0.value != id }
+        return .run { [chatPhotos, chat = state.thread.id] _ in await chatPhotos.remove(photo, chat) }
     }
 
     private func changed(_ state: State) -> Effect<Action> {

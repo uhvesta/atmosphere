@@ -30,21 +30,44 @@ struct ReplyTurn {
 
     /// The turn for `thread` on a model with `budget`: what the chat knows,
     /// then its newest messages that fit, and the files sent with the last.
-    /// The model thinks for `thinkingTokens` first, if set.
-    init(thread: ChatThread, instructions: String, budget: ContextBudget, thinkingTokens: Int?) {
-        // About three characters a token.
-        let room = max(400, budget.room * 3 - instructions.count - 200)
+    /// `photos` are the files of the photos sent with message `photosFrom`,
+    /// which the model sees; a message's other photos are only named. The
+    /// model thinks for `thinkingTokens` first, if set.
+    init(
+        thread: ChatThread, instructions: String, budget: ContextBudget, thinkingTokens: Int?, photos: [URL] = [],
+        photosFrom: UUID? = nil
+    ) {
+        // About three characters a token, less what the photos take.
+        let room = max(400, budget.room * 3 - instructions.count - 200 - photos.count * Self.photoCharacters)
         // The files sent with the new message, in at most half the room;
         // earlier ones were read with their own messages.
         let files = Self.files(of: thread.messages.last, fitting: room / 2)
         let transcript =
             thread.messages.newest(fitting: room - files.count)
-            .map { "\($0.role == .person ? "User" : "Assistant"): \($0.text)" }
+            .map { message in
+                let role = message.role == .person ? "User" : "Assistant"
+                return "\(role): \(message.text)\(Self.photos(of: message, seen: photos.isEmpty ? nil : photosFrom))"
+            }
             .joined(separator: "\n\n") + files
-        turn = ModelTurn(instructions: instructions, prompt: transcript)
+        turn = ModelTurn(
+            instructions: instructions, prompt: transcript,
+            attachments: photos.map { ModelAttachment(.image, file: $0) })
         if let thinkingTokens {
             turn.thinkingTokens = thinkingTokens
         }
+    }
+
+    /// What a photo takes of the model's window, in characters: models
+    /// read one as up to about 280 tokens.
+    static let photoCharacters = 280 * 3
+
+    /// Says `message` was sent with photos, and when they aren't the ones
+    /// the model sees, that it can't see them.
+    static func photos(of message: ThreadMessage, seen: UUID?) -> String {
+        let count = message.photos.count
+        guard count > 0 else { return "" }
+        let photos = count == 1 ? "a photo" : "\(count) photos"
+        return message.id == seen ? " [Sent with \(photos)]" : " [Sent with \(photos), which you can't see now]"
     }
 
     /// The text of the files sent with `message`, each after its name, cut

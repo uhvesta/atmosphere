@@ -1,9 +1,10 @@
 load("@lifr_identity//:defs.bzl", "LANGREADR_BUNDLE_ID", "TEAM_ID")
 load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 
-# Uploads the iPhone app to TestFlight from this Mac, with Lifr's script and
-# App Store Connect key (see //apps/lifr/tools/testflight):
-#   bazel run --config=xcode //apps/langreadr/tools/testflight:upload
+# Uploads LocalLogChatr's iPhone app to TestFlight from this Mac, in
+# LangReadr's App Store Connect record, with Lifr's script and key (see
+# //apps/lifr/tools/testflight):
+#   bazel run --config=xcode //apps/locallogchatr/tools/testflight:upload
 # See upload.sh for what each argument is. Bazel splits args at spaces like
 # a shell, so those with a space in them are quoted.
 sh_binary(
@@ -14,7 +15,7 @@ sh_binary(
         "$(rootpath //apps/lifr/tools/testflight:asc)",
         "LangReadr",
         "lifr_testflight",
-        "//apps/langreadr/app:ios",
+        "//apps/locallogchatr/app:ios",
         "langreadr",
         "'" + LANGREADR_BUNDLE_ID + "|LangReadr|LangReadr App Store|langreadr-app-store'",
     ],

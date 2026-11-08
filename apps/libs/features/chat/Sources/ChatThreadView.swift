@@ -3,6 +3,7 @@ import ChatKit
 import ChatUI
 import ComposableArchitecture
 import ModelsClient
+import PhotosUI
 import SwiftUI
 
 /// A chat, from its first message to the field: each message with what the
@@ -16,6 +17,9 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
     let extra: (ThreadMessage) -> Extra
 
     @State private var selecting: TextToSelect?
+    /// Whether the system's photo picker is open, from + on the Mac.
+    @State private var picksPhoto = false
+    @State private var photo: PhotosPickerItem?
 
     public init(
         store: StoreOf<ChatThreadFeature>, prompt: Text? = nil, @ViewBuilder empty: () -> Empty,
@@ -46,9 +50,18 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
             .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
             .sheet(item: $store.scope(state: \.modelSheet, action: \.modelSheet)) { ChatModelView(store: $0) }
             .fileImporter(
-                isPresented: $store.picksFiles, allowedContentTypes: PickedFile.types(photos: false),
+                isPresented: $store.picksFiles, allowedContentTypes: PickedFile.types(photos: store.readsPhotos),
                 allowsMultipleSelection: true
             ) { store.send(.filesPicked($0)) }
+            .photosPicker(
+                isPresented: $picksPhoto, selection: $photo, matching: .images, preferredItemEncoding: .compatible
+            )
+            .onChange(of: photo) { _, item in
+                guard let item else { return }
+                photo = nil
+                Task { store.send(.photoPicked(try? await item.loadTransferable(type: Data.self))) }
+            }
+            .modifier(AddContext(store: store))
             .background { findShortcut }
             .task { await store.send(.task).finish() }
     }
@@ -77,6 +90,9 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
                             toggleThinking: { store.send(.thinkingToggled(messageID: message.id)) },
                             select: { selecting = TextToSelect(text: $0) },
                             attachments: {
+                                ForEach(message.photos) { photo in
+                                    ChatPhoto(file: store.photoFiles[photo.id])
+                                }
                                 ForEach(message.files, id: \.self) { file in
                                     AttachmentChip(verbatim: file.name, systemImage: "doc.text")
                                 }
@@ -212,16 +228,47 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
             move: { store.send(.findMoved(by: $0)) }, close: { store.send(.findClosed) })
     }
 
-    /// The field, with the chat's model, the mic, + for files, and above it
-    /// what's being edited and attached.
-    private var composer: some View {
+    /// The field, with the chat's model, the mic and +, and above it what's
+    /// being edited and attached. For a model that reads photos, + opens a
+    /// sheet of what to add on the iPhone and a menu on the Mac; for one
+    /// that doesn't, it opens the file picker.
+    @ViewBuilder private var composer: some View {
+        #if os(macOS)
+            if store.readsPhotos {
+                ChatComposer(
+                    text: $store.input, prompt: prompt, model: modelPill, mic: mic, send: sendButton,
+                    submit: { store.send(.sendTapped) }, top: { composerTop }, attach: { attachMenu })
+            } else {
+                addingComposer
+            }
+        #else
+            addingComposer
+        #endif
+    }
+
+    /// What + offers on the Mac for a model that reads photos.
+    @ViewBuilder private var attachMenu: some View {
+        Button("Attach a Photo…", systemImage: "photo") { picksPhoto = true }
+            .disabled(store.attaching)
+        Button("Add Files…", systemImage: "doc") { store.picksFiles = true }
+            .disabled(store.attaching)
+    }
+
+    /// The field with a + that sends `addContextTapped`.
+    private var addingComposer: some View {
         ChatComposer(
-            text: $store.input, prompt: prompt, model: modelPill,
-            mic: MicButton(isOn: store.dictating, mode: .dictate) { store.send(.micTapped) },
-            send: SendButton(
-                canSend: store.canSend, canStop: store.reply != nil, send: { store.send(.sendTapped) },
-                stop: { store.send(.stopTapped) }),
+            text: $store.input, prompt: prompt, model: modelPill, mic: mic, send: sendButton,
             submit: { store.send(.sendTapped) }, add: { store.send(.addContextTapped) }, top: { composerTop })
+    }
+
+    private var mic: MicButton {
+        MicButton(isOn: store.dictating, mode: .dictate) { store.send(.micTapped) }
+    }
+
+    private var sendButton: SendButton {
+        SendButton(
+            canSend: store.canSend, canStop: store.reply != nil, send: { store.send(.sendTapped) },
+            stop: { store.send(.stopTapped) })
     }
 
     /// Opens what the chat runs on: its model and how long it thinks.
@@ -245,7 +292,7 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
             }
             .padding(.horizontal, 4)
         }
-        if !store.pending.isEmpty || store.dictating {
+        if !store.pending.isEmpty || !store.pendingPhotos.isEmpty || store.attaching || store.dictating {
             ScrollView(.horizontal) {
                 HStack(spacing: 8) {
                     if store.dictating {
@@ -253,15 +300,89 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
                             .foregroundStyle(.red)
                             .font(.callout)
                     }
+                    ForEach(store.pendingPhotos) { photo in
+                        ChatPhoto(file: store.photoFiles[photo.id], side: 56) {
+                            store.send(.removePhotoTapped(photo.id))
+                        }
+                    }
                     ForEach(Array(store.pending.enumerated()), id: \.offset) { index, file in
                         AttachmentChip(verbatim: file.name, systemImage: "doc.text") {
                             store.send(.removeFileTapped(index))
                         }
                     }
+                    if store.attaching {
+                        ProgressView().controlSize(.small)
+                    }
                 }
             }
             .scrollIndicators(.hidden)
         }
+    }
+}
+
+/// + on the iPhone: the camera and recent photos, for a model that reads
+/// them, and files, in a sheet.
+private struct AddContext: ViewModifier {
+    @Bindable var store: StoreOf<ChatThreadFeature>
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+            content.sheet(isPresented: $store.addsContext) {
+                AddContextSheet(
+                    photos: AddContextSheet.Photos(
+                        access: store.photosAccess, recents: store.recentPhotos,
+                        attached: Set(store.attachedRecents.keys), camera: store.hasCamera),
+                    fileTypes: PickedFile.types(photos: true),
+                    close: { store.addsContext = false },
+                    tapRecent: { store.send(.recentPhotoTapped($0)) },
+                    photoPicked: { store.send(.photoPicked($0)) },
+                    photoTaken: { store.send(.photoTaken($0)) },
+                    filesPicked: { store.send(.filesPicked($0)) })
+            }
+        #else
+            content
+        #endif
+    }
+}
+
+/// A photo sent in the chat or attached to the next message, with a button
+/// to take it off when `remove` is set. One whose file isn't on this device
+/// shows as a chip saying so.
+private struct ChatPhoto: View {
+    let file: URL?
+    var side: CGFloat = 160
+    var remove: (() -> Void)?
+
+    var body: some View {
+        if let image = file.flatMap(Self.image) {
+            image
+                .resizable()
+                .scaledToFill()
+                .frame(width: side, height: side)
+                .clipShape(.rect(cornerRadius: side > 80 ? 14 : 10))
+                .overlay(alignment: .topTrailing) {
+                    if let remove {
+                        Button("Remove", systemImage: "xmark.circle.fill", action: remove)
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.borderless)
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, .black.opacity(0.6))
+                            .padding(3)
+                    }
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel(Text("Photo"))
+        } else {
+            AttachmentChip("Photo", systemImage: "photo", elsewhere: true, remove: remove)
+        }
+    }
+
+    private static func image(_ file: URL) -> Image? {
+        #if canImport(UIKit)
+            UIImage(contentsOfFile: file.path).map { Image(uiImage: $0) }
+        #else
+            NSImage(contentsOf: file).map { Image(nsImage: $0) }
+        #endif
     }
 }
 

@@ -20,6 +20,7 @@ config_setting(
         "//apps/lifr/app:__pkg__",
         "//apps/lifr/cli:__pkg__",
         "//apps/lifr/widgets:__pkg__",
+        "//apps/locallogchatr/app:__pkg__",
         "@rules_apple//apple:__pkg__",
     ],
 )
@@ -46,6 +47,7 @@ config_setting(
         "//apps/langreadr/app:__pkg__",
         "//apps/lifr/app:__pkg__",
         "//apps/lifr/widgets:__pkg__",
+        "//apps/locallogchatr/app:__pkg__",
         "@rules_apple//apple:__pkg__",
     ],
 )

@@ -1,0 +1,27 @@
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# What LocalLogChatr asks a model to do, on the shared library from
+# //apps/libs/features/models/client, with an in-memory one for its tests
+# and previews. The app gives the live library.
+swift_library(
+    name = "models",
+    package_name = "locallogchatr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "LocalLogChatrModels",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/locallogchatr/app:__pkg__",
+        "//apps/locallogchatr/chats:__pkg__",
+    ],
+    deps = [
+        "//apps/libs/features/models/client",
+        "//apps/libs/kits/inference",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

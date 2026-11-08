@@ -1,0 +1,11 @@
+[button] "Chats" id: BackButton
+[button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
+[header] "New conversation"
+[image] "Sparkle"
+[text] "Ask anything"
+[text] "Replies come from the model on this device. Pick another from the model button by the field."
+[element] "" value: "Message"
+[button] "Add" hint: "Add photos or files"
+[button] "Model" value: "Apple Intelligence" hint: "Model, Thinking and Context Window"
+[button] "Dictate" hint: "Dictate, on this device"
+[button, notEnabled] "Send"

@@ -1,0 +1,7 @@
+[button] "Settings"
+[button] "New Chat"
+[header] "Chats"
+[text] "No chats"
+[text] "Chat with a model that runs on this device. Nothing you write leaves it."
+[button] "New Chat"
+[searchField] "Search chats" value: "Search chats"

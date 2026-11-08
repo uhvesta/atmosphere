@@ -10,8 +10,9 @@ load("//apps/lifr:signing.bzl", "lifr_entitlements")
 # downloaded from Hugging Face. Needs Xcode: build with `--config=xcode`.
 # Its bundle ID and team come from user.bazelrc, like Lifr's (see
 # apps/lifr/identity.bzl). Unsigned, it runs on simulators and this Mac;
-# --config=lifr_ios_device signs the iPhone app for a phone, and
-# //apps/langreadr/tools/testflight:upload for TestFlight.
+# --config=lifr_ios_device signs the iPhone app for a phone. Its TestFlight
+# uploads are paused: LocalLogChatr ships in its place, under its bundle ID
+# (see //apps/locallogchatr/tools/testflight).
 
 swift_library(
     name = "app_lib",

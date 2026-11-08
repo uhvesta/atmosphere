@@ -1,0 +1,40 @@
+[Window/StandardWindow] "New conversation"
+  [Outline] "Sidebar"
+    [Row/OutlineRow, selected] ""
+      [StaticText] "" value: "New conversation"
+      [StaticText] "" value: "Nov 3 at 2:00 AM"
+  [Image] "Sparkle" id: sparkles
+  [StaticText] "" value: "Ask anything"
+  [StaticText] "" value: "Replies come from the model on this device. Pick another from the model button by the field."
+  [TextField] ""
+  [Button] "Add" help: "Add photos or files" id: plus
+  [Button] "Model" value: "Qwen3.5 2B, Long" help: "Model, Thinking and Context Window"
+  [Button] "Dictate" help: "Dictate, on this device" id: mic
+  [Button, disabled] "Send" id: arrow.up
+  [Toolbar] ""
+    [Button] "New Chat"
+    [Button] "Settings"
+    [Button] "Hide Sidebar"
+    [MenuButton] "Context Window" help: "Nothing used yet"
+    [TextField/SearchField] ""
+      [Button] "Search"
+  [Button/CloseButton, disabled] ""
+  [Button/ZoomButton] ""
+  [Button/MinimizeButton] ""
+  [StaticText] "" value: "New conversation"
+  [Sheet] ""
+    [StaticText] "" value: "Select Model"
+    [Button] "Apple Intelligence, Default, Built in, nothing to download"
+    [Button] "Gemma 4 E4B, Reads photos and recordings"
+    [Button, selected] "Qwen3.5 2B, Small, thinks when asked"
+    [StaticText] "" value: "Only for this chat. Download more models in Settings › Models."
+    [MenuButton] "Thinking" value: "Long"
+    [MenuButton] "Thinking" value: "Long"
+    [MenuButton] "Thinking" value: "Long" id: chevron.up.chevron.down
+    [StaticText] "" value: "Long thinks up to four times as long before it answers, for harder questions."
+    [MenuButton] "Context Window" value: "8,192 tokens"
+    [MenuButton] "Context Window" value: "8,192 tokens"
+    [MenuButton] "Context Window" value: "8,192 tokens"
+    [MenuButton] "Context Window" value: "8,192 tokens" id: chevron.up.chevron.down
+    [StaticText] "" value: "A larger window remembers more of the chat and takes more memory."
+    [Button] "Close" id: xmark

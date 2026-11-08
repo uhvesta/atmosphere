@@ -18,6 +18,7 @@ swift_library(
     visibility = [
         "//apps/langreadr/app:__pkg__",
         "//apps/lifr/app:__pkg__",
+        "//apps/locallogchatr/app:__pkg__",
     ],
     deps = ["//apps/libs/kits/inference"],
 )
