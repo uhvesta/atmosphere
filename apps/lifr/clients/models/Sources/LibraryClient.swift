@@ -292,10 +292,10 @@ package final class InMemoryModelLibrary: Sendable {
         let gpu = candidate.options.backend == .gpu
         let fast = candidate.runtime == .liteRT ? 1.3 : 1.0
         let saved: Int64 =
-            switch candidate.options.kvCache ?? .q8_0 {
+            switch candidate.options.kvCache ?? .q8 {
             case .f16: 0
-            case .q8_0: 2 * gigabyte / 10
-            case .q4_0: 3 * gigabyte / 10
+            case .q8: 2 * gigabyte / 10
+            case .q4: 3 * gigabyte / 10
             }
         let measurement = ModelMeasurement(
             backend: candidate.options.backend, runtime: candidate.runtime, quantization: candidate.quantization,

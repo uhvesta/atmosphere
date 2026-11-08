@@ -16,13 +16,13 @@ final class EngineOptionsTests: XCTestCase {
     func testEverySettingLlamaHasIsValidTogether() {
         let options = EngineOptions(
             backend: .gpu, window: 4_096, cpuThreads: 4, gpuLayers: 20, batchTokens: 1_024, microBatchTokens: 256,
-            kvCache: .q4_0, flashAttention: true)
+            kvCache: .q4, flashAttention: true)
 
         XCTAssertNoThrow(try options.validate(for: gemma, on: .llama))
     }
 
     func testASettingTheEngineDoesntHaveIsRefused() {
-        let cache = EngineOptions(backend: .gpu, window: 8_192, kvCache: .q8_0)
+        let cache = EngineOptions(backend: .gpu, window: 8_192, kvCache: .q8)
         let threads = EngineOptions(backend: .gpu, window: 8_192, cpuThreads: 4)
 
         XCTAssertEqual(validation(cache, on: .liteRT), .unsupported(.kvCache, .liteRT))
@@ -71,7 +71,7 @@ final class EngineOptionsTests: XCTestCase {
 
     func testAQuantizedCacheNeedsFlashAttention() {
         XCTAssertEqual(
-            validation(EngineOptions(backend: .gpu, window: 8_192, kvCache: .q8_0, flashAttention: false), on: .llama),
+            validation(EngineOptions(backend: .gpu, window: 8_192, kvCache: .q8, flashAttention: false), on: .llama),
             .quantizedCacheNeedsFlashAttention)
         XCTAssertNoThrow(
             try EngineOptions(backend: .gpu, window: 8_192, kvCache: .f16, flashAttention: false)
@@ -95,7 +95,7 @@ final class TuneTests: XCTestCase {
 
     func testResultsAreKeptApartByDeviceSystemFormatAndOptions() {
         var cache = candidate
-        cache.options.kvCache = .q4_0
+        cache.options.kvCache = .q4
         var format = candidate
         format.runtime = .liteRT
         format.quantization = ""
@@ -113,7 +113,7 @@ final class TuneTests: XCTestCase {
         var options = candidate
         options.options = EngineOptions(
             backend: .gpu, window: 4_096, cpuThreads: 2, gpuLayers: 8, batchTokens: 256, microBatchTokens: 128,
-            kvCache: .q8_0, flashAttention: true)
+            kvCache: .q8, flashAttention: true)
         let key = options.key(device: "iPhone18,1", system: "27.0")
 
         XCTAssertEqual(try JSONDecoder().decode(TuneKey.self, from: JSONEncoder().encode(key)), key)
@@ -147,7 +147,7 @@ final class TuneTests: XCTestCase {
     func testTheReferenceIsTheMostPreciseSetup() {
         let gpu = TuneCandidate(
             model: "gemma-4-e2b", runtime: .llama, quantization: "Q4_K_M",
-            options: EngineOptions(backend: .gpu, window: 8_192, kvCache: .q8_0))
+            options: EngineOptions(backend: .gpu, window: 8_192, kvCache: .q8))
         var cpu = gpu
         cpu.options.backend = .cpu
         var full = gpu

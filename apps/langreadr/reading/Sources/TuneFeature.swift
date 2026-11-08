@@ -26,6 +26,8 @@ package struct TuneFeature {
         package var otherFormats: [ModelVariant] = []
         package var downloading: ModelVariant?
         package var downloadError: String?
+        /// The index of the candidate whose settings are open.
+        package var editing: Int?
 
         package init(model: ModelSpec) {
             self.model = model
@@ -64,6 +66,7 @@ package struct TuneFeature {
         /// The run is done: every candidate's outcome, with qualities.
         case finished([TuneOutcome])
         case stopTapped
+        case editTapped(Int?)
         case optionsChanged(EngineOptions, at: Int)
         case duplicateTapped(Int)
         case removeTapped(Int)
@@ -127,6 +130,10 @@ package struct TuneFeature {
                 state.running = nil
                 return .cancel(id: CancelID.run)
 
+            case .editTapped(let index):
+                state.editing = index.flatMap { state.candidates.indices.contains($0) ? $0 : nil }
+                return .none
+
             case .optionsChanged(let options, let index):
                 guard !state.isRunning, state.candidates.indices.contains(index) else { return .none }
                 state.candidates[index].options = options
@@ -135,6 +142,7 @@ package struct TuneFeature {
             case .duplicateTapped(let index):
                 guard !state.isRunning, state.candidates.indices.contains(index) else { return .none }
                 state.candidates.insert(state.candidates[index], at: index + 1)
+                state.editing = index + 1
                 return .none
 
             case .removeTapped(let index):
@@ -142,6 +150,7 @@ package struct TuneFeature {
                     return .none
                 }
                 state.candidates.remove(at: index)
+                state.editing = nil
                 return .none
 
             case .setupPicked(let setup, let purpose):

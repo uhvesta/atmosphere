@@ -41,9 +41,9 @@ public struct EngineOptions: Hashable, Codable, Sendable {
         /// 16 bits: the most precise, and the most memory.
         case f16
         /// 8 bits: half the memory, and close to f16's answers.
-        case q8_0
+        case q8 = "q8_0"
         /// 4 bits: a quarter, and answers that drift further.
-        case q4_0
+        case q4 = "q4_0"
     }
 
     /// The settings that are the engine's own, besides where it runs and
@@ -96,8 +96,8 @@ public struct EngineOptions: Hashable, Codable, Sendable {
         let cache: Int =
             switch kvCache {
             case .f16: 0
-            case .q8_0, nil: 1
-            case .q4_0: 2
+            case .q8, nil: 1
+            case .q4: 2
             }
         let activations = backend == .cpu || gpuActivations == .full ? 0 : 1
         return cache + activations

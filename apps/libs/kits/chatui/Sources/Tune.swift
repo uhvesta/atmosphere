@@ -19,12 +19,14 @@ public struct TuneScreenState {
     /// The format downloading now, and why the last one didn't.
     public var downloading: ModelVariant?
     public var downloadError: String?
+    /// The index of the candidate whose settings are open.
+    public var editing: Int?
 
     public init(
         model: ModelSpec, candidates: [TuneCandidate], results: [TuneCandidate: TuneResult],
         failures: [TuneCandidate: String], running: TuneCandidate?, isRunning: Bool,
         setups: [TunePurpose: TunedSetup], otherFormats: [ModelVariant], downloading: ModelVariant?,
-        downloadError: String?
+        downloadError: String?, editing: Int?
     ) {
         self.model = model
         self.candidates = candidates
@@ -36,6 +38,7 @@ public struct TuneScreenState {
         self.otherFormats = otherFormats
         self.downloading = downloading
         self.downloadError = downloadError
+        self.editing = editing
     }
 }
 
@@ -44,6 +47,8 @@ public struct TuneScreenActions {
     /// Runs every candidate, one after another.
     public var tune: () -> Void
     public var stop: () -> Void
+    /// Opens the settings of the candidate at an index, or closes them.
+    public var edit: (Int?) -> Void
     /// Sets the options of the candidate at an index.
     public var change: (EngineOptions, Int) -> Void
     /// Adds a copy of the candidate at an index, to change.
@@ -54,12 +59,14 @@ public struct TuneScreenActions {
     public var download: (ModelVariant) -> Void
 
     public init(
-        tune: @escaping () -> Void, stop: @escaping () -> Void, change: @escaping (EngineOptions, Int) -> Void,
+        tune: @escaping () -> Void, stop: @escaping () -> Void, edit: @escaping (Int?) -> Void,
+        change: @escaping (EngineOptions, Int) -> Void,
         duplicate: @escaping (Int) -> Void, remove: @escaping (Int) -> Void,
         pick: @escaping (TunedSetup?, TunePurpose) -> Void, download: @escaping (ModelVariant) -> Void
     ) {
         self.tune = tune
         self.stop = stop
+        self.edit = edit
         self.change = change
         self.duplicate = duplicate
         self.remove = remove
@@ -94,6 +101,7 @@ public struct TuneScreen: View {
                 formats
             }
         }
+        .formStyle(.grouped)
         .navigationTitle("Tune \(state.model.name)")
     }
 
@@ -125,7 +133,8 @@ public struct TuneScreen: View {
         guard let running = state.running, let index = state.candidates.firstIndex(of: running) else {
             return String(localized: "Measuring…")
         }
-        return String(localized: "Measuring \(index + 1) of \(state.candidates.count): \(running.title)")
+        return String(
+            localized: "Measuring \(index + 1) of \(state.candidates.count): \(running.title(in: state.model))")
     }
 
     // MARK: Results
@@ -136,7 +145,7 @@ public struct TuneScreen: View {
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
                     GridRow {
                         Text(verbatim: "")
-                        ForEach(state.candidates) { Text($0.title).bold() }
+                        ForEach(state.candidates) { Text($0.title(in: state.model)).bold() }
                     }
                     row("Reads") { Self.speed($0.measurement.prefillTokensPerSecond) }
                     row("Writes") { Self.speed($0.measurement.decodeTokensPerSecond) }
@@ -165,7 +174,7 @@ public struct TuneScreen: View {
             }
             ForEach(state.candidates.filter { state.failures[$0] != nil }) { candidate in
                 if let failure = state.failures[candidate] {
-                    Text("\(candidate.title): \(failure)").font(.caption).foregroundStyle(.red)
+                    Text("\(candidate.title(in: state.model)): \(failure)").font(.caption).foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -214,7 +223,7 @@ public struct TuneScreen: View {
                 ) {
                     Text("Automatic").tag(TunedSetup?.none)
                     ForEach(choices(for: purpose), id: \.self) { setup in
-                        Text(setup.title).tag(TunedSetup?.some(setup))
+                        Text(setup.title(in: state.model)).tag(TunedSetup?.some(setup))
                     }
                 }
                 .disabled(state.isRunning)
@@ -242,10 +251,23 @@ public struct TuneScreen: View {
     @ViewBuilder private var setups: some View {
         Section {
             ForEach(Array(state.candidates.enumerated()), id: \.offset) { index, candidate in
-                DisclosureGroup(candidate.title) {
-                    SetupEditor(
-                        candidate: candidate, model: state.model,
-                        change: { actions.change($0, index) })
+                let isOpen = state.editing == index
+                Button {
+                    actions.edit(isOpen ? nil : index)
+                } label: {
+                    HStack {
+                        Text(candidate.title(in: state.model)).foregroundStyle(Color.primary)
+                        Spacer()
+                        Image(systemName: isOpen ? "chevron.down" : "chevron.right")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .disabled(state.isRunning)
+                if isOpen {
+                    SetupEditor(candidate: candidate, model: state.model, change: { actions.change($0, index) })
+                        .disabled(state.isRunning)
                     HStack {
                         Button("Duplicate") { actions.duplicate(index) }
                         Spacer()
@@ -253,8 +275,8 @@ public struct TuneScreen: View {
                             .disabled(state.candidates.count < 2)
                     }
                     .buttonStyle(.borderless)
+                    .disabled(state.isRunning)
                 }
-                .disabled(state.isRunning)
             }
         } header: {
             Text("Setups")
@@ -403,15 +425,19 @@ private struct SetupEditor: View {
 }
 
 extension TuneCandidate {
-    /// Its engine and backend, and the settings it changes, such as
-    /// "llama.cpp · GPU · KV 4-bit".
-    public var title: String { setup.title }
+    /// Its engine and backend, and the settings it changes from `model`'s
+    /// own, such as "llama.cpp · GPU · KV 4-bit".
+    public func title(in model: ModelSpec) -> String { setup.title(in: model) }
 }
 
 extension TunedSetup {
-    /// Its engine and backend, and the settings it changes.
-    public var title: String {
+    /// Its engine and backend, and the settings it changes from `model`'s
+    /// own.
+    public func title(in model: ModelSpec) -> String {
         var parts = [runtime.name, options.backend.title]
+        if options.window != model.contextTokens {
+            parts.append(String(localized: "\(options.window / 1_024)K tokens"))
+        }
         if let threads = options.cpuThreads { parts.append(String(localized: "\(threads) threads")) }
         if let layers = options.gpuLayers { parts.append(String(localized: "\(layers) GPU layers")) }
         if let batch = options.batchTokens { parts.append(String(localized: "batch \(batch)")) }
@@ -430,8 +456,8 @@ extension EngineOptions.KVCache {
     public var title: String {
         switch self {
         case .f16: String(localized: "16-bit")
-        case .q8_0: String(localized: "8-bit")
-        case .q4_0: String(localized: "4-bit")
+        case .q8: String(localized: "8-bit")
+        case .q4: String(localized: "4-bit")
         }
     }
 }

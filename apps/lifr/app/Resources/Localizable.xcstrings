@@ -44,6 +44,9 @@
     "%@ deleted it, and it was changed here." : {
 
     },
+    "%@ has no settings of its own to change." : {
+
+    },
     "%@ is %@" : {
       "localizations" : {
         "en" : {
@@ -95,6 +98,16 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "%1$@ of %2$@"
+          }
+        }
+      }
+    },
+    "%@ on %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ on %2$@"
           }
         }
       }
@@ -168,6 +181,9 @@
       }
     },
     "%lld" : {
+
+    },
+    "%lld GPU layers" : {
 
     },
     "%lld Sub task(s) are still open" : {
@@ -247,6 +263,9 @@
     "%lld tasks are due today." : {
 
     },
+    "%lld threads" : {
+
+    },
     "%lld/%lld" : {
       "localizations" : {
         "en" : {
@@ -270,6 +289,27 @@
 
     },
     "1 task is due today." : {
+
+    },
+    "16 bits" : {
+
+    },
+    "16-bit" : {
+
+    },
+    "32 bits" : {
+
+    },
+    "32-bit GPU" : {
+
+    },
+    "4-bit" : {
+
+    },
+    "8-bit" : {
+
+    },
+    "A KV cache at 8 or 4 bits keeps less memory for each token read, and its answers drift further from 16 bits'." : {
 
     },
     "A closed task can't keep open Sub tasks, so they'll be marked Won't Do too." : {
@@ -502,6 +542,9 @@
     "Attachment" : {
 
     },
+    "Automatic" : {
+
+    },
     "Automatic (%@)" : {
 
     },
@@ -526,6 +569,9 @@
     "Back to Latest" : {
 
     },
+    "Batch" : {
+
+    },
     "Battery per token" : {
 
     },
@@ -545,6 +591,12 @@
 
     },
     "CPU" : {
+
+    },
+    "CPU per token" : {
+
+    },
+    "CPU threads" : {
 
     },
     "CPU time is the CPU's seconds, across its cores." : {
@@ -581,6 +633,9 @@
 
     },
     "Changes save at once, and each can be undone from the conversation or Activity." : {
+
+    },
+    "Chats want fast writing; quick tasks, such as naming a conversation, want the first word soon. Automatic runs it where it measured fastest." : {
 
     },
     "Checking" : {
@@ -838,6 +893,9 @@
     "Done" : {
 
     },
+    "Download" : {
+
+    },
     "Download model" : {
 
     },
@@ -865,6 +923,9 @@
     "Due" : {
 
     },
+    "Duplicate" : {
+
+    },
     "Each piece of text from your tasks and chats becomes a placeholder, and screenshots are left out. What you write above is kept." : {
 
     },
@@ -889,6 +950,9 @@
     "Editing your message. Sending it writes the reply again." : {
 
     },
+    "Engine's own" : {
+
+    },
     "Every Friday, show what I finished and what's overdue" : {
 
     },
@@ -908,6 +972,9 @@
 
     },
     "Expires after" : {
+
+    },
+    "Failed" : {
 
     },
     "Filters" : {
@@ -943,6 +1010,18 @@
     "First word" : {
 
     },
+    "Flash attention" : {
+
+    },
+    "Flash attention works out attention in one step, which takes less memory; a cache under 16 bits needs it. Layers not on the GPU run on the CPU." : {
+
+    },
+    "For chats" : {
+
+    },
+    "For quick tasks" : {
+
+    },
     "Forget Summary" : {
 
     },
@@ -959,6 +1038,12 @@
 
     },
     "GPU" : {
+
+    },
+    "GPU layers" : {
+
+    },
+    "GPU precision" : {
 
     },
     "GPU time per token" : {
@@ -1067,6 +1152,12 @@
 
     },
     "KEY" : {
+
+    },
+    "KV %@" : {
+
+    },
+    "KV cache" : {
 
     },
     "Keep" : {
@@ -1248,13 +1339,35 @@
     "Marks a task in Lifr as done." : {
 
     },
+    "Matches" : {
+
+    },
+    "Matches is how many of its words, in order, match the most precise setup's on four short prompts. That's the most precise setup on this device, not the full-size model, which isn't downloaded: a cheap check that a setup doesn't garble, not a score of how good it is." : {
+
+    },
     "Measure again" : {
 
     },
     "Measure on this device" : {
 
     },
+    "Measured" : {
+
+    },
+    "Measuring %lld of %lld: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Measuring %1$lld of %2$lld: %3$@"
+          }
+        }
+      }
+    },
     "Measuring, about a minute" : {
+
+    },
+    "Measuring…" : {
 
     },
     "Medium" : {
@@ -1264,6 +1377,9 @@
 
     },
     "Message" : {
+
+    },
+    "Micro-batch" : {
 
     },
     "Model" : {
@@ -1513,6 +1629,9 @@
     "One field was changed again since, so it stays as it is now." : {
 
     },
+    "Only downloaded formats are compared. Download one to add it; nothing downloads until you tap." : {
+
+    },
     "Only for this chat. Download more models in Settings › Models." : {
 
     },
@@ -1523,6 +1642,9 @@
 
     },
     "Opens the filters" : {
+
+    },
+    "Other formats" : {
 
     },
     "Overdue" : {
@@ -1545,6 +1667,9 @@
 
     },
     "Pause" : {
+
+    },
+    "Peak memory" : {
 
     },
     "Photo" : {
@@ -1622,6 +1747,9 @@
     "Reads" : {
 
     },
+    "Reads is how fast it takes in what's sent (prefill); writes is how fast it answers (decode). First word is the wait before the answer starts." : {
+
+    },
     "Recommended" : {
 
     },
@@ -1647,6 +1775,9 @@
 
     },
     "Redraft" : {
+
+    },
+    "Reference" : {
 
     },
     "Related" : {
@@ -1778,6 +1909,9 @@
     "Revoke %@?" : {
 
     },
+    "Runs each setup below on a short test, one after another: about a minute each. The model that's loaded now is unloaded first." : {
+
+    },
     "Runs on" : {
 
     },
@@ -1856,6 +1990,9 @@
 
     },
     "Settings" : {
+
+    },
+    "Setups" : {
 
     },
     "Share" : {
@@ -2170,6 +2307,15 @@
     "Try other words, or clear the filters." : {
 
     },
+    "Tune %@" : {
+
+    },
+    "Tune again" : {
+
+    },
+    "Tune for this device" : {
+
+    },
     "Turn a brain dump into a plan." : {
 
     },
@@ -2222,6 +2368,9 @@
 
     },
     "Urgent" : {
+
+    },
+    "Use" : {
 
     },
     "Use Automatically" : {
@@ -2284,6 +2433,9 @@
     "Which task did you finish?" : {
 
     },
+    "Window" : {
+
+    },
     "Won't Do" : {
 
     },
@@ -2329,10 +2481,22 @@
     "another device" : {
 
     },
+    "batch %lld" : {
+
+    },
+    "flash off" : {
+
+    },
+    "flash on" : {
+
+    },
     "iCloud isn't available right now" : {
 
     },
     "iCloud lost the records twice" : {
+
+    },
+    "micro-batch %lld" : {
 
     },
     "none" : {

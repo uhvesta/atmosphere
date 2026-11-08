@@ -65,4 +65,39 @@ final class MacFlowSnapshotTests: XCTestCase {
         await flow.step("chat-model-picked")
         flow.finish()
     }
+
+    /// The Tune screen for the downloaded model, as Settings › Models opens
+    /// it: its setups, its other format downloaded on tap, every setup
+    /// measured side by side, then one picked for quick tasks and its
+    /// window made smaller.
+    func testTuning() async throws {
+        let library = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small])
+        let tune = Store(initialState: TuneFeature.State(model: ModelCatalog.qwen35Small)) {
+            TuneFeature()
+        } withDependencies: {
+            $0.models = library.client
+            $0.date.now = Date(timeIntervalSince1970: 1_793_700_000)
+        }
+        let state: () -> TuneFeature.State? = { tune.state }
+        let flow = FlowRecorder("tuning", NavigationStack { TuneView(store: tune) })
+        try await Sample.waitFor { state()?.candidates.isEmpty == false }
+        await flow.step("opened")
+        let other = try XCTUnwrap(state()?.otherFormats.first)
+        let before = state()?.candidates.count ?? 0
+        tune.send(.downloadTapped(other))
+        try await Sample.waitFor { (state()?.candidates.count ?? 0) > before }
+        await flow.step("downloaded")
+        tune.send(.tuneTapped)
+        try await Sample.waitFor { state()?.isRunning == false && state()?.results.isEmpty == false }
+        await flow.step("tuned")
+        let candidates = state()?.candidates ?? []
+        let last = candidates.count - 1
+        tune.send(.setupPicked(candidates[last].setup, for: .quick))
+        tune.send(.editTapped(last))
+        var options = candidates[last].options
+        options.window = try XCTUnwrap(ModelCatalog.qwen35Small.windows.first)
+        tune.send(.optionsChanged(options, at: last))
+        await flow.step("edited")
+        flow.finish()
+    }
 }

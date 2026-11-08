@@ -78,4 +78,45 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         await flow.step("chat-model-picked")
         flow.finish()
     }
+
+    /// Tuning the downloaded model from Settings › Models: its setups before
+    /// anything runs, its other format downloaded on tap, every setup
+    /// measured side by side, then one picked for quick tasks and its
+    /// window made smaller.
+    func testTuning() async throws {
+        let library = Sample.library()
+        let flow = FlowRecorder("tuning", LangReadrView(store: library))
+        func send(_ action: TuneFeature.Action) {
+            library.send(.settings(.presented(.models(.tune(.presented(action))))))
+        }
+        library.send(.settingsTapped)
+        try await Sample.waitFor { library.settings != nil }
+        await flow.step("settings")
+        flow.tap("Models")
+        try await Sample.waitFor { library.settings?.models.choices.count == 2 }
+        await flow.step("models")
+        library.send(.settings(.presented(.models(.tuneTapped(ModelCatalog.qwen35Small.id)))))
+        try await Sample.waitFor { library.settings?.models.tune?.candidates.isEmpty == false }
+        await flow.step("opened")
+        let other = try XCTUnwrap(library.settings?.models.tune?.otherFormats.first)
+        let before = library.settings?.models.tune?.candidates.count ?? 0
+        send(.downloadTapped(other))
+        try await Sample.waitFor { (library.settings?.models.tune?.candidates.count ?? 0) > before }
+        await flow.step("downloaded")
+        send(.tuneTapped)
+        try await Sample.waitFor {
+            library.settings?.models.tune?.isRunning == false && library.settings?.models.tune?.results.isEmpty == false
+        }
+        await flow.step("tuned")
+        let candidates = library.settings?.models.tune?.candidates ?? []
+        let last = candidates.count - 1
+        send(.setupPicked(candidates[last].setup, for: .quick))
+        send(.editTapped(last))
+        var options = candidates[last].options
+        options.window = try XCTUnwrap(ModelCatalog.qwen35Small.windows.first)
+        send(.optionsChanged(options, at: last))
+        flow.scrollToEnd()
+        await flow.step("edited")
+        flow.finish()
+    }
 }

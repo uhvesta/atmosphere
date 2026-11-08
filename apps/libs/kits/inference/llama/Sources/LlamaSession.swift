@@ -145,10 +145,10 @@ final class LlamaSession: @unchecked Sendable {
         let flash = options?.flashAttention ?? true
         contextParams.flash_attn_type = flash ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_DISABLED
         let cache: ggml_type =
-            switch options?.kvCache ?? .q8_0 {
+            switch options?.kvCache ?? .q8 {
             case .f16: GGML_TYPE_F16
-            case .q8_0: GGML_TYPE_Q8_0
-            case .q4_0: GGML_TYPE_Q4_0
+            case .q8: GGML_TYPE_Q8_0
+            case .q4: GGML_TYPE_Q4_0
             }
         contextParams.type_k = cache
         contextParams.type_v = cache

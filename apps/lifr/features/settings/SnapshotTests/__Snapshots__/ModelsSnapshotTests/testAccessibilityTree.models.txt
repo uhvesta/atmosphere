@@ -35,3 +35,4 @@
 [text] "0 ms"
 [text] "CPU time is the CPU's seconds, across its cores. Battery is what the CPU drew: the system doesn't tell an app what the GPU drew, so its busy time is shown instead."
 [button] "Measure again"
+[button] "Tune for this device…"

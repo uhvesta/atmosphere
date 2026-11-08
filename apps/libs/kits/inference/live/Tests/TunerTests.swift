@@ -68,7 +68,7 @@ final class TunerTests: XCTestCase {
     }
 
     func testAnswersAreScoredAgainstTheMostPreciseCandidates() async throws {
-        let candidates = [candidate(.llama, .gpu, kvCache: .q4_0), candidate(.llama, .cpu, kvCache: .f16)]
+        let candidates = [candidate(.llama, .gpu, kvCache: .q4), candidate(.llama, .cpu, kvCache: .f16)]
         let bench = bench(answers: { _, backend in
             backend == .cpu ? "ice is less dense than water" : "ice is less dense than stone"
         })
@@ -100,8 +100,8 @@ final class TunerTests: XCTestCase {
         let candidates = [candidate(.liteRT, .gpu), candidate(.llama, .gpu), candidate(.llama, .cpu)]
         let reported = Locked<[TuneOutcome]>([])
 
-        let outcomes = await bench(failing: ["llama gpu"]).tune(candidates, of: installed, host: host) {
-            _, outcome in reported.withValue { $0.append(outcome) }
+        let outcomes = await bench(failing: ["llama gpu"]).tune(candidates, of: installed, host: host) { _, outcome in
+            reported.withValue { $0.append(outcome) }
         }
 
         XCTAssertNotNil(outcomes[0].result)
@@ -113,7 +113,7 @@ final class TunerTests: XCTestCase {
 
     func testOptionsTheEngineCantTakeFailWithoutRunningIt() async throws {
         var cache = candidate(.liteRT, .gpu)
-        cache.options.kvCache = .q8_0
+        cache.options.kvCache = .q8
         var window = candidate(.llama, .gpu)
         window.options.window = 5_000
         let measured = Locked<[String]>([])

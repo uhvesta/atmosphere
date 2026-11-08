@@ -13,6 +13,7 @@ import LifrModelsClient
 import LifrRemindersClient
 import LifrRoot
 import LifrSessionClient
+import LifrSettings
 import LifrShortcuts
 import LifrStoreClient
 import LifrSyncClient
@@ -685,6 +686,37 @@ final class MacFlowSnapshotTests: XCTestCase {
         await flow.step("instructions-saved")
         store.send(.settings(.instructions(.presented(.useTapped(nil)))))
         await flow.step("instructions-default")
+        flow.finish()
+    }
+
+    /// Tuning Gemma 4 E2B for this Mac from Models in the Settings window:
+    /// its setups, the GGUF downloaded on tap, both formats measured side by
+    /// side, then one picked for quick tasks and its cache made smaller,
+    /// which flash attention turned off doesn't allow.
+    func testTuning() async throws {
+        let (store, flow) = app("tuning", settings: true)
+        let gemma = ModelCatalog.gemma4E2B
+        let gguf = try XCTUnwrap(gemma.variants.first { $0.runtime == .llama })
+        func tune(_ action: TuneFeature.Action) -> RootFeature.Action {
+            .settings(.models(.presented(.tune(.presented(action)))))
+        }
+        store.send(.settings(.modelsTapped))
+        await flow.step("models")
+        store.send(.settings(.models(.presented(.tuneTapped(gemma.id)))))
+        await flow.step("opened")
+        store.send(tune(.downloadTapped(gguf)))
+        await flow.step("downloaded")
+        store.send(tune(.tuneTapped))
+        await flow.step("tuned")
+        let candidates = store.settings.models?.tune?.candidates ?? []
+        let llama = try XCTUnwrap(candidates.firstIndex { $0.runtime == .llama && $0.options.backend == .gpu })
+        store.send(tune(.setupPicked(candidates[llama].setup, for: .quick)))
+        store.send(tune(.editTapped(llama)))
+        var options = candidates[llama].options
+        options.kvCache = .q4
+        options.flashAttention = false
+        store.send(tune(.optionsChanged(options, at: llama)))
+        await flow.step("edited")
         flow.finish()
     }
 

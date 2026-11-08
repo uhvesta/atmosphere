@@ -32,3 +32,4 @@
 [button] "Runs on, Automatic (GPU)"
 [text] "Runs on the GPU, where it does best on most devices. Measure it to see this one."
 [button] "Measure on this device"
+[button] "Tune for this device…"

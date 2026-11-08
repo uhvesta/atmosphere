@@ -127,6 +127,7 @@ final class TuneFeatureTests: XCTestCase {
         var options = store.state.candidates[0].options
         options.cpuThreads = 4
         await store.send(.duplicateTapped(0))
+        XCTAssertEqual(store.state.editing, 1)
         await store.send(.optionsChanged(options, at: 1))
 
         XCTAssertEqual(store.state.candidates.count, 3)
