@@ -903,7 +903,7 @@
     "@@rules_swift_package_manager+//:extensions.bzl%swift_deps": {
       "general": {
         "bzlTransitiveDigest": "OU0Ca8wMfwZ7vxx53phj0q1UIfrqYE54ez+UwvXFS+I=",
-        "usagesDigest": "4vEmFdprl9rU/AAvG2ptX3mISty8LRZDyHzg0FIqYtU=",
+        "usagesDigest": "tBeo0Mw0yFjzQe2n13xxw2UcVLyoRUMcf/5AYRhfQro=",
         "recordedInputs": [
           "REPO_MAPPING:rules_swift_package_manager+,bazel_skylib bazel_skylib+",
           "REPO_MAPPING:rules_swift_package_manager+,bazel_tools bazel_tools",
@@ -998,7 +998,20 @@
               "env": {},
               "env_inherit": [],
               "cached_json_directory": "",
+              "init_submodules": false,
               "make_files_read_only": false,
+              "recursive_init_submodules": true,
+              "patch_args": [
+                "-p0"
+              ],
+              "patch_cmds": [
+                "cp Libraries/MLXCXGrammar/xgrammar/cpp/grammar_functor.cc Libraries/MLXCXGrammar/xgrammar/cpp/grammar_functor_source.h",
+                "perl -pi -e 's|grammar_functor\\.cc\"|grammar_functor_source.h\"|' Libraries/MLXCXGrammar/grammar_functor_wrapper.cc"
+              ],
+              "patch_cmds_win": [],
+              "patch_tool": "",
+              "patches": [],
+              "publicly_expose_all_targets": false,
               "replace_scm_with_registry": false,
               "target_deps": {},
               "module_aliases": {},

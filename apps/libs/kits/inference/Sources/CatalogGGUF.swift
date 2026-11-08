@@ -11,9 +11,9 @@ extension ModelCatalog {
         granite42Large,
     ]
 
-    /// Alibaba's Qwen3.5 0.8B, the smallest that thinks when asked. A
-    /// quarter of its layers attend; the rest keep a fixed state.
-    public static let qwen35Tiny = ggufModel(
+    /// Alibaba's Qwen3.5 0.8B in GGUF, where MLX can't run it. A quarter
+    /// of its layers attend; the rest keep a fixed state.
+    static let qwen35TinyGGUF = ggufModel(
         id: "qwen3.5-0.8b", name: "Qwen3.5 0.8B", summary: "Tiny and quick, thinks when asked",
         repo: "unsloth/Qwen3.5-0.8B-GGUF", commit: "6ab461498e2023f6e3c1baea90a8f0fe38ab64d0",
         file: ModelFile(
@@ -21,8 +21,8 @@ extension ModelCatalog {
             digest: .sha256("bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517")),
         bytesPerToken: 6_528, license: "Apache 2.0", profile: qwen35)
 
-    /// Qwen3.5 2B.
-    public static let qwen35Small = ggufModel(
+    /// Qwen3.5 2B in GGUF.
+    static let qwen35SmallGGUF = ggufModel(
         id: "qwen3.5-2b", name: "Qwen3.5 2B", summary: "Small, thinks when asked",
         repo: "unsloth/Qwen3.5-2B-GGUF", commit: "f6d5376be1edb4d416d56da11e5397a961aca8ae",
         file: ModelFile(
@@ -30,8 +30,8 @@ extension ModelCatalog {
             digest: .sha256("aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223")),
         bytesPerToken: 6_528, license: "Apache 2.0", profile: qwen35)
 
-    /// Qwen3.5 4B.
-    public static let qwen35Medium = ggufModel(
+    /// Qwen3.5 4B in GGUF.
+    static let qwen35MediumGGUF = ggufModel(
         id: "qwen3.5-4b", name: "Qwen3.5 4B", summary: "Careful, thinks when asked",
         repo: "unsloth/Qwen3.5-4B-GGUF", commit: "e87f176479d0855a907a41277aca2f8ee7a09523",
         file: ModelFile(
@@ -39,8 +39,8 @@ extension ModelCatalog {
             digest: .sha256("00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4")),
         bytesPerToken: 17_408, license: "Apache 2.0", profile: qwen35)
 
-    /// Qwen3.5 9B, which fits a Mac or an iPhone with 12 GB.
-    public static let qwen35Large = ggufModel(
+    /// Qwen3.5 9B in GGUF.
+    static let qwen35LargeGGUF = ggufModel(
         id: "qwen3.5-9b", name: "Qwen3.5 9B", summary: "The largest, for a Mac",
         repo: "unsloth/Qwen3.5-9B-GGUF", commit: "3885219b6810b007914f3a7950a8d1b469d598a5",
         file: ModelFile(

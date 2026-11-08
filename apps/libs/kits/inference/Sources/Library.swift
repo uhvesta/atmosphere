@@ -24,6 +24,8 @@ public enum RuntimeKind: String, Hashable, Codable, Sendable, CaseIterable {
     case liteRT
     /// llama.cpp, for `.gguf` files.
     case llama
+    /// MLX, for a folder of `.safetensors` in MLX's format.
+    case mlx
 
     /// Its name, for the person.
     public var name: String {
@@ -31,6 +33,17 @@ public enum RuntimeKind: String, Hashable, Codable, Sendable, CaseIterable {
         case .apple: "Apple Intelligence"
         case .liteRT: "LiteRT-LM"
         case .llama: "llama.cpp"
+        case .mlx: "MLX"
+        }
+    }
+
+    /// Where it runs models. MLX runs only on the GPU: the CPU runs some
+    /// models' layers, such as Qwen3.5's linear attention, step by step,
+    /// hundreds of times slower.
+    public var backends: [ModelBackend] {
+        switch self {
+        case .mlx: [.gpu]
+        case .apple, .liteRT, .llama: [.gpu, .cpu]
         }
     }
 }

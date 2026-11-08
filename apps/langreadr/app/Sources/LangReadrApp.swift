@@ -11,6 +11,9 @@ import SwiftUI
 #if canImport(InferenceKitLlama)
     import InferenceKitLlama
 #endif
+#if canImport(InferenceKitMLX)
+    import InferenceKitMLX
+#endif
 
 /// LangReadr: read what you import in the language you're learning, with
 /// a model on the device to translate it and answer questions about it.
@@ -58,6 +61,14 @@ private enum Models {
             let measure: Bench.Measure = LlamaEngine.measure
             loaders[.llama] = llama
             measures[.llama] = measure
+        #endif
+        #if canImport(InferenceKitMLX)
+            let mlx: ModelHost.Loader = { model, backend async throws(ModelRuntimeError) in
+                try await MLXEngine.load(model, on: backend)
+            }
+            let measureMLX: Bench.Measure = MLXEngine.measure
+            loaders[.mlx] = mlx
+            measures[.mlx] = measureMLX
         #endif
         // A model stops when LangReadr leaves the screen, and carries on
         // when it's back.

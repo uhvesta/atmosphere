@@ -86,7 +86,7 @@ public struct ModelRuntimes<Use: ModelUseCase>: Sendable {
         }
         switch model.spec.runtime {
         case .apple: return AppleRuntime()
-        case .liteRT, .llama: return EngineRuntime(model: model, host: host)
+        case .liteRT, .llama, .mlx: return EngineRuntime(model: model, host: host)
         }
     }
 
@@ -110,7 +110,7 @@ public struct ModelRuntimes<Use: ModelUseCase>: Sendable {
         guard let bench, let model = library.installed().first(where: { $0.id == id }) else {
             throw .unavailable(.notDownloaded)
         }
-        let backends = [ModelBackend.gpu, .cpu].filter { host.fits(model, on: $0) }
+        let backends = model.spec.runtime.backends.filter { host.fits(model, on: $0) }
         guard !backends.isEmpty else {
             let needed = MemoryPlan.needed(model, on: .cpu)
             let available = MemoryPlan.available()

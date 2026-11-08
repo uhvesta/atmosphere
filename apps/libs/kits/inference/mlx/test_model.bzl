@@ -1,7 +1,8 @@
-"""A real MLX model for the MLX spike: Qwen3.5 0.8B at 4 bits.
+"""A real MLX model for the smoke test: Qwen3.5 0.8B at 4 bits.
 
 From mlx-community, pinned to one commit and each file's SHA-256. It's
-630 MB, fetched only when the spike's test builds.
+630 MB, fetched only when the smoke test builds. The catalog pins the
+same files, which the test checks.
 """
 
 QWEN35_TINY_MLX = struct(

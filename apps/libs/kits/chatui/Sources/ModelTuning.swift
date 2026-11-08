@@ -28,7 +28,7 @@ public struct ModelTuningView: View {
         VStack(alignment: .leading, spacing: 8) {
             Picker("Runs on", selection: Binding(get: { tuning.picked }, set: pick)) {
                 Text("Automatic (\(tuning.plan.backend.title))").tag(ModelBackend?.none)
-                ForEach([ModelBackend.gpu, .cpu], id: \.self) { backend in
+                ForEach(tuning.backends, id: \.self) { backend in
                     Text(backend.title).tag(ModelBackend?.some(backend))
                 }
             }
@@ -79,7 +79,7 @@ public struct ModelTuningView: View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
             GridRow {
                 Text(verbatim: "")
-                ForEach([ModelBackend.gpu, .cpu], id: \.self) { Text($0.title).bold() }
+                ForEach(tuning.backends, id: \.self) { Text($0.title).bold() }
             }
             row("Writes") { Self.speed($0.decodeTokensPerSecond) }
             row("Reads") { Self.speed($0.prefillTokensPerSecond) }
@@ -112,7 +112,7 @@ public struct ModelTuningView: View {
     private func row(_ title: LocalizedStringKey, _ value: @escaping (ModelMeasurement) -> String) -> some View {
         GridRow {
             Text(title).foregroundStyle(.secondary)
-            ForEach([ModelBackend.gpu, .cpu], id: \.self) { backend in
+            ForEach(tuning.backends, id: \.self) { backend in
                 Text(tuning.measurement(on: backend).map(value) ?? "–")
             }
         }

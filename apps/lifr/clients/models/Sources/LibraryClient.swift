@@ -220,7 +220,8 @@ package final class InMemoryModelLibrary: Sendable {
         let plan = ModelPlanner.plan(
             model, picked: model.pickedBackend, measurements: here, device: device.model, system: device.system,
             fits: { _ in true })
-        return ModelTuning(plan: plan, picked: model.pickedBackend, measurements: here)
+        return ModelTuning(
+            plan: plan, picked: model.pickedBackend, measurements: here, backends: model.spec.runtime.backends)
     }
 
     private static func installed(_ spec: ModelSpec, at now: Date) -> InstalledModel {

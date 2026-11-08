@@ -1,12 +1,37 @@
-load("@rules_apple//apple:ios.bzl", "ios_build_test")
 load("@rules_apple//apple:macos.bzl", "macos_unit_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 load(":test_model.bzl", "QWEN35_TINY_MLX")
 
-# The MLX spike: can Bazel build MLX Swift LM, its Metal kernels included,
-# and does it run a real model here? Nothing in the apps uses it yet.
+# Downloaded models in MLX's format, run by MLX Swift LM on the GPU or the
+# CPU, with the Metal kernels it looks up in its bundle. MLX has no build
+# for the iOS Simulator's GPU, so this builds for devices and Macs, and
+# the app leaves it out of Simulator builds. It needs a model, so it's
+# checked by building and by hand with :smoke_test; what runs a turn is in
+# //apps/libs/kits/inference/live, tested with a fake engine.
+swift_library(
+    name = "mlx",
+    package_name = "inference",
+    srcs = glob(["Sources/*.swift"]),
+    data = ["@mlx_kernels//:bundle"],
+    module_name = "InferenceKitMLX",
+    target_compatible_with = ["//bazel/xcode"] + select({
+        "@apple_support//constraints:simulator": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    visibility = ["//apps:__subpackages__"],
+    deps = [
+        "//apps/libs/kits/inference",
+        "@swiftpkg_mlx_swift//:MLX",
+        "@swiftpkg_mlx_swift_lm//:MLXGuidedGeneration",
+        "@swiftpkg_mlx_swift_lm//:MLXLLM",
+        "@swiftpkg_mlx_swift_lm//:MLXLMCommon",
+        "@swiftpkg_swift_transformers//:Tokenizers",
+    ],
+)
 
-# Where the spike's model is, for the test to find it.
+# Where the smoke test's model is, and the SHA-256s Bazel checked it
+# against, for the test to find it and check the catalog pins the same
+# files.
 genrule(
     name = "test_model_swift",
     testonly = True,
@@ -15,27 +40,36 @@ genrule(
     cmd = """cat > $@ <<'EOF'
 enum TestModel {{
     static let config = "$(rlocationpath @mlx_test_model//:{directory}/config.json)"
+    static let sha256 = [
+{files}
+    ]
 }}
-EOF""".format(directory = QWEN35_TINY_MLX.directory),
+EOF""".format(
+        directory = QWEN35_TINY_MLX.directory,
+        files = "\n".join([
+            '        "{}": "{}",'.format(path, sha256)
+            for path, sha256 in QWEN35_TINY_MLX.files.items()
+        ]),
+    ),
 )
 
 swift_library(
-    name = "spike_tests_lib",
+    name = "smoke_tests_lib",
     testonly = True,
-    srcs = glob(["SpikeTests/*.swift"]) + [":test_model_swift"],
-    data = ["@mlx_kernels//:bundle"],
+    srcs = glob(["SmokeTests/*.swift"]) + [":test_model_swift"],
     target_compatible_with = ["//bazel/xcode"],
     deps = [
-        "@swiftpkg_mlx_swift_lm//:MLXLLM",
-        "@swiftpkg_mlx_swift_lm//:MLXLMCommon",
-        "@swiftpkg_swift_transformers//:Tokenizers",
+        ":mlx",
+        "//apps/libs/kits/inference",
     ],
 )
 
-# Qwen3.5 0.8B on MLX on this Mac's GPU: an answer, and how fast.
-# Manual: it downloads 630 MB and needs the GPU, which the sandbox hides.
+# MLX on a real model, Qwen3.5 0.8B on this Mac's GPU: an answer,
+# one held to a schema, thinking, a second turn and a measurement.
+# Manual: it downloads 630 MB and needs the Mac's GPU, which the sandbox
+# hides.
 macos_unit_test(
-    name = "spike_test",
+    name = "smoke_test",
     data = ["@mlx_test_model//:model"],
     minimum_os_version = "15.0",
     tags = [
@@ -43,19 +77,7 @@ macos_unit_test(
         "no-sandbox",
     ],
     target_compatible_with = ["//bazel/xcode"],
-    deps = [":spike_tests_lib"],
-)
-
-# The same for iPhones: MLX, its kernels and the test build for a device.
-ios_build_test(
-    name = "spike_ios_build_test",
-    testonly = True,
-    minimum_os_version = "18.0",
-    target_compatible_with = ["//bazel/xcode"],
-    targets = [
-        ":spike_tests_lib",
-        "@mlx_kernels//:kernels",
-    ],
+    deps = [":smoke_tests_lib"],
 )
 
 filegroup(

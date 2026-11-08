@@ -28,6 +28,9 @@ import SwiftUI
 #if canImport(InferenceKitLlama)
     import InferenceKitLlama
 #endif
+#if canImport(InferenceKitMLX)
+    import InferenceKitMLX
+#endif
 
 #if canImport(UIKit)
     import UIKit
@@ -141,6 +144,14 @@ private enum Storage {
             let measure: Bench.Measure = LlamaEngine.measure
             loaders[.llama] = llama
             measures[.llama] = measure
+        #endif
+        #if canImport(InferenceKitMLX)
+            let mlx: ModelHost.Loader = { model, backend async throws(ModelRuntimeError) in
+                try await MLXEngine.load(model, on: backend)
+            }
+            let measureMLX: Bench.Measure = MLXEngine.measure
+            loaders[.mlx] = mlx
+            measures[.mlx] = measureMLX
         #endif
         let host = ModelHost(
             load: ModelHost.loading(with: loaders), answersInBackground: { Shared(.answersInBackground).wrappedValue })

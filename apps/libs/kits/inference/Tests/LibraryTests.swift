@@ -231,22 +231,52 @@ final class ModelLibraryTypesTests: XCTestCase {
 
     func testTheCatalogDownloadsFromHuggingFaceAtAPinnedCommit() throws {
         for spec in ModelCatalog.all {
-            guard let source = spec.source else {
-                XCTAssertEqual(spec.runtime, .apple)
-                continue
-            }
-            XCTAssertEqual(source.commit.count, 40, spec.name)
-            for file in source.files {
-                let url = try XCTUnwrap(source.url(of: file))
-                XCTAssertTrue(HostPolicy.allows(url), spec.name)
-                guard case .sha256(let digest) = file.digest else { return XCTFail("\(spec.name) has no SHA-256") }
-                XCTAssertEqual(digest.count, 64, spec.name)
+            for variant in spec.variants {
+                guard let source = variant.source else {
+                    XCTAssertEqual(variant.runtime, .apple)
+                    continue
+                }
+                XCTAssertEqual(source.commit.count, 40, spec.name)
+                for file in source.files {
+                    let url = try XCTUnwrap(source.url(of: file))
+                    XCTAssertTrue(HostPolicy.allows(url), spec.name)
+                    guard case .sha256(let digest) = file.digest else {
+                        return XCTFail("\(spec.name) has no SHA-256")
+                    }
+                    XCTAssertEqual(digest.count, 64, spec.name)
+                }
             }
         }
     }
 
+    /// Every variant of the catalog's that runs on `runtime`, as its model.
+    private func catalog(on runtime: RuntimeKind) -> [ModelSpec] {
+        ModelCatalog.all.flatMap { spec in spec.variants.filter { $0.runtime == runtime }.map(spec.running) }
+    }
+
+    func testTheCatalogsMLXModelsAreWholeFoldersAndFitTheirEstimate() {
+        let mlx = catalog(on: .mlx)
+
+        XCTAssertFalse(mlx.isEmpty)
+        for spec in mlx {
+            let paths = Set(spec.source?.files.map(\.path) ?? [])
+            XCTAssertTrue(paths.isSuperset(of: ["config.json", "tokenizer.json", "tokenizer_config.json"]), spec.name)
+            let weights = spec.source?.files.filter { $0.path.hasSuffix(".safetensors") } ?? []
+            XCTAssertFalse(weights.isEmpty, spec.name)
+            XCTAssertGreaterThan(spec.memoryBytes, weights.reduce(0) { $0 + $1.size }, spec.name)
+            XCTAssertTrue(spec.inputs.isEmpty, spec.name)
+            XCTAssertNotNil(spec.profile.thinking, spec.name)
+        }
+    }
+
+    func testEveryMLXModelFallsBackToLlama() {
+        for spec in ModelCatalog.all where spec.runtime == .mlx {
+            XCTAssertTrue(spec.variants.contains { $0.runtime == .llama }, spec.name)
+        }
+    }
+
     func testTheCatalogsGGUFModelsRunOnLlamaAndFitTheirEstimate() {
-        let gguf = ModelCatalog.all.filter { $0.runtime == .llama }
+        let gguf = catalog(on: .llama)
 
         XCTAssertFalse(gguf.isEmpty)
         for spec in gguf {

@@ -62,7 +62,10 @@ final class LlamaSmokeTests: XCTestCase {
 
     /// The model Bazel downloaded, as the catalog pins it.
     static func installedModel() throws -> InstalledModel {
-        let spec = ModelCatalog.qwen35Tiny
+        let entry = ModelCatalog.qwen35Tiny
+        let gguf = try XCTUnwrap(
+            entry.variants.first { $0.runtime == .llama }, "The catalog's Qwen3.5 0.8B has no GGUF")
+        let spec = entry.running(gguf)
         let file = try XCTUnwrap(spec.source?.files.first, "The catalog's Qwen3.5 0.8B has no file")
         XCTAssertEqual(
             file.digest, .sha256(TestModel.sha256),

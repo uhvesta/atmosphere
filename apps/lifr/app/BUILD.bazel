@@ -46,9 +46,12 @@ swift_library(
         "//apps/lifr/widgets:glance",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ] + select({
-        # llama.cpp's framework has no Simulator build.
+        # llama.cpp's framework and MLX's GPU have no Simulator build.
         "@apple_support//constraints:simulator": [],
-        "//conditions:default": ["//apps/libs/kits/inference/llama"],
+        "//conditions:default": [
+            "//apps/libs/kits/inference/llama",
+            "//apps/libs/kits/inference/mlx",
+        ],
     }),
 )
 

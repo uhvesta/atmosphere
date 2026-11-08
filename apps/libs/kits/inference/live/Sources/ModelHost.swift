@@ -116,7 +116,9 @@ public actor ModelHost {
         for measurement in here where !latest.contains(where: { $0.backend == measurement.backend }) {
             latest.append(measurement)
         }
-        return ModelTuning(plan: plan(for: model), picked: model.pickedBackend, measurements: latest)
+        return ModelTuning(
+            plan: plan(for: model), picked: model.pickedBackend, measurements: latest,
+            backends: model.spec.runtime.backends)
     }
 
     /// Whether `model` fits on `backend` in the memory the system leaves
@@ -139,7 +141,7 @@ public actor ModelHost {
         _ body: @escaping @Sendable (any ModelEngine) async throws(ModelRuntimeError) -> JSONValue
     ) async throws(ModelRuntimeError) -> JSONValue {
         while true {
-            await untilAllowed()
+            await untilAllowed(model)
             guard !Task.isCancelled else { throw .cancelled }
             let engine: any ModelEngine
             do {
@@ -173,6 +175,9 @@ public actor ModelHost {
     /// loaded already.
     public func engine(for model: InstalledModel) async throws(ModelRuntimeError) -> any ModelEngine {
         idleTimer?.cancel()
+        // In the background only the CPU is left, which not every runtime
+        // runs on: its turns wait for the screen.
+        if inBackground, !model.spec.runtime.backends.contains(.cpu) { throw .interrupted(.background) }
         let backend: ModelBackend = inBackground ? .cpu : plan(for: model).backend
         // A model loaded at another window is loaded again, once its turns
         // are done.
@@ -205,7 +210,9 @@ public actor ModelHost {
             available = memory()
         }
         if MemoryPlan.fits(needed, available: available) { return preferred }
-        if preferred == .gpu, MemoryPlan.fits(MemoryPlan.needed(model, on: .cpu), available: available) {
+        if preferred == .gpu, model.spec.runtime.backends.contains(.cpu),
+            MemoryPlan.fits(MemoryPlan.needed(model, on: .cpu), available: available)
+        {
             return .cpu
         }
         throw .unavailable(
@@ -314,10 +321,11 @@ public actor ModelHost {
         #endif
     }
 
-    /// Returns once a turn may run: at once on screen, or in the background
-    /// when the person lets the model answer there.
-    private func untilAllowed() async {
-        guard inBackground, !answersInBackground() else { return }
+    /// Returns once a turn on `model` may run: at once on screen, or in the
+    /// background when the person lets models answer there and its runtime
+    /// runs on the CPU.
+    private func untilAllowed(_ model: InstalledModel) async {
+        guard inBackground, !answersInBackground() || !model.spec.runtime.backends.contains(.cpu) else { return }
         let id = UUID()
         await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in

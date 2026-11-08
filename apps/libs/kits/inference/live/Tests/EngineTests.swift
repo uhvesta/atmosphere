@@ -340,17 +340,19 @@ final class ModelHostTests: XCTestCase {
     }
 
     private func model(
-        _ id: ModelID, memory: Int64 = 1_000_000_000, cpu: Int64 = 0, profile: ModelProfile = .standard
+        _ id: ModelID, memory: Int64 = 1_000_000_000, cpu: Int64 = 0, profile: ModelProfile = .standard,
+        runtime: RuntimeKind = .liteRT, picked: ModelBackend? = nil
     ) -> InstalledModel {
         InstalledModel(
             spec: ModelSpec(
-                id: id, name: id.rawValue, summary: "", runtime: .liteRT,
+                id: id, name: id.rawValue, summary: "", runtime: runtime,
                 source: ModelSource(
                     repo: "org/model", commit: String(repeating: "a", count: 40),
                     files: [ModelFile(path: "m.litertlm", size: 10, digest: .sha256(String(repeating: "b", count: 64)))]
                 ), contextTokens: 8_192, memoryBytes: memory, cpuMemoryBytes: cpu,
                 license: "", profile: profile),
-            directory: URL(filePath: "/nonexistent"), installedAt: Date(timeIntervalSince1970: 0))
+            directory: URL(filePath: "/nonexistent"), installedAt: Date(timeIntervalSince1970: 0),
+            pickedBackend: picked)
     }
 
     private func host(
@@ -434,6 +436,26 @@ final class ModelHostTests: XCTestCase {
         // Its last turn over, the model leaves the background's memory.
         let loaded = await host.loadedModel
         XCTAssertNil(loaded)
+    }
+
+    func testATurnOnAGPUOnlyModelWaitsForTheScreenEvenWhenAnsweringInTheBackground() async throws {
+        let started = AsyncStream.makeStream(of: Void.self)
+        let backends = Locked<[ModelBackend]>([])
+        let host = host(chat: stalling(started.continuation), backends: backends, answersInBackground: true)
+        let model = model("a", runtime: .mlx)
+
+        let turn = Task { try await host.run(model, plain) }
+        var events = started.stream.makeAsyncIterator()
+        _ = await events.next()
+        await host.backgrounded()
+        try await eventually { await host.loadedModel == nil }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(backends.value, [.gpu])
+        await host.foregrounded()
+
+        let answer = try await turn.value
+        XCTAssertEqual(answer, .string("hi"))
+        XCTAssertEqual(backends.value, [.gpu, .gpu])
     }
 
     func testBackOnScreenTheNextTurnIsOnTheGPU() async throws {
@@ -626,6 +648,27 @@ final class ModelHostTests: XCTestCase {
         _ = try await host.run(model("a", memory: 2_600_000_000, cpu: 1_000_000_000), plain)
 
         XCTAssertEqual(backends.value, [.cpu])
+    }
+
+    func testAGPUOnlyModelThatOnlyFitsOnTheCPUDoesntLoad() async throws {
+        let backends = Locked<[ModelBackend]>([])
+        let host = host(memory: { 2_000_000_000 }, sleep: { _ in }, backends: backends)
+        let model = model("a", memory: 2_600_000_000, cpu: 1_000_000_000, runtime: .mlx)
+
+        do {
+            _ = try await host.run(model, plain)
+            XCTFail("it loaded")
+        } catch .unavailable(.notEnoughMemory) {}
+        XCTAssertEqual(backends.value, [])
+    }
+
+    func testAGPUOnlyModelIsTunedOnlyForTheGPU() {
+        let model = model("a", runtime: .mlx, picked: .cpu)
+
+        let tuning = host().tuning(for: model)
+
+        XCTAssertEqual(tuning.backends, [.gpu])
+        XCTAssertEqual(tuning.plan.backend, .gpu)
     }
 
     func testRunningLowOnMemoryStopsTheTurn() async throws {

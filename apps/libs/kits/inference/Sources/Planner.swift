@@ -20,20 +20,24 @@ public enum ModelPlanner {
         case profile
     }
 
-    /// The backend `model` runs on: the person's pick if they made one;
-    /// else, of those `measurements` that describe it here and fit in
-    /// `available` bytes, the one that writes fastest, the lighter one when
-    /// they're within a tenth of each other; else its profile's.
+    /// The backend `model` runs on, of those its runtime has: the person's
+    /// pick if they made one; else, of those `measurements` that describe
+    /// it here and fit in `available` bytes, the one that writes fastest,
+    /// the lighter one when they're within a tenth of each other; else its
+    /// profile's.
     public static func plan(
         _ model: InstalledModel, picked: ModelBackend?, measurements: [ModelMeasurement], device: String,
         system: String, fits: (Int64) -> Bool
     ) -> Plan {
-        if let picked { return Plan(backend: picked, reason: .picked) }
+        let backends = model.spec.runtime.backends
+        if let picked, backends.contains(picked) { return Plan(backend: picked, reason: .picked) }
         let candidates = measurements.filter {
             $0.describes(model, device: device, system: system) && fits($0.peakMemoryBytes)
+                && backends.contains($0.backend)
         }
         guard let fastest = candidates.max(by: { $0.decodeTokensPerSecond < $1.decodeTokensPerSecond }) else {
-            return Plan(backend: model.spec.profile.onScreen, reason: .profile)
+            let profile = model.spec.profile.onScreen
+            return Plan(backend: backends.contains(profile) ? profile : .gpu, reason: .profile)
         }
         let close = candidates.filter { $0.decodeTokensPerSecond >= fastest.decodeTokensPerSecond * 0.9 }
         let best = close.min { lighter($0, than: $1) } ?? fastest
@@ -54,11 +58,17 @@ public struct ModelTuning: Hashable, Sendable {
     public var plan: ModelPlanner.Plan
     public var picked: ModelBackend?
     public var measurements: [ModelMeasurement]
+    /// Where its runtime can run it.
+    public var backends: [ModelBackend]
 
-    public init(plan: ModelPlanner.Plan, picked: ModelBackend? = nil, measurements: [ModelMeasurement] = []) {
+    public init(
+        plan: ModelPlanner.Plan, picked: ModelBackend? = nil, measurements: [ModelMeasurement] = [],
+        backends: [ModelBackend] = [.gpu, .cpu]
+    ) {
         self.plan = plan
         self.picked = picked
         self.measurements = measurements
+        self.backends = backends
     }
 
     /// The measurement for `backend`, if it was measured.
