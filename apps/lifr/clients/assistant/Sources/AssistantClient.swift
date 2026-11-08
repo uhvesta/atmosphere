@@ -341,6 +341,9 @@ package struct AssistantReply: Hashable, Sendable {
     /// How many of the request's messages the model didn't get, as they
     /// didn't fit: older ones, which a summary can stand in for.
     package var leftOut = 0
+    /// How much of the model's window the turn took, estimated, once the
+    /// reply is complete.
+    package var context: ContextUse?
     /// What it asks to change, for the person to apply.
     package var proposal: Proposal?
 

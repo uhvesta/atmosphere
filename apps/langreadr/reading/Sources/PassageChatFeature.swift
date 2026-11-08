@@ -20,6 +20,13 @@ package struct PassageChatFeature {
         package var problem: String?
         /// The sheet picking what the chat runs on.
         @Presents package var model: ChatModelFeature.State?
+        /// Apple's model and the downloaded ones, for the composer's pill.
+        package var models: [RunnableModel] = []
+        /// The chats' model in Settings.
+        package var standard: ModelID?
+        /// How much of the model's window the last reply took; nil before
+        /// one, and once the model or its window changes.
+        package var context: ContextUse?
 
         package var id: UUID { chat.id }
 
@@ -30,10 +37,18 @@ package struct PassageChatFeature {
         }
 
         package var canSend: Bool { reply == nil && !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+        /// The model the chat runs on, once it's looked up.
+        package var current: RunnableModel? {
+            let id = ModelChoice(chat.model).model ?? standard
+            return models.first { $0.id == id }
+        }
     }
 
     package enum Action: BindableAction {
         case binding(BindingAction<State>)
+        case task
+        case modelsLoaded([RunnableModel], standard: ModelID)
         case sendTapped
         case stopTapped
         case openFullTapped
@@ -41,7 +56,7 @@ package struct PassageChatFeature {
         case modelTapped
         case model(PresentationAction<ChatModelFeature.Action>)
         case partial(String)
-        case replied(Result<String, ModelRuntimeError>)
+        case replied(Result<TutorReply, ModelRuntimeError>)
         case delegate(Delegate)
 
         @CasePathable
@@ -54,6 +69,7 @@ package struct PassageChatFeature {
     private enum CancelID { case reply }
 
     @Dependency(\.tutor) private var tutor
+    @Dependency(\.models) private var library
     @Dependency(\.date.now) private var now
     @Dependency(\.uuid) private var uuid
     @Dependency(\.dismiss) private var dismiss
@@ -65,6 +81,14 @@ package struct PassageChatFeature {
         Reduce { state, action in
             switch action {
             case .binding:
+                return .none
+            case .task:
+                return .run { [library] send in
+                    await send(.modelsLoaded(await library.runnable(), standard: library.selection(.chat)))
+                }
+            case .modelsLoaded(let models, let standard):
+                state.models = models
+                state.standard = standard
                 return .none
             case .sendTapped:
                 guard state.canSend else { return .none }
@@ -86,15 +110,23 @@ package struct PassageChatFeature {
                 state.model = ChatModelFeature.State(choice: ModelChoice(state.chat.model))
                 return .none
             case .model:
+                if let sheet = state.model, !sheet.models.isEmpty {
+                    state.models = sheet.models
+                    state.standard = sheet.standard
+                }
                 // Kept as it's picked, so the next message runs on it.
                 guard let choice = state.model?.choice.kept, choice != state.chat.model else { return .none }
+                if choice.model != state.chat.model.model || choice.window != state.chat.model.window {
+                    state.context = nil
+                }
                 state.chat.model = choice
                 return .send(.delegate(.changed(state.chat)))
             case .partial(let text):
                 if state.reply != nil { state.reply = text }
                 return .none
-            case .replied(.success(let text)):
-                return keep(text, in: &state)
+            case .replied(.success(let reply)):
+                state.context = reply.context
+                return keep(reply.text, in: &state)
             case .replied(.failure(let error)):
                 state.reply = nil
                 state.problem = error.description

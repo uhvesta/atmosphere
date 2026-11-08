@@ -1,6 +1,7 @@
 import ChatKit
 import ChatUI
 import ComposableArchitecture
+import InferenceKit
 import LangReadrCore
 import SwiftUI
 
@@ -22,22 +23,25 @@ struct PassageChatView: View {
             Divider()
             CompactChat(
                 messages: store.chat.conversation.messages, reply: store.reply, input: $store.input,
-                prompt: Text("Ask about it"), canSend: store.canSend, canStop: store.reply != nil,
+                prompt: Text("Ask about it"), model: modelPill, canSend: store.canSend, canStop: store.reply != nil,
                 send: { store.send(.sendTapped) }, stop: { store.send(.stopTapped) },
                 empty: {
                     Text("Ask what it means, how it's said, or why it's written this way.")
                         .foregroundStyle(.secondary)
                 })
         }
-        .navigationTitle(store.compact ? "Ask" : "Chat")
-        #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-        #endif
+        .chatTitle(store.compact ? String(localized: "Ask") : String(localized: "Chat"), subtitle: store.book.title)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Done") { store.send(.doneTapped) } }
             ToolbarItem(placement: .automatic) {
-                Button("Model", systemImage: "cpu") { store.send(.modelTapped) }
-                    .help("Model, Thinking and Context Window")
+                // How full the model's window was at the last reply.
+                Menu {
+                    Text(ContextRing.description(of: store.context))
+                } label: {
+                    ContextRing(store.context)
+                }
+                .menuIndicator(.hidden)
+                .help(ContextRing.description(of: store.context))
             }
             if store.compact {
                 ToolbarItem(placement: .primaryAction) {
@@ -46,6 +50,16 @@ struct PassageChatView: View {
             }
         }
         .sheet(item: $store.scope(state: \.model, action: \.model)) { ChatModelView(store: $0) }
+        .task { await store.send(.task).finish() }
+    }
+
+    /// Opens what the chat runs on: its model and how long it thinks.
+    private var modelPill: ModelPill {
+        let current = store.state.current
+        return ModelPill(
+            name: current?.name ?? String(localized: "Model"),
+            detail: current?.thinks == true ? ModelChoice(store.chat.model).thinkingLevel.title : nil,
+            pick: { store.send(.modelTapped) })
     }
 }
 

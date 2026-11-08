@@ -3,6 +3,8 @@
 public struct RunnableModel: Hashable, Identifiable, Sendable {
     public var id: ModelID
     public var name: String
+    /// What it's good for, in a few words.
+    public var summary: String
     /// The window it runs at unless something picks another: the one
     /// picked for it in Settings, or its own.
     public var window: Int
@@ -10,9 +12,10 @@ public struct RunnableModel: Hashable, Identifiable, Sendable {
     /// choice, as with Apple's.
     public var windows: [Int]
 
-    public init(id: ModelID, name: String, window: Int, windows: [Int]) {
+    public init(id: ModelID, name: String, summary: String = "", window: Int, windows: [Int]) {
         self.id = id
         self.name = name
+        self.summary = summary
         self.window = window
         self.windows = windows
     }
@@ -24,12 +27,13 @@ public struct RunnableModel: Hashable, Identifiable, Sendable {
         let spec = model.spec
         let windows = Set(spec.contextChoices + [spec.contextTokens])
         self.init(
-            id: spec.id, name: spec.name, window: model.window,
+            id: spec.id, name: spec.name, summary: spec.summary, window: model.window,
             windows: spec.contextChoices.isEmpty ? [] : windows.sorted())
     }
 
     public static let apple = RunnableModel(
-        id: .apple, name: ModelCatalog.apple.name, window: ModelCatalog.apple.contextTokens, windows: [])
+        id: .apple, name: ModelCatalog.apple.name, summary: ModelCatalog.apple.summary,
+        window: ModelCatalog.apple.contextTokens, windows: [])
 
     /// Apple's model, then each of `installed` but Apple's, by name.
     public static func list(_ installed: [InstalledModel]) -> [RunnableModel] {

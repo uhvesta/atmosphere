@@ -19,7 +19,7 @@ package struct ChatView: View {
     @Environment(\.locale) private var locale
     @State private var photo: PhotosPickerItem?
     @State private var selecting: TextToSelect?
-    @Environment(\.dynamicTypeSize) private var typeSize
+    @State private var picksPhoto = false
 
     package var body: some View {
         VStack(spacing: 0) {
@@ -112,18 +112,17 @@ package struct ChatView: View {
             }
             .sheetLayout(height: 560)
         }
-        .navigationTitle(store.conversation.title)
+        .chatTitle(store.conversation.title, subtitle: subtitle)
         .toolbarTitleMenu {
             Button("Rename", systemImage: "pencil") { store.send(.renameTapped) }
         }
         #if os(iOS)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    modelButton
-                }
-                // One menu, as more buttons fold into the bar's overflow.
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu("More", systemImage: "ellipsis.circle") {
+                // The ring and one menu share a capsule, as more buttons
+                // fold into the bar's overflow.
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    contextMenu
+                    Menu("More", systemImage: "ellipsis") {
                         findButton
                         compactButton
                         Section("Checkpoints") { checkpointButtons }
@@ -150,10 +149,33 @@ package struct ChatView: View {
         }
     }
 
-    /// Opens what the conversation runs on, also before its first message.
-    private var modelButton: some View {
-        Button("Model", systemImage: "cpu") { store.send(.modelTapped) }
-            .help("Model, Thinking and Context Window")
+    /// Where the conversation is kept, under its title.
+    private var subtitle: String {
+        store.conversation.isSynced
+            ? String(localized: "Synced with iCloud") : String(localized: "On this device")
+    }
+
+    /// How full the model's window was at the last reply, which opens to
+    /// say how much and to compact.
+    private var contextMenu: some View {
+        Menu {
+            Text(ContextRing.description(of: store.context))
+            compactButton
+        } label: {
+            ContextRing(store.context)
+        }
+        .menuIndicator(.hidden)
+        .help(ContextRing.description(of: store.context))
+    }
+
+    /// Opens what the conversation runs on: its model and how long it
+    /// thinks, also before its first message.
+    private var modelPill: ModelPill {
+        let current = store.state.current
+        return ModelPill(
+            name: current?.name ?? String(localized: "Model"),
+            detail: current?.thinks == true ? store.conversation.context.model.thinkingLevel.title : nil,
+            pick: { store.send(.modelTapped) })
     }
 
     /// Opens the bar to find words in the messages shown.
@@ -367,8 +389,9 @@ package struct ChatView: View {
                     .lineLimit(1)
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
+                contextMenu
+                    .fixedSize()
                 Group {
-                    modelButton
                     findButton
                     compactButton
                     checkpointButtons
@@ -383,25 +406,70 @@ package struct ChatView: View {
         }
     #endif
 
-    /// The message field, with the skill for the next message: a pill once
-    /// one is picked, a button to find one before. Above it, what's
-    /// attached to the next message.
+    /// The message field in its card, with the skill for the next message
+    /// and what's attached to it above. Typing / lists the skills to pick.
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if store.editing != nil {
-                HStack {
-                    Label("Editing your message. Sending it writes the reply again.", systemImage: "pencil")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Cancel") { store.send(.cancelEditTapped) }
-                        .font(.footnote.weight(.semibold))
+            let choices = store.state.slashChoices
+            if !choices.isEmpty {
+                SkillSuggestions(choices) { store.send(.pickSkillTapped($0)) }
+            }
+            ChatComposer(
+                text: $store.input, prompt: store.picked.map { _ in Text("Add details, or just send") },
+                model: modelPill,
+                mic: store.inputs.contains(.audio)
+                    ? MicButton(isRecording: store.recording) { store.send(.recordTapped) } : nil,
+                send: sendButton, submit: { store.send(.sendTapped) },
+                top: { composerTop }, attach: { attachMenu }
+            )
+            .modifier(SkillFinderPopover(store: store))
+            .photosPicker(
+                isPresented: $picksPhoto, selection: $photo, matching: .images, preferredItemEncoding: .compatible
+            )
+            .onChange(of: photo) { _, item in
+                guard let item else { return }
+                photo = nil
+                Task {
+                    guard let data = try? await item.loadTransferable(type: Data.self) else {
+                        store.send(.attached(.failure(AttachmentError.unreadablePhoto)))
+                        return
+                    }
+                    store.send(.photoPicked(data))
                 }
             }
-            if !store.pending.isEmpty || store.attaching || store.recording {
-                attachments
+        }
+    }
+
+    /// What + offers: a photo, for a model that reads them, and a skill.
+    @ViewBuilder private var attachMenu: some View {
+        if store.inputs.contains(.image) {
+            Button("Attach a Photo", systemImage: "photo") { picksPhoto = true }
+                .disabled(store.attaching || store.recording)
+        }
+        Button("Use a Skill", systemImage: "sparkles") { store.send(.findSkillTapped) }
+    }
+
+    /// Above the field: that a message is being edited, the skill picked
+    /// and what's attached.
+    @ViewBuilder private var composerTop: some View {
+        if store.editing != nil {
+            HStack {
+                Label("Editing your message. Sending it writes the reply again.", systemImage: "pencil")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel") { store.send(.cancelEditTapped) }
+                    .font(.footnote.weight(.semibold))
             }
-            field
+            .padding(.horizontal, 4)
+        }
+        if let picked = store.picked {
+            SkillPill(
+                title: picked.title, change: { store.send(.findSkillTapped) },
+                remove: { store.send(.clearSkillTapped) })
+        }
+        if !store.pending.isEmpty || store.attaching || store.recording {
+            attachments
         }
     }
 
@@ -426,82 +494,8 @@ package struct ChatView: View {
         .scrollIndicators(.hidden)
     }
 
-    /// Buttons to attach a photo or a recording, for a model that reads them.
-    @ViewBuilder private var attachButtons: some View {
-        if store.inputs.contains(.image) {
-            PhotosPicker(selection: $photo, matching: .images, preferredItemEncoding: .compatible) {
-                Label("Attach a Photo", systemImage: "photo")
-                    .labelStyle(.iconOnly)
-                    .font(.title2)
-            }
-            .disabled(store.attaching || store.recording)
-            .onChange(of: photo) { _, item in
-                guard let item else { return }
-                photo = nil
-                Task {
-                    guard let data = try? await item.loadTransferable(type: Data.self) else {
-                        store.send(.attached(.failure(AttachmentError.unreadablePhoto)))
-                        return
-                    }
-                    store.send(.photoPicked(data))
-                }
-            }
-        }
-        if store.inputs.contains(.audio) {
-            Button {
-                store.send(.recordTapped)
-            } label: {
-                Label(
-                    store.recording ? "Stop Recording" : "Record",
-                    systemImage: store.recording ? "stop.circle.fill" : "mic"
-                )
-                .labelStyle(.iconOnly)
-                .font(.title2)
-            }
-            .tint(store.recording ? .red : nil)
-            .disabled(store.attaching)
-        }
-    }
-
-    /// At the largest text sizes the message field takes its own row, so
-    /// the buttons can't squeeze it out.
-    @ViewBuilder private var field: some View {
-        if typeSize.isAccessibilitySize, store.picked == nil {
-            VStack(alignment: .leading, spacing: 8) {
-                textField
-                HStack {
-                    skillButton
-                    attachButtons
-                    Spacer()
-                    sendButton
-                }
-            }
-            .modifier(SkillFinderPopover(store: store))
-        } else {
-            HStack {
-                skillButton
-                attachButtons
-                textField
-                sendButton
-            }
-            .modifier(SkillFinderPopover(store: store))
-        }
-    }
-
-    private var skillButton: some View {
-        SkillButton(
-            picked: store.picked?.title, find: { store.send(.findSkillTapped) },
-            remove: { store.send(.clearSkillTapped) })
-    }
-
-    private var textField: some View {
-        MessageField(
-            text: $store.input, prompt: store.picked.map { _ in Text("Add details, or just send") },
-            submit: { store.send(.sendTapped) })
-    }
-
     /// Send, or Stop while a reply is being written.
-    private var sendButton: some View {
+    private var sendButton: SendButton {
         SendButton(
             canSend: store.canSend, canStop: store.canStop, send: { store.send(.sendTapped) },
             stop: { store.send(.stopTapped) })

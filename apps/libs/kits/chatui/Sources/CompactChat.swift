@@ -4,7 +4,7 @@ import SwiftUI
 
 /// A small chat to put inside another screen, such as beside what the
 /// person is reading: the messages, the reply being written, and the field
-/// with Send or Stop. The app keeps the messages and writes the reply; the
+/// with the model's pill and Send or Stop. The app keeps the messages and writes the reply; the
 /// space it gets is the app's to give.
 public struct CompactChat<Message: ChatEntry, Empty: View>: View {
     let messages: [Message]
@@ -12,6 +12,7 @@ public struct CompactChat<Message: ChatEntry, Empty: View>: View {
     let thinking: ModelThinking?
     @Binding var input: String
     let prompt: Text?
+    let model: ModelPill?
     let canSend: Bool
     let canStop: Bool
     let send: () -> Void
@@ -24,14 +25,15 @@ public struct CompactChat<Message: ChatEntry, Empty: View>: View {
     /// being written. `empty` shows before the first message.
     public init(
         messages: [Message], reply: String?, thinking: ModelThinking? = nil, input: Binding<String>,
-        prompt: Text? = nil, canSend: Bool, canStop: Bool, send: @escaping () -> Void, stop: @escaping () -> Void,
-        @ViewBuilder empty: () -> Empty
+        prompt: Text? = nil, model: ModelPill? = nil, canSend: Bool, canStop: Bool, send: @escaping () -> Void,
+        stop: @escaping () -> Void, @ViewBuilder empty: () -> Empty
     ) {
         self.messages = messages
         self.reply = reply
         self.thinking = thinking
         _input = input
         self.prompt = prompt
+        self.model = model
         self.canSend = canSend
         self.canStop = canStop
         self.send = send
@@ -64,11 +66,11 @@ public struct CompactChat<Message: ChatEntry, Empty: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .defaultScrollAnchor(.bottom)
-            Divider()
-            HStack {
-                MessageField(text: $input, prompt: prompt) { if canSend { send() } }
-                SendButton(canSend: canSend, canStop: canStop, send: send, stop: stop)
-            }
+            ChatComposer(
+                text: $input, prompt: prompt, model: model,
+                send: SendButton(canSend: canSend, canStop: canStop, send: send, stop: stop),
+                submit: { if canSend { send() } }
+            )
             .padding(10)
         }
         .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
@@ -78,10 +80,12 @@ public struct CompactChat<Message: ChatEntry, Empty: View>: View {
 extension CompactChat where Empty == EmptyView {
     public init(
         messages: [Message], reply: String?, thinking: ModelThinking? = nil, input: Binding<String>,
-        prompt: Text? = nil, canSend: Bool, canStop: Bool, send: @escaping () -> Void, stop: @escaping () -> Void
+        prompt: Text? = nil, model: ModelPill? = nil, canSend: Bool, canStop: Bool, send: @escaping () -> Void,
+        stop: @escaping () -> Void
     ) {
         self.init(
-            messages: messages, reply: reply, thinking: thinking, input: input, prompt: prompt, canSend: canSend,
+            messages: messages, reply: reply, thinking: thinking, input: input, prompt: prompt, model: model,
+            canSend: canSend,
             canStop: canStop, send: send, stop: stop
         ) { EmptyView() }
     }

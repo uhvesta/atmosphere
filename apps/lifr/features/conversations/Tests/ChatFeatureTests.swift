@@ -35,6 +35,7 @@ final class ChatFeatureTests: XCTestCase {
             ChatFeature()
         } withDependencies: { [now] in
             $0.store = .inMemory(workspace, actor: .user(device: "iPhone", surface: .iPhone))
+            $0.models = InMemoryModelLibrary().client
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
             $0.assistant.availability = { _ in .available }
@@ -144,8 +145,6 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.binding(.set(\.model, .apple)))
 
         XCTAssertNil(store.state.choice.window)
-        await store.send(.resetTapped)
-        XCTAssertEqual(store.state.choice, .defaults)
     }
 
     func testAForkRunsOnTheSameModelAsItsChat() throws {
@@ -890,6 +889,62 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertNil(store.state.picked)
     }
 
+    func testTypingASlashListsTheSkillsThatMatchAndPickingOneTakesItsPlace() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.binding(.set(\.input, "ti")))
+        XCTAssertTrue(store.state.slashChoices.isEmpty)
+
+        await store.send(.binding(.set(\.input, "/ti")))
+        XCTAssertEqual(store.state.slashChoices.first?.id, "tidy")
+        await store.send(.pickSkillTapped("tidy"))
+
+        XCTAssertEqual(store.state.picked?.id, "tidy")
+        XCTAssertEqual(store.state.input, "")
+        await store.send(.binding(.set(\.input, "/ti")))
+        XCTAssertTrue(store.state.slashChoices.isEmpty)
+    }
+
+    func testTheComposerNamesTheModelTheChatRunsOn() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
+        store.dependencies.models = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small]).client
+        XCTAssertNil(store.state.current)
+
+        await store.send(.task)
+        await store.receive(\.modelsLoaded)
+        XCTAssertEqual(store.state.current?.id, .apple)
+        await store.send(.modelTapped)
+        await store.send(.model(.presented(.binding(.set(\.model, ModelCatalog.qwen35Small.id)))))
+        await store.send(.model(.dismiss))
+
+        XCTAssertEqual(store.state.current?.id, ModelCatalog.qwen35Small.id)
+    }
+
+    func testAReplySaysHowMuchOfTheWindowItTookUntilTheModelChanges() async {
+        let (workspace, _) = home()
+        let used = ContextUse(used: 1_200, window: 4_096)
+        let store = chat(workspace) { _ in
+            var reply = AssistantReply(text: "OK.", isComplete: true)
+            reply.context = used
+            return reply
+        }
+        store.dependencies.models = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small]).client
+        XCTAssertNil(store.state.context)
+        await send("Plan the week", in: store)
+        XCTAssertEqual(store.state.context, used)
+
+        await store.send(.modelTapped)
+        await store.send(.model(.presented(.binding(.set(\.choice.thinking, .long)))))
+        await store.send(.model(.dismiss))
+        XCTAssertEqual(store.state.context, used)
+
+        await store.send(.modelTapped)
+        await store.send(.model(.presented(.binding(.set(\.model, ModelCatalog.qwen35Small.id)))))
+        await store.send(.model(.dismiss))
+        XCTAssertNil(store.state.context)
+    }
+
     // MARK: - Picking a skill
 
     func testAMessageSentWithoutASkillGetsTheOneLifrPicksAmongTheAutomaticOnes() async {
@@ -1220,6 +1275,7 @@ final class ChatFeatureTests: XCTestCase {
         } withDependencies: { [now] in
             $0.store = .inMemory(workspace)
             $0.conversations = kept
+            $0.models = InMemoryModelLibrary().client
             $0.attachments = attachments
             $0.recorder = .scripted()
             $0.skills = .inMemory()

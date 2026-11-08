@@ -5,7 +5,8 @@ import LangReadrModels
 
 /// Picks what one chat about a passage runs on: its model, how long that thinks
 /// and its window. Each starts at the default from Settings, which this
-/// never changes. The next message uses what's picked.
+/// never changes, and picking the default goes back to following it. The
+/// next message uses what's picked.
 @Reducer
 package struct ChatModelFeature {
     @ObservableState
@@ -44,7 +45,6 @@ package struct ChatModelFeature {
         case binding(BindingAction<State>)
         case task
         case loaded([RunnableModel], standard: ModelID)
-        case resetTapped
         case doneTapped
     }
 
@@ -68,10 +68,6 @@ package struct ChatModelFeature {
                 if let picked = state.choice.model, !runnable.contains(where: { $0.id == picked }) {
                     state.model = nil
                 }
-                return .none
-
-            case .resetTapped:
-                state.choice = .defaults
                 return .none
 
             case .doneTapped:

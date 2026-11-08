@@ -188,3 +188,55 @@ public struct SkillToggle<Tool: SkillTool>: View {
         }
     }
 }
+
+/// The skills matching what's typed after a / in the message field, in a
+/// card above it that scrolls. Picking one becomes the message's skill.
+public struct SkillSuggestions<Tool: SkillTool>: View {
+    let skills: [Skill<Tool>]
+    let pick: (Skill<Tool>.ID) -> Void
+
+    public init(_ skills: [Skill<Tool>], pick: @escaping (Skill<Tool>.ID) -> Void) {
+        self.skills = skills
+        self.pick = pick
+    }
+
+    public var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(skills) { skill in
+                    Button {
+                        pick(skill.id)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            // What's typed to pick it: "/query".
+                            Text(verbatim: "/\(skill.id)")
+                                .font(.body.monospaced())
+                            if !skill.summary.isEmpty {
+                                Text(skill.summary)
+                                    .font(.caption)
+                                    .foregroundStyle(Color.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    if skill.id != skills.last?.id {
+                        Divider().padding(.leading, 14)
+                    }
+                }
+            }
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxHeight: 240)
+        .fixedSize(horizontal: false, vertical: true)
+        .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(.quaternary)
+        }
+        .shadow(color: .black.opacity(0.08), radius: 10, y: 2)
+    }
+}

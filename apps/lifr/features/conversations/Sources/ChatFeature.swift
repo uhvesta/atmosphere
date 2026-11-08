@@ -73,6 +73,13 @@ package struct ChatFeature {
         @Presents package var manageSkills: SkillsFeature.State?
         /// What the conversation runs on, being picked.
         @Presents package var model: ChatModelFeature.State?
+        /// Apple's model and the downloaded ones, and the assistant's in
+        /// Settings, once they're looked up: for the composer's pill.
+        package var models: [RunnableModel] = []
+        package var standard: ModelID?
+        /// How much of the model's window the last reply took, since the
+        /// chat opened or its model changed.
+        package var context: ContextUse?
         /// Whether the draft's editor is open.
         package var editsDraft = false
         /// The proposal being edited, before it's checked again.
@@ -184,6 +191,19 @@ package struct ChatFeature {
         /// The skills that are on, matching the finder.
         package var skillChoices: [Skill] { Skill.search(skillQuery, in: skills.filter(\.isOn)) }
 
+        /// The skills that are on, matching what's typed after a / that
+        /// starts the message, while none is picked. Empty without a /.
+        package var slashChoices: [Skill] {
+            guard picked == nil, input.hasPrefix("/") else { return [] }
+            return Skill.search(String(input.dropFirst()), in: skills.filter(\.isOn))
+        }
+
+        /// The model the next message runs on, once it's looked up.
+        package var current: RunnableModel? {
+            let id = conversation.context.model.model ?? standard
+            return models.first { $0.id == id }
+        }
+
         /// The title of the skill a message was sent with, if any.
         package func skillTitle(of message: ChatMessage) -> String? {
             message.skill.map { id in skills.first { $0.id == id }?.title ?? id }
@@ -235,6 +255,7 @@ package struct ChatFeature {
         /// thinking or window for it.
         case modelTapped
         case model(PresentationAction<ChatModelFeature.Action>)
+        case modelsLoaded([RunnableModel], standard: ModelID)
         case sendTapped
         /// Stops the reply being written, keeping what it has written.
         case stopTapped
@@ -372,6 +393,7 @@ package struct ChatFeature {
     @Dependency(\.assistant) private var assistant
     @Dependency(\.store) private var store
     @Dependency(\.skills) private var skillsClient
+    @Dependency(\.models) private var library
     @Dependency(\.guidance) private var guidance
     @Dependency(\.attachments) private var attachments
     @Dependency(\.recorder) private var recorder
@@ -395,10 +417,16 @@ package struct ChatFeature {
                 state.elsewhere = Set(
                     state.conversation.messages.flatMap(\.attachments)
                         .filter { attachments.file($0, conversation) == nil }.map(\.id))
-                return .run { [skillsClient] send in
+                return .run { [skillsClient, library] send in
+                    await send(.modelsLoaded(await library.runnable(), standard: library.selection(.assistant)))
                     // Without the person's skills, the built-ins still work.
                     if let skills = try? await skillsClient.load() { await send(.skillsLoaded(skills)) }
                 }
+
+            case .modelsLoaded(let models, let standard):
+                state.models = models
+                state.standard = standard
+                return .none
 
             case .skillsLoaded(let skills):
                 state.skills = skills
@@ -413,6 +441,8 @@ package struct ChatFeature {
                 state.findsSkill = false
                 guard state.skills.contains(where: { $0.id == id && $0.isOn }) else { return .none }
                 state.skill = id
+                // Picked from what was typed after a /, which it replaces.
+                if state.input.hasPrefix("/") { state.input = "" }
                 return .none
 
             case .clearSkillTapped:
@@ -429,9 +459,18 @@ package struct ChatFeature {
                 return .none
 
             case .model(.presented):
+                if let sheet = state.model, !sheet.models.isEmpty {
+                    state.models = sheet.models
+                    state.standard = sheet.standard
+                }
                 // Each change applies to the next message.
                 guard let choice = state.model?.choice, choice != state.conversation.context.model else {
                     return .none
+                }
+                if choice.model != state.conversation.context.model.model
+                    || choice.window != state.conversation.context.model.window
+                {
+                    state.context = nil
                 }
                 state.conversation.context.model = choice
                 state.availability = assistant.availability(choice)
@@ -651,6 +690,7 @@ package struct ChatFeature {
                 if state.showsReplyThinking, thinking != nil { state.shownThinking.insert(id) }
                 state.showsReplyThinking = false
                 state.leftOut = reply.leftOut
+                if let context = reply.context { state.context = context }
                 if let plan = reply.plan {
                     // A model often repeats what this chat already added,
                     // and makes small mistakes Lifr can put right. A plan

@@ -26,7 +26,7 @@
   [Button] "New conversation"
   [Outline] ""
   [Heading] "New conversation"
-  [Button] "Model" help: "Model, Thinking and Context Window"
+  [MenuButton] "Context Window" help: "Nothing used yet"
   [Button, disabled] "Find in Conversation" help: "Find in Conversation"
   [Button, disabled] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
   [Button, disabled] "Back" help: "Go back to the message before"
@@ -34,11 +34,11 @@
   [Button, disabled] "All Checkpoints" help: "Every point to go back or forward to"
   [Button] "Rename" help: "Rename"
   [Button] "Photo"
-  [Button] "Use a Skill" id: sparkles
-  [Button] "Attach a Photo" id: photo
-  [Button] "Record" id: mic
   [TextField] ""
-  [Button] "Send" id: arrow.up.circle.fill
+  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
+  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
+  [Button] "Record" id: mic
+  [Button] "Send" id: arrow.up
   [StaticText] "" value: "Ask about your tasks, change them, or plan what to add."
   [Button] "Plan my week"
   [Button] "What's overdue?"

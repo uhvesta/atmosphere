@@ -58,6 +58,8 @@ lifr_snapshot_test(
     srcs = glob(["SnapshotTests/*.swift"]),
     deps = [
         ":conversations",
+        "//apps/libs/kits/chatui",
+        "//apps/libs/kits/inference",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/models",
         "//apps/lifr/clients/store",

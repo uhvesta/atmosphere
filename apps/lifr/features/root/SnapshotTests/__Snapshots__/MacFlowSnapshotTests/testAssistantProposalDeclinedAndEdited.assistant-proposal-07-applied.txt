@@ -27,16 +27,17 @@
     [Row/OutlineRow] ""
       [Button] "I called the plumber, Nov 3 at 10:00 AM, I'd mark it done."
   [Heading] "I called the plumber"
-  [Button] "Model" help: "Model, Thinking and Context Window"
+  [MenuButton] "Context Window" help: "5% used, 1,574 of 32,768 tokens"
   [Button] "Find in Conversation" help: "Find in Conversation"
   [Button] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
   [Button] "Back" help: "Go back to the message before"
   [Button, disabled] "Forward" help: "Go forward to the message after"
   [Button] "All Checkpoints" help: "Every point to go back or forward to"
   [Button] "Rename" help: "Rename"
-  [Button] "Use a Skill" id: sparkles
   [TextField] ""
-  [Button, disabled] "Send" id: arrow.up.circle.fill
+  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
+  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
+  [Button, disabled] "Send" id: arrow.up
   [Unknown] "Skill: Change"
   [StaticText] "" value: "I called the plumber"
   [StaticText] "" value: "I'd mark it done."

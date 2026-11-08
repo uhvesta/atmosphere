@@ -1,5 +1,7 @@
+import ChatUI
 import ComposableArchitecture
 import FlowKit
+import InferenceKit
 import LifrAssistantClient
 import LifrConversations
 import LifrCore
@@ -98,8 +100,30 @@ final class ChatSnapshotTests: XCTestCase {
         return state
     }
 
+    /// A chat with nothing in it yet and / typed, listing the skills.
+    private var slash: ChatFeature.State {
+        var state = ChatFeature.State(
+            conversation: Conversation(id: UUID(0), createdAt: now), workspace: .sample(now: now, timeZone: .gmt))
+        state.input = "/"
+        return state
+    }
+
+    /// Apple's model and a downloaded Qwen3.5, which the sheet offers.
+    private func models() throws -> [RunnableModel] {
+        let entry = ModelCatalog.qwen35Small
+        let variant = try XCTUnwrap(entry.variants.first)
+        let qwen = InstalledModel(spec: entry.running(variant), directory: URL(filePath: "/"), installedAt: now)
+        return [.apple, RunnableModel(qwen)]
+    }
+
+    /// The chat on Apple's model, the default, with a third of its window
+    /// used by the last reply.
     private func screen(_ state: ChatFeature.State) -> some View {
-        NavigationStack {
+        var state = state
+        state.models = [.apple]
+        state.standard = .apple
+        if !state.conversation.messages.isEmpty { state.context = ContextUse(used: 1_400, window: 4_096) }
+        return NavigationStack {
             ChatView(store: Store(initialState: state) { EmptyReducer() })
         }
         .environment(\.timeZone, .gmt)
@@ -115,5 +139,14 @@ final class ChatSnapshotTests: XCTestCase {
         assertScreenImages(of: screen(attachments()), named: "attachments")
         assertScreenImages(of: screen(attachments(recording: true)), named: "recording", images: [.proMaxLight])
         assertScreenImages(of: screen(compacted), named: "compacted", images: [.proMaxLight, .proMaxDark])
+        assertScreenImages(of: screen(slash), named: "slash", images: [.proMaxLight, .proMaxDark])
+    }
+
+    /// The sheet picking the chat's model, on Qwen3.5 thinking long.
+    func testModelSheet() throws {
+        let sheet = ModelSheet(
+            model: .constant(ModelCatalog.qwen35Small.id), thinking: .constant(.long), window: .constant(nil),
+            models: try models(), standard: .apple, done: {})
+        assertScreenImages(of: sheet, named: "model", images: [.proMaxLight, .proMaxDark, .seLargestText])
     }
 }

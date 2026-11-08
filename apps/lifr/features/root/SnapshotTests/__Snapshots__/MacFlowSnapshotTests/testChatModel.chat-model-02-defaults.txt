@@ -26,16 +26,17 @@
   [Button] "New conversation"
   [Outline] ""
   [Heading] "New conversation"
-  [Button] "Model" help: "Model, Thinking and Context Window"
+  [MenuButton] "Context Window" help: "Nothing used yet"
   [Button, disabled] "Find in Conversation" help: "Find in Conversation"
   [Button, disabled] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
   [Button, disabled] "Back" help: "Go back to the message before"
   [Button, disabled] "Forward" help: "Go forward to the message after"
   [Button, disabled] "All Checkpoints" help: "Every point to go back or forward to"
   [Button] "Rename" help: "Rename"
-  [Button] "Use a Skill" id: sparkles
   [TextField] ""
-  [Button, disabled] "Send" id: arrow.up.circle.fill
+  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
+  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
+  [Button, disabled] "Send" id: arrow.up
   [StaticText] "" value: "Ask about your tasks, change them, or plan what to add."
   [Button] "Plan my week"
   [Button] "What's overdue?"
@@ -54,9 +55,8 @@
   [Button/MinimizeButton] ""
   [StaticText] "" value: "Conversations"
   [Sheet] ""
-    [StaticText] "" value: "This Chat's Model"
-    [StaticText] "" value: "Model"
-    [PopUpButton] "" value: "Default (Apple Intelligence)"
+    [StaticText] "" value: "Select Model"
+    [Button, selected] "Apple Intelligence, Default, Built in, nothing to download"
+    [Button] "Gemma 4 E2B, Small and quick"
     [StaticText] "" value: "Only for this chat. Download more models in Settings › Models."
-    [Button, disabled] "Use the Defaults"
-    [Button] "Done"
+    [Button] "Close" id: xmark

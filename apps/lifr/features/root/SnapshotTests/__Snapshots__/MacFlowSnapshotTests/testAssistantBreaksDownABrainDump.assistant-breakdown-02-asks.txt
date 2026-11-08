@@ -25,16 +25,17 @@
     [Row/OutlineRow] ""
       [Button] "ugh I have to move flat, get the deposi…, Nov 3 at 10:00 AM, Is the move by a date, and is the deposit for the new flat or the old one?"
   [Heading] "ugh I have to move flat, get the deposi…"
-  [Button] "Model" help: "Model, Thinking and Context Window"
+  [MenuButton] "Context Window" help: "5% used, 1,481 of 32,768 tokens"
   [Button] "Find in Conversation" help: "Find in Conversation"
   [Button, disabled] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
   [Button, disabled] "Back" help: "Go back to the message before"
   [Button, disabled] "Forward" help: "Go forward to the message after"
   [Button] "All Checkpoints" help: "Every point to go back or forward to"
   [Button] "Rename" help: "Rename"
-  [Button] "Use a Skill" id: sparkles
   [TextField] ""
-  [Button, disabled] "Send" id: arrow.up.circle.fill
+  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
+  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
+  [Button, disabled] "Send" id: arrow.up
   [Unknown] "Skill: Breakdown"
   [StaticText] "" value: "ugh I have to move flat, get the deposit sorted, pack, book a van, and call mum"
   [StaticText] "" value: "Is the move by a date, and is the deposit for the new flat or the old one?"

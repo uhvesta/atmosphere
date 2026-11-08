@@ -139,7 +139,8 @@ public struct SummaryMarker: View {
     }
 }
 
-/// Send, or Stop while a reply is being written.
+/// Send, or Stop while a reply is being written: a round button in the
+/// accent color, gray while there's nothing to send.
 public struct SendButton: View {
     let canSend: Bool
     let canStop: Bool
@@ -156,20 +157,47 @@ public struct SendButton: View {
     public var body: some View {
         if canStop {
             Button(action: stop) {
-                Label("Stop", systemImage: "stop.circle.fill")
-                    .labelStyle(.iconOnly)
-                    .font(.title2)
+                Label("Stop", systemImage: "stop.fill")
             }
+            .buttonStyle(RoundButtonStyle(prominent: true))
             .help("Stop the reply, keeping what it has written")
             .keyboardShortcut(".", modifiers: .command)
         } else {
             Button(action: send) {
-                Label("Send", systemImage: "arrow.up.circle.fill")
-                    .labelStyle(.iconOnly)
-                    .font(.title2)
+                Label("Send", systemImage: "arrow.up")
             }
+            .buttonStyle(RoundButtonStyle(prominent: true))
             .disabled(!canSend)
         }
+    }
+}
+
+/// A round icon button of the composer: gray, or filled with the accent
+/// color when `prominent`, such as Send.
+public struct RoundButtonStyle: ButtonStyle {
+    let prominent: Bool
+    @Environment(\.isEnabled) private var isEnabled
+
+    public init(prominent: Bool = false) {
+        self.prominent = prominent
+    }
+
+    public func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .labelStyle(.iconOnly)
+            .font(.body.weight(.semibold))
+            .foregroundStyle(prominent ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
+            .frame(width: 34, height: 34)
+            .background {
+                Circle().fill(fill)
+            }
+            .opacity(configuration.isPressed ? 0.6 : 1)
+            .contentShape(.circle)
+    }
+
+    private var fill: AnyShapeStyle {
+        guard prominent else { return AnyShapeStyle(.fill.secondary) }
+        return isEnabled ? AnyShapeStyle(.tint) : AnyShapeStyle(.gray.opacity(0.4))
     }
 }
 
@@ -187,7 +215,159 @@ public struct MessageField: View {
 
     public var body: some View {
         TextField("Message", text: $text, prompt: prompt, axis: .vertical)
-            .textFieldStyle(.roundedBorder)
+            .textFieldStyle(.plain)
+            .lineLimit(1...8)
             .onSubmit(submit)
+    }
+}
+
+/// The model the next message runs on, and how long it thinks, in the
+/// composer: tap it to pick another.
+public struct ModelPill: View {
+    let name: String
+    let detail: String?
+    let pick: () -> Void
+
+    /// `detail` follows the name in gray, such as the thinking level.
+    public init(name: String, detail: String?, pick: @escaping () -> Void) {
+        self.name = name
+        self.detail = detail
+        self.pick = pick
+    }
+
+    public var body: some View {
+        Button(action: pick) {
+            HStack(spacing: 6) {
+                Text(name)
+                    .foregroundStyle(.primary)
+                if let detail {
+                    Text(detail)
+                        .foregroundStyle(Color.secondary)
+                }
+            }
+            .font(.callout.weight(.medium))
+            .lineLimit(1)
+            .padding(.horizontal, 12)
+            .frame(height: 34)
+            .background(.fill.secondary, in: .capsule)
+            .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text("Model"))
+        .accessibilityValue(Text(detail.map { "\(name), \($0)" } ?? name))
+        .help("Model, Thinking and Context Window")
+    }
+}
+
+/// The microphone button of the composer, which records for the next
+/// message, or stops.
+public struct MicButton: View {
+    let isRecording: Bool
+    let toggle: () -> Void
+
+    public init(isRecording: Bool, toggle: @escaping () -> Void) {
+        self.isRecording = isRecording
+        self.toggle = toggle
+    }
+
+    public var body: some View {
+        Button(action: toggle) {
+            Label(isRecording ? "Stop Recording" : "Record", systemImage: isRecording ? "stop.fill" : "mic")
+        }
+        // Red while recording, like the system's own.
+        .buttonStyle(RoundButtonStyle(prominent: isRecording))
+        .tint(isRecording ? .red : nil)
+    }
+}
+
+/// What the next message is written in: a rounded card with what goes
+/// with the message on top, such as its skill and attachments, the field,
+/// and under it a row with + for what to attach, the model's pill, and
+/// on the right the microphone and Send.
+public struct ChatComposer<Top: View, Attach: View>: View {
+    @Binding var text: String
+    let prompt: Text?
+    let model: ModelPill?
+    let mic: MicButton?
+    let send: SendButton
+    let submit: () -> Void
+    let top: Top
+    let attach: Attach
+    let attaches: Bool
+
+    /// `attach` is the menu + opens; `top` sits above the field.
+    public init(
+        text: Binding<String>, prompt: Text? = nil, model: ModelPill?, mic: MicButton? = nil, send: SendButton,
+        submit: @escaping () -> Void, @ViewBuilder top: () -> Top, @ViewBuilder attach: () -> Attach
+    ) {
+        _text = text
+        self.prompt = prompt
+        self.model = model
+        self.mic = mic
+        self.send = send
+        self.submit = submit
+        self.top = top()
+        self.attach = attach()
+        attaches = true
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            top
+            MessageField(text: $text, prompt: prompt, submit: submit)
+                .padding(.horizontal, 4)
+            HStack(spacing: 8) {
+                if attaches {
+                    Menu {
+                        attach
+                    } label: {
+                        Label("Add", systemImage: "plus")
+                    }
+                    .menuIndicator(.hidden)
+                    .buttonStyle(RoundButtonStyle())
+                    .fixedSize()
+                    .help("Attach a photo or use a skill")
+                }
+                model
+                Spacer(minLength: 0)
+                mic
+                send
+            }
+        }
+        .padding(10)
+        .background(.background, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .strokeBorder(.quaternary)
+        }
+        .shadow(color: .black.opacity(0.06), radius: 8, y: 2)
+    }
+}
+
+extension ChatComposer where Attach == EmptyView {
+    /// A composer with nothing to attach, and so no +.
+    public init(
+        text: Binding<String>, prompt: Text? = nil, model: ModelPill?, mic: MicButton? = nil, send: SendButton,
+        submit: @escaping () -> Void, @ViewBuilder top: () -> Top
+    ) {
+        _text = text
+        self.prompt = prompt
+        self.model = model
+        self.mic = mic
+        self.send = send
+        self.submit = submit
+        self.top = top()
+        attach = EmptyView()
+        attaches = false
+    }
+}
+
+extension ChatComposer where Top == EmptyView, Attach == EmptyView {
+    /// A composer with only the field, the model's pill and Send.
+    public init(
+        text: Binding<String>, prompt: Text? = nil, model: ModelPill?, send: SendButton,
+        submit: @escaping () -> Void
+    ) {
+        self.init(text: text, prompt: prompt, model: model, send: send, submit: submit) { EmptyView() }
     }
 }

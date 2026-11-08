@@ -58,6 +58,16 @@ package enum AssistantPrompt {
         (text.utf8.count + 2) / 3
     }
 
+    /// How much of the window of a model with `budget` the turn took: the
+    /// request at `size`, what the model thought, and its answer.
+    package static func contextUse(
+        _ request: AssistantRequest, size: Size, answer: String, thinking: ModelThinking?, budget: ContextBudget
+    ) -> ContextUse {
+        let answered = estimatedTokens(answer) + estimatedTokens(thinking?.text ?? "")
+        let used = estimatedTokens(request, size: size) + answered
+        return ContextUse(used: used, window: budget.window)
+    }
+
     /// The estimated tokens of `request` at `size`, before the answer.
     package static func estimatedTokens(_ request: AssistantRequest, size: Size) -> Int {
         estimatedTokens(instructions(request, size: size)) + estimatedTokens(prompt(request, size: size))

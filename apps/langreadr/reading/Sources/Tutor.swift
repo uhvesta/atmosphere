@@ -79,11 +79,12 @@ public struct Tutor: Sendable {
             inSentence: inSentence ?? "")
     }
 
-    /// The reply to the last message of `chat`, about a passage of `book`.
-    /// `partial` gets the reply as it's written.
+    /// The reply to the last message of `chat`, about a passage of `book`,
+    /// and how much of the model's window it took. `partial` gets the reply
+    /// as it's written.
     public func reply(
         in chat: AnchoredChat, about book: ChatBook, partial: @escaping @Sendable (String) -> Void
-    ) async throws(ModelRuntimeError) -> String {
+    ) async throws(ModelRuntimeError) -> TutorReply {
         let choice = ModelChoice(chat.model)
         let model = runtime(.chat, choice)
         let budget = model.budget.room * 3
@@ -91,23 +92,25 @@ public struct Tutor: Sendable {
         let transcript = chat.conversation.messages.newest(fitting: max(400, budget - context.count - 600))
             .map { "\($0.role == .person ? "Reader" : "You"): \($0.text)" }
             .joined(separator: "\n\n")
-        var turn = ModelTurn(
-            instructions: """
-                You help someone who speaks \(name(reader)) read \(name(book.language)). They're reading \
-                “\(book.title)” and asking about this passage: “\(chat.passage.text)”, from the paragraph: \
-                “\(context)”. Answer in \(name(reader)), briefly and plainly. Explain grammar and words \
-                where they ask, and quote the \(name(book.language)) you explain.
-                """,
-            prompt: transcript)
+        let instructions = """
+            You help someone who speaks \(name(reader)) read \(name(book.language)). They're reading \
+            “\(book.title)” and asking about this passage: “\(chat.passage.text)”, from the paragraph: \
+            “\(context)”. Answer in \(name(reader)), briefly and plainly. Explain grammar and words \
+            where they ask, and quote the \(name(book.language)) you explain.
+            """
+        var turn = ModelTurn(instructions: instructions, prompt: transcript)
         if let tokens = choice.thinkingLevel.tokens {
             // The chat shows only the reply, so what it thinks isn't kept.
             turn.thinking = { _ in }
             turn.thinkingTokens = tokens
         }
-        return try await Self.text(
+        let text = try await Self.text(
             model.respond(to: turn) { value in
                 if case .string(let text) = value { partial(text) }
             })
+        // About three bytes a token, as the transcript was cut to fit.
+        let used = (instructions.utf8.count + transcript.utf8.count + text.utf8.count) / 3
+        return TutorReply(text: text, context: ContextUse(used: used, window: model.budget.window))
     }
 
     private static let hepburn = ", in Hepburn romanization, with each kanji read as it is in its word"
@@ -122,6 +125,18 @@ public struct Tutor: Sendable {
     private static func text(_ answer: JSONValue) throws(ModelRuntimeError) -> String {
         guard case .string(let text) = answer else { throw .failed("the model answered with a value, not text") }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// A reply in a chat about a passage.
+public struct TutorReply: Hashable, Sendable {
+    public var text: String
+    /// About how much of the model's window the chat took, with the reply.
+    public var context: ContextUse
+
+    public init(text: String, context: ContextUse) {
+        self.text = text
+        self.context = context
     }
 }
 

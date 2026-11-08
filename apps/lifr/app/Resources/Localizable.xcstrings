@@ -20,6 +20,9 @@
         }
       }
     },
+    "%@ (Recommended)" : {
+
+    },
     "%@ (agent)" : {
 
     },
@@ -477,6 +480,9 @@
     "Attach a Photo" : {
 
     },
+    "Attach a photo or use a skill" : {
+
+    },
     "Attach skills to a conversation to tell the assistant what to do and which tools it may use." : {
 
     },
@@ -577,6 +583,9 @@
 
     },
     "Clear filters" : {
+
+    },
+    "Close" : {
 
     },
     "Close %@ as Won't Do and Archive" : {
@@ -751,6 +760,9 @@
 
     },
     "Declined" : {
+
+    },
+    "Default" : {
 
     },
     "Default (%@)" : {
@@ -1570,6 +1582,9 @@
     "Reads" : {
 
     },
+    "Recommended" : {
+
+    },
     "Record" : {
 
     },
@@ -1777,6 +1792,9 @@
 
     },
     "See what's due" : {
+
+    },
+    "Select Model" : {
 
     },
     "Select Text" : {

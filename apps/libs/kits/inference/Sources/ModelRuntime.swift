@@ -181,6 +181,24 @@ public struct ContextBudget: Hashable, Sendable {
     public static let appleOnDevice = ContextBudget(window: 4_096, reservedForAnswer: 1_100)
 }
 
+/// How much of a model's window a conversation took on its last turn:
+/// what it read and wrote, estimated.
+public struct ContextUse: Hashable, Sendable {
+    public var used: Int
+    public var window: Int
+
+    public init(used: Int, window: Int) {
+        self.used = used
+        self.window = window
+    }
+
+    /// The part of the window used, from 0 to 1.
+    public var fraction: Double {
+        guard window > 0 else { return 0 }
+        return min(1, max(0, Double(used) / Double(window)))
+    }
+}
+
 /// Whether a model can answer now.
 public enum ModelStatus: Hashable, Sendable {
     case available

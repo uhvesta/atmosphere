@@ -245,6 +245,8 @@ enum LiveAssistant {
         }
         reply.thinking = thoughts.value
         reply.leftOut = AssistantPrompt.leftOut(request, size: size)
+        reply.context = AssistantPrompt.contextUse(
+            request, size: size, answer: reply.text, thinking: reply.thinking, budget: model.budget)
         reply.proposal = tools.proposal
         continuation.yield(
             AssistantPrompt.reply(reply, changed: changed, refused: refused, refusedProjects: refusedProjects))
@@ -277,10 +279,12 @@ enum LiveAssistant {
         let answer = try await model.respond(to: turn) { partial in
             thoughts.yield(AssistantReply(text: partial.plainText, isComplete: false), continuation)
         }
-        continuation.yield(
-            AssistantReply(
-                text: answer.plainText, isComplete: true, thinking: thoughts.value,
-                leftOut: AssistantPrompt.leftOut(request, size: size)))
+        var reply = AssistantReply(
+            text: answer.plainText, isComplete: true, thinking: thoughts.value,
+            leftOut: AssistantPrompt.leftOut(request, size: size))
+        reply.context = AssistantPrompt.contextUse(
+            request, size: size, answer: reply.text, thinking: reply.thinking, budget: model.budget)
+        continuation.yield(reply)
         continuation.finish()
     }
 

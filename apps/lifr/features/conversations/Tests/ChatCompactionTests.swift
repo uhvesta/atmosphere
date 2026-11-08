@@ -3,6 +3,7 @@ import Foundation
 import LifrAssistantClient
 import LifrConversations
 import LifrCore
+import LifrModelsClient
 import LifrStoreClient
 import XCTest
 
@@ -24,6 +25,7 @@ final class ChatCompactionTests: XCTestCase {
         ) {
             ChatFeature()
         } withDependencies: { [now] in
+            $0.models = InMemoryModelLibrary().client
             $0.store = .inMemory(Workspace(), actor: .user(device: "iPhone", surface: .iPhone))
             $0.skills = .inMemory()
             $0.guidance = .inMemory()

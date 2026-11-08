@@ -94,12 +94,45 @@ final class ChatModelTests: XCTestCase {
         XCTAssertEqual(runs.runtime.turns.map { $0.thinking != nil }, [true, false])
     }
 
-    func testUsingTheDefaultsAgainForgetsWhatWasPicked() async throws {
+    func testPickingEachDefaultAgainForgetsWhatWasPicked() async throws {
         let store = try chat(Runs([]), picked: ChatModel(model: qwen.rawValue, thinking: "off", window: 16_384))
         await store.send(.modelTapped)
-        await store.send(.model(.presented(.resetTapped)))
+        await store.send(.model(.presented(.binding(.set(\.model, nil)))))
+        await store.send(.model(.presented(.binding(.set(\.choice.thinking, nil)))))
+        await store.send(.model(.presented(.binding(.set(\.choice.window, nil)))))
         await store.send(.model(.dismiss))
         XCTAssertEqual(store.state.chat.model, ChatModel())
+    }
+
+    func testTheComposerNamesTheModelTheChatRunsOn() async throws {
+        let store = try chat(
+            Runs([]), picked: ChatModel(model: qwen.rawValue),
+            library: InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small]))
+        XCTAssertNil(store.state.current)
+        await store.send(.task)
+        await store.receive(\.modelsLoaded)
+        XCTAssertEqual(store.state.current?.id, qwen)
+    }
+
+    func testAReplySaysHowMuchOfTheWindowItTookUntilTheModelChanges() async throws {
+        let store = try chat(
+            Runs([ScriptedRuntime.answer("Hello.")]),
+            library: InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small]))
+        XCTAssertNil(store.state.context)
+        await ask("Hola?", in: store)
+        let context = try XCTUnwrap(store.state.context)
+        XCTAssertGreaterThan(context.used, 0)
+        XCTAssertGreaterThan(context.window, context.used)
+
+        await store.send(.modelTapped)
+        await store.send(.model(.presented(.binding(.set(\.choice.thinking, .long)))))
+        await store.send(.model(.dismiss))
+        XCTAssertEqual(store.state.context, context)
+
+        await store.send(.modelTapped)
+        await store.send(.model(.presented(.binding(.set(\.model, qwen)))))
+        await store.send(.model(.dismiss))
+        XCTAssertNil(store.state.context)
     }
 
     func testAChatOnAModelThatWasDeletedRunsOnTheDefault() async throws {

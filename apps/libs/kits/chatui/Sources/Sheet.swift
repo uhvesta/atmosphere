@@ -45,3 +45,29 @@ extension Binding where Value == String? {
             set: { wrappedValue = $0.isEmpty ? nil : $0 })
     }
 }
+
+extension View {
+    /// The chat's title, with a line in gray under it on systems that show
+    /// one.
+    public func chatTitle(_ title: String, subtitle: String) -> some View {
+        modifier(ChatTitle(title: title, subtitle: subtitle))
+    }
+}
+
+private struct ChatTitle: ViewModifier {
+    let title: String
+    let subtitle: String
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+            if #available(iOS 26, *) {
+                content.navigationTitle(title).navigationSubtitle(subtitle)
+                    .navigationBarTitleDisplayMode(.inline)
+            } else {
+                content.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+            }
+        #else
+            content.navigationTitle(title).navigationSubtitle(subtitle)
+        #endif
+    }
+}

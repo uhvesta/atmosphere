@@ -25,18 +25,18 @@
     [Row/OutlineRow] ""
       [Button] "What plant is this?, Nov 3 at 10:00 AM, And this one?"
   [Heading] "What plant is this?"
-  [Button] "Model" help: "Model, Thinking and Context Window"
+  [MenuButton] "Context Window" help: "Nothing used yet"
   [Button] "Find in Conversation" help: "Find in Conversation"
   [Button] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
   [Button] "Back" help: "Go back to the message before"
   [Button, disabled] "Forward" help: "Go forward to the message after"
   [Button] "All Checkpoints" help: "Every point to go back or forward to"
   [Button] "Rename" help: "Rename"
-  [Button] "Use a Skill" id: sparkles
-  [Button] "Attach a Photo" id: photo
-  [Button] "Record" id: mic
   [TextField] ""
-  [Button, disabled] "Send" id: arrow.up.circle.fill
+  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
+  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
+  [Button] "Record" id: mic
+  [Button, disabled] "Send" id: arrow.up
   [StaticText] "" value: "Photo"
   [StaticText] "" value: "Recording, 6 s"
   [StaticText] "" value: "What plant is this?"
