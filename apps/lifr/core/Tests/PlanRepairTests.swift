@@ -6,11 +6,12 @@ func planRepairTests() -> [TestCase] {
     let gmt = TimeZone.gmt
 
     return [
-        TestCase("given places by name, in another case, a typo away or only a Project, when repaired, then they add") {
+        TestCase(
+            "given places by name, in another case, a Project typo or only a Project, when repaired, then they add"
+        ) {
             let fixture = try Fixture()
             let plan = Plan(tasks: [
                 .init(title: "A", place: "Health"),
-                .init(title: "B", place: "HEALHT"),
                 .init(title: "C", place: "health/half MARATHON"),
                 .init(title: "D", place: "HEALTH/Half marathn"),
                 .init(title: "E", place: "Half marathon"),
@@ -18,8 +19,23 @@ func planRepairTests() -> [TestCase] {
             let repaired = plan.repaired(for: fixture.workspace)
             try expectEqual(
                 repaired.tasks.map(\.place),
-                ["HEALTH", "HEALTH", "HEALTH/Half marathon", "HEALTH/Half marathon", "HEALTH/Half marathon"])
+                ["HEALTH", "HEALTH/Half marathon", "HEALTH/Half marathon", "HEALTH/Half marathon"])
             _ = try fixture.workspace.apply(repaired, timeZone: gmt, in: fixture.context)
+        },
+        TestCase("given a key a letter from HEALTH that the plan doesn't add, when repaired, then it's refused") {
+            let fixture = try Fixture()
+            // WEALTH may be a new Avenue the plan left out, or HEALTH
+            // mistyped: a guess could put it all in the wrong Avenue.
+            let plan = Plan(
+                projects: [.init(name: "Emergency fund", avenue: "WEALTH", tasks: [.init(title: "Open an account")])],
+                tasks: [.init(title: "Budget", place: "wealth")])
+            let repaired = plan.repaired(for: fixture.workspace)
+            try expectEqual(repaired.projects.map(\.avenue), ["WEALTH"])
+            try expectEqual(repaired.tasks.map(\.place), ["wealth"])
+            let problem = fixture.workspace.problem(with: repaired, timeZone: gmt, now: fixture.now)
+            var refused = false
+            if case .plan(_, .unknownAvenue(key: "WEALTH", _))? = problem { refused = true }
+            try expect(refused, "WEALTH wasn't refused: \(String(describing: problem))")
         },
         TestCase("given a place nothing is close to, when repaired, then it stays for the person to fix") {
             let fixture = try Fixture()

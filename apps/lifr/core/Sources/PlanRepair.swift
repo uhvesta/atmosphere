@@ -4,9 +4,9 @@ extension Plan {
     /// The plan with the small mistakes an assistant makes put right, so
     /// the person needn't fix them by hand:
     /// - a place that names an Avenue by its name rather than its key, or
-    ///   a key or Project name one or two letters off, or only a Project's
-    ///   name, becomes the place it means; a Project of a new Avenue that
-    ///   the plan doesn't add becomes the Avenue;
+    ///   a Project name one or two letters off, or only a Project's name,
+    ///   becomes the place it means; a Project of a new Avenue that the
+    ///   plan doesn't add becomes the Avenue;
     /// - a new Avenue with the name of one that's there is left out, and
     ///   what named its key goes in the one that's there;
     /// - a task with both a place and the code of an existing parent goes
@@ -15,7 +15,10 @@ extension Plan {
     /// - the same task twice in one place becomes one, keeping what either
     ///   says.
     /// Anything it can't be sure of is left for `Workspace.problem(with:)`
-    /// to report.
+    /// to report, such as an Avenue key that's neither there nor added: a
+    /// key a letter from one that's there, such as WEALTH for HEALTH, may
+    /// be a new Avenue the plan left out, and a guess would put it all in
+    /// the wrong one.
     package func repaired(for workspace: Workspace) -> Plan {
         var plan = self
         let places = PlaceNames(workspace)
@@ -212,14 +215,13 @@ private struct PlaceNames {
         avenues.first { $0.name.caseInsensitiveCompare(name.trimmingCharacters(in: .whitespaces)) == .orderedSame }
     }
 
-    /// The key of the Avenue `text` names: its key in any case, its name,
-    /// or a key a typo away. Nil when none is close.
+    /// The key of the Avenue `text` names: its key in any case, or its
+    /// name. Nil when it names none.
     func avenueKey(_ text: String) -> String? {
         if let avenue = avenues.first(where: { $0.key.rawValue.caseInsensitiveCompare(text) == .orderedSame }) {
             return avenue.key.rawValue
         }
-        if let avenue = avenue(named: text) { return avenue.key.rawValue }
-        return Workspace.closest(to: text.uppercased(), in: avenues.map(\.key.rawValue))
+        return avenue(named: text)?.key.rawValue
     }
 
     /// "KEY" or "KEY/Project name" for `text`, or `text` when it can't

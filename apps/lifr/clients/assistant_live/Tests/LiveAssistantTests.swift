@@ -57,7 +57,9 @@ final class LiveAssistantTests: XCTestCase {
 
     private let turn: JSONValue = [
         "message": "Here's a plan.",
-        "plan": ["tasks": [["title": "Water plants", "place": "HOME"]]],
+        "plan": [
+            "avenues": [["key": "HOME", "name": "Home"]], "tasks": [["title": "Water plants", "place": "HOME"]],
+        ],
     ]
 
     func testTheAnswerStreamsAndEndsWithTheWholePlan() async {
@@ -718,5 +720,100 @@ final class LiveAssistantTests: XCTestCase {
 
         XCTAssertNil(error)
         XCTAssertGreaterThan(replies.last?.leftOut ?? 0, 0)
+    }
+
+    // MARK: - A new Avenue with what goes in it
+
+    private let newAvenueMessage =
+        "Make a Wealth avenue with a project Emergency fund, and tasks to open a savings account and set up a transfer"
+
+    /// The model's answer: the Project "Emergency fund" with two tasks in
+    /// Avenue WEALTH, which it adds to the plan only `withAvenue`.
+    private func fundAnswer(withAvenue: Bool) -> JSONValue {
+        var plan: [String: JSONValue] = [
+            "projects": [
+                [
+                    "name": "Emergency fund", "avenue": "WEALTH",
+                    "tasks": [["title": "Open a savings account"], ["title": "Set up a transfer"]],
+                ]
+            ]
+        ]
+        if withAvenue { plan["avenues"] = [["key": "WEALTH", "name": "Wealth"]] }
+        return ["message": "I made the Wealth Avenue with Emergency fund and its tasks.", "plan": .object(plan)]
+    }
+
+    /// The reply's plan as the chat keeps it: without what's there and
+    /// with small mistakes put right.
+    private func drafted(_ replies: [AssistantReply], in workspace: Workspace) throws -> Plan {
+        try XCTUnwrap(replies.last?.plan).leavingOut(workspace).repaired(for: workspace)
+    }
+
+    func testANewAvenueTheModelLeavesOutIsAskedForAndAddedWithItsProjectAndTasksInOneChange() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let health = records.avenue("HEALTH", "Health")
+        let store = StoreClient.inMemory(records.workspace, actor: .user(device: "iPhone", surface: .iPhone))
+        let model = ScriptedRuntime(steps: [
+            ScriptedRuntime.answer(fundAnswer(withAvenue: false)),
+            ScriptedRuntime.answer(fundAnswer(withAvenue: true)),
+        ])
+
+        let (replies, error) = await replies(
+            .live(runtime: { _, _ in model }), request(newAvenueMessage, workspace: records.workspace))
+        XCTAssertNil(error)
+        let plan = try drafted(replies, in: records.workspace)
+        let saved = try await withDependencies {
+            $0.date.now = now
+            $0.uuid = .incrementing
+            $0.withRandomNumberGenerator = WithRandomNumberGenerator(SystemRandomNumberGenerator())
+        } operation: {
+            try await store.save { workspace, context throws(LifrError) in
+                try workspace.apply(plan, timeZone: .gmt, in: context)
+            }
+        }.workspace
+
+        let wealth = try XCTUnwrap(saved.avenues.values.first { $0.key.rawValue == "WEALTH" })
+        XCTAssertEqual(wealth.name, "Wealth")
+        let fund = try XCTUnwrap(saved.projects.values.first { $0.name == "Emergency fund" })
+        XCTAssertEqual(fund.avenueID, wealth.id)
+        let tasks = saved.tasks.values.filter { $0.projectID == fund.id }
+        XCTAssertEqual(Set(tasks.map(\.title)), ["Open a savings account", "Set up a transfer"])
+        XCTAssertTrue(tasks.allSatisfy { $0.avenueID == wealth.id })
+        XCTAssertFalse(saved.tasks.values.contains { $0.avenueID == health.id }, "nothing went in HEALTH")
+        XCTAssertFalse(saved.projects.values.contains { $0.avenueID == health.id }, "nothing went in HEALTH")
+        XCTAssertEqual(saved.journal.count, 1, "the Avenue, Project and tasks are one change")
+    }
+
+    func testANewAvenueTheModelAddsGoesInWithItsProjectAndTasksFirstTime() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        _ = records.avenue("HEALTH", "Health")
+        let model = ScriptedRuntime(steps: [ScriptedRuntime.answer(fundAnswer(withAvenue: true))])
+
+        let (replies, error) = await replies(
+            .live(runtime: { _, _ in model }), request(newAvenueMessage, workspace: records.workspace))
+
+        XCTAssertNil(error)
+        XCTAssertEqual(model.turns.count, 1)
+        let plan = try drafted(replies, in: records.workspace)
+        XCTAssertEqual(plan.avenues.map(\.key), ["WEALTH"])
+        XCTAssertEqual(plan.projects.map(\.avenue), ["WEALTH"])
+        XCTAssertNil(records.workspace.problem(with: plan, timeZone: .gmt, now: now))
+    }
+
+    func testAnAvenueThePlanNeverAddsIsReportedNotSwappedForOneThatsThere() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        _ = records.avenue("HEALTH", "Health")
+        let model = ScriptedRuntime(
+            steps: Array(repeating: ScriptedRuntime.answer(fundAnswer(withAvenue: false)), count: 2))
+
+        let (replies, error) = await replies(
+            .live(runtime: { _, _ in model }), request(newAvenueMessage, workspace: records.workspace))
+
+        XCTAssertNil(error)
+        let plan = try drafted(replies, in: records.workspace)
+        XCTAssertEqual(plan.projects.map(\.avenue), ["WEALTH"], "the Project stays where the model put it")
+        let problem = records.workspace.problem(with: plan, timeZone: .gmt, now: now)
+        guard case .plan(_, .unknownAvenue(let key, _))? = problem
+        else { return XCTFail("A plan in an Avenue that isn't there can be added") }
+        XCTAssertEqual(key, "WEALTH")
     }
 }

@@ -136,18 +136,22 @@ enum LiveAssistant {
                 request, size, instructions: AssistantPrompt.chatInstructions(request), model, thoughts, continuation)
         }
         tools.resultBudget = size.toolResultBudget
-        var forgot = false
+        var note: String?
         for attempt in 1...2 {
             do {
-                try await structured(request, size, tools, model, thoughts, forgot: forgot, continuation)
+                try await structured(
+                    request, size, tools, model, thoughts, note: note, asksAgain: attempt == 1 && note == nil,
+                    continuation)
                 return
             } catch ModelRuntimeError.decodingFailure {
                 if attempt == 2 { break }
             } catch is ForgotTasks {
                 // Asked the same way, a model that answers the same each
                 // time would forget them again.
-                forgot = true
+                note = Self.forgotTasks
                 if attempt == 2 { break }
+            } catch let unknown as UnknownAvenues {
+                note = Self.unknownAvenues(unknown.keys)
             }
         }
         // Plain text has no tools, so it asks to change nothing.
@@ -163,7 +167,7 @@ enum LiveAssistant {
     /// One answer as a message and maybe a plan, with the tools.
     private static func structured(
         _ request: AssistantRequest, _ size: AssistantPrompt.Size, _ tools: AssistantTools, _ model: any ModelRuntime,
-        _ thoughts: Thoughts, forgot: Bool, _ continuation: AssistantReplies.Continuation
+        _ thoughts: Thoughts, note: String?, asksAgain: Bool, _ continuation: AssistantReplies.Continuation
     ) async throws {
         // What an earlier try asked to change is asked again, or not.
         tools.discardProposal()
@@ -178,7 +182,7 @@ enum LiveAssistant {
         let mustPlan = asksForPlan && (draftTitles.isEmpty || asksToAdd)
         var turn = ModelTurn(
             instructions: AssistantPrompt.instructions(request, size: size),
-            prompt: AssistantPrompt.prompt(request, size: size) + (forgot ? Self.forgotTasks : ""),
+            prompt: AssistantPrompt.prompt(request, size: size) + (note ?? ""),
             tools: AssistantTool.allCases.filter(allowed.contains).compactMap { $0.definition(tools) },
             schema: Shapes.turn(
                 changes: changeable.map(\.code), places: request.lookup.places.flatMap(\.choices),
@@ -235,6 +239,15 @@ enum LiveAssistant {
         {
             throw ForgotTasks()
         }
+        // Asked for a new Avenue with things in it, a small model sometimes
+        // puts them under its key without adding the Avenue, and says it
+        // did. Told which, it adds the Avenue or uses one that's there.
+        // Asked once: what's still unknown is refused when it's added,
+        // never put in an Avenue it only looks like.
+        if asksAgain, let plan = reply.plan {
+            let unknown = Self.unknownAvenues(in: plan, request)
+            if !unknown.isEmpty { throw UnknownAvenues(keys: unknown) }
+        }
         reply.plan = reply.plan.map {
             AssistantPrompt.withoutRepeatedTasks(
                 AssistantPrompt.withoutRestatedGoals(AssistantPrompt.withAskedProjects($0, request), request))
@@ -265,6 +278,52 @@ enum LiveAssistant {
 
     /// An answer that was asked for new things and added none of them.
     private struct ForgotTasks: Error {}
+
+    /// An answer whose plan puts things in Avenues with these `keys`,
+    /// which are neither there nor added by the plan.
+    private struct UnknownAvenues: Error {
+        let keys: [String]
+    }
+
+    /// Added to the prompt when asking again after an answer that put
+    /// things in Avenues with `keys` that aren't there.
+    private static func unknownAvenues(_ keys: [String]) -> String {
+        let named = keys.joined(separator: ", ")
+        return """
+
+
+            Your last answer put things in \(keys.count == 1 ? "the Avenue" : "the Avenues") \(named), which \
+            \(keys.count == 1 ? "isn't" : "aren't") in the list and not in the plan's "avenues". If the person \
+            asked for a new Avenue, add it to "avenues" with its key and name, and keep its Projects and tasks \
+            in it. Otherwise use an Avenue from the list.
+            """
+    }
+
+    /// The Avenues `plan` puts its Projects and tasks in, by what it calls
+    /// them, that are neither open in the workspace nor new in the plan
+    /// or the draft, by key or name in any case. A task placed by only a
+    /// Project's name is left to `Plan.repaired`.
+    private static func unknownAvenues(in plan: Plan, _ request: AssistantRequest) -> [String] {
+        func trim(_ text: String) -> String { text.trimmingCharacters(in: .whitespaces) }
+        let workspace = request.workspace
+        let open = workspace.avenues.values.filter { $0.archivedAt == nil }
+        let new = plan.avenues + (request.draft?.avenues ?? [])
+        let known = Set(
+            (open.flatMap { [$0.key.rawValue, $0.name] } + new.flatMap { [$0.key, $0.name] }).map { $0.lowercased() })
+        let projects = Set(workspace.projects.values.map { $0.name.lowercased() })
+        let named =
+            plan.projects.map(\.avenue)
+            + plan.tasks.filter { $0.parent == nil }.compactMap { task -> String? in
+                guard let place = task.place else { return nil }
+                let parts = place.split(separator: "/", maxSplits: 1)
+                let avenue = parts.first.map(String.init) ?? place
+                return parts.count == 1 && projects.contains(trim(avenue).lowercased()) ? nil : avenue
+            }
+        var seen: Set<String> = []
+        return named.map(trim).filter { name in
+            !name.isEmpty && !known.contains(name.lowercased()) && seen.insert(name.lowercased()).inserted
+        }
+    }
 
     /// One answer as plain text, without tools or a plan: the answer
     /// without a skill, and what's left when the structured answer can't

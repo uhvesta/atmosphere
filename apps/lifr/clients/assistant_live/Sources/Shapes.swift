@@ -160,8 +160,8 @@ enum Shapes {
     /// must with `mustChangeProject`.
     static func turn(
         changes codes: [String], places: [String] = [], draftTitles: [String] = [], projects: [String] = [],
-        avenues: [String] = [], mustChange: Bool = false, mustChangeDraft: Bool = false, mustChangeProject: Bool = false,
-        mustPlan: Bool = false
+        avenues: [String] = [], mustChange: Bool = false, mustChangeDraft: Bool = false,
+        mustChangeProject: Bool = false, mustPlan: Bool = false
     ) -> ModelSchema {
         var properties: [ModelProperty] = []
         if !codes.isEmpty {
