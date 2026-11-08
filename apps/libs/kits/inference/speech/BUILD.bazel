@@ -1,0 +1,70 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# Speech: text read aloud on the device. The system voice, through
+# AVSpeechSynthesizer, needs no download; a downloaded voice model,
+# Supertonic 3, runs on Core ML, which the OS ships. Both make PCM audio
+# a piece at a time, which plays through AVAudioEngine; Speaker picks the
+# voice for each language, falls back to the system's, and stops what's
+# playing when something else speaks. Supertonic needs its model, so it's
+# checked by building and by hand with :smoke_test; Speaker and the text
+# Supertonic reads are tested with fakes.
+swift_library(
+    name = "speech",
+    package_name = "inference",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "InferenceKitSpeech",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/langreadr/app:__pkg__",
+        "//apps/lifr/app:__pkg__",
+    ],
+    deps = ["//apps/libs/kits/inference"],
+)
+
+swift_library(
+    name = "tests_lib",
+    package_name = "inference",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":speech",
+        "//apps/libs/kits/inference",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+# Speaks a sentence with a downloaded Supertonic 3, from the folder in
+# SUPERTONIC_DIR, and checks it made about as much audio as the text
+# takes to say. Skips without it; it downloads nothing.
+swift_library(
+    name = "smoke_tests_lib",
+    testonly = True,
+    srcs = glob(["SmokeTests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":speech",
+        "//apps/libs/kits/inference",
+    ],
+)
+
+macos_unit_test(
+    name = "smoke_test",
+    minimum_os_version = "15.0",
+    tags = ["manual"],
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":smoke_tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

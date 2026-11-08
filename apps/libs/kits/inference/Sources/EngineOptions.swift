@@ -110,7 +110,7 @@ extension RuntimeKind {
         switch self {
         case .llama: Set(EngineOptions.Setting.allCases).subtracting([.gpuActivations])
         case .liteRT: [.cpuThreads, .gpuActivations]
-        case .mlx, .apple: []
+        case .mlx, .apple, .coreML: []
         }
     }
 }

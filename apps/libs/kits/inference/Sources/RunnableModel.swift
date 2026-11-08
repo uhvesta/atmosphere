@@ -35,11 +35,13 @@ public struct RunnableModel: Hashable, Identifiable, Sendable {
         id: .apple, name: ModelCatalog.apple.name, summary: ModelCatalog.apple.summary,
         window: ModelCatalog.apple.contextTokens, windows: [])
 
-    /// Apple's model, then each of `installed` but Apple's, by name.
+    /// Apple's model, then each of `installed` but Apple's and voice
+    /// models, by name.
     public static func list(_ installed: [InstalledModel]) -> [RunnableModel] {
         var seen: Set<ModelID> = [.apple]
         // A model downloaded in more than one format is one model to pick.
-        let downloaded = installed.filter { seen.insert($0.id).inserted }.map(RunnableModel.init)
+        let downloaded = installed.filter { !VoiceCatalog.isVoice($0.spec) && seen.insert($0.id).inserted }
+            .map(RunnableModel.init)
         return [.apple] + downloaded.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 }

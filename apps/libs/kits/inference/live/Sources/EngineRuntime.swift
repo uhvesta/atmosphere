@@ -99,6 +99,8 @@ public struct ModelRuntimes<Use: ModelUseCase>: Sendable {
         switch model.spec.runtime {
         case .apple: return AppleRuntime()
         case .liteRT, .llama, .mlx: return EngineRuntime(model: model, host: host)
+        // A voice model speaks; it doesn't answer.
+        case .coreML: return Missing()
         }
     }
 

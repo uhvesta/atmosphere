@@ -26,6 +26,9 @@ public enum RuntimeKind: String, Hashable, Codable, Sendable, CaseIterable {
     case llama
     /// MLX, for a folder of `.safetensors` in MLX's format.
     case mlx
+    /// Core ML, built into the OS, for `.mlpackage` folders, such as a
+    /// voice model's.
+    case coreML
 
     /// Its name, for the person.
     public var name: String {
@@ -34,6 +37,7 @@ public enum RuntimeKind: String, Hashable, Codable, Sendable, CaseIterable {
         case .liteRT: "LiteRT-LM"
         case .llama: "llama.cpp"
         case .mlx: "MLX"
+        case .coreML: "Core ML"
         }
     }
 
@@ -43,7 +47,7 @@ public enum RuntimeKind: String, Hashable, Codable, Sendable, CaseIterable {
     public var backends: [ModelBackend] {
         switch self {
         case .mlx: [.gpu]
-        case .apple, .liteRT, .llama: [.gpu, .cpu]
+        case .apple, .liteRT, .llama, .coreML: [.gpu, .cpu]
         }
     }
 }
