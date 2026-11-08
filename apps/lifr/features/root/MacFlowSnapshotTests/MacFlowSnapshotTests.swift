@@ -348,6 +348,48 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// + and the microphone with a model that reads photos but doesn't
+    /// listen: + is a menu with Attach a Photo and Add Files, a text file
+    /// and a photo added from it, then the microphone writing what's said
+    /// into the message until it's tapped again, and the message sent.
+    func testAddContextAndDictation() async throws {
+        let notes = try FileText(name: "notes.md", text: "Run on Tuesday and Thursday.", limit: 8_000)
+        let photo = photoFile()
+        let (store, flow) = app(
+            "add-context", inputs: [.image], files: ["notes.md": .text(notes), "fern.jpg": .photo(photo)])
+        store.send(.selected(.conversations))
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        func chat(_ action: ChatFeature.Action) { store.send(.conversations(.chats(.element(id: id, action: action)))) }
+        await flow.step("new")
+        let picked = [URL(filePath: "/tmp/notes.md"), URL(filePath: "/tmp/fern.jpg")]
+        chat(.filesPicked(.success(picked)))
+        await flow.step("files")
+        XCTAssertEqual(store.conversations.chats[id: id]?.pending.count, 2)
+        chat(.micTapped)
+        await flow.step("dictating")
+        XCTAssertEqual(store.conversations.chats[id: id]?.dictating, true)
+        chat(.micTapped)
+        await flow.step("dictated")
+        XCTAssertEqual(store.conversations.chats[id: id]?.input, "Move my run to Friday")
+        chat(.sendTapped)
+        await flow.step("sent")
+        flow.finish()
+    }
+
+    /// A small JPEG, for a photo file picked on the Mac.
+    private func photoFile() -> Data {
+        let image = NSImage(size: NSSize(width: 120, height: 120), flipped: false) { rect in
+            NSColor.systemTeal.setFill()
+            rect.fill()
+            return true
+        }
+        guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),
+            let jpeg = bitmap.representation(using: .jpeg, properties: [:])
+        else { return Data() }
+        return jpeg
+    }
+
     /// The assistant failing to answer, then Retry writing the reply, the
     /// message edited to write it again beside the old, and a message too
     /// long to answer, which Retry can't help.

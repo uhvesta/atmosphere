@@ -35,9 +35,9 @@
   [Button] "Cancel"
   [Button] "Photo"
   [TextField] ""
-  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
+  [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
-  [Button] "Stop Recording" id: stop.fill
+  [Button] "Stop Recording" help: "Record a clip for the model to hear" id: stop.fill
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Hide Sidebar"
