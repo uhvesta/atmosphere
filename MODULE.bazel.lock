@@ -903,12 +903,12 @@
     "@@rules_swift_package_manager+//:extensions.bzl%swift_deps": {
       "general": {
         "bzlTransitiveDigest": "OU0Ca8wMfwZ7vxx53phj0q1UIfrqYE54ez+UwvXFS+I=",
-        "usagesDigest": "zZxyeWXdxGfpW7nK3QSCU9q2KCed3Cq+sxlZ8haFXXE=",
+        "usagesDigest": "4vEmFdprl9rU/AAvG2ptX3mISty8LRZDyHzg0FIqYtU=",
         "recordedInputs": [
           "REPO_MAPPING:rules_swift_package_manager+,bazel_skylib bazel_skylib+",
           "REPO_MAPPING:rules_swift_package_manager+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_swift_package_manager+,cgrindel_bazel_starlib cgrindel_bazel_starlib+",
-          "FILE:@@//apps/lifr/Package.resolved 1c7b69d61b30e2d1e4441dbf167d45a519cde4546b76b88262fcfbff3e32774f"
+          "FILE:@@//apps/lifr/Package.resolved 93097e3045927a571b99b59e7d59bcf8829805e1b9a5ebc6ee1392a02acdb4da"
         ],
         "generatedRepoSpecs": {
           "swift_package": {
@@ -923,20 +923,30 @@
             "attributes": {
               "repo_names": [
                 "swiftpkg_combine_schedulers",
+                "swiftpkg_eventsource",
+                "swiftpkg_mlx_swift",
+                "swiftpkg_mlx_swift_lm",
+                "swiftpkg_swift_asn1",
                 "swiftpkg_swift_case_paths",
                 "swiftpkg_swift_clocks",
                 "swiftpkg_swift_collections",
                 "swiftpkg_swift_composable_architecture",
                 "swiftpkg_swift_concurrency_extras",
+                "swiftpkg_swift_crypto",
                 "swiftpkg_swift_custom_dump",
                 "swiftpkg_swift_dependencies",
+                "swiftpkg_swift_huggingface",
                 "swiftpkg_swift_identified_collections",
+                "swiftpkg_swift_issue_reporting",
+                "swiftpkg_swift_jinja",
                 "swiftpkg_swift_navigation",
+                "swiftpkg_swift_numerics",
                 "swiftpkg_swift_perception",
                 "swiftpkg_swift_sharing",
                 "swiftpkg_swift_snapshot_testing",
                 "swiftpkg_swift_syntax",
-                "swiftpkg_xctest_dynamic_overlay"
+                "swiftpkg_swift_transformers",
+                "swiftpkg_yyjson"
               ]
             }
           },
@@ -978,6 +988,44 @@
               "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
             }
           },
+          "swiftpkg_mlx_swift_lm": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_mlx_swift_lm",
+              "commit": "3b339ad6e3b3f44c8121ecff5131c7fd55e075e6",
+              "remote": "https://github.com/ml-explore/mlx-swift-lm",
+              "version": "3.32.3",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "make_files_read_only": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": "",
+              "bazel_target_mods": "",
+              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
+            }
+          },
+          "swiftpkg_swift_transformers": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_swift_transformers",
+              "commit": "402a8a1105f52038b0949d9596981fc9e32bed17",
+              "remote": "https://github.com/huggingface/swift-transformers",
+              "version": "1.4.0",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "make_files_read_only": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": "",
+              "bazel_target_mods": "",
+              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
+            }
+          },
           "swiftpkg_combine_schedulers": {
             "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
             "attributes": {
@@ -985,6 +1033,80 @@
               "commit": "114354e8c1667a2edc4993700fb9fa4f90157b56",
               "remote": "https://github.com/pointfreeco/combine-schedulers",
               "version": "1.2.2",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "make_files_read_only": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": "",
+              "bazel_target_mods": "",
+              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
+            }
+          },
+          "swiftpkg_eventsource": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_eventsource",
+              "commit": "bb4b61273b5a976bb571859c17f903ebc3439df1",
+              "remote": "https://github.com/mattt/EventSource.git",
+              "version": "1.6.0",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "make_files_read_only": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": "",
+              "bazel_target_mods": "",
+              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
+            }
+          },
+          "swiftpkg_mlx_swift": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_mlx_swift",
+              "commit": "19601207e9a0de51e03ee6ec0c3c5f3784275075",
+              "remote": "https://github.com/ml-explore/mlx-swift",
+              "version": "0.32.3",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "init_submodules": false,
+              "make_files_read_only": false,
+              "recursive_init_submodules": true,
+              "patch_args": [
+                "-p0"
+              ],
+              "patch_cmds": [
+                "touch Source/Cmlx/bazel_include_root.h",
+                "rm -r Source/Cmlx/mlx-generated/metal",
+                "cp Source/Cmlx/mlx/mlx/backend/cpu/compiled.cpp Source/Cmlx/mlx-conditional/cpu_compiled.h",
+                "cp Source/Cmlx/mlx/mlx/backend/no_cpu/compiled.cpp Source/Cmlx/mlx-conditional/no_cpu_compiled.h",
+                "cp Source/Cmlx/mlx/mlx/backend/cpu/jit_compiler.cpp Source/Cmlx/mlx-conditional/jit_compiler.h",
+                "perl -pi -e 's|\\.\\./mlx/mlx/backend/cpu/compiled\\.cpp|cpu_compiled.h|; s|\\.\\./mlx/mlx/backend/no_cpu/compiled\\.cpp|no_cpu_compiled.h|; s|\\.\\./mlx/mlx/backend/cpu/jit_compiler\\.cpp|jit_compiler.h|' Source/Cmlx/mlx-conditional/*.cpp"
+              ],
+              "patch_cmds_win": [],
+              "patch_tool": "",
+              "patches": [],
+              "publicly_expose_all_targets": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": "",
+              "bazel_target_mods": "",
+              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
+            }
+          },
+          "swiftpkg_swift_asn1": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_swift_asn1",
+              "commit": "917b472dbe53ba699cbb0495f9a95a084bc6364d",
+              "remote": "https://github.com/apple/swift-asn1.git",
+              "version": "1.7.4",
               "env": {},
               "env_inherit": [],
               "cached_json_directory": "",
@@ -1073,6 +1195,25 @@
               "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
             }
           },
+          "swiftpkg_swift_crypto": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_swift_crypto",
+              "commit": "da9d28d69ebe3894b18376c8f2395c2f37b8448f",
+              "remote": "https://github.com/apple/swift-crypto.git",
+              "version": "4.5.2",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "make_files_read_only": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": "",
+              "bazel_target_mods": "",
+              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
+            }
+          },
           "swiftpkg_swift_custom_dump": {
             "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
             "attributes": {
@@ -1111,6 +1252,25 @@
               "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
             }
           },
+          "swiftpkg_swift_huggingface": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_swift_huggingface",
+              "commit": "c30143a4616f3fa994ee3ab3e3464f752845c07c",
+              "remote": "https://github.com/huggingface/swift-huggingface.git",
+              "version": "1.0.0",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "make_files_read_only": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": "",
+              "bazel_target_mods": "",
+              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
+            }
+          },
           "swiftpkg_swift_identified_collections": {
             "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
             "attributes": {
@@ -1130,6 +1290,44 @@
               "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
             }
           },
+          "swiftpkg_swift_issue_reporting": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_swift_issue_reporting",
+              "commit": "b23bb4493c439d3e05152bc167014235ba3d47fc",
+              "remote": "https://github.com/pointfreeco/swift-issue-reporting",
+              "version": "2.1.2",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "make_files_read_only": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": "",
+              "bazel_target_mods": "",
+              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
+            }
+          },
+          "swiftpkg_swift_jinja": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_swift_jinja",
+              "commit": "a091d6ae559ee97e904a0f3c2890b21949d0306f",
+              "remote": "https://github.com/huggingface/swift-jinja.git",
+              "version": "3.0.0",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "make_files_read_only": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": "",
+              "bazel_target_mods": "",
+              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
+            }
+          },
           "swiftpkg_swift_navigation": {
             "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
             "attributes": {
@@ -1137,6 +1335,25 @@
               "commit": "7e95e5e9ff0a64f6ad8bca59083f8d6ba381b6ff",
               "remote": "https://github.com/pointfreeco/swift-navigation",
               "version": "2.11.2",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "make_files_read_only": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": "",
+              "bazel_target_mods": "",
+              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
+            }
+          },
+          "swiftpkg_swift_numerics": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_swift_numerics",
+              "commit": "0c0290ff6b24942dadb83a929ffaaa1481df04a2",
+              "remote": "https://github.com/apple/swift-numerics",
+              "version": "1.1.1",
               "env": {},
               "env_inherit": [],
               "cached_json_directory": "",
@@ -1191,9 +1408,9 @@
             "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
             "attributes": {
               "bazel_package_name": "swiftpkg_swift_syntax",
-              "commit": "050f1a346fbbac0ca2cfb15a95274f7bd1cf0ccf",
+              "commit": "79e4b74a295b6eb74a8b585e3a39d29e70c1dbd1",
               "remote": "https://github.com/swiftlang/swift-syntax",
-              "version": "604.0.0",
+              "version": "603.0.2",
               "env": {},
               "env_inherit": [],
               "cached_json_directory": "",
@@ -1206,13 +1423,13 @@
               "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
             }
           },
-          "swiftpkg_xctest_dynamic_overlay": {
+          "swiftpkg_yyjson": {
             "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
             "attributes": {
-              "bazel_package_name": "swiftpkg_xctest_dynamic_overlay",
-              "commit": "d9308ad679143c26a30dec52daefe82f54af2b82",
-              "remote": "https://github.com/pointfreeco/xctest-dynamic-overlay",
-              "version": "1.13.1",
+              "bazel_package_name": "swiftpkg_yyjson",
+              "commit": "6447536015f3d600f3d65323b10976103b337ca7",
+              "remote": "https://github.com/ibireme/yyjson.git",
+              "version": "0.13.0",
               "env": {},
               "env_inherit": [],
               "cached_json_directory": "",
@@ -1230,6 +1447,8 @@
           "explicitRootModuleDirectDeps": [
             "swiftpkg_swift_composable_architecture",
             "swiftpkg_swift_snapshot_testing",
+            "swiftpkg_mlx_swift_lm",
+            "swiftpkg_swift_transformers",
             "swift_package"
           ],
           "explicitRootModuleDirectDevDeps": [],

@@ -13,5 +13,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/pointfreeco/swift-composable-architecture", exact: "1.26.2"),
         .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", exact: "1.19.7"),
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm", exact: "3.32.3"),
+        .package(url: "https://github.com/huggingface/swift-transformers", exact: "1.4.0"),
     ]
 )

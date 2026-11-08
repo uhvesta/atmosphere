@@ -135,7 +135,28 @@ swift_deps.from_package(
     resolved = "//apps/lifr:Package.resolved",
     swift = "//apps/lifr:Package.swift",
 )
-use_repo(swift_deps, "swift_package", "swiftpkg_swift_composable_architecture", "swiftpkg_swift_snapshot_testing")
+# Unlike SwiftPM, rules_swift_package_manager adds every folder in a C
+# target that holds a header to its include path, and some of MLX's headers
+# then shadow the system's: mlx-c/mlx/c/string.h, mlx-generated/metal's
+# complex.h. It drops folders inside one it already has, so an empty header
+# at Cmlx's root leaves only that, which shadows nothing; the paths
+# Package.swift names stay. MLX's Metal kernels are compiled from their own
+# pinned copy (see apps/libs/kits/inference/mlx/mlx_kernels.bzl), so their
+# sources here are removed: MLX's C++ doesn't include them.
+swift_deps.configure_package(
+    name = "mlx-swift",
+    patch_cmds = [
+        "touch Source/Cmlx/bazel_include_root.h",
+        "rm -r Source/Cmlx/mlx-generated/metal",
+        # mlx-conditional's wrappers include sources Package.swift excludes,
+        # which Bazel then leaves out of the build: copy them in as headers.
+        "cp Source/Cmlx/mlx/mlx/backend/cpu/compiled.cpp Source/Cmlx/mlx-conditional/cpu_compiled.h",
+        "cp Source/Cmlx/mlx/mlx/backend/no_cpu/compiled.cpp Source/Cmlx/mlx-conditional/no_cpu_compiled.h",
+        "cp Source/Cmlx/mlx/mlx/backend/cpu/jit_compiler.cpp Source/Cmlx/mlx-conditional/jit_compiler.h",
+        "perl -pi -e 's|\\.\\./mlx/mlx/backend/cpu/compiled\\.cpp|cpu_compiled.h|; s|\\.\\./mlx/mlx/backend/no_cpu/compiled\\.cpp|no_cpu_compiled.h|; s|\\.\\./mlx/mlx/backend/cpu/jit_compiler\\.cpp|jit_compiler.h|' Source/Cmlx/mlx-conditional/*.cpp",
+    ],
+)
+use_repo(swift_deps, "swift_package", "swiftpkg_mlx_swift_lm", "swiftpkg_swift_composable_architecture", "swiftpkg_swift_snapshot_testing", "swiftpkg_swift_transformers")
 
 # Google's LiteRT-LM, which runs downloaded models for Lifr: its Swift API
 # and prebuilt runtime, pinned by SHA-256. See
@@ -150,6 +171,19 @@ litert_lm(name = "litert_lm")
 llama_cpp = use_repo_rule("//apps/libs/kits/inference/llama:llama_cpp.bzl", "llama_cpp")
 
 llama_cpp(name = "llama_cpp")
+
+# MLX's Metal kernels, which SwiftPM can't build, from the mlx-swift commit
+# apps/lifr/Package.resolved pins. See
+# apps/libs/kits/inference/mlx/mlx_kernels.bzl.
+mlx_kernels = use_repo_rule("//apps/libs/kits/inference/mlx:mlx_kernels.bzl", "mlx_kernels")
+
+mlx_kernels(name = "mlx_kernels")
+
+# Qwen3.5 0.8B in MLX's format, for the MLX spike. Only that manual test
+# fetches it. See apps/libs/kits/inference/mlx/test_model.bzl.
+mlx_test_model = use_repo_rule("//apps/libs/kits/inference/mlx:test_model.bzl", "mlx_test_model")
+
+mlx_test_model(name = "mlx_test_model")
 
 # Qwen3.5 0.8B, as Lifr's catalog pins it, for llama.cpp's smoke test. Only
 # that manual test fetches it. See
