@@ -47,7 +47,9 @@
     [Unknown] "Al is a + el: “to the”."
     [Unknown] "Hoy means “today”."
     [TextField] ""
+    [Button] "Add" help: "Add photos or files" id: plus
     [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
+    [Button] "Dictate" help: "Dictate, on this device" id: mic
     [Button, disabled] "Send" id: arrow.up
     [MenuButton] "Context Window" help: "4% used, 171 of 4,096 tokens"
     [Button] "Done"
