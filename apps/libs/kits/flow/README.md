@@ -49,6 +49,8 @@ References live next to the tests in `SnapshotTests/__Snapshots__/`.
   new references with `git diff`.
 - Mac: `apps/libs/kits/flow/run_mac.sh //pkg:mac_flow_snapshot_test [record]`.
   The terminal needs Accessibility and Screen Recording access.
+  Mac tests share the one screen, so they run one at a time: a second run
+  builds, then waits for the first to finish.
 
 ## What it gives you
 

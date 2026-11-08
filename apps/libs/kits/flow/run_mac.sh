@@ -22,7 +22,26 @@ cd "$(git rev-parse --show-toplevel)"
 bazel build --config=xcode "$target"
 runfiles=$PWD/bazel-bin/$package/$name.runfiles
 bundle=$(mktemp -d)
-trap 'rm -rf "$bundle"' EXIT
+# The tests share this Mac's one screen, keyboard focus and pointer, so two
+# at once type into each other's windows and capture each other in their
+# images. Each run waits its turn; builds above still run side by side.
+readonly lock=/private/tmp/flowkit-mac-test.lock
+trap 'rm -rf "$bundle"; if [[ "$(cat "$lock/owner" 2>/dev/null || true)" == "$$" ]]; then rm -rf "$lock"; fi' EXIT
+waited=0
+until mkdir "$lock" 2>/dev/null; do
+  owner="$(cat "$lock/owner" 2>/dev/null || true)"
+  # A run that's gone, such as one stopped with Control-C before its trap ran.
+  if [[ -n "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; then
+    rm -rf "$lock"
+    continue
+  fi
+  if ((waited == 0)); then
+    echo "Waiting for another Mac snapshot test (process ${owner:-starting}) to finish…" >&2
+  fi
+  waited=1
+  sleep 2
+done
+echo "$$" >"$lock/owner"
 unzip -q "$runfiles/_main/$package/$name.zip" -d "$bundle"
 
 export FLOWKIT_SNAPSHOTS=SnapshotTests/__Snapshots__
