@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck shell=bash
 # Gives back the simulator lend.sh lent the runner, for the runner's
 # clean_up_simulator_action. It stays booted for the next test.
 set -euo pipefail

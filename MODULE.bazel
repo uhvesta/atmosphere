@@ -135,6 +135,7 @@ swift_deps.from_package(
     resolved = "//apps/lifr:Package.resolved",
     swift = "//apps/lifr:Package.swift",
 )
+
 # Unlike SwiftPM, rules_swift_package_manager adds every folder in a C
 # target that holds a header to its include path, and some of MLX's headers
 # then shadow the system's: mlx-c/mlx/c/string.h, mlx-generated/metal's
@@ -156,6 +157,7 @@ swift_deps.configure_package(
         "perl -pi -e 's|\\.\\./mlx/mlx/backend/cpu/compiled\\.cpp|cpu_compiled.h|; s|\\.\\./mlx/mlx/backend/no_cpu/compiled\\.cpp|no_cpu_compiled.h|; s|\\.\\./mlx/mlx/backend/cpu/jit_compiler\\.cpp|jit_compiler.h|' Source/Cmlx/mlx-conditional/*.cpp",
     ],
 )
+
 # The same for mlx-swift-lm's xgrammar, which holds answers to a schema.
 swift_deps.configure_package(
     name = "mlx-swift-lm",

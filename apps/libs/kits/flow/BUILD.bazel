@@ -25,12 +25,12 @@ swift_library(
 # the same device and OS, so references don't drift between machines.
 ios_xctestrun_runner(
     name = "iphone_17",
-    device_type = "iPhone 17",
-    os_version = "26.2",
     # Each test gets a simulator of its own from a pool that stays booted,
     # so tests run side by side.
     clean_up_simulator_action = ":return_simulator",
     create_simulator_action = ":lend_simulator",
+    device_type = "iPhone 17",
+    os_version = "26.2",
     visibility = ["//apps:__subpackages__"],
 )
 

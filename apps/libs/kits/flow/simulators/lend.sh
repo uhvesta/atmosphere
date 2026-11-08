@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck shell=bash
 # Lends an iOS test a simulator of its own from a pool of four, for the
 # runner's create_simulator_action: it prints the simulator's UDID. Each
 # simulator stays booted for the next test, since a new one takes minutes
