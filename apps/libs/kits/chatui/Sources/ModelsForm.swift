@@ -55,8 +55,8 @@ public struct ModelEntryActions {
 
 /// The Models screen: what each use runs on, from the app, then the
 /// models to download, with how each runs here once it's downloaded, and
-/// a Hugging Face link to download another from.
-public struct ModelsForm<Uses: View, Options: View>: View {
+/// a Hugging Face link to download another from, then any voices.
+public struct ModelsForm<Uses: View, Options: View, Voices: View>: View {
     let app: String
     let models: [ModelSpec]
     let entry: (ModelSpec) -> ModelEntryState
@@ -69,14 +69,16 @@ public struct ModelsForm<Uses: View, Options: View>: View {
     let add: () -> Void
     let uses: Uses
     let options: Options
+    let voices: Voices
 
     /// `app` names the app in the screen's words; `models` are those to
     /// download, and `entry` what's known of each. `uses` picks what each
-    /// use runs on, and `options` follows it.
+    /// use runs on, and `options` follows it. `voices` ends the screen.
     public init(
         app: String, models: [ModelSpec], entry: @escaping (ModelSpec) -> ModelEntryState, actions: ModelEntryActions,
         link: Binding<String>, sha256: Binding<String>, addError: String?, isAdding: Bool, canAdd: Bool,
-        add: @escaping () -> Void, @ViewBuilder uses: () -> Uses, @ViewBuilder options: () -> Options
+        add: @escaping () -> Void, @ViewBuilder uses: () -> Uses, @ViewBuilder options: () -> Options,
+        @ViewBuilder voices: () -> Voices
     ) {
         self.app = app
         self.models = models
@@ -90,6 +92,7 @@ public struct ModelsForm<Uses: View, Options: View>: View {
         self.add = add
         self.uses = uses()
         self.options = options()
+        self.voices = voices()
     }
 
     public var body: some View {
@@ -140,8 +143,22 @@ public struct ModelsForm<Uses: View, Options: View>: View {
                         + "it to the current commit and checks every file. Give the SHA-256 its publisher lists to "
                         + "be sure it's theirs.")
             }
+            voices
         }
         .navigationTitle("Models")
+    }
+}
+
+extension ModelsForm where Voices == EmptyView {
+    /// The screen with no voices.
+    public init(
+        app: String, models: [ModelSpec], entry: @escaping (ModelSpec) -> ModelEntryState, actions: ModelEntryActions,
+        link: Binding<String>, sha256: Binding<String>, addError: String?, isAdding: Bool, canAdd: Bool,
+        add: @escaping () -> Void, @ViewBuilder uses: () -> Uses, @ViewBuilder options: () -> Options
+    ) {
+        self.init(
+            app: app, models: models, entry: entry, actions: actions, link: link, sha256: sha256, addError: addError,
+            isAdding: isAdding, canAdd: canAdd, add: add, uses: uses, options: options, voices: { EmptyView() })
     }
 }
 

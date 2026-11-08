@@ -95,9 +95,16 @@
                 XCTFail("There's nothing on the screen that scrolls.", file: file, line: line)
                 return
             }
-            let insets = list.adjustedContentInset
-            let end = max(-insets.top, list.contentSize.height + insets.bottom - list.bounds.height)
-            list.setContentOffset(CGPoint(x: list.contentOffset.x, y: end), animated: false)
+            // A lazy list only guesses the height of rows it hasn't laid out,
+            // so its end moves as scrolling lays them out: scroll until it
+            // stays put.
+            for _ in 0..<20 {
+                let insets = list.adjustedContentInset
+                let end = max(-insets.top, list.contentSize.height + insets.bottom - list.bounds.height)
+                if list.contentOffset.y == end { return }
+                list.setContentOffset(CGPoint(x: list.contentOffset.x, y: end), animated: false)
+                list.layoutIfNeeded()
+            }
         }
 
         private static func scrollViews(in view: UIView) -> [UIScrollView] {

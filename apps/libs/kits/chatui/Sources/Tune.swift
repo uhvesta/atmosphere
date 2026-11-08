@@ -480,6 +480,7 @@ extension ModelVariant {
             case .liteRT: ".litertlm"
             case .llama: "GGUF"
             case .mlx: "Safetensors"
+            case .coreML: ".mlmodel"
             case .apple: ""
             }
         let name = String(localized: "\(format) on \(runtime.name)")
