@@ -1,7 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "New conversation, Actions Menu"
 [button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
-[button, notEnabled] "More"
 [text] "On this device"
 [text] "Ask about your tasks, change them, or plan what to add."
 [button] "Close"

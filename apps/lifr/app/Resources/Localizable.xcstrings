@@ -381,6 +381,9 @@
     "Add details, or just send" : {
 
     },
+    "Add photos or files" : {
+
+    },
     "Add reminder" : {
 
     },
@@ -791,6 +794,9 @@
     "Couldn't confirm it's you (%@). Try again." : {
 
     },
+    "Couldn't dictate" : {
+
+    },
     "Couldn't keep the attachment on this device (%@). Check that this device has free storage, then attach it again." : {
 
     },
@@ -888,6 +894,12 @@
 
     },
     "Device" : {
+
+    },
+    "Dictate" : {
+
+    },
+    "Dictate, on this device" : {
 
     },
     "Didn't finish" : {
@@ -1783,6 +1795,9 @@
     "Record Steps" : {
 
     },
+    "Record a clip for the model to hear" : {
+
+    },
     "Recorded" : {
 
     },
@@ -2085,6 +2100,9 @@
     "Stop" : {
 
     },
+    "Stop Dictation" : {
+
+    },
     "Stop Recording" : {
 
     },
@@ -2228,6 +2246,9 @@
       }
     },
     "The key starts each task's code, such as HEALTH-7K2Q. Use 2 to 10 letters." : {
+
+    },
+    "The model of this chat can't read photos, so %@ wasn't attached. Pick a model that reads them, or attach a text file." : {
 
     },
     "The recording stopped (%@). Record again; if another app is using the microphone, close it first." : {

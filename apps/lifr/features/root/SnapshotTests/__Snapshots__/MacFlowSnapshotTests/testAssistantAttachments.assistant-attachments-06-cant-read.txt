@@ -34,9 +34,9 @@
   [StaticText] "" value: "And this one?"
   [StaticText] "" value: "The model picked for the assistant can't listen to recordings. Pick one that can, such as Gemma 4 E4B, in Settings › Models, or remove the recording and send the message again."
   [TextField] ""
-  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
+  [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
-  [Button] "Record" id: mic
+  [Button] "Record" help: "Record a clip for the model to hear" id: mic
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Hide Sidebar"

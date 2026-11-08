@@ -43,8 +43,9 @@
   [Button] "Retry" help: "Write this reply again"
   [Button] "Speak" help: "Read this reply aloud"
   [TextField] ""
-  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
+  [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
+  [Button] "Dictate" help: "Dictate, on this device" id: mic
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Hide Sidebar"

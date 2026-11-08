@@ -31,5 +31,7 @@
 [text] "Al is a + el: “to the”."
 [text] "Hoy means “today”."
 [element] "" value: "Ask about it"
+[button] "Add" hint: "Add photos or files"
 [button] "Model" value: "Apple Intelligence" hint: "Model, Thinking and Context Window"
+[button] "Dictate" hint: "Dictate, on this device"
 [button, notEnabled] "Send"

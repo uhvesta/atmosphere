@@ -26,17 +26,6 @@
       [Button] "Move my run to Friday, Nov 3 at 10:00 AM, Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add., Draft to review"
   [Heading] "Move my run to Friday"
   [MenuButton] "Context Window" help: "Nothing used yet"
-  [Button] "Find in Conversation" help: "Find in Conversation"
-  [Button, disabled] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
-  [Button, disabled] "Back" help: "Go back to the message before"
-  [Button, disabled] "Forward" help: "Go forward to the message after"
-  [Button] "All Checkpoints" help: "Every point to go back or forward to"
-  [Button] "Rename" help: "Rename"
-  [TextField] ""
-  [MenuButton] "Add" help: "Add photos or files" id: plus
-  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
-  [Button] "Dictate" help: "Dictate, on this device" id: mic
-  [Button, disabled] "Send" id: arrow.up
   [StaticText] "" value: "notes.md"
   [StaticText] "" value: "Photo"
   [StaticText] "" value: "Move my run to Friday"
@@ -53,6 +42,11 @@
   [Button] "Discard"
   [Button] "Edit"
   [Button] "Add"
+  [TextField] ""
+  [MenuButton] "Add" help: "Add photos or files" id: plus
+  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
+  [Button] "Dictate" help: "Dictate, on this device" id: mic
+  [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Hide Sidebar"
     [RadioGroup] "Show"
