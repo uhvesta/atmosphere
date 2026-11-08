@@ -26,17 +26,7 @@
       [Button] "I called the plumber, Nov 3 at 10:00 AM, I'd mark it done."
   [Heading] "I called the plumber"
   [MenuButton] "Context Window" help: "5% used, 1,545 of 32,768 tokens"
-  [Button] "Find in Conversation" help: "Find in Conversation"
-  [Button, disabled] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
-  [Button, disabled] "Back" help: "Go back to the message before"
-  [Button, disabled] "Forward" help: "Go forward to the message after"
-  [Button] "All Checkpoints" help: "Every point to go back or forward to"
-  [Button] "Rename" help: "Rename"
-  [TextField] ""
-  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
-  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
-  [Button, disabled] "Send" id: arrow.up
-  [Unknown] "Skill: Change"
+  [Unknown] "Skill: change"
   [StaticText] "" value: "I called the plumber"
   [StaticText] "" value: "I'd mark it done."
   [StaticText] "" value: "Changed task “Call the plumber”"
@@ -46,6 +36,10 @@
   [StaticText] "" value: "Done"
   [StaticText] "" value: "Declined"
   [Button] "Retry" help: "Write this reply again"
+  [TextField] ""
+  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
+  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
+  [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Hide Sidebar"
     [RadioGroup] "Show"

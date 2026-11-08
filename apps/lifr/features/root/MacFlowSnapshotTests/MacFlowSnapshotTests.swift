@@ -213,8 +213,8 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
-    /// The assistant: a new conversation, the skill finder, a reply with a
-    /// draft, adding it, renaming, then the archive.
+    /// The assistant: a new conversation, the / list, a skill typed with its
+    /// details, a reply with a draft, adding it, renaming, then the archive.
     func testAssistant() async throws {
         let (store, flow) = app("assistant")
         store.send(.selected(.conversations))
@@ -224,11 +224,11 @@ final class MacFlowSnapshotTests: XCTestCase {
         let id = try XCTUnwrap(store.conversations.openID)
         store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "/"))))))
         await flow.step("slash")
-        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, ""))))))
-        store.send(.conversations(.chats(.element(id: id, action: .findSkillTapped))))
-        await flow.step("find-skill")
-        store.send(.conversations(.chats(.element(id: id, action: .pickSkillTapped("review")))))
+        // "/review " turns into the skill's name at the start of the field.
+        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "/review "))))))
         await flow.step("skill-picked")
+        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "what slipped"))))))
+        await flow.step("skill-details")
         store.send(.conversations(.chats(.element(id: id, action: .clearSkillTapped))))
         store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "Tidy my weekend"))))))
         store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
@@ -466,7 +466,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         """
 
     /// A long conversation: the reply written without older messages
-    /// offers Compact, which summarizes them; the summary is shown where
+    /// offers Compact, which /compact does, summarizing them; the summary is shown where
     /// it ends, and Forget Summary sends the messages again.
     func testAssistantCompacts() async throws {
         let assistant = AssistantClient.scripted([
@@ -485,7 +485,8 @@ final class MacFlowSnapshotTests: XCTestCase {
         await flow.step("offered")
         XCTAssertEqual(store.conversations.chats[id: id]?.offersCompact, true)
 
-        chat(.compactTapped)
+        // /compact does what the offer's button does.
+        chat(.binding(.set(\.input, "/compact ")))
         await flow.step("compacted")
         let summary = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.summary)
         XCTAssertEqual(store.conversations.chats[id: id]?.offersCompact, false)

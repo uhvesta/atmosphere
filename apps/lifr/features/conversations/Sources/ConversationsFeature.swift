@@ -230,7 +230,7 @@ package struct ConversationsFeature {
                 }
                 return .none
 
-            case .newTapped:
+            case .newTapped, .chats(.element(_, .delegate(.new))):
                 state.open(Conversation(id: uuid(), createdAt: now))
                 return .none
 

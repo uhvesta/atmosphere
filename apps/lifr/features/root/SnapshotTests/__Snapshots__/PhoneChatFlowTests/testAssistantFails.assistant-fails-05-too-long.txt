@@ -1,7 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "Plan my weekend, Actions Menu"
 [button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
-[button] "More"
 [text] "On this device"
 [text] "Plan my weekend"
 [text] "Version 2 of 2"

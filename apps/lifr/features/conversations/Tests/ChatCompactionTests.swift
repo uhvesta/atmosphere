@@ -97,6 +97,19 @@ final class ChatCompactionTests: XCTestCase {
         XCTAssertEqual(compacted.value.last?.1, "They planned the week.")
     }
 
+    func testCompactTypedAfterASlashCompacts() async {
+        let compacted = LockIsolated<[([ChatMessage], String?)]>([])
+        let store = chat(leftOut: 2, compacted: compacted)
+        await send(["Plan the week", "Add laundry"], in: store)
+
+        await store.send(.binding(.set(\.input, "/compact ")))
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(compacted.value.count, 1)
+        XCTAssertEqual(store.state.input, "")
+        XCTAssertEqual(store.state.conversation.messages.count, 4, "nothing was sent")
+    }
+
     func testCompactingByItselfWhenTurnedOn() async {
         let compacted = LockIsolated<[([ChatMessage], String?)]>([])
         let store = chat(leftOut: 2, compacted: compacted)

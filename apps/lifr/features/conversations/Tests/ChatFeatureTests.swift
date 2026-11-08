@@ -851,11 +851,9 @@ final class ChatFeatureTests: XCTestCase {
 
         await store.send(.task)
         await store.skipReceivedActions()
-        await store.send(.findSkillTapped)
-        await store.send(.binding(.set(\.skillQuery, "ti")))
-        XCTAssertEqual(store.state.skillChoices.first?.id, "tidy")
+        await store.send(.binding(.set(\.input, "/ti")))
+        XCTAssertEqual(store.state.slashChoices.first?.id, "tidy")
         await store.send(.pickSkillTapped("tidy"))
-        XCTAssertFalse(store.state.findsSkill)
         await send("Only HOME", in: store)
         XCTAssertNil(store.state.picked)
         await send("Thanks", in: store)
@@ -884,9 +882,207 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.skillsLoaded([off, .tidy]))
 
         XCTAssertNil(store.state.picked)
-        XCTAssertEqual(store.state.skillChoices.map(\.id), ["tidy"])
+        await store.send(.binding(.set(\.input, "/")))
+        let skills = store.state.slashChoices.compactMap { if case .skill(let skill) = $0 { skill.id } else { nil } }
+        XCTAssertEqual(skills, ["tidy"])
         await store.send(.pickSkillTapped("query"))
         XCTAssertNil(store.state.picked)
+        await store.send(.binding(.set(\.input, "/query ")))
+        XCTAssertNil(store.state.picked)
+        XCTAssertEqual(store.state.input, "/query ")
+    }
+
+    // MARK: - Typing a skill's name
+
+    func testASkillsNameThenASpacePicksIt() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
+
+        await store.send(.binding(.set(\.input, "/add")))
+        XCTAssertNil(store.state.picked, "it may still be the start of a longer name")
+        XCTAssertEqual(store.state.input, "/add")
+        await store.send(.binding(.set(\.input, "/add ")))
+
+        XCTAssertEqual(store.state.picked?.id, "add")
+        XCTAssertEqual(store.state.input, "")
+        XCTAssertTrue(store.state.slashChoices.isEmpty)
+    }
+
+    func testANameTypedOnPastKeepsWhatFollowsAsTheDetails() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
+
+        await store.send(.binding(.set(\.input, "/Add buy milk")))
+        XCTAssertEqual(store.state.picked?.id, "add")
+        XCTAssertEqual(store.state.input, "buy milk")
+
+        await store.send(.clearSkillTapped)
+        await store.send(.binding(.set(\.input, "/tidy\nOnly HOME")))
+        XCTAssertEqual(store.state.picked?.id, "tidy")
+        XCTAssertEqual(store.state.input, "Only HOME")
+    }
+
+    func testTheStartOfALongerNameDoesntPickTheShorterOne() async throws {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
+        let addresses = try XCTUnwrap(
+            Skill(
+                userNamed: "addresses", summary: "Find addresses.", instructions: "Find addresses.", tools: [],
+                draftsPlans: false))
+        await store.send(.skillsLoaded(Skill.builtIn + [addresses]))
+
+        for typed in ["/add", "/addr", "/addresses"] {
+            await store.send(.binding(.set(\.input, typed)))
+            XCTAssertNil(store.state.picked, typed)
+        }
+        await store.send(.binding(.set(\.input, "/addresses near home")))
+        XCTAssertEqual(store.state.picked?.id, addresses.id)
+        XCTAssertEqual(store.state.input, "near home")
+    }
+
+    func testANameNoSkillHasOrOneMidwayStaysText() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
+
+        for typed in ["/groceries ", "buy /add milk", "/ add"] {
+            await store.send(.binding(.set(\.input, typed)))
+            XCTAssertNil(store.state.picked, typed)
+            XCTAssertEqual(store.state.input, typed)
+        }
+    }
+
+    func testSendingASkillsNameAndDetailsSendsThemWithTheSkill() async {
+        let (workspace, _) = home()
+        let sent = LockIsolated<[Skill?]>([])
+        let store = chat(workspace) { request in
+            sent.withValue { $0.append(request.skill) }
+            return AssistantReply(text: "Added.", isComplete: true)
+        }
+
+        await send("/add buy milk", in: store)
+        XCTAssertEqual(store.state.conversation.messages.first?.text, "buy milk")
+        XCTAssertEqual(store.state.conversation.messages.first?.skill, "add")
+
+        // Sent with nothing after the name, it's still the skill's.
+        await send("/review", in: store)
+        XCTAssertEqual(store.state.conversation.messages.dropFirst(2).first?.text, "")
+        XCTAssertEqual(store.state.conversation.messages.dropFirst(2).first?.skill, "review")
+        XCTAssertEqual(sent.value.map { $0?.id }, ["add", "review"])
+    }
+
+    func testWithASkillPickedASlashStaysText() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.pickSkillTapped("review"))
+
+        await store.send(.binding(.set(\.input, "/add more")))
+        XCTAssertEqual(store.state.picked?.id, "review")
+        XCTAssertEqual(store.state.input, "/add more")
+    }
+
+    func testRemovingThePickedSkillKeepsTheDetails() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.binding(.set(\.input, "/add buy milk")))
+
+        await store.send(.clearSkillTapped)
+        XCTAssertNil(store.state.picked)
+        XCTAssertEqual(store.state.input, "buy milk")
+    }
+
+    // MARK: - Commands
+
+    func testTheSlashListOffersOnlyCommandsThatCanRunNow() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "OK.", isComplete: true) }
+        func commands() -> [ChatCommand] {
+            store.state.slashChoices.compactMap { if case .command(let command) = $0 { command } else { nil } }
+        }
+
+        await store.send(.binding(.set(\.input, "/")))
+        XCTAssertEqual(commands(), [.rename, .model, .skills, .new])
+        await send("Plan the week", in: store)
+        await store.send(.binding(.set(\.input, "/")))
+        XCTAssertTrue(commands().contains(.find))
+        XCTAssertFalse(commands().contains(.forward))
+        await store.send(.binding(.set(\.input, "/fi")))
+        XCTAssertEqual(commands(), [.find])
+
+        // Names starting with what's typed come before looser matches.
+        await store.send(.binding(.set(\.input, "/c")))
+        XCTAssertEqual(store.state.slashChoices.prefix(2).map(\.id), ["change", "checkpoints"])
+    }
+
+    func testACommandNotAvailableStaysText() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
+
+        await store.send(.binding(.set(\.input, "/back ")))
+        XCTAssertEqual(store.state.input, "/back ")
+    }
+
+    func testFindTypedWithWordsFindsThem() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "Saturday works.", isComplete: true) }
+        await send("Plan saturday", in: store)
+
+        await store.send(.binding(.set(\.input, "/find saturday")))
+        await store.send(.sendTapped)
+        XCTAssertTrue(store.state.finds)
+        XCTAssertEqual(store.state.findQuery, "saturday")
+        XCTAssertEqual(store.state.findMatches.count, 2)
+        XCTAssertEqual(store.state.input, "")
+        XCTAssertEqual(store.state.conversation.messages.count, 2, "nothing was sent")
+    }
+
+    func testACommandRunsOnceTypedWithASpaceOrPicked() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "OK.", isComplete: true) }
+        await send("Plan the week", in: store)
+
+        await store.send(.binding(.set(\.input, "/checkpoints ")))
+        XCTAssertTrue(store.state.showsCheckpoints)
+        XCTAssertEqual(store.state.input, "")
+
+        await store.send(.binding(.set(\.input, "/mod")))
+        await store.send(.pickCommandTapped(.model))
+        await store.receive(\.modelTapped)
+        XCTAssertNotNil(store.state.model)
+        XCTAssertEqual(store.state.input, "")
+
+        await store.send(.binding(.set(\.input, "/rename ")))
+        await store.receive(\.delegate.rename)
+    }
+
+    func testBackTypedGoesBackAndForwardReturns() async {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in AssistantReply(text: "OK.", isComplete: true) }
+        ticking(store)
+        await send("Plan the week", in: store)
+        await send("And the weekend", in: store)
+
+        await store.send(.binding(.set(\.input, "/back ")))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.conversation.messages.count, 2)
+        await store.send(.binding(.set(\.input, "/forward")))
+        await store.send(.sendTapped)
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.conversation.messages.count, 4)
+    }
+
+    func testNewTypedInAChatOpensANewOne() async throws {
+        let store = list(.inMemory())
+        await store.send(.task)
+        await store.send(.newTapped)
+        let id = try XCTUnwrap(store.state.openID)
+        await store.send(.chats(.element(id: id, action: .binding(.set(\.input, "Plan the week")))))
+        await store.send(.chats(.element(id: id, action: .sendTapped)))
+        await store.skipReceivedActions()
+
+        await store.send(.chats(.element(id: id, action: .binding(.set(\.input, "/new ")))))
+        await store.skipReceivedActions()
+        XCTAssertNotEqual(store.state.openID, id)
+        XCTAssertEqual(store.state.chat?.conversation.messages.isEmpty, true)
     }
 
     func testTypingASlashListsTheSkillsThatMatchAndPickingOneTakesItsPlace() async {

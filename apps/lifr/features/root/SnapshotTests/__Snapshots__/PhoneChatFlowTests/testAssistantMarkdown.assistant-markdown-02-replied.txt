@@ -1,6 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "How do I plant the seedlings?, Actions Menu"
-[button] "More"
+[button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
 [text] "On this device"
 [text] "How do I plant the seedlings?"
 [header, text] "Planting the seedlings"

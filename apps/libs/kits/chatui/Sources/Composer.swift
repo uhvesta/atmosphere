@@ -201,23 +201,68 @@ public struct RoundButtonStyle: ButtonStyle {
     }
 }
 
-/// The message field: it grows with what's written, and Return sends.
+/// The message field: it grows with what's written, and Return sends. With
+/// a skill picked, the field starts with its `SkillToken`, and deleting
+/// back past the start of the text removes it.
 public struct MessageField: View {
     @Binding var text: String
     let prompt: Text?
+    let token: String?
+    let removeToken: () -> Void
     let submit: () -> Void
 
-    public init(text: Binding<String>, prompt: Text? = nil, submit: @escaping () -> Void) {
+    public init(
+        text: Binding<String>, prompt: Text? = nil, token: String? = nil, removeToken: @escaping () -> Void = {},
+        submit: @escaping () -> Void
+    ) {
         _text = text
         self.prompt = prompt
+        self.token = token
+        self.removeToken = removeToken
         self.submit = submit
     }
 
+    /// Stands in the field before the text while there's a token, so that
+    /// deleting it, which a field can't otherwise tell from an empty one,
+    /// removes the token. It takes no room.
+    private static let mark = "\u{200B}"
+
     public var body: some View {
-        TextField("Message", text: $text, prompt: prompt, axis: .vertical)
-            .textFieldStyle(.plain)
-            .lineLimit(1...8)
-            .onSubmit(submit)
+        // The field stays the same view with or without the token, so it
+        // keeps the keyboard when typing "/add " turns into one.
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            if let token {
+                SkillToken(token)
+            }
+            TextField("Message", text: field, prompt: token == nil ? prompt : nil, axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...8)
+                .onSubmit(submit)
+                .overlay(alignment: .leading) {
+                    // The mark keeps the field from showing its prompt.
+                    if token != nil, text.isEmpty, let prompt {
+                        prompt
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
+        }
+    }
+
+    private var field: Binding<String> {
+        guard token != nil else { return $text }
+        return Binding(
+            get: { Self.mark + text },
+            set: { new in
+                if new.contains(Self.mark) {
+                    text = new.replacingOccurrences(of: Self.mark, with: "")
+                } else {
+                    removeToken()
+                    text = new
+                }
+            })
     }
 }
 
@@ -294,6 +339,17 @@ public struct ChatComposer<Top: View, Attach: View>: View {
     let top: Top
     let attach: Attach
     let attaches: Bool
+    private var token: String?
+    private var removeToken: () -> Void = {}
+
+    /// Starts the field with the skill `name` picked for the message, as
+    /// "/name"; deleting it calls `remove`.
+    public func token(_ name: String?, remove: @escaping () -> Void) -> Self {
+        var composer = self
+        composer.token = name
+        composer.removeToken = remove
+        return composer
+    }
 
     /// `attach` is the menu + opens; `top` sits above the field.
     public init(
@@ -314,7 +370,7 @@ public struct ChatComposer<Top: View, Attach: View>: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             top
-            MessageField(text: $text, prompt: prompt, submit: submit)
+            MessageField(text: $text, prompt: prompt, token: token, removeToken: removeToken, submit: submit)
                 .padding(.horizontal, 4)
             HStack(spacing: 8) {
                 if attaches {

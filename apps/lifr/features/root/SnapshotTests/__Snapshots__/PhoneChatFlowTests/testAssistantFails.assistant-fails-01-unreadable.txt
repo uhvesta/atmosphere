@@ -1,7 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "Plan my week, Actions Menu"
 [button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
-[button] "More"
 [text] "On this device"
 [text] "Plan my week"
 [text] "The on-device model wrote answers Lifr couldn't read, twice. Send the message again, or ask for less at once: long plans are the hardest for it."

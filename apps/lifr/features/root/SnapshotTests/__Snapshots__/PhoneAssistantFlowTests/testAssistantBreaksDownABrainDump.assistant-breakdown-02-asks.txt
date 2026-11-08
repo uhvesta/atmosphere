@@ -1,8 +1,8 @@
 [button] "Conversations" id: BackButton
 [button] "ugh I have to move flat, get the deposi…, Actions Menu"
-[button] "More"
+[button] "Context Window" value: "5% used, 1,481 of 32,768 tokens" hint: "5% used, 1,481 of 32,768 tokens"
 [text] "On this device"
-[element] "Skill: Breakdown"
+[element] "Skill: breakdown"
 [text] "ugh I have to move flat, get the deposit sorted, pack, book a van, and call mum"
 [text] "Is the move by a date, and is the deposit for the new flat or the old one?"
 [button] "Retry" hint: "Write this reply again"

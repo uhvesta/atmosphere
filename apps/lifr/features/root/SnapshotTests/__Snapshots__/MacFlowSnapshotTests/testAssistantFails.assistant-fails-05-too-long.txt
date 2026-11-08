@@ -26,16 +26,6 @@
       [Button] "Plan my weekend, Nov 3 at 10:01 AM, Add a task for every day of the year"
   [Heading] "Plan my weekend"
   [MenuButton] "Context Window" help: "Nothing used yet"
-  [Button] "Find in Conversation" help: "Find in Conversation"
-  [Button] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
-  [Button] "Back" help: "Go back to the message before"
-  [Button, disabled] "Forward" help: "Go forward to the message after"
-  [Button] "All Checkpoints" help: "Every point to go back or forward to"
-  [Button] "Rename" help: "Rename"
-  [TextField] ""
-  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
-  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
-  [Button, disabled] "Send" id: arrow.up
   [StaticText] "" value: "Plan my weekend"
   [Button] "Previous Version"
   [StaticText] "" value: "Version 2 of 2"
@@ -43,6 +33,10 @@
   [StaticText] "" value: "Keep Saturday for the garden and Sunday free."
   [StaticText] "" value: "Add a task for every day of the year"
   [StaticText] "" value: "Your message and the draft are more than the on-device model can read at once, even with older messages left out. Shorten the message, ask for less at once, or remove rows from the draft."
+  [TextField] ""
+  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
+  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
+  [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Hide Sidebar"
     [RadioGroup] "Show"

@@ -24,7 +24,7 @@ import XCTest
 /// The assistant on the iPhone drafting tasks: following up, repairing what the model writes, and breaking down a brain dump.
 @MainActor
 final class PhoneAssistantFlowTests: PhoneFlowTestCase {
-    /// The assistant: a new conversation, a skill, a reply with a draft,
+    /// The assistant: a new conversation, the / list, a skill typed, a reply with a draft,
     /// adding it, renaming, then the list.
     func testAssistant() async throws {
         let (store, flow) = app("assistant")
@@ -35,10 +35,8 @@ final class PhoneAssistantFlowTests: PhoneFlowTestCase {
         let id = try XCTUnwrap(store.conversations.openID)
         store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "/"))))))
         await flow.step("slash")
-        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, ""))))))
-        store.send(.conversations(.chats(.element(id: id, action: .findSkillTapped))))
-        await flow.step("find-skill")
-        store.send(.conversations(.chats(.element(id: id, action: .pickSkillTapped("review")))))
+        // "/review " turns into the skill's name at the start of the field.
+        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "/review "))))))
         await flow.step("skill-picked")
         store.send(.conversations(.chats(.element(id: id, action: .clearSkillTapped))))
         store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "Tidy my weekend"))))))

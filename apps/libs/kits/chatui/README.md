@@ -53,8 +53,9 @@ CompactChat(
   `SummaryMarker`.
 - **History:** `CheckpointList`, `ConversationRow`, and
   `Snippet.around(_:in:)` for the words a search found.
-- **Skills:** `SkillButton`, `SkillPill`, `SkillFinder` (a popover on macOS
-  and a sheet on iOS), `SkillChoices` and `SkillToggle`.
+- **Skills and commands:** `SkillToken`, the "/name" a message starts with
+  (`ChatComposer.token(_:remove:)` puts it in the field), `SlashSuggestions`
+  for what's typed after a /, and `SkillToggle`.
 - **Changes:** `ProposalCard`, `ProposalEditor`, `ActivityEntryRow` and
   `FieldLine`. Each takes `ChangedField`s, so the app chooses how its
   fields are named.

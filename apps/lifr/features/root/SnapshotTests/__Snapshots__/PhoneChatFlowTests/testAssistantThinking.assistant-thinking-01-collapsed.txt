@@ -1,6 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "When should I water the plants?, Actions Menu"
-[button] "More"
+[button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
 [text] "On this device"
 [text] "When should I water the plants?"
 [button] "Thoughts · 4.2 secs. on the GPU" hint: "Shows the thinking"

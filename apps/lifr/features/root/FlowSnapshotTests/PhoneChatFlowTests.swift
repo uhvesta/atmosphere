@@ -21,8 +21,8 @@ import LifrWidgetViews
 import SwiftUI
 import XCTest
 
-/// The chat on the iPhone: checkpoints, attachments, dark mode, its model, thinking, failing, stopping, Markdown
-/// and compacting.
+/// The chat on the iPhone: a skill typed and commands, checkpoints, attachments, dark mode, its model, thinking,
+/// failing, stopping, Markdown and compacting.
 @MainActor
 final class PhoneChatFlowTests: PhoneFlowTestCase {
     /// Going back in a chat past a reply whose plan was added, keeping its
@@ -109,6 +109,42 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         await clock.advance(by: .seconds(1))
         await flow.step("related")
         XCTAssertEqual(store.conversations.found.map(\.isRelated), [true])
+        flow.finish()
+    }
+
+    /// Typing a skill's name: "/add " turns into the skill at the start of
+    /// the field, the details follow it, and the sent message starts with
+    /// it too. Then commands in the / list, and /find with the words to find.
+    func testSkillTypedAndCommands() async throws {
+        let (store, flow) = app(
+            "skill-typed",
+            replies: [AssistantReply(text: "Added milk to your list for Saturday.", isComplete: true)])
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        func chat(_ action: ChatFeature.Action) { store.send(.conversations(.chats(.element(id: id, action: action)))) }
+        chat(.binding(.set(\.input, "/add")))
+        await flow.step("typing")
+        XCTAssertNil(store.conversations.chats[id: id]?.picked)
+        chat(.binding(.set(\.input, "/add ")))
+        await flow.step("picked")
+        XCTAssertEqual(store.conversations.chats[id: id]?.picked?.id, "add")
+        XCTAssertEqual(store.conversations.chats[id: id]?.input, "")
+        chat(.binding(.set(\.input, "buy milk on saturday")))
+        await flow.step("details")
+        chat(.sendTapped)
+        await flow.step("sent")
+        let asked = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.first)
+        XCTAssertEqual(asked.skill, "add")
+        XCTAssertEqual(asked.text, "buy milk on saturday")
+
+        // Skills come first, then the commands that can run now.
+        chat(.binding(.set(\.input, "/c")))
+        await flow.step("commands")
+        chat(.binding(.set(\.input, "/find milk")))
+        chat(.sendTapped)
+        await flow.step("find")
+        XCTAssertEqual(store.conversations.chats[id: id]?.findQuery, "milk")
         flow.finish()
     }
 
@@ -373,7 +409,7 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         """
 
     /// A long conversation: the reply written without older messages
-    /// offers Compact, which summarizes them; the summary is shown where
+    /// offers Compact, which /compact does, summarizing them; the summary is shown where
     /// it ends, and Forget Summary sends the messages again.
     func testAssistantCompacts() async throws {
         let assistant = AssistantClient.scripted([
@@ -392,7 +428,8 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         await flow.step("offered")
         XCTAssertEqual(store.conversations.chats[id: id]?.offersCompact, true)
 
-        chat(.compactTapped)
+        // /compact does what the offer's button does.
+        chat(.binding(.set(\.input, "/compact ")))
         await flow.step("compacted")
         let summary = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.summary)
         XCTAssertEqual(store.conversations.chats[id: id]?.offersCompact, false)

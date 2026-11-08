@@ -1,7 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "Add a Fitness Avenue, Actions Menu"
 [button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
-[button] "More"
 [text] "On this device"
 [text] "Add a Fitness Avenue"
 [text] "Here's a Fitness Avenue. Tap Add to make it."

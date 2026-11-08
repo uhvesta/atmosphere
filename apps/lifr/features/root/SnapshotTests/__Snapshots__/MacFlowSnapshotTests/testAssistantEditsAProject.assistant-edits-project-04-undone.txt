@@ -26,17 +26,7 @@
       [Button] "Rename the Half marathon to “Spring hal…, Nov 3 at 10:00 AM, I renamed it to Spring half marathon, due 6 December."
   [Heading] "Rename the Half marathon to “Spring hal…"
   [MenuButton] "Context Window" help: "5% used, 1,559 of 32,768 tokens"
-  [Button] "Find in Conversation" help: "Find in Conversation"
-  [Button, disabled] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
-  [Button, disabled] "Back" help: "Go back to the message before"
-  [Button, disabled] "Forward" help: "Go forward to the message after"
-  [Button] "All Checkpoints" help: "Every point to go back or forward to"
-  [Button] "Rename" help: "Rename"
-  [TextField] ""
-  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
-  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
-  [Button, disabled] "Send" id: arrow.up
-  [Unknown] "Skill: Change"
+  [Unknown] "Skill: change"
   [StaticText] "" value: "Rename the Half marathon to “Spring half marathon”, due 2026-12-06"
   [StaticText] "" value: "I renamed it to Spring half marathon, due 6 December."
   [StaticText] "" value: "Changed Project “Spring half marathon”"
@@ -48,6 +38,10 @@
   [StaticText] "" value: "2026-12-06"
   [StaticText] "" value: "Applied, then undone"
   [Button] "Retry" help: "Write this reply again"
+  [TextField] ""
+  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
+  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
+  [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Hide Sidebar"
     [RadioGroup] "Show"

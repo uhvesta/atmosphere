@@ -68,11 +68,6 @@ package struct ChatView: View {
             }
             .sheetLayout(height: 560)
         }
-        #if os(iOS)
-            .sheet(isPresented: $store.findsSkill) {
-                skillFinder
-            }
-        #endif
         .sheet(item: $store.scope(state: \.manageSkills, action: \.manageSkills)) { store in
             NavigationStack {
                 SkillsView(store: store)
@@ -118,19 +113,13 @@ package struct ChatView: View {
         }
         #if os(iOS)
             .toolbar {
-                // The ring and one menu share a capsule, as more buttons
-                // fold into the bar's overflow.
-                ToolbarItemGroup(placement: .topBarTrailing) {
+                // Compacting, finding and checkpoints are / commands.
+                ToolbarItem(placement: .topBarTrailing) {
                     contextMenu
-                    Menu("More", systemImage: "ellipsis") {
-                        findButton
-                        compactButton
-                        Section("Checkpoints") { checkpointButtons }
-                    }
-                    .disabled(store.conversation.messages.isEmpty)
                 }
             }
         #endif
+        .background { findShortcut }
         .task { await store.send(.task).finish() }
         .alert($store.scope(state: \.alert, action: \.alert))
     }
@@ -156,11 +145,10 @@ package struct ChatView: View {
     }
 
     /// How full the model's window was at the last reply, which opens to
-    /// say how much and to compact.
+    /// say how much. /compact makes room.
     private var contextMenu: some View {
         Menu {
             Text(ContextRing.description(of: store.context))
-            compactButton
         } label: {
             ContextRing(store.context)
         }
@@ -178,12 +166,16 @@ package struct ChatView: View {
             pick: { store.send(.modelTapped) })
     }
 
-    /// Opens the bar to find words in the messages shown.
-    private var findButton: some View {
-        Button("Find in Conversation", systemImage: "magnifyingglass") { store.send(.findTapped) }
+    /// ⌘F opens the bar to find words in the messages shown, as /find
+    /// does. The button isn't seen.
+    private var findShortcut: some View {
+        Button("Find in Conversation") { store.send(.findTapped) }
             .keyboardShortcut("f")
             .disabled(store.conversation.messages.isEmpty)
-            .help("Find in Conversation")
+            .opacity(0)
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
     /// Finds words in the messages shown, one match at a time.
@@ -209,7 +201,7 @@ package struct ChatView: View {
                     VStack(alignment: .trailing, spacing: 4) {
                         MessageView(
                             role: message.role, text: message.text, thinking: message.thinking,
-                            skill: store.state.skillTitle(of: message),
+                            skill: message.skill,
                             // A proposal's card offers its own Undo.
                             canUndo: message.proposal == nil && store.conversation.changes[message.id] != nil,
                             showsThinking: store.shownThinking.contains(message.id),
@@ -274,26 +266,6 @@ package struct ChatView: View {
             .frame(maxWidth: .infinity)
         }
         .defaultScrollAnchor(.bottom)
-    }
-
-    /// Back, forward and the log of every point to go to.
-    @ViewBuilder private var checkpointButtons: some View {
-        Button("Back", systemImage: "arrow.uturn.backward") { store.send(.backTapped) }
-            .disabled(!store.canGo || store.conversation.back == nil)
-            .help("Go back to the message before")
-        Button("Forward", systemImage: "arrow.uturn.forward") { store.send(.forwardTapped) }
-            .disabled(!store.canGo || store.conversation.forward == nil)
-            .help("Go forward to the message after")
-        Button("All Checkpoints", systemImage: "clock.arrow.circlepath") { store.showsCheckpoints = true }
-            .disabled(store.conversation.messages.isEmpty)
-            .help("Every point to go back or forward to")
-    }
-
-    /// Summarizes older messages, so the model keeps them in mind.
-    private var compactButton: some View {
-        Button("Compact Conversation", systemImage: "rectangle.compress.vertical") { store.send(.compactTapped) }
-            .disabled(!store.state.canCompact)
-            .help("Summarize older messages, so the assistant keeps them in mind")
     }
 
     /// Says the last reply was written without older messages, above the
@@ -381,7 +353,7 @@ package struct ChatView: View {
 
     #if os(macOS)
         /// The Mac shows no title for the third column, so the chat names
-        /// itself here, with Rename beside it.
+        /// itself here. Renaming, finding and checkpoints are / commands.
         private var header: some View {
             HStack {
                 Text(store.conversation.title)
@@ -391,28 +363,26 @@ package struct ChatView: View {
                 Spacer()
                 contextMenu
                     .fixedSize()
-                Group {
-                    findButton
-                    compactButton
-                    checkpointButtons
-                    Button("Rename", systemImage: "pencil") { store.send(.renameTapped) }
-                        .help("Rename")
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
             }
             .padding(.horizontal)
             .padding(.vertical, 10)
         }
     #endif
 
-    /// The message field in its card, with the skill for the next message
-    /// and what's attached to it above. Typing / lists the skills to pick.
+    /// The message field in its card, starting with the skill for the next
+    /// message, with what's attached to it above. Typing / lists the skills
+    /// to pick and the commands to run.
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
             let choices = store.state.slashChoices
             if !choices.isEmpty {
-                SkillSuggestions(choices) { store.send(.pickSkillTapped($0)) }
+                SlashSuggestions(choices.map { SlashSuggestion($0.id, summary: $0.summary) }) { name in
+                    switch choices.first(where: { $0.id == name }) {
+                    case .skill(let skill): store.send(.pickSkillTapped(skill.id))
+                    case .command(let command): store.send(.pickCommandTapped(command))
+                    case nil: break
+                    }
+                }
             }
             ChatComposer(
                 text: $store.input, prompt: store.picked.map { _ in Text("Add details, or just send") },
@@ -422,7 +392,7 @@ package struct ChatView: View {
                 send: sendButton, submit: { store.send(.sendTapped) },
                 top: { composerTop }, attach: { attachMenu }
             )
-            .modifier(SkillFinderPopover(store: store))
+            .token(store.picked?.id) { store.send(.clearSkillTapped) }
             .photosPicker(
                 isPresented: $picksPhoto, selection: $photo, matching: .images, preferredItemEncoding: .compatible
             )
@@ -440,17 +410,16 @@ package struct ChatView: View {
         }
     }
 
-    /// What + offers: a photo, for a model that reads them, and a skill.
+    /// What + offers: a photo, for a model that reads them.
     @ViewBuilder private var attachMenu: some View {
         if store.inputs.contains(.image) {
             Button("Attach a Photo", systemImage: "photo") { picksPhoto = true }
                 .disabled(store.attaching || store.recording)
         }
-        Button("Use a Skill", systemImage: "sparkles") { store.send(.findSkillTapped) }
     }
 
-    /// Above the field: that a message is being edited, the skill picked
-    /// and what's attached.
+    /// Above the field: that a message is being edited, and what's
+    /// attached.
     @ViewBuilder private var composerTop: some View {
         if store.editing != nil {
             HStack {
@@ -462,11 +431,6 @@ package struct ChatView: View {
                     .font(.footnote.weight(.semibold))
             }
             .padding(.horizontal, 4)
-        }
-        if let picked = store.picked {
-            SkillPill(
-                title: picked.title, change: { store.send(.findSkillTapped) },
-                remove: { store.send(.clearSkillTapped) })
         }
         if !store.pending.isEmpty || store.attaching || store.recording {
             attachments
@@ -501,13 +465,6 @@ package struct ChatView: View {
             stop: { store.send(.stopTapped) })
     }
 
-    /// Finds a skill for the next message by its name or what it does.
-    private var skillFinder: some View {
-        SkillFinder(
-            store.skillChoices, query: $store.skillQuery, pick: { store.send(.pickSkillTapped($0)) },
-            manage: { store.send(.manageSkillsTapped) }, cancel: { store.findsSkill = false })
-    }
-
     /// Ways to start, in a chat with nothing in it yet.
     private static var suggestions: [Suggestions.Suggestion] {
         [
@@ -515,24 +472,6 @@ package struct ChatView: View {
             .init(systemImage: "exclamationmark.circle", text: String(localized: "What's overdue?")),
             .init(systemImage: "checkmark.circle", text: String(localized: "What did I finish this week?")),
         ]
-    }
-}
-
-/// On the Mac the skill finder hangs off the composer, where the button is,
-/// instead of covering the chat.
-private struct SkillFinderPopover: ViewModifier {
-    @Bindable var store: StoreOf<ChatFeature>
-
-    func body(content: Content) -> some View {
-        #if os(macOS)
-            content.popover(isPresented: $store.findsSkill, arrowEdge: .top) {
-                SkillFinder(
-                    store.skillChoices, query: $store.skillQuery, pick: { store.send(.pickSkillTapped($0)) },
-                    manage: { store.send(.manageSkillsTapped) }, cancel: { store.findsSkill = false })
-            }
-        #else
-            content
-        #endif
     }
 }
 

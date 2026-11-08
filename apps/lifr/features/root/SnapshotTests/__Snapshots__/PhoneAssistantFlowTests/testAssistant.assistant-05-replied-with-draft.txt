@@ -1,7 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "Tidy my weekend, Actions Menu"
 [button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
-[button] "More"
 [text] "On this device"
 [text] "Tidy my weekend"
 [text] "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."

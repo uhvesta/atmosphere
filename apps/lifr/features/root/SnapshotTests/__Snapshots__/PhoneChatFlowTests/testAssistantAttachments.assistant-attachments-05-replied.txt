@@ -1,7 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "What plant is this?, Actions Menu"
 [button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
-[button] "More"
 [text] "On this device"
 [text] "Photo"
 [text] "Recording, 6 s"

@@ -1,7 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "Show me some code, Actions Menu"
 [button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
-[button] "More"
 [text] "On this device"
 [text] "Show me some code"
 [text] "Start with Buy soil."

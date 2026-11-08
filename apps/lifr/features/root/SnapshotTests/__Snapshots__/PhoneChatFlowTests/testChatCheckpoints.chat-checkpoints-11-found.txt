@@ -1,7 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "What should I do first?, Actions Menu"
 [button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
-[button] "More"
 [text] "On this device"
 [text] "What should I do first?"
 [text] "Start with the urgent tasks, then the ones due this week."

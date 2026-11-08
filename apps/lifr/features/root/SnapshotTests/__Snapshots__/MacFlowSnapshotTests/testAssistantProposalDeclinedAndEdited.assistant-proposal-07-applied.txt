@@ -28,17 +28,7 @@
       [Button] "I called the plumber, Nov 3 at 10:00 AM, I'd mark it done."
   [Heading] "I called the plumber"
   [MenuButton] "Context Window" help: "5% used, 1,574 of 32,768 tokens"
-  [Button] "Find in Conversation" help: "Find in Conversation"
-  [Button] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
-  [Button] "Back" help: "Go back to the message before"
-  [Button, disabled] "Forward" help: "Go forward to the message after"
-  [Button] "All Checkpoints" help: "Every point to go back or forward to"
-  [Button] "Rename" help: "Rename"
-  [TextField] ""
-  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
-  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
-  [Button, disabled] "Send" id: arrow.up
-  [Unknown] "Skill: Change"
+  [Unknown] "Skill: change"
   [StaticText] "" value: "I called the plumber"
   [StaticText] "" value: "I'd mark it done."
   [StaticText] "" value: "Changed task “Call the plumber”"
@@ -47,7 +37,7 @@
   [Image] "to" id: arrow.right
   [StaticText] "" value: "Done"
   [StaticText] "" value: "Declined"
-  [Unknown] "Skill: Change"
+  [Unknown] "Skill: change"
   [StaticText] "" value: "Mark “Call the plumber” done"
   [StaticText] "" value: "I'd mark it done."
   [StaticText] "" value: "Changed task “Call the plumber”"
@@ -58,6 +48,10 @@
   [StaticText] "" value: "Applied"
   [Button] "Undo"
   [Button] "Retry" help: "Write this reply again"
+  [TextField] ""
+  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
+  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
+  [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Hide Sidebar"
     [RadioGroup] "Show"

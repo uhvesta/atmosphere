@@ -898,6 +898,9 @@
     "Every point to go back or forward to" : {
 
     },
+    "Every point to go back or forward to." : {
+
+    },
     "Every version you save is kept on this device only. Tap one to use it again." : {
 
     },
@@ -923,6 +926,9 @@
 
     },
     "Find in conversation" : {
+
+    },
+    "Find words in this conversation." : {
 
     },
     "Finding related conversations…" : {
@@ -967,7 +973,13 @@
     "Go back to the message before" : {
 
     },
+    "Go back to the message before. What came after is kept." : {
+
+    },
     "Go forward to the message after" : {
+
+    },
+    "Go forward to the message after." : {
 
     },
     "Go through what's overdue and suggest new dates." : {
@@ -1550,6 +1562,9 @@
     "Pick a skill for a message to tell the assistant what to do and which tools it may use." : {
 
     },
+    "Pick the model, thinking and context window." : {
+
+    },
     "Picks another skill" : {
 
     },
@@ -1665,6 +1680,9 @@
 
     },
     "Rename" : {
+
+    },
+    "Rename this conversation." : {
 
     },
     "Rename, move, reschedule or finish tasks and Projects." : {
@@ -1882,6 +1900,9 @@
     "Start" : {
 
     },
+    "Start a new conversation." : {
+
+    },
     "Status" : {
 
     },
@@ -1937,6 +1958,9 @@
 
     },
     "Summarize older messages, so the assistant keeps them in mind" : {
+
+    },
+    "Summarize older messages, so the assistant keeps them in mind." : {
 
     },
     "Summarized up to here" : {
@@ -2153,6 +2177,9 @@
 
     },
     "Turn skills on in Manage Skills." : {
+
+    },
+    "Turn skills on or off, or write your own." : {
 
     },
     "Unarchive" : {

@@ -1,7 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "New conversation, Actions Menu"
 [button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
-[button, notEnabled] "More"
 [text] "On this device"
 [text] "Ask about your tasks, change them, or plan what to add."
 [button] "Plan my week"
@@ -23,3 +22,7 @@
 [button] "Avenues"
 [button, selected] "Assistant"
 [button] "/undo, Put back recent changes."
+[button] "/rename, Rename this conversation."
+[button] "/model, Pick the model, thinking and context window."
+[button] "/skills, Turn skills on or off, or write your own."
+[button] "/new, Start a new conversation."

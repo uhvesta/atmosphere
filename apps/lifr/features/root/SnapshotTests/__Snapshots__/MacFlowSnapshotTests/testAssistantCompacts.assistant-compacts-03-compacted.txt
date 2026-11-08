@@ -26,16 +26,6 @@
       [Button] "Plan my week, Nov 3 at 10:01 AM, Keep Saturday for the garden and Sunday free."
   [Heading] "Plan my week"
   [MenuButton] "Context Window" help: "Nothing used yet"
-  [Button] "Find in Conversation" help: "Find in Conversation"
-  [Button, disabled] "Compact Conversation" help: "Summarize older messages, so the assistant keeps them in mind"
-  [Button] "Back" help: "Go back to the message before"
-  [Button, disabled] "Forward" help: "Go forward to the message after"
-  [Button] "All Checkpoints" help: "Every point to go back or forward to"
-  [Button] "Rename" help: "Rename"
-  [TextField] ""
-  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
-  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
-  [Button, disabled] "Send" id: arrow.up
   [StaticText] "" value: "Plan my week"
   [StaticText] "" value: "Start with the urgent tasks, then the ones due this week."
   [Button] "Summarized up to here" value: "Hidden"
@@ -44,6 +34,10 @@
   [StaticText] "" value: "And the weekend?"
   [StaticText] "" value: "Keep Saturday for the garden and Sunday free."
   [Button] "Retry" help: "Write this reply again"
+  [TextField] ""
+  [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
+  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
+  [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Hide Sidebar"
     [RadioGroup] "Show"

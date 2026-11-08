@@ -67,11 +67,9 @@ package struct ChatFeature {
         package var findPosition = 0
         /// Every skill, on or off. The built-ins until the person's load.
         package var skills = Skill.builtIn
-        /// The ID of the skill picked for the next message.
+        /// The ID of the skill picked for the next message, shown as its
+        /// "/name" at the start of the field.
         package var skill: String?
-        /// Whether the skill finder is open, and what's typed in it.
-        package var findsSkill = false
-        package var skillQuery = ""
         @Presents package var manageSkills: SkillsFeature.State?
         /// What the conversation runs on, being picked.
         @Presents package var model: ChatModelFeature.State?
@@ -192,25 +190,46 @@ package struct ChatFeature {
         /// The skill picked for the next message, while it exists and is on.
         package var picked: Skill? { skill.flatMap { id in skills.first { $0.id == id && $0.isOn } } }
 
-        /// The skills that are on, matching the finder.
-        package var skillChoices: [Skill] { Skill.search(skillQuery, in: skills.filter(\.isOn)) }
-
-        /// The skills that are on, matching what's typed after a / that
-        /// starts the message, while none is picked. Empty without a /.
-        package var slashChoices: [Skill] {
+        /// The skills that are on, then the commands that can run now,
+        /// matching what's typed after a / that starts the message, while
+        /// no skill is picked. Empty without a /.
+        package var slashChoices: [SlashChoice] {
             guard picked == nil, input.hasPrefix("/") else { return [] }
-            return Skill.search(String(input.dropFirst()), in: skills.filter(\.isOn))
+            let query = String(input.dropFirst())
+            let commands = ChatCommand.allCases.filter {
+                $0.isAvailable(in: self) && (query.isEmpty || $0.name.hasPrefix(query.lowercased()))
+            }
+            let choices =
+                Skill.search(query, in: skills.filter(\.isOn)).map(SlashChoice.skill)
+                + commands.map(SlashChoice.command)
+            // Names that start with what's typed come before looser matches,
+            // so a command isn't pushed out of sight by skills.
+            let typed = query.lowercased()
+            func starts(_ choice: SlashChoice) -> Bool {
+                let name = choice.id.lowercased()
+                return name.hasPrefix(typed) || name.hasPrefix(Skill.userPrefix + typed)
+            }
+            return choices.filter(starts) + choices.filter { !starts($0) }
+        }
+
+        /// The skill that's on, or the command that can run now, typed as
+        /// `name` after a /, ignoring case. A skill of the person's goes by
+        /// its name with or without "user:".
+        func slash(named name: String) -> SlashChoice? {
+            let name = name.lowercased()
+            if let command = ChatCommand(rawValue: name), command.isAvailable(in: self) {
+                return .command(command)
+            }
+            let skill = skills.first { skill in
+                skill.isOn && (skill.id.lowercased() == name || skill.id.lowercased() == Skill.userPrefix + name)
+            }
+            return skill.map(SlashChoice.skill)
         }
 
         /// The model the next message runs on, once it's looked up.
         package var current: RunnableModel? {
             let id = conversation.context.model.model ?? standard
             return models.first { $0.id == id }
-        }
-
-        /// The title of the skill a message was sent with, if any.
-        package func skillTitle(of message: ChatMessage) -> String? {
-            message.skill.map { id in skills.first { $0.id == id }?.title ?? id }
         }
 
         /// What the reply `id` proposed, if it's shown.
@@ -250,8 +269,9 @@ package struct ChatFeature {
         case findMoved(by: Int)
         case findClosed
         case skillsLoaded([Skill])
-        case findSkillTapped
         case pickSkillTapped(String)
+        /// A command picked from the / list, which runs now.
+        case pickCommandTapped(ChatCommand)
         case clearSkillTapped
         case manageSkillsTapped
         case manageSkills(PresentationAction<SkillsFeature.Action>)
@@ -352,6 +372,8 @@ package struct ChatFeature {
         package enum Delegate {
             case saved(Snapshot)
             case rename
+            /// Opens a new conversation, as /new does.
+            case new
             /// A new conversation forked from this one, to keep and open.
             case fork(Conversation)
         }
@@ -436,13 +458,7 @@ package struct ChatFeature {
                 state.skills = skills
                 return .none
 
-            case .findSkillTapped:
-                state.skillQuery = ""
-                state.findsSkill = true
-                return .none
-
             case .pickSkillTapped(let id):
-                state.findsSkill = false
                 guard state.skills.contains(where: { $0.id == id && $0.isOn }) else { return .none }
                 state.skill = id
                 // Picked from what was typed after a /, which it replaces.
@@ -453,8 +469,13 @@ package struct ChatFeature {
                 state.skill = nil
                 return .none
 
+            case .pickCommandTapped(let command):
+                guard command.isAvailable(in: state) else { return .none }
+                // Picked from what was typed after a /, which it replaces.
+                if state.input.hasPrefix("/") { state.input = "" }
+                return run(command, details: "", in: &state)
+
             case .manageSkillsTapped:
-                state.findsSkill = false
                 state.manageSkills = SkillsFeature.State()
                 return .none
 
@@ -489,6 +510,10 @@ package struct ChatFeature {
                 }
 
             case .sendTapped:
+                // "/add buy milk" picks the skill and sends "buy milk".
+                if let typed = takeSlash(in: &state, complete: true) {
+                    return run(typed.command, details: typed.details, in: &state)
+                }
                 guard state.canSend else { return .none }
                 if let editing = state.editing {
                     let changed = state.conversation.changedReplies(hiddenGoingBefore: editing)
@@ -951,6 +976,11 @@ package struct ChatFeature {
                     state.warmed = true
                     assistant.prewarm(state.conversation.context.model)
                 }
+                // "/add " turns into the skill's name at the start of the
+                // field, and "/compact " runs.
+                if let typed = takeSlash(in: &state, complete: false) {
+                    return run(typed.command, details: typed.details, in: &state)
+                }
                 return .none
 
             case .binding(\.conversation.draft), .binding(\.conversation):
@@ -1168,6 +1198,48 @@ package struct ChatFeature {
             let result = await Result { try await store.revert(entries: entries) }
             await send(.saved(result))
             if case .success = result { await send(next()) }
+        }
+    }
+
+    /// Takes "/name" and the space or new line after it from the start of
+    /// the field, while no skill is picked: a skill becomes the one picked,
+    /// with what follows left as its details; a command is returned to run,
+    /// with what follows. A name not complete yet, or that's neither, stays
+    /// as text.
+    private func takeSlash(in state: inout State, complete: Bool) -> (command: ChatCommand, details: String)? {
+        guard state.picked == nil, let typed = TypedSlash(state.input, complete: complete),
+            let choice = state.slash(named: typed.name)
+        else { return nil }
+        state.input = typed.details
+        switch choice {
+        case .skill(let skill):
+            state.skill = skill.id
+            return nil
+        case .command(let command):
+            return (command, typed.details)
+        }
+    }
+
+    /// Runs `command`, typed with `details` after it: the words to find,
+    /// for /find. The others leave them in the field.
+    private func run(_ command: ChatCommand, details: String, in state: inout State) -> Effect<Action> {
+        switch command {
+        case .compact: return .send(.compactTapped)
+        case .find:
+            state.input = ""
+            state.finds = true
+            state.findQuery = details.trimmingCharacters(in: .whitespacesAndNewlines)
+            state.findPosition = max(state.findMatches.count - 1, 0)
+            return .none
+        case .back: return .send(.backTapped)
+        case .forward: return .send(.forwardTapped)
+        case .checkpoints:
+            state.showsCheckpoints = true
+            return .none
+        case .rename: return .send(.delegate(.rename))
+        case .model: return .send(.modelTapped)
+        case .skills: return .send(.manageSkillsTapped)
+        case .new: return .send(.delegate(.new))
         }
     }
 

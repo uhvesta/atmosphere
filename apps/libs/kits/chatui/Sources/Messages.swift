@@ -9,6 +9,7 @@ public struct MessageView<Attachments: View>: View {
     let role: ChatRole
     let text: String
     let thinking: ModelThinking?
+    /// The skill's name, after the /: it starts the person's text.
     let skill: String?
     let canUndo: Bool
     let showsThinking: Bool
@@ -41,7 +42,7 @@ public struct MessageView<Attachments: View>: View {
                 ThinkingDisclosure(
                     thinking: thinking, isExpanded: showsThinking, toggle: toggleThinking, select: select)
             }
-            if let skill {
+            if let skill, role == .assistant {
                 Label(skill, systemImage: "sparkles")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.tint)
@@ -49,14 +50,20 @@ public struct MessageView<Attachments: View>: View {
                     .accessibilityLabel(Text("Skill: \(skill)"))
             }
             attachments
-            if !text.isEmpty {
+            if !text.isEmpty || (role == .person && skill != nil) {
                 if role == .person {
-                    Text(text)
-                        .selectableOnMac()
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(.tint.opacity(0.2), in: .rect(cornerRadius: 16))
-                        .frame(maxWidth: 520, alignment: .trailing)
+                    // The skill starts the text, as it did in the field.
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        if let skill { SkillToken(skill) }
+                        if !text.isEmpty {
+                            Text(text)
+                                .selectableOnMac()
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.tint.opacity(0.2), in: .rect(cornerRadius: 16))
+                    .frame(maxWidth: 520, alignment: .trailing)
                 } else {
                     // The assistant's words read as text, not a bubble,
                     // in the Markdown it writes.
