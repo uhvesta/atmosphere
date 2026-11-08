@@ -1,6 +1,6 @@
 import ComposableArchitecture
 import Foundation
-import LifrModelsClient
+import ModelsClient
 
 /// The models on this device: which one each use runs on, downloading one
 /// from the catalog or from a Hugging Face link, removing one, and
@@ -8,49 +8,53 @@ import LifrModelsClient
 /// the CPU.
 /// Downloads go on when the screen closes, and show here when it opens.
 @Reducer
-package struct ModelsFeature {
+public struct ModelsFeature {
     @ObservableState
-    package struct State: Equatable {
+    public struct State: Equatable {
         /// The catalog, then models added from links, in the order added.
-        package var models: [ModelSpec] = []
-        package var installed: Set<ModelID> = []
-        package var downloads: [ModelID: DownloadState] = [:]
-        package var selection: [ModelUse: ModelID] = [:]
+        public var models: [ModelSpec] = []
+        public var installed: Set<ModelID> = []
+        public var downloads: [ModelID: DownloadState] = [:]
+        public var selection: [ModelUseKey: ModelID] = [:]
         /// The window each downloaded model runs at.
-        package var windows: [ModelID: Int] = [:]
+        public var windows: [ModelID: Int] = [:]
         /// Where each downloaded model runs and why, and what was measured
         /// of it here.
-        package var tunings: [ModelID: ModelTuning] = [:]
+        public var tunings: [ModelID: ModelTuning] = [:]
         /// The models being measured now.
-        package var measuring: Set<ModelID> = []
+        public var measuring: Set<ModelID> = []
         /// Why measuring a model didn't finish.
-        package var measureErrors: [ModelID: String] = [:]
+        public var measureErrors: [ModelID: String] = [:]
         /// The Hugging Face link being added, and its SHA-256 if given.
-        package var link = ""
-        package var sha256 = ""
-        package var isAdding = false
+        public var link = ""
+        public var sha256 = ""
+        public var isAdding = false
         /// Why the link couldn't be added.
-        package var addError: String?
+        public var addError: String?
         /// Comparing a model's formats, engines and settings.
-        @Presents package var tune: TuneFeature.State?
-        @Presents package var remove: ConfirmationDialogState<Remove>?
-        @Presents package var alert: AlertState<Never>?
-        /// The voice that reads answers aloud, and the voice models.
-        package var voices = VoicesFeature.State()
+        @Presents public var tune: TuneFeature.State?
+        @Presents public var remove: ConfirmationDialogState<Remove>?
+        @Presents public var alert: AlertState<Never>?
+        /// The voice that reads aloud, and the voice models.
+        public var voices: VoicesFeature.State
 
-        package init() {}
+        /// `languages` are those that can have a voice of their own, as
+        /// BCP 47 tags.
+        public init(languages: [String] = []) {
+            voices = VoicesFeature.State(languages: languages)
+        }
 
         /// The models a use can run on: Apple's, and those downloaded.
-        package var choices: [ModelSpec] {
+        public var choices: [ModelSpec] {
             models.filter { $0.id == .apple || installed.contains($0.id) }
         }
 
         /// The models that need a download: all but Apple's.
-        package var downloadable: [ModelSpec] { models.filter { $0.id != .apple } }
+        public var downloadable: [ModelSpec] { models.filter { $0.id != .apple } }
 
-        package func selected(for use: ModelUse) -> ModelID { use.model(in: selection) }
+        public func selected(for use: ModelUseKey) -> ModelID { selection[use] ?? .apple }
 
-        package var canAdd: Bool { !isAdding && !link.trimmingCharacters(in: .whitespaces).isEmpty }
+        public var canAdd: Bool { !isAdding && !link.trimmingCharacters(in: .whitespaces).isEmpty }
 
         fileprivate mutating func add(_ spec: ModelSpec) {
             if let index = models.firstIndex(where: { $0.id == spec.id }) {
@@ -61,22 +65,22 @@ package struct ModelsFeature {
         }
     }
 
-    package enum Remove: Equatable, Sendable {
+    public enum Remove: Equatable, Sendable {
         case confirmed(ModelID)
     }
 
-    package enum Action: BindableAction {
+    public enum Action: BindableAction {
         case binding(BindingAction<State>)
         case task
         case loaded(
-            installed: [InstalledModel], unfinished: [ModelSpec], selection: [ModelUse: ModelID],
+            installed: [InstalledModel], unfinished: [ModelSpec], selection: [ModelUseKey: ModelID],
             tunings: [ModelID: ModelTuning])
         case downloadsChanged([ModelID: DownloadState])
-        case picked(ModelID, for: ModelUse)
+        case picked(ModelID, for: ModelUseKey)
         case windowPicked(Int, for: ModelID)
         /// What each use runs on after a pick, as uses left unpicked
-        /// follow the assistant.
-        case selectionChanged([ModelUse: ModelID])
+        /// follow another.
+        case selectionChanged([ModelUseKey: ModelID])
         case measureTapped(ModelID)
         case measured(ModelID, Result<ModelTuning?, ModelRuntimeError>)
         case backendPicked(ModelBackend?, for: ModelID)
@@ -98,9 +102,9 @@ package struct ModelsFeature {
 
     @Dependency(\.models) private var library
 
-    package init() {}
+    public init() {}
 
-    package var body: some ReducerOf<Self> {
+    public var body: some ReducerOf<Self> {
         BindingReducer()
         Scope(state: \.voices, action: \.voices) { VoicesFeature() }
         Reduce { state, action in
@@ -127,8 +131,8 @@ package struct ModelsFeature {
                 return .none
 
             case .downloadsChanged(let downloads):
-                // One that left finished, perhaps started before Lifr last
-                // quit, with no one here waiting for it.
+                // One that left finished, perhaps started before the app
+                // last quit, with no one here waiting for it.
                 let finished = state.downloads.keys.contains { downloads[$0] == nil }
                 state.downloads = downloads
                 return finished ? reload() : .none
@@ -301,8 +305,8 @@ package struct ModelsFeature {
             tunings: tunings)
     }
 
-    private static func selection(_ library: ModelLibraryClient) -> [ModelUse: ModelID] {
-        Dictionary(uniqueKeysWithValues: ModelUse.allCases.map { ($0, library.selection($0)) })
+    private static func selection(_ library: ModelLibraryClient) -> [ModelUseKey: ModelID] {
+        Dictionary(library.uses().map { ($0, library.selection($0)) }) { first, _ in first }
     }
 
     private func download(_ spec: ModelSpec) -> Effect<Action> {
@@ -312,17 +316,6 @@ package struct ModelsFeature {
             } catch {
                 await send(.downloaded(spec.id, .failure(error)))
             }
-        }
-    }
-}
-
-extension ModelUse {
-    package var title: String {
-        switch self {
-        case .assistant: String(localized: "Assistant")
-        case .skills: String(localized: "Writing skills")
-        case .titles: String(localized: "Naming conversations")
-        case .search: String(localized: "Searching conversations")
         }
     }
 }

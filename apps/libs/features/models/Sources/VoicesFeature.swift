@@ -1,37 +1,37 @@
 import ComposableArchitecture
 import Foundation
-import LangReadrModels
+import ModelsClient
 
 /// The Models screen's voices: the one that reads aloud, for every
-/// language and for each language on the shelf, and the voice models to
+/// language and for each of the app's languages, and the voice models to
 /// download. A voice model downloads only when the person taps.
 @Reducer
-package struct VoicesFeature {
+public struct VoicesFeature {
     @ObservableState
-    package struct State: Equatable {
-        /// The languages of the books on the shelf, as BCP 47 tags, each of
-        /// which can have a voice of its own.
-        package var languages: [String]
-        package var models: [VoiceModel] = VoiceCatalog.all
-        package var installed: Set<ModelID> = []
-        package var downloads: [ModelID: DownloadState] = [:]
+    public struct State: Equatable {
+        /// The languages, as BCP 47 tags, each of which can have a voice of
+        /// its own. An app with one voice for every language has none.
+        public var languages: [String]
+        public var models: [VoiceModel] = VoiceCatalog.all
+        public var installed: Set<ModelID> = []
+        public var downloads: [ModelID: DownloadState] = [:]
         /// The voice for every language.
-        package var standard: VoiceChoice = .system
+        public var standard: VoiceChoice = .system
         /// Each language's own voice; one missing follows `standard`.
-        package var own: [String: VoiceChoice] = [:]
-        @Presents package var remove: ConfirmationDialogState<Remove>?
-        @Presents package var alert: AlertState<Never>?
+        public var own: [String: VoiceChoice] = [:]
+        @Presents public var remove: ConfirmationDialogState<Remove>?
+        @Presents public var alert: AlertState<Never>?
 
-        package init(languages: [String] = []) {
+        public init(languages: [String] = []) {
             self.languages = languages
         }
     }
 
-    package enum Remove: Equatable, Sendable {
+    public enum Remove: Equatable, Sendable {
         case confirmed(ModelID)
     }
 
-    package enum Action {
+    public enum Action {
         case task
         case loaded(installed: Set<ModelID>, standard: VoiceChoice, own: [String: VoiceChoice])
         case downloadsChanged([ModelID: DownloadState])
@@ -49,9 +49,9 @@ package struct VoicesFeature {
     @Dependency(\.models) private var library
     @Dependency(\.speech) private var speech
 
-    package init() {}
+    public init() {}
 
-    package var body: some ReducerOf<Self> {
+    public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
             case .task:

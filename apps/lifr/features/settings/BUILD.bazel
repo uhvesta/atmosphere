@@ -16,6 +16,7 @@ swift_library(
         "//apps/lifr/features:__subpackages__",
     ],
     deps = [
+        "//apps/libs/features/models",
         "//apps/libs/kits/chatui",
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
@@ -42,6 +43,7 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     deps = [
         ":settings",
+        "//apps/libs/features/models",
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/lock",
@@ -68,6 +70,7 @@ lifr_snapshot_test(
     srcs = glob(["SnapshotTests/*.swift"]),
     deps = [
         ":settings",
+        "//apps/libs/features/models",
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/lock",

@@ -19,6 +19,7 @@ import LifrShortcuts
 import LifrStoreClient
 import LifrSyncClient
 import LifrWidgetViews
+import ModelsFeatures
 import SwiftUI
 import XCTest
 

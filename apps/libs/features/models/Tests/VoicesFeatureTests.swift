@@ -1,12 +1,8 @@
 import ComposableArchitecture
 import Foundation
-import InferenceKit
-import LangReadrCore
-import LangReadrModels
-import LangReadrServices
+import ModelsClient
+import ModelsFeatures
 import XCTest
-
-@testable import LangReadrReading
 
 @MainActor
 final class VoicesFeatureTests: XCTestCase {
@@ -97,46 +93,5 @@ final class VoicesFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.standard, .system)
         XCTAssertEqual(library.installed, [])
         await store.skipInFlightEffects()
-    }
-}
-
-@MainActor
-final class WordCardSpeechTests: XCTestCase {
-    private func card(speak: @escaping @Sendable (String, String) async throws(SpeechError) -> Void)
-        -> TestStoreOf<WordCardFeature>
-    {
-        let word = WordSpan(text: "amigo", start: 5, end: 10)
-        let store = TestStore(
-            initialState: WordCardFeature.State(
-                key: WordKey(paragraph: UUID(0), word: "amigo"), word: word, language: Language("es-MX"),
-                sentence: "Hola amigo.")
-        ) {
-            WordCardFeature()
-        } withDependencies: {
-            $0.speech.speak = speak
-        }
-        store.exhaustivity = .off
-        return store
-    }
-
-    func testTheWordAndItsSentenceAreSaidInTheBooksLanguage() async {
-        let said = LockIsolated<[String]>([])
-        let store = card { text, language in said.withValue { $0.append("\(language): \(text)") } }
-
-        await store.send(.sayTapped)
-        await store.send(.saySentenceTapped)
-        await store.finish()
-
-        XCTAssertEqual(said.value, ["es-MX: amigo", "es-MX: Hola amigo."])
-        XCTAssertNil(store.state.speechProblem)
-    }
-
-    func testWhyItCouldntBeSaidIsShown() async {
-        let store = card { _, _ throws(SpeechError) in throw .audioUnavailable(reason: "busy") }
-
-        await store.send(.sayTapped)
-        await store.receive(\.spoke)
-
-        XCTAssertNotNil(store.state.speechProblem)
     }
 }

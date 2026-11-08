@@ -18,6 +18,7 @@ swift_library(
         "//apps/langreadr/core",
         "//apps/langreadr/models",
         "//apps/langreadr/services",
+        "//apps/libs/features/models",
         "//apps/libs/kits/capture",
         "//apps/libs/kits/chat",
         "//apps/libs/kits/chatui",
@@ -57,6 +58,7 @@ macos_unit_test(
 
 _FLOW_DEPS = [
     ":reading",
+    "//apps/libs/features/models",
     "//apps/langreadr/core",
     "//apps/langreadr/models",
     "//apps/langreadr/services:fake",

@@ -10,6 +10,7 @@ import LifrSkills
 import LifrStoreClient
 import LifrSyncClient
 import LifrTaskDetail
+import ModelsFeatures
 
 /// One Avenue's agent access, as Settings shows it.
 package struct AvenueAccess: Identifiable, Hashable, Sendable {

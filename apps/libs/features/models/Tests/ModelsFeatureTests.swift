@@ -1,7 +1,7 @@
 import ComposableArchitecture
 import Foundation
-import LifrModelsClient
-import LifrSettings
+import ModelsClient
+import ModelsFeatures
 import XCTest
 
 @MainActor

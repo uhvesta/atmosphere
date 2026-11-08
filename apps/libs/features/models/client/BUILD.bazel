@@ -1,0 +1,23 @@
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# The models an app can run, from //apps/libs/kits/inference, as TCA
+# dependencies: the library, with an in-memory one for tests and previews,
+# and reading aloud. Each app gives the live ones, and names what it asks
+# models to do with its own `ModelUseCase`.
+swift_library(
+    name = "client",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "ModelsClient",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps:__subpackages__"],
+    deps = [
+        "//apps/libs/kits/inference",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

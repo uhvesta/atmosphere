@@ -2,6 +2,7 @@ import ComposableArchitecture
 import FlowKit
 import LifrModelsClient
 import LifrSettings
+import ModelsFeatures
 import SnapshotTesting
 import SwiftUI
 import XCTest
@@ -43,7 +44,11 @@ final class ModelsSnapshotTests: XCTestCase {
         var state = ModelsFeature.State()
         state.models = ModelCatalog.all + [Self.pasted]
         state.installed = [ModelCatalog.gemma4E2B.id]
-        state.selection = [.skills: ModelCatalog.gemma4E2B.id]
+        // What each use runs on, as the library gives it: writing skills
+        // was picked, and the rest are as they start.
+        state.selection = [
+            .assistant: .apple, .skills: ModelCatalog.gemma4E2B.id, .titles: .apple, .search: .builtIn,
+        ]
         state.windows = [ModelCatalog.gemma4E2B.id: 16_384]
         state.tunings = [ModelCatalog.gemma4E2B.id: Self.measured]
         state.downloads = [
@@ -64,7 +69,7 @@ final class ModelsSnapshotTests: XCTestCase {
         assertSnapshot(
             of: (
                 choices: models.choices.map(\.id), downloadable: models.downloadable.map(\.id),
-                selected: ModelUse.allCases.map { ($0, models.selected(for: $0)) }, canAdd: models.canAdd
+                selected: ModelUse.allCases.map { ($0, models.selected(for: ModelUseKey($0))) }, canAdd: models.canAdd
             ),
             as: Snapshotting<Any, String>.dump.pullback { $0 }, named: "models")
     }

@@ -1,9 +1,8 @@
 import ComposableArchitecture
 import Foundation
-import LangReadrModels
+import ModelsClient
+import ModelsFeatures
 import XCTest
-
-@testable import LangReadrReading
 
 @MainActor
 final class TuneFeatureTests: XCTestCase {

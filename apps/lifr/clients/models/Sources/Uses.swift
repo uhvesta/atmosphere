@@ -1,5 +1,6 @@
 import ComposableArchitecture
-@_exported import InferenceKit
+import Foundation
+@_exported import ModelsClient
 
 extension ModelID {
     /// No model: Lifr's own word lists, built into the system. Only
@@ -47,6 +48,38 @@ package enum ModelUse: String, ModelUseCase {
         case .assistant, .skills: .chat
         case .titles, .search: .quick
         }
+    }
+}
+
+extension ModelUse {
+    package var title: String {
+        switch self {
+        case .assistant: String(localized: "Assistant")
+        case .skills: String(localized: "Writing skills")
+        case .titles: String(localized: "Naming conversations")
+        case .search: String(localized: "Searching conversations")
+        }
+    }
+}
+
+extension ModelUseKey {
+    package static let assistant = Self(ModelUse.assistant)
+    package static let skills = Self(ModelUse.skills)
+    package static let titles = Self(ModelUse.titles)
+    package static let search = Self(ModelUse.search)
+
+    /// The title of Lifr's use this is.
+    package var title: String { ModelUse(rawValue: rawValue)?.title ?? rawValue }
+}
+
+extension InMemoryModelLibrary {
+    /// A library for Lifr's uses.
+    package convenience init(
+        catalog: [ModelSpec] = ModelCatalog.all, installed: [ModelSpec] = [],
+        links: [String: Result<ModelSpec, ModelResolveError>] = [:],
+        now: Date = Date(timeIntervalSince1970: 1_793_700_000)
+    ) {
+        self.init(uses: ModelUse.self, catalog: catalog, installed: installed, links: links, now: now)
     }
 }
 

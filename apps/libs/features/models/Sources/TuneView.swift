@@ -1,16 +1,16 @@
 import ChatUI
 import ComposableArchitecture
-import LifrModelsClient
+import ModelsClient
 import SwiftUI
 
-package struct TuneView: View {
+public struct TuneView: View {
     let store: StoreOf<TuneFeature>
 
-    package init(store: StoreOf<TuneFeature>) {
+    public init(store: StoreOf<TuneFeature>) {
         self.store = store
     }
 
-    package var body: some View {
+    public var body: some View {
         TuneScreen(
             TuneScreenState(
                 model: store.model, candidates: store.candidates, results: store.results, failures: store.failures,

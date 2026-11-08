@@ -1,6 +1,6 @@
 import ComposableArchitecture
 import Foundation
-import LangReadrModels
+import ModelsClient
 
 /// Compares the ways a downloaded model can run on this device: each format
 /// it's downloaded in, on each engine and backend, with the engine's
@@ -9,27 +9,27 @@ import LangReadrModels
 /// runs until they tap Tune for this device, and nothing downloads until
 /// they tap a format.
 @Reducer
-package struct TuneFeature {
+public struct TuneFeature {
     @ObservableState
-    package struct State: Equatable {
+    public struct State: Equatable {
         /// The model, with every format it comes in.
-        package var model: ModelSpec
-        package var candidates: [TuneCandidate] = []
+        public var model: ModelSpec
+        public var candidates: [TuneCandidate] = []
         /// The latest result of each candidate measured here.
-        package var results: [TuneCandidate: TuneResult] = [:]
+        public var results: [TuneCandidate: TuneResult] = [:]
         /// Why a candidate in the last run has no result.
-        package var failures: [TuneCandidate: String] = [:]
+        public var failures: [TuneCandidate: String] = [:]
         /// The candidate running now.
-        package var running: TuneCandidate?
-        package var isRunning = false
-        package var setups: [TunePurpose: TunedSetup] = [:]
-        package var otherFormats: [ModelVariant] = []
-        package var downloading: ModelVariant?
-        package var downloadError: String?
+        public var running: TuneCandidate?
+        public var isRunning = false
+        public var setups: [TunePurpose: TunedSetup] = [:]
+        public var otherFormats: [ModelVariant] = []
+        public var downloading: ModelVariant?
+        public var downloadError: String?
         /// The index of the candidate whose settings are open.
-        package var editing: Int?
+        public var editing: Int?
 
-        package init(model: ModelSpec) {
+        public init(model: ModelSpec) {
             self.model = model
         }
 
@@ -53,7 +53,7 @@ package struct TuneFeature {
         }
     }
 
-    package enum Action {
+    public enum Action {
         case task
         /// The candidates for each format downloaded, what was measured
         /// before, latest first, what's picked, and the formats to offer.
@@ -79,9 +79,9 @@ package struct TuneFeature {
 
     @Dependency(\.models) private var library
 
-    package init() {}
+    public init() {}
 
-    package var body: some ReducerOf<Self> {
+    public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
             case .task:

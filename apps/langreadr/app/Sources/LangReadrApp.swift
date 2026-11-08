@@ -91,7 +91,7 @@ extension TutorKey: DependencyKey {
 }
 
 extension ModelLibraryClient: DependencyKey {
-    package static let liveValue: ModelLibraryClient = {
+    public static let liveValue: ModelLibraryClient = {
         let models = Models.runtimes
         return ModelLibraryClient(
             catalog: { models.library.catalog },
@@ -112,8 +112,12 @@ extension ModelLibraryClient: DependencyKey {
             setups: { id in models.setups(for: id) },
             pickSetup: { setup, purpose, id in await models.pick(setup, for: purpose, of: id) },
             otherFormats: { id in models.otherFormats(of: id) },
-            selection: { use in models.selection.model(for: use) },
-            select: { id, use in await models.select(id, for: use) },
+            uses: { ModelUse.allCases.map(ModelUseKey.init) },
+            selection: { key in ModelUse(rawValue: key.rawValue).map(models.selection.model(for:)) ?? .apple },
+            select: { id, key in
+                guard let use = ModelUse(rawValue: key.rawValue) else { return }
+                await models.select(id, for: use)
+            },
             setWindow: { id, window in await models.setWindow(window, for: id) }
         )
     }()
@@ -123,7 +127,7 @@ extension ModelLibraryClient: DependencyKey {
 /// until a voice model is downloaded and picked. The picks are kept with
 /// the models.
 extension SpeechClient: DependencyKey {
-    package static let liveValue: SpeechClient = {
+    public static let liveValue: SpeechClient = {
         let selection = VoiceSelection(file: ModelLibrary.defaultRoot.appending(path: "voices.json"))
         let speaker = Speaker(
             installed: { Models.runtimes.library.installed() }, selection: selection, system: SystemVoice(rate: 0.9),

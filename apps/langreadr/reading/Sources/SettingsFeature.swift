@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import ModelsFeatures
 
 /// Settings, opened from the library: the models LangReadr runs on.
 @Reducer

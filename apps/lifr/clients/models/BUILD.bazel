@@ -1,8 +1,8 @@
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
-# The models Lifr can run, from //apps/libs/kits/inference: what Lifr asks a
-# model to do, and the library as a dependency for features, with an
-# in-memory one for tests and previews. The live library is in
+# What Lifr asks a model to do, on the shared library from
+# //apps/libs/features/models/client, with an in-memory one for Lifr's
+# tests and previews. The live library is in
 # //apps/lifr/clients/models_live, which features never depend on.
 swift_library(
     name = "models",
@@ -24,6 +24,7 @@ swift_library(
         "//apps/lifr/features/skills:__pkg__",
     ],
     deps = [
+        "//apps/libs/features/models/client",
         "//apps/libs/kits/inference",
         "//apps/lifr/api",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

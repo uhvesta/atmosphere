@@ -1,0 +1,46 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# The Models screen, shared by the apps: what each of an app's uses runs
+# on, downloading and removing models, tuning one for this device, and the
+# voices that read aloud. TCA reducers with views built from ChatUI, whose
+# words are looked up in the app's String Catalog. Needs Xcode: build with
+# `--config=xcode`. In Swift 5 mode, like the apps' features.
+swift_library(
+    name = "models",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "ModelsFeatures",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps:__subpackages__"],
+    deps = [
+        "//apps/libs/features/models/client",
+        "//apps/libs/kits/chatui",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# TestStore tests, on macOS, on an in-memory library.
+swift_library(
+    name = "tests_lib",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":models",
+        "//apps/libs/features/models/client",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

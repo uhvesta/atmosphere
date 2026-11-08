@@ -5,90 +5,102 @@ import Foundation
 /// progress, and which model each use runs on. Downloads come only from
 /// Hugging Face, pinned to a commit and checked against each file's digest.
 @DependencyClient
-package struct ModelLibraryClient: Sendable {
-    package var catalog: @Sendable () -> [ModelSpec] = { [] }
+public struct ModelLibraryClient: Sendable {
+    public var catalog: @Sendable () -> [ModelSpec] = { [] }
     /// The models whose files are downloaded and checked.
-    package var installed: @Sendable () async -> [InstalledModel] = { [] }
+    public var installed: @Sendable () async -> [InstalledModel] = { [] }
     /// The models downloads were started for and haven't finished, running
-    /// or paused, even ones from before LangReadr last quit.
-    package var unfinished: @Sendable () async -> [ModelSpec] = { [] }
+    /// or paused, even ones from before the app last quit.
+    public var unfinished: @Sendable () async -> [ModelSpec] = { [] }
     // A typed throw needs its closure's parameters spelled out, and the
     // formatter puts them on their own line.
     // swiftlint:disable closure_parameter_position
     /// The model a pasted Hugging Face link points at, pinned to a commit,
     /// with each file's digest: the SHA-256 the person gave, which must
     /// match Hugging Face's, or Hugging Face's. Downloads nothing.
-    package var resolve: @Sendable (_ link: String, _ sha256: String?) async throws(ModelResolveError) -> ModelSpec = {
+    public var resolve: @Sendable (_ link: String, _ sha256: String?) async throws(ModelResolveError) -> ModelSpec = {
         link, _ throws(ModelResolveError) in
         throw .notALink(link)
     }
     /// Downloads the model's files, or what's left of them, checks them and
     /// moves them into place. Progress goes to `downloads`.
-    package var download: @Sendable (_ spec: ModelSpec) async throws(ModelDownloadError) -> InstalledModel = {
+    public var download: @Sendable (_ spec: ModelSpec) async throws(ModelDownloadError) -> InstalledModel = {
         _ throws(ModelDownloadError) in
         throw .nothingToDownload
     }
     /// Each download's state, each time one changes. Finished downloads
     /// leave it.
-    package var downloads: @Sendable () -> AsyncStream<[ModelID: DownloadState]> = { .finished }
+    public var downloads: @Sendable () -> AsyncStream<[ModelID: DownloadState]> = { .finished }
     /// Pauses a download. Downloading again goes on from where it stopped.
-    package var pause: @Sendable (_ id: ModelID) async -> Void
+    public var pause: @Sendable (_ id: ModelID) async -> Void
     /// Removes the model's files, and any partial download. Uses that ran
     /// on it go back to Apple's model.
-    package var delete: @Sendable (_ id: ModelID) async throws(ModelStorageError) -> Void = {
+    public var delete: @Sendable (_ id: ModelID) async throws(ModelStorageError) -> Void = {
         _ throws(ModelStorageError) in
     }
     /// Measures how fast `id` runs here on each backend it fits on, with a
     /// short fixed prompt, and keeps what was measured for picking where it
     /// runs. Unloads the loaded model first. Takes a minute or so.
-    package var tune: @Sendable (_ id: ModelID) async throws(ModelRuntimeError) -> Void = {
+    public var tune: @Sendable (_ id: ModelID) async throws(ModelRuntimeError) -> Void = {
         _ throws(ModelRuntimeError) in
         throw .unavailable(.notDownloaded)
     }
     // swiftlint:enable closure_parameter_position
-    /// Runs `id` on `backend` while LangReadr is on screen, or where LangReadr picks
+    /// Runs `id` on `backend` while the app is on screen, or where the app picks
     /// from what was measured with nil, from its next answer.
-    package var pickBackend: @Sendable (_ id: ModelID, _ backend: ModelBackend?) async -> Void
+    public var pickBackend: @Sendable (_ id: ModelID, _ backend: ModelBackend?) async -> Void
     /// Where `id` runs and why, and what was measured of it here, if it's
     /// downloaded.
-    package var tuning: @Sendable (_ id: ModelID) -> ModelTuning? = { _ in nil }
+    public var tuning: @Sendable (_ id: ModelID) -> ModelTuning? = { _ in nil }
     /// The setups to compare for `id`: each of its downloaded formats on
     /// each backend its engine has, at its window. Empty when it isn't
     /// downloaded.
-    package var tuneCandidates: @Sendable (_ id: ModelID) -> [TuneCandidate] = { _ in [] }
+    public var tuneCandidates: @Sendable (_ id: ModelID) -> [TuneCandidate] = { _ in [] }
     /// Runs each of `candidates` in turn, unloading the loaded model
     /// first, and keeps what's measured; `report` hears of each as it's
     /// done. A candidate that fails is reported and the rest go on;
     /// cancelling skips what's left.
-    package var compare:
+    public var compare:
         @Sendable (
             _ candidates: [TuneCandidate], _ report: @escaping @Sendable (TuneCandidate, TuneOutcome) async -> Void
         ) async -> [TuneOutcome] = { candidates, _ in candidates.map { _ in .skipped } }
     /// What was measured of `id`'s setups on this device, latest first.
-    package var tuneResults: @Sendable (_ id: ModelID) -> [TuneResult] = { _ in [] }
+    public var tuneResults: @Sendable (_ id: ModelID) -> [TuneResult] = { _ in [] }
     /// The setup the person picked for `id` for each purpose.
-    package var setups: @Sendable (_ id: ModelID) -> [TunePurpose: TunedSetup] = { _ in [:] }
-    /// Runs `id` as `setup` for the uses with `purpose`, or as LangReadr picks
+    public var setups: @Sendable (_ id: ModelID) -> [TunePurpose: TunedSetup] = { _ in [:] }
+    /// Runs `id` as `setup` for the uses with `purpose`, or as the app picks
     /// with nil, from its next answer.
-    package var pickSetup: @Sendable (_ setup: TunedSetup?, _ purpose: TunePurpose, _ id: ModelID) async -> Void
+    public var pickSetup: @Sendable (_ setup: TunedSetup?, _ purpose: TunePurpose, _ id: ModelID) async -> Void
     /// The formats of `id` in the catalog that aren't downloaded, to offer
     /// for comparing. Nothing's downloaded until the person asks.
-    package var otherFormats: @Sendable (_ id: ModelID) -> [ModelVariant] = { _ in [] }
+    public var otherFormats: @Sendable (_ id: ModelID) -> [ModelVariant] = { _ in [] }
+    /// What the app asks models to do, each of which the person can pick a
+    /// model for.
+    public var uses: @Sendable () -> [ModelUseKey] = { [] }
     /// The model `use` runs on.
-    package var selection: @Sendable (_ use: ModelUse) -> ModelID = { _ in .apple }
-    package var select: @Sendable (_ id: ModelID, _ use: ModelUse) async -> Void
+    public var selection: @Sendable (_ use: ModelUseKey) -> ModelID = { _ in .apple }
+    public var select: @Sendable (_ id: ModelID, _ use: ModelUseKey) async -> Void
     /// Sets the window `id` runs at, one of its `contextChoices`; its own
     /// window, or one it doesn't offer, goes back to its own.
-    package var setWindow: @Sendable (_ id: ModelID, _ window: Int) async -> Void
+    public var setWindow: @Sendable (_ id: ModelID, _ window: Int) async -> Void
 }
 
 extension ModelLibraryClient: TestDependencyKey {
-    package static let testValue = ModelLibraryClient()
-    package static let previewValue = InMemoryModelLibrary().client
+    public static let testValue = ModelLibraryClient()
+    public static let previewValue = InMemoryModelLibrary(uses: PreviewUse.self).client
+}
+
+/// The one use previews have.
+private enum PreviewUse: String, ModelUseCase {
+    case chat
+
+    func model(in selection: [PreviewUse: ModelID]) -> ModelID { selection[self] ?? .apple }
+    var standard: ModelID? { .apple }
+    var purpose: TunePurpose { .chat }
 }
 
 extension DependencyValues {
-    package var models: ModelLibraryClient {
+    public var models: ModelLibraryClient {
         get { self[ModelLibraryClient.self] }
         set { self[ModelLibraryClient.self] = newValue }
     }
@@ -97,10 +109,10 @@ extension DependencyValues {
 /// A library kept in memory, for tests and previews. Links resolve to the
 /// specs in `links`; a download finishes at once, or fails with the error
 /// set for it.
-package final class InMemoryModelLibrary: Sendable {
+public final class InMemoryModelLibrary: Sendable {
     private struct State {
         var installed: [ModelID: InstalledModel] = [:]
-        var selection: [ModelUse: ModelID] = [:]
+        var selection: [ModelUseKey: ModelID] = [:]
         var failures: [ModelID: ModelDownloadError] = [:]
         var unfinished: [ModelID: ModelSpec] = [:]
         var tuneFailures: [ModelID: ModelRuntimeError] = [:]
@@ -119,12 +131,24 @@ package final class InMemoryModelLibrary: Sendable {
     private let links: [String: Result<ModelSpec, ModelResolveError>]
     private let catalog: [ModelSpec]
     private let now: Date
+    private let uses: [ModelUseKey]
+    /// The model a use runs on, given what was picked: see
+    /// `ModelUseCase.model(in:)`.
+    private let resolve: @Sendable (ModelUseKey, [ModelUseKey: ModelID]) -> ModelID
 
-    package init(
-        catalog: [ModelSpec] = ModelCatalog.all, installed: [ModelSpec] = [],
+    /// A library for an app whose uses are `Use`'s cases.
+    public init<Use: ModelUseCase & RawRepresentable<String>>(
+        uses: Use.Type, catalog: [ModelSpec] = ModelCatalog.all, installed: [ModelSpec] = [],
         links: [String: Result<ModelSpec, ModelResolveError>] = [:],
         now: Date = Date(timeIntervalSince1970: 1_793_700_000)
     ) {
+        self.uses = Use.allCases.map(ModelUseKey.init)
+        resolve = { key, selection in
+            let picked = Dictionary(
+                selection.compactMap { key, id in Use(rawValue: key.rawValue).map { ($0, id) } }
+            ) { first, _ in first }
+            return Use(rawValue: key.rawValue)?.model(in: picked) ?? selection[key] ?? .apple
+        }
         self.catalog = catalog
         self.links = links
         self.now = now
@@ -134,35 +158,35 @@ package final class InMemoryModelLibrary: Sendable {
     }
 
     /// The models downloaded so far.
-    package var installed: [ModelID] { state.value.installed.keys.sorted { $0.rawValue < $1.rawValue } }
+    public var installed: [ModelID] { state.value.installed.keys.sorted { $0.rawValue < $1.rawValue } }
 
     /// Makes the next download of `id` fail with `error`.
-    package func failNextDownload(of id: ModelID, with error: ModelDownloadError) {
+    public func failNextDownload(of id: ModelID, with error: ModelDownloadError) {
         state.withValue { $0.failures[id] = error }
     }
 
-    /// Keeps `spec`'s download unfinished, as one paused before LangReadr quit.
-    package func leaveUnfinished(_ spec: ModelSpec, received: Int64) {
+    /// Keeps `spec`'s download unfinished, as one paused before the app quit.
+    public func leaveUnfinished(_ spec: ModelSpec, received: Int64) {
         state.withValue { $0.unfinished[spec.id] = spec }
         board.update { $0[spec.id] = .paused(received: received, total: spec.source?.totalSize ?? 0) }
     }
 
     /// Makes the next tune of `id` fail with `error`.
-    package func failNextTune(of id: ModelID, with error: ModelRuntimeError) {
+    public func failNextTune(of id: ModelID, with error: ModelRuntimeError) {
         state.withValue { $0.tuneFailures[id] = error }
     }
 
     /// Makes candidates on `runtime` fail with `error` when compared.
-    package func failComparing(on runtime: RuntimeKind, with error: ModelRuntimeError) {
+    public func failComparing(on runtime: RuntimeKind, with error: ModelRuntimeError) {
         state.withValue { $0.failingRuntimes[runtime] = error }
     }
 
     /// Shows `download` for `id`, as a download in progress would.
-    package func show(_ download: DownloadState?, for id: ModelID) {
+    public func show(_ download: DownloadState?, for id: ModelID) {
         board.update { $0[id] = download }
     }
 
-    package var client: ModelLibraryClient {
+    public var client: ModelLibraryClient {
         ModelLibraryClient(
             catalog: { [catalog] in catalog },
             installed: { [state] in
@@ -239,7 +263,8 @@ package final class InMemoryModelLibrary: Sendable {
                 let entry = catalog.first { $0.id == id }
                 return (entry?.variants ?? []).filter { !installed.contains($0) && $0.runtime != .apple }
             },
-            selection: { [state] use in use.model(in: state.value.selection) },
+            uses: { [uses] in uses },
+            selection: { [state, resolve] use in resolve(use, state.value.selection) },
             select: { [state] id, use in state.withValue { $0.selection[use] = id } },
             setWindow: { [state] id, window in
                 state.withValue { state in

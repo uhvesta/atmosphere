@@ -30,8 +30,12 @@ extension ModelRuntimes where Use == ModelUse {
             setups: { [self] id in setups(for: id) },
             pickSetup: { [self] setup, purpose, id in await pick(setup, for: purpose, of: id) },
             otherFormats: { [self] id in otherFormats(of: id) },
-            selection: { [selection] use in selection.model(for: use) },
-            select: { [self] id, use in await select(id, for: use) },
+            uses: { ModelUse.allCases.map(ModelUseKey.init) },
+            selection: { [selection] key in ModelUse(rawValue: key.rawValue).map(selection.model(for:)) ?? .apple },
+            select: { [self] id, key in
+                guard let use = ModelUse(rawValue: key.rawValue) else { return }
+                await select(id, for: use)
+            },
             setWindow: { [self] id, window in await setWindow(window, for: id) }
         )
     }

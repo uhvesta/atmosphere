@@ -1,9 +1,8 @@
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
-# The models LangReadr can run, from //apps/libs/kits/inference: what
-# LangReadr asks a model to do, and the library as a dependency for
-# features, with an in-memory one for tests and previews. The app gives
-# the live library.
+# What LangReadr asks a model to do, on the shared library from
+# //apps/libs/features/models/client, with an in-memory one for its tests
+# and previews. The app gives the live library.
 swift_library(
     name = "models",
     package_name = "langreadr",
@@ -15,6 +14,7 @@ swift_library(
         "//apps/langreadr/reading:__pkg__",
     ],
     deps = [
+        "//apps/libs/features/models/client",
         "//apps/libs/kits/inference",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],

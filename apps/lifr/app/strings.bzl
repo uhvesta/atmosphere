@@ -12,9 +12,9 @@ _StringsInfo = provider(
 def _strings_aspect_impl(target, ctx):
     own = []
 
-    # Lifr's own libraries and the kits it shows, whose words are looked up
-    # in the app's catalog.
-    is_lifr = ctx.label.workspace_name == "" and ctx.label.package.startswith(("apps/lifr/", "apps/libs/kits/"))
+    # Lifr's own libraries and the shared kits and features it shows, whose
+    # words are looked up in the app's catalog.
+    is_lifr = ctx.label.workspace_name == "" and ctx.label.package.startswith(("apps/lifr/", "apps/libs/"))
     if is_lifr and OutputGroupInfo in target and hasattr(target[OutputGroupInfo], "swift_localized_strings"):
         own = [target[OutputGroupInfo].swift_localized_strings]
     deps = [dep[_StringsInfo].directories for dep in getattr(ctx.rule.attr, "deps", []) if _StringsInfo in dep]

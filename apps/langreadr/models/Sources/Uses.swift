@@ -1,4 +1,5 @@
-@_exported import InferenceKit
+import Foundation
+@_exported import ModelsClient
 
 /// What LangReadr asks a model to do. The person can pick a model for each.
 package enum ModelUse: String, ModelUseCase {
@@ -41,9 +42,21 @@ package enum ModelUse: String, ModelUseCase {
     }
 }
 
-extension ModelLibraryClient {
-    /// Apple's model, then each one downloaded, by name.
-    package func runnable() async -> [RunnableModel] {
-        RunnableModel.list(await installed())
+extension ModelUseKey {
+    package static let chat = Self(ModelUse.chat)
+    package static let reading = Self(ModelUse.reading)
+
+    /// The title of LangReadr's use this is.
+    package var title: String { ModelUse(rawValue: rawValue)?.title ?? rawValue }
+}
+
+extension InMemoryModelLibrary {
+    /// A library for LangReadr's uses.
+    package convenience init(
+        catalog: [ModelSpec] = ModelCatalog.all, installed: [ModelSpec] = [],
+        links: [String: Result<ModelSpec, ModelResolveError>] = [:],
+        now: Date = Date(timeIntervalSince1970: 1_793_700_000)
+    ) {
+        self.init(uses: ModelUse.self, catalog: catalog, installed: installed, links: links, now: now)
     }
 }

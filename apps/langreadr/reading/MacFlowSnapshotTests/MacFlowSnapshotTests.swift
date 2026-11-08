@@ -3,6 +3,7 @@ import FlowKit
 import LangReadrCore
 import LangReadrModels
 import LangReadrReading
+import ModelsFeatures
 import SwiftUI
 import XCTest
 
