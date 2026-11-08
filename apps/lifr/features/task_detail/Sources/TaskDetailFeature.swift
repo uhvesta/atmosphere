@@ -34,6 +34,9 @@ package struct TaskDetailFeature {
         /// the task's Avenue.
         package var avenueChoices: [Choice]
         package var projectChoices: [Choice]
+        /// The active Projects of the other open Avenues, by Avenue, so a
+        /// task moves straight into one in a single change.
+        package var otherProjectChoices: [ProjectGroup]
         /// Every label, for the label menu.
         package var labelChoices: [Choice]
         /// Tasks this one can become a Sub task of: open top-level tasks in
@@ -78,6 +81,17 @@ package struct TaskDetailFeature {
                 .filter { $0.avenueID == task.avenueID && ($0.status == .active || $0.id == task.projectID) }
                 .sorted { $0.sortOrder < $1.sortOrder }
                 .map { Choice(id: $0.id, name: $0.name) }
+            otherProjectChoices = workspace.avenues.values
+                .filter { $0.archivedAt == nil && $0.id != task.avenueID }
+                .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
+                .compactMap { avenue in
+                    let projects = workspace.projects.values
+                        .filter { $0.avenueID == avenue.id && $0.status == .active }
+                        .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
+                        .map { Choice(id: $0.id, name: $0.name) }
+                    return projects.isEmpty
+                        ? nil : ProjectGroup(avenue: Choice(id: avenue.id, name: avenue.name), projects: projects)
+                }
             labelChoices = workspace.labels.values
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
                 .map { Choice(id: $0.id, name: $0.name) }
@@ -243,9 +257,12 @@ package struct TaskDetailFeature {
 
             case .projectPicked(let projectID):
                 guard projectID != state.projectID else { return .none }
-                return save { [id = state.id, avenueID = state.avenueID] in
-                    try await $0.move(id, toAvenue: avenueID, project: projectID)
-                }
+                // A Project of another Avenue takes the task to that Avenue
+                // too, in the same change.
+                let avenueID =
+                    state.otherProjectChoices.first { group in group.projects.contains { $0.id == projectID } }?
+                    .avenue.id ?? state.avenueID
+                return save { [id = state.id] in try await $0.move(id, toAvenue: avenueID, project: projectID) }
 
             case .labelToggled(let labelID):
                 var labelIDs = state.labelIDs
@@ -392,4 +409,12 @@ package struct TaskDetailFeature {
 package struct Choice: Identifiable, Hashable, Sendable {
     package var id: UUID
     package var name: String
+}
+
+/// An Avenue's Projects, to pick one by name.
+package struct ProjectGroup: Identifiable, Hashable, Sendable {
+    package var avenue: Choice
+    package var projects: [Choice]
+
+    package var id: UUID { avenue.id }
 }

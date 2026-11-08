@@ -109,4 +109,37 @@ final class PhoneTasksFlowTests: PhoneFlowTestCase {
         await flow.step("edit-avenue")
         flow.finish()
     }
+
+    /// Moving: a Project to another Avenue takes its task along, and a
+    /// task picked into a Project of another Avenue takes its Sub tasks.
+    /// Undo puts each back whole.
+    func testMoves() async throws {
+        let sample = Workspace.sample(now: now, timeZone: .gmt)
+        let marathon = try XCTUnwrap(sample.projects.values.first { $0.name == "Half marathon" }?.id)
+        let home = try XCTUnwrap(sample.avenues.values.first { $0.key.rawValue == "HOME" }?.id)
+        let (store, flow) = app("moves", workspace: sample)
+        store.tab = .avenues
+        await flow.step("avenues", image: false)
+        store.send(.avenues(.opened(.project(marathon))))
+        await flow.step("project-opened")
+        store.send(.avenues(.avenue(.presented(.project(.avenuePicked(home))))))
+        await flow.step("project-moved")
+        XCTAssertEqual(
+            store.workspace?.tasks.values.filter { $0.projectID == marathon }.map(\.avenueID), [home])
+        store.send(.undoTapped(try XCTUnwrap(store.toast?.id)))
+        await flow.step("project-move-undone")
+        store.send(.avenues(.avenue(.dismiss)))
+        store.tab = .today
+        let review = try task("Review Q4 roadmap", in: store)
+        store.send(.today(.list(.rowTapped(review))))
+        await flow.step("task-opened")
+        store.send(.today(.list(.detail(.presented(.projectPicked(marathon))))))
+        await flow.step("task-moved")
+        XCTAssertEqual(
+            store.workspace?.tasks.values.filter { $0.parentID == review }.map(\.projectID),
+            [marathon, marathon, marathon])
+        store.send(.undoTapped(try XCTUnwrap(store.toast?.id)))
+        await flow.step("task-move-undone")
+        flow.finish()
+    }
 }

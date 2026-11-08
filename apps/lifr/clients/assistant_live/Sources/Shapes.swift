@@ -59,8 +59,9 @@ enum Shapes {
     }
 
     /// A change to one of the existing Projects named `projects`, as
-    /// "KEY/Name". Only the fields to change are given.
-    static func projectChange(projects: [String]) -> ModelSchema {
+    /// "KEY/Name", which may move it to one of the Avenues with `avenues`
+    /// keys. Only the fields to change are given.
+    static func projectChange(projects: [String], avenues: [String]) -> ModelSchema {
         .object(
             name: "ProjectChange",
             [
@@ -71,6 +72,9 @@ enum Shapes {
                 optional("due", "Only to change when it's due: the new date as the person said it, or none."),
                 optional("rename", "Only to rename it: the new name."),
                 optional("details", "Only to change what the goal is: the new description."),
+                optional(
+                    "moveTo", "Only to move it, with its tasks, to another Avenue.",
+                    .choice(name: "AvenueKey", avenues)),
             ])
     }
 
@@ -156,7 +160,7 @@ enum Shapes {
     /// must with `mustChangeProject`.
     static func turn(
         changes codes: [String], places: [String] = [], draftTitles: [String] = [], projects: [String] = [],
-        mustChange: Bool = false, mustChangeDraft: Bool = false, mustChangeProject: Bool = false,
+        avenues: [String] = [], mustChange: Bool = false, mustChangeDraft: Bool = false, mustChangeProject: Bool = false,
         mustPlan: Bool = false
     ) -> ModelSchema {
         var properties: [ModelProperty] = []
@@ -171,7 +175,7 @@ enum Shapes {
             properties.append(
                 ModelProperty(
                     "projectChanges", "Changes to these existing Projects the person asked for.",
-                    .array(projectChange(projects: projects)), optional: !mustChangeProject))
+                    .array(projectChange(projects: projects, avenues: avenues)), optional: !mustChangeProject))
         }
         if !draftTitles.isEmpty {
             properties.append(

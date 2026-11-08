@@ -12,15 +12,19 @@ package struct ProjectChange: Hashable, Codable, Sendable {
     package var status: String?
     /// A date as `CalendarDate.resolving` reads it, or "none" to clear it.
     package var due: String?
+    /// The key or name of the Avenue to move the Project to, with its tasks.
+    package var avenue: String?
 
     package init(
-        project: String, name: String? = nil, details: String? = nil, status: String? = nil, due: String? = nil
+        project: String, name: String? = nil, details: String? = nil, status: String? = nil, due: String? = nil,
+        avenue: String? = nil
     ) {
         self.project = project
         self.name = name
         self.details = details
         self.status = status
         self.due = due
+        self.avenue = avenue
     }
 }
 
@@ -29,6 +33,7 @@ package enum ProjectChangeError: Error, Hashable, Sendable, CustomStringConverti
     case noProject(name: String, suggestion: String?)
     case unknownStatus(String)
     case invalidDate(String)
+    case unknownAvenue(key: String, suggestion: String?)
     case nothingToChange(project: String)
     /// The conversation can't change anything, such as with a skill that
     /// only reads.
@@ -46,6 +51,9 @@ package enum ProjectChangeError: Error, Hashable, Sendable, CustomStringConverti
             "“\(status)” isn't something a Project can be. Ask to complete, archive or reopen it."
         case .invalidDate(let text):
             "“\(text)” isn't a date Lifr reads, so the Project's due date wasn't changed. " + Plan.dateHelp
+        case .unknownAvenue(let key, let suggestion):
+            "There's no Avenue \(key), so the Project wasn't moved."
+                + (suggestion.map { " Did you mean \($0)?" } ?? " Ask again with one from the sidebar.")
         case .nothingToChange(let project):
             "The change to “\(project)” didn't say what to change."
         case .readOnly:
@@ -68,7 +76,8 @@ extension AssistantTools {
     /// Project after it. Fields that say what it already has change
     /// nothing. Archiving moves its open tasks out to its Avenue, so none
     /// is closed without the person asking; completing needs every task
-    /// closed.
+    /// closed. A move to another Avenue takes every task and Sub task in
+    /// the Project with it.
     package func change(_ change: ProjectChange) async throws(ProjectChangeError) -> Project {
         let project = try project(named: change.project)
         let newStatus = try change.status.nonEmpty.map { (status) throws(ProjectChangeError) in
@@ -82,8 +91,10 @@ extension AssistantTools {
         }.flatMap { $0 == project.dueDate ? nil : .some($0) }
         let newName = change.name.nonEmpty.flatMap { $0 == project.name ? nil : $0 }
         let newDetails = change.details.nonEmpty.flatMap { $0 == project.details ? nil : $0 }
-        guard newStatus != nil || newDue != nil || newName != nil || newDetails != nil else {
-            let given = [change.name, change.details, change.status, change.due]
+        let newAvenue = try change.avenue.nonEmpty.map { (key) throws(ProjectChangeError) in try avenue(named: key) }
+            .flatMap { $0 == project.avenueID ? nil : $0 }
+        guard newStatus != nil || newDue != nil || newName != nil || newDetails != nil || newAvenue != nil else {
+            let given = [change.name, change.details, change.status, change.due, change.avenue]
             if given.contains(where: { $0.nonEmpty != nil }) { return project }
             throw .nothingToChange(project: project.name)
         }
@@ -94,6 +105,7 @@ extension AssistantTools {
                 try workspace.edit(
                     project: id, Workspace.ProjectEdit(name: newName, details: newDetails, dueDate: newDue))
             }
+            if let newAvenue { saved.merge(try workspace.move(project: id, toAvenue: newAvenue, in: context)) }
             switch newStatus {
             case .archived?: saved.merge(try workspace.archive(project: id, openTasks: .moveToAvenue, in: context))
             case let status?: try workspace.setStatus(status, ofProject: id, in: context)
@@ -106,6 +118,20 @@ extension AssistantTools {
         case .readOnly: throw .readOnly
         case .refused(let error): throw .refused(project: project.name, error)
         }
+    }
+
+    /// The open Avenue `text` names by key or name, in any case.
+    private func avenue(named text: String) throws(ProjectChangeError) -> UUID {
+        let wanted = text.trimmingCharacters(in: .whitespaces)
+        let avenues = workspace.avenues.values.filter { $0.archivedAt == nil }
+        guard
+            let avenue = avenues.first(where: { $0.key.rawValue.caseInsensitiveCompare(wanted) == .orderedSame })
+                ?? avenues.first(where: { $0.name.caseInsensitiveCompare(wanted) == .orderedSame })
+        else {
+            throw .unknownAvenue(
+                key: wanted, suggestion: Workspace.closest(to: wanted.uppercased(), in: avenues.map(\.key.rawValue)))
+        }
+        return avenue.id
     }
 
     /// The Project "KEY/Name" or "Name" names, in any case, in an Avenue

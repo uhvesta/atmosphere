@@ -249,8 +249,8 @@ package enum AssistantPrompt {
         if changesProjects {
             text +=
                 "\n\nTo change Projects that already exist, such as to rename, describe, reschedule, complete, "
-                + "reopen or archive them, put each in \"projectChanges\" with its name from the existing Projects "
-                + "the prompt lists. Archiving a Project moves its open tasks out to its Avenue. Each change waits "
+                + "reopen, archive or move them to another Avenue, put each in \"projectChanges\" with its name from the existing Projects "
+                + "the prompt lists. Archiving a Project moves its open tasks out to its Avenue; moving one takes its tasks along. Each change waits "
                 + "for the person to apply it."
         }
         let writes = AssistantTool.allCases.filter { $0.writes && tools.contains($0) }
@@ -617,7 +617,7 @@ package enum AssistantPrompt {
             }
             return ProjectChange(
                 project: project, name: change["rename"]?.text, details: change["details"]?.text,
-                status: change["status"]?.text, due: change["due"]?.text)
+                status: change["status"]?.text, due: change["due"]?.text, avenue: change["moveTo"]?.text)
         }
     }
 

@@ -292,6 +292,25 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.subtasks.map(\.avenue), ["Home"])
     }
 
+    func testPickingAProjectInAnotherAvenueMovesTheTaskAndSubtasksThereInOneChange() async throws {
+        let home = records.avenue("HOME", "Home")
+        let garden = records.project("Garden", in: home)
+        let stretch = records.task("Stretch", in: health)
+        let hips = records.task("Hips", in: health, parent: stretch)
+        let store = try makeStore(stretch)
+        XCTAssertEqual(store.state.otherProjectChoices.map(\.avenue.name), ["Home"])
+
+        await store.send(.projectPicked(garden.id))
+        await store.receive(\.delegate.saved)
+
+        XCTAssertEqual(store.state.avenueID, home.id)
+        XCTAssertEqual(store.state.projectID, garden.id)
+        let workspace = try await store.dependencies.store.load()
+        XCTAssertEqual(workspace.tasks[hips.id]?.avenueID, home.id)
+        XCTAssertEqual(workspace.tasks[hips.id]?.projectID, garden.id)
+        XCTAssertEqual(workspace.journal.count, records.workspace.journal.count + 1, "the move is one change")
+    }
+
     func testLabelsAreToggledAndNewOnesReuseAnExistingName() async throws {
         let errands = records.label("errands")
         let stretch = records.task("Stretch", in: health)

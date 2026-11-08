@@ -128,6 +128,12 @@ package struct LastChange: Equatable, Sendable {
         case (.fieldChanged?, .status?):
             let status = event?.newValue.flatMap(TaskStatus.init(rawValue:))
             return status.map { String(localized: "\(title) is \($0.title)") } ?? String(localized: "Changed \(title)")
+        case (.fieldChanged?, .avenue?), (.fieldChanged?, .project?):
+            // Where it went: its Project, or its Avenue when it left one.
+            let place = task.flatMap { task in
+                task.projectID.flatMap { workspace.projects[$0]?.name } ?? workspace.avenues[task.avenueID]?.name
+            }
+            return place.map { String(localized: "Moved \(title) to \($0)") } ?? String(localized: "Changed \(title)")
         case (.movedToTrash?, _):
             return String(localized: "Moved \(title) to the Trash")
         default:

@@ -183,6 +183,7 @@ enum LiveAssistant {
             schema: Shapes.turn(
                 changes: changeable.map(\.code), places: request.lookup.places.flatMap(\.choices),
                 draftTitles: draftTitles, projects: projects.map(\.place),
+                avenues: request.lookup.places.map(\.key),
                 mustChange: asksForChange && !asksForProjectChange,
                 mustChangeDraft: asksForPlan && !asksToAdd,
                 mustChangeProject: asksForProjectChange && !asksForChange,

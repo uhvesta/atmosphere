@@ -200,13 +200,10 @@ package struct Workspace: Hashable, Codable, Sendable {
         project.avenueID = avenueID
         project.sortOrder = SortKey.between(last, nil)
         projects[id] = project
-        // Trashed tasks move too, so a restored one is still in its Project's
-        // Avenue.
-        let inProject = tasks.values.filter { $0.projectID == id }.sorted { $0.id.uuidString < $1.id.uuidString }
+        let inProject = tasks.values.filter { $0.projectID == id && !$0.isSubtask }
+            .sorted { $0.id.uuidString < $1.id.uuidString }
         for task in inProject {
-            place(
-                task.id, avenue: avenueID, project: id, by: context.actor,
-                reason: task.isSubtask ? .movedWithParent : nil, in: context, &change)
+            relocate(task.id, avenue: avenueID, project: id, by: context.actor, in: context, &change)
         }
         return change
     }
@@ -220,11 +217,7 @@ package struct Workspace: Hashable, Codable, Sendable {
         for task in openTopLevelTasks(where: { $0.projectID == id }) {
             switch openTasks {
             case .moveToAvenue:
-                for moved in [task] + subtasks(of: task.id) {
-                    place(
-                        moved.id, avenue: project.avenueID, project: nil, by: context.actor,
-                        reason: moved.isSubtask ? .movedWithParent : nil, in: context, &change)
-                }
+                relocate(task.id, avenue: project.avenueID, project: nil, by: context.actor, in: context, &change)
             case .closeAsWontDo:
                 change.merge(try setStatus(.wontDo, of: task.id, cascade: true, in: context))
             }
@@ -475,10 +468,26 @@ package struct Workspace: Hashable, Codable, Sendable {
         try checkProject(projectID, isIn: avenueID)
         var change = Change()
         guard task.avenueID != avenueID || task.projectID != projectID else { return change }
-        for (taskID, reason) in [(id, nil)] + subtasks(of: id).map({ ($0.id, HistoryEvent.Reason.movedWithParent) }) {
-            place(taskID, avenue: avenueID, project: projectID, by: context.actor, reason: reason, in: context, &change)
-        }
+        relocate(id, avenue: avenueID, project: projectID, by: context.actor, in: context, &change)
         return change
+    }
+
+    /// Puts a top-level task and every one of its Sub tasks in the Avenue
+    /// and Project. Every move goes through here, so a Sub task is never
+    /// left behind its parent: trashed ones move too, so a restored one is
+    /// still with its parent.
+    mutating func relocate(
+        _ id: UUID, avenue avenueID: UUID, project projectID: UUID?, by actor: Actor, in context: Context,
+        _ change: inout Change
+    ) {
+        place(id, avenue: avenueID, project: projectID, by: actor, reason: nil, in: context, &change)
+        let subtasks = tasks.values.filter { $0.parentID == id }
+            .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
+        for subtask in subtasks {
+            place(
+                subtask.id, avenue: avenueID, project: projectID, by: actor, reason: .movedWithParent, in: context,
+                &change)
+        }
     }
 
     /// Makes a task a Sub task of `parentID`, or a top-level task when

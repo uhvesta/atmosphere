@@ -214,6 +214,33 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Moving a Project to another Avenue, with its task, and a task with
+    /// its Sub tasks into a Project of another Avenue; ⌘Z puts each back.
+    func testMoves() async throws {
+        let (store, flow) = app("moves")
+        await flow.step("launch", image: false)
+        let marathon = try XCTUnwrap(store.workspace?.projects.values.first { $0.name == "Half marathon" }?.id)
+        store.send(.selected(.scope(.project(marathon))))
+        await flow.step("project-opened")
+        store.send(.avenue(.project(.avenuePicked(try avenue("HOME", in: store)))))
+        await flow.step("project-moved")
+        store.send(.undoTapped(try XCTUnwrap(store.lastChange?.id)))
+        await flow.step("project-move-undone")
+        store.send(.selected(.today))
+        let review = try task("Review Q4 roadmap", in: store)
+        store.send(.today(.list(.rowTapped(review))))
+        await flow.step("task-opened")
+        store.send(.today(.list(.detail(.presented(.projectPicked(marathon))))))
+        await flow.step("task-moved")
+        XCTAssertEqual(
+            store.workspace?.tasks.values.filter { $0.parentID == review }.map(\.projectID),
+            [marathon, marathon, marathon])
+        store.send(.undoTapped(try XCTUnwrap(store.lastChange?.id)))
+        await flow.step("task-move-undone")
+        XCTAssertEqual(store.workspace?.tasks[review]?.projectID, nil)
+        flow.finish()
+    }
+
     /// The assistant: a new conversation, the / list, a skill typed with its
     /// details, a reply with a draft, adding it, renaming, then the archive.
     func testAssistant() async throws {

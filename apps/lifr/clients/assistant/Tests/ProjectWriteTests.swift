@@ -68,6 +68,36 @@ final class ProjectWriteTests: XCTestCase {
         XCTAssertEqual(task.status, .todo, "the open task isn't closed")
     }
 
+    func testMovingToAnotherAvenueTakesItsTasksAndSubtasksInOneChange() async throws {
+        var (records, healthAvenue, marathon, shoes) = health()
+        let home = records.avenue("HOME", "Home")
+        let laces = records.task("Pick laces", in: healthAvenue, project: marathon, parent: shoes)
+        let (tools, store) = tools(records.workspace)
+
+        _ = try await tools.change(ProjectChange(project: "HEALTH/Half marathon", avenue: "home"))
+
+        let saved = try await apply(tools, to: store)
+        XCTAssertEqual(saved.projects[marathon.id]?.avenueID, home.id)
+        for id in [shoes.id, laces.id] {
+            XCTAssertEqual(saved.tasks[id]?.avenueID, home.id)
+            XCTAssertEqual(saved.tasks[id]?.projectID, marathon.id)
+        }
+        XCTAssertEqual(saved.journal.count, records.workspace.journal.count + 1, "the move is one change")
+    }
+
+    func testMovingToAnAvenueThatIsntThereIsRefusedAndChangesNothing() async throws {
+        let (records, _, _, _) = health()
+        let (tools, _) = tools(records.workspace)
+
+        do {
+            _ = try await tools.change(ProjectChange(project: "Half marathon", avenue: "HOBBY"))
+            XCTFail("Moved a Project to an Avenue that isn't there")
+        } catch {
+            guard case .unknownAvenue = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertNil(tools.proposal)
+    }
+
     func testCompletingWithOpenTasksIsRefusedAndChangesNothing() async throws {
         let (records, _, marathon, _) = health()
         let (tools, store) = tools(records.workspace)

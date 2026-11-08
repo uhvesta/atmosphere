@@ -176,6 +176,11 @@ package struct TaskDetailView: View {
             ) {
                 Text("None").tag(UUID?.none)
                 ForEach(store.projectChoices) { Text($0.name).tag(UUID?.some($0.id)) }
+                ForEach(store.otherProjectChoices) { group in
+                    Section(group.avenue.name) {
+                        ForEach(group.projects) { Text($0.name).tag(UUID?.some($0.id)) }
+                    }
+                }
             }
         } footer: {
             Text("Moving a task moves its Sub tasks with it.")

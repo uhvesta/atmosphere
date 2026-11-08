@@ -572,6 +572,62 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testMovingAProjectTakesItsTasksAndUndoPutsThemAllBack() async throws {
+        let marathon = records.project("Half marathon", in: health)
+        let home = records.avenue("HOME", "Home")
+        let shoes = records.task("Buy running shoes", in: health, project: marathon)
+        let laces = records.task("Pick laces", in: health, project: marathon, parent: shoes)
+        let store = makeStore(.phone)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.avenues(.opened(.project(marathon.id))))
+        await store.send(.avenues(.avenue(.presented(.project(.avenuePicked(home.id))))))
+        await store.skipReceivedActions()
+        let toast = try XCTUnwrap(store.state.toast)
+        for id in [shoes.id, laces.id] {
+            XCTAssertEqual(store.state.workspace?.tasks[id]?.avenueID, home.id)
+            XCTAssertEqual(store.state.workspace?.tasks[id]?.projectID, marathon.id)
+        }
+        XCTAssertEqual(store.state.workspace?.projects[marathon.id]?.avenueID, home.id)
+
+        await store.send(.undoTapped(toast.id))
+        await store.receive(\.undone)
+        XCTAssertEqual(store.state.workspace?.projects[marathon.id]?.avenueID, health.id)
+        for id in [shoes.id, laces.id] {
+            XCTAssertEqual(store.state.workspace?.tasks[id]?.avenueID, health.id)
+            XCTAssertEqual(store.state.workspace?.tasks[id]?.projectID, marathon.id)
+        }
+        await task.cancel()
+    }
+
+    func testMovingATaskTakesItsSubtasksAndUndoPutsThemAllBack() async throws {
+        let home = records.avenue("HOME", "Home")
+        let garden = records.project("Garden", in: home)
+        let run = records.task("Run", in: health, due: 0)
+        let warmUp = records.task("Warm up", in: health, parent: run)
+        let store = makeStore(.phone)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.today(.list(.rowTapped(run.id))))
+        await store.send(.today(.list(.detail(.presented(.projectPicked(garden.id))))))
+        await store.skipReceivedActions()
+        let toast = try XCTUnwrap(store.state.toast)
+        for id in [run.id, warmUp.id] {
+            XCTAssertEqual(store.state.workspace?.tasks[id]?.avenueID, home.id)
+            XCTAssertEqual(store.state.workspace?.tasks[id]?.projectID, garden.id)
+        }
+
+        await store.send(.undoTapped(toast.id))
+        await store.receive(\.undone)
+        for id in [run.id, warmUp.id] {
+            XCTAssertEqual(store.state.workspace?.tasks[id]?.avenueID, health.id)
+            XCTAssertNil(store.state.workspace?.tasks[id]?.projectID)
+        }
+        await task.cancel()
+    }
+
     func testUndoRefusesOnceTheProjectChangedAgainElsewhere() async throws {
         let marathon = records.project("Half marathon", in: health)
         let client = StoreClient.inMemory(records.workspace)

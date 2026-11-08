@@ -59,6 +59,30 @@ func hierarchyTests() -> [TestCase] {
             try expectEqual(fixture.get(subtask).projectID, nil)
             try expectEqual(try fixture.workspace.task(code: subtask.code.rawValue).id, subtask.id)
         },
+        TestCase("given a trashed Sub task, when its parent moves, then it moves too and is restored with it") {
+            let fixture = try Fixture()
+            let parent = try fixture.task("Parent")
+            let trashed = try fixture.task("Old step", parent: parent)
+            _ = try fixture.workspace.moveToTrash(trashed.id, in: fixture.context)
+            let home = try fixture.workspace.createAvenue(key: "HOME", name: "Home", in: fixture.context)
+            let garden = try fixture.workspace.createProject(name: "Garden", inAvenue: home.id, in: fixture.context)
+            _ = try fixture.workspace.move(parent.id, toAvenue: home.id, project: garden.id, in: fixture.context)
+            _ = try fixture.workspace.restore(trashed.id, in: fixture.context)
+            try expectEqual(fixture.get(trashed).avenueID, home.id)
+            try expectEqual(fixture.get(trashed).projectID, garden.id)
+        },
+        TestCase("given a moved task with Sub tasks, when the move is undone, then they all go back") {
+            let fixture = try Fixture()
+            let parent = try fixture.task("Parent", project: fixture.marathon)
+            let subtask = try fixture.task("Sub task", parent: parent)
+            let home = try fixture.workspace.createAvenue(key: "HOME", name: "Home", in: fixture.context)
+            let change = try fixture.workspace.move(parent.id, toAvenue: home.id, project: nil, in: fixture.context)
+            _ = fixture.workspace.undo(change, in: fixture.context)
+            for task in [parent, subtask] {
+                try expectEqual(fixture.get(task).avenueID, fixture.health.id)
+                try expectEqual(fixture.get(task).projectID, fixture.marathon.id)
+            }
+        },
         TestCase("given a Sub task, then it can't be moved on its own") {
             let fixture = try Fixture()
             let subtask = try fixture.task("Sub task", parent: try fixture.task("Parent"))
