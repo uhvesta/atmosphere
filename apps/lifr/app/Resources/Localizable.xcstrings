@@ -336,6 +336,9 @@
     "Add" : {
 
     },
+    "Add Files…" : {
+
+    },
     "Add Skill" : {
 
     },
@@ -531,6 +534,9 @@
 
     },
     "Attach a Photo" : {
+
+    },
+    "Attach a Photo…" : {
 
     },
     "Attach a photo or use a skill" : {
@@ -1289,6 +1295,9 @@
 
     },
     "List" : {
+
+    },
+    "Listening…" : {
 
     },
     "Local API" : {

@@ -493,7 +493,7 @@ package struct ChatView: View {
                         .font(.callout)
                 }
                 if store.dictating {
-                    Label("Listening… Tap stop when you're done.", systemImage: "waveform")
+                    Label("Listening…", systemImage: "waveform")
                         .foregroundStyle(.red)
                         .font(.callout)
                 }
