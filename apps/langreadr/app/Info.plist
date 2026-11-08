@@ -14,6 +14,14 @@
 	<false/>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.education</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>LangReadr listens when you tap the microphone in a chat, to write what you say into your message. What you say stays on this device.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>LangReadr writes what you say into your message when you tap the microphone in a chat. Your speech is recognized on this device and isn't sent anywhere.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>LangReadr opens the camera when you choose to take a photo to add to a chat. The photo stays on this device.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>LangReadr shows your recent photos when you add to a chat, so you can attach one. Only the photos you attach are used, and they stay on this device.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Avesta Barzegar</string>
 </dict>

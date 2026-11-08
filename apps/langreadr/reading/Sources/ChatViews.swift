@@ -1,3 +1,4 @@
+import CaptureKit
 import ChatKit
 import ChatUI
 import ComposableArchitecture
@@ -23,7 +24,16 @@ struct PassageChatView: View {
             Divider()
             CompactChat(
                 messages: store.chat.conversation.messages, reply: store.reply, input: $store.input,
-                prompt: Text("Ask about it"), model: modelPill, canSend: store.canSend, canStop: store.reply != nil,
+                prompt: Text("Ask about it"), model: modelPill,
+                mic: MicButton(isOn: store.dictating, mode: .dictate) { store.send(.micTapped) },
+                add: { store.send(.addContextTapped) },
+                pending: store.pending.enumerated().map { index, file in
+                    AttachmentChip(verbatim: file.name, systemImage: "doc.text") {
+                        store.send(.removeFileTapped(index))
+                    }
+                },
+                files: { $0.files.map(\.name) },
+                canSend: store.canSend, canStop: store.reply != nil,
                 send: { store.send(.sendTapped) }, stop: { store.send(.stopTapped) },
                 empty: {
                     Text("Ask what it means, how it's said, or why it's written this way.")
@@ -50,6 +60,7 @@ struct PassageChatView: View {
             }
         }
         .sheet(item: $store.scope(state: \.model, action: \.model)) { ChatModelView(store: $0) }
+        .modifier(AddFiles(store: store))
         .task { await store.send(.task).finish() }
     }
 
@@ -60,6 +71,28 @@ struct PassageChatView: View {
             name: current?.name ?? String(localized: "Model"),
             detail: current?.thinks == true ? ModelChoice(store.chat.model).thinkingLevel.title : nil,
             pick: { store.send(.modelTapped) })
+    }
+}
+
+/// + in a chat: on the iPhone a sheet with Add files, on the Mac the file
+/// picker itself. Chats read only text, so there are no photos.
+private struct AddFiles: ViewModifier {
+    @Bindable var store: StoreOf<PassageChatFeature>
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+            content.sheet(isPresented: $store.addsContext) {
+                AddContextSheet(
+                    photos: nil, fileTypes: PickedFile.types(photos: false), close: { store.addsContext = false },
+                    tapRecent: { _ in }, photoPicked: { _ in }, photoTaken: { _ in },
+                    filesPicked: { store.send(.filesPicked($0)) })
+            }
+        #else
+            content.fileImporter(
+                isPresented: $store.addsContext, allowedContentTypes: PickedFile.types(photos: false),
+                allowsMultipleSelection: true
+            ) { store.send(.filesPicked($0)) }
+        #endif
     }
 }
 

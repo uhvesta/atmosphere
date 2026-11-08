@@ -30,3 +30,4 @@
 [text] "market; marketplace"
 [header, text] "Here"
 [text] "The place they're going today."
+[text] "¿Vamos al mercado hoy?"

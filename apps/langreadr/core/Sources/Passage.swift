@@ -36,12 +36,38 @@ public struct ReaderMessage: ChatEntry {
     public var role: ChatRole
     public var text: String
     public var at: Date
+    /// The files sent with it, whose text the model read.
+    public var files: [ReaderFile]
 
-    public init(id: UUID = UUID(), role: ChatRole, text: String, at: Date) {
+    public init(id: UUID = UUID(), role: ChatRole, text: String, at: Date, files: [ReaderFile] = []) {
         self.id = id
         self.role = role
         self.text = text
         self.at = at
+        self.files = files
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, role, text, at, files }
+
+    /// A message kept before files could be sent has none.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        role = try container.decode(ChatRole.self, forKey: .role)
+        text = try container.decode(String.self, forKey: .text)
+        at = try container.decode(Date.self, forKey: .at)
+        files = try container.decodeIfPresent([ReaderFile].self, forKey: .files) ?? []
+    }
+}
+
+/// A file sent with a message: its name and the text read from it.
+public struct ReaderFile: Hashable, Codable, Sendable {
+    public var name: String
+    public var text: String
+
+    public init(name: String, text: String) {
+        self.name = name
+        self.text = text
     }
 }
 

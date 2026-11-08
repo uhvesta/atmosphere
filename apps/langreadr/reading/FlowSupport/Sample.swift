@@ -1,3 +1,4 @@
+import CaptureKit
 import ComposableArchitecture
 import Foundation
 import InferenceKit
@@ -56,6 +57,15 @@ enum Sample {
 
     static var runtime: ScriptedRuntime { ScriptedRuntime(steps: Array(repeating: answer, count: 100)) }
 
+    /// The files a flow can pick, by name: notes on the story's words.
+    static var files: [String: PickedFile] {
+        guard
+            let notes = try? FileText(
+                name: "notes.md", text: "Vamos: we go. Al: to the. Mercado: market.", limit: 8_000)
+        else { return [:] }
+        return ["notes.md": .text(notes)]
+    }
+
     /// A library with nothing in it yet, reading in English, with one
     /// model downloaded beside Apple's.
     @MainActor
@@ -70,6 +80,8 @@ enum Sample {
             $0.models = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small]).client
             $0.date.now = Date(timeIntervalSince1970: 1_793_700_000)
             $0.uuid = .incrementing
+            $0.dictation = .scripted()
+            $0.fileReader = .scripted(files)
         }
     }
 

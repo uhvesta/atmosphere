@@ -89,9 +89,14 @@ public struct Tutor: Sendable {
         let model = runtime(.chat, choice)
         let budget = model.budget.room * 3
         let context = book.paragraph ?? chat.passage.text
-        let transcript = chat.conversation.messages.newest(fitting: max(400, budget - context.count - 600))
+        let room = max(400, budget - context.count - 600)
+        // The files sent with the new message, in at most half the room;
+        // earlier ones were read with their own messages.
+        let files = Self.files(of: chat.conversation.messages.last, fitting: room / 2)
+        let transcript =
+            chat.conversation.messages.newest(fitting: room - files.count)
             .map { "\($0.role == .person ? "Reader" : "You"): \($0.text)" }
-            .joined(separator: "\n\n")
+            .joined(separator: "\n\n") + files
         let instructions = """
             You help someone who speaks \(name(reader)) read \(name(book.language)). They're reading \
             “\(book.title)” and asking about this passage: “\(chat.passage.text)”, from the paragraph: \
@@ -111,6 +116,21 @@ public struct Tutor: Sendable {
         // About three bytes a token, as the transcript was cut to fit.
         let used = (instructions.utf8.count + transcript.utf8.count + text.utf8.count) / 3
         return TutorReply(text: text, context: ContextUse(used: used, window: model.budget.window))
+    }
+
+    /// The text of the files sent with `message`, each after its name, cut
+    /// to `room` characters in all; empty when it has none.
+    static func files(of message: ReaderMessage?, fitting room: Int) -> String {
+        guard let message, message.role == .person, !message.files.isEmpty else { return "" }
+        var left = room
+        var written = ""
+        for file in message.files {
+            let text = String(file.text.prefix(max(0, left)))
+            left -= text.count
+            let cut = text.count < file.text.count ? ", cut short" : ""
+            written += "\n\n[The file \(file.name)\(cut):\n\(text)\n]"
+        }
+        return written
     }
 
     private static let hepburn = ", in Hepburn romanization, with each kanji read as it is in its word"

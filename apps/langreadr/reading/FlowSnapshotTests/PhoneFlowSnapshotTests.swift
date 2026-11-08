@@ -45,6 +45,50 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Adding to a chat about a passage: + with Add files, a file of notes
+    /// attached, the microphone writing what's said into the message until
+    /// it's tapped again, then the reply.
+    func testAddingToAChat() async throws {
+        try await addingToAChat("adding", style: .light)
+    }
+
+    func testAddingToAChatInDarkMode() async throws {
+        try await addingToAChat("adding-dark", style: .dark)
+    }
+
+    private func addingToAChat(_ name: String, style: UIUserInterfaceStyle, test: String = #function) async throws {
+        let library = Sample.library()
+        let flow = FlowRecorder(name, LangReadrView(store: library), style: style)
+        let reader = try await Sample.importStory(into: library)
+        reader.send(.binding(.set(\.isHighlighting, true)))
+        await flow.step("highlighting", image: false, testName: test)
+        flow.tap("Hola")
+        flow.tap("mercado")
+        flow.tap("Ask")
+        await flow.step("ask", image: false, testName: test)
+        flow.tap("Open in chat")
+        await flow.step("chat", testName: test)
+        let chat = { (action: PassageChatFeature.Action) in
+            _ = reader.send(.destination(.presented(.chat(action))))
+        }
+        chat(.addContextTapped)
+        await flow.step("add-context", testName: test)
+        chat(.filesPicked(.success([URL(filePath: "/tmp/notes.md")])))
+        try await Sample.waitFor { reader.destination?.chat?.pending.isEmpty == false }
+        await flow.step("file", testName: test)
+        chat(.micTapped)
+        try await Sample.waitFor { reader.destination?.chat?.input.isEmpty == false }
+        await flow.step("dictating", testName: test)
+        chat(.micTapped)
+        try await Sample.waitFor { reader.destination?.chat?.dictatedAfter == nil }
+        await flow.step("dictated", testName: test)
+        chat(.sendTapped)
+        try await Sample.waitFor { reader.destination?.chat?.reply == nil }
+        await flow.step("replied", testName: test)
+        XCTAssertEqual(reader.destination?.chat?.chat.conversation.messages.first?.files.map(\.name), ["notes.md"])
+        flow.finish()
+    }
+
     /// Settings › Models, then picking a passage chat's own model, how
     /// long it thinks and its window. The toolbar's Settings and Model
     /// buttons go through the store.

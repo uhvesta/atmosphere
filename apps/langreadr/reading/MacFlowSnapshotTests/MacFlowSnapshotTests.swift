@@ -39,6 +39,38 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Adding to a chat about a passage: a file of notes picked from + (the
+    /// system's file picker isn't shown), the microphone writing what's
+    /// said into the message until it's tapped again, then the reply.
+    func testAddingToAChat() async throws {
+        let library = Sample.library()
+        let flow = FlowRecorder("adding", LangReadrView(store: library))
+        let reader = try await Sample.importStory(into: library)
+        let paragraph = try XCTUnwrap(reader.book.paragraphs.first)
+        let words = reader.words[paragraph.id] ?? []
+        reader.send(.binding(.set(\.isHighlighting, true)))
+        reader.send(.wordTapped(paragraph: paragraph.id, try XCTUnwrap(words.first)))
+        reader.send(.wordTapped(paragraph: paragraph.id, try XCTUnwrap(words.first { $0.text == "mercado" })))
+        reader.send(.askTapped)
+        await flow.step("ask")
+        let chat = { (action: PassageChatFeature.Action) in
+            _ = reader.send(.destination(.presented(.chat(action))))
+        }
+        chat(.filesPicked(.success([URL(filePath: "/tmp/notes.md")])))
+        try await Sample.waitFor { reader.destination?.chat?.pending.isEmpty == false }
+        await flow.step("file")
+        chat(.micTapped)
+        try await Sample.waitFor { reader.destination?.chat?.input.isEmpty == false }
+        await flow.step("dictating")
+        chat(.micTapped)
+        try await Sample.waitFor { reader.destination?.chat?.dictatedAfter == nil }
+        await flow.step("dictated")
+        chat(.sendTapped)
+        try await Sample.waitFor { reader.destination?.chat?.reply == nil }
+        await flow.step("replied")
+        flow.finish()
+    }
+
     /// Settings › Models, then a passage chat's own model.
     func testPickingModels() async throws {
         let library = Sample.library()

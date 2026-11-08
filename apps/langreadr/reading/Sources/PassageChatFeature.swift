@@ -1,3 +1,4 @@
+import CaptureKit
 import ChatKit
 import ComposableArchitecture
 import Foundation
@@ -27,6 +28,16 @@ package struct PassageChatFeature {
         /// How much of the model's window the last reply took; nil before
         /// one, and once the model or its window changes.
         package var context: ContextUse?
+        /// The files that go with the next message.
+        package var pending: [ReaderFile] = []
+        /// Whether + is open: a sheet on the iPhone, the file picker on
+        /// the Mac.
+        package var addsContext = false
+        /// Whether the microphone is writing what's said into the field.
+        package var dictating = false
+        /// What the field held when dictation started, which what's said
+        /// follows; nil once the dictation has ended.
+        package var dictatedAfter: String?
 
         package var id: UUID { chat.id }
 
@@ -36,7 +47,10 @@ package struct PassageChatFeature {
             self.compact = compact
         }
 
-        package var canSend: Bool { reply == nil && !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        package var canSend: Bool {
+            reply == nil && dictatedAfter == nil
+                && (!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pending.isEmpty)
+        }
 
         /// The model the chat runs on, once it's looked up.
         package var current: RunnableModel? {
@@ -57,6 +71,14 @@ package struct PassageChatFeature {
         case model(PresentationAction<ChatModelFeature.Action>)
         case partial(String)
         case replied(Result<TutorReply, ModelRuntimeError>)
+        case addContextTapped
+        case filesPicked(Result<[URL], any Error>)
+        case filesRead([ReaderFile], failures: [String])
+        case removeFileTapped(Int)
+        case micTapped
+        case dictated(String)
+        case dictationEnded
+        case dictationFailed(String)
         case delegate(Delegate)
 
         @CasePathable
@@ -66,13 +88,15 @@ package struct PassageChatFeature {
         }
     }
 
-    private enum CancelID { case reply }
+    private enum CancelID { case reply, dictation }
 
     @Dependency(\.tutor) private var tutor
     @Dependency(\.models) private var library
     @Dependency(\.date.now) private var now
     @Dependency(\.uuid) private var uuid
     @Dependency(\.dismiss) private var dismiss
+    @Dependency(\.dictation) private var dictation
+    @Dependency(\.fileReader) private var fileReader
 
     package init() {}
 
@@ -95,7 +119,9 @@ package struct PassageChatFeature {
                 let text = state.input.trimmingCharacters(in: .whitespacesAndNewlines)
                 state.input = ""
                 state.problem = nil
-                state.chat.conversation.append(ReaderMessage(id: uuid(), role: .person, text: text, at: now))
+                state.chat.conversation.append(
+                    ReaderMessage(id: uuid(), role: .person, text: text, at: now, files: state.pending))
+                state.pending = []
                 state.reply = ""
                 return .merge(.send(.delegate(.changed(state.chat))), write(state))
             case .stopTapped:
@@ -130,6 +156,83 @@ package struct PassageChatFeature {
             case .replied(.failure(let error)):
                 state.reply = nil
                 state.problem = error.description
+                return .none
+            case .addContextTapped:
+                state.addsContext = true
+                return .none
+            case .filesPicked(.failure(let error)):
+                state.addsContext = false
+                state.problem = String(
+                    localized: "Couldn't open that file: \(error.localizedDescription) Try picking it again.")
+                return .none
+            case .filesPicked(.success(let urls)):
+                state.addsContext = false
+                guard !urls.isEmpty else { return .none }
+                return .run { [fileReader] send in
+                    var read: [ReaderFile] = []
+                    var failures: [String] = []
+                    for url in urls {
+                        do {
+                            switch try await fileReader.read(url) {
+                            case .text(let file):
+                                read.append(ReaderFile(name: file.name, text: file.text))
+                            case .photo:
+                                failures.append(
+                                    String(
+                                        localized: """
+                                            \(url.lastPathComponent) is a photo, and chats read only text. \
+                                            Add a text, Markdown or PDF file instead.
+                                            """))
+                            }
+                        } catch {
+                            failures.append(String(describing: error))
+                        }
+                    }
+                    await send(.filesRead(read, failures: failures))
+                }
+            case .filesRead(let files, let failures):
+                state.pending += files
+                state.problem = failures.isEmpty ? nil : failures.joined(separator: "\n")
+                return .none
+            case .removeFileTapped(let index):
+                guard state.pending.indices.contains(index) else { return .none }
+                state.pending.remove(at: index)
+                return .none
+            case .micTapped:
+                if state.dictating {
+                    // The last words still come, until the dictation ends.
+                    state.dictating = false
+                    return .run { [dictation] _ in await dictation.stop() }
+                }
+                guard state.dictatedAfter == nil else { return .none }
+                state.dictating = true
+                state.problem = nil
+                state.dictatedAfter = state.input.trimmingCharacters(in: .whitespacesAndNewlines)
+                return .run { [dictation] send in
+                    do {
+                        for try await heard in try await dictation.start() {
+                            await send(.dictated(heard))
+                        }
+                        await send(.dictationEnded)
+                    } catch is CancellationError {
+                        await send(.dictationEnded)
+                    } catch {
+                        await send(.dictationFailed(String(describing: error)))
+                    }
+                }
+                .cancellable(id: CancelID.dictation, cancelInFlight: true)
+            case .dictated(let heard):
+                guard let before = state.dictatedAfter else { return .none }
+                state.input = before.isEmpty || heard.isEmpty ? before + heard : before + " " + heard
+                return .none
+            case .dictationEnded:
+                state.dictating = false
+                state.dictatedAfter = nil
+                return .none
+            case .dictationFailed(let reason):
+                state.dictating = false
+                state.dictatedAfter = nil
+                state.problem = reason
                 return .none
             case .delegate:
                 return .none
