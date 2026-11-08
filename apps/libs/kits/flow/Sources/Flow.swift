@@ -17,12 +17,12 @@
         private let timeout: Duration
         private var count = 0
 
-        /// Hosts `view` in a window the size of an iPhone 17. `name` names the
-        /// flow's references. A step waits at most `timeout` for the screen to
-        /// settle.
+        /// Hosts `view` in a window the size of an iPhone 17, in `style`, light
+        /// or dark. `name` names the flow's references. A step waits at most
+        /// `timeout` for the screen to settle.
         public init(
             _ name: String, _ view: some View, size: CGSize = CGSize(width: 402, height: 874),
-            timeout: Duration = .seconds(5)
+            style: UIUserInterfaceStyle = .light, timeout: Duration = .seconds(5)
         ) {
             self.timeout = timeout
             _ = AccessibilityTree.automation
@@ -30,6 +30,7 @@
             self.name = name
             let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
             window = scene.map(UIWindow.init(windowScene:)) ?? UIWindow()
+            window.overrideUserInterfaceStyle = style
             window.frame = CGRect(origin: .zero, size: size)
             window.rootViewController = UIHostingController(rootView: view)
             window.makeKeyAndVisible()

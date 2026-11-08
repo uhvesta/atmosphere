@@ -202,7 +202,7 @@ public struct SkillSuggestions<Tool: SkillTool>: View {
 
     public var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
                 ForEach(skills) { skill in
                     Button {
                         pick(skill.id)
@@ -233,10 +233,15 @@ public struct SkillSuggestions<Tool: SkillTool>: View {
         .scrollBounceBehavior(.basedOnSize)
         .frame(maxHeight: 240)
         .fixedSize(horizontal: false, vertical: true)
-        .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        // The shadow goes on the card alone: on the scroll view, it would be
+        // drawn under each row and wash out their gray text.
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(.background)
+                .shadow(color: .black.opacity(0.08), radius: 10, y: 2)
+        }
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(.quaternary)
         }
-        .shadow(color: .black.opacity(0.08), radius: 10, y: 2)
     }
 }

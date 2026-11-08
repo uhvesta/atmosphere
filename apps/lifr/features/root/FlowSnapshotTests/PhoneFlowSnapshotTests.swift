@@ -44,7 +44,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
     private func app(
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
         inputs: Set<ModelInput> = [], lock: LockClient = .always(), assistant: AssistantClient? = nil,
-        tab: RootFeature.Tab = .today
+        tab: RootFeature.Tab = .today, style: UIUserInterfaceStyle = .light
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
         let ids = LockIsolated(1000)
@@ -85,7 +85,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
                 }
             }
         }
-        let flow = FlowRecorder(name, RootView(store: store).environment(\.timeZone, .gmt))
+        let flow = FlowRecorder(name, RootView(store: store).environment(\.timeZone, .gmt), style: style)
         store.send(.task)
         return (store, flow)
     }
@@ -857,6 +857,22 @@ final class PhoneFlowSnapshotTests: XCTestCase {
     /// Picking what one chat runs on: a new chat, its Model sheet before
     /// the first message, Gemma thinking Long with a larger window, then the chat.
     /// Settings keeps its default.
+    /// The chat in dark mode: its composer, the / list, a draft and the
+    /// model sheet.
+    func testAssistantInDarkMode() async throws {
+        let (store, flow) = app("assistant-dark", style: .dark)
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "/"))))))
+        await flow.step("slash")
+        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "Tidy my weekend"))))))
+        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
+        await flow.step("replied-with-draft")
+        store.send(.conversations(.chats(.element(id: id, action: .modelTapped))))
+        await flow.step("model")
+    }
+
     func testChatModel() async throws {
         let (store, flow) = app("chat-model")
         store.tab = .conversations
