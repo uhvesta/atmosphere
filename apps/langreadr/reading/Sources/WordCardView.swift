@@ -39,7 +39,11 @@ struct WordCardView: View {
             }
             Section {
                 Text(store.sentence).foregroundStyle(.secondary)
+                Button("Say the sentence", systemImage: "speaker.wave.2") { store.send(.saySentenceTapped) }
                 Button("Ask about it", systemImage: "bubble.left") { store.send(.askTapped) }
+                if let problem = store.speechProblem {
+                    Text(problem).font(.caption).foregroundStyle(.red)
+                }
             }
         }
         .navigationTitle(store.word.text)

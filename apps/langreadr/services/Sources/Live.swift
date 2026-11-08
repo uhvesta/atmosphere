@@ -1,4 +1,3 @@
-import AVFoundation
 import Foundation
 import ImageIO
 import LangReadrCore
@@ -6,8 +5,7 @@ import NaturalLanguage
 import Vision
 
 extension ReaderServices {
-    /// The system's: NaturalLanguage, ICU, the speech synthesizer, Vision and
-    /// URLSession. Nothing leaves the device but a page's request.
+    /// The system's: NaturalLanguage, ICU, Vision and URLSession. Nothing leaves the device but a page's request.
     public static var live: ReaderServices {
         ReaderServices(
             detectLanguage: Language.detect,
@@ -18,7 +16,6 @@ extension ReaderServices {
                 }
                 return Script.isLatin(latin) ? latin : nil
             },
-            speak: { text, language in Speaker.shared.speak(text, in: language) },
             recognizeText: TextRecognition.lines,
             fetchPage: PageFetch.html
         )
@@ -50,20 +47,6 @@ extension WordSpan {
             return true
         }
         return spans
-    }
-}
-
-@MainActor
-private final class Speaker {
-    static let shared = Speaker()
-    private let synthesizer = AVSpeechSynthesizer()
-
-    func speak(_ text: String, in language: Language) {
-        synthesizer.stopSpeaking(at: .immediate)
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: language.rawValue)
-        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.9
-        synthesizer.speak(utterance)
     }
 }
 

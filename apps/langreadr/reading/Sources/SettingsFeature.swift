@@ -5,9 +5,13 @@ import ComposableArchitecture
 package struct SettingsFeature {
     @ObservableState
     package struct State: Equatable {
-        package var models = ModelsFeature.State()
+        package var models: ModelsFeature.State
 
-        package init() {}
+        /// `languages` are the shelf's, as BCP 47 tags, each of which can
+        /// have a voice of its own.
+        package init(languages: [String] = []) {
+            models = ModelsFeature.State(languages: languages)
+        }
     }
 
     package enum Action {

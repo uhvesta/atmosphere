@@ -119,4 +119,60 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         await flow.step("edited")
         flow.finish()
     }
+
+    /// Settings › Models › Voices with a Spanish book on the shelf:
+    /// downloading a voice model, picking one of its voices for Spanish,
+    /// then hearing a word and its sentence from the word card.
+    func testPickingAVoice() async throws {
+        let said = LockIsolated<[String]>([])
+        let library = Sample.library(
+            speech: .picks(
+                VoiceSelection(file: nil),
+                speak: { text, language in
+                    said.withValue { $0.append("\(language): \(text)") }
+                }))
+        let flow = FlowRecorder("voices", LangReadrView(store: library))
+        let opened = try await Sample.importStory(into: library)
+        let book = opened.book
+        // The reader finds its words as it appears; closing it before then
+        // would leave that with no reader to reach.
+        try await Sample.waitFor { !opened.words.isEmpty }
+        // Settings opens from the library, with the Spanish book on its shelf.
+        library.send(.reader(.dismiss))
+        try await Sample.waitFor { library.reader == nil }
+        library.send(.settingsTapped)
+        try await Sample.waitFor { library.settings != nil }
+        await flow.step("settings")
+        flow.tap("Models")
+        try await Sample.waitFor { library.settings?.models.choices.count == 2 }
+        // Voices end the screen.
+        flow.scrollToEnd()
+        await flow.step("voices")
+        let voices: (VoicesFeature.Action) -> LibraryFeature.Action = {
+            .settings(.presented(.models(.voices($0))))
+        }
+        let supertonic = VoiceCatalog.supertonic3.id
+        library.send(voices(.downloadTapped(supertonic)))
+        try await Sample.waitFor { library.settings?.models.voices.installed.contains(supertonic) == true }
+        library.send(voices(.picked(.model(supertonic, voice: "F2"), language: "es")))
+        flow.scrollToEnd()
+        await flow.step("voice-picked")
+        library.send(.settings(.dismiss))
+        try await Sample.waitFor { library.settings == nil }
+        library.send(.bookTapped(book.id))
+        try await Sample.waitFor { library.reader != nil }
+        let reader = try XCTUnwrap(library.scope(state: \.reader, action: \.reader.presented))
+        await flow.step("reading")
+        flow.tap("mercado")
+        try await Sample.waitFor { reader.destination?.word?.note != nil }
+        await flow.step("word-card")
+        flow.tap("Say it")
+        // The sentence's button sits below the half sheet's fold.
+        reader.send(.destination(.presented(.word(.saySentenceTapped))))
+        try await Sample.waitFor { said.value.count == 3 }
+        let language = reader.book.language.rawValue
+        XCTAssertEqual(
+            said.value, ["mercado", "mercado", "¿Vamos al mercado hoy?"].map { "\(language): \($0)" })
+        flow.finish()
+    }
 }

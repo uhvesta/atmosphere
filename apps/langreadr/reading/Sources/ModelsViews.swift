@@ -27,10 +27,12 @@ struct SettingsView: View {
 }
 
 /// What each use runs on, and the models to download.
-struct ModelsView: View {
+package struct ModelsView: View {
     @Bindable var store: StoreOf<ModelsFeature>
 
-    var body: some View {
+    package init(store: StoreOf<ModelsFeature>) { self.store = store }
+
+    package var body: some View {
         ModelsForm(
             app: "LangReadr", models: store.downloadable, entry: entry, actions: actions, link: $store.link,
             sha256: $store.sha256, addError: store.addError, isAdding: store.isAdding, canAdd: store.canAdd,
@@ -54,7 +56,8 @@ struct ModelsView: View {
                             + "A chat can pick its own model from its Model button.")
                 }
             },
-            options: { EmptyView() }
+            options: { EmptyView() },
+            voices: { VoicesView(store: store.scope(state: \.voices, action: \.voices)) }
         )
         .formStyle(.grouped)
         .task { await store.send(.task).finish() }
@@ -78,6 +81,26 @@ struct ModelsView: View {
             remove: { store.send(.removeTapped($0)) }, pickWindow: { store.send(.windowPicked($0, for: $1)) },
             measure: { store.send(.measureTapped($0)) }, pickBackend: { store.send(.backendPicked($0, for: $1)) },
             tune: { store.send(.tuneTapped($0)) })
+    }
+}
+
+/// The voice that reads aloud, for every language and each on the shelf,
+/// and the voice models to download.
+struct VoicesView: View {
+    @Bindable var store: StoreOf<VoicesFeature>
+
+    var body: some View {
+        VoicesSection(
+            app: "LangReadr", models: store.models, installed: store.installed, downloads: store.downloads,
+            pickers: [VoicePicker(language: nil, choice: store.standard)]
+                + store.languages.map { VoicePicker(language: $0, choice: store.own[$0]) },
+            actions: VoiceActions(
+                start: { store.send(.downloadTapped($0)) }, pause: { store.send(.pauseTapped($0)) },
+                remove: { store.send(.removeTapped($0)) }, pick: { store.send(.picked($0, language: $1)) })
+        )
+        .task { await store.send(.task).finish() }
+        .confirmationDialog($store.scope(state: \.remove, action: \.remove))
+        .alert($store.scope(state: \.alert, action: \.alert))
     }
 }
 

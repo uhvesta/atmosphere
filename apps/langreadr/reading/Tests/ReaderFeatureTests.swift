@@ -4,6 +4,7 @@ import Foundation
 import InferenceKit
 import JSONKit
 import LangReadrCore
+import LangReadrModels
 import LangReadrServices
 import LangReadrServicesFake
 import XCTest
@@ -19,7 +20,8 @@ final class ReaderFeatureTests: XCTestCase {
             ReaderFeature()
         } withDependencies: {
             $0.tutor = tutor(steps)
-            $0.readerServices = .fake(speak: { text, _ in spoken.withValue { $0.append(text) } })
+            $0.readerServices = .fake()
+            $0.speech.speak = { text, _ in spoken.withValue { $0.append(text) } }
             $0.date.now = epoch
             $0.uuid = .incrementing
         }

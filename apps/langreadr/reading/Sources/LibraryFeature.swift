@@ -136,7 +136,12 @@ package struct LibraryFeature {
                 state.alert = Self.alert(error.description)
                 return .none
             case .settingsTapped:
-                state.settings = SettingsFeature.State()
+                var languages: [String] = []
+                // A voice is picked for a language, not each of its regions.
+                for book in state.books where !languages.contains(book.language.base) {
+                    languages.append(book.language.base)
+                }
+                state.settings = SettingsFeature.State(languages: languages)
                 return .none
             case .importing, .reader, .alert, .settings:
                 return .none

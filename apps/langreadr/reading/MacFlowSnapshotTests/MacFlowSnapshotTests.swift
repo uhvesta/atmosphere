@@ -49,6 +49,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         library.send(.settings(.dismiss))
         let reader = try await Sample.importStory(into: library)
         let paragraph = try XCTUnwrap(reader.book.paragraphs.first)
+        try await Sample.waitFor { reader.words[paragraph.id]?.isEmpty == false }
         let words = reader.words[paragraph.id] ?? []
         reader.send(.binding(.set(\.isHighlighting, true)))
         reader.send(.wordTapped(paragraph: paragraph.id, try XCTUnwrap(words.first)))
@@ -98,6 +99,27 @@ final class MacFlowSnapshotTests: XCTestCase {
         options.window = try XCTUnwrap(ModelCatalog.qwen35Small.windows.first)
         tune.send(.optionsChanged(options, at: last))
         await flow.step("edited")
+        flow.finish()
+    }
+
+    /// The Models screen's voices with Spanish and Japanese books on the
+    /// shelf: downloading a voice model, then picking one of its voices
+    /// for Spanish while Japanese keeps the system voice.
+    func testPickingAVoice() async throws {
+        let models = Store(initialState: ModelsFeature.State(languages: ["es", "ja"])) {
+            ModelsFeature()
+        } withDependencies: {
+            $0.models = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small]).client
+            $0.speech = .inMemory
+        }
+        let flow = FlowRecorder("voices", NavigationStack { ModelsView(store: models) })
+        try await Sample.waitFor { models.choices.count == 2 }
+        await flow.step("voices")
+        let supertonic = VoiceCatalog.supertonic3.id
+        models.send(.voices(.downloadTapped(supertonic)))
+        try await Sample.waitFor { models.voices.installed.contains(supertonic) }
+        models.send(.voices(.picked(.model(supertonic, voice: "F2"), language: "es")))
+        await flow.step("voice-picked")
         flow.finish()
     }
 }

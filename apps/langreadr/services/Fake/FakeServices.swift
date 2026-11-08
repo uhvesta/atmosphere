@@ -8,7 +8,6 @@ extension ReaderServices {
     /// pages from `page`.
     public static func fake(
         language: Language = Language("es"),
-        speak: @escaping @MainActor @Sendable (String, Language) -> Void = { _, _ in },
         page: @escaping @Sendable (URL) async throws(PageError) -> String = { url throws(PageError) in
             throw .unreachable(host: url.host() ?? "", reason: "offline")
         }
@@ -30,7 +29,6 @@ extension ReaderServices {
                 return words
             },
             transliterate: { _ in nil },
-            speak: speak,
             recognizeText: { _ throws(RecognitionError) in throw .notAnImage },
             fetchPage: page)
     }

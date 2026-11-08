@@ -59,13 +59,14 @@ enum Sample {
     /// A library with nothing in it yet, reading in English, with one
     /// model downloaded beside Apple's.
     @MainActor
-    static func library() -> StoreOf<LibraryFeature> {
+    static func library(speech: SpeechClient = .inMemory) -> StoreOf<LibraryFeature> {
         Store(initialState: LibraryFeature.State()) {
             LibraryFeature()
         } withDependencies: {
             $0.shelf = .inMemory()
             $0.tutor = Tutor(runtime: runtime, reader: Language("en"))
             $0.readerServices = .fake()
+            $0.speech = speech
             $0.models = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small]).client
             $0.date.now = Date(timeIntervalSince1970: 1_793_700_000)
             $0.uuid = .incrementing

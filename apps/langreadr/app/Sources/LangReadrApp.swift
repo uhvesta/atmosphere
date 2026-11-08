@@ -3,6 +3,7 @@ import Foundation
 import InferenceKit
 import InferenceKitLiteRT
 import InferenceKitLive
+import InferenceKitSpeech
 import LangReadrCore
 import LangReadrModels
 import LangReadrReading
@@ -115,5 +116,21 @@ extension ModelLibraryClient: DependencyKey {
             select: { id, use in await models.select(id, for: use) },
             setWindow: { id, window in await models.setWindow(window, for: id) }
         )
+    }()
+}
+
+/// Reading aloud in the voice picked for each language: the system's
+/// until a voice model is downloaded and picked. The picks are kept with
+/// the models.
+extension SpeechClient: DependencyKey {
+    package static let liveValue: SpeechClient = {
+        let selection = VoiceSelection(file: ModelLibrary.defaultRoot.appending(path: "voices.json"))
+        let speaker = Speaker(
+            installed: { Models.runtimes.library.installed() }, selection: selection, system: SystemVoice(rate: 0.9),
+            output: SpeakerOutput(), engine: { model, _ in SupertonicEngine(model: model) })
+        return .picks(
+            selection,
+            speak: { text, language throws(SpeechError) in try await speaker.speak(text, language: language) },
+            stop: { await speaker.stop() })
     }()
 }

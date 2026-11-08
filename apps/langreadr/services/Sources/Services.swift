@@ -25,8 +25,6 @@ public struct ReaderServices: Sendable {
     /// `text` in Latin letters by ICU's transform; nil when it has no rule
     /// for the script or the text is Latin already.
     public var transliterate: @Sendable (_ text: String) -> String?
-    /// Says `text` aloud in `language`.
-    public var speak: @MainActor @Sendable (_ text: String, _ language: Language) -> Void
     /// The lines of text in a photo, in reading order.
     public var recognizeText: @Sendable (_ image: Data) async throws(RecognitionError) -> [String]
     /// A web page's HTML.
@@ -36,14 +34,12 @@ public struct ReaderServices: Sendable {
         detectLanguage: @escaping @Sendable (String) -> Language?,
         words: @escaping @Sendable (String, Language) -> [WordSpan],
         transliterate: @escaping @Sendable (String) -> String?,
-        speak: @escaping @MainActor @Sendable (String, Language) -> Void,
         recognizeText: @escaping @Sendable (Data) async throws(RecognitionError) -> [String],
         fetchPage: @escaping @Sendable (URL) async throws(PageError) -> String
     ) {
         self.detectLanguage = detectLanguage
         self.words = words
         self.transliterate = transliterate
-        self.speak = speak
         self.recognizeText = recognizeText
         self.fetchPage = fetchPage
     }

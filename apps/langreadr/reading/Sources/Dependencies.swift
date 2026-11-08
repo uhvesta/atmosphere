@@ -16,7 +16,7 @@ private enum ServicesKey: DependencyKey {
     static let liveValue = ReaderServices.live
     /// Services that find no words and can't read photos or pages.
     static let testValue = ReaderServices(
-        detectLanguage: { _ in nil }, words: { _, _ in [] }, transliterate: { _ in nil }, speak: { _, _ in },
+        detectLanguage: { _ in nil }, words: { _, _ in [] }, transliterate: { _ in nil },
         recognizeText: { _ throws(RecognitionError) in throw .failed("tests read no photos") },
         fetchPage: { url throws(PageError) in throw .unreachable(host: url.host() ?? "", reason: "tests are offline") })
 }

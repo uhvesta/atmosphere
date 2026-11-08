@@ -26,6 +26,7 @@ swift_library(
         "//apps/libs/kits/inference",
         "//apps/libs/kits/inference/litert",
         "//apps/libs/kits/inference/live",
+        "//apps/libs/kits/inference/speech",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ] + select({
         # llama.cpp's framework and MLX's GPU have no Simulator build.

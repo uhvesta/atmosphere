@@ -56,5 +56,7 @@
       [Row/OutlineRow] ""
         [StaticText] "" value: "¿Vamos al mercado hoy?"
       [Row/OutlineRow] ""
+        [Button] "Say the sentence"
+      [Row/OutlineRow] ""
         [Button] "Ask about it"
     [Button] "Done"
