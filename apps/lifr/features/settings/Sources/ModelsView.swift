@@ -15,7 +15,7 @@ package struct ModelsView: View {
         ModelsForm(
             app: "Lifr", models: store.downloadable, entry: entry, actions: actions, link: $store.link,
             sha256: $store.sha256, addError: store.addError, isAdding: store.isAdding, canAdd: store.canAdd,
-            add: { store.send(.addTapped) }
+            add: add
         ) {
             Section {
                 ForEach(ModelUse.allCases, id: \.self) { use in
@@ -53,6 +53,10 @@ package struct ModelsView: View {
         .task { await store.send(.task).finish() }
         .confirmationDialog($store.scope(state: \.remove, action: \.remove))
         .alert($store.scope(state: \.alert, action: \.alert))
+    }
+
+    private func add() {
+        store.send(.addTapped)
     }
 
     private func entry(_ model: ModelSpec) -> ModelEntryState {
