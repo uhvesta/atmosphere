@@ -46,7 +46,7 @@ class PhoneFlowTestCase: XCTestCase {
     func app(
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
         inputs: Set<ModelInput> = [], lock: LockClient = .always(), assistant: AssistantClient? = nil,
-        tab: RootFeature.Tab = .today, style: UIUserInterfaceStyle = .light
+        tab: RootFeature.Tab = .today, style: UIUserInterfaceStyle = .light, speech: SpeechClient = .inMemory
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
         let ids = LockIsolated(1000)
@@ -71,6 +71,7 @@ class PhoneFlowTestCase: XCTestCase {
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
             $0.models = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B]).client
+            $0.speech = speech
             $0.date = DateGenerator { time.value }
             $0.lock = lock
             $0.glance = GlanceClient { [widgets] glance in await widgets.show(glance) }

@@ -11,6 +11,7 @@
 [text] "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
 [button] "Undo"
 [button] "Retry" hint: "Write this reply again"
+[button] "Speak" hint: "Read this reply aloud"
 [element] "" value: "Message"
 [button] "Add" hint: "Attach a photo or use a skill"
 [button] "Model" value: "Apple Intelligence" hint: "Model, Thinking and Context Window"

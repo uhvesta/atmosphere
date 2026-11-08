@@ -444,4 +444,28 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         XCTAssertNil(store.conversations.chats[id: id]?.conversation.summary)
         flow.finish()
     }
+
+    /// Reading a reply aloud from the button under it, then stopping it.
+    func testSpeakingAReply() async throws {
+        let said = LockIsolated<[String]>([])
+        let speech = SpeechClient.picks(
+            VoiceSelection(file: nil),
+            speak: { text, _ throws(SpeechError) in
+                said.withValue { $0.append(text) }
+                try? await Task.never()
+            })
+        let (store, flow) = app("speak", speech: speech)
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        send("What should I do first?", in: id, of: store)
+        await flow.step("replied")
+        flow.tap("Speak")
+        await flow.step("speaking")
+        XCTAssertEqual(said.value.count, 1)
+        flow.tap("Stop Speaking")
+        await flow.step("stopped")
+        XCTAssertNil(store.conversations.chats[id: id]?.speaking)
+        flow.finish()
+    }
 }

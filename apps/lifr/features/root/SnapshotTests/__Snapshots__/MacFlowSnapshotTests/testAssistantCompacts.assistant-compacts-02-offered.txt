@@ -31,6 +31,7 @@
   [StaticText] "" value: "And the weekend?"
   [StaticText] "" value: "Keep Saturday for the garden and Sunday free."
   [Button] "Retry" help: "Write this reply again"
+  [Button] "Speak" help: "Read this reply aloud"
   [StaticText] "" value: "Older messages no longer fit what the model reads. Compact them into a summary it keeps."
   [Button] "Compact"
   [TextField] ""

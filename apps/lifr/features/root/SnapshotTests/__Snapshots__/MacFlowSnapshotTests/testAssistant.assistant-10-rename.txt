@@ -32,6 +32,7 @@
   [StaticText] "" value: "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
   [Button] "Undo"
   [Button] "Retry" help: "Write this reply again"
+  [Button] "Speak" help: "Read this reply aloud"
   [TextField] ""
   [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
   [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"

@@ -47,7 +47,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
         inputs: Set<ModelInput> = [], lock: LockClient = .always(),
         session: InMemorySession = InMemorySession(), assistant: AssistantClient? = nil,
-        settings: Bool = false
+        settings: Bool = false, speech: SpeechClient = .inMemory
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
         let ids = LockIsolated(1000)
@@ -69,6 +69,7 @@ final class MacFlowSnapshotTests: XCTestCase {
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
             $0.models = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B]).client
+            $0.speech = speech
             $0.date = DateGenerator { time.value }
             $0.lock = lock
             $0.glance = GlanceClient { [widgets] glance in await widgets.show(glance) }
@@ -748,6 +749,50 @@ final class MacFlowSnapshotTests: XCTestCase {
         options.flashAttention = false
         store.send(tune(.optionsChanged(options, at: llama)))
         await flow.step("edited")
+        flow.finish()
+    }
+
+    /// Settings › Models › Voices: downloading a voice model and picking one
+    /// of its voices to read replies aloud.
+    func testPickingAVoice() async throws {
+        let (store, flow) = app("voices", settings: true)
+        store.send(.settings(.modelsTapped))
+        await flow.step("voices")
+        let voices: (VoicesFeature.Action) -> RootFeature.Action = {
+            .settings(.models(.presented(.voices($0))))
+        }
+        let supertonic = VoiceCatalog.supertonic3.id
+        store.send(voices(.downloadTapped(supertonic)))
+        await flow.step("downloaded")
+        XCTAssertEqual(store.settings.models?.voices.installed, [supertonic])
+        store.send(voices(.picked(.model(supertonic, voice: "M1"), language: nil)))
+        await flow.step("voice-picked")
+        flow.finish()
+    }
+
+    /// Reading a reply aloud from the button under it, then stopping it.
+    func testSpeakingAReply() async throws {
+        let said = LockIsolated<[String]>([])
+        let speech = SpeechClient.picks(
+            VoiceSelection(file: nil),
+            speak: { text, _ throws(SpeechError) in
+                said.withValue { $0.append(text) }
+                try? await Task.never()
+            })
+        let (store, flow) = app("speak", speech: speech)
+        store.send(.selected(.conversations))
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        func chat(_ action: ChatFeature.Action) { store.send(.conversations(.chats(.element(id: id, action: action)))) }
+        chat(.binding(.set(\.input, "What should I do first?")))
+        chat(.sendTapped)
+        await flow.step("replied")
+        let reply = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last)
+        chat(.speakTapped(messageID: reply.id))
+        await flow.step("speaking")
+        XCTAssertEqual(said.value.count, 1)
+        chat(.speakTapped(messageID: reply.id))
+        await flow.step("stopped")
         flow.finish()
     }
 

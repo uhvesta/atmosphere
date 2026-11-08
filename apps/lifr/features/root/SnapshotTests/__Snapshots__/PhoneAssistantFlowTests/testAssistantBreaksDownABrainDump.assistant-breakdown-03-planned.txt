@@ -9,6 +9,7 @@
 [text] "On this device"
 [text] "Here's the move as a Project, in order, and calling your mum on its own."
 [button] "Retry" hint: "Write this reply again"
+[button] "Speak" hint: "Read this reply aloud"
 [header, text] "Draft"
 [text] "8 tasks"
 [text] "New Project Move flat, Sat, Dec 5 · Home"

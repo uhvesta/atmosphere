@@ -6,6 +6,7 @@
 [text] "ugh I have to move flat, get the deposit sorted, pack, book a van, and call mum"
 [text] "Is the move by a date, and is the deposit for the new flat or the old one?"
 [button] "Retry" hint: "Write this reply again"
+[button] "Speak" hint: "Read this reply aloud"
 [element] "" value: "Message"
 [button] "Add" hint: "Attach a photo or use a skill"
 [button] "Model" value: "Apple Intelligence" hint: "Model, Thinking and Context Window"

@@ -7,6 +7,7 @@
 [text] "I added Stretch after every run to your Half marathon project."
 [button] "Undo"
 [button] "Retry" hint: "Write this reply again"
+[button] "Speak" hint: "Read this reply aloud"
 [element] "" value: "Message"
 [text] "Added “Stretch after every run” to Half marathon"
 [button] "Undo"

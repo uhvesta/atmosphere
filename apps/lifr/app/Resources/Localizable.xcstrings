@@ -803,7 +803,13 @@
     "Couldn't load your tasks" : {
 
     },
+    "Couldn't read it aloud" : {
+
+    },
     "Couldn't remove the model" : {
+
+    },
+    "Couldn't remove the voice" : {
 
     },
     "Couldn't revert" : {
@@ -1146,6 +1152,9 @@
 
     },
     "Its files are deleted from this device. Anything that ran on it goes back to Apple's." : {
+
+    },
+    "Its files are deleted from this device. Text it read aloud goes back to the system voice." : {
 
     },
     "Its next request is refused. It can ask again, and you'd approve it anew." : {
@@ -1747,6 +1756,9 @@
     "Read only" : {
 
     },
+    "Read this reply aloud" : {
+
+    },
     "Reads" : {
 
     },
@@ -1805,6 +1817,9 @@
 
     },
     "Remove model" : {
+
+    },
+    "Remove voice" : {
 
     },
     "Removed" : {
@@ -1947,6 +1962,9 @@
     "SHA-256 (optional)" : {
 
     },
+    "Same as other languages" : {
+
+    },
     "Save" : {
 
     },
@@ -2034,6 +2052,12 @@
     "Some fields were kept" : {
 
     },
+    "Speak" : {
+
+    },
+    "Speaks %@" : {
+
+    },
     "Stalled" : {
 
     },
@@ -2055,10 +2079,16 @@
     "Stop Recording" : {
 
     },
+    "Stop Speaking" : {
+
+    },
     "Stop Syncing" : {
 
     },
     "Stop locking Lifr" : {
+
+    },
+    "Stop reading this reply aloud" : {
 
     },
     "Stop the reply, keeping what it has written" : {
@@ -2137,6 +2167,9 @@
 
     },
     "Syncing…" : {
+
+    },
+    "System voice" : {
 
     },
     "Task" : {
@@ -2319,6 +2352,9 @@
     "Tune for this device" : {
 
     },
+    "Tune for this device…" : {
+
+    },
     "Turn a brain dump into a plan." : {
 
     },
@@ -2395,6 +2431,15 @@
 
     },
     "Version %lld of %lld" : {
+
+    },
+    "Voice" : {
+
+    },
+    "Voice for %@" : {
+
+    },
+    "Voices" : {
 
     },
     "Weekly review" : {

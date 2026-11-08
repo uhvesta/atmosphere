@@ -12,6 +12,7 @@
 [button] "Undo"
 [button] "Retry" hint: "Write this reply again"
 [button] "Model, Default (Apple Intelligence)"
+[button] "Speak" hint: "Read this reply aloud"
 [button] "Suggest with Apple Intelligence"
 [element] "" value: "Message"
 [button] "Add" hint: "Attach a photo or use a skill"

@@ -169,4 +169,26 @@ final class PhoneSettingsFlowTests: PhoneFlowTestCase {
         await flow.step("unlocked", image: false)
         flow.finish()
     }
+
+    /// Settings › Models › Voices, at the end: downloading a voice
+    /// model and picking one of its voices to read replies aloud.
+    func testPickingAVoice() async {
+        let (store, flow) = app("voices")
+        store.isSettingsShown = true
+        store.send(.settings(.modelsTapped))
+        flow.scrollToEnd()
+        await flow.step("voices")
+        let voices: (VoicesFeature.Action) -> RootFeature.Action = {
+            .settings(.models(.presented(.voices($0))))
+        }
+        let supertonic = VoiceCatalog.supertonic3.id
+        store.send(voices(.downloadTapped(supertonic)))
+        flow.scrollToEnd()
+        await flow.step("downloaded")
+        XCTAssertEqual(store.settings.models?.voices.installed, [supertonic])
+        store.send(voices(.picked(.model(supertonic, voice: "M1"), language: nil)))
+        flow.scrollToEnd()
+        await flow.step("voice-picked")
+        flow.finish()
+    }
 }

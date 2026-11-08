@@ -49,6 +49,8 @@ package struct ModelsView: View {
                             + "Screen. Off, the model stops and carries on where it was when you come back.")
                 }
             #endif
+        } voices: {
+            VoicesView(store: store.scope(state: \.voices, action: \.voices))
         }
         .task { await store.send(.task).finish() }
         .navigationDestination(item: $store.scope(state: \.tune, action: \.tune)) { store in
@@ -81,5 +83,23 @@ package struct ModelsView: View {
 #Preview {
     NavigationStack {
         ModelsView(store: Store(initialState: ModelsFeature.State()) { ModelsFeature() })
+    }
+}
+
+/// The voice that reads answers aloud, and the voice models to download.
+struct VoicesView: View {
+    @Bindable var store: StoreOf<VoicesFeature>
+
+    var body: some View {
+        VoicesSection(
+            app: "Lifr", models: store.models, installed: store.installed, downloads: store.downloads,
+            pickers: [VoicePicker(language: nil, choice: store.standard)],
+            actions: VoiceActions(
+                start: { store.send(.downloadTapped($0)) }, pause: { store.send(.pauseTapped($0)) },
+                remove: { store.send(.removeTapped($0)) }, pick: { store.send(.picked($0, language: $1)) })
+        )
+        .task { await store.send(.task).finish() }
+        .confirmationDialog($store.scope(state: \.remove, action: \.remove))
+        .alert($store.scope(state: \.alert, action: \.alert))
     }
 }

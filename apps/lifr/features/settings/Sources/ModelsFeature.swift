@@ -35,6 +35,8 @@ package struct ModelsFeature {
         @Presents package var tune: TuneFeature.State?
         @Presents package var remove: ConfirmationDialogState<Remove>?
         @Presents package var alert: AlertState<Never>?
+        /// The voice that reads answers aloud, and the voice models.
+        package var voices = VoicesFeature.State()
 
         package init() {}
 
@@ -91,6 +93,7 @@ package struct ModelsFeature {
         case resolved(Result<ModelSpec, ModelResolveError>)
         case remove(PresentationAction<Remove>)
         case alert(PresentationAction<Never>)
+        case voices(VoicesFeature.Action)
     }
 
     @Dependency(\.models) private var library
@@ -99,10 +102,11 @@ package struct ModelsFeature {
 
     package var body: some ReducerOf<Self> {
         BindingReducer()
+        Scope(state: \.voices, action: \.voices) { VoicesFeature() }
         Reduce { state, action in
             switch action {
             case .task:
-                state.models = library.catalog()
+                state.models = library.catalog().filter { !VoiceCatalog.isVoice($0) }
                 return .run { [library] send in
                     await send(Self.loaded(library))
                     for await downloads in library.downloads() {
@@ -110,7 +114,10 @@ package struct ModelsFeature {
                     }
                 }
 
-            case .loaded(let installed, let unfinished, let selection, let tunings):
+            case .loaded(var installed, var unfinished, let selection, let tunings):
+                // Voice models have their own section.
+                installed.removeAll { VoiceCatalog.isVoice($0.spec) }
+                unfinished.removeAll(where: VoiceCatalog.isVoice)
                 for spec in unfinished { state.add(spec) }
                 for model in installed { state.add(model.spec) }
                 state.installed = Set(installed.map(\.id))
@@ -270,7 +277,7 @@ package struct ModelsFeature {
                 state.addError = nil
                 return .none
 
-            case .binding, .remove, .alert:
+            case .binding, .remove, .alert, .voices:
                 return .none
             }
         }

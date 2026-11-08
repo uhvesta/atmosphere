@@ -5,6 +5,7 @@ import LifrCore
 import LifrModelsClient
 import LifrSkills
 import LifrStoreClient
+import NaturalLanguage
 
 /// A chat with the assistant: it answers questions, proposes changes to
 /// tasks and Projects when asked, which the person applies, edits or
@@ -104,6 +105,8 @@ package struct ChatFeature {
         package var warmed = false
         /// Whether the log of every point to go back or forward to is open.
         package var showsCheckpoints = false
+        /// The reply being read aloud.
+        package var speaking: UUID?
 
         package init(conversation: Conversation, workspace: Workspace) {
             self.conversation = conversation
@@ -349,6 +352,10 @@ package struct ChatFeature {
         case cancelEditTapped
         /// Writes the reply to this message, or this reply, again.
         case retryTapped(messageID: UUID)
+        /// Reads the reply aloud, or stops reading it.
+        case speakTapped(messageID: UUID)
+        /// The reply finished being read aloud, or why it couldn't be.
+        case spoke(messageID: UUID, SpeechError?)
         /// Sends the message being edited, once the person said whether to
         /// undo the changes of the replies that hides.
         case sendConfirmed
@@ -410,7 +417,7 @@ package struct ChatFeature {
         package var retries: Bool
     }
 
-    private enum CancelID { case reply, recording }
+    private enum CancelID { case reply, recording, speech }
 
     /// How long the assistant may write nothing before Lifr stops waiting:
     /// it gives up between one and two of these after the last progress.
@@ -423,6 +430,7 @@ package struct ChatFeature {
     @Dependency(\.guidance) private var guidance
     @Dependency(\.attachments) private var attachments
     @Dependency(\.recorder) private var recorder
+    @Dependency(\.speech) private var speech
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
     @Dependency(\.uuid) private var uuid
@@ -567,6 +575,39 @@ package struct ChatFeature {
                 state.editing = nil
                 state.input = ""
                 state.skill = nil
+                return .none
+
+            case .speakTapped(let id):
+                if state.speaking == id {
+                    state.speaking = nil
+                    return .merge(.cancel(id: CancelID.speech), .run { _ in await speech.stop() })
+                }
+                guard let message = state.conversation.messages.first(where: { $0.id == id && $0.role == .assistant })
+                else { return .none }
+                let text = Self.spoken(message.text)
+                guard !text.isEmpty else { return .none }
+                state.speaking = id
+                return .run { send in
+                    do throws(SpeechError) {
+                        try await speech.speak(text, Self.language(of: text))
+                        await send(.spoke(messageID: id, nil))
+                    } catch {
+                        await send(.spoke(messageID: id, error))
+                    }
+                }
+                .cancellable(id: CancelID.speech, cancelInFlight: true)
+
+            case .spoke(let id, let problem):
+                if state.speaking == id { state.speaking = nil }
+                if let problem {
+                    state.alert = AlertState {
+                        TextState("Couldn't read it aloud")
+                    } actions: {
+                        ButtonState(role: .cancel) { TextState("OK") }
+                    } message: {
+                        TextState(problem.description)
+                    }
+                }
                 return .none
 
             case .retryTapped(let id):
@@ -1322,5 +1363,23 @@ extension ModelThinking {
     /// This, unless the model thought nothing worth showing.
     fileprivate var shown: ModelThinking? {
         text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self
+    }
+}
+
+extension ChatFeature {
+    /// A reply's text as it's said: its Markdown's words without the marks.
+    static func spoken(_ text: String) -> String {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        let plain = (try? AttributedString(markdown: text, options: options)).map { String($0.characters) } ?? text
+        return plain.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The language `text` is written in, as a BCP 47 tag: the device's
+    /// when it can't be told.
+    static func language(of text: String) -> String {
+        if let language = NLLanguageRecognizer.dominantLanguage(for: text), language != .undetermined {
+            return language.rawValue
+        }
+        return Locale.current.language.languageCode?.identifier ?? "en"
     }
 }

@@ -31,6 +31,7 @@
   [StaticText] "" value: "What plant is this?"
   [StaticText] "" value: "A Boston fern. Water it when the top of the soil is dry."
   [Button] "Retry" help: "Write this reply again"
+  [Button] "Speak" help: "Read this reply aloud"
   [TextField] ""
   [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
   [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"

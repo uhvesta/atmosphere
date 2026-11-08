@@ -3,6 +3,7 @@ import ComposableArchitecture
 import InferenceKit
 import InferenceKitLiteRT
 import InferenceKitLive
+import InferenceKitSpeech
 import LifrAPI
 import LifrAssistantClient
 import LifrAssistantLive
@@ -114,6 +115,7 @@ private enum Storage {
         $0.guidance = .onDisk()
         $0.attachments = .onDisk()
         $0.recorder = .live()
+        $0.speech = speech
         $0.session = session
         $0.sync = sync
         $0.lock = .live()
@@ -124,6 +126,20 @@ private enum Storage {
     /// when this build has a container.
     private static let sync = SyncClient.live(
         container: LifrIdentity.iCloudContainer, store: client, device: deviceName)
+
+    /// Reading replies aloud in the voice picked: the system's until a
+    /// voice model is downloaded and picked. The pick is kept with the
+    /// models.
+    private static let speech: SpeechClient = {
+        let selection = VoiceSelection(file: ModelLibrary.defaultRoot.appending(path: "voices.json"))
+        let speaker = Speaker(
+            installed: { models.library.installed() }, selection: selection, system: SystemVoice(),
+            output: SpeakerOutput(), engine: { model, _ in SupertonicEngine(model: model) })
+        return .picks(
+            selection,
+            speak: { text, language throws(SpeechError) in try await speaker.speak(text, language: language) },
+            stop: { await speaker.stop() })
+    }()
 
     /// The models downloaded to this device, and the one that's loaded.
     nonisolated static let models: ModelRuntimes<ModelUse> = {

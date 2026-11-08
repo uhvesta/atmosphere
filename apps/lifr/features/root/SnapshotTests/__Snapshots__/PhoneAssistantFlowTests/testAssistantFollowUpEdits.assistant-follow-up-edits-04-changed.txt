@@ -12,6 +12,7 @@
 [text] "Change that to Friday"
 [text] "I moved buy milk to Friday."
 [button] "Retry" hint: "Write this reply again"
+[button] "Speak" hint: "Read this reply aloud"
 [header, text] "Draft"
 [text] "2 tasks"
 [text] "buy milk, Home"

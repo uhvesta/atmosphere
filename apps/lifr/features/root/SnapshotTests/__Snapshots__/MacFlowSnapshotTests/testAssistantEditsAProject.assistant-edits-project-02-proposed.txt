@@ -40,6 +40,7 @@
   [Button] "Edit"
   [Button] "Apply"
   [Button] "Retry" help: "Write this reply again"
+  [Button] "Speak" help: "Read this reply aloud"
   [TextField] ""
   [MenuButton] "Add" help: "Attach a photo or use a skill" id: plus
   [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"

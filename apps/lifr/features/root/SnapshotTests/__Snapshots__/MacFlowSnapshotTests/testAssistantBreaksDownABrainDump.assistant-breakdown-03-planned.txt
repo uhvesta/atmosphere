@@ -33,6 +33,7 @@
   [StaticText] "" value: "By 5 December, and it's the old flat's deposit"
   [StaticText] "" value: "Here's the move as a Project, in order, and calling your mum on its own."
   [Button] "Retry" help: "Write this reply again"
+  [Button] "Speak" help: "Read this reply aloud"
   [Heading] "Draft"
   [StaticText] "" value: "8 tasks"
   [StaticText] "" value: "New Project Move flat, Sat, Dec 5 · Home"

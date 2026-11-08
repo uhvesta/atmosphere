@@ -14,6 +14,7 @@
 [text] "Add a task to plan the team offsite in WORK: book a venue, send the invites"
 [text] "I added a task to plan the team offsite."
 [button] "Retry" hint: "Write this reply again"
+[button] "Speak" hint: "Read this reply aloud"
 [header, text] "Draft"
 [text] "3 tasks"
 [text] "Plan the team offsite, Work"

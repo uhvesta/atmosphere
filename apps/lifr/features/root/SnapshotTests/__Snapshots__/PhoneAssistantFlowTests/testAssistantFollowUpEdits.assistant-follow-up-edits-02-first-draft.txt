@@ -6,6 +6,7 @@
 [text] "Add a task to buy milk, in HOME"
 [text] "I added a task to buy milk in HOME."
 [button] "Retry" hint: "Write this reply again"
+[button] "Speak" hint: "Read this reply aloud"
 [header, text] "Draft"
 [text] "1 task"
 [text] "buy milk, Home"

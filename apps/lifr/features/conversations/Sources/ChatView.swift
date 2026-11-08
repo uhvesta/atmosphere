@@ -297,13 +297,19 @@ package struct ChatView: View {
         }
         .disabled(!store.state.canRetry(message))
         if message.role == .assistant {
-            retry
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .help("Write this reply again")
+            HStack(spacing: 12) {
+                retry
+                    .help("Write this reply again")
+                if !message.text.isEmpty {
+                    speak(message)
+                        .help(store.speaking == message.id ? "Stop reading this reply aloud" : "Read this reply aloud")
+                }
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else if store.waiting == nil {
             VStack(alignment: .leading, spacing: 6) {
                 Label(
@@ -316,6 +322,14 @@ package struct ChatView: View {
             .font(.callout)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// Speak for a reply, or Stop Speaking while it's read aloud.
+    private func speak(_ message: ChatMessage) -> some View {
+        let speaking = store.speaking == message.id
+        return Button(
+            speaking ? "Stop Speaking" : "Speak", systemImage: speaking ? "stop.circle" : "speaker.wave.2"
+        ) { store.send(.speakTapped(messageID: message.id)) }
     }
 
     /// ‹ 2/3 › under a message or reply written again, to show the others.
@@ -341,6 +355,7 @@ package struct ChatView: View {
         } else {
             Button("Retry", systemImage: "arrow.clockwise") { store.send(.retryTapped(messageID: message.id)) }
                 .disabled(!store.state.canRetry(message))
+            if !message.text.isEmpty { speak(message) }
         }
         let end = store.conversation.end(of: message.id)
         if end != store.conversation.messages.last?.id {

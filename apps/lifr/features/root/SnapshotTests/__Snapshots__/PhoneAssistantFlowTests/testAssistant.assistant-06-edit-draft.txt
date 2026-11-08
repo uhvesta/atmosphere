@@ -16,6 +16,7 @@
 [text] "Sat, Nov 7"
 [text] "Home"
 [button] "Retry" hint: "Write this reply again"
+[button] "Speak" hint: "Read this reply aloud"
 [element] "Sub task" value: "Vacuum"
 [button] "Remove"
 [image] "circle"

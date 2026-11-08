@@ -7,6 +7,7 @@
 [text] "The person wants to water the plants this weekend. Saturday morning is free, so a task for Saturday at HOME fits."
 [text] "I'd water them on Saturday morning."
 [button] "Retry" hint: "Write this reply again"
+[button] "Speak" hint: "Read this reply aloud"
 [element] "" value: "Message"
 [button] "Add" hint: "Attach a photo or use a skill"
 [button] "Model" value: "Apple Intelligence" hint: "Model, Thinking and Context Window"
