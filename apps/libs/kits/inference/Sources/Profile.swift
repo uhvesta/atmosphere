@@ -23,11 +23,14 @@ public struct ModelProfile: Hashable, Codable, Sendable {
     /// engine that writes the model's prompt itself; nil for a model that
     /// doesn't think, or whose runtime knows how.
     public var thinking: Thinking?
+    /// The markup of its turns, for an engine that writes the model's
+    /// prompt itself; nil for ChatML.
+    public var markup: ChatMarkup?
 
     public init(
         onScreen: ModelBackend = .gpu, gpuActivations: Activations = .half, vision: Encoder = .withModel,
         audio: Encoder = .cpu, speculation: Speculation = .off, cpuThreads: Int? = nil, sampling: Sampling? = nil,
-        thinking: Thinking? = nil
+        thinking: Thinking? = nil, markup: ChatMarkup? = nil
     ) {
         self.onScreen = onScreen
         self.gpuActivations = gpuActivations
@@ -37,6 +40,7 @@ public struct ModelProfile: Hashable, Codable, Sendable {
         self.cpuThreads = cpuThreads
         self.sampling = sampling
         self.thinking = thinking
+        self.markup = markup
     }
 
     /// What a model runs with when nothing's known about it: the GPU at
@@ -105,5 +109,33 @@ public struct ModelProfile: Hashable, Codable, Sendable {
             self.off = off
             self.end = end
         }
+    }
+
+    /// What starts and ends each turn of a model's prompt.
+    public struct ChatMarkup: Hashable, Codable, Sendable {
+        /// Starts the instructions.
+        public var system: String
+        /// Starts the person's message.
+        public var user: String
+        /// Starts the model's answer.
+        public var model: String
+        /// Ends a turn.
+        public var end: String
+
+        public init(system: String, user: String, model: String, end: String) {
+            self.system = system
+            self.user = user
+            self.model = model
+            self.end = end
+        }
+
+        /// The ChatML that Qwen and most models read.
+        public static let chatML = ChatMarkup(
+            system: "<|im_start|>system\n", user: "<|im_start|>user\n", model: "<|im_start|>assistant\n",
+            end: "<|im_end|>\n")
+
+        /// Gemma 4's.
+        public static let gemma4 = ChatMarkup(
+            system: "<|turn>system\n", user: "<|turn>user\n", model: "<|turn>model\n", end: "<turn|>\n")
     }
 }

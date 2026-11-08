@@ -158,7 +158,7 @@ private enum Storage {
         Task { await host.observeSystem() }
         let library = ModelLibrary.live()
         library.resumeUnfinished()
-        let bench = Bench(measure: Bench.measuring(with: measures))
+        let bench = Bench(measure: Bench.measuring(with: measures), load: ModelHost.loading(with: loaders))
         return ModelRuntimes(library: library, host: host, bench: bench)
     }()
 

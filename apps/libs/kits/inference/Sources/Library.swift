@@ -290,6 +290,9 @@ public struct InstalledModel: Identifiable, Hashable, Codable, Sendable {
     public var pickedBackend: ModelBackend?
     /// How fast it ran here, each time the person had it measured.
     public var measurements: [ModelMeasurement]
+    /// How its engine runs it, as the person tuned it for the use it runs
+    /// for; nil for the engine's usual settings at `chosenWindow`.
+    public var options: EngineOptions?
 
     public init(
         spec: ModelSpec, directory: URL, installedAt: Date, chosenWindow: Int? = nil,
@@ -306,7 +309,16 @@ public struct InstalledModel: Identifiable, Hashable, Codable, Sendable {
     public var id: ModelID { spec.id }
 
     /// The tokens it reads and writes at most.
-    public var window: Int { chosenWindow ?? spec.contextTokens }
+    public var window: Int { options?.window ?? chosenWindow ?? spec.contextTokens }
+
+    /// How it runs: its profile, with the CPU threads and GPU precision
+    /// its options set.
+    public var profile: ModelProfile {
+        var profile = spec.profile
+        if let threads = options?.cpuThreads { profile.cpuThreads = threads }
+        if let activations = options?.gpuActivations { profile.gpuActivations = activations }
+        return profile
+    }
 
     /// Where `file` is.
     public func location(of file: ModelFile) -> URL {

@@ -20,17 +20,40 @@ public enum ModelCatalog {
     /// (`RequestsOnRealModelTests`).
     /// Each token of window past that takes about 150 KB, measured on a
     /// Mac's GPU at 16K and 32K (`ContextWindowOnRealModelTests`).
+    /// The same model in GGUF at Q4_K_M runs on llama.cpp, so the two
+    /// engines can be compared on one device; it's downloaded only when the
+    /// person asks for it. Its memory is estimated: the weights, its keys
+    /// and values at 8 bits for the 3 layers that attend to the whole
+    /// window, 3,264 bytes a token (the others attend to the last 512
+    /// tokens, or share a layer's), and llama.cpp's
+    /// buffers.
     public static let gemma4E2B = ModelSpec(
-        id: "gemma-4-e2b", name: "Gemma 4 E2B", summary: "Small and quick", runtime: .liteRT,
-        source: ModelSource(
-            repo: "litert-community/gemma-4-E2B-it-litert-lm", commit: "c658da437244f072bf2f1cabc916b60d66d97663",
-            files: [
-                ModelFile(
-                    path: "gemma-4-E2B-it.litertlm", size: 2_588_147_712,
-                    digest: .sha256("181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c"))
-            ]), contextTokens: 8_192, memoryBytes: 1_450_000_000, cpuMemoryBytes: 1_000_000_000,
-        license: "Apache 2.0", contextChoices: gemmaWindows, memoryBytesPerToken: 150_000,
-        profile: gemma4)
+        id: "gemma-4-e2b", name: "Gemma 4 E2B", summary: "Small and quick", contextTokens: 8_192,
+        license: "Apache 2.0", contextChoices: gemmaWindows,
+        variants: [
+            ModelVariant(
+                runtime: .liteRT,
+                source: ModelSource(
+                    repo: "litert-community/gemma-4-E2B-it-litert-lm",
+                    commit: "c658da437244f072bf2f1cabc916b60d66d97663",
+                    files: [
+                        ModelFile(
+                            path: "gemma-4-E2B-it.litertlm", size: 2_588_147_712,
+                            digest: .sha256("181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c"))
+                    ]), memoryBytes: 1_450_000_000, cpuMemoryBytes: 1_000_000_000, memoryBytesPerToken: 150_000,
+                profile: gemma4),
+            ModelVariant(
+                runtime: .llama, quantization: "Q4_K_M",
+                source: ModelSource(
+                    repo: "unsloth/gemma-4-E2B-it-GGUF", commit: "0314792d7f1f7e229411f620751375812bb9faf2",
+                    files: [
+                        ModelFile(
+                            path: "gemma-4-E2B-it-Q4_K_M.gguf", size: 3_106_738_272,
+                            digest: .sha256("740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8"))
+                    ]), memoryBytes: 3_106_738_272 + 8_192 * 3_264 + llamaOverhead,
+                cpuMemoryBytes: 3_106_738_272 + 8_192 * 3_264 + llamaOverhead, memoryBytesPerToken: 3_264,
+                profile: gemma4GGUF),
+        ])
 
     /// Google's Gemma 4 E4B, larger and slower than E2B, and the one that
     /// reads photos and listens to recordings. Measured by Google at 3.38 GB
@@ -54,6 +77,11 @@ public enum ModelCatalog {
     /// 2814). Its vision encoder runs where the model does and its audio
     /// encoder on the CPU, as Google runs them.
     static let gemma4 = ModelProfile(onScreen: .gpu, gpuActivations: .full, vision: .withModel, audio: .cpu)
+
+    /// How Gemma 4 runs on llama.cpp: in its own markup, with the sampling
+    /// Google suggests, and not thinking, which it does only when asked.
+    static let gemma4GGUF = ModelProfile(
+        sampling: ModelProfile.Sampling(topK: 64, topP: 0.95, temperature: 1), markup: .gemma4)
 
     /// The windows Gemma 4 runs at in the app. It reads up to 128K tokens;
     /// past 32K the memory is more than an iPhone leaves an app.

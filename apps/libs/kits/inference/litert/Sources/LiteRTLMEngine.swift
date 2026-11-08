@@ -19,7 +19,7 @@ public struct LiteRTLMEngine: ModelEngine {
     @Sendable public static func load(_ model: InstalledModel, on backend: ModelBackend)
         async throws(ModelRuntimeError) -> any ModelEngine
     {
-        try await load(model, on: backend, profile: model.spec.profile)
+        try await load(model, on: backend, profile: model.profile)
     }
 
     /// Loads `model`, taking the likeliest token at each step with
@@ -28,7 +28,7 @@ public struct LiteRTLMEngine: ModelEngine {
     public static func load(_ model: InstalledModel, on backend: ModelBackend = .gpu, greedy: Bool)
         async throws(ModelRuntimeError) -> any ModelEngine
     {
-        var profile = model.spec.profile
+        var profile = model.profile
         if greedy { profile.sampling = .greedy }
         return try await load(model, on: backend, profile: profile)
     }
@@ -80,7 +80,7 @@ public struct LiteRTLMEngine: ModelEngine {
         }
         let path = model.location(of: file).path
         guard FileManager.default.fileExists(atPath: path) else { throw .unavailable(.notDownloaded) }
-        let profile = model.spec.profile
+        let profile = model.profile
         do {
             let cache = try cacheDirectory(model.id)
             let cpu: Backend = .cpu(threadCount: profile.cpuThreads)

@@ -27,22 +27,40 @@ public actor ModelHost {
     public typealias Loader =
         @Sendable (InstalledModel, ModelBackend) async throws(ModelRuntimeError) -> any ModelEngine
 
-    private struct Loaded {
+    /// How a model was loaded: which variant, at which window, with which
+    /// options. A model asked for another way is loaded again.
+    private struct Setup: Equatable {
         var id: ModelID
+        var runtime: RuntimeKind
+        var quantization: String
         var window: Int
+        var options: EngineOptions?
+
+        init(_ model: InstalledModel) {
+            id = model.id
+            runtime = model.spec.variant.runtime
+            quantization = model.spec.variant.quantization
+            window = model.window
+            options = model.options
+        }
+    }
+
+    private struct Loaded {
+        var setup: Setup
         var backend: ModelBackend
         var engine: any ModelEngine
 
-        func `is`(_ model: InstalledModel) -> Bool { id == model.id && window == model.window }
+        var id: ModelID { setup.id }
+        func `is`(_ model: InstalledModel) -> Bool { setup == Setup(model) }
     }
 
     private struct Loading {
-        var id: ModelID
-        var window: Int
+        var setup: Setup
         var backend: ModelBackend
         var task: Task<Result<any ModelEngine, ModelRuntimeError>, Never>
 
-        func `is`(_ model: InstalledModel) -> Bool { id == model.id && window == model.window }
+        var id: ModelID { setup.id }
+        func `is`(_ model: InstalledModel) -> Bool { setup == Setup(model) }
     }
 
     private let load: Loader
@@ -96,13 +114,14 @@ public actor ModelHost {
         }
     }
 
-    /// Where `model` runs while the app is on screen, and why: the person's
-    /// pick, what was measured fastest here among what fits in memory now,
-    /// or its profile's.
+    /// Where `model` runs while the app is on screen, and why: the setup
+    /// or backend the person picked, what was measured fastest here among
+    /// what fits in memory now, or its profile's.
     public nonisolated func plan(for model: InstalledModel) -> ModelPlanner.Plan {
         let available = memory()
         return ModelPlanner.plan(
-            model, picked: model.pickedBackend, measurements: model.measurements, device: device.model,
+            model, picked: model.options?.backend ?? model.pickedBackend, measurements: model.measurements,
+            device: device.model,
             system: device.system, fits: { MemoryPlan.fits($0, available: available) })
     }
 
@@ -231,7 +250,7 @@ public actor ModelHost {
                 return .failure(error)
             }
         }
-        loading = Loading(id: model.id, window: model.window, backend: backend, task: task)
+        loading = Loading(setup: Setup(model), backend: backend, task: task)
         let result = await task.value
         // Unloaded while it loaded: going to the background, or for
         // another model.
@@ -240,7 +259,7 @@ public actor ModelHost {
         }
         loading = nil
         let engine = try result.get()
-        loaded = Loaded(id: model.id, window: model.window, backend: backend, engine: engine)
+        loaded = Loaded(setup: Setup(model), backend: backend, engine: engine)
         scheduleIdle()
         return engine
     }

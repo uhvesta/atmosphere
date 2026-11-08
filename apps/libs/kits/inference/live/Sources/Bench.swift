@@ -54,7 +54,9 @@ public struct Bench: Sendable {
         @Sendable (InstalledModel, ModelBackend) async throws(ModelRuntimeError) -> EngineSpeed
 
     private let measure: Measure
-    private let device: DeviceInfo
+    /// Loads a model for its answers to the quality prompts.
+    let load: ModelHost.Loader?
+    let device: DeviceInfo
     private let footprint: @Sendable () -> Int64
     private let cpuSeconds: @Sendable () -> Double
     private let energy: @Sendable () -> TaskEnergy?
@@ -62,19 +64,22 @@ public struct Bench: Sendable {
     private let interval: Duration
 
     /// - Parameters:
+    ///   - load: Loads a model to answer the quality prompts when it's
+    ///     tuned; nil leaves quality unmeasured.
     ///   - footprint: The memory the app takes now.
     ///   - cpuSeconds: The CPU time the app has used, across its cores.
     ///   - energy: What the app has drawn, or nil where the system doesn't
     ///     say.
     ///   - interval: How often the memory is looked at during a run.
     public init(
-        measure: @escaping Measure, device: DeviceInfo = .current,
+        measure: @escaping Measure, load: ModelHost.Loader? = nil, device: DeviceInfo = .current,
         footprint: @escaping @Sendable () -> Int64 = Bench.footprint,
         cpuSeconds: @escaping @Sendable () -> Double = Bench.cpuSeconds,
         energy: @escaping @Sendable () -> TaskEnergy? = Bench.energy,
         now: @escaping @Sendable () -> Date = Date.init, interval: Duration = .milliseconds(20)
     ) {
         self.measure = measure
+        self.load = load
         self.device = device
         self.footprint = footprint
         self.cpuSeconds = cpuSeconds
@@ -115,7 +120,7 @@ public struct Bench: Sendable {
         return measured
     }
 
-    private func once(_ model: InstalledModel, on backend: ModelBackend) async throws(ModelRuntimeError)
+    func once(_ model: InstalledModel, on backend: ModelBackend) async throws(ModelRuntimeError)
         -> ModelMeasurement
     {
         let baseline = footprint()

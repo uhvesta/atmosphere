@@ -17,10 +17,28 @@ public final class ModelLibrary: Sendable {
     }
 
     /// What's kept of a model's tuning: where the person picked for it to
-    /// run, and its measurements.
+    /// run, its measurements, how each setup compared when the person
+    /// tuned it, and the setup they picked for each purpose.
     private struct Tuning: Codable {
         var picked: ModelBackend?
         var measurements: [ModelMeasurement] = []
+        var results: [TuneResult] = []
+        var setups: [TunePurpose: TunedSetup] = [:]
+
+        init() {}
+
+        private enum CodingKeys: String, CodingKey {
+            case picked, measurements, results, setups
+        }
+
+        /// Reads tuning kept before setups were compared as having none.
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            picked = try container.decodeIfPresent(ModelBackend.self, forKey: .picked)
+            measurements = try container.decodeIfPresent([ModelMeasurement].self, forKey: .measurements) ?? []
+            results = try container.decodeIfPresent([TuneResult].self, forKey: .results) ?? []
+            setups = try container.decodeIfPresent([TunePurpose: TunedSetup].self, forKey: .setups) ?? [:]
+        }
     }
 
     private let root: URL
@@ -420,6 +438,33 @@ public final class ModelLibrary: Sendable {
             kept.measurements += measurements
             tuning[id] = kept
         }
+    }
+
+    /// Keeps `results` of `id`'s setups, in place of earlier ones under
+    /// the same key.
+    public func record(_ results: [TuneResult], for id: ModelID) {
+        saveTuning { tuning in
+            var kept = tuning[id, default: Tuning()]
+            kept.results.removeAll { old in results.contains { $0.key == old.key } }
+            kept.results += results
+            tuning[id] = kept
+        }
+    }
+
+    /// How each of `id`'s setups compared, each time the person tuned it,
+    /// on any device.
+    public func tuneResults(for id: ModelID) -> [TuneResult] {
+        state.withValue { $0.tuning[id]?.results ?? [] }
+    }
+
+    /// Runs `id` as `setup` for `purpose`, or as the planner picks with nil.
+    public func pick(_ setup: TunedSetup?, for purpose: TunePurpose, of id: ModelID) {
+        saveTuning { $0[id, default: Tuning()].setups[purpose] = setup }
+    }
+
+    /// The setup the person picked for `id` for each purpose.
+    public func setups(for id: ModelID) -> [TunePurpose: TunedSetup] {
+        state.withValue { $0.tuning[id]?.setups ?? [:] }
     }
 
     private func saveTuning(_ change: (inout [ModelID: Tuning]) -> Void) {

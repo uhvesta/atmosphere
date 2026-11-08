@@ -423,6 +423,50 @@ final class ModelLibraryTests: XCTestCase {
         XCTAssertEqual(selection().model(for: .assistant), .apple)
     }
 
+    func testComparedSetupsAreKeptAndThePickedOneRunsForItsPurpose() async throws {
+        let runtimes = ModelRuntimes<Use>(
+            library: library(), host: ModelHost(load: { _, _ throws(ModelRuntimeError) in throw .failed("no") }),
+            bench: bench())
+        let model = try await runtimes.library.download(spec())
+        let candidates = runtimes.tuneCandidates(for: model.id)
+
+        let outcomes = await runtimes.tune(candidates)
+
+        XCTAssertEqual(candidates.map(\.options.backend), [.gpu, .cpu])
+        XCTAssertEqual(outcomes.count, 2)
+        let reopened = ModelRuntimes<Use>(library: library(), host: runtimes.host, bench: bench())
+        XCTAssertEqual(Set(reopened.tuneResults(for: model.id).map(\.key.candidate)), Set(candidates))
+
+        var cpu = try XCTUnwrap(candidates.last).setup
+        cpu.options.cpuThreads = 2
+        await runtimes.pick(cpu, for: .chat, of: model.id)
+        await runtimes.select(model.id, for: .assistant)
+
+        let relaunched = ModelRuntimes<Use>(library: library(), host: runtimes.host, bench: bench())
+        let runtime = try XCTUnwrap(relaunched.runtime(for: .assistant) as? EngineRuntime)
+        XCTAssertEqual(runtime.model.options, cpu.options)
+        XCTAssertEqual(runtimes.host.plan(for: runtime.model).backend, .cpu)
+        XCTAssertEqual(relaunched.setups(for: model.id), [.chat: cpu])
+    }
+
+    func testAFormatThatIsntDownloadedIsOfferedToCompare() async throws {
+        var twoWays = spec()
+        twoWays.variants.append(
+            ModelVariant(
+                runtime: .llama, quantization: "Q4_K_M",
+                source: ModelSource(repo: "org/gguf", commit: commit, files: []), memoryBytes: 0))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubProtocol.self]
+        let library = ModelLibrary(
+            root: root, session: URLSession(configuration: configuration), capacity: { _ in 100_000_000_000 },
+            chunkSize: 300, catalog: [twoWays])
+        let runtimes = ModelRuntimes<Use>(library: library, host: runtimes(library).host)
+
+        XCTAssertEqual(runtimes.otherFormats(of: twoWays.id).map(\.runtime), [.liteRT, .llama])
+        _ = try await library.download(spec())
+        XCTAssertEqual(runtimes.otherFormats(of: twoWays.id).map(\.runtime), [.llama])
+    }
+
     func testThePickedWindowIsKeptForThatModel() async throws {
         var offered = spec()
         offered.contextChoices = [4_096, 16_384]

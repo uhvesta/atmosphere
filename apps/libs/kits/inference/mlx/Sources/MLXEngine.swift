@@ -15,7 +15,7 @@ public struct MLXEngine: ModelEngine {
     @Sendable public static func load(_ model: InstalledModel, on backend: ModelBackend)
         async throws(ModelRuntimeError) -> any ModelEngine
     {
-        try await load(model, on: backend, profile: model.spec.profile)
+        try await load(model, on: backend, profile: model.profile)
     }
 
     /// Loads `model`, taking the likeliest token at each step with
@@ -23,7 +23,7 @@ public struct MLXEngine: ModelEngine {
     public static func load(_ model: InstalledModel, on backend: ModelBackend = .gpu, greedy: Bool)
         async throws(ModelRuntimeError) -> any ModelEngine
     {
-        var profile = model.spec.profile
+        var profile = model.profile
         if greedy { profile.sampling = .greedy }
         return try await load(model, on: backend, profile: profile)
     }
@@ -40,7 +40,7 @@ public struct MLXEngine: ModelEngine {
     @Sendable public static func measure(_ model: InstalledModel, on backend: ModelBackend)
         async throws(ModelRuntimeError) -> EngineSpeed
     {
-        var profile = model.spec.profile
+        var profile = model.profile
         profile.sampling = .greedy
         let session = try await open(model, on: backend, profile: profile)
         return try await session.run(stoppedBy: MLXStop()) { session throws(ModelRuntimeError) in

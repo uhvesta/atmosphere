@@ -4,7 +4,8 @@ import InferenceKitGrammar
 
 /// llama.cpp's engine for one downloaded GGUF model, on the GPU through
 /// Metal, or on the CPU while the app answers in the background. It writes
-/// the model's prompt itself, in the ChatML the catalog's models read.
+/// the model's prompt itself, in the markup its profile names: ChatML,
+/// which most of the catalog's models read, or Gemma 4's.
 public struct LlamaEngine: ModelEngine {
     let session: LlamaSession
 
@@ -13,7 +14,7 @@ public struct LlamaEngine: ModelEngine {
     @Sendable public static func load(_ model: InstalledModel, on backend: ModelBackend)
         async throws(ModelRuntimeError) -> any ModelEngine
     {
-        try await load(model, on: backend, profile: model.spec.profile)
+        try await load(model, on: backend, profile: model.profile)
     }
 
     /// Loads `model`, taking the likeliest token at each step with
@@ -21,7 +22,7 @@ public struct LlamaEngine: ModelEngine {
     public static func load(_ model: InstalledModel, on backend: ModelBackend = .gpu, greedy: Bool)
         async throws(ModelRuntimeError) -> any ModelEngine
     {
-        var profile = model.spec.profile
+        var profile = model.profile
         if greedy { profile.sampling = .greedy }
         return try await load(model, on: backend, profile: profile)
     }
@@ -38,7 +39,7 @@ public struct LlamaEngine: ModelEngine {
     @Sendable public static func measure(_ model: InstalledModel, on backend: ModelBackend)
         async throws(ModelRuntimeError) -> EngineSpeed
     {
-        var profile = model.spec.profile
+        var profile = model.profile
         profile.sampling = .greedy
         let session = try await open(model, on: backend, profile: profile)
         return try await session.run(stoppedBy: LlamaStop()) { session throws(ModelRuntimeError) in
@@ -63,7 +64,8 @@ public struct LlamaEngine: ModelEngine {
             throw .unavailable(.notDownloaded)
         }
         return try await LlamaSession.open(
-            path: path, projector: projector, backend: backend, window: model.window, profile: profile)
+            path: path, projector: projector, backend: backend, window: model.window, profile: profile,
+            options: model.options)
     }
 }
 
@@ -155,22 +157,23 @@ private struct Turn: Sendable {
     /// Gives the model the message, after the instructions if it's the
     /// first, and starts its answer.
     private func prompt(on session: LlamaSession) throws(ModelRuntimeError) {
+        let markup = session.profile.markup ?? .chatML
         if session.isNew(id) {
             if instructions.isEmpty {
-                try session.give("<|im_start|>user\n", special: true, in: id, beginning: true)
+                try session.give(markup.user, special: true, in: id, beginning: true)
             } else {
-                try session.give("<|im_start|>system\n", special: true, in: id, beginning: true)
+                try session.give(markup.system, special: true, in: id, beginning: true)
                 try session.give(instructions, special: false, in: id)
-                try session.give("<|im_end|>\n<|im_start|>user\n", special: true, in: id)
+                try session.give(markup.end + markup.user, special: true, in: id)
             }
         } else {
             // The model's last answer ended where it wrote its end token,
             // which isn't read back.
-            try session.give("<|im_end|>\n<|im_start|>user\n", special: true, in: id)
+            try session.give(markup.end + markup.user, special: true, in: id)
         }
         try session.give(images: images, in: id)
         try session.give(message, special: false, in: id)
-        var start = "<|im_end|>\n<|im_start|>assistant\n"
+        var start = markup.end + markup.model
         if let thinking = session.profile.thinking {
             start += (thinks ? thinking.on : thinking.off) ?? thinking.on
         }

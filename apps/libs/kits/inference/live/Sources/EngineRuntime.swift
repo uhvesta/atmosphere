@@ -75,14 +75,26 @@ public struct ModelRuntimes<Use: ModelUseCase>: Sendable {
     }
 
     /// What `use` runs on, or what `choice` picks in place of it: its
-    /// model, at its window. The person's defaults stay as they are.
+    /// model, as the setup the person tuned it to for the use's purpose if
+    /// that's downloaded, at its window. The person's defaults stay as
+    /// they are.
     public func runtime(for use: Use, choice: ModelChoice = .defaults) -> any ModelRuntime {
         let id = choice.model ?? selection.model(for: use)
         guard id != .apple else { return AppleRuntime() }
-        guard var model = library.installed().first(where: { $0.id == id }) else { return Missing() }
+        let variants = library.installed().filter { $0.id == id }
+        guard var model = variants.first else { return Missing() }
+        if let setup = library.setups(for: id)[use.purpose],
+            let tuned = variants.first(where: {
+                $0.spec.variant.runtime == setup.runtime && $0.spec.variant.quantization == setup.quantization
+            })
+        {
+            model = tuned
+            model.options = setup.options
+        }
         if let window = choice.window, window == model.spec.contextTokens || model.spec.contextChoices.contains(window)
         {
             model.chosenWindow = window
+            model.options?.window = window
         }
         switch model.spec.runtime {
         case .apple: return AppleRuntime()
@@ -120,6 +132,61 @@ public struct ModelRuntimes<Use: ModelUseCase>: Sendable {
         let measured = try await bench.run(model, on: backends, host: host)
         library.record(measured, for: id)
         return measured
+    }
+
+    /// The setups to compare for `id`: each of its downloaded formats on
+    /// each backend its engine has, at its window, with the engine's own
+    /// settings. Empty when it isn't downloaded.
+    public func tuneCandidates(for id: ModelID) -> [TuneCandidate] {
+        let variants = library.installed().filter { $0.id == id }
+        return InferenceKit.tuneCandidates(for: variants, window: variants.first?.window ?? 0)
+    }
+
+    /// The formats of `id` in the catalog that aren't on the device, to
+    /// offer to download for comparing.
+    public func otherFormats(of id: ModelID) -> [ModelVariant] {
+        let installed = library.installed().filter { $0.id == id }.map(\.spec.variant)
+        let entry = library.catalog.first { $0.id == id }
+        return (entry?.variants ?? []).filter { variant in
+            variant.runtime != .apple
+                && !installed.contains { $0.runtime == variant.runtime && $0.source == variant.source }
+        }
+    }
+
+    /// Runs each of `candidates` and keeps what's measured, for the
+    /// person to compare; see `Bench.tune`. Without a bench, each fails.
+    public func tune(
+        _ candidates: [TuneCandidate], report: @Sendable (TuneCandidate, TuneOutcome) async -> Void = { _, _ in }
+    ) async -> [TuneOutcome] {
+        guard let bench else {
+            return candidates.map { .failed(.engine(.engineMissing($0.runtime))) }
+        }
+        let outcomes = await bench.tune(candidates, of: library.installed(), host: host, report: report)
+        for (candidate, outcome) in zip(candidates, outcomes) {
+            if case .measured(let result) = outcome { library.record([result], for: candidate.model) }
+        }
+        return outcomes
+    }
+
+    /// What was measured of each of `id`'s setups on this device, latest
+    /// first.
+    public func tuneResults(for id: ModelID) -> [TuneResult] {
+        let device = bench?.device ?? .current
+        return library.tuneResults(for: id)
+            .filter { $0.key.device == device.model && $0.key.system == device.system }
+            .sorted { $0.measuredAt > $1.measuredAt }
+    }
+
+    /// The setup the person picked for `id` for each purpose.
+    public func setups(for id: ModelID) -> [TunePurpose: TunedSetup] {
+        library.setups(for: id)
+    }
+
+    /// Runs `id` as `setup` for `purpose` from its next turn, or as the
+    /// planner picks with nil.
+    public func pick(_ setup: TunedSetup?, for purpose: TunePurpose, of id: ModelID) async {
+        library.pick(setup, for: purpose, of: id)
+        await host.release(model: id)
     }
 
     /// Runs `id` on `backend` while the app is on screen, or where the

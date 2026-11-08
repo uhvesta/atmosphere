@@ -286,7 +286,9 @@ final class ModelLibraryTypesTests: XCTestCase {
             XCTAssertGreaterThan(spec.memoryBytes, weights, spec.name)
             XCTAssertEqual(
                 spec.inputs.contains(.image), files.contains { ModelResolution.isEncoder($0.path) }, spec.name)
-            XCTAssertNotNil(spec.profile.thinking, spec.name)
+            // Gemma 4 thinks only when its instructions ask, which the app
+            // doesn't yet on llama.cpp.
+            XCTAssertTrue(spec.profile.thinking != nil || spec.profile.markup == .gemma4, spec.name)
         }
     }
 
@@ -358,12 +360,12 @@ final class ModelVariantTests: XCTestCase {
     }
 
     func testAManifestFromBeforeVariantsHasOnlyItsOwn() throws {
-        let manifest = try JSONEncoder().encode(ModelCatalog.gemma4E2B)
+        let manifest = try JSONEncoder().encode(ModelCatalog.gemma4E4B)
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: manifest) as? [String: Any])
         json["variants"] = nil
         let decoded = try JSONDecoder().decode(ModelSpec.self, from: JSONSerialization.data(withJSONObject: json))
 
-        XCTAssertEqual(decoded, ModelCatalog.gemma4E2B)
+        XCTAssertEqual(decoded, ModelCatalog.gemma4E4B)
         XCTAssertEqual(decoded.variants, [decoded.variant])
     }
 

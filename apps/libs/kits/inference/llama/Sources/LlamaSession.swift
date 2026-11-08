@@ -58,12 +58,10 @@ final class LlamaSession: @unchecked Sendable {
     /// What stops the call running now.
     private let stop = Mutex<LlamaStop?>(nil)
 
-    /// The prompt tokens a batch reads at once.
-    private static let batchTokens: Int32 = 512
-
     private init(
         model: OpaquePointer, context: OpaquePointer, vocab: OpaquePointer, vision: OpaquePointer?,
-        queue: DispatchQueue, batch: llama_batch, window: Int32, backend: ModelBackend, profile: ModelProfile
+        queue: DispatchQueue, batch: llama_batch, batchSize: Int32, window: Int32, backend: ModelBackend,
+        profile: ModelProfile
     ) {
         self.model = model
         self.context = context
@@ -74,7 +72,7 @@ final class LlamaSession: @unchecked Sendable {
         self.window = window
         self.backend = backend
         self.profile = profile
-        batchSize = Self.batchTokens
+        self.batchSize = batchSize
         let template = llama_model_chat_template(model, nil).map { String(cString: $0) } ?? ""
         let bos = llama_vocab_bos(vocab)
         begin =
@@ -93,9 +91,11 @@ final class LlamaSession: @unchecked Sendable {
 
     /// Loads the GGUF file at `path` to run on `backend` with a window of
     /// `window` tokens, and its vision encoder from `projector` if it has
-    /// one.
+    /// one, with `options` where they're set and the usual settings
+    /// where they aren't.
     static func open(
-        path: String, projector: String?, backend: ModelBackend, window: Int, profile: ModelProfile
+        path: String, projector: String?, backend: ModelBackend, window: Int, profile: ModelProfile,
+        options: EngineOptions?
     ) async throws(ModelRuntimeError) -> LlamaSession {
         let queue = DispatchQueue(label: "InferenceKitLlama.session", qos: .userInitiated)
         let result: Result<LlamaSession, ModelRuntimeError> = await withCheckedContinuation { continuation in
@@ -104,7 +104,7 @@ final class LlamaSession: @unchecked Sendable {
                     returning: Result { () throws(ModelRuntimeError) -> LlamaSession in
                         try load(
                             path: path, projector: projector, backend: backend, window: window, profile: profile,
-                            queue: queue)
+                            options: options, queue: queue)
                     })
             }
         }
@@ -113,12 +113,13 @@ final class LlamaSession: @unchecked Sendable {
 
     private static func load(
         path: String, projector: String?, backend: ModelBackend, window: Int, profile: ModelProfile,
-        queue: DispatchQueue
+        options: EngineOptions?, queue: DispatchQueue
     ) throws(ModelRuntimeError) -> LlamaSession {
         LlamaBackend.start()
         let threads = Int32(profile.cpuThreads ?? LlamaBackend.performanceCores)
         var modelParams = llama_model_default_params()
-        modelParams.n_gpu_layers = backend == .gpu ? -1 : 0
+        // Every layer on the GPU unless the person set fewer.
+        modelParams.n_gpu_layers = backend == .gpu ? Int32(clamping: options?.gpuLayers ?? -1) : 0
         // On the CPU, llama.cpp is told of no other device, so nothing of
         // the model goes to the GPU.
         var devices: [ggml_backend_dev_t?] = [ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU), nil]
@@ -131,17 +132,26 @@ final class LlamaSession: @unchecked Sendable {
         }
         var contextParams = llama_context_default_params()
         contextParams.n_ctx = UInt32(window)
+        // The prompt tokens a batch reads at once.
+        let batchTokens = Int32(clamping: options?.batchTokens ?? EngineOptions.llamaBatchTokens)
         contextParams.n_batch = UInt32(batchTokens)
-        contextParams.n_ubatch = UInt32(batchTokens)
+        contextParams.n_ubatch = UInt32(clamping: options?.microBatchTokens ?? Int(batchTokens))
         contextParams.n_seq_max = 1
         contextParams.n_threads = threads
         contextParams.n_threads_batch = threads
-        // The window's keys and values at 8 bits, which takes half the
-        // memory of 16 for answers that read the same; llama.cpp needs
-        // flash attention for it.
-        contextParams.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED
-        contextParams.type_k = GGML_TYPE_Q8_0
-        contextParams.type_v = GGML_TYPE_Q8_0
+        // The window's keys and values at 8 bits unless set, which takes
+        // half the memory of 16 for answers that read the same; llama.cpp
+        // needs flash attention for a cache under 16 bits.
+        let flash = options?.flashAttention ?? true
+        contextParams.flash_attn_type = flash ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_DISABLED
+        let cache: ggml_type =
+            switch options?.kvCache ?? .q8_0 {
+            case .f16: GGML_TYPE_F16
+            case .q8_0: GGML_TYPE_Q8_0
+            case .q4_0: GGML_TYPE_Q4_0
+            }
+        contextParams.type_k = cache
+        contextParams.type_v = cache
         contextParams.offload_kqv = backend == .gpu
         contextParams.op_offload = backend == .gpu
         contextParams.no_perf = false
@@ -170,7 +180,8 @@ final class LlamaSession: @unchecked Sendable {
         }
         let session = LlamaSession(
             model: model, context: context, vocab: vocab, vision: vision, queue: queue,
-            batch: llama_batch_init(batchTokens, 0, 1), window: Int32(window), backend: backend, profile: profile)
+            batch: llama_batch_init(batchTokens, 0, 1), batchSize: batchTokens, window: Int32(window), backend: backend,
+            profile: profile)
         llama_set_abort_callback(context, LlamaSession.shouldAbort, Unmanaged.passUnretained(session).toOpaque())
         return session
     }
