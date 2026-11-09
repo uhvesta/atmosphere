@@ -8,6 +8,7 @@
 [button] "Context Window" value: "5% used, 1,534 of 32,768 tokens" hint: "5% used, 1,534 of 32,768 tokens"
 [text] "On this device"
 [text] "Here's the move as a Project, in order, and calling your mum on its own."
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [header, text] "Draft"

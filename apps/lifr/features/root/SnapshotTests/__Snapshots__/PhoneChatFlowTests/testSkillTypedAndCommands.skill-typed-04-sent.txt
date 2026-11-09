@@ -5,6 +5,7 @@
 [element] "Skill: add"
 [text] "buy milk on saturday"
 [text] "Added milk to your list for Saturday."
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [element] "" value: "Message"

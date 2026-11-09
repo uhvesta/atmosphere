@@ -15,6 +15,7 @@
 [text] "Remove the second one"
 [text] "I took buy eggs out of the plan."
 [button] "Undo"
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [element] "" value: "Message"

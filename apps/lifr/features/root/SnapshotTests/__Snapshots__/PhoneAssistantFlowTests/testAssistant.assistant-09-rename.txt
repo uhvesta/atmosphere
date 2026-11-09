@@ -11,6 +11,7 @@
 [text] "Leave it empty to use the first message."
 [button] "Undo"
 [button] "Model, Default (Apple Intelligence)"
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [button] "Suggest with Apple Intelligence"

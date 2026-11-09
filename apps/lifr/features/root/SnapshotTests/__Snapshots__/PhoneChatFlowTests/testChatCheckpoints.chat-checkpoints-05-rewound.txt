@@ -4,6 +4,7 @@
 [text] "On this device"
 [text] "What should I do first?"
 [text] "Start with the urgent tasks, then the ones due this week."
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [text] "Going on from an earlier point. What came after is kept."

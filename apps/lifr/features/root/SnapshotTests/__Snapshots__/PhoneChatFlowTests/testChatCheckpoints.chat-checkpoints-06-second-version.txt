@@ -9,6 +9,7 @@
 [button] "Previous Version"
 [button, notEnabled] "Next Version"
 [text] "Saturday morning suits the garden; leave the afternoon free."
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [element] "" value: "Message"

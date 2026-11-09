@@ -1,10 +1,11 @@
 [button] "Chats" id: BackButton
 [button] "Context Window" value: "3% used, 143 of 4,096 tokens" hint: "3% used, 143 of 4,096 tokens"
 [header] "What's in this photo?"
-[image] ""
+[button] "Photo" hint: "Opens it"
 [text] "What's in this photo?"
 [button] "Thoughts · 2.0 secs." hint: "Shows the thinking"
 [text] "A sunset over rolling green hills: the sun sits low on the horizon, and the sky fades from orange to pink above it."
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [element] "" value: "Message"

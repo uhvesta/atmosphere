@@ -19,6 +19,9 @@ struct MarkdownList: Hashable, Sendable {
     var start: Int?
     /// What each item holds, which can be lists of their own.
     var items: [[MarkdownBlock]]
+    /// For a list of tasks, whether each item is done, nil for an item
+    /// that isn't a task; empty for a list with no tasks.
+    var checks: [Bool?] = []
 }
 
 struct MarkdownTable: Hashable, Sendable {
@@ -320,9 +323,12 @@ private struct BlockParser {
 
     private mutating func list(from first: ListMarker) -> MarkdownList {
         var items: [[MarkdownBlock]] = []
+        var checks: [Bool?] = []
         var marker = first
         while true {
-            var item: [Substring] = [marker.content]
+            let (check, content) = marker.number == nil ? Self.task(marker.content) : (nil, marker.content)
+            checks.append(check)
+            var item: [Substring] = [content]
             index += 1
             while index < lines.count {
                 let line = lines[index]
@@ -355,7 +361,20 @@ private struct BlockParser {
             index = next
             marker = following
         }
-        return MarkdownList(start: first.number, items: items)
+        return MarkdownList(
+            start: first.number, items: items, checks: checks.contains { $0 != nil } ? checks : [])
+    }
+
+    /// A bulleted item's box, `[ ]` or `[x]`, whether it's ticked, and the
+    /// text after it; nil and the text as it is for an item without one.
+    static func task(_ content: Substring) -> (Bool?, Substring) {
+        let boxes: [(String, Bool)] = [("[ ]", false), ("[x]", true), ("[X]", true)]
+        for (box, checked) in boxes where content.hasPrefix(box) {
+            let rest = content.dropFirst(box.count)
+            if rest.isEmpty { return (checked, rest) }
+            if rest.first == " " || rest.first == "\t" { return (checked, rest.dropFirst()) }
+        }
+        return (nil, content)
     }
 
     /// A table whose header is this line, with its delimiter row after it.

@@ -1,6 +1,9 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "" : {
+
+    },
     " before due" : {
 
     },
@@ -698,6 +701,9 @@
     "CPU time per token" : {
 
     },
+    "Can't Show This Photo" : {
+
+    },
     "Cancel" : {
 
     },
@@ -849,6 +855,9 @@
 
     },
     "Copy as TOML" : {
+
+    },
+    "Copy this reply" : {
 
     },
     "Couldn't apply" : {
@@ -1296,6 +1305,9 @@
     "It's deleted here and from iCloud, and can't be undone. Tasks it changed stay." : {
 
     },
+    "Its file couldn't be read. Try attaching the photo again." : {
+
+    },
     "Its files are deleted from this device. Anything that ran on it goes back to Apple's." : {
 
     },
@@ -1690,6 +1702,9 @@
     "No Project" : {
 
     },
+    "No Text" : {
+
+    },
     "No apps yet. When an agent first runs lifr, Lifr asks you to approve it." : {
 
     },
@@ -1744,7 +1759,13 @@
     "No task selected" : {
 
     },
+    "No text could be read from this file, so the model didn't see any." : {
+
+    },
     "None" : {
+
+    },
+    "Not done" : {
 
     },
     "Not on this device" : {
@@ -1808,6 +1829,9 @@
 
     },
     "Open Lifr and unlock it to see them." : {
+
+    },
+    "Opens it" : {
 
     },
     "Opens the filters" : {

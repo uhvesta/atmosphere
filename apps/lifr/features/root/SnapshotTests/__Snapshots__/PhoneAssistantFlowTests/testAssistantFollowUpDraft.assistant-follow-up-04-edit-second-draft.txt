@@ -20,6 +20,7 @@
 [element] "Due" value: "Due"
 [element] "Avenue or KEY/Project" value: "SPORTS"
 [text] "I added Reading, and a run to start with."
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [text] "Nothing was added. In task 1 “Go for a run”: there's no Avenue SPORTS. Use an existing Avenue's key, or add the Avenue to the plan."

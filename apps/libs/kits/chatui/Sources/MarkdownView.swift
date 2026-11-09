@@ -127,8 +127,19 @@ private struct ListBlock: View {
         }
     }
 
-    /// As wide as the widest marker, so the items line up.
-    private func marker(at index: Int) -> some View {
+    /// As wide as the widest marker, so the items line up; a task's box
+    /// for a task.
+    @ViewBuilder private func marker(at index: Int) -> some View {
+        if index < list.checks.count, let checked = list.checks[index] {
+            Image(systemName: checked ? "checkmark.square.fill" : "square")
+                .foregroundStyle(checked ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                .accessibilityLabel(checked ? Text("Done") : Text("Not done"))
+        } else {
+            textMarker(at: index)
+        }
+    }
+
+    private func textMarker(at index: Int) -> some View {
         ZStack(alignment: .trailing) {
             Text(verbatim: marker(list.items.count - 1)).hidden()
             Text(verbatim: marker(index))
@@ -186,7 +197,7 @@ private struct CodeBlock: View {
             .padding(.horizontal, 10)
             .padding(.top, 6)
             ScrollView(.horizontal) {
-                Text(verbatim: code)
+                Text(CodeSyntax.colored(code, language: language))
                     .font(.system(.callout, design: .monospaced))
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 10)

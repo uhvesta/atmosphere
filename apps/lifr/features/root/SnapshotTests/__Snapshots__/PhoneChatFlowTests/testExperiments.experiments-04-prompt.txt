@@ -14,6 +14,7 @@
 [text] "I'd water them on Saturday morning."
 [text] "20.0 tok/s · 0.9 secs. to first token · 1,840 read · 12 written" hint: "Read the chat at 2,044 tokens a second. Counted by the model as it ran."
 [button] "Prompt" hint: "See exactly what the model was sent for this reply"
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [button] "Compare with Another Model…"

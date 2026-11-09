@@ -6,6 +6,7 @@
 [text] "Recording, 6 s"
 [text] "What plant is this?"
 [text] "A Boston fern. Water it when the top of the soil is dry."
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [element] "" value: "Message"

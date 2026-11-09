@@ -227,12 +227,14 @@ public struct BranchSwitcher: View {
 }
 
 /// A photo, recording or file: on the next message with a button to remove
-/// it, or on a sent one, saying when its file is on another device.
+/// it, or on a sent one, saying when its file is on another device. With
+/// `open`, tapping it opens what's attached.
 public struct AttachmentChip: View {
     let title: Text
     let systemImage: String
     let elsewhere: Bool
     var remove: (() -> Void)?
+    var open: (() -> Void)?
 
     public init(
         _ title: LocalizedStringKey, systemImage: String, elsewhere: Bool = false, remove: (() -> Void)? = nil
@@ -244,22 +246,25 @@ public struct AttachmentChip: View {
     }
 
     /// A chip titled as is, such as with a file's name.
-    public init(verbatim title: String, systemImage: String, elsewhere: Bool = false, remove: (() -> Void)? = nil) {
+    public init(
+        verbatim title: String, systemImage: String, elsewhere: Bool = false, open: (() -> Void)? = nil,
+        remove: (() -> Void)? = nil
+    ) {
         self.title = Text(verbatim: title)
         self.systemImage = systemImage
         self.elsewhere = elsewhere
+        self.open = open
         self.remove = remove
     }
 
     public var body: some View {
         HStack(spacing: 6) {
-            Label {
-                title.lineLimit(1)
-            } icon: {
-                Image(systemName: systemImage)
-            }
-            if elsewhere {
-                Text("Not on this device").foregroundStyle(.secondary)
+            if let open {
+                Button(action: open) { label }
+                    .buttonStyle(.plain)
+                    .accessibilityHint(Text("Opens it"))
+            } else {
+                label
             }
             if let remove {
                 Button("Remove", systemImage: "xmark.circle.fill", action: remove)
@@ -272,7 +277,21 @@ public struct AttachmentChip: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(Color.secondary.opacity(0.15), in: .capsule)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: open == nil ? .combine : .contain)
+    }
+
+    private var label: some View {
+        HStack(spacing: 6) {
+            Label {
+                title.lineLimit(1)
+            } icon: {
+                Image(systemName: systemImage)
+            }
+            if elsewhere {
+                Text("Not on this device").foregroundStyle(.secondary)
+            }
+        }
+        .contentShape(.rect)
     }
 }
 

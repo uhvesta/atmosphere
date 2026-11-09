@@ -11,6 +11,7 @@
 [element] "Skill: add"
 [text] "Change that to Friday"
 [text] "I moved buy milk to Friday."
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [header, text] "Draft"

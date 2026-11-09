@@ -8,6 +8,7 @@
 [text] "Version 1 of 2"
 [button, notEnabled] "Previous Version"
 [button] "Next Version"
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [button] "Compared with Gemma 4 E4B"

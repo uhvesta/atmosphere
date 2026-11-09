@@ -5,6 +5,7 @@
 [element] "Skill: add"
 [text] "Add an urgent task to file my taxes, in WORK"
 [text] "I have added an urgent task to file my taxes under the WORK avenue for you."
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [header, text] "Draft"

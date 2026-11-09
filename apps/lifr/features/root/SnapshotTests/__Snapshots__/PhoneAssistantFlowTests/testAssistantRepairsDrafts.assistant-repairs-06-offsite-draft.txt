@@ -13,6 +13,7 @@
 [element] "Skill: add"
 [text] "Add a task to plan the team offsite in WORK: book a venue, send the invites"
 [text] "I added a task to plan the team offsite."
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [header, text] "Draft"

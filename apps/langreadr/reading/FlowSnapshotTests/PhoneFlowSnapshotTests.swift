@@ -49,8 +49,8 @@ final class PhoneFlowSnapshotTests: XCTestCase {
 
     /// Adding to a chat about a passage: a file of notes picked with +, the
     /// microphone writing what's said into the message until it's tapped
-    /// again, then the reply. + opens the system's file picker, which the
-    /// flow doesn't show.
+    /// again, then the reply, and the file opened from the message. + opens
+    /// the system's file picker, which the flow doesn't show.
     func testAddingToAChat() async throws {
         try await addingToAChat("adding", style: .light)
     }
@@ -87,6 +87,8 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         try await Sample.waitFor { reader.destination?.chat?.thread.reply == nil }
         await flow.step("replied", testName: test)
         XCTAssertEqual(reader.destination?.chat?.chat.conversation.messages.first?.files.map(\.name), ["notes.md"])
+        flow.tap("notes.md")
+        await flow.step("file-opened", testName: test)
         flow.finish()
     }
 

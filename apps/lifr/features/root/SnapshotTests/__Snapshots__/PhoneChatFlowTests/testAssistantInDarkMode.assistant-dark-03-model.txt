@@ -4,6 +4,7 @@
 [text] "On this device"
 [text] "Tidy my weekend"
 [text] "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [header, text] "Draft"

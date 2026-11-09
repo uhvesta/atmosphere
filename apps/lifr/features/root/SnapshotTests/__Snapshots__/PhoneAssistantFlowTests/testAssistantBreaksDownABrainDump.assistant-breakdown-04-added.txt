@@ -9,6 +9,7 @@
 [text] "By 5 December, and it's the old flat's deposit"
 [text] "Here's the move as a Project, in order, and calling your mum on its own."
 [button] "Undo"
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [element] "" value: "Message"

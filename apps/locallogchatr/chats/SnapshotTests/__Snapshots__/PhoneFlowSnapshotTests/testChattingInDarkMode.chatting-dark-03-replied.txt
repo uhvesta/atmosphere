@@ -8,6 +8,7 @@
 [text] "2., Fry two cloves of garlic in olive oil until golden."
 [text] "3., Toss the pasta in the pan with chili flakes and parsley."
 [text] "Ready in about 15 minutes."
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [element] "" value: "Message"

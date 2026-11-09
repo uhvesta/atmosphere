@@ -10,6 +10,7 @@
 [text] "Make a Garden Avenue with a task to plant tomatoes: buy seedlings, dig the bed"
 [text] "Here's a Garden Avenue with a task to plant tomatoes."
 [button] "Undo"
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [element] "" value: "Message"

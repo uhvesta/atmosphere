@@ -19,6 +19,8 @@ where Parts.Message == Replier.Message {
     let parts: Parts
 
     @State private var selecting: TextToSelect?
+    /// The photo or file opened from a message or the field.
+    @State private var opened: OpenAttachment?
     /// Whether the system's photo picker is open, from + on the Mac.
     @State private var picksPhoto = false
     @State private var photo: PhotosPickerItem?
@@ -51,6 +53,7 @@ where Parts.Message == Replier.Message {
                 .background(.bar)
             }
             .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
+            .attachmentViewer($opened)
             .sheet(item: $store.scope(state: \.modelSheet, action: \.modelSheet)) { ChatModelView(store: $0) }
             .sheet(item: $store.scope(state: \.rivalSheet, action: \.rivalSheet)) { ChatModelView(store: $0) }
             .sheet(
@@ -152,11 +155,16 @@ where Parts.Message == Replier.Message {
             toggleThinking: { store.send(.thinkingToggled(messageID: message.id)) }, undo: { undo?() },
             select: { selecting = TextToSelect(text: $0) },
             attachments: {
-                ForEach(message.photos) { photo in
-                    ChatPhoto(file: store.photoFiles[photo.id])
+                if !message.photos.isEmpty {
+                    PhotoRow(
+                        files: message.photos.map { store.photoFiles[$0.id] },
+                        trailing: message.role == .person
+                    ) { opened = .photo($0) }
                 }
                 ForEach(message.files, id: \.self) { file in
-                    AttachmentChip(verbatim: file.name, systemImage: "doc.text")
+                    AttachmentChip(verbatim: file.name, systemImage: "doc.text") {
+                        opened = .file(name: file.name, text: file.text)
+                    }
                 }
                 parts.attached(message)
             }
@@ -185,6 +193,9 @@ where Parts.Message == Replier.Message {
             HStack(spacing: 12) {
                 retry
                     .help("Write this reply again")
+                Button("Copy", systemImage: "doc.on.doc") { copyToClipboard(message.text) }
+                    .disabled(message.text.isEmpty)
+                    .help("Copy this reply")
                 speak(message)
                     .help(store.speaking == message.id ? "Stop reading this reply aloud" : "Read this reply aloud")
             }
@@ -365,14 +376,16 @@ where Parts.Message == Replier.Message {
                             .font(.callout)
                     }
                     ForEach(store.pendingPhotos) { photo in
-                        ChatPhoto(file: store.photoFiles[photo.id], side: 56) {
-                            store.send(.removePhotoTapped(photo.id))
-                        }
+                        let file = store.photoFiles[photo.id]
+                        ChatPhoto(
+                            file: file, side: 56, open: file.map { file in { opened = .photo(file) } },
+                            remove: { store.send(.removePhotoTapped(photo.id)) })
                     }
                     ForEach(Array(store.pending.enumerated()), id: \.offset) { index, file in
-                        AttachmentChip(verbatim: file.name, systemImage: "doc.text") {
-                            store.send(.removeFileTapped(index))
-                        }
+                        AttachmentChip(
+                            verbatim: file.name, systemImage: "doc.text",
+                            open: { opened = .file(name: file.name, text: file.text) },
+                            remove: { store.send(.removeFileTapped(index)) })
                     }
                     if store.attaching {
                         ProgressView().controlSize(.small)
@@ -409,44 +422,69 @@ private struct AddContext<Replier: ChatReplier>: ViewModifier {
     }
 }
 
-/// A photo sent in the chat or attached to the next message, with a button
-/// to take it off when `remove` is set. One that can't be shown is a chip,
-/// which says so when its file isn't on this device.
+/// A message's photos in a row, scrolling sideways when they don't fit,
+/// each opening on its own when tapped. One photo shows larger.
+private struct PhotoRow: View {
+    let files: [URL?]
+    let trailing: Bool
+    let open: (URL) -> Void
+
+    var body: some View {
+        let side: CGFloat = files.count == 1 ? 200 : 120
+        ScrollView(.horizontal) {
+            HStack(spacing: 6) {
+                ForEach(files.indices, id: \.self) { index in
+                    let file = files[index]
+                    ChatPhoto(file: file, side: side, open: file.map { file in { open(file) } })
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .defaultScrollAnchor(trailing ? .trailing : .leading)
+        .frame(maxWidth: CGFloat(files.count) * (side + 6), alignment: trailing ? .trailing : .leading)
+    }
+}
+
+/// A photo sent in the chat or attached to the next message, opening when
+/// tapped, with a button to take it off when `remove` is set. One that
+/// can't be shown is a chip, which says so when its file isn't on this
+/// device.
 private struct ChatPhoto: View {
     let file: URL?
     var side: CGFloat = 160
+    var open: (() -> Void)?
     var remove: (() -> Void)?
 
     var body: some View {
-        if let image = file.flatMap(Self.image) {
-            image
-                .resizable()
-                .scaledToFill()
-                .frame(width: side, height: side)
-                .clipShape(.rect(cornerRadius: side > 80 ? 14 : 10))
-                .overlay(alignment: .topTrailing) {
-                    if let remove {
-                        Button("Remove", systemImage: "xmark.circle.fill", action: remove)
-                            .labelStyle(.iconOnly)
-                            .buttonStyle(.borderless)
-                            .symbolRenderingMode(.palette)
-                            .foregroundStyle(.white, .black.opacity(0.6))
-                            .padding(3)
-                    }
+        if let image = file.flatMap(PhotoFile.image) {
+            Button {
+                open?()
+            } label: {
+                image
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: side, height: side)
+                    .clipShape(.rect(cornerRadius: side > 80 ? 14 : 10))
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .disabled(open == nil)
+            .accessibilityLabel(Text("Photo"))
+            .accessibilityHint(open == nil ? Text("") : Text("Opens it"))
+            .overlay(alignment: .topTrailing) {
+                if let remove {
+                    Button("Remove", systemImage: "xmark.circle.fill", action: remove)
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, .black.opacity(0.6))
+                        .padding(3)
                 }
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel(Text("Photo"))
+            }
         } else {
             AttachmentChip("Photo", systemImage: "photo", elsewhere: file == nil, remove: remove)
         }
-    }
-
-    private static func image(_ file: URL) -> Image? {
-        #if canImport(UIKit)
-            UIImage(contentsOfFile: file.path).map { Image(uiImage: $0) }
-        #else
-            NSImage(contentsOf: file).map { Image(nsImage: $0) }
-        #endif
     }
 }
 

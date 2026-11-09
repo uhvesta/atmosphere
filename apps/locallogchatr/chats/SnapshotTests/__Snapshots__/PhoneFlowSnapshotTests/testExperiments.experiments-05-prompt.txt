@@ -17,6 +17,7 @@
 [button, notEnabled] "Previous Version"
 [button] "Next Version"
 [text] "The newest messages that fit the model's window, with the files sent with the last."
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [button] "Compared with Gemma 4 E4B"

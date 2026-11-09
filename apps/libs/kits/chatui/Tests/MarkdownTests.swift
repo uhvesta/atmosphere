@@ -77,6 +77,24 @@ private func blockTests() -> [TestCase] {
 
 private func listTests() -> [TestCase] {
     [
+        TestCase("given bullets with boxes, then a list of tasks, done or not, without the boxes") {
+            try expectEqual(
+                Markdown.blocks(in: "- [ ] Soil\n- [x] Seeds\n- Water"),
+                [
+                    .list(
+                        MarkdownList(
+                            start: nil, items: [[.paragraph("Soil")], [.paragraph("Seeds")], [.paragraph("Water")]],
+                            checks: [false, true, nil]))
+                ])
+        },
+        TestCase("given a numbered item or brackets that aren't a box, then no task") {
+            try expectEqual(
+                Markdown.blocks(in: "1. [ ] Dig\n\n- [link](https://example.com)"),
+                [
+                    .list(MarkdownList(start: 1, items: [[.paragraph("[ ] Dig")]])),
+                    .list(MarkdownList(start: nil, items: [[.paragraph("[link](https://example.com)")]])),
+                ])
+        },
         TestCase("given bullets, then a list with an item each") {
             try expectEqual(
                 Markdown.blocks(in: "- Soil\n- Seeds"),

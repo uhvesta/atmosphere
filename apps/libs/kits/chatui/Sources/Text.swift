@@ -80,7 +80,7 @@ public struct SelectTextSheet: View {
 #if os(iOS)
     /// Text that can't be changed, where dragging selects any part of it,
     /// which SwiftUI's text selection doesn't on iOS.
-    private struct SelectableText: UIViewRepresentable {
+    struct SelectableText: UIViewRepresentable {
         let text: String
 
         func makeUIView(context: Context) -> UITextView {
@@ -101,7 +101,7 @@ public struct SelectTextSheet: View {
         }
     }
 #else
-    private struct SelectableText: View {
+    struct SelectableText: View {
         let text: String
 
         var body: some View {

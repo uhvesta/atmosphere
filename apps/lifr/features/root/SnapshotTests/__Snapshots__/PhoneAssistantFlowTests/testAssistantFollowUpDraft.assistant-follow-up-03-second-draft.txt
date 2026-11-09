@@ -7,6 +7,7 @@
 [button] "Undo"
 [text] "Now add a Reading Avenue"
 [text] "I added Reading, and a run to start with."
+[button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [header, text] "Draft"

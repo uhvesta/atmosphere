@@ -61,7 +61,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
     }
 
     /// A photo from +: the sheet with the camera and recent photos, one
-    /// attached, then what the model says about it.
+    /// attached, then what the model says about it, and the photo opened.
     func testAddingAPhoto() async throws {
         let chats = Sample.chats()
         let flow = FlowRecorder("photo", ChatsView(store: chats))
@@ -77,6 +77,8 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         await flow.step("attached")
         try await Sample.ask("What's in this photo?", in: chats)
         await flow.step("replied")
+        flow.tap("Photo")
+        await flow.step("opened")
         flow.finish()
     }
 
