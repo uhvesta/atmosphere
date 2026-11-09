@@ -46,6 +46,7 @@ public struct TextMenu: View {
     public var body: some View {
         Button("Copy", systemImage: "doc.on.doc") { copyToClipboard(text) }
         Button("Select Text", systemImage: "selection.pin.in.out") { select(text) }
+        ShareLink(item: text)
     }
 }
 

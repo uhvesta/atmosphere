@@ -197,9 +197,7 @@ where Parts.Message == Replier.Message {
             HStack(spacing: 12) {
                 retry
                     .help("Write this reply again")
-                Button("Copy", systemImage: "doc.on.doc") { copyToClipboard(message.text) }
-                    .disabled(message.text.isEmpty)
-                    .help("Copy this reply")
+                CopyReplyButton(text: message.text)
                 speak(message)
                     .help(store.speaking == message.id ? "Stop reading this reply aloud" : "Read this reply aloud")
             }
@@ -450,6 +448,26 @@ private struct PhotoRow: View {
     }
 }
 
+/// Copy under the last reply, which says Copied for a moment after.
+private struct CopyReplyButton: View {
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        Button(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc") {
+            copyToClipboard(text)
+            copied = true
+        }
+        .disabled(text.isEmpty)
+        .help("Copy this reply")
+        .task(id: copied) {
+            guard copied else { return }
+            try? await Task.sleep(for: .seconds(2))
+            copied = false
+        }
+    }
+}
+
 /// A photo sent in the chat or attached to the next message, opening when
 /// tapped, with a button to take it off when `remove` is set. One that
 /// can't be shown is a chip, which says so when its file isn't on this
@@ -476,6 +494,9 @@ private struct ChatPhoto: View {
             .disabled(open == nil)
             .accessibilityLabel(Text("Photo"))
             .accessibilityHint(open == nil ? Text("") : Text("Opens it"))
+            .contextMenu {
+                if let file { PhotoMenu(file: file) }
+            }
             .overlay(alignment: .topTrailing) {
                 if let remove {
                     Button("Remove", systemImage: "xmark.circle.fill", action: remove)

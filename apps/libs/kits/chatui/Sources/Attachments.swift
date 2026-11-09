@@ -143,4 +143,31 @@ public enum PhotoFile {
             NSImage(contentsOf: file).map { Image(nsImage: $0) }
         #endif
     }
+
+    /// Puts the photo in `file` on the clipboard, to paste elsewhere.
+    static func copy(_ file: URL) {
+        #if canImport(UIKit)
+            guard let image = UIImage(contentsOfFile: file.path) else { return }
+            UIPasteboard.general.image = image
+        #else
+            guard let image = NSImage(contentsOf: file) else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.writeObjects([image])
+        #endif
+    }
+}
+
+/// What a photo in the chat offers when held or right-clicked: Copy, and
+/// Share, which can also save it.
+public struct PhotoMenu: View {
+    let file: URL
+
+    public init(file: URL) {
+        self.file = file
+    }
+
+    public var body: some View {
+        Button("Copy", systemImage: "doc.on.doc") { PhotoFile.copy(file) }
+        ShareLink(item: file, preview: SharePreview(Text("Photo")))
+    }
 }
