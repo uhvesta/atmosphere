@@ -5,6 +5,7 @@
 [button] "Cancel"
 [button] "Save"
 [header] "Rename"
+[header, text] "Tuesday, November 3 at 10:00 AM"
 [text] "Tidy my weekend"
 [element] "" value: "The first message"
 [text] "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."

@@ -5,6 +5,7 @@
 [button] "More"
 [text] "On this device"
 [header] "Edit Draft"
+[header, text] "Tuesday, November 3 at 10:00 AM"
 [element] "Title" value: "Clean up living room"
 [button] "Remove"
 [image] "circle"

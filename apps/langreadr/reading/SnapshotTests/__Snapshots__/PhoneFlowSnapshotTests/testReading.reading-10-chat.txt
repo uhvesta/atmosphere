@@ -26,6 +26,7 @@
 [button] "muy"
 [button] "bien"
 [text] "The bread is warm and smells very good."
+[header, text] "Tuesday, November 3 at 2:00 AM"
 [text] "What does “vamos al” mean?"
 [text] "Vamos is “we go” of ir, and as a question it means “shall we go?”."
 [text] "Al is a + el: “to the”."

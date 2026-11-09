@@ -56,7 +56,8 @@ public struct MessageView<Attachments: View>: View {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         if let skill { SkillToken(skill) }
                         if !text.isEmpty {
-                            Text(text)
+                            // Marks such as **bold** read as they do in a reply.
+                            Text(InlineText.styled(text))
                                 .selectableOnMac()
                         }
                     }

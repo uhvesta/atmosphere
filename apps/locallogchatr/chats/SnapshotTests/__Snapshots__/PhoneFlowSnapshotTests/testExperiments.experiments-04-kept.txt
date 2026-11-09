@@ -1,6 +1,7 @@
 [button] "Chats" id: BackButton
 [button] "Context Window" value: "3% used, 131 of 4,096 tokens" hint: "3% used, 131 of 4,096 tokens"
 [header] "A quick pasta recipe?"
+[header, text] "Tuesday, November 3 at 2:00 AM"
 [text] "A quick pasta recipe?"
 [text] "Spaghetti aglio e olio: boil the pasta, fry sliced garlic in olive oil, then toss them together with chili and parsley. About 15 minutes."
 [text] "Gemma 4 E4B · 40.2 tok/s · 0.2 secs. to first token · 398 read · 41 written" hint: "Read the chat at 1,895 tokens a second. Counted by the model as it ran."

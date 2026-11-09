@@ -1,6 +1,7 @@
 [button] "Chats" id: BackButton
 [button] "Context Window" value: "3% used, 143 of 4,096 tokens" hint: "3% used, 143 of 4,096 tokens"
 [header] "What's in this photo?"
+[header, text] "Tuesday, November 3 at 2:00 AM"
 [button] "Photo" hint: "Opens it"
 [text] "What's in this photo?"
 [button] "Thoughts · 2.0 secs." hint: "Shows the thinking"

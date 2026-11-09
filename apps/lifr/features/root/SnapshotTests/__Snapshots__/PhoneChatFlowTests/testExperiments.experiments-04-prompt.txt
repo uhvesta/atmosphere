@@ -9,6 +9,7 @@
 [text] "You help the person plan with Lifr."
 [header, text] "Chat"
 [text] "Person: When should I water the plants?"
+[header, text] "Tuesday, November 3 at 10:00 AM"
 [text] "The newest messages that fit the model's window, with the files sent with the last."
 [text] "When should I water the plants?"
 [text] "I'd water them on Saturday morning."

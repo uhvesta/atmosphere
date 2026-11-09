@@ -2,6 +2,7 @@
 [button] "When should I water the plants?, Actions Menu"
 [button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
 [text] "On this device"
+[header, text] "Tuesday, November 3 at 10:00 AM"
 [text] "When should I water the plants?"
 [button] "Thoughts · 4.2 secs." hint: "Shows the thinking"
 [text] "I'd water them on Saturday morning."

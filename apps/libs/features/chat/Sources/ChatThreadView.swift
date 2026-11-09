@@ -99,7 +99,11 @@ where Parts.Message == Replier.Message {
                 if store.thread.messages.isEmpty, store.reply == nil {
                     parts.empty()
                 }
-                ForEach(store.thread.messages) { message in
+                let messages = store.thread.messages
+                ForEach(Array(zip(messages.indices, messages)), id: \.1.id) { index, message in
+                    if let mark = TimeMark.mark(at: message.at, after: index > 0 ? messages[index - 1].at : nil) {
+                        TimeMarkView(message.at, mark: mark)
+                    }
                     VStack(alignment: .trailing, spacing: 4) {
                         if let rival = store.rival, rival.answering == message.id {
                             Comparison(

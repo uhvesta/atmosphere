@@ -2,6 +2,7 @@
 [button] "Plan my weekend, Actions Menu"
 [button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
 [text] "On this device"
+[header, text] "Tuesday, November 3 at 10:01 AM"
 [text] "Plan my weekend"
 [text] "Version 2 of 2"
 [button] "Previous Version"

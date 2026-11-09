@@ -62,6 +62,13 @@ private struct MarkdownBlockView: View, Equatable {
             Divider().padding(.vertical, 4)
         case .table(let table):
             TableBlock(table: table)
+        case .math(let latex):
+            Text(verbatim: Math.text(latex))
+                .font(.system(.title3, design: .serif))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 2)
+                .accessibilityIdentifier(ModelText.identifier)
         }
     }
 
@@ -77,7 +84,7 @@ private struct MarkdownBlockView: View, Equatable {
 }
 
 /// Inline Markdown in a run of text, with code on a tint of its own.
-private struct InlineText: View {
+struct InlineText: View {
     let text: String
 
     init(_ text: String) {

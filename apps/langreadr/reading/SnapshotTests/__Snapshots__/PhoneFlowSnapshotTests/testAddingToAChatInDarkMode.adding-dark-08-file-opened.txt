@@ -29,6 +29,7 @@
 [button] "huele"
 [button] "muy"
 [button] "bien"
+[header, text] "Tuesday, November 3 at 2:00 AM"
 [button] "notes.md"
 [text] "What does this word mean?"
 [text] "Vamos is “we go” of ir, and as a question it means “shall we go?”."

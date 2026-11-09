@@ -5,4 +5,6 @@ await runSuites([
     ("Snippet", snippetTests()),
     ("Markdown", markdownTests()),
     ("Code colors", codeColorsTests()),
+    ("Time marks", timeMarkTests()),
+    ("Math", mathTests()),
 ])

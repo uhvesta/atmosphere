@@ -1,3 +1,4 @@
+[header, text] "Tuesday, November 3 at 2:00 AM"
 [button] "Chats" id: BackButton
 [button] "Context Window" value: "4% used, 171 of 4,096 tokens" hint: "4% used, 171 of 4,096 tokens"
 [header] "A quick pasta recipe?"

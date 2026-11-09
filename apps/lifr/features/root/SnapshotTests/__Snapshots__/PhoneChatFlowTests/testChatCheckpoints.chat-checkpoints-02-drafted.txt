@@ -1,3 +1,4 @@
+[header, text] "Tuesday, November 3 at 10:00 AM"
 [button] "Conversations" id: BackButton
 [button] "What should I do first?, Actions Menu"
 [button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"

@@ -2,6 +2,7 @@
 [button] "Plan my week, Actions Menu"
 [button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
 [text] "On this device"
+[header, text] "Tuesday, November 3 at 10:00 AM"
 [text] "Plan my week"
 [button] "Retry"
 [text] "The on-device model wrote answers Lifr couldn't read, twice. Send the message again, or ask for less at once: long plans are the hardest for it."

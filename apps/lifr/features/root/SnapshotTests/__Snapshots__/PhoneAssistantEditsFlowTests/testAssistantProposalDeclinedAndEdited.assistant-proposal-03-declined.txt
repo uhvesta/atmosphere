@@ -2,6 +2,7 @@
 [button] "I called the plumber, Actions Menu"
 [button] "Context Window" value: "5% used, 1,545 of 32,768 tokens" hint: "5% used, 1,545 of 32,768 tokens"
 [text] "On this device"
+[header, text] "Tuesday, November 3 at 10:00 AM"
 [element] "Skill: change"
 [text] "I called the plumber"
 [text] "I'd mark it done."

@@ -12,6 +12,8 @@ enum MarkdownBlock: Hashable, Sendable {
     case list(MarkdownList)
     case rule
     case table(MarkdownTable)
+    /// Maths on lines of its own, as the LaTeX the model wrote.
+    case math(String)
 }
 
 struct MarkdownList: Hashable, Sendable {
@@ -63,6 +65,7 @@ enum Markdown {
         let options = AttributedString.MarkdownParsingOptions(
             allowsExtendedAttributes: false, interpretedSyntax: .inlineOnlyPreservingWhitespace,
             failurePolicy: .returnPartiallyParsedIfPossible)
+        let text = Math.inline(text)
         var string = (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
         let unsafe = string.runs.compactMap { run -> Range<AttributedString.Index>? in
             guard let url = run.link else { return nil }
@@ -89,6 +92,7 @@ enum Markdown {
             case .quote(let inner): plainText(inner)
             case .list(let list): list.items.flatMap(plainText)
             case .rule: []
+            case .math(let latex): [Math.text(latex)]
             case .table(let table):
                 ([table.header] + table.rows).map { $0.map(plainInline).joined(separator: " ") }
             }
@@ -113,7 +117,7 @@ enum Markdown {
         case .table(var table):
             if let last = table.rows.indices.last { table.rows[last] = table.rows[last].map(closingOpenMarks) }
             return .table(table)
-        case .code, .rule: return block
+        case .code, .rule, .math: return block
         }
     }
 
@@ -278,6 +282,8 @@ private struct BlockParser {
                 blocks.append((.list(list(from: marker)), start))
             } else if let table = table() {
                 blocks.append((.table(table), start))
+            } else if let delimiters = Math.blockDelimiters(line) {
+                blocks.append((math(delimiters), start))
             } else {
                 blocks.append((paragraph(), start))
             }
@@ -301,6 +307,25 @@ private struct BlockParser {
         // The closing fence being written.
         if !closed, let last = body.last, !last.isEmpty, fence.isClosing(partly: last) { body.removeLast() }
         return .code(language: fence.language, code: body.joined(separator: "\n"))
+    }
+
+    /// Maths from `$$` or `\[` to its closing, which can be on the same
+    /// line, or to the end while it's written.
+    private mutating func math(_ delimiters: (open: String, close: String)) -> MarkdownBlock {
+        var rest = Substring(lines[index].trimmingCharacters(in: .whitespaces)).dropFirst(delimiters.open.count)
+        var body: [Substring] = []
+        index += 1
+        while true {
+            if let close = rest.range(of: delimiters.close) {
+                body.append(rest[..<close.lowerBound])
+                break
+            }
+            body.append(rest)
+            guard index < lines.count else { break }
+            rest = lines[index]
+            index += 1
+        }
+        return .math(body.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     private mutating func quote() -> MarkdownBlock {
@@ -429,6 +454,7 @@ private struct BlockParser {
     /// Whether `line` starts a block that ends a paragraph before it.
     private func startsBlock(_ line: Substring) -> Bool {
         if Fence(line) != nil || heading(line) != nil || isRule(line) || quoted(line) != nil { return true }
+        if Math.blockDelimiters(line) != nil { return true }
         if let marker = ListMarker(line), !marker.content.isEmpty { return true }
         return false
     }

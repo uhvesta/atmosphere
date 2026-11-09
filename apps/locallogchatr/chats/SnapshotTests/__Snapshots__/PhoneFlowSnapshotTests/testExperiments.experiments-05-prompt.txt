@@ -7,6 +7,7 @@
 [text] "Window, 3% used, 131 of 4,096 tokens"
 [header, text] "Instructions"
 [text] "You're a helpful assistant running on this device, so nothing said here leaves it. Answer in the language of the person's last message. Be clear and to the point, and use Markdown when it helps: lists, tables and code blocks."
+[header, text] "Tuesday, November 3 at 2:00 AM"
 [text] "A quick pasta recipe?"
 [text] "Spaghetti aglio e olio: boil the pasta, fry sliced garlic in olive oil, then toss them together with chili and parsley. About 15 minutes."
 [header, text] "Chat"

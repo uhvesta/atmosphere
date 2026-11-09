@@ -4,6 +4,7 @@
 [button] "Done"
 [button] "More"
 [text] "On this device"
+[header, text] "Tuesday, November 3 at 10:00 AM"
 [header] "Edit Draft"
 [text] "Add a Fitness Avenue"
 [text] "Here's a Fitness Avenue. Tap Add to make it."

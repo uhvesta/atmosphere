@@ -6,6 +6,7 @@
 [text] "On this device"
 [header] "Edit Changes"
 [button, toggle] "Change “Call the plumber”" value: "1"
+[header, text] "Tuesday, November 3 at 10:00 AM"
 [element] "Title" value: "Unchanged"
 [element] "Skill: change"
 [text] "I called the plumber"

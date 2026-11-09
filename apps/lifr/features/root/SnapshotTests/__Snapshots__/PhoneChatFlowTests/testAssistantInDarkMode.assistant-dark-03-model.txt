@@ -2,6 +2,7 @@
 [button] "Tidy my weekend, Actions Menu"
 [button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
 [text] "On this device"
+[header, text] "Tuesday, November 3 at 10:00 AM"
 [text] "Tidy my weekend"
 [text] "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
 [button] "Copy" hint: "Copy this reply"

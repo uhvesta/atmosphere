@@ -134,6 +134,27 @@ final class ChatSnapshotTests: XCTestCase {
         | Plant | Sun |
         """
 
+    /// A reply with a task list and a formula, after the person's message
+    /// in Markdown.
+    private var tasks: ChatFeature.State {
+        var conversation = Conversation(id: UUID(0), createdAt: now)
+        conversation.messages = [
+            ChatMessage(id: UUID(1), role: .person, text: "How much soil for a bed of radius *r*?", at: now),
+            ChatMessage(id: UUID(2), role: .assistant, text: Self.tasksReply, at: now),
+        ]
+        return ChatFeature.State(conversation: conversation, workspace: .sample(now: now, timeZone: .gmt))
+    }
+
+    static let tasksReply = """
+        A round bed of radius $r$ and depth $h$ needs:
+        $$
+        V = \\pi r^2 h
+        $$
+
+        - [x] Buy soil
+        - [ ] Buy seeds
+        """
+
     /// A chat with nothing in it yet and / typed, listing the skills.
     private var slash: ChatFeature.State {
         var state = ChatFeature.State(
@@ -176,6 +197,7 @@ final class ChatSnapshotTests: XCTestCase {
         assertScreenImages(of: screen(compacted), named: "compacted", images: [.proMaxLight, .proMaxDark])
         assertScreenImages(of: screen(slash), named: "slash", images: [.proMaxLight, .proMaxDark])
         assertScreenImages(of: screen(markdown), named: "markdown", images: [.proMaxLight, .proMaxDark])
+        assertScreenImages(of: screen(tasks), named: "tasks", images: [.proMaxLight, .proMaxDark])
     }
 
     /// The sheet picking the chat's model, on Qwen3.5 thinking long,

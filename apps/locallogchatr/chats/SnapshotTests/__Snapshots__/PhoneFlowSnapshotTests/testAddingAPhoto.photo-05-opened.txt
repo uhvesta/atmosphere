@@ -5,6 +5,7 @@
 [button] "Share…"
 [button] "Done"
 [header] "Photo"
+[header, text] "Tuesday, November 3 at 2:00 AM"
 [button] "Photo" hint: "Opens it"
 [text] "What's in this photo?"
 [button] "Thoughts · 2.0 secs." hint: "Shows the thinking"
