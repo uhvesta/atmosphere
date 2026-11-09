@@ -91,7 +91,8 @@ final class LlamaChat: EngineChat {
 
     func send(
         _ message: String, attachments: [ModelAttachment], format: String?, thinkingTokens: Int?,
-        thought: (@Sendable (ModelThinking) -> Void)?, partial: @escaping @Sendable (String) -> Void
+        thought: (@Sendable (ModelThinking) -> Void)?, speed: (@Sendable (TurnSpeed) -> Void)?,
+        partial: @escaping @Sendable (String) -> Void
     ) async throws(ModelRuntimeError) -> String {
         if attachments.contains(where: { $0.kind == .audio }) { throw .unsupportedInput(.audio) }
         let images = attachments.filter { $0.kind == .image }.map(\.file)
@@ -105,7 +106,7 @@ final class LlamaChat: EngineChat {
         let turn = Turn(
             id: id, instructions: instructions, message: message, images: images, grammar: grammar,
             thinkingTokens: thinkingTokens,
-            stop: stop, thought: thought, partial: partial)
+            stop: stop, thought: thought, speed: speed, partial: partial)
         let (answer, reasoning) = try await session.run(stoppedBy: stop) { session throws(ModelRuntimeError) in
             try turn.run(on: session)
         }
@@ -131,15 +132,31 @@ private struct Turn: Sendable {
     var thinkingTokens: Int?
     var stop: LlamaStop
     var thought: (@Sendable (ModelThinking) -> Void)?
+    var speed: (@Sendable (TurnSpeed) -> Void)?
     var partial: @Sendable (String) -> Void
 
-    /// The answer, and the reasoning to show for it, if the model showed
-    /// any.
     /// Whether the turn asked the model to think.
     private var thinks: Bool { thinkingTokens != nil }
 
+    /// The answer, and the reasoning to show for it, if the model showed
+    /// any. `speed` gets how fast it read and wrote.
     func run(on session: LlamaSession) throws(ModelRuntimeError) -> (String, String?) {
+        let clock = ContinuousClock()
+        let start = clock.now
+        let empty = session.room
         try prompt(on: session)
+        let prompted = clock.now
+        let room = session.room
+        let result = try reply(on: session)
+        speed?(
+            TurnSpeed(
+                read: empty - room, written: room - session.room, reading: prompted - start,
+                writing: clock.now - prompted))
+        return result
+    }
+
+    /// What the model writes once it has read the message.
+    private func reply(on session: LlamaSession) throws(ModelRuntimeError) -> (String, String?) {
         let thinking = session.profile.thinking
         let sampling = session.profile.sampling ?? LlamaChat.sampling
         // A model that always thinks does, but its reasoning is shown only

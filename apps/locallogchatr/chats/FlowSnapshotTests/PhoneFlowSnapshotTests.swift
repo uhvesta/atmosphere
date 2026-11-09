@@ -80,6 +80,30 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Settings › Experiments turned on, then a reply compared with a
+    /// second model, the second kept, how fast it was written and what it
+    /// was sent.
+    func testExperiments() async throws {
+        let chats = Sample.chats()
+        let flow = FlowRecorder("experiments", ChatsView(store: chats))
+        chats.send(.settingsTapped)
+        try Sample.experiment(in: chats)
+        await flow.step("settings")
+        chats.send(.settings(.dismiss))
+        chats.send(.newTapped)
+        let id = try await Sample.compare(in: chats)
+        let chat = { (action: ChatThreadFeature.Action) in _ = chats.send(.chats(.element(id: id, action: action))) }
+        await flow.step("comparing")
+        try await Sample.ask("A quick pasta recipe?", in: chats)
+        try await Sample.compared(id, in: chats)
+        await flow.step("compared")
+        chat(.keepTapped(rival: true))
+        await flow.step("kept")
+        chat(.promptTapped(messageID: chats.chats[id: id]?.thread.messages.last?.id))
+        await flow.step("prompt")
+        flow.finish()
+    }
+
     /// Settings › Models, from the list.
     func testSettings() async throws {
         let chats = Sample.chats()

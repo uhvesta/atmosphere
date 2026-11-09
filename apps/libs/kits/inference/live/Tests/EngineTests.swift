@@ -34,7 +34,8 @@ final class FakeChat: EngineChat, @unchecked Sendable {
 
     func send(
         _ message: String, attachments: [ModelAttachment], format: String?, thinkingTokens: Int?,
-        thought: (@Sendable (ModelThinking) -> Void)?, partial: @escaping @Sendable (String) -> Void
+        thought: (@Sendable (ModelThinking) -> Void)?, speed: (@Sendable (TurnSpeed) -> Void)?,
+        partial: @escaping @Sendable (String) -> Void
     ) async throws(ModelRuntimeError) -> String {
         sent.withValue {
             $0.append(Sent(message: message, format: format, attachments: attachments, thinkingTokens: thinkingTokens))
@@ -45,6 +46,8 @@ final class FakeChat: EngineChat, @unchecked Sendable {
         let written = try await reply(message, format)
         thought?(ModelThinking(text: thinks ? "About \(message)" : "", duration: .seconds(1), processor: .gpu))
         partial(written)
+        // Each message read in a second, and each answer written in two.
+        speed?(TurnSpeed(read: 10, written: 4, reading: .seconds(1), writing: .seconds(2)))
         return written
     }
 
@@ -111,6 +114,31 @@ final class EngineTurnTests: XCTestCase {
         XCTAssertEqual(calls.value, [.object(["code": .string("HOME-0001")])])
         XCTAssertEqual(chat.sent.value.count, 2)
         XCTAssertTrue(chat.sent.value[1].message.contains("HOME-0001 Buy milk"))
+    }
+
+    func testATurnSaysHowFastTheModelReadAndWrote() async throws {
+        let chat = FakeChat(["Hello there"])
+        let speeds = Locked<[TurnSpeed]>([])
+        var turn = ModelTurn(instructions: "", prompt: "Hi")
+        turn.speed = { speed in speeds.withValue { $0.append(speed) } }
+
+        _ = try await EngineTurn.respond(to: turn, on: FakeEngine(chat: chat)) { _ in }
+
+        XCTAssertEqual(speeds.value, [TurnSpeed(read: 10, written: 4, reading: .seconds(1), writing: .seconds(2))])
+        XCTAssertEqual(speeds.value.first?.readPerSecond, 10)
+        XCTAssertEqual(speeds.value.first?.writtenPerSecond, 2)
+    }
+
+    func testAToolTurnsSpeedCountsEveryRound() async throws {
+        let tool = ModelTool(name: "overview", description: "", parameters: []) { _ in "Nothing's due." }
+        let chat = FakeChat([#"{"tool":"overview","arguments":{}}"#, #"{"answer":"All clear."}"#])
+        let speeds = Locked<[TurnSpeed]>([])
+        var turn = ModelTurn(instructions: "", prompt: "What's due?", tools: [tool])
+        turn.speed = { speed in speeds.withValue { $0.append(speed) } }
+
+        _ = try await EngineTurn.respond(to: turn, on: FakeEngine(chat: chat)) { _ in }
+
+        XCTAssertEqual(speeds.value, [TurnSpeed(read: 20, written: 8, reading: .seconds(2), writing: .seconds(4))])
     }
 
     func testPhotosAndRecordingsGoWithThePromptOnly() async throws {

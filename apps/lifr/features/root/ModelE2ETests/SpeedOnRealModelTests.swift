@@ -21,12 +21,12 @@ final class SpeedOnRealModelTests: XCTestCase {
                 let chat = try await engine.chat(instructions: "Answer plainly.", constrained: false)
                 // The first turn compiles the GPU's programs; the second is timed.
                 _ = try await chat.send(
-                    "Say hi.", attachments: [], format: nil, thinkingTokens: nil, thought: nil
+                    "Say hi.", attachments: [], format: nil, thinkingTokens: nil, thought: nil, speed: nil
                 ) { _ in }
                 let clock = ContinuousClock()
                 let start = clock.now
                 let answer = try await chat.send(
-                    prompt, attachments: [], format: nil, thinkingTokens: nil, thought: nil
+                    prompt, attachments: [], format: nil, thinkingTokens: nil, thought: nil, speed: nil
                 ) { _ in }
                 let seconds = (clock.now - start) / .seconds(1)
                 XCTAssertFalse(answer.isEmpty, "No answer on the \(backend) with speculation \(speculation)")

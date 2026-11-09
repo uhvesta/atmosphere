@@ -83,6 +83,25 @@ public struct ChatThreadFeature {
         public var findQuery = ""
         /// Which of the matches is shown, the oldest first.
         public var findPosition = 0
+        /// The experiments the person turned on in Settings, all off until
+        /// they do.
+        @Shared(.chatShowsSpeed) public var showsSpeed
+        @Shared(.chatShowsPrompt) public var showsPrompt
+        @Shared(.chatCompares) public var compares
+        /// What the model was sent for the reply being written.
+        public var replyPrompt: ReplyPrompt?
+        /// What the model was sent for each reply written since the chat
+        /// opened.
+        public var prompts: [UUID: ReplyPrompt] = [:]
+        /// The reply whose prompt is shown.
+        public var shownPrompt: UUID?
+        /// The second model each reply is compared with, when comparing.
+        public var rivalModel: ModelChoice?
+        /// The sheet picking the second model.
+        @Presents public var rivalSheet: ChatModelFeature.State?
+        /// The second model's answer to the last message, until one of the
+        /// two is kept.
+        public var rival: RivalReply?
 
         public init(thread: ChatThread, model: ModelChoice = .defaults, use: ModelUseKey, instructions: String) {
             self.thread = thread
@@ -92,7 +111,7 @@ public struct ChatThreadFeature {
         }
 
         public var canSend: Bool {
-            reply == nil && dictatedAfter == nil && !attaching
+            reply == nil && rival?.done != false && dictatedAfter == nil && !attaching
                 && (!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pending.isEmpty
                     || !pendingPhotos.isEmpty)
         }
@@ -102,7 +121,18 @@ public struct ChatThreadFeature {
 
         /// Whether the chat can go to another branch or write a reply
         /// again: not while one is written.
-        public var canGo: Bool { reply == nil && !thread.messages.isEmpty }
+        public var canGo: Bool { reply == nil && rival?.done != false && !thread.messages.isEmpty }
+
+        /// The second model, once it's looked up; nil when it isn't picked.
+        public var rivalCurrent: RunnableModel? {
+            guard let rivalModel else { return nil }
+            let id = rivalModel.model ?? standard
+            return models.first { $0.id == id }
+        }
+
+        /// What the model was sent for the reply shown in the prompt
+        /// sheet.
+        public var shownPromptValue: ReplyPrompt? { shownPrompt.flatMap { prompts[$0] } }
 
         /// Whether the reply to `message`, or `message` itself for a reply,
         /// can be written again: any reply, or the last message when its
@@ -154,6 +184,18 @@ public struct ChatThreadFeature {
         case modelSheet(PresentationAction<ChatModelFeature.Action>)
         case progressed(ReplyProgress)
         case replied(Result<ChatReply, ModelRuntimeError>)
+        /// Opens what the model was sent for a reply, or closes it.
+        case promptTapped(messageID: UUID?)
+        /// The composer's second model button.
+        case rivalTapped
+        case rivalSheet(PresentationAction<ChatModelFeature.Action>)
+        /// Stops comparing this chat's replies.
+        case rivalRemoved
+        case rivalProgressed(ReplyProgress)
+        case rivalReplied(Result<ChatReply, ModelRuntimeError>)
+        /// Keeps one of the two answers, the second model's or the first,
+        /// and the chat continues from it.
+        case keepTapped(rival: Bool)
         /// + on the iPhone, or for a model that reads only text: the
         /// camera, recent photos and files, or the file picker.
         case addContextTapped
@@ -184,7 +226,7 @@ public struct ChatThreadFeature {
         }
     }
 
-    private enum CancelID { case reply, dictation, speech }
+    private enum CancelID { case reply, rival, dictation, speech }
 
     @Dependency(\.chatRuntime) private var chatRuntime
     @Dependency(\.models) private var library
@@ -228,9 +270,16 @@ public struct ChatThreadFeature {
                 return send(in: &state)
 
             case .stopTapped:
+                if var rival = state.rival, !rival.done {
+                    rival.done = true
+                    rival.speed = nil
+                    state.rival = rival.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : rival
+                    return .cancel(id: CancelID.rival)
+                }
                 guard let reply = state.reply else { return .none }
                 let thinking = state.replyThinking
-                return .merge(.cancel(id: CancelID.reply), keep(reply, thinking: thinking, in: &state))
+                return .merge(
+                    .cancel(id: CancelID.reply), keep(reply, thinking: thinking, speed: nil, in: &state))
 
             case .retryTapped(let id):
                 let messages = state.thread.messages
@@ -261,11 +310,13 @@ public struct ChatThreadFeature {
                 guard let index = branches.firstIndex(where: { $0.id == id }),
                     branches.indices.contains(index + offset)
                 else { return .none }
+                state.rival = nil
                 state.thread.go(to: state.thread.newest(through: branches[index + offset].id))
                 return changed(state)
 
             case .latestTapped:
                 guard state.canGo, let newest = state.thread.newest else { return .none }
+                state.rival = nil
                 state.thread.go(to: newest)
                 return changed(state)
 
@@ -346,14 +397,86 @@ public struct ChatThreadFeature {
 
             case .replied(.success(let reply)):
                 state.context = reply.context
-                return keep(reply.text, thinking: reply.thinking, in: &state)
+                state.replyPrompt?.context = reply.context
+                // The second model answers the same chat, once the first is
+                // done.
+                let rival = state.compares ? state.rivalModel.map { ask($0, in: state) } : nil
+                let kept = keep(reply.text, thinking: reply.thinking, speed: reply.speed, in: &state)
+                guard let (prompt, effect) = rival, let first = state.thread.messages.last,
+                    first.role == .assistant
+                else { return kept }
+                state.rival = RivalReply(answering: first.id, model: prompt.model, prompt: prompt)
+                return .merge(
+                    kept,
+                    effect.run(progressed: Action.rivalProgressed, replied: Action.rivalReplied)
+                        .cancellable(id: CancelID.rival, cancelInFlight: true))
 
             case .replied(.failure(let error)):
                 state.reply = nil
                 state.replyThinking = nil
+                state.replyPrompt = nil
                 state.showsReplyThinking = false
                 state.problem = error.description
                 return .none
+
+            case .promptTapped(let id):
+                state.shownPrompt = id
+                return .none
+
+            case .rivalTapped:
+                state.rivalSheet = ChatModelFeature.State(choice: state.rivalModel ?? state.model, use: state.use)
+                return .none
+
+            case .rivalSheet:
+                if let sheet = state.rivalSheet, !sheet.models.isEmpty {
+                    state.models = sheet.models
+                    state.standard = sheet.standard
+                }
+                if let choice = state.rivalSheet?.choice { state.rivalModel = choice }
+                return .none
+
+            case .rivalRemoved:
+                state.rivalModel = nil
+                return .none
+
+            case .rivalProgressed(.text(let text)):
+                if state.rival?.done == false { state.rival?.text = text }
+                return .none
+
+            case .rivalProgressed(.thinking(let thinking)):
+                if state.rival?.done == false { state.rival?.thinking = thinking }
+                return .none
+
+            case .rivalReplied(.success(let reply)):
+                guard var rival = state.rival, !rival.done else { return .none }
+                rival.done = true
+                rival.text = reply.text
+                rival.thinking = reply.thinking
+                rival.speed = reply.speed
+                rival.prompt.context = reply.context
+                state.rival = reply.text.isEmpty ? nil : rival
+                return .none
+
+            case .rivalReplied(.failure(let error)):
+                state.rival = nil
+                state.problem = error.description
+                return .none
+
+            case .keepTapped(let keepsRival):
+                guard let rival = state.rival, rival.done else { return .none }
+                state.rival = nil
+                guard keepsRival else { return .none }
+                // Kept beside the first answer, on its own branch, like a
+                // reply written again.
+                state.thread.go(before: rival.answering)
+                let id = uuid()
+                state.thread.append(
+                    ThreadMessage(
+                        id: id, role: .assistant, text: rival.text, at: now, thinking: rival.thinking,
+                        model: rival.model, speed: rival.speed))
+                state.prompts[id] = rival.prompt
+                state.context = rival.prompt.context
+                return changed(state)
 
             case .addContextTapped:
                 guard state.readsPhotos else {
@@ -530,6 +653,7 @@ public struct ChatThreadFeature {
             }
         }
         .ifLet(\.$modelSheet, action: \.modelSheet) { ChatModelFeature() }
+        .ifLet(\.$rivalSheet, action: \.rivalSheet) { ChatModelFeature() }
     }
 
     /// Sends what's in the field, with its files, in place of the message
@@ -562,8 +686,18 @@ public struct ChatThreadFeature {
         state.reply = ""
         state.replyThinking = nil
         state.showsReplyThinking = false
-        let model = chatRuntime.runtime(state.use, state.model)
-        let tokens = state.model.thinkingLevel.tokens
+        state.rival = nil
+        let (prompt, effect) = ask(state.model, in: state)
+        state.replyPrompt = prompt
+        return effect.run(progressed: Action.progressed, replied: Action.replied)
+            .cancellable(id: CancelID.reply, cancelInFlight: true)
+    }
+
+    /// Asks `choice` for the reply to the last message: what it's sent,
+    /// and the reply as it's written then once it's done.
+    private func ask(_ choice: ModelChoice, in state: State) -> (ReplyPrompt, Asked) {
+        let model = chatRuntime.runtime(state.use, choice)
+        let tokens = choice.thinkingLevel.tokens
         // The newest photos sent, so the model can be asked about them
         // again, for a model that reads them.
         let sent = state.thread.messages.last { !$0.photos.isEmpty }
@@ -573,29 +707,31 @@ public struct ChatThreadFeature {
         let turn = ReplyTurn(
             thread: state.thread, instructions: state.instructions, budget: model.budget, thinkingTokens: tokens,
             photos: photos, photosFrom: sent?.id)
-        return .run { send in
-            let (updates, continuation) = AsyncStream.makeStream(
-                of: ReplyProgress.self, bufferingPolicy: .bufferingNewest(8))
-            async let written = outcome { () throws(ModelRuntimeError) in
-                defer { continuation.finish() }
-                return try await turn.ask(model, thinks: tokens != nil) { continuation.yield($0) }
-            }
-            for await update in updates { await send(.progressed(update)) }
-            await send(.replied(await written))
-        }
-        .cancellable(id: CancelID.reply, cancelInFlight: true)
+        var prompt = turn.prompt
+        let id = choice.model ?? state.standard
+        prompt.model = state.models.first { $0.id == id }?.name
+        return (prompt, Asked(turn: turn, model: model, thinks: tokens != nil))
     }
 
-    /// Ends the reply, keeping what's written of it.
-    private func keep(_ text: String, thinking: ThreadThinking?, in state: inout State) -> Effect<Action> {
+    /// Ends the reply, keeping what's written of it, and how fast when it
+    /// was all written.
+    private func keep(
+        _ text: String, thinking: ThreadThinking?, speed: ThreadSpeed?, in state: inout State
+    ) -> Effect<Action> {
         state.reply = nil
         state.replyThinking = nil
+        let prompt = state.replyPrompt
+        state.replyPrompt = nil
         let shows = state.showsReplyThinking
         state.showsReplyThinking = false
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return .none }
         let id = uuid()
-        state.thread.append(ThreadMessage(id: id, role: .assistant, text: text, at: now, thinking: thinking))
+        state.thread.append(
+            ThreadMessage(
+                id: id, role: .assistant, text: text, at: now, thinking: thinking, model: prompt?.model,
+                speed: speed))
+        state.prompts[id] = prompt
         // Thinking open while the reply was written stays open.
         if shows, thinking != nil { state.shownThinking.insert(id) }
         return changed(state)
@@ -629,4 +765,51 @@ public struct ChatThreadFeature {
         }
         return Locale.current.language.languageCode?.identifier ?? "en"
     }
+}
+
+/// A reply being asked for.
+private struct Asked {
+    let turn: ReplyTurn
+    let model: any ModelRuntime
+    let thinks: Bool
+
+    /// Sends the reply as it's written, then once it's done.
+    func run<Action: Sendable>(
+        progressed: @escaping @Sendable (ReplyProgress) -> Action,
+        replied: @escaping @Sendable (Result<ChatReply, ModelRuntimeError>) -> Action
+    ) -> Effect<Action> {
+        .run { [turn, model, thinks] send in
+            let (updates, continuation) = AsyncStream.makeStream(
+                of: ReplyProgress.self, bufferingPolicy: .bufferingNewest(8))
+            async let written = outcome { () throws(ModelRuntimeError) in
+                defer { continuation.finish() }
+                return try await turn.ask(model, thinks: thinks, clock: ContinuousClock()) { continuation.yield($0) }
+            }
+            for await update in updates { await send(progressed(update)) }
+            await send(replied(await written))
+        }
+    }
+}
+
+/// The second model's answer to a message, beside the first model's.
+public struct RivalReply: Equatable, Sendable {
+    /// The first model's answer, which this one may take the place of.
+    public var answering: UUID
+    public var model: String?
+    public var text = ""
+    public var thinking: ThreadThinking?
+    /// How fast it was written; nil until it's all written.
+    public var speed: ThreadSpeed?
+    public var prompt: ReplyPrompt
+    /// Whether it's all written, or was stopped.
+    public var done = false
+}
+
+extension SharedKey where Self == AppStorageKey<Bool>.Default {
+    /// Whether replies say how fast the model read and wrote them.
+    public static var chatShowsSpeed: Self { Self[.appStorage("chatShowsSpeed"), default: false] }
+    /// Whether each reply shows what its model was sent.
+    public static var chatShowsPrompt: Self { Self[.appStorage("chatShowsPrompt"), default: false] }
+    /// Whether the composer offers a second model to compare replies with.
+    public static var chatCompares: Self { Self[.appStorage("chatCompares"), default: false] }
 }

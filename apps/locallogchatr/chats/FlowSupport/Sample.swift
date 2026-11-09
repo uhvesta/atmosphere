@@ -33,19 +33,47 @@ enum Sample {
         to pink above it.
         """
 
+    /// The second model's answer, to compare with.
+    static let shortPasta = """
+        Spaghetti **aglio e olio**: boil the pasta, fry sliced garlic in olive oil, then toss them together \
+        with chili and parsley. About *15 minutes*.
+        """
+
     /// Answers by what the last message asks, or by the photo sent with it,
-    /// thinking first when asked to.
+    /// thinking first when asked to, and says how fast it read and wrote as
+    /// an engine does.
     private static let answer: ScriptedRuntime.Step = ScriptedRuntime.think(
         "They want something short and practical.", for: .seconds(2)
     ) { turn, partial throws(ModelRuntimeError) in
         let value = JSONValue.string(
             !turn.attachments.isEmpty ? sunset : turn.prompt.contains("monad") ? monad : pasta)
         partial(value)
+        turn.speed?(TurnSpeed(read: 412, written: 96, reading: .milliseconds(380), writing: .milliseconds(4_150)))
+        return value
+    }
+
+    /// Answers a photo as `answer` does, and the rest shorter.
+    private static let rivalAnswer: ScriptedRuntime.Step = { turn, partial throws(ModelRuntimeError) in
+        guard turn.attachments.isEmpty else { return try await answer(turn, partial) }
+        let value = JSONValue.string(shortPasta)
+        partial(value)
+        turn.speed?(TurnSpeed(read: 398, written: 41, reading: .milliseconds(210), writing: .milliseconds(1_020)))
         return value
     }
 
     static var runtime: ScriptedRuntime {
         ScriptedRuntime(inputs: [.image], steps: Array(repeating: answer, count: 100))
+    }
+
+    /// The model the flows compare with, which reads photos.
+    static let rival = seeing
+
+    /// Runs the model compared with on its own answers, and the rest on
+    /// `runtime`.
+    static var runtimes: ChatRuntimeClient {
+        let main = runtime
+        let second = ScriptedRuntime(inputs: [.image], steps: Array(repeating: rivalAnswer, count: 100))
+        return ChatRuntimeClient { _, choice in choice.model == rival.id ? second : main }
     }
 
     /// The model that reads photos.
@@ -64,7 +92,9 @@ enum Sample {
             ChatsFeature()
         } withDependencies: {
             $0.chatShelf = .inMemory()
-            $0.chatRuntime = .always(runtime)
+            $0.chatRuntime = runtimes
+            // The experiments start off in each flow.
+            $0.defaultAppStorage = UserDefaults(suiteName: "flows-\(UUID().uuidString)") ?? .standard
             $0.speech = speech
             $0.models = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small, seeing]).client
             $0.photoLibrary = .scripted(recents, camera: true)
@@ -87,6 +117,32 @@ enum Sample {
         chats.send(.chats(.element(id: id, action: .modelSheet(.dismiss))))
         try await waitFor { chats.chats[id: id]?.readsPhotos == true }
         return id
+    }
+
+    /// Turns on every experiment in Settings.
+    @MainActor
+    static func experiment(in chats: StoreOf<ChatsFeature>) throws {
+        guard let settings = chats.settings else { throw Unopened() }
+        settings.$showsSpeed.withLock { $0 = true }
+        settings.$showsPrompt.withLock { $0 = true }
+        settings.$compares.withLock { $0 = true }
+    }
+
+    /// Compares the open chat's replies with `rival`'s.
+    @MainActor
+    static func compare(in chats: StoreOf<ChatsFeature>) async throws -> UUID {
+        guard let id = chats.openID else { throw Unopened() }
+        chats.send(.chats(.element(id: id, action: .rivalTapped)))
+        try await waitFor { chats.chats[id: id]?.rivalSheet?.models.isEmpty == false }
+        chats.send(.chats(.element(id: id, action: .rivalSheet(.presented(.binding(.set(\.model, rival.id)))))))
+        chats.send(.chats(.element(id: id, action: .rivalSheet(.dismiss))))
+        return id
+    }
+
+    /// Waits for the model compared with in chat `id` to finish.
+    @MainActor
+    static func compared(_ id: UUID, in chats: StoreOf<ChatsFeature>) async throws {
+        try await waitFor { chats.chats[id: id]?.rival?.done == true }
     }
 
     /// A sunset over hills, `hue` the sky's color, as a camera gives it.

@@ -13,10 +13,12 @@ public protocol EngineChat: Sendable {
     /// answer as far as it's written, each time it grows. With
     /// `thinkingTokens`, the model reasons for at most that many tokens
     /// before it answers. `thought` gets that reasoning as it grows, then
-    /// how long the answer took.
+    /// how long the answer took. `speed` gets how many tokens the model
+    /// read and wrote, and how long each took, once it's done.
     func send(
         _ message: String, attachments: [ModelAttachment], format: String?, thinkingTokens: Int?,
-        thought: (@Sendable (ModelThinking) -> Void)?, partial: @escaping @Sendable (String) -> Void
+        thought: (@Sendable (ModelThinking) -> Void)?, speed: (@Sendable (TurnSpeed) -> Void)?,
+        partial: @escaping @Sendable (String) -> Void
     ) async throws(ModelRuntimeError) -> String
     /// Stops the answer being written.
     func cancel()

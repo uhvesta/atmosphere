@@ -3,16 +3,43 @@ import ComposableArchitecture
 import Foundation
 import InferenceKit
 
-/// A reply as the model writes it, and how much of its window the chat
-/// took.
+/// A reply as the model writes it, how much of its window the chat took,
+/// and how fast the model read and wrote.
 public struct ChatReply: Hashable, Sendable {
     public var text: String
     public var thinking: ThreadThinking?
     public var context: ContextUse
+    public var speed: ThreadSpeed?
 
-    public init(text: String, thinking: ThreadThinking? = nil, context: ContextUse) {
+    public init(text: String, thinking: ThreadThinking? = nil, context: ContextUse, speed: ThreadSpeed? = nil) {
         self.text = text
         self.thinking = thinking
+        self.context = context
+        self.speed = speed
+    }
+}
+
+/// What a model was sent for a reply, exactly as it got it.
+public struct ReplyPrompt: Hashable, Sendable {
+    /// What the model is told before the chat.
+    public var instructions: String
+    /// The chat's newest messages that fit, with the files sent with the
+    /// last.
+    public var prompt: String
+    /// How many photos went with it.
+    public var photos: Int
+    /// The model it was sent to, by name, once it's looked up.
+    public var model: String?
+    /// How much of the model's window it took, once it replied.
+    public var context: ContextUse?
+
+    public init(
+        instructions: String, prompt: String, photos: Int, model: String? = nil, context: ContextUse? = nil
+    ) {
+        self.instructions = instructions
+        self.prompt = prompt
+        self.photos = photos
+        self.model = model
         self.context = context
     }
 }
@@ -85,20 +112,34 @@ struct ReplyTurn {
         return written
     }
 
+    /// What the model is sent.
+    var prompt: ReplyPrompt {
+        ReplyPrompt(instructions: turn.instructions, prompt: turn.prompt, photos: turn.attachments.count)
+    }
+
     /// Asks `model`, sending the reply and what it thinks as they grow.
+    /// `clock` times the reply when the model doesn't count its tokens.
     func ask(
-        _ model: any ModelRuntime, thinks: Bool, progress: @escaping @Sendable (ReplyProgress) -> Void
+        _ model: any ModelRuntime, thinks: Bool, clock: some Clock<Duration>,
+        progress: @escaping @Sendable (ReplyProgress) -> Void
     ) async throws(ModelRuntimeError) -> ChatReply {
         var turn = turn
         let thought = LockIsolated<ThreadThinking?>(nil)
+        let measured = LockIsolated<TurnSpeed?>(nil)
+        let start = clock.now
+        let first = LockIsolated<Duration?>(nil)
+        let began = { @Sendable in first.withValue { $0 = $0 ?? start.duration(to: clock.now) } }
         if thinks {
             turn.thinking = { thinking in
+                began()
                 let kept = ThreadThinking(text: thinking.text, duration: thinking.duration)
                 thought.setValue(kept)
                 progress(.thinking(kept))
             }
         }
+        turn.speed = { speed in measured.setValue(speed) }
         let answer = try await model.respond(to: turn) { value in
+            began()
             if case .string(let text) = value { progress(.text(text)) }
         }
         guard case .string(let written) = answer else {
@@ -107,7 +148,22 @@ struct ReplyTurn {
         let text = written.trimmingCharacters(in: .whitespacesAndNewlines)
         let thinking = thought.value.flatMap { $0.text.isEmpty ? nil : $0 }
         let read = turn.instructions.utf8.count + turn.prompt.utf8.count
-        let used = (read + text.utf8.count + (thinking?.text.utf8.count ?? 0)) / 3
-        return ChatReply(text: text, thinking: thinking, context: ContextUse(used: used, window: model.budget.window))
+        let writes = text.utf8.count + (thinking?.text.utf8.count ?? 0)
+        let used = (read + writes) / 3
+        let speed =
+            measured.value.map {
+                ThreadSpeed(read: $0.read, written: $0.written, reading: $0.reading, writing: $0.writing)
+            }
+            ?? {
+                // Guessed for a model that doesn't count its tokens, about
+                // three characters a token, from when it began to write.
+                let whole = start.duration(to: clock.now)
+                let reading = first.value ?? whole
+                return ThreadSpeed(
+                    read: read / 3 + turn.attachments.count * Self.photoCharacters / 3, written: writes / 3,
+                    reading: reading, writing: whole - reading, estimated: true)
+            }()
+        return ChatReply(
+            text: text, thinking: thinking, context: ContextUse(used: used, window: model.budget.window), speed: speed)
     }
 }

@@ -139,7 +139,8 @@ struct LiteRTLMChat: EngineChat {
 
     func send(
         _ message: String, attachments: [ModelAttachment], format: String?, thinkingTokens: Int?,
-        thought: (@Sendable (ModelThinking) -> Void)?, partial: @escaping @Sendable (String) -> Void
+        thought: (@Sendable (ModelThinking) -> Void)?, speed: (@Sendable (TurnSpeed) -> Void)?,
+        partial: @escaping @Sendable (String) -> Void
     ) async throws(ModelRuntimeError) -> String {
         let clock = ContinuousClock()
         let start = clock.now
@@ -156,16 +157,22 @@ struct LiteRTLMChat: EngineChat {
             // Off unless asked for: Gemma 4 can think by default.
             let thinking = ThinkingConfig(
                 enableThinking: thinkingTokens != nil, thinkingTokenBudget: thinkingTokens ?? 0)
+            let held = (try? conversation.getTokenCount()) ?? 0
             let chunks = conversation.sendMessageStream(
                 Message(contents: contents), thinkingConfig: thinking, responseFormat: responseFormat)
             // A stream stops giving chunks as soon as the task reading it is
             // cancelled, while the model is still writing, and the next turn
             // then waits behind it. So it's read where cancelling doesn't
             // reach, and a stopped turn returns once the model has stopped.
-            let reading = Task { [backend] () throws -> (written: String, reasoning: String) in
+            let reading = Task { [backend] () throws -> Streamed in
                 var written = ""
                 var reasoning = ""
+                // The stream gives a chunk for each token the model writes.
+                var steps = 0
+                var first: ContinuousClock.Instant?
                 for try await chunk in chunks {
+                    if first == nil { first = clock.now }
+                    steps += 1
                     // Gemma writes its reasoning to a channel of its own.
                     let thinkingPart = chunk.channels.values.joined()
                     if !thinkingPart.isEmpty {
@@ -178,16 +185,23 @@ struct LiteRTLMChat: EngineChat {
                         partial(written)
                     }
                 }
-                return (written, reasoning)
+                return Streamed(written: written, reasoning: reasoning, steps: steps, first: first)
             }
-            let (written, reasoning) = try await withTaskCancellationHandler {
+            let streamed = try await withTaskCancellationHandler {
                 try await reading.value
             } onCancel: {
                 try? conversation.cancel()
             }
             if Task.isCancelled { throw ModelRuntimeError.cancelled }
-            thought?(ModelThinking(text: reasoning, duration: clock.now - start, processor: backend))
-            return written
+            let end = clock.now
+            thought?(ModelThinking(text: streamed.reasoning, duration: end - start, processor: backend))
+            if let speed, let first = streamed.first, let total = try? conversation.getTokenCount() {
+                speed(
+                    TurnSpeed(
+                        read: max(0, total - held - streamed.steps), written: streamed.steps, reading: first - start,
+                        writing: end - first))
+            }
+            return streamed.written
         } catch {
             throw runtimeError(error)
         }
@@ -195,6 +209,15 @@ struct LiteRTLMChat: EngineChat {
 
     func cancel() {
         try? conversation.cancel()
+    }
+
+    /// What a stream gave: the answer, the reasoning, how many chunks, and
+    /// when the first came.
+    private struct Streamed {
+        var written: String
+        var reasoning: String
+        var steps: Int
+        var first: ContinuousClock.Instant?
     }
 }
 

@@ -13,6 +13,7 @@ final class LlamaSmokeTests: XCTestCase {
 
             let answer = try await chat.send(
                 "What is the capital of France?", attachments: [], format: nil, thinkingTokens: nil, thought: nil,
+                speed: nil,
                 partial: { _ in })
 
             XCTAssertTrue(answer.localizedCaseInsensitiveContains("paris"), "\(backend): \(answer)")
@@ -29,7 +30,7 @@ final class LlamaSmokeTests: XCTestCase {
 
         let answer = try await chat.send(
             "A task: walk the dog for half an hour.", attachments: [], format: schema, thinkingTokens: nil,
-            thought: nil,
+            thought: nil, speed: nil,
             partial: { _ in })
 
         let object = try XCTUnwrap(
@@ -45,9 +46,10 @@ final class LlamaSmokeTests: XCTestCase {
 
         _ = try await chat.send(
             "My cat is called Miso. Say hello to her.", attachments: [], format: nil, thinkingTokens: 512,
-            thought: { thinking in thoughts.withValue { $0.append(thinking) } }, partial: { _ in })
+            thought: { thinking in thoughts.withValue { $0.append(thinking) } }, speed: nil, partial: { _ in })
         let answer = try await chat.send(
-            "What is my cat called?", attachments: [], format: nil, thinkingTokens: nil, thought: nil, partial: { _ in }
+            "What is my cat called?", attachments: [], format: nil, thinkingTokens: nil, thought: nil, speed: nil,
+            partial: { _ in }
         )
 
         XCTAssertFalse(thoughts.value.isEmpty)

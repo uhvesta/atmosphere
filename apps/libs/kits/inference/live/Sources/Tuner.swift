@@ -89,7 +89,7 @@ extension Bench {
             let cut = Locked(false)
             do throws(ModelRuntimeError) {
                 let answer = try await chat.send(
-                    prompt, attachments: [], format: nil, thinkingTokens: nil, thought: nil,
+                    prompt, attachments: [], format: nil, thinkingTokens: nil, thought: nil, speed: nil,
                     partial: { text in
                         written.setValue(text)
                         if Self.words(text) >= TunePrompts.answerWords {

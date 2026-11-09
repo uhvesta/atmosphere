@@ -49,6 +49,16 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
             }
             .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
             .sheet(item: $store.scope(state: \.modelSheet, action: \.modelSheet)) { ChatModelView(store: $0) }
+            .sheet(item: $store.scope(state: \.rivalSheet, action: \.rivalSheet)) { ChatModelView(store: $0) }
+            .sheet(
+                isPresented: Binding(
+                    get: { store.state.shownPromptValue != nil },
+                    set: { if !$0 { store.send(.promptTapped(messageID: nil)) } })
+            ) {
+                if let prompt = store.state.shownPromptValue {
+                    PromptSheet(prompt: prompt) { store.send(.promptTapped(messageID: nil)) }
+                }
+            }
             .fileImporter(
                 isPresented: $store.picksFiles, allowedContentTypes: PickedFile.types(photos: store.readsPhotos),
                 allowsMultipleSelection: true
@@ -84,26 +94,16 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
                 }
                 ForEach(store.thread.messages) { message in
                     VStack(alignment: .trailing, spacing: 4) {
-                        MessageView(
-                            role: message.role, text: message.text, thinking: message.thinking?.model,
-                            showsThinking: store.shownThinking.contains(message.id),
-                            toggleThinking: { store.send(.thinkingToggled(messageID: message.id)) },
-                            select: { selecting = TextToSelect(text: $0) },
-                            attachments: {
-                                ForEach(message.photos) { photo in
-                                    ChatPhoto(file: store.photoFiles[photo.id])
-                                }
-                                ForEach(message.files, id: \.self) { file in
-                                    AttachmentChip(verbatim: file.name, systemImage: "doc.text")
-                                }
-                            }
-                        )
-                        .contextMenu { menu(for: message) }
-                        if message.role == .assistant {
-                            extra(message)
+                        if let rival = store.rival, rival.answering == message.id {
+                            Comparison(
+                                first: message, rival: rival, showsSpeed: store.showsSpeed,
+                                select: { selecting = TextToSelect(text: $0) },
+                                keep: { store.send(.keepTapped(rival: $0)) })
+                        } else {
+                            reply(message)
                         }
                         branches(at: message)
-                        if message.id == store.thread.messages.last?.id, store.reply == nil {
+                        if message.id == store.thread.messages.last?.id, store.reply == nil, store.rival == nil {
                             after(message)
                         }
                     }
@@ -128,11 +128,42 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .frame(maxWidth: 720)
+            .frame(maxWidth: store.rival == nil ? 720 : 1_080)
             .padding()
             .frame(maxWidth: .infinity)
         }
         .defaultScrollAnchor(.bottom)
+    }
+
+    /// A message, with what the app adds under a reply and, when asked
+    /// for in Settings, how fast it was written and what the model was
+    /// sent.
+    @ViewBuilder private func reply(_ message: ThreadMessage) -> some View {
+        MessageView(
+            role: message.role, text: message.text, thinking: message.thinking?.model,
+            showsThinking: store.shownThinking.contains(message.id),
+            toggleThinking: { store.send(.thinkingToggled(messageID: message.id)) },
+            select: { selecting = TextToSelect(text: $0) },
+            attachments: {
+                ForEach(message.photos) { photo in
+                    ChatPhoto(file: store.photoFiles[photo.id])
+                }
+                ForEach(message.files, id: \.self) { file in
+                    AttachmentChip(verbatim: file.name, systemImage: "doc.text")
+                }
+            }
+        )
+        .contextMenu { menu(for: message) }
+        if message.role == .assistant {
+            extra(message)
+            let prompt = store.showsPrompt && store.prompts[message.id] != nil
+            if store.showsSpeed || prompt {
+                ReplyDetails(
+                    model: store.showsSpeed ? message.model : nil,
+                    speed: store.showsSpeed ? message.speed : nil,
+                    prompt: prompt ? { store.send(.promptTapped(messageID: message.id)) } : nil)
+            }
+        }
     }
 
     /// Under the last message: Retry and Speak for a reply, and for the
@@ -199,6 +230,11 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
             Button("Retry", systemImage: "arrow.clockwise") { store.send(.retryTapped(messageID: message.id)) }
                 .disabled(!store.state.canRetry(message))
             speak(message)
+            if store.showsPrompt, store.prompts[message.id] != nil {
+                Button("Show Prompt", systemImage: "text.magnifyingglass") {
+                    store.send(.promptTapped(messageID: message.id))
+                }
+            }
         }
     }
 
@@ -267,7 +303,8 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
 
     private var sendButton: SendButton {
         SendButton(
-            canSend: store.canSend, canStop: store.reply != nil, send: { store.send(.sendTapped) },
+            canSend: store.canSend, canStop: store.reply != nil || store.rival?.done == false,
+            send: { store.send(.sendTapped) },
             stop: { store.send(.stopTapped) })
     }
 
@@ -281,6 +318,11 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
     }
 
     @ViewBuilder private var composerTop: some View {
+        if store.compares {
+            RivalBar(
+                model: store.rivalModel == nil ? nil : store.state.rivalCurrent?.name ?? String(localized: "Model"),
+                pick: { store.send(.rivalTapped) }, remove: { store.send(.rivalRemoved) })
+        }
         if store.editing != nil {
             HStack {
                 Label("Editing your message. Sending it writes the reply again.", systemImage: "pencil")

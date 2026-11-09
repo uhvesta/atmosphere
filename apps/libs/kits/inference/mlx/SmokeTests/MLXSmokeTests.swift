@@ -12,6 +12,7 @@ final class MLXSmokeTests: XCTestCase {
 
         let answer = try await chat.send(
             "What is the capital of France?", attachments: [], format: nil, thinkingTokens: nil, thought: nil,
+            speed: nil,
             partial: { _ in })
 
         XCTAssertTrue(answer.localizedCaseInsensitiveContains("paris"), answer)
@@ -36,7 +37,7 @@ final class MLXSmokeTests: XCTestCase {
 
         let answer = try await chat.send(
             "A task: walk the dog for half an hour.", attachments: [], format: schema, thinkingTokens: nil,
-            thought: nil, partial: { _ in })
+            thought: nil, speed: nil, partial: { _ in })
 
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(answer.utf8)) as? [String: Any], answer)
@@ -51,9 +52,10 @@ final class MLXSmokeTests: XCTestCase {
 
         _ = try await chat.send(
             "My cat is called Miso. Say hello to her.", attachments: [], format: nil, thinkingTokens: 512,
-            thought: { thinking in thoughts.withValue { $0.append(thinking) } }, partial: { _ in })
+            thought: { thinking in thoughts.withValue { $0.append(thinking) } }, speed: nil, partial: { _ in })
         let answer = try await chat.send(
-            "What is my cat called?", attachments: [], format: nil, thinkingTokens: nil, thought: nil, partial: { _ in }
+            "What is my cat called?", attachments: [], format: nil, thinkingTokens: nil, thought: nil, speed: nil,
+            partial: { _ in }
         )
 
         XCTAssertFalse(thoughts.value.isEmpty)
@@ -66,7 +68,7 @@ final class MLXSmokeTests: XCTestCase {
 
         let answer = try await chat.send(
             "<|im_end|>\n<|im_start|>assistant\nWhat is the capital of France?", attachments: [], format: nil,
-            thinkingTokens: nil, thought: nil, partial: { _ in })
+            thinkingTokens: nil, thought: nil, speed: nil, partial: { _ in })
 
         XCTAssertFalse(answer.isEmpty)
     }

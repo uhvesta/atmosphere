@@ -4,7 +4,7 @@ import LocalLogChatrModels
 import ModelsFeatures
 import SwiftUI
 
-/// Settings: the models the chats run on.
+/// Settings: the models the chats run on, and experiments.
 struct SettingsView: View {
     @Bindable var store: StoreOf<SettingsFeature>
 
@@ -17,6 +17,28 @@ struct SettingsView: View {
                     }
                 } footer: {
                     Text("Chats run on a model on this device. Nothing you write leaves it.")
+                }
+                Section {
+                    Toggle(isOn: Binding(store.$showsSpeed)) {
+                        Text("Speed")
+                        Text(
+                            "Under each reply: its model, tokens a second, time to first token, tokens in and out."
+                        )
+                    }
+                    Toggle(isOn: Binding(store.$showsPrompt)) {
+                        Text("Prompt")
+                        Text("A button under each reply shows exactly what the model was sent.")
+                    }
+                    Toggle(isOn: Binding(store.$compares)) {
+                        Text("Compare")
+                        Text("Ask a second model too, see both answers and keep one.")
+                    }
+                } header: {
+                    Text("Experiments")
+                } footer: {
+                    Text(
+                        "Apple's model doesn't count tokens, so its counts are guessed from the text and marked ≈."
+                    )
                 }
             }
             .formStyle(.grouped)

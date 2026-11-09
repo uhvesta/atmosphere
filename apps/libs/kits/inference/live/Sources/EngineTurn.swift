@@ -90,13 +90,14 @@ enum EngineTurn {
         }
         guard let answer else {
             let text = try await chat.send(
-                turn.prompt, attachments: turn.attachments, format: nil, thinkingTokens: thinks, thought: thought
+                turn.prompt, attachments: turn.attachments, format: nil, thinkingTokens: thinks, thought: thought,
+                speed: turn.speed
             ) { partial(.string($0)) }
             return .string(text)
         }
         let text = try await chat.send(
             turn.prompt, attachments: turn.attachments, format: JSONSchema.text(answer), thinkingTokens: thinks,
-            thought: thought, partial: { _ in })
+            thought: thought, speed: turn.speed, partial: { _ in })
         return try parse(text)
     }
 
@@ -115,6 +116,11 @@ enum EngineTurn {
         // counts, but thinking again after each tool would fill the
         // conversation's window.
         let earlier = Locked(ModelThinking(text: ""))
+        // Each round's reading and writing count toward the turn's speed.
+        let speed = Locked<TurnSpeed?>(nil)
+        let measured = turn.speed.map { _ in
+            { @Sendable (round: TurnSpeed) in speed.withValue { $0 = $0?.adding(round) ?? round } }
+        }
         for round in min(done.count, toolRounds)...toolRounds {
             let format = round == toolRounds ? answering : calling
             let before = earlier.value
@@ -128,12 +134,13 @@ enum EngineTurn {
             let thinks = turn.thinking != nil && round == min(done.count, toolRounds)
             let text = try await chat.send(
                 message, attachments: attachments, format: format, thinkingTokens: thinks ? turn.thinkingTokens : nil,
-                thought: thought,
+                thought: thought, speed: measured,
                 partial: { _ in })
             let written = try parse(text)
             attachments = []
             switch try Step(written) {
             case .answer(let value):
+                if let report = turn.speed, let whole = speed.value { report(whole) }
                 return answer == nil ? .string(value.text ?? "") : value
             case .call(let name, let arguments):
                 guard let tool = turn.tools.first(where: { $0.name == name }) else { throw .decodingFailure }

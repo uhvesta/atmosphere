@@ -44,6 +44,10 @@ public struct ModelTurn: Sendable {
     public var thinking: (@Sendable (ModelThinking) -> Void)?
     /// The most tokens the model thinks for when `thinking` is set.
     public var thinkingTokens = 512
+    /// Gets how fast the model read the turn and wrote its answer, once
+    /// it's done, from engines that count their tokens. Apple's model
+    /// doesn't, so it never calls this.
+    public var speed: (@Sendable (TurnSpeed) -> Void)?
 
     public init(
         instructions: String, prompt: String, tools: [ModelTool] = [], schema: ModelSchema? = nil,
@@ -60,6 +64,47 @@ public struct ModelTurn: Sendable {
     /// The first kind of attachment `inputs` doesn't include, if any.
     public func unreadable(by inputs: Set<ModelInput>) -> ModelInput? {
         attachments.map(\.kind).first { !inputs.contains($0) }
+    }
+}
+
+/// How fast a model read a turn and wrote its answer.
+public struct TurnSpeed: Hashable, Codable, Sendable {
+    /// The tokens it read: the prompt, and photos as their tokens.
+    public var read: Int
+    /// The tokens it wrote, its thinking included.
+    public var written: Int
+    /// How long it read for, until it wrote its first token.
+    public var reading: Duration
+    /// How long it wrote for, after that.
+    public var writing: Duration
+    /// Whether the counts are guessed from the text's length, about three
+    /// characters a token, for a model that doesn't count its tokens.
+    public var estimated: Bool
+
+    public init(read: Int, written: Int, reading: Duration, writing: Duration, estimated: Bool = false) {
+        self.read = read
+        self.written = written
+        self.reading = reading
+        self.writing = writing
+        self.estimated = estimated
+    }
+
+    /// Tokens read a second, or nil when it took no measurable time.
+    public var readPerSecond: Double? { Self.rate(read, in: reading) }
+    /// Tokens written a second, or nil when it took no measurable time.
+    public var writtenPerSecond: Double? { Self.rate(written, in: writing) }
+
+    /// This turn's and `next`'s, as one, as when a turn calls tools and
+    /// the model reads and writes again.
+    public func adding(_ next: TurnSpeed) -> TurnSpeed {
+        TurnSpeed(
+            read: read + next.read, written: written + next.written, reading: reading + next.reading,
+            writing: writing + next.writing, estimated: estimated || next.estimated)
+    }
+
+    private static func rate(_ tokens: Int, in duration: Duration) -> Double? {
+        let seconds = Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
+        return seconds > 0.001 ? Double(tokens) / seconds : nil
     }
 }
 

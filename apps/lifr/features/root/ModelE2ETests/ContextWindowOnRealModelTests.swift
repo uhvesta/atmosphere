@@ -25,7 +25,7 @@ final class ContextWindowOnRealModelTests: XCTestCase {
             let filler = window == largest ? String(repeating: "The sky is blue today. ", count: 2_400) : ""
             let answer = try await chat.send(
                 filler + "What colour is the sky?", attachments: [], format: nil, thinkingTokens: nil, thought: nil,
-                partial: { _ in })
+                speed: nil, partial: { _ in })
             XCTAssertFalse(answer.isEmpty, "No answer at \(window) tokens")
             print("Window \(window): \((Self.footprint() - before) / 1_000_000) MB")
         }

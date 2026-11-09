@@ -1,12 +1,19 @@
+import ChatFeatures
 import ComposableArchitecture
 import ModelsFeatures
 
-/// Settings, opened from the chats: the models they run on, and voices.
+/// Settings, opened from the chats: the models they run on, voices, and
+/// experiments to try in the chat.
 @Reducer
 package struct SettingsFeature {
     @ObservableState
     package struct State: Equatable {
         package var models = ModelsFeature.State(languages: [])
+        /// The chat's experiments, kept on this device and off until turned
+        /// on.
+        @Shared(.chatShowsSpeed) package var showsSpeed
+        @Shared(.chatShowsPrompt) package var showsPrompt
+        @Shared(.chatCompares) package var compares
 
         package init() {}
     }
