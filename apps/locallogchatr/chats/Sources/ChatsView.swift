@@ -116,10 +116,7 @@ package struct ChatsView: View {
             ChatThreadView(store: chat, prompt: Text("Message")) {
                 ChatStart()
             }
-            .navigationTitle(chat.thread.title)
-            #if os(iOS)
-                .navigationBarTitleDisplayMode(.inline)
-            #endif
+            .chatTitle(chat.thread.title)
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     ChatContextButton(chat.context)

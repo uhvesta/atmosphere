@@ -103,6 +103,13 @@ enum Markdown {
         String(inline(text).characters)
     }
 
+    /// A line the person typed, such as a chat's title taken from their
+    /// first message, without its bold, italics and other inline marks.
+    /// Unlike `plainText`, a line like "1. Buy milk" stays as typed.
+    static func plainLine(_ text: String) -> String {
+        plainInline(text)
+    }
+
     /// `block` as it's shown while the model is still writing it: marks
     /// it has opened but not yet closed, such as `**` or a link's `[`, are
     /// closed or left out, so the rest of the reply doesn't flicker.

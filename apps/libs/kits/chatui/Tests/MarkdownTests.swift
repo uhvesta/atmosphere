@@ -24,6 +24,14 @@ private func plainTextTests() -> [TestCase] {
         TestCase("given plain text, then it's unchanged") {
             try expectEqual(Markdown.plainText("Buy soil on Saturday"), "Buy soil on Saturday")
         },
+        TestCase("given a line the person typed with inline marks, then its words without them") {
+            try expectEqual(Markdown.plainLine("How do I plant the **seedlings**, *today*?"),
+                "How do I plant the seedlings, today?")
+        },
+        TestCase("given a typed line that looks like a list or heading, then it stays as typed") {
+            try expectEqual(Markdown.plainLine("1. Buy milk"), "1. Buy milk")
+            try expectEqual(Markdown.plainLine("# of seeds per pot"), "# of seeds per pot")
+        },
     ]
 }
 

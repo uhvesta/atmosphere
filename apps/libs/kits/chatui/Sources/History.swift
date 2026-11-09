@@ -41,7 +41,7 @@ public struct ConversationRow: View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(title)
+                    Text(Markdown.plainLine(title))
                         .font(.headline)
                         .lineLimit(1)
                     Spacer()
@@ -54,7 +54,7 @@ public struct ConversationRow: View {
                         .font(.subheadline)
                         .foregroundStyle(.tint)
                 } else if let preview {
-                    Text(previewIsModel ? Markdown.plainText(preview) : preview)
+                    Text(previewIsModel ? Markdown.plainText(preview) : Markdown.plainLine(preview))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)

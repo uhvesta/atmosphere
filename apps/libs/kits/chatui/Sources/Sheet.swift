@@ -47,27 +47,37 @@ extension Binding where Value == String? {
 }
 
 extension View {
-    /// The chat's title, with a line in gray under it on systems that show
-    /// one.
+    /// The chat's title, without the Markdown marks a first message may
+    /// have, with a line in gray under it on systems that show one.
     public func chatTitle(_ title: String, subtitle: String) -> some View {
-        modifier(ChatTitle(title: title, subtitle: subtitle))
+        modifier(ChatTitle(title: Markdown.plainLine(title), subtitle: subtitle))
+    }
+
+    /// The chat's title, without the Markdown marks a first message may
+    /// have.
+    public func chatTitle(_ title: String) -> some View {
+        modifier(ChatTitle(title: Markdown.plainLine(title), subtitle: nil))
     }
 }
 
 private struct ChatTitle: ViewModifier {
     let title: String
-    let subtitle: String
+    let subtitle: String?
 
     func body(content: Content) -> some View {
         #if os(iOS)
-            if #available(iOS 26, *) {
+            if #available(iOS 26, *), let subtitle {
                 content.navigationTitle(title).navigationSubtitle(subtitle)
                     .navigationBarTitleDisplayMode(.inline)
             } else {
                 content.navigationTitle(title).navigationBarTitleDisplayMode(.inline)
             }
         #else
-            content.navigationTitle(title).navigationSubtitle(subtitle)
+            if let subtitle {
+                content.navigationTitle(title).navigationSubtitle(subtitle)
+            } else {
+                content.navigationTitle(title)
+            }
         #endif
     }
 }
