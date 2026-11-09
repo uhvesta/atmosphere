@@ -4,18 +4,23 @@ import Foundation
 import InferenceKit
 
 /// A reply as the model writes it, how much of its window the chat took,
-/// and how fast the model read and wrote.
-public struct ChatReply: Hashable, Sendable {
+/// how fast the model read and wrote, and what the app's replier added.
+public struct ChatReply<Extra: Hashable & Sendable>: Hashable, Sendable {
     public var text: String
     public var thinking: ThreadThinking?
     public var context: ContextUse
     public var speed: ThreadSpeed?
+    public var extra: Extra?
 
-    public init(text: String, thinking: ThreadThinking? = nil, context: ContextUse, speed: ThreadSpeed? = nil) {
+    public init(
+        text: String, thinking: ThreadThinking? = nil, context: ContextUse, speed: ThreadSpeed? = nil,
+        extra: Extra? = nil
+    ) {
         self.text = text
         self.thinking = thinking
         self.context = context
         self.speed = speed
+        self.extra = extra
     }
 }
 
@@ -122,7 +127,7 @@ struct ReplyTurn {
     func ask(
         _ model: any ModelRuntime, thinks: Bool, clock: some Clock<Duration>,
         progress: @escaping @Sendable (ReplyProgress) -> Void
-    ) async throws(ModelRuntimeError) -> ChatReply {
+    ) async throws(ModelRuntimeError) -> ChatReply<Never> {
         var turn = turn
         let thought = LockIsolated<ThreadThinking?>(nil)
         let measured = LockIsolated<TurnSpeed?>(nil)

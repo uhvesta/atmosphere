@@ -115,9 +115,9 @@ struct PromptSheet: View {
 
 /// Two models' answers to the same message, side by side on the Mac and
 /// one above the other on the iPhone, each with a button to keep it.
-struct Comparison: View {
-    let first: ThreadMessage
-    let rival: RivalReply
+struct Comparison<Message: ThreadEntry>: View {
+    let first: Message
+    let rival: RivalReply<Message.Extra>
     let showsSpeed: Bool
     let select: (String) -> Void
     let keep: (_ rival: Bool) -> Void

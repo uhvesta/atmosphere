@@ -122,7 +122,7 @@ extension DependencyValues {
 }
 
 /// What a model's work came to: its answer, or why there's none.
-func outcome<T>(_ body: () async throws(ModelRuntimeError) -> T) async -> Result<T, ModelRuntimeError> {
+func outcome<T, Failure: Error>(_ body: () async throws(Failure) -> T) async -> Result<T, Failure> {
     do {
         return .success(try await body())
     } catch {

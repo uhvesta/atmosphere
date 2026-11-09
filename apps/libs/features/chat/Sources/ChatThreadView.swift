@@ -10,11 +10,13 @@ import SwiftUI
 /// model thought, the branches to switch between, and under the last reply
 /// Retry and Speak. `empty` shows before the first message, and `extra`
 /// shows what the app adds under a reply.
-public struct ChatThreadView<Empty: View, Extra: View>: View {
-    @Bindable var store: StoreOf<ChatThreadFeature>
+public struct ChatThreadView<Replier: ChatReplier, Empty: View, Extra: View>: View {
+    public typealias Message = Replier.Message
+
+    @Bindable var store: StoreOf<ChatCore<Replier>>
     let prompt: Text?
     let empty: Empty
-    let extra: (ThreadMessage) -> Extra
+    let extra: (Message) -> Extra
 
     @State private var selecting: TextToSelect?
     /// Whether the system's photo picker is open, from + on the Mac.
@@ -22,8 +24,8 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
     @State private var photo: PhotosPickerItem?
 
     public init(
-        store: StoreOf<ChatThreadFeature>, prompt: Text? = nil, @ViewBuilder empty: () -> Empty,
-        @ViewBuilder extra: @escaping (ThreadMessage) -> Extra
+        store: StoreOf<ChatCore<Replier>>, prompt: Text? = nil, @ViewBuilder empty: () -> Empty,
+        @ViewBuilder extra: @escaping (Message) -> Extra
     ) {
         self.store = store
         self.prompt = prompt
@@ -138,7 +140,7 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
     /// A message, with what the app adds under a reply and, when asked
     /// for in Settings, how fast it was written and what the model was
     /// sent.
-    @ViewBuilder private func reply(_ message: ThreadMessage) -> some View {
+    @ViewBuilder private func reply(_ message: Message) -> some View {
         MessageView(
             role: message.role, text: message.text, thinking: message.thinking?.model,
             showsThinking: store.shownThinking.contains(message.id),
@@ -168,7 +170,7 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
 
     /// Under the last message: Retry and Speak for a reply, and for the
     /// person's message, that its reply didn't come.
-    @ViewBuilder private func after(_ message: ThreadMessage) -> some View {
+    @ViewBuilder private func after(_ message: Message) -> some View {
         let retry = Button("Retry", systemImage: "arrow.clockwise") {
             store.send(.retryTapped(messageID: message.id))
         }
@@ -202,7 +204,7 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
     }
 
     /// Speak for a reply, or Stop Speaking while it's read aloud.
-    private func speak(_ message: ThreadMessage) -> some View {
+    private func speak(_ message: Message) -> some View {
         let speaking = store.speaking == message.id
         return Button(
             speaking ? "Stop Speaking" : "Speak", systemImage: speaking ? "stop.circle" : "speaker.wave.2"
@@ -210,7 +212,7 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
     }
 
     /// ‹ 2/3 › under a message or reply written again, to show the others.
-    @ViewBuilder private func branches(at message: ThreadMessage) -> some View {
+    @ViewBuilder private func branches(at message: Message) -> some View {
         let branches = store.thread.branches(at: message.id)
         if branches.count > 1, let index = branches.firstIndex(where: { $0.id == message.id }) {
             BranchSwitcher(index: index, count: branches.count, canGo: store.canGo) {
@@ -220,7 +222,7 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
     }
 
     /// Copying a message, editing it or writing its reply again.
-    @ViewBuilder private func menu(for message: ThreadMessage) -> some View {
+    @ViewBuilder private func menu(for message: Message) -> some View {
         TextMenu(text: message.text) { selecting = TextToSelect(text: $0) }
         Divider()
         if message.role == .person {
@@ -364,8 +366,8 @@ public struct ChatThreadView<Empty: View, Extra: View>: View {
 
 /// + on the iPhone: the camera and recent photos, for a model that reads
 /// them, and files, in a sheet.
-private struct AddContext: ViewModifier {
-    @Bindable var store: StoreOf<ChatThreadFeature>
+private struct AddContext<Replier: ChatReplier>: ViewModifier {
+    @Bindable var store: StoreOf<ChatCore<Replier>>
 
     func body(content: Content) -> some View {
         #if os(iOS)
@@ -429,7 +431,7 @@ private struct ChatPhoto: View {
 }
 
 extension ChatThreadView where Extra == EmptyView {
-    public init(store: StoreOf<ChatThreadFeature>, prompt: Text? = nil, @ViewBuilder empty: () -> Empty) {
+    public init(store: StoreOf<ChatCore<Replier>>, prompt: Text? = nil, @ViewBuilder empty: () -> Empty) {
         self.init(store: store, prompt: prompt, empty: empty) { _ in EmptyView() }
     }
 }
