@@ -50,6 +50,12 @@ package struct RootView: View {
         .task { await store.send(.task).finish() }
     }
 
+    /// Whether the Undo toast and banners show above the tab bar: on
+    /// iPhone, except while a chat is open.
+    private var bannersAtBottom: Bool {
+        store.platform == .phone && !(store.tab == .conversations && store.conversations.openID != nil)
+    }
+
     private var content: some View {
         Group {
             switch store.platform {
@@ -57,10 +63,11 @@ package struct RootView: View {
             case .mac: MacRootView(store: store)
             }
         }
-        .overlay(alignment: store.platform == .phone ? .bottom : .top) {
+        .overlay(alignment: bannersAtBottom ? .bottom : .top) {
             // On iPhone above the tab bar, clear of every screen's own
-            // controls. On the Mac under the toolbar, small enough to leave
-            // the sidebar and the chat's composer free.
+            // controls, but under the title while a chat is open, whose
+            // field is just above the tab bar. On the Mac under the toolbar,
+            // small enough to leave the sidebar and the chat's composer free.
             VStack(spacing: 8) {
                 if store.isRecordingSteps {
                     RecordingBar { store.send(.stopRecordingTapped) }
@@ -74,7 +81,7 @@ package struct RootView: View {
                 }
             }
             .frame(maxWidth: store.platform == .phone ? .infinity : 440)
-            .padding(store.platform == .phone ? .bottom : .top, store.platform == .phone ? 64 : 60)
+            .padding(bannersAtBottom ? .bottom : .top, bannersAtBottom ? 64 : 60)
             .animation(.default, value: store.toast?.id)
         }
         .modifier(RegistersUndo(store: store))
@@ -415,7 +422,7 @@ private struct UndoToast: View {
         .padding()
         .background(.thinMaterial, in: .rect(cornerRadius: 12))
         .padding(.horizontal)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .transition(.opacity)
     }
 }
 
