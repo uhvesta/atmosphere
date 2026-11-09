@@ -18,7 +18,10 @@ _SHA256 = "434b0055e794bccfa209bce4a96a5e66beb226f56998fdb120b563d4d3b28b4c"
 _BUILD = """\
 load("@rules_apple//apple:resources.bzl", "apple_metal_library", "apple_resource_bundle")
 
-package(default_visibility = ["@@//apps/libs/kits/inference/mlx:__subpackages__"])
+package(default_visibility = [
+    "@@//apps/libs/kits/inference/mlx:__subpackages__",
+    "@@//apps/libs/kits/inference/speech/dualar:__pkg__",
+])
 
 licenses(["notice"])
 

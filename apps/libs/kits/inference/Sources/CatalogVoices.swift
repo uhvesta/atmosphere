@@ -2,7 +2,7 @@
 /// from the language models of `ModelCatalog`. See Speech.swift for why
 /// these.
 public enum VoiceCatalog {
-    public static let all: [VoiceModel] = [supertonic3]
+    public static let all: [VoiceModel] = [supertonic3, audio8Persian]
 
     /// The voice model `id` names, if it's one.
     public static func model(_ id: ModelID) -> VoiceModel? {
@@ -35,6 +35,40 @@ public enum VoiceCatalog {
         ],
         voices: ["F1", "F2", "F3", "F4", "F5"].enumerated().map { VoiceStyle(id: $1, name: "Female \($0 + 1)") }
             + ["M1", "M2", "M3", "M4", "M5"].enumerated().map { VoiceStyle(id: $1, name: "Male \($0 + 1)") })
+
+    /// Audio8's Persian voice, a dual autoregressive model of about 600M
+    /// parameters in bfloat16, at commit bcca4112, with its tokenizer and
+    /// its audio codec, a PyTorch checkpoint. The model is Apache 2.0, but
+    /// most of the codec's weights are Fish Audio's S2 Pro codec's, under
+    /// the Fish Audio Research License, so the whole is for non-commercial
+    /// use only.
+    public static let audio8Persian = VoiceModel(
+        spec: ModelSpec(
+            id: "audio8-tts-persian", name: "Audio8 Persian",
+            summary: "A natural Persian voice", runtime: .mlx,
+            source: ModelSource(
+                repo: "ArminRahimi/Audio8-TTS-Persian", commit: "bcca4112db62fccaf733772226d4f9931a088a0a",
+                files: [
+                    ModelFile(
+                        path: "config.json", size: 1_459,
+                        digest: .sha256("92e19f10edb6c79ef2ccf4aebe218baa2c12743d648d75238041eca39439f8d3")),
+                    ModelFile(
+                        path: "tokenizer_config.json", size: 860_832,
+                        digest: .sha256("b8d149343ae425b0da67e6708686aceb51be7815d9792f265fc12ff04d5e9856")),
+                    ModelFile(
+                        path: "tokenizer.json", size: 12_217_872,
+                        digest: .sha256("f24e08099d45a8adf3f52f5f0b03276e433bb9d689bb15fcbcc48ce58744588b")),
+                    ModelFile(
+                        path: "model.safetensors", size: 1_202_342_528,
+                        digest: .sha256("e0540b75b39171ace3942ddca063a0c8881a66da97ce3eecae1a5bd4aa55fa4c")),
+                    ModelFile(
+                        path: "codec.pth", size: 1_349_857_559,
+                        digest: .sha256("c310505aa11fe2f6cc63b8d3130dc7e77e73227774f5c62575769b1f47a8d048")),
+                ]),
+            contextTokens: 0, memoryBytes: 2_500_000_000, license: "Non-commercial (Fish Audio Research)"),
+        engine: .dualAR,
+        languages: ["fa"],
+        voices: [VoiceStyle(id: "default", name: "Default")])
 
     private static let supertonicPackages: [ModelFile] = [
         package(

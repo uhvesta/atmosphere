@@ -1,0 +1,79 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# Dual autoregressive voice models on MLX, such as Audio8's Persian one: a
+# SpeechEngine that Speaker, in the package above, plays. The model's
+# codec is read straight from its PyTorch checkpoint. MLX has no build for
+# the iOS Simulator's GPU, so this builds for devices and Macs only, and
+# ../voices leaves it out of Simulator builds. It needs its model, so it's
+# checked by building and by hand with :smoke_test; the checkpoint reader
+# and the sampler are tested on their own.
+swift_library(
+    name = "dualar",
+    package_name = "inference",
+    srcs = glob(["Sources/*.swift"]),
+    data = ["@mlx_kernels//:bundle"],
+    module_name = "InferenceKitDualAR",
+    target_compatible_with = ["//bazel/xcode"] + select({
+        "@apple_support//constraints:simulator": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    visibility = ["//apps/libs/kits/inference/speech/voices:__pkg__"],
+    deps = [
+        "//apps/libs/kits/inference",
+        "//apps/libs/kits/inference/speech/text",
+        "@swiftpkg_mlx_swift//:MLX",
+        "@swiftpkg_mlx_swift//:MLXNN",
+        "@swiftpkg_swift_transformers//:Tokenizers",
+    ],
+)
+
+swift_library(
+    name = "tests_lib",
+    package_name = "inference",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":dualar"],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+swift_library(
+    name = "smoke_tests_lib",
+    package_name = "inference",
+    testonly = True,
+    srcs = glob(["SmokeTests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":dualar",
+        "//apps/libs/kits/inference",
+    ],
+)
+
+# Speaks Persian with a downloaded Audio8-TTS-Persian, from the folder in
+# DUALAR_DIR, and checks its prompt, codec and first codes against what
+# the model's own code makes; DUALAR_WAV, if set, is where the speech is
+# written. Skips without it; it downloads nothing. Manual: it needs the
+# Mac's GPU, which the sandbox hides.
+macos_unit_test(
+    name = "smoke_test",
+    minimum_os_version = "15.0",
+    tags = [
+        "manual",
+        "no-sandbox",
+    ],
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":smoke_tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

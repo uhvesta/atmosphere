@@ -15,8 +15,8 @@ import Foundation
 /// speak the language. The engines and the player live in
 /// InferenceKitSpeech.
 ///
-/// The voice model, picked in November 2026 for its size, its languages
-/// and its licence:
+/// The voice models, picked in November 2026 for their size, languages
+/// and licences:
 ///
 /// - Supertonic 3, by Supertone: about 99M parameters, 31 languages, and
 ///   it reads raw text, so it needs no phonemizer such as espeak-ng
@@ -27,12 +27,20 @@ import Foundation
 ///   ML packages (iOS 18 and macOS 15 and later), so it needs no new
 ///   engine. About 400 MB.
 ///
+/// - Audio8 Persian, for Persian, which Supertonic doesn't speak: a dual
+///   autoregressive model of about 600M parameters and an audio codec, run
+///   on MLX, so on devices and Macs but not in the Simulator. Most of
+///   its codec's weights are Fish Audio's, under a research licence, so
+///   it's for non-commercial use only, which is how the apps ship for now.
+///   About 2.5 GB.
+///
 /// Considered and left out: Kokoro 82M (Apache 2.0, but every language
 /// past English and Japanese needs espeak-ng's GPL phonemizer); Qwen3-TTS
 /// 0.6B (Apache 2.0, 10 languages, but it needs a language model and an
-/// audio codec ported to MLX first, a follow-up); Kitten TTS and Audio8
-/// (their own licences); Pocket TTS and NeuTTS (gated downloads); and
-/// several with non-commercial licences.
+/// audio codec ported to MLX first, a follow-up); Kitten TTS (its own
+/// licence); Pocket TTS and NeuTTS (gated downloads); Piper's Persian
+/// voices (trained from a research-only voice); and several with
+/// non-commercial licences.
 
 /// A voice a voice model speaks in, such as one of Supertonic's ten.
 public struct VoiceStyle: Hashable, Codable, Sendable, Identifiable {
@@ -53,6 +61,8 @@ public struct VoiceStyle: Hashable, Codable, Sendable, Identifiable {
 public enum VoiceEngineKind: String, Hashable, Sendable {
     /// Supertonic's flow-matching model on Core ML.
     case supertonic
+    /// A dual autoregressive model and its codec on MLX, such as Audio8's.
+    case dualAR
 }
 
 /// A neural text-to-speech model to download: its files, what runs it, the

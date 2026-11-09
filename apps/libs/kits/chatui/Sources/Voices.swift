@@ -94,7 +94,7 @@ public struct VoicesSection: View {
                 "The system voice needs no download. A voice model sounds more natural, and like the other models "
                     + "here it runs on this device. Where it doesn't speak a language, \(app) uses the system "
                     + "voice. Supertonic 3's licence, OpenRAIL-M, forbids using it to pass speech off as a real "
-                    + "person's, to deceive or to harm.")
+                    + "person's, to deceive or to harm. Audio8 Persian's licence allows only non-commercial use.")
         }
     }
 

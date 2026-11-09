@@ -31,7 +31,7 @@ final class VoicesFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.standard, .system)
         XCTAssertEqual(store.state.own, [:])
         XCTAssertEqual(store.state.installed, [])
-        XCTAssertEqual(store.state.models.map(\.id), [supertonic.id])
+        XCTAssertEqual(store.state.models.map(\.id), VoiceCatalog.all.map(\.id))
         await store.skipInFlightEffects()
     }
 

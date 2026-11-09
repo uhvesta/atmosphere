@@ -59,7 +59,7 @@ final class SpeechRouteTests: XCTestCase {
                 case .gitBlobSHA1(let hex): XCTAssertEqual(hex.count, 40, file.path)
                 }
             }
-            for voice in model.voices {
+            for voice in model.voices where model.engine == .supertonic {
                 XCTAssertTrue(source.files.contains { $0.path == "voice_styles/\(voice.id).json" }, voice.id)
             }
         }

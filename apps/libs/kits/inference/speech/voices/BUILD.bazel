@@ -1,7 +1,8 @@
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
 # Which engine runs each kind of downloaded voice model, the one place the
-# apps' speech meets the engines beside it, such as ../supertonic.
+# apps' speech meets the engines beside it, such as ../supertonic. The
+# MLX ones, such as ../dualar, are left out of Simulator builds.
 swift_library(
     name = "voices",
     package_name = "inference",
@@ -16,7 +17,10 @@ swift_library(
     deps = [
         "//apps/libs/kits/inference",
         "//apps/libs/kits/inference/speech/supertonic",
-    ],
+    ] + select({
+        "@apple_support//constraints:simulator": [],
+        "//conditions:default": ["//apps/libs/kits/inference/speech/dualar"],
+    }),
 )
 
 filegroup(

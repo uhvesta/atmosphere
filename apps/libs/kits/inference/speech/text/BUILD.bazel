@@ -1,0 +1,36 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# Text made ready to be read aloud, by language: written the way a voice
+# model saw text in training, and cut into pieces short enough for one to
+# say at once. It knows nothing of any model, so any engine can use it.
+swift_library(
+    name = "text",
+    package_name = "inference",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "InferenceKitSpeechText",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/libs/kits/inference/speech:__subpackages__"],
+)
+
+swift_library(
+    name = "tests_lib",
+    package_name = "inference",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":text"],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
