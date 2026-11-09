@@ -94,8 +94,12 @@ package struct ChatsView: View {
             preview: last?.text, previewIsModel: last?.role == .assistant, isSynced: false
         )
         .tag(chat.id)
-        .swipeActions(edge: .trailing) {
-            Button("Delete", systemImage: "trash", role: .destructive) { store.send(.deleteTapped(chat.id)) }
+        // Not a destructive button: the list would take the row away at
+        // once, while the chat stays until the person confirms, and the
+        // two disagreeing crashes the list.
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("Delete", systemImage: "trash") { store.send(.deleteTapped(chat.id)) }
+                .tint(.red)
             Button("Rename", systemImage: "pencil") { store.send(.renameTapped(chat.id)) }
                 .tint(.gray)
         }
