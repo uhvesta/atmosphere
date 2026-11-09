@@ -219,7 +219,16 @@ private struct Writer: Sendable {
         guard let reply = last.value else { throw ReplyFailure.noReply }
         return ChatReply(
             text: reply.text, thinking: reply.thinking?.shown, context: reply.context,
-            extra: ReplyChanges(proposal: reply.proposal, plan: reply.plan, leftOut: reply.leftOut, skill: picked))
+            speed: reply.speed.map {
+                ThreadSpeed(
+                    read: $0.read, written: $0.written, reading: $0.reading, writing: $0.writing,
+                    estimated: $0.estimated)
+            },
+            extra: ReplyChanges(proposal: reply.proposal, plan: reply.plan, leftOut: reply.leftOut, skill: picked),
+            prompt: reply.sent.map {
+                ReplyPrompt(
+                    instructions: $0.instructions, prompt: $0.prompt, photos: $0.photos, context: reply.context)
+            })
     }
 
     /// Sends each reply to `request`, and stops with `.timedOut` when the

@@ -338,6 +338,9 @@
     "A KV cache at 8 or 4 bits keeps less memory for each token read, and its answers drift further from 16 bits'." : {
 
     },
+    "A button under each reply shows exactly what the model was sent." : {
+
+    },
     "A closed task can't keep open Sub tasks, so they'll be marked Won't Do too." : {
 
     },
@@ -511,6 +514,9 @@
     "Apple Intelligence" : {
 
     },
+    "Apple's model doesn't count tokens, so its counts are guessed from the text and marked ≈." : {
+
+    },
     "Applied" : {
 
     },
@@ -548,6 +554,9 @@
 
     },
     "Archiving hides the Avenue and its tasks. You can restore it from Archived." : {
+
+    },
+    "Ask a second model too, see both answers and keep one." : {
 
     },
     "Ask about your tasks, change them, or plan what to add." : {
@@ -740,6 +749,9 @@
 
     },
     "Compact long conversations" : {
+
+    },
+    "Compare" : {
 
     },
     "Complete Project" : {
@@ -1032,6 +1044,9 @@
 
     },
     "Every version you save is kept on this device only. Tap one to use it again." : {
+
+    },
+    "Experiments" : {
 
     },
     "Expires %@" : {
@@ -1810,6 +1825,9 @@
     "Projects" : {
 
     },
+    "Prompt" : {
+
+    },
     "Put back recent changes." : {
 
     },
@@ -2128,6 +2146,9 @@
 
     },
     "Speaks %@" : {
+
+    },
+    "Speed" : {
 
     },
     "Stalled" : {
@@ -2468,6 +2489,9 @@
 
     },
     "Under %@" : {
+
+    },
+    "Under each reply: its model, tokens a second, time to first token, tokens in and out." : {
 
     },
     "Undo" : {

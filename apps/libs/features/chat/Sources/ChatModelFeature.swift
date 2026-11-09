@@ -4,10 +4,11 @@ import Foundation
 import ModelsClient
 import SwiftUI
 
-/// Picks what one chat runs on: its model, how long that thinks and its
-/// window. Each starts at the default for the chat's use in the Models
-/// screen, which this never changes, and picking the default goes back to
-/// following it. The next message uses what's picked.
+/// Picks what one chat runs on: its model, how long that thinks, its
+/// window, and in an app that picks skills, whether the chat picks one for
+/// a message sent without one. Each starts at the app's default, which
+/// this never changes, and picking the default goes back to following it.
+/// The next message uses what's picked.
 @Reducer
 public struct ChatModelFeature {
     @ObservableState
@@ -19,10 +20,25 @@ public struct ChatModelFeature {
         public var models: [RunnableModel] = []
         /// The model the use runs on in the Models screen.
         public var standard: ModelID?
+        /// Whether the chat picks skills, or nil to follow the app.
+        public var picksSkills: Bool?
+        /// Whether the app picks skills, or nil for one with none to pick.
+        public var standardPicksSkills: Bool?
 
-        public init(choice: ModelChoice, use: ModelUseKey) {
+        public init(
+            choice: ModelChoice, use: ModelUseKey, picksSkills: Bool? = nil, standardPicksSkills: Bool? = nil
+        ) {
             self.choice = choice
             self.use = use
+            self.picksSkills = picksSkills
+            self.standardPicksSkills = standardPicksSkills
+        }
+
+        /// Whether the chat picks skills. Matching the app goes back to
+        /// following it.
+        public var picksSkillsHere: Bool {
+            get { picksSkills ?? standardPicksSkills ?? false }
+            set { picksSkills = newValue == standardPicksSkills ? nil : newValue }
         }
 
         /// The model the chat runs on, once it's looked up.
@@ -94,7 +110,8 @@ public struct ChatModelView: View {
 
     public var body: some View {
         ModelSheet(
-            model: $store.model, thinking: $store.choice.thinking, window: $store.choice.window, models: store.models,
+            model: $store.model, thinking: $store.choice.thinking, window: $store.choice.window,
+            picksSkills: store.standardPicksSkills == nil ? nil : $store.picksSkillsHere, models: store.models,
             standard: store.standard, done: { store.send(.doneTapped) }
         )
         .task { await store.send(.task).finish() }

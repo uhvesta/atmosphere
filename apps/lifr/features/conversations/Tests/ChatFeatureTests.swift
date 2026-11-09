@@ -140,24 +140,6 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(library.client.selection(.assistant), .apple)
     }
 
-    func testAWindowTheNewModelDoesntOfferGoesBackToItsOwn() async {
-        let library = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small])
-        let store = TestStore(initialState: ChatModelFeature.State(choice: .defaults)) {
-            ChatModelFeature()
-        } withDependencies: {
-            $0.models = library.client
-        }
-        store.exhaustivity = .off
-        await store.send(.task)
-        await store.receive(\.loaded)
-        await store.send(.binding(.set(\.model, ModelCatalog.qwen35Small.id)))
-        await store.send(.binding(.set(\.choice.window, 32_768)))
-
-        await store.send(.binding(.set(\.model, .apple)))
-
-        XCTAssertNil(store.state.choice.window)
-    }
-
     func testAForkRunsOnTheSameModelAsItsChat() throws {
         var conversation = Conversation(id: conversationID, createdAt: now)
         conversation.context.model = ModelChoice(model: ModelCatalog.qwen35Small.id, thinking: .off)
@@ -534,6 +516,26 @@ final class ChatFeatureTests: XCTestCase {
         await send("I paid the rent", in: store)
 
         XCTAssertNil(store.state.conversation.messages.last?.thinking)
+    }
+
+    func testAReplyKeepsHowFastItWentAndShowsWhatTheModelWasSent() async throws {
+        let (workspace, _) = home()
+        let speed = TurnSpeed(read: 900, written: 30, reading: .seconds(1), writing: .seconds(2))
+        let store = chat(workspace) { _ in
+            var reply = AssistantReply(text: "Paid.", isComplete: true)
+            reply.speed = speed
+            reply.sent = AssistantSent(instructions: "You help with Lifr.", prompt: "I paid the rent", photos: 0)
+            return reply
+        }
+
+        await send("I paid the rent", in: store)
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+        await store.send(.core(.promptTapped(messageID: reply.id)))
+
+        XCTAssertEqual(reply.speed?.read, 900)
+        XCTAssertEqual(reply.speed?.written, 30)
+        XCTAssertEqual(store.state.core.shownPromptValue?.instructions, "You help with Lifr.")
+        XCTAssertEqual(store.state.core.shownPromptValue?.prompt, "I paid the rent")
     }
 
     func testAFailedReplyKeepsTheMessageAndSaysWhy() async throws {
@@ -1200,19 +1202,6 @@ final class ChatFeatureTests: XCTestCase {
         await send("How was my week?", in: store)
 
         XCTAssertEqual(sent.value, [.query])
-    }
-
-    func testPickingSkillsTheWaySettingsDoesFollowsSettingsAgain() async {
-        let store = TestStore(initialState: ChatModelFeature.State(choice: .defaults, picksSkills: false)) {
-            ChatModelFeature()
-        }
-        store.exhaustivity = .off
-
-        await store.send(.binding(.set(\.picksSkillsHere, true)))
-
-        XCTAssertNil(store.state.picksSkills)
-        store.state.$standardPicksSkills.withLock { $0 = false }
-        XCTAssertFalse(store.state.picksSkillsHere)
     }
 
     func testWhilePlanningAnAnswerKeepsTheSkillWhenLifrPicksNone() async {

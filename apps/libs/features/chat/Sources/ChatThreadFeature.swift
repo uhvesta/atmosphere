@@ -425,6 +425,7 @@ public struct ChatCore<Replier: ChatReplier> {
 
             case .replied(.success(let reply)):
                 if let context = reply.context { state.context = context }
+                if let sent = reply.prompt { state.replyPrompt = sent.named(state.replyPrompt?.model) }
                 state.replyPrompt?.context = reply.context
                 // The second model answers the same chat, once the first is
                 // done.
@@ -484,6 +485,7 @@ public struct ChatCore<Replier: ChatReplier> {
                 rival.thinking = reply.thinking
                 rival.speed = reply.speed
                 rival.extra = reply.extra
+                if let sent = reply.prompt { rival.prompt = sent.named(rival.prompt.model) }
                 rival.prompt.context = reply.context
                 state.rival = reply.text.isEmpty && reply.extra == nil ? nil : rival
                 return .none

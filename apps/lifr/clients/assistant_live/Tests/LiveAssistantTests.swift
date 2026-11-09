@@ -89,6 +89,22 @@ final class LiveAssistantTests: XCTestCase {
         XCTAssertEqual(AssistantClient.live(runtime: { _, _ in model }).inputs(.defaults), [.image])
     }
 
+    func testAFinishedReplySaysWhatTheModelWasSentAndHowFastItWent() async {
+        let model = ScriptedRuntime(inputs: [.image], steps: [ScriptedRuntime.answer(turn)])
+        var request = request("What's this?")
+        request.attachments = [ModelAttachment(.image, file: URL(filePath: "/tmp/photo.jpg"))]
+
+        let (replies, _) = await replies(.live(runtime: { _, _ in model }), request)
+
+        let last = replies.last
+        XCTAssertEqual(last?.sent?.instructions, model.turns.last?.instructions)
+        XCTAssertEqual(last?.sent?.prompt, model.turns.last?.prompt)
+        XCTAssertEqual(last?.sent?.photos, 1)
+        // The scripted model doesn't count its tokens, so they're guessed.
+        XCTAssertEqual(last?.speed?.estimated, true)
+        XCTAssertGreaterThan(last?.speed?.read ?? 0, 0)
+    }
+
     func testARecordingToAModelThatCantListenSaysPickAnother() async {
         let model = ScriptedRuntime(steps: [ScriptedRuntime.answer(turn)])
         var request = request("")

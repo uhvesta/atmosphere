@@ -302,7 +302,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         let id = try XCTUnwrap(store.conversations.openID)
         store.send(.conversations(.chats(.element(id: id, action: .core(.modelTapped)))))
         await flow.step("defaults")
-        let sheet = { (action: LifrConversations.ChatModelFeature.Action) in
+        let sheet = { (action: ChatModelFeature.Action) in
             _ = store.send(.conversations(.chats(.element(id: id, action: .model(.presented(action))))))
         }
         let gemma = ModelCatalog.gemma4E2B.id

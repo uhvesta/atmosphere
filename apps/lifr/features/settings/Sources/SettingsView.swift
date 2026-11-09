@@ -1,3 +1,4 @@
+import ChatFeatures
 import ComposableArchitecture
 import LifrAPI
 import LifrAssistantClient
@@ -58,6 +59,9 @@ package struct SettingsView: View {
                         + "stay on this device unless you sync them: swipe right on one in Conversations. "
                         + "Instructions stay on this device. Skills sync through iCloud, encrypted end to end.")
             }
+            ChatExperimentsSection(
+                showsSpeed: Binding(store.$showsSpeed), showsPrompt: Binding(store.$showsPrompt),
+                compares: Binding(store.$compares))
             Section {
                 Button("Bug Reports") { store.send(.bugReportsTapped) }
             } footer: {

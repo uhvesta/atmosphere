@@ -13,16 +13,20 @@ public struct ChatReply<Extra: Hashable & Sendable>: Hashable, Sendable {
     public var context: ContextUse?
     public var speed: ThreadSpeed?
     public var extra: Extra?
+    /// What the model was sent, for a replier that only knows once it's
+    /// written, in place of what it said when asked.
+    public var prompt: ReplyPrompt?
 
     public init(
         text: String, thinking: ThreadThinking? = nil, context: ContextUse?, speed: ThreadSpeed? = nil,
-        extra: Extra? = nil
+        extra: Extra? = nil, prompt: ReplyPrompt? = nil
     ) {
         self.text = text
         self.thinking = thinking
         self.context = context
         self.speed = speed
         self.extra = extra
+        self.prompt = prompt
     }
 }
 
@@ -48,6 +52,15 @@ public struct ReplyPrompt: Hashable, Sendable {
         self.photos = photos
         self.model = model
         self.context = context
+    }
+}
+
+extension ReplyPrompt {
+    /// The same, named for `model` unless it names its own.
+    func named(_ model: String?) -> ReplyPrompt {
+        var prompt = self
+        prompt.model = prompt.model ?? model
+        return prompt
     }
 }
 

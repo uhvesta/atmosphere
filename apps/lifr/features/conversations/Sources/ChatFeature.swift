@@ -422,7 +422,8 @@ package struct ChatFeature {
 
             case .core(.modelTapped):
                 state.model = ChatModelFeature.State(
-                    choice: state.conversation.context.model, picksSkills: state.conversation.context.picksSkills)
+                    choice: state.conversation.context.model, use: state.core.use,
+                    picksSkills: state.conversation.context.picksSkills, standardPicksSkills: state.picksSkills)
                 return .none
 
             case .model(.presented):

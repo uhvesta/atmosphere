@@ -1,3 +1,4 @@
+import ChatFeatures
 import ComposableArchitecture
 import Foundation
 import LifrAPI
@@ -45,6 +46,11 @@ package struct SettingsFeature {
         /// Whether Lifr locks when it opens. Changed only once the person
         /// confirms it's them.
         @Shared(.locksApp) package var locksApp
+        /// The chat's experiments, kept on this device and off until turned
+        /// on.
+        @Shared(.chatShowsSpeed) package var showsSpeed
+        @Shared(.chatShowsPrompt) package var showsPrompt
+        @Shared(.chatCompares) package var compares
         /// Where sync is. The app passes each change on.
         package var sync = SyncState()
         /// Kept so the Activity log opens on what's shown.

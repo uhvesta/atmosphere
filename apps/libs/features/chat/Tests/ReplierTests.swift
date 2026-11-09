@@ -50,7 +50,8 @@ private enum NoteFailure: Error, CustomStringConvertible, Equatable {
 }
 
 /// Answers each message with the next of `answers`, adding a note naming
-/// the model it was asked for, or fails when there are none left.
+/// the model it was asked for, or fails when there are none left. What it
+/// sends, it only says once it's written.
 private struct NotingReplier: ChatReplier {
     typealias Message = NotedMessage
     typealias Context = NoContext
@@ -67,7 +68,8 @@ private struct NotingReplier: ChatReplier {
         return ReplyAsk(prompt: prompt) { progress throws(NoteFailure) in
             guard let answer else { throw .busy }
             progress(.text(answer))
-            return ChatReply(text: answer, context: ContextUse(used: 10, window: 100), extra: note)
+            let sent = ReplyPrompt(instructions: "Sent: \(request.instructions)", prompt: answer, photos: 0)
+            return ChatReply(text: answer, context: ContextUse(used: 10, window: 100), extra: note, prompt: sent)
         }
     }
 }
@@ -101,6 +103,17 @@ final class ReplierTests: XCTestCase {
         XCTAssertEqual(store.state.thread.messages.last?.note, "standard")
         XCTAssertEqual(replier.asked.value.first?.instructions, "You keep notes.")
         XCTAssertEqual(replier.asked.value.first?.chat.messages.map(\.text), ["Remember milk."])
+    }
+
+    func testWhatTheReplierSaysItSentIsThePromptShown() async throws {
+        let (store, _) = chat(["Noted."])
+        await store.send(.binding(.set(\.input, "Remember milk.")))
+        await store.send(.sendTapped)
+        await store.receive(\.replied)
+        let reply = try store.state.thread.messages.last.unwrap()
+        await store.send(.promptTapped(messageID: reply.id))
+        XCTAssertEqual(store.state.shownPromptValue?.instructions, "Sent: You keep notes.")
+        XCTAssertEqual(store.state.shownPromptValue?.context, ContextUse(used: 10, window: 100))
     }
 
     func testAFailedReplySaysWhyInTheRepliersWords() async throws {

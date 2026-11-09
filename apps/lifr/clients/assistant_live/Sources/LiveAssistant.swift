@@ -196,7 +196,9 @@ enum LiveAssistant {
             attachments: request.attachments)
         let draftsPlans = request.draftsPlans
         think(&turn, request, thoughts, continuation)
+        let timing = Timing(&turn)
         let answer = try await model.respond(to: turn) { partial in
+            timing.began()
             let reply = AssistantPrompt.reply(from: partial, isComplete: false, draftsPlans: draftsPlans)
             thoughts.yield(reply, continuation)
         }
@@ -262,6 +264,7 @@ enum LiveAssistant {
         reply.context = AssistantPrompt.contextUse(
             request, size: size, answer: reply.text, thinking: reply.thinking, budget: model.budget)
         reply.proposal = tools.proposal
+        timing.finish(&reply, turn)
         continuation.yield(
             AssistantPrompt.reply(reply, changed: changed, refused: refused, refusedProjects: refusedProjects))
         continuation.finish()
@@ -336,7 +339,9 @@ enum LiveAssistant {
             instructions: instructions,
             prompt: AssistantPrompt.prompt(request, size: size), attachments: request.attachments)
         think(&turn, request, thoughts, continuation)
+        let timing = Timing(&turn)
         let answer = try await model.respond(to: turn) { partial in
+            timing.began()
             thoughts.yield(AssistantReply(text: partial.plainText, isComplete: false), continuation)
         }
         var reply = AssistantReply(
@@ -344,6 +349,7 @@ enum LiveAssistant {
             leftOut: AssistantPrompt.leftOut(request, size: size))
         reply.context = AssistantPrompt.contextUse(
             request, size: size, answer: reply.text, thinking: reply.thinking, budget: model.budget)
+        timing.finish(&reply, turn)
         continuation.yield(reply)
         continuation.finish()
     }
@@ -437,6 +443,53 @@ extension LiveAssistant {
 /// What the model has thought for one request, over each time Lifr asked
 /// it, and the reply written so far, so a reply as it's written carries
 /// both.
+/// Times one answer: the model's own counts, or, for a model that
+/// doesn't count its tokens, guesses from the text at about three
+/// characters a token, timed from when it began to write.
+final class Timing: Sendable {
+    /// What a photo is guessed to take, in tokens.
+    private static let photoTokens = 280
+    private let clock = ContinuousClock()
+    private let start: ContinuousClock.Instant
+    private let first = Mutex<Duration?>(nil)
+    private let measured = Mutex<TurnSpeed?>(nil)
+
+    /// Times `turn`, which it tells to report its speed.
+    init(_ turn: inout ModelTurn) {
+        start = clock.now
+        turn.speed = { [weak self] speed in self?.measured.withLock { $0 = speed } }
+        if let thinking = turn.thinking {
+            turn.thinking = { [weak self] thought in
+                self?.began()
+                thinking(thought)
+            }
+        }
+    }
+
+    /// Notes that the model wrote, the first time it does.
+    func began() {
+        let now = start.duration(to: clock.now)
+        first.withLock { $0 = $0 ?? now }
+    }
+
+    /// Adds to `reply` how fast the model answered `turn`, and what it
+    /// was sent.
+    func finish(_ reply: inout AssistantReply, _ turn: ModelTurn) {
+        let photos = turn.attachments.filter { $0.kind == .image }.count
+        reply.sent = AssistantSent(instructions: turn.instructions, prompt: turn.prompt, photos: photos)
+        if let speed = measured.withLock({ $0 }) {
+            reply.speed = speed
+            return
+        }
+        let whole = start.duration(to: clock.now)
+        let reading = first.withLock { $0 } ?? whole
+        let read = (turn.instructions.utf8.count + turn.prompt.utf8.count) / 3 + photos * Self.photoTokens
+        let written = (reply.text.utf8.count + (reply.thinking?.text.utf8.count ?? 0)) / 3
+        reply.speed = TurnSpeed(
+            read: read, written: written, reading: reading, writing: whole - reading, estimated: true)
+    }
+}
+
 final class Thoughts: Sendable {
     private struct State {
         /// The thinking of answers Lifr asked again after.

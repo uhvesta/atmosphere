@@ -358,6 +358,11 @@ package struct AssistantReply: Hashable, Sendable {
     package var context: ContextUse?
     /// What it asks to change, for the person to apply.
     package var proposal: Proposal?
+    /// How fast the model read and wrote, once the reply is complete:
+    /// guessed from the text for a model that doesn't count its tokens.
+    package var speed: TurnSpeed?
+    /// What the model was sent for the answer, once the reply is complete.
+    package var sent: AssistantSent?
 
     package init(
         text: String, plan: Plan? = nil, isComplete: Bool = false, thinking: ModelThinking? = nil, leftOut: Int = 0
@@ -367,6 +372,20 @@ package struct AssistantReply: Hashable, Sendable {
         self.isComplete = isComplete
         self.thinking = thinking
         self.leftOut = leftOut
+    }
+}
+
+/// What the model was sent for an answer, exactly as it got it.
+package struct AssistantSent: Hashable, Sendable {
+    package var instructions: String
+    package var prompt: String
+    /// How many photos went with it.
+    package var photos: Int
+
+    package init(instructions: String, prompt: String, photos: Int) {
+        self.instructions = instructions
+        self.prompt = prompt
+        self.photos = photos
     }
 }
 

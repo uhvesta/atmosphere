@@ -16,6 +16,7 @@ swift_library(
         "//apps/lifr/features:__subpackages__",
     ],
     deps = [
+        "//apps/libs/features/chat",
         "//apps/libs/features/models",
         "//apps/libs/kits/chatui",
         "//apps/lifr/api",

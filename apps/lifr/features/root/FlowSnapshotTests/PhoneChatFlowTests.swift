@@ -1,3 +1,4 @@
+import ChatFeatures
 import ComposableArchitecture
 import FlowKit
 import LifrAPI
@@ -14,6 +15,7 @@ import LifrRemindersClient
 import LifrRoot
 import LifrSearchClient
 import LifrSessionClient
+import LifrSettings
 import LifrShortcuts
 import LifrStoreClient
 import LifrSyncClient
@@ -288,6 +290,35 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
 
     /// A reply with what the model thought: closed under its chevron with
     /// how long it took on the GPU, then opened.
+    /// The experiments turned on in Settings, then a reply with its speed
+    /// under it and what the model was sent.
+    func testExperiments() async throws {
+        var reply = AssistantReply(text: "I'd water them on Saturday morning.", isComplete: true)
+        reply.context = ContextUse(used: 1_852, window: 4_096)
+        reply.speed = TurnSpeed(read: 1_840, written: 12, reading: .milliseconds(900), writing: .milliseconds(600))
+        reply.sent = AssistantSent(
+            instructions: "You help the person plan with Lifr.", prompt: "Person: When should I water the plants?",
+            photos: 0)
+        let (store, flow) = app("experiments", replies: [reply])
+        store.isSettingsShown = true
+        store.settings.$showsSpeed.withLock { $0 = true }
+        store.settings.$showsPrompt.withLock { $0 = true }
+        store.settings.$compares.withLock { $0 = true }
+        await flow.step("settings", image: false)
+        flow.scrollToEnd()
+        await flow.step("settings-experiments")
+        store.isSettingsShown = false
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        send("When should I water the plants?", in: id, of: store)
+        await flow.step("replied")
+        let answer = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last)
+        store.send(.conversations(.chats(.element(id: id, action: .core(.promptTapped(messageID: answer.id))))))
+        await flow.step("prompt")
+        flow.finish()
+    }
+
     func testAssistantThinking() async throws {
         let thinking = ModelThinking(
             text: """
