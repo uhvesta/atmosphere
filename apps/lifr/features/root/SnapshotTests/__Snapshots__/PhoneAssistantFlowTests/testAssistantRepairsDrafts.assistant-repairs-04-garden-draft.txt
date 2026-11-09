@@ -18,7 +18,7 @@
 [text] "Buy seedlings"
 [text] "Dig the bed"
 [button] "Edit"
-[button] "Add"
+[button] "Add Draft"
 [button] "Discard"
 [element] "" value: "Message"
 [text] "Added “Stretch after every run” to Half marathon"

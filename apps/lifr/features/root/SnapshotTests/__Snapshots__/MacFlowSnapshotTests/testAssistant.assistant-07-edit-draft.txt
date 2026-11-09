@@ -40,7 +40,7 @@
   [StaticText] "" value: "Jacket"
   [Button] "Discard"
   [Button] "Edit"
-  [Button] "Add"
+  [Button] "Add Draft"
   [TextField] ""
   [Button] "Add" help: "Add photos or files" id: plus
   [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"

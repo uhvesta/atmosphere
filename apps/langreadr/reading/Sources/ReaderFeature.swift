@@ -102,7 +102,6 @@ package struct ReaderFeature {
 
     @Dependency(\.tutor) private var tutor
     @Dependency(\.readerServices) private var services
-    @Dependency(\.speech) private var speech
     @Dependency(\.date.now) private var now
 
     package init() {}
@@ -162,10 +161,8 @@ package struct ReaderFeature {
                         transliteration: Script.transliteration(for: state.book.language) == .transform
                             ? services.transliterate(word.text) : nil,
                         note: state.book.words[key]))
-                // The card says why if it can't; here it just doesn't.
-                return .run { [language = state.book.language] _ in
-                    try? await speech.speak(word.text, language.rawValue)
-                }
+                // Read aloud through the card, which says why if it can't.
+                return .send(.destination(.presented(.word(.sayTapped))))
             case .askTapped:
                 guard let passage = state.picked else { return .none }
                 state.isHighlighting = false

@@ -17,7 +17,7 @@
 [text] "Shoes"
 [text] "Jacket"
 [button] "Edit"
-[button] "Add"
+[button] "Add Draft"
 [button] "Discard"
 [element] "" value: "Message"
 [button] "Add" hint: "Add photos or files"

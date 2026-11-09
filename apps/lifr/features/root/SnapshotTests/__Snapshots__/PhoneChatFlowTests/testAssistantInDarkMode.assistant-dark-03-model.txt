@@ -20,7 +20,7 @@
 [text] "Jacket"
 [button] "Gemma 4 E2B, Small and quick"
 [button] "Edit"
-[button] "Add"
+[button] "Add Draft"
 [button] "Discard"
 [text] "Only for this chat. Download more models in Settings › Models."
 [element] "" value: "Message"

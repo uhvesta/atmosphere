@@ -20,7 +20,7 @@
 [text] "0 tasks"
 [text] "New Avenue Reading, READ"
 [button] "Edit"
-[button] "Add"
+[button] "Add Draft"
 [button] "Discard"
 [element] "" value: "Message"
 [button] "Add" hint: "Add photos or files"

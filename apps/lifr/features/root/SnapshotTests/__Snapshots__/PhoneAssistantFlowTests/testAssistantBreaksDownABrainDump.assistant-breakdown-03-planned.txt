@@ -22,7 +22,7 @@
 [text] "Pack the kitchen last"
 [text] "Call mum, Home"
 [button] "Edit"
-[button] "Add"
+[button] "Add Draft"
 [button] "Discard"
 [element] "" value: "Message"
 [button] "Add" hint: "Add photos or files"

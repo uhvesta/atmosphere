@@ -85,7 +85,7 @@ final class PhoneAssistantFlowTests: PhoneFlowTestCase {
             .conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, "Add a Fitness Avenue")))))))
         store.send(.conversations(.chats(.element(id: id, action: .core(.sendTapped)))))
         await flow.step("first-draft")
-        flow.tap("Add")
+        flow.tap("Add Draft")
         await flow.step("first-added", image: false)
         XCTAssertNotNil(store.workspace?.avenues.values.first { $0.key.rawValue == "FIT" }, "Fitness wasn't added")
 
@@ -106,7 +106,7 @@ final class PhoneAssistantFlowTests: PhoneFlowTestCase {
         XCTAssertNil(chat.problem, "Removing the row the problem was about left the problem")
         XCTAssertTrue(chat.canAdd)
         store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.editsDraft, false))))))
-        flow.tap("Add")
+        flow.tap("Add Draft")
         await flow.step("second-added")
         XCTAssertNotNil(store.workspace?.avenues.values.first { $0.key.rawValue == "READ" }, "Reading wasn't added")
         flow.finish()
@@ -161,7 +161,7 @@ final class PhoneAssistantFlowTests: PhoneFlowTestCase {
         send("Remove the second one", in: id, of: store)
         await flow.step("removed")
         XCTAssertEqual(draftTitles(id, in: store), ["buy milk"])
-        flow.tap("Add")
+        flow.tap("Add Draft")
         await flow.step("added", image: false)
         XCTAssertEqual(store.workspace?.tasks.values.filter { $0.title == "buy milk" }.count, 1)
         flow.finish()
@@ -242,7 +242,7 @@ final class PhoneAssistantFlowTests: PhoneFlowTestCase {
         XCTAssertEqual(chat.conversation.draft?.tasks.map(\.title), ["Stretch after every run"])
         XCTAssertEqual(chat.conversation.draft?.projects, [])
         XCTAssertNil(chat.problem)
-        flow.tap("Add")
+        flow.tap("Add Draft")
         await flow.step("project-added", image: false)
 
         send("Make a Garden Avenue with a task to plant tomatoes: buy seedlings, dig the bed", in: id, of: store)
@@ -252,7 +252,7 @@ final class PhoneAssistantFlowTests: PhoneFlowTestCase {
         XCTAssertEqual(
             garden.conversation.draft?.tasks.first?.subtasks.map(\.title), ["Buy seedlings", "Dig the bed"])
         XCTAssertNil(garden.problem)
-        flow.tap("Add")
+        flow.tap("Add Draft")
         await flow.step("garden-added", image: false)
         XCTAssertNotNil(store.workspace?.avenues.values.first { $0.key.rawValue == "GARDEN" }, "Garden wasn't added")
 
@@ -293,7 +293,7 @@ final class PhoneAssistantFlowTests: PhoneFlowTestCase {
         XCTAssertEqual(chat.conversation.draft?.tasks.map(\.title), ["file my taxes"])
         XCTAssertEqual(chat.conversation.draft?.tasks.first?.priority, .urgent)
         XCTAssertEqual(chat.conversation.draft?.avenues, [])
-        flow.tap("Add")
+        flow.tap("Add Draft")
         await flow.step("added", image: false)
         let added = store.workspace?.tasks.values.first { $0.title == "file my taxes" }
         XCTAssertEqual(added?.priority, .urgent)
@@ -347,7 +347,7 @@ final class PhoneAssistantFlowTests: PhoneFlowTestCase {
             planned.conversation.draft?.tasks.map(\.title),
             ["Get the old deposit back", "Book a van", "Pack", "Call mum"])
         XCTAssertNil(planned.problem)
-        flow.tap("Add")
+        flow.tap("Add Draft")
         await flow.step("added")
         XCTAssertNotNil(store.workspace?.projects.values.first { $0.name == "Move flat" }, "the Project wasn't added")
         flow.finish()

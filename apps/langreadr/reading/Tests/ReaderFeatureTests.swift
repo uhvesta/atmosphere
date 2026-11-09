@@ -15,7 +15,8 @@ import XCTest
 @MainActor
 final class ReaderFeatureTests: XCTestCase {
     private func reader(
-        _ book: Book, steps: [ScriptedRuntime.Step] = [], spoken: LockIsolated<[String]> = LockIsolated([])
+        _ book: Book, steps: [ScriptedRuntime.Step] = [], spoken: LockIsolated<[String]> = LockIsolated([]),
+        fails: SpeechError? = nil
     ) async -> TestStoreOf<ReaderFeature> {
         let store = TestStore(initialState: ReaderFeature.State(book: book)) {
             ReaderFeature()
@@ -23,7 +24,10 @@ final class ReaderFeatureTests: XCTestCase {
             $0.tutor = tutor(steps)
             $0.chatRuntime = .always(ScriptedRuntime(steps: steps))
             $0.readerServices = .fake()
-            $0.speech.speak = { text, _ in spoken.withValue { $0.append(text) } }
+            $0.speech.speak = { text, _ throws(SpeechError) in
+                if let fails { throw fails }
+                spoken.withValue { $0.append(text) }
+            }
             $0.date.now = epoch
             $0.uuid = .incrementing
         }
@@ -85,6 +89,16 @@ final class ReaderFeatureTests: XCTestCase {
         XCTAssertEqual(card?.note?.meaning, "friend")
         XCTAssertNil(card?.note?.transliteration, "a reading that's the word itself isn't shown")
         XCTAssertEqual(store.state.book.words[WordKey(paragraph: paragraph, word: "amigo")]?.meaning, "friend")
+    }
+
+    func testATappedWordThatCantBeSaidSaysWhyOnItsCard() async throws {
+        let store = await reader(try spanish(), fails: .audioUnavailable(reason: "busy"))
+        let (paragraph, amigo) = try word("amigo", in: store)
+
+        await store.send(.wordTapped(paragraph: paragraph, amigo))
+        await store.receive(\.destination.presented.word.spoke)
+
+        XCTAssertNotNil(store.state.destination?.word?.speechProblem)
     }
 
     func testTwoTapsWhileHighlightingAskAboutThePassageBetweenThem() async throws {

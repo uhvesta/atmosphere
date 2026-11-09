@@ -11,7 +11,7 @@
 [text] "1 task"
 [text] "Stretch after every run, Health › Half marathon"
 [button] "Edit"
-[button] "Add"
+[button] "Add Draft"
 [button] "Discard"
 [element] "" value: "Message"
 [button] "Add" hint: "Add photos or files"

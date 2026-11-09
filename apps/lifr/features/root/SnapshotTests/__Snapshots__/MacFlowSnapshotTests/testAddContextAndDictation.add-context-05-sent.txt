@@ -42,7 +42,7 @@
   [StaticText] "" value: "Jacket"
   [Button] "Discard"
   [Button] "Edit"
-  [Button] "Add"
+  [Button] "Add Draft"
   [TextField] ""
   [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button] "Model" value: "Gemma 4 E4B, On" help: "Model, Thinking and Context Window"

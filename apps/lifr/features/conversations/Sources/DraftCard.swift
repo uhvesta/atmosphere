@@ -6,7 +6,7 @@ import SwiftUI
 
 /// What the plan adds, to read before adding: each row with what it means,
 /// such as "Sat, Nov 7" for "saturday" or "Home" for "HOME". Edit opens the
-/// plan's fields; Add adds exactly what the card shows.
+/// plan's fields; Add, which VoiceOver calls Add Draft, adds exactly what the card shows.
 struct DraftCard: View {
     let plan: Plan
     let meanings: DraftMeanings
@@ -55,9 +55,11 @@ struct DraftCard: View {
                 Spacer()
                 Button("Edit", action: edit)
                     .buttonStyle(.bordered)
+                // Named for VoiceOver apart from the composer's Add.
                 Button("Add", action: add)
                     .buttonStyle(.borderedProminent)
                     .disabled(!canAdd)
+                    .accessibilityLabel("Add Draft")
             }
         }
         .padding()
