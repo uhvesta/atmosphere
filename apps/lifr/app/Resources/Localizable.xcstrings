@@ -73,6 +73,16 @@
     "%@ is In Progress again: a Sub task was added on one device while it was closed on another." : {
 
     },
+    "%@ is a photo, and %@ reads only text. Pick a model that reads photos with the model button, or add a text, Markdown or PDF file." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ is a photo, and %2$@ reads only text. Pick a model that reads photos with the model button, or add a text, Markdown or PDF file."
+          }
+        }
+      }
+    },
     "%@ is a task of its own now, because its parents were Sub tasks of each other." : {
 
     },
@@ -141,6 +151,9 @@
     "%@ s" : {
 
     },
+    "%@ to first token" : {
+
+    },
     "%@ tok/s" : {
 
     },
@@ -166,6 +179,36 @@
           "stringUnit" : {
             "state" : "new",
             "value" : "%1$@ · %2$@"
+          }
+        }
+      }
+    },
+    "%@%@ read" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@%2$@ read"
+          }
+        }
+      }
+    },
+    "%@%@ tok/s" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@%2$@ tok/s"
+          }
+        }
+      }
+    },
+    "%@%@ written" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@%2$@ written"
           }
         }
       }
@@ -682,6 +725,9 @@
     "Changes save at once, and each can be undone from the conversation or Activity." : {
 
     },
+    "Chat" : {
+
+    },
     "Chats want fast writing; quick tasks, such as naming a conversation, want the first word soon. Automatic runs it where it measured fastest." : {
 
     },
@@ -755,6 +801,12 @@
 
     },
     "Compare" : {
+
+    },
+    "Compare with Another Model…" : {
+
+    },
+    "Compared with %@" : {
 
     },
     "Complete Project" : {
@@ -844,6 +896,9 @@
     "Couldn't keep the instructions on this device (%@). The assistant uses the ones from before. Check that this device has free storage, then try again." : {
 
     },
+    "Couldn't keep the photo on this device: %@ Free some space, then add it again." : {
+
+    },
     "Couldn't load your Avenues" : {
 
     },
@@ -866,10 +921,16 @@
         }
       }
     },
+    "Couldn't open that file: %@ Try picking it again." : {
+
+    },
     "Couldn't read it aloud" : {
 
     },
     "Couldn't read that photo (%@). If it's in iCloud, check you're online so it can download, then pick it again." : {
+
+    },
+    "Couldn't read that photo. Pick another, or take a screenshot of it and add that." : {
 
     },
     "Couldn't remove the model" : {
@@ -891,6 +952,9 @@
 
     },
     "Couldn't undo" : {
+
+    },
+    "Counted by the model as it ran." : {
 
     },
     "Created" : {
@@ -1256,7 +1320,13 @@
     "Keep Changes" : {
 
     },
+    "Keep This Answer" : {
+
+    },
     "Keep it?" : {
+
+    },
+    "Keep the answer to go on from." : {
 
     },
     "Key" : {
@@ -1692,6 +1762,9 @@
     "Note for %@" : {
 
     },
+    "Nothing" : {
+
+    },
     "Nothing is due today." : {
 
     },
@@ -1771,6 +1844,9 @@
     "Photo" : {
 
     },
+    "Photos" : {
+
+    },
     "Pick" : {
 
     },
@@ -1842,6 +1918,16 @@
     },
     "Read only" : {
 
+    },
+    "Read the chat at %@ tokens a second. %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Read the chat at %1$@ tokens a second. %2$@"
+          }
+        }
+      }
     },
     "Read this reply aloud" : {
 
@@ -2076,6 +2162,9 @@
     "Searching conversations" : {
 
     },
+    "See exactly what the model was sent for this reply" : {
+
+    },
     "See recent changes" : {
 
     },
@@ -2170,6 +2259,9 @@
 
     },
     "Stop" : {
+
+    },
+    "Stop Comparing" : {
 
     },
     "Stop Dictation" : {
@@ -2329,6 +2421,9 @@
     "The model of this chat can't read photos, so %@ wasn't attached. Pick a model that reads them, or attach a text file." : {
 
     },
+    "The newest messages that fit the model's window, with the files sent with the last." : {
+
+    },
     "The recording stopped (%@). Record again; if another app is using the microphone, close it first." : {
 
     },
@@ -2413,7 +2508,13 @@
     "This can't be undone. Tasks the assistant added or changed stay." : {
 
     },
+    "This chat's model" : {
+
+    },
     "This iPhone" : {
+
+    },
+    "This model doesn't count its tokens, so the counts are guessed from the text's length." : {
 
     },
     "Thoughts · %@" : {

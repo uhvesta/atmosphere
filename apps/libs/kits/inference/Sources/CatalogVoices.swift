@@ -28,6 +28,7 @@ public enum VoiceCatalog {
                 repo: "aufklarer/Supertonic-3-CoreML", commit: "d159f984aa1c4ccaafd0541076463e422cf75408",
                 files: supertonicPackages + supertonicSettings + supertonicVoices),
             contextTokens: 0, memoryBytes: 700_000_000, license: "OpenRAIL-M"),
+        engine: .supertonic,
         languages: [
             "en", "ko", "ja", "ar", "bg", "cs", "da", "de", "el", "es", "et", "fi", "fr", "hi", "hr", "hu", "id",
             "it", "lt", "lv", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "tr", "uk", "vi",

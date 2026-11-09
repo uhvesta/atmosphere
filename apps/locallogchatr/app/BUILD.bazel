@@ -27,6 +27,7 @@ swift_library(
         "//apps/libs/kits/inference/litert",
         "//apps/libs/kits/inference/live",
         "//apps/libs/kits/inference/speech",
+        "//apps/libs/kits/inference/speech/voices",
         "//apps/locallogchatr/chats",
         "//apps/locallogchatr/models",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

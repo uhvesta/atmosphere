@@ -1,6 +1,6 @@
 import Foundation
 import InferenceKit
-import InferenceKitSpeech
+import InferenceKitSupertonic
 import XCTest
 
 /// Speaks with a Supertonic 3 downloaded by hand into the folder in

@@ -24,6 +24,7 @@ swift_library(
         "//apps/libs/kits/inference/litert",
         "//apps/libs/kits/inference/live",
         "//apps/libs/kits/inference/speech",
+        "//apps/libs/kits/inference/speech/voices",
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/assistant_live",

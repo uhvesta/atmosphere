@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import InferenceKitSpeech
+@testable import InferenceKitSupertonic
 
 final class SupertonicTextTests: XCTestCase {
     /// A table that knows every character up to U+FFFF, by its own value.

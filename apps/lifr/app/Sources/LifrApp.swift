@@ -4,6 +4,7 @@ import InferenceKit
 import InferenceKitLiteRT
 import InferenceKitLive
 import InferenceKitSpeech
+import InferenceKitVoices
 import LifrAPI
 import LifrAssistantClient
 import LifrAssistantLive
@@ -134,7 +135,7 @@ private enum Storage {
         let selection = VoiceSelection(file: ModelLibrary.defaultRoot.appending(path: "voices.json"))
         let speaker = Speaker(
             installed: { models.library.installed() }, selection: selection, system: SystemVoice(),
-            output: SpeakerOutput(), engine: { model, _ in SupertonicEngine(model: model) })
+            output: SpeakerOutput(), engine: VoiceEngines.engine)
         return .picks(
             selection,
             speak: { text, language throws(SpeechError) in try await speaker.speak(text, language: language) },

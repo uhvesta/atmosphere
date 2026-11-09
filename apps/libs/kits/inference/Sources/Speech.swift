@@ -47,15 +47,25 @@ public struct VoiceStyle: Hashable, Codable, Sendable, Identifiable {
     }
 }
 
-/// A neural text-to-speech model to download: its files, the languages it
-/// speaks, as BCP 47 base subtags such as "en", and its voices.
+/// What runs a voice model. Each engine is a package of its own beside
+/// //apps/libs/kits/inference/speech, so one can be added or swapped
+/// without touching the rest.
+public enum VoiceEngineKind: String, Hashable, Sendable {
+    /// Supertonic's flow-matching model on Core ML.
+    case supertonic
+}
+
+/// A neural text-to-speech model to download: its files, what runs it, the
+/// languages it speaks, as BCP 47 base subtags such as "en", and its voices.
 public struct VoiceModel: Hashable, Sendable, Identifiable {
     public var spec: ModelSpec
+    public var engine: VoiceEngineKind
     public var languages: [String]
     public var voices: [VoiceStyle]
 
-    public init(spec: ModelSpec, languages: [String], voices: [VoiceStyle]) {
+    public init(spec: ModelSpec, engine: VoiceEngineKind, languages: [String], voices: [VoiceStyle]) {
         self.spec = spec
+        self.engine = engine
         self.languages = languages
         self.voices = voices
     }

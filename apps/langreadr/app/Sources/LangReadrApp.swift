@@ -5,6 +5,7 @@ import InferenceKit
 import InferenceKitLiteRT
 import InferenceKitLive
 import InferenceKitSpeech
+import InferenceKitVoices
 import LangReadrCore
 import LangReadrModels
 import LangReadrReading
@@ -140,7 +141,7 @@ extension SpeechClient: DependencyKey {
         let selection = VoiceSelection(file: ModelLibrary.defaultRoot.appending(path: "voices.json"))
         let speaker = Speaker(
             installed: { Models.runtimes.library.installed() }, selection: selection, system: SystemVoice(rate: 0.9),
-            output: SpeakerOutput(), engine: { model, _ in SupertonicEngine(model: model) })
+            output: SpeakerOutput(), engine: VoiceEngines.engine)
         return .picks(
             selection,
             speak: { text, language throws(SpeechError) in try await speaker.speak(text, language: language) },
