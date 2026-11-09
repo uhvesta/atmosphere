@@ -110,17 +110,18 @@ final class RealModel {
     /// which must be words, not an error.
     func send(_ text: String, file: StaticString = #filePath, line: UInt = #line) async throws {
         let id = try XCTUnwrap(conversation, "Open a chat first", file: file, line: line)
-        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, text))))))
-        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, text)))))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.sendTapped)))))
         try await until("the model replies to “\(text)”", timeout: Self.replyTimeout) {
-            store.conversations.chats[id: id].map { $0.replying == nil && !$0.reloading } ?? false
+            store.conversations.chats[id: id].map { $0.core.reply == nil && !$0.reloading } ?? false
         }
         let chat = try XCTUnwrap(store.conversations.chats[id: id])
         XCTAssertNil(chat.alert, "The model couldn't reply to “\(text)”", file: file, line: line)
         let reply = try XCTUnwrap(chat.conversation.messages.last)
         XCTAssertEqual(reply.role, .assistant, "No reply to “\(text)”", file: file, line: line)
         let skill = chat.conversation.messages.last { $0.role == .person }?.skill ?? "none"
-        print("“\(text)” [\(skill)] → \(reply.text)\nDraft: \(chat.conversation.draft.map(PlanFile.write) ?? "none")")
+        let draft = chat.conversation.draft.map(PlanFile.write) ?? "none"
+        print("“\(text)” [\(skill)] → \(reply.text)\nDraft: \(draft)")
     }
 
     /// Adds the draft as the model left it, and returns the tasks it added.

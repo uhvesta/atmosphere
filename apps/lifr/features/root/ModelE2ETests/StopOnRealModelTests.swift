@@ -16,13 +16,15 @@ final class StopOnRealModelTests: XCTestCase {
         let chat: (ChatFeature.Action) -> Void = {
             model.store.send(.conversations(.chats(.element(id: id, action: $0))))
         }
-        chat(.binding(.set(\.input, "Write a long story about a lighthouse keeper, at least two thousand words.")))
-        chat(.sendTapped)
+        chat(
+            .core(.binding(.set(\.input, "Write a long story about a lighthouse keeper, at least two thousand words.")))
+        )
+        chat(.core(.sendTapped))
         // A structured answer shows when it's whole, so the story is
         // stopped a few seconds in, while the model writes it.
         try await Task.sleep(for: .seconds(3))
         XCTAssertEqual(model.chatState?.canStop, true, "The story was done in 3 seconds")
-        chat(.stopTapped)
+        chat(.core(.stopTapped))
         XCTAssertEqual(model.chatState?.canStop, false)
 
         let clock = ContinuousClock()

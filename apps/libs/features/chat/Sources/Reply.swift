@@ -8,12 +8,14 @@ import InferenceKit
 public struct ChatReply<Extra: Hashable & Sendable>: Hashable, Sendable {
     public var text: String
     public var thinking: ThreadThinking?
-    public var context: ContextUse
+    /// Nil when the replier can't tell, which keeps what the last reply
+    /// took.
+    public var context: ContextUse?
     public var speed: ThreadSpeed?
     public var extra: Extra?
 
     public init(
-        text: String, thinking: ThreadThinking? = nil, context: ContextUse, speed: ThreadSpeed? = nil,
+        text: String, thinking: ThreadThinking? = nil, context: ContextUse?, speed: ThreadSpeed? = nil,
         extra: Extra? = nil
     ) {
         self.text = text

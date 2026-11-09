@@ -4,8 +4,8 @@
 [button] "Conversations" id: BackButton
 [button] "Add a task to stretch after every run t…, Actions Menu"
 [button] "Context Window" value: "4% used, 1,294 of 32,768 tokens" hint: "4% used, 1,294 of 32,768 tokens"
-[button] "Undo"
 [text] "On this device"
+[button] "Undo"
 [element] "Skill: add"
 [text] "Make a Garden Avenue with a task to plant tomatoes: buy seedlings, dig the bed"
 [text] "Here's a Garden Avenue with a task to plant tomatoes."

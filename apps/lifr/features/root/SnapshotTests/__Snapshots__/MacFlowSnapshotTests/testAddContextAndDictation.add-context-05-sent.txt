@@ -26,8 +26,8 @@
       [Button] "Move my run to Friday, Nov 3 at 10:00 AM, Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add., Draft to review"
   [Heading] "Move my run to Friday"
   [MenuButton] "Context Window" help: "Nothing used yet"
-  [StaticText] "" value: "notes.md"
   [StaticText] "" value: "Photo"
+  [StaticText] "" value: "notes.md"
   [StaticText] "" value: "Move my run to Friday"
   [StaticText] "" value: "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
   [Button] "Retry" help: "Write this reply again"
@@ -45,7 +45,7 @@
   [Button] "Add"
   [TextField] ""
   [MenuButton] "Add" help: "Add photos or files" id: plus
-  [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
+  [Button] "Model" value: "Gemma 4 E4B, On" help: "Model, Thinking and Context Window"
   [Button] "Dictate" help: "Dictate, on this device" id: mic
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""

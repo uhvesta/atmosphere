@@ -1,3 +1,4 @@
+import ChatKit
 import Foundation
 import LifrAssistantClient
 import LifrCore
@@ -29,11 +30,22 @@ final class AttachmentTests: XCTestCase {
         XCTAssertNil(message.thinking)
     }
 
-    func testWhatTheModelThoughtIsKeptWithItsReply() throws {
-        let thinking = ModelThinking(text: "Ferns like shade.", duration: .milliseconds(4_200), processor: .gpu)
-        let message = ChatMessage(id: UUID(), role: .assistant, text: "A fern.", at: now, thinking: thinking)
+    func testWhatTheModelThoughtAndWhoWroteItAreKeptWithItsReply() throws {
+        let thinking = ThreadThinking(text: "Ferns like shade.", duration: .milliseconds(4_200))
+        let speed = ThreadSpeed(read: 120, written: 30, reading: .seconds(1), writing: .seconds(2))
+        let message = ChatMessage(
+            id: UUID(), role: .assistant, text: "A fern.", at: now, thinking: thinking, model: "Qwen", speed: speed)
         let read = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(message))
         XCTAssertEqual(read.thinking, thinking)
+        XCTAssertEqual(read.model, "Qwen")
+        XCTAssertEqual(read.speed, speed)
+    }
+
+    func testThinkingKeptWithWhatItRanOnStillReads() throws {
+        let old = ModelThinking(text: "Ferns like shade.", duration: .milliseconds(4_200), processor: .gpu)
+        let saved = try JSONEncoder().encode(old)
+        let read = try JSONDecoder().decode(ThreadThinking.self, from: saved)
+        XCTAssertEqual(read, ThreadThinking(text: "Ferns like shade.", duration: .milliseconds(4_200)))
     }
 
     func testWhatAReplyAskedToChangeIsKeptWithItsDecision() throws {

@@ -63,7 +63,7 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         let conversation = try XCTUnwrap(store.conversations.chats[id: id]?.conversation)
         let asked = try XCTUnwrap(conversation.messages.last { $0.role == .person })
         XCTAssertEqual(conversation.branches(at: asked.id).count, 2)
-        chat(.branchTapped(messageID: asked.id, by: -1))
+        chat(.core(.branchTapped(messageID: asked.id, by: -1)))
         await flow.step("first-version")
         let shownLast = store.conversations.chats[id: id]?.conversation.messages.last
         XCTAssertEqual(shownLast?.text, AssistantReply.example.text)
@@ -96,14 +96,14 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
             "Saturday morning suits the garden; leave the afternoon free.")
 
         // Finding in the chat goes to the newest message with the words.
-        chat(.findTapped)
-        chat(.binding(.set(\.findQuery, "saturday")))
+        chat(.core(.findTapped))
+        chat(.core(.binding(.set(\.findQuery, "saturday"))))
         await flow.step("find")
-        XCTAssertEqual(store.conversations.chats[id: id]?.findMatches.count, 2)
+        XCTAssertEqual(store.conversations.chats[id: id]?.core.findMatches.count, 2)
 
         // Related words find what the words typed don't, once the person
         // pauses.
-        chat(.findClosed)
+        chat(.core(.findClosed))
         store.send(.conversations(.closed))
         store.send(.conversations(.searched("yard work")))
         await clock.advance(by: .seconds(1))
@@ -123,28 +123,28 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         store.send(.conversations(.newTapped))
         let id = try XCTUnwrap(store.conversations.openID)
         func chat(_ action: ChatFeature.Action) { store.send(.conversations(.chats(.element(id: id, action: action)))) }
-        chat(.binding(.set(\.input, "/add")))
+        chat(.core(.binding(.set(\.input, "/add"))))
         await flow.step("typing")
         XCTAssertNil(store.conversations.chats[id: id]?.picked)
-        chat(.binding(.set(\.input, "/add ")))
+        chat(.core(.binding(.set(\.input, "/add "))))
         await flow.step("picked")
         XCTAssertEqual(store.conversations.chats[id: id]?.picked?.id, "add")
         XCTAssertEqual(store.conversations.chats[id: id]?.input, "")
-        chat(.binding(.set(\.input, "buy milk on saturday")))
+        chat(.core(.binding(.set(\.input, "buy milk on saturday"))))
         await flow.step("details")
-        chat(.sendTapped)
+        chat(.core(.sendTapped))
         await flow.step("sent")
         let asked = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.first)
         XCTAssertEqual(asked.skill, "add")
         XCTAssertEqual(asked.text, "buy milk on saturday")
 
         // Skills come first, then the commands that can run now.
-        chat(.binding(.set(\.input, "/c")))
+        chat(.core(.binding(.set(\.input, "/c"))))
         await flow.step("commands")
-        chat(.binding(.set(\.input, "/find milk")))
-        chat(.sendTapped)
+        chat(.core(.binding(.set(\.input, "/find milk"))))
+        chat(.core(.sendTapped))
         await flow.step("find")
-        XCTAssertEqual(store.conversations.chats[id: id]?.findQuery, "milk")
+        XCTAssertEqual(store.conversations.chats[id: id]?.core.findQuery, "milk")
         flow.finish()
     }
 
@@ -158,31 +158,37 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
             inputs: [.image, .audio]
         )
         .failing([2: .cantRead(.audio)])
-        let (store, flow) = app("assistant-attachments", assistant: assistant)
+        let (store, flow) = app("assistant-attachments", readsPhotos: true, assistant: assistant)
+        // Photos go to a model that reads them.
+        await library.client.select(ModelCatalog.gemma4E4B.id, .assistant)
         store.tab = .conversations
         store.send(.conversations(.newTapped))
         let id = try XCTUnwrap(store.conversations.openID)
+        // The model's pill names it once the library's read.
+        for _ in 0..<100 where store.conversations.chats[id: id]?.core.standard == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         await flow.step("new")
-        store.send(.conversations(.chats(.element(id: id, action: .photoPicked(Data([1]))))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.photoPicked(Data([1])))))))
         await flow.step("photo", image: false)
-        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.micTapped)))))
         await flow.step("recording")
-        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.micTapped)))))
         store.send(
-            .conversations(.chats(.element(id: id, action: .binding(.set(\.input, "What plant is this?"))))))
+            .conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, "What plant is this?")))))))
         await flow.step("attached")
-        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.sendTapped)))))
         await flow.step("replied")
-        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
-        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
-        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "And this one?"))))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.micTapped)))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.micTapped)))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, "And this one?")))))))
         // Stopping attaches the recording once it's saved.
         for _ in 0..<100 where store.conversations.chats[id: id]?.canSend != true {
             try await Task.sleep(for: .milliseconds(10))
         }
-        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.sendTapped)))))
         await flow.step("cant-read")
-        XCTAssertNotNil(store.conversations.chats[id: id]?.failure)
+        XCTAssertNotNil(store.conversations.chats[id: id]?.core.problem)
         flow.finish()
     }
 
@@ -201,25 +207,31 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
     private func addContext(_ name: String, style: UIUserInterfaceStyle, test: String = #function) async throws {
         let (store, flow) = app(
             name, inputs: [.image], photos: .scripted(recentPhotos(), camera: true), style: style)
+        // Photos go to a model that reads them.
+        await library.client.select(ModelCatalog.gemma4E4B.id, .assistant)
         store.tab = .conversations
         store.send(.conversations(.newTapped))
         let id = try XCTUnwrap(store.conversations.openID)
         func chat(_ action: ChatFeature.Action) { store.send(.conversations(.chats(.element(id: id, action: action)))) }
+        // The model's pill names it once the library's read.
+        for _ in 0..<100 where store.conversations.chats[id: id]?.core.standard == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         await flow.step("new", image: false, testName: test)
-        chat(.addContextTapped)
+        chat(.core(.addContextTapped))
         // The sheet's blur of the chat beneath comes out a little different
         // each run, so these two steps check what's on screen, not pixels.
         await flow.step("sheet", image: false, testName: test)
-        XCTAssertEqual(store.conversations.chats[id: id]?.recentPhotos.count, 4)
-        chat(.recentPhotoTapped("photo-1"))
+        XCTAssertEqual(store.conversations.chats[id: id]?.core.recentPhotos.count, 4)
+        chat(.core(.recentPhotoTapped("photo-1")))
         await flow.step("recent-attached", image: false, testName: test)
-        XCTAssertEqual(store.conversations.chats[id: id]?.pending.count, 1)
-        chat(.binding(.set(\.addsContext, false)))
+        XCTAssertEqual(store.conversations.chats[id: id]?.core.pendingPhotos.count, 1)
+        chat(.core(.binding(.set(\.addsContext, false))))
         await flow.step("attached", testName: test)
-        chat(.micTapped)
+        chat(.core(.micTapped))
         await flow.step("dictating", testName: test)
-        XCTAssertEqual(store.conversations.chats[id: id]?.dictating, true)
-        chat(.micTapped)
+        XCTAssertEqual(store.conversations.chats[id: id]?.core.dictating, true)
+        chat(.core(.micTapped))
         await flow.step("dictated", testName: test)
         XCTAssertEqual(store.conversations.chats[id: id]?.input, "Move my run to Friday")
         flow.finish()
@@ -236,12 +248,15 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         store.tab = .conversations
         store.send(.conversations(.newTapped))
         let id = try XCTUnwrap(store.conversations.openID)
-        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "/"))))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, "/")))))))
         await flow.step("slash")
-        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "Tidy my weekend"))))))
-        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
-        await flow.step("replied-with-draft")
-        store.send(.conversations(.chats(.element(id: id, action: .modelTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, "Tidy my weekend")))))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.sendTapped)))))
+        // The glass under the draft comes out a little different from the
+        // image saved of it, so this step checks what's on screen, not
+        // pixels.
+        await flow.step("replied-with-draft", image: false)
+        store.send(.conversations(.chats(.element(id: id, action: .core(.modelTapped)))))
         await flow.step("model")
     }
 
@@ -251,7 +266,7 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         store.send(.conversations(.newTapped))
         await flow.step("new")
         let id = try XCTUnwrap(store.conversations.openID)
-        store.send(.conversations(.chats(.element(id: id, action: .modelTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.modelTapped)))))
         await flow.step("defaults")
         let sheet = { (action: ChatModelFeature.Action) in
             _ = store.send(.conversations(.chats(.element(id: id, action: .model(.presented(action))))))
@@ -292,8 +307,8 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         send("When should I water the plants?", in: id, of: store)
         await flow.step("collapsed")
         let reply = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last)
-        XCTAssertEqual(reply.thinking, thinking)
-        store.send(.conversations(.chats(.element(id: id, action: .thinkingToggled(messageID: reply.id)))))
+        XCTAssertEqual(reply.thinking?.text, thinking.text)
+        store.send(.conversations(.chats(.element(id: id, action: .core(.thinkingToggled(messageID: reply.id))))))
         await flow.step("expanded")
         flow.finish()
     }
@@ -315,17 +330,17 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         send("Plan my week", in: id, of: store)
         await flow.step("unreadable")
         let asked = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last)
-        XCTAssertNotNil(store.conversations.chats[id: id]?.failure)
+        XCTAssertNotNil(store.conversations.chats[id: id]?.core.problem)
 
-        chat(.retryTapped(messageID: asked.id))
+        chat(.core(.retryTapped(messageID: asked.id)))
         await flow.step("retried")
         XCTAssertEqual(store.conversations.chats[id: id]?.conversation.messages.count, 2)
 
         time.withValue { $0 += 60 }
-        chat(.editTapped(messageID: asked.id))
+        chat(.core(.editTapped(messageID: asked.id)))
         await flow.step("editing")
-        chat(.binding(.set(\.input, "Plan my weekend")))
-        chat(.sendTapped)
+        chat(.core(.binding(.set(\.input, "Plan my weekend"))))
+        chat(.core(.sendTapped))
         await flow.step("edited")
         let edited = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.first)
         XCTAssertEqual(store.conversations.chats[id: id]?.conversation.branches(at: edited.id).count, 2)
@@ -333,7 +348,7 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         send("Add a task for every day of the year", in: id, of: store)
         await flow.step("too-long")
         let long = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last)
-        XCTAssertEqual(store.conversations.chats[id: id]?.canRetry(long), false)
+        XCTAssertEqual(store.conversations.chats[id: id]?.core.canRetry(long), false)
         flow.finish()
     }
 
@@ -370,7 +385,7 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         await flow.step("writing")
         XCTAssertEqual(store.conversations.chats[id: id]?.canStop, true)
 
-        chat(.stopTapped)
+        chat(.core(.stopTapped))
         await flow.step("stopped")
         XCTAssertEqual(store.conversations.chats[id: id]?.canStop, false)
         XCTAssertEqual(
@@ -416,7 +431,7 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         let id = try XCTUnwrap(store.conversations.openID)
         send("Show me some code", in: id, of: store)
         await flow.step("writing")
-        store.send(.conversations(.chats(.element(id: id, action: .stopTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.stopTapped)))))
         store.send(.conversations(.closed))
         store.send(.conversations(.newTapped))
         let next = try XCTUnwrap(store.conversations.openID)
@@ -473,7 +488,7 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         XCTAssertEqual(store.conversations.chats[id: id]?.offersCompact, true)
 
         // /compact does what the offer's button does.
-        chat(.binding(.set(\.input, "/compact ")))
+        chat(.core(.binding(.set(\.input, "/compact "))))
         await flow.step("compacted")
         let summary = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.summary)
         XCTAssertEqual(store.conversations.chats[id: id]?.offersCompact, false)
@@ -504,7 +519,7 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         XCTAssertEqual(said.value.count, 1)
         flow.tap("Stop Speaking")
         await flow.step("stopped")
-        XCTAssertNil(store.conversations.chats[id: id]?.speaking)
+        XCTAssertNil(store.conversations.chats[id: id]?.core.speaking)
         flow.finish()
     }
 }

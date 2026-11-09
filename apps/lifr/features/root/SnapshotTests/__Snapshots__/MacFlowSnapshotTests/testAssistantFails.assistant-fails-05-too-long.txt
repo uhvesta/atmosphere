@@ -32,6 +32,7 @@
   [Button, disabled] "Next Version"
   [StaticText] "" value: "Keep Saturday for the garden and Sunday free."
   [StaticText] "" value: "Add a task for every day of the year"
+  [Button, disabled] "Retry"
   [StaticText] "" value: "Your message and the draft are more than the on-device model can read at once, even with older messages left out. Shorten the message, ask for less at once, or remove rows from the draft."
   [TextField] ""
   [Button] "Add" help: "Add photos or files" id: plus

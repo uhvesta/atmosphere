@@ -288,7 +288,7 @@ package struct ConversationsFeature {
 
             case .resumed:
                 return .merge(
-                    state.chats.filter { $0.waiting != nil }.map { .send(.chats(.element(id: $0.id, action: .resume))) }
+                    state.chats.filter { $0.stopped }.map { .send(.chats(.element(id: $0.id, action: .resume))) }
                 )
 
             case .syncTapped(let id):

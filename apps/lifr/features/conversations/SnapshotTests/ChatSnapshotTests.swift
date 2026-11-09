@@ -73,9 +73,7 @@ final class ChatSnapshotTests: XCTestCase {
         var state = ChatFeature.State(conversation: conversation, workspace: .sample(now: now, timeZone: .gmt))
         state.inputs = [.image, .audio]
         state.elsewhere = [UUID(10)]
-        state.pending = [
-            ChatAttachment(id: UUID(11), kind: .image), ChatAttachment(id: UUID(12), kind: .audio, seconds: 7),
-        ]
+        state.recordings = [ChatAttachment(id: UUID(12), kind: .audio, seconds: 7)]
         state.recording = recording
         state.input = "Add a task to water it"
         return state
@@ -156,9 +154,10 @@ final class ChatSnapshotTests: XCTestCase {
     /// used by the last reply.
     private func screen(_ state: ChatFeature.State) -> some View {
         var state = state
-        state.models = [.apple]
-        state.standard = .apple
-        if !state.conversation.messages.isEmpty { state.context = ContextUse(used: 1_400, window: 4_096) }
+        state.core.models = [.apple]
+        state.core.standard = .apple
+        if !state.conversation.messages.isEmpty { state.core.context = ContextUse(used: 1_400, window: 4_096) }
+        state.sync()
         return NavigationStack {
             ChatView(store: Store(initialState: state) { EmptyReducer() })
         }

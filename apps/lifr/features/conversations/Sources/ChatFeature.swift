@@ -1,4 +1,5 @@
 import CaptureKit
+import ChatFeatures
 import ComposableArchitecture
 import Foundation
 import LifrAssistantClient
@@ -6,7 +7,6 @@ import LifrCore
 import LifrModelsClient
 import LifrSkills
 import LifrStoreClient
-import NaturalLanguage
 
 /// A chat with the assistant: it answers questions, proposes changes to
 /// tasks and Projects when asked, which the person applies, edits or
@@ -14,26 +14,22 @@ import NaturalLanguage
 /// person can edit and then add. A reply keeps going when the person
 /// leaves the chat or Lifr; one the system turns away, as Apple's model
 /// does in the background, is sent again on `resume`.
+///
+/// The shared chat writes, shows and goes between the messages; this adds
+/// what Lifr keeps with them: the records, skills, recordings, the draft,
+/// what replies change, and their summaries.
 @Reducer
 package struct ChatFeature {
+    package typealias Core = ChatCore<LifrReplier>
+
     @ObservableState
     package struct State: Equatable, Identifiable {
-        package var conversation: Conversation
-        package var workspace: Workspace
+        /// The shared chat, which keeps the conversation, the field and the
+        /// reply being written.
+        package var core: Core.State
         /// The latest save shown, so an earlier one's late reply is ignored.
         package var saves = SaveOrder()
-        package var input = ""
         package var availability = AssistantAvailability.available
-        /// The reply as it's written, until it's complete.
-        package var replying: String?
-        /// What the model has thought so far for the reply being written.
-        package var replyingThinking: ModelThinking?
-        /// Whether the thinking of the reply being written is open.
-        package var showsReplyThinking = false
-        /// The replies whose thinking is open.
-        package var shownThinking: Set<UUID> = []
-        /// The request of the reply being written, kept until it's complete.
-        package var waiting: AssistantRequest?
         /// Whether the system turned the reply away, such as while Lifr was
         /// in the background, so `resume` sends it again.
         package var stopped = false
@@ -49,75 +45,24 @@ package struct ChatFeature {
         package var leftOut = 0
         /// Whether the assistant is summarizing older messages.
         package var compacting = false
-        /// Why the draft can't be added as it is now, checked on every
-        /// change, and sent with the next message.
-        package var problem: String?
         /// The day the draft's dates are read from, such as "saturday".
         package var today: CalendarDate?
         @Presents package var alert: AlertState<Action.Alert>?
-        /// Why the last reply couldn't be written, shown under the message
-        /// it's to.
-        package var failure: Failure?
-        /// The person's message being written again: sending puts the new
-        /// one in its place, as a branch beside it.
-        package var editing: UUID?
-        /// Whether the bar to find words in the messages shown is up.
-        package var finds = false
-        /// What's being found in the messages shown.
-        package var findQuery = ""
-        /// Which of `findMatches` is current, counting from the oldest.
-        package var findPosition = 0
-        /// Every skill, on or off. The built-ins until the person's load.
-        package var skills = Skill.builtIn
-        /// The ID of the skill picked for the next message, shown as its
-        /// "/name" at the start of the field.
-        package var skill: String?
         @Presents package var manageSkills: SkillsFeature.State?
         /// What the conversation runs on, being picked.
         @Presents package var model: ChatModelFeature.State?
-        /// Apple's model and the downloaded ones, and the assistant's in
-        /// Settings, once they're looked up: for the composer's pill.
-        package var models: [RunnableModel] = []
-        package var standard: ModelID?
-        /// How much of the model's window the last reply took, since the
-        /// chat opened or its model changed.
-        package var context: ContextUse?
         /// Whether the draft's editor is open.
         package var editsDraft = false
         /// The proposal being edited, before it's checked again.
         package var editingProposal: ProposalEdit?
         /// The reply whose proposal is being applied or checked again.
         package var applying: UUID?
-        /// What the assistant's model reads besides text: the composer only
-        /// offers to attach what it can read.
+        /// What the assistant's model reads besides text: the microphone
+        /// records for one that listens, and dictates otherwise.
         package var inputs: Set<ModelInput> = []
-        /// Photos and recordings to send with the next message.
-        package var pending: [ChatAttachment] = []
-        /// Whether a photo or recording is being kept for the next message.
-        package var attaching = false
         /// Whether the microphone is recording for the next message.
         package var recording = false
-        /// Whether the microphone is writing what the person says into the
-        /// field, for a model that doesn't listen.
-        package var dictating = false
-        /// What was in the field before dictation started, which what's
-        /// heard follows; nil once dictation has ended.
-        package var dictatedAfter: String?
-        /// Whether + shows what to add, on the iPhone.
-        package var addsContext = false
-        /// Whether the file picker is open. + opens it straight away for a
-        /// model that doesn't read photos, as files are all it can add.
-        package var picksFiles = false
-        /// Whether Lifr may show the person's recent photos in +.
-        package var photosAccess: PhotosAccess = .notAsked
-        /// The person's newest photos, for + to attach with a tap.
-        package var recentPhotos: [RecentPhoto] = []
-        /// The recent photos attached to the next message, with the ID
-        /// each is attached as.
-        package var attachedRecents: [RecentPhoto.ID: UUID] = [:]
-        /// Whether there's a camera to take a photo with.
-        package var hasCamera = false
-        /// Attachments of this conversation whose files aren't on this
+        /// Recordings of this conversation whose files aren't on this
         /// device, such as those sent from another one.
         package var elsewhere: Set<UUID> = []
         /// Whether the model was asked to load, once the person started
@@ -126,13 +71,56 @@ package struct ChatFeature {
         package var warmed = false
         /// Whether the log of every point to go back or forward to is open.
         package var showsCheckpoints = false
-        /// The reply being read aloud.
-        package var speaking: UUID?
 
         package init(conversation: Conversation, workspace: Workspace) {
-            self.conversation = conversation
-            self.workspace = workspace
+            core = Core.State(
+                thread: conversation, model: conversation.context.model, use: .assistant, instructions: "",
+                host: LifrHost(workspace: workspace))
             forgetUndone()
+            sync()
+        }
+
+        package var id: UUID { core.id }
+
+        package var conversation: Conversation {
+            get { core.thread }
+            set { core.thread = newValue }
+        }
+
+        package var workspace: Workspace {
+            get { core.host.workspace }
+            set { core.host.workspace = newValue }
+        }
+
+        package var input: String {
+            get { core.input }
+            set { core.input = newValue }
+        }
+
+        /// Why the draft can't be added as it is now, checked on every
+        /// change, and sent with the next message.
+        package var problem: String? {
+            get { core.host.problem }
+            set { core.host.problem = newValue }
+        }
+
+        /// Every skill, on or off. The built-ins until the person's load.
+        package var skills: [Skill] {
+            get { core.host.skills }
+            set { core.host.skills = newValue }
+        }
+
+        /// The ID of the skill picked for the next message, shown as its
+        /// "/name" at the start of the field.
+        package var skill: String? {
+            get { core.host.skill }
+            set { core.host.skill = newValue }
+        }
+
+        /// The recordings to send with the next message.
+        package var recordings: [ChatAttachment] {
+            get { core.host.recordings }
+            set { core.host.recordings = newValue }
         }
 
         /// Shows `snapshot`'s records, letting go of replies' changes they
@@ -154,20 +142,27 @@ package struct ChatFeature {
             }
         }
 
-        package var id: UUID { conversation.id }
+        /// Tells the shared chat what Lifr holds it for, and what it runs
+        /// on. The reducer does it on each action; a state made for a
+        /// preview or snapshot does it once made.
+        package mutating func sync() {
+            core.held = reloading || compacting
+            core.canReply = availability == .available && !recording
+            core.sendsEmpty = picked != nil || !recordings.isEmpty
+            core.model = conversation.context.model
+        }
 
         /// Whether a reply is being written, waits to be sent again, is
         /// being finished, or failed: the chat is kept until it isn't.
         package var isWorking: Bool {
-            replying != nil || waiting != nil || reloading || naming || compacting || alert != nil
-                || failure != nil
+            core.reply != nil || core.rival?.done == false || stopped || reloading || naming || compacting
+                || alert != nil || core.problem != nil
         }
 
         /// Whether older messages can be summarized now: there are some
         /// after the newest summary, and no reply is being written.
         package var canCompact: Bool {
-            availability == .available && replying == nil && waiting == nil && !compacting
-                && !conversation.compactable.isEmpty
+            availability == .available && core.reply == nil && !compacting && !conversation.compactable.isEmpty
         }
 
         /// Whether to offer Compact: the last reply was written without
@@ -178,38 +173,19 @@ package struct ChatFeature {
 
         /// Whether the conversation can go back, forward or to another
         /// branch: not while a reply is written or its changes are read.
-        package var canGo: Bool {
-            replying == nil && waiting == nil && !reloading && !compacting && !conversation.messages.isEmpty
-        }
+        package var canGo: Bool { core.canGo }
 
         /// Whether the conversation can be forked at the message `id`: also
         /// while a reply is written, from before the message it answers.
-        /// The messages shown that have every word being found, oldest
-        /// first.
-        package var findMatches: [UUID] {
-            let query = ConversationQuery(words: findQuery.split(whereSeparator: \.isWhitespace).map(String.init))
-            return conversation.messages.filter { query.matches($0.text) }.map(\.id)
-        }
-
-        /// The match shown now, when there's one.
-        package var currentMatch: UUID? {
-            let matches = findMatches
-            return matches.indices.contains(findPosition) ? matches[findPosition] : nil
-        }
-
         package func canFork(at id: UUID) -> Bool {
             guard !conversation.messages.isEmpty else { return false }
             return canGo || id != conversation.messages.last?.id
         }
 
-        /// Whether the reply to `message`, or `message` itself for a reply,
-        /// can be written again: any reply, or the last message when its
-        /// reply failed in a way sending it again can fix, or never came.
-        package func canRetry(_ message: ChatMessage) -> Bool {
-            guard canGo, availability == .available else { return false }
-            guard message.role == .person else { return true }
-            return message.id == conversation.messages.last?.id && failure?.retries ?? true
-        }
+        /// Whether a reply is being written, which Stop ends.
+        package var canStop: Bool { core.reply != nil }
+
+        package var canSend: Bool { core.canSend }
 
         /// The skill picked for the next message, while it exists and is on.
         package var picked: Skill? { skill.flatMap { id in skills.first { $0.id == id && $0.isOn } } }
@@ -250,12 +226,6 @@ package struct ChatFeature {
             return skill.map(SlashChoice.skill)
         }
 
-        /// The model the next message runs on, once it's looked up.
-        package var current: RunnableModel? {
-            let id = conversation.context.model.model ?? standard
-            return models.first { $0.id == id }
-        }
-
         /// What the reply `id` proposed, if it's shown.
         package func proposal(of id: UUID) -> Proposal? {
             conversation.messages.first { $0.id == id }?.proposal
@@ -273,27 +243,12 @@ package struct ChatFeature {
             proposal.decision = decision
             setProposal(proposal, of: id)
         }
-
-        /// Whether a reply is being written, which Stop ends.
-        package var canStop: Bool { waiting != nil }
-
-        package var canSend: Bool {
-            availability == .available && replying == nil && waiting == nil && !attaching && !recording
-                && dictatedAfter == nil
-                && !compacting
-                && (picked != nil || !pending.isEmpty
-                    || !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
     }
 
     package enum Action: BindableAction {
         case binding(BindingAction<State>)
-        case task
-        case findTapped
-        /// Goes to the match `by` after the current one, or before it when
-        /// negative, coming round at the ends.
-        case findMoved(by: Int)
-        case findClosed
+        /// The shared chat: most of what the person does in it.
+        case core(Core.Action)
         case skillsLoaded([Skill])
         case pickSkillTapped(String)
         /// A command picked from the / list, which runs now.
@@ -301,54 +256,16 @@ package struct ChatFeature {
         case clearSkillTapped
         case manageSkillsTapped
         case manageSkills(PresentationAction<SkillsFeature.Action>)
-        /// Opens what the conversation runs on, to pick another model,
-        /// thinking or window for it.
-        case modelTapped
         case model(PresentationAction<ChatModelFeature.Action>)
-        case modelsLoaded([RunnableModel], standard: ModelID)
-        case sendTapped
-        /// Stops the reply being written, keeping what it has written.
-        case stopTapped
         /// A suggestion in an empty chat: sent as the person's message.
         case suggestionTapped(String)
         case editDraftTapped
-        /// + on the iPhone: shows the camera and recent photos, for a model
-        /// that reads them, and Add files.
-        case addContextTapped
-        case photosLoaded(access: PhotosAccess, recents: [RecentPhoto], camera: Bool)
-        /// Attaches a recent photo, or takes it off if it's attached.
-        case recentPhotoTapped(RecentPhoto.ID)
-        case recentPhotoAttached(RecentPhoto.ID, Result<ChatAttachment, any Error>)
-        /// A photo the person picked, in any format the system reads.
-        case photoPicked(Data)
-        /// A photo the person took with the camera.
-        case photoTaken(Data)
-        /// Files the person picked: photos are attached as photos, others
-        /// as their text.
-        case filesPicked(Result<[URL], any Error>)
-        case filesAttached([ChatAttachment], failures: [String])
-        /// The microphone: for a model that listens, starts recording or
-        /// stops and attaches the recording; otherwise starts or stops
-        /// dictation.
-        case micTapped
         case cancelRecordingTapped
         case recordingStarted(Result<Void, any Error>)
-        /// Everything heard since dictation started.
-        case dictated(String)
-        case dictationEnded
-        case dictationFailed(any Error)
-        case attached(Result<ChatAttachment, any Error>)
-        case removeAttachmentTapped(UUID)
+        case recorded(Result<ChatAttachment, any Error>)
+        case removeRecordingTapped(UUID)
         /// Lifr is back on screen: send a stopped reply's request again.
         case resume
-        /// Lifr picked the skill `id` for the message `messageID`, sent
-        /// without one.
-        case skillPicked(messageID: UUID, id: String)
-        case replied(AssistantReply)
-        case replyFailed(any Error)
-        /// The thinking of the reply `messageID` was opened or closed, or of
-        /// the reply being written when nil.
-        case thinkingToggled(messageID: UUID?)
         case reloaded(messageID: UUID, Result<Snapshot, any Error>)
         case named(Result<String, any Error>)
         /// The title was tapped, to rename the conversation.
@@ -378,31 +295,17 @@ package struct ChatFeature {
         case backTapped
         /// Goes to the point after the last one shown, the way it last went.
         case forwardTapped
-        /// Goes to the end of the latest branch from here.
-        case latestTapped
-        /// Shows the branch `by` places along from the message's, such as
-        /// -1 for the one written before it.
-        case branchTapped(messageID: UUID, by: Int)
         /// A point in the log, or a message, to go to.
         case goTapped(UUID)
         /// Makes a new conversation of the messages up to this one.
         case forkTapped(messageID: UUID)
         case forked(Conversation)
-        /// Puts one of the person's messages in the field, to send again in
-        /// its place.
-        case editTapped(messageID: UUID)
-        case cancelEditTapped
-        /// Writes the reply to this message, or this reply, again.
-        case retryTapped(messageID: UUID)
-        /// Reads the reply aloud, or stops reading it.
-        case speakTapped(messageID: UUID)
-        /// The reply finished being read aloud, or why it couldn't be.
-        case spoke(messageID: UUID, SpeechError?)
         /// Sends the message being edited, once the person said whether to
         /// undo the changes of the replies that hides.
         case sendConfirmed
-        /// Writes the reply to the person's message `id` again, once the
-        /// person said whether to undo the changes of the replies that hides.
+        /// Writes the reply to the message `id`, or the reply `id`, again,
+        /// once the person said whether to undo the changes of the replies
+        /// that hides.
         case retryConfirmed(UUID)
         case alert(PresentationAction<Alert>)
         case delegate(Delegate)
@@ -413,7 +316,7 @@ package struct ChatFeature {
             case go(to: UUID, undo: Bool)
             /// Sends the message being edited in place of the old one.
             case resend(undo: Bool)
-            /// Writes the reply to the person's message again.
+            /// Writes the reply to the message, or the reply, again.
             case retry(UUID, undo: Bool)
         }
 
@@ -451,61 +354,41 @@ package struct ChatFeature {
         }
     }
 
-    /// Why a reply couldn't be written.
-    package struct Failure: Equatable, Sendable {
-        package var reason: String
-        /// Whether sending it again can fix it: not for a request that's
-        /// too long or declined.
-        package var retries: Bool
-    }
-
-    private enum CancelID { case reply, recording, speech, dictation }
-
-    /// How long the assistant may write nothing before Lifr stops waiting:
-    /// it gives up between one and two of these after the last progress.
-    package static let stallLimit = Duration.seconds(60)
+    private enum CancelID { case recording }
 
     @Dependency(\.assistant) private var assistant
     @Dependency(\.store) private var store
     @Dependency(\.skills) private var skillsClient
-    @Dependency(\.models) private var library
-    @Dependency(\.guidance) private var guidance
     @Dependency(\.attachments) private var attachments
     @Dependency(\.recorder) private var recorder
-    @Dependency(\.speech) private var speech
-    @Dependency(\.dictation) private var dictation
-    @Dependency(\.photoLibrary) private var photoLibrary
-    @Dependency(\.fileReader) private var fileReader
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
     @Dependency(\.uuid) private var uuid
-    @Dependency(\.backgroundTime) private var backgroundTime
-    @Dependency(\.continuousClock) private var clock
 
     package init() {}
 
     package var body: some ReducerOf<Self> {
+        Reduce { state, _ in
+            state.sync()
+            return .none
+        }
         BindingReducer()
         Reduce { state, action in
             switch action {
-            case .task:
+            case .core(.task):
                 state.availability = assistant.availability(state.conversation.context.model)
                 state.today = CalendarDate(now, in: timeZone)
                 state.inputs = assistant.inputs(state.conversation.context.model)
                 let conversation = state.conversation.id
                 state.elsewhere = Set(
                     state.conversation.messages.flatMap(\.attachments)
-                        .filter { $0.kind != .text && attachments.file($0, conversation) == nil }.map(\.id))
-                return .run { [skillsClient, library] send in
-                    await send(.modelsLoaded(await library.runnable(), standard: library.selection(.assistant)))
-                    // Without the person's skills, the built-ins still work.
-                    if let skills = try? await skillsClient.load() { await send(.skillsLoaded(skills)) }
-                }
-
-            case .modelsLoaded(let models, let standard):
-                state.models = models
-                state.standard = standard
-                return .none
+                        .filter { $0.kind == .audio && attachments.file($0, conversation) == nil }.map(\.id))
+                return .merge(
+                    core(.task, &state),
+                    .run { [skillsClient] send in
+                        // Without the person's skills, the built-ins still work.
+                        if let skills = try? await skillsClient.load() { await send(.skillsLoaded(skills)) }
+                    })
 
             case .skillsLoaded(let skills):
                 state.skills = skills
@@ -532,15 +415,20 @@ package struct ChatFeature {
                 state.manageSkills = SkillsFeature.State()
                 return .none
 
-            case .modelTapped:
+            case .manageSkills(.dismiss):
+                return .run { [skillsClient] send in
+                    if let skills = try? await skillsClient.load() { await send(.skillsLoaded(skills)) }
+                }
+
+            case .core(.modelTapped):
                 state.model = ChatModelFeature.State(
                     choice: state.conversation.context.model, picksSkills: state.conversation.context.picksSkills)
                 return .none
 
             case .model(.presented):
                 if let sheet = state.model, !sheet.models.isEmpty {
-                    state.models = sheet.models
-                    state.standard = sheet.standard
+                    state.core.models = sheet.models
+                    state.core.standard = sheet.standard
                 }
                 if let sheet = state.model, sheet.picksSkills != state.conversation.context.picksSkills {
                     state.conversation.context.picksSkills = sheet.picksSkills
@@ -552,7 +440,7 @@ package struct ChatFeature {
                 if choice.model != state.conversation.context.model.model
                     || choice.window != state.conversation.context.model.window
                 {
-                    state.context = nil
+                    state.core.context = nil
                 }
                 state.conversation.context.model = choice
                 state.availability = assistant.availability(choice)
@@ -561,18 +449,14 @@ package struct ChatFeature {
                 state.warmed = false
                 return .none
 
-            case .manageSkills(.dismiss):
-                return .run { [skillsClient] send in
-                    if let skills = try? await skillsClient.load() { await send(.skillsLoaded(skills)) }
-                }
-
-            case .sendTapped:
+            case .core(.sendTapped):
                 // "/add buy milk" picks the skill and sends "buy milk".
                 if let typed = takeSlash(in: &state, complete: true) {
                     return run(typed.command, details: typed.details, in: &state)
                 }
+                state.sync()
                 guard state.canSend else { return .none }
-                if let editing = state.editing {
+                if let editing = state.core.editing {
                     let changed = state.conversation.changedReplies(hiddenGoingBefore: editing)
                     guard changed.isEmpty else {
                         state.alert = undoAlert(
@@ -583,248 +467,84 @@ package struct ChatFeature {
                 return send(in: &state)
 
             case .sendConfirmed:
+                state.sync()
                 guard state.canSend else { return .none }
                 return send(in: &state)
 
-            case .editTapped(let id):
-                guard state.canGo,
-                    let message = state.conversation.messages.first(where: { $0.id == id && $0.role == .person })
-                else { return .none }
-                state.editing = id
-                state.input = message.text
-                state.skill = message.skill
-                return .none
+            case .core(.editTapped(let id)):
+                let effect = core(.editTapped(messageID: id), &state)
+                if state.core.editing == id {
+                    state.skill = state.conversation.messages.first { $0.id == id }?.skill
+                }
+                return effect
 
-            case .findTapped:
-                state.finds = true
-                return .none
-
-            case .findMoved(let step):
-                let count = state.findMatches.count
-                guard count > 0 else { return .none }
-                state.findPosition = ((state.findPosition + step) % count + count) % count
-                return .none
-
-            case .findClosed:
-                state.finds = false
-                state.findQuery = ""
-                state.findPosition = 0
-                return .none
-
-            case .binding(\.findQuery):
-                // The newest match first, nearest where the chat ends.
-                state.findPosition = max(state.findMatches.count - 1, 0)
-                return .none
-
-            case .cancelEditTapped:
-                state.editing = nil
-                state.input = ""
+            case .core(.cancelEditTapped):
                 state.skill = nil
-                return .none
+                return core(.cancelEditTapped, &state)
 
-            case .speakTapped(let id):
-                if state.speaking == id {
-                    state.speaking = nil
-                    return .merge(.cancel(id: CancelID.speech), .run { _ in await speech.stop() })
-                }
-                guard let message = state.conversation.messages.first(where: { $0.id == id && $0.role == .assistant })
-                else { return .none }
-                let text = Self.spoken(message.text)
-                guard !text.isEmpty else { return .none }
-                state.speaking = id
-                return .run { send in
-                    do throws(SpeechError) {
-                        try await speech.speak(text, Self.language(of: text))
-                        await send(.spoke(messageID: id, nil))
-                    } catch {
-                        await send(.spoke(messageID: id, error))
-                    }
-                }
-                .cancellable(id: CancelID.speech, cancelInFlight: true)
-
-            case .spoke(let id, let problem):
-                if state.speaking == id { state.speaking = nil }
-                if let problem {
-                    state.alert = AlertState {
-                        TextState("Couldn't read it aloud")
-                    } actions: {
-                        ButtonState(role: .cancel) { TextState("OK") }
-                    } message: {
-                        TextState(problem.description)
-                    }
-                }
-                return .none
-
-            case .retryTapped(let id):
+            case .core(.retryTapped(let id)):
                 let messages = state.conversation.messages
-                guard let index = messages.firstIndex(where: { $0.id == id }), state.canRetry(messages[index]),
+                guard let index = messages.firstIndex(where: { $0.id == id }), state.core.canRetry(messages[index]),
                     let asked = messages[...index].last(where: { $0.role == .person })
                 else { return .none }
                 let changed = state.conversation.changedReplies(hiddenGoingTo: asked.id)
                 guard changed.isEmpty else {
                     state.alert = undoAlert(
-                        changed, in: state, undo: .retry(asked.id, undo: true), keep: .retry(asked.id, undo: false))
+                        changed, in: state, undo: .retry(id, undo: true), keep: .retry(id, undo: false))
                     return .none
                 }
-                return .send(.retryConfirmed(asked.id))
+                return .send(.retryConfirmed(id))
 
             case .retryConfirmed(let id):
-                guard state.canGo else { return .none }
-                state.conversation.go(to: id)
-                guard state.conversation.messages.last?.id == id else { return .none }
-                state.failure = nil
-                return reply(request(in: state), in: &state)
+                state.core.host.pick = nil
+                return core(.retryTapped(messageID: id), &state)
 
             case .alert(.presented(.resend(let undo))):
-                guard let editing = state.editing else { return .none }
+                guard let editing = state.core.editing else { return .none }
                 let changed = undo ? state.conversation.changedReplies(hiddenGoingBefore: editing) : []
                 return undoing(changed, in: state) { .sendConfirmed }
 
             case .alert(.presented(.retry(let id, let undo))):
-                let changed = undo ? state.conversation.changedReplies(hiddenGoingTo: id) : []
+                let messages = state.conversation.messages
+                guard let index = messages.firstIndex(where: { $0.id == id }),
+                    let asked = messages[...index].last(where: { $0.role == .person })
+                else { return .none }
+                let changed = undo ? state.conversation.changedReplies(hiddenGoingTo: asked.id) : []
                 return undoing(changed, in: state) { .retryConfirmed(id) }
 
             case .suggestionTapped(let text):
                 guard state.conversation.messages.isEmpty else { return .none }
                 state.input = text
-                return .send(.sendTapped)
+                return .send(.core(.sendTapped))
 
             case .editDraftTapped:
                 guard state.conversation.draft != nil else { return .none }
                 state.editsDraft = true
                 return .none
 
-            case .addContextTapped:
-                guard state.inputs.contains(.image) else {
-                    state.picksFiles = true
-                    return .none
-                }
-                state.addsContext = true
-                return .run { [photoLibrary] send in
-                    var access = photoLibrary.access()
-                    // Asked the first time + opens, not before.
-                    if access == .notAsked { access = await photoLibrary.requestAccess() }
-                    let recents = access == .allowed ? await photoLibrary.recents() : []
-                    await send(.photosLoaded(access: access, recents: recents, camera: await photoLibrary.hasCamera()))
-                }
-
-            case .photosLoaded(let access, let recents, let camera):
-                state.photosAccess = access
-                state.recentPhotos = recents
-                state.hasCamera = camera
-                return .none
-
-            case .recentPhotoTapped(let id):
-                if let attached = state.attachedRecents[id] {
-                    return remove(attached, in: &state)
-                }
-                guard state.inputs.contains(.image), !state.attaching else { return .none }
-                state.attaching = true
-                let conversation = state.conversation.id
-                return .run { [attachments, photoLibrary] send in
-                    await send(
-                        .recentPhotoAttached(
-                            id,
-                            Result {
-                                let data = try await photoLibrary.photo(id)
-                                return try await attachments.save(data, .image, nil, conversation)
-                            }))
-                }
-
-            case .recentPhotoAttached(let id, .success(let attachment)):
-                state.attaching = false
-                state.pending.append(attachment)
-                state.attachedRecents[id] = attachment.id
-                return .none
-
-            case .recentPhotoAttached(_, .failure(let error)):
-                state.attaching = false
-                state.alert = Self.attachAlert(error)
-                return .none
-
-            case .photoPicked(let data), .photoTaken(let data):
-                // The library and the camera cover +, so it closes for them.
-                state.addsContext = false
-                guard state.inputs.contains(.image), !state.attaching else { return .none }
-                state.attaching = true
-                let conversation = state.conversation.id
-                return .run { [attachments] send in
-                    await send(.attached(Result { try await attachments.save(data, .image, nil, conversation) }))
-                }
-
-            case .filesPicked(.failure(let error)):
-                state.addsContext = false
-                state.picksFiles = false
-                state.alert = Self.attachAlert(AttachmentError.unreadableFile(error.localizedDescription))
-                return .none
-
-            case .filesPicked(.success(let urls)):
-                state.addsContext = false
-                state.picksFiles = false
-                guard !urls.isEmpty, !state.attaching else { return .none }
-                state.attaching = true
-                let conversation = state.conversation.id
-                let photos = state.inputs.contains(.image)
-                return .run { [attachments, fileReader, uuid] send in
-                    var attached: [ChatAttachment] = []
-                    var failures: [String] = []
-                    for url in urls {
-                        do {
-                            switch try await fileReader.read(url) {
-                            case .photo(let data) where photos:
-                                attached.append(try await attachments.save(data, .image, nil, conversation))
-                            case .photo:
-                                failures.append(
-                                    String(
-                                        localized: """
-                                            The model of this chat can't read photos, so \
-                                            \(url.lastPathComponent) wasn't attached. Pick a model that reads \
-                                            them, or attach a text file.
-                                            """))
-                            case .text(let file):
-                                attached.append(ChatAttachment(id: uuid(), name: file.name, text: file.text))
-                            }
-                        } catch {
-                            failures.append(String(describing: error))
-                        }
+            case .core(.micTapped) where state.inputs.contains(.audio):
+                guard state.recording else {
+                    guard !state.core.attaching else { return .none }
+                    state.recording = true
+                    return .run { [recorder] send in
+                        await send(.recordingStarted(Result { try await recorder.start() }))
                     }
-                    await send(.filesAttached(attached, failures: failures))
+                    .cancellable(id: CancelID.recording)
                 }
-
-            case .filesAttached(let attached, let failures):
-                state.attaching = false
-                state.pending += attached
-                if !failures.isEmpty {
-                    state.alert = Self.attachAlert(AttachmentError.unreadableFile(failures.joined(separator: "\n\n")))
-                }
-                return .none
-
-            case .micTapped where !state.inputs.contains(.audio):
-                return dictate(in: &state)
-
-            case .micTapped where state.recording:
                 state.recording = false
-                state.attaching = true
+                state.core.attaching = true
                 let conversation = state.conversation.id
                 return .merge(
                     .cancel(id: CancelID.recording),
                     .run { [attachments, recorder] send in
                         await send(
-                            .attached(
+                            .recorded(
                                 Result {
                                     let recording = try await recorder.stop()
                                     return try await attachments.save(
                                         recording.data, .audio, recording.seconds, conversation)
                                 }))
                     })
-
-            case .micTapped:
-                guard !state.attaching else { return .none }
-                state.recording = true
-                return .run { [recorder] send in
-                    await send(.recordingStarted(Result { try await recorder.start() }))
-                }
-                .cancellable(id: CancelID.recording)
 
             case .recordingStarted(.success):
                 return .none
@@ -839,119 +559,65 @@ package struct ChatFeature {
                 state.recording = false
                 return .merge(.cancel(id: CancelID.recording), .run { [recorder] _ in await recorder.cancel() })
 
-            case .dictated(let heard):
-                guard let before = state.dictatedAfter else { return .none }
-                state.input = before.isEmpty || heard.isEmpty ? before + heard : before + " " + heard
+            case .recorded(.success(let recording)):
+                state.core.attaching = false
+                state.recordings.append(recording)
                 return .none
 
-            case .dictationEnded:
-                state.dictating = false
-                state.dictatedAfter = nil
-                return .none
-
-            case .dictationFailed(let error):
-                state.dictating = false
-                state.dictatedAfter = nil
-                state.alert = AlertState {
-                    TextState("Couldn't dictate")
-                } actions: {
-                    ButtonState(role: .cancel) { TextState("OK") }
-                } message: {
-                    TextState(String(describing: error))
-                }
-                return .none
-
-            case .attached(.success(let attachment)):
-                state.attaching = false
-                state.pending.append(attachment)
-                return .none
-
-            case .attached(.failure(let error)):
-                state.attaching = false
+            case .recorded(.failure(let error)):
+                state.core.attaching = false
                 state.alert = Self.attachAlert(error)
                 return .none
 
-            case .removeAttachmentTapped(let id):
-                return remove(id, in: &state)
+            case .removeRecordingTapped(let id):
+                guard let recording = state.recordings.first(where: { $0.id == id }) else { return .none }
+                state.recordings.removeAll { $0.id == id }
+                let conversation = state.conversation.id
+                return .run { [attachments] _ in await attachments.remove(recording, conversation) }
 
-            case .stopTapped:
-                guard state.canStop else { return .none }
-                let written = (state.replying ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                let thinking = state.replyingThinking
-                state.replying = nil
-                state.replyingThinking = nil
-                state.waiting = nil
+            case .core(.stopTapped):
                 state.stopped = false
-                // What it was asking to change is left out with the rest:
-                // nothing's saved before the person applies it.
-                if !written.isEmpty || thinking != nil {
-                    let id = uuid()
-                    state.conversation.append(
-                        ChatMessage(id: id, role: .assistant, text: written, at: now, thinking: thinking))
-                    if state.showsReplyThinking, thinking != nil { state.shownThinking.insert(id) }
-                }
-                state.showsReplyThinking = false
-                return .cancel(id: CancelID.reply)
+                return core(.stopTapped, &state)
 
             case .resume:
                 // A reply still being written carries on by itself.
-                guard state.stopped, let request = state.waiting else { return .none }
-                return reply(request, in: &state)
-
-            case .skillPicked(let messageID, let id):
-                guard let index = state.conversation.messages.firstIndex(where: { $0.id == messageID }) else {
-                    return .none
+                guard state.stopped, let written = state.core.reply, let asked = state.conversation.messages.last
+                else { return .none }
+                state.stopped = false
+                let thinking = state.core.replyThinking
+                state.core.reply = nil
+                state.core.host.pick = nil
+                let effect = core(.retryTapped(messageID: asked.id), &state)
+                // What was written before it was turned away stays until
+                // the reply carries on.
+                if state.core.reply != nil {
+                    state.core.reply = written
+                    state.core.replyThinking = thinking
                 }
-                state.conversation.messages[index].skill = id
-                let skill = state.skills.first { $0.id == id }
-                if state.waiting?.messages.last?.id == messageID { state.waiting?.skill = skill }
+                return effect
+
+            case .core(.replied(.failure(.assistant(let error)))) where error == .busy:
+                // Keep what's written so far, and send again on `resume`.
+                state.stopped = true
                 return .none
 
-            case .replied(let reply):
-                guard reply.isComplete else {
-                    state.replying = reply.text
-                    state.replyingThinking = reply.thinking?.shown
-                    return .none
+            case .core(.replied(.success(let reply))):
+                let effect = core(.replied(.success(reply)), &state)
+                guard let id = state.conversation.messages.last?.id,
+                    state.conversation.messages.last?.role == .assistant
+                else { return effect }
+                if let skill = reply.extra?.skill,
+                    let asked = state.conversation.messages.dropLast().lastIndex(where: { $0.role == .person })
+                {
+                    state.conversation.messages[asked].skill = skill
                 }
-                state.replying = nil
-                state.replyingThinking = nil
-                state.waiting = nil
-                state.stopped = false
-                state.reloading = true
-                let id = uuid()
-                let thinking = reply.thinking?.shown
-                state.conversation.append(
-                    ChatMessage(
-                        id: id, role: .assistant, text: reply.text, at: now, thinking: thinking,
-                        proposal: reply.proposal))
-                // Thinking opened while it was written stays open.
-                if state.showsReplyThinking, thinking != nil { state.shownThinking.insert(id) }
-                state.showsReplyThinking = false
-                state.leftOut = reply.leftOut
-                if let context = reply.context { state.context = context }
-                if let plan = reply.plan {
-                    // A model often repeats what this chat already added,
-                    // and makes small mistakes Lifr can put right. A plan
-                    // of only what's there already leaves the draft as it
-                    // was, as no plan does; an empty plan, such as after
-                    // every task was removed, clears it.
-                    let new = plan.leavingOut(state.workspace).repaired(for: state.workspace)
-                    if !new.isEmpty || plan.isEmpty { state.conversation.draft = new.isEmpty ? nil : new }
-                    check(&state)
-                }
-                var reload: Effect<Action> = .run { [store] send in
-                    await send(.reloaded(messageID: id, Result { try await store.snapshot() }))
-                }
-                if state.compactsConversations, state.offersCompact { reload = .merge(reload, compact(&state)) }
-                guard state.namesConversations, !state.conversation.isNamedByHand, state.conversation.name == nil
-                else { return reload }
-                state.naming = true
-                let messages = state.conversation.messages
-                return .merge(
-                    reload,
-                    .run { [assistant] send in
-                        await send(.named(Result { try await assistant.suggestTitle(messages, nil) }))
-                    })
+                return .merge(effect, finish(reply.extra, of: id, in: &state))
+
+            case .core(.keepTapped(let keepsRival)):
+                let extra = state.core.rival?.extra
+                let effect = core(.keepTapped(rival: keepsRival), &state)
+                if keepsRival, let plan = extra?.plan { draft(plan, in: &state) }
+                return effect
 
             case .named(let result):
                 state.naming = false
@@ -991,34 +657,6 @@ package struct ChatFeature {
                 state.conversation.summaries[id] = nil
                 return .none
 
-            case .replyFailed(let error as AssistantError) where error == .busy:
-                // Keep what's written so far, and send again on `resume`.
-                state.stopped = true
-                return .none
-
-            case .thinkingToggled(let id?):
-                if state.shownThinking.remove(id) == nil { state.shownThinking.insert(id) }
-                return .none
-
-            case .thinkingToggled(nil):
-                state.showsReplyThinking.toggle()
-                return .none
-
-            case .replyFailed(let error):
-                state.replying = nil
-                state.replyingThinking = nil
-                state.showsReplyThinking = false
-                // Sending again can't help a request that's too long or
-                // declined, and could make saved changes twice.
-                let retries =
-                    (error as? AssistantError).map {
-                        $0 == .unreadable || $0 == .timedOut || $0.isFailure
-                    } ?? true
-                state.failure = Failure(reason: String(describing: error), retries: retries)
-                state.waiting = nil
-                state.stopped = false
-                return .none
-
             case .backTapped:
                 guard let back = state.conversation.back else { return .none }
                 return go(to: back, in: &state)
@@ -1027,11 +665,11 @@ package struct ChatFeature {
                 guard let forward = state.conversation.forward else { return .none }
                 return go(to: forward, in: &state)
 
-            case .latestTapped:
+            case .core(.latestTapped):
                 guard let newest = state.conversation.newest else { return .none }
                 return go(to: newest, in: &state)
 
-            case .branchTapped(let id, let offset):
+            case .core(.branchTapped(let id, let offset)):
                 let branches = state.conversation.branches(at: id)
                 guard let index = branches.firstIndex(where: { $0.id == id }),
                     branches.indices.contains(index + offset)
@@ -1046,6 +684,7 @@ package struct ChatFeature {
                 let entries = state.conversation.changedReplies(hiddenGoingTo: id).flatMap {
                     state.conversation.changes[$0] ?? []
                 }
+                state.core.rival = nil
                 state.conversation.go(to: id)
                 guard undo, !entries.isEmpty else { return .none }
                 return .run { [store] send in
@@ -1180,7 +819,8 @@ package struct ChatFeature {
                 state.editsDraft = false
                 return .none
 
-            case .binding(\.input):
+            case .core(.binding(let binding)) where binding.keyPath == \Core.State.input:
+                let effect = core(.binding(binding), &state)
                 if !state.warmed, !state.input.isEmpty, state.availability == .available {
                     state.warmed = true
                     assistant.prewarm(state.conversation.context.model)
@@ -1188,9 +828,9 @@ package struct ChatFeature {
                 // "/add " turns into the skill's name at the start of the
                 // field, and "/compact " runs.
                 if let typed = takeSlash(in: &state, complete: false) {
-                    return run(typed.command, details: typed.details, in: &state)
+                    return .merge(effect, run(typed.command, details: typed.details, in: &state))
                 }
-                return .none
+                return effect
 
             case .binding(\.conversation.draft), .binding(\.conversation):
                 // The editor's fields change the conversation they're in.
@@ -1254,6 +894,13 @@ package struct ChatFeature {
                 }
                 return .none
 
+            case .core(.delegate):
+                // Lifr keeps the conversation as it changes.
+                return .none
+
+            case .core(let action):
+                return core(action, &state)
+
             case .binding, .alert, .manageSkills, .model, .delegate:
                 return .none
             }
@@ -1261,6 +908,67 @@ package struct ChatFeature {
         .ifLet(\.$alert, action: \.alert)
         .ifLet(\.$manageSkills, action: \.manageSkills) { SkillsFeature() }
         .ifLet(\.$model, action: \.model) { ChatModelFeature() }
+        Reduce { state, _ in
+            state.sync()
+            return .none
+        }
+    }
+
+    /// Runs `action` in the shared chat, which keeps its photos with the
+    /// conversation's other attachments.
+    private func core(_ action: Core.Action, _ state: inout State) -> Effect<Action> {
+        Scope(state: \.core, action: \.core) {
+            Core(replier: LifrReplier()).dependency(\.chatPhotos, .attachments(attachments))
+        }
+        .reduce(into: &state, action: .core(action))
+    }
+
+    /// Sends what's in the field, with the skill picked and the
+    /// recordings, letting Lifr pick a skill when none is.
+    private func send(in state: inout State) -> Effect<Action> {
+        state.skill = state.picked?.id
+        let picks = state.conversation.context.picksSkills ?? state.picksSkills
+        state.core.host.pick = state.skill == nil && picks ? pickable(in: state) : nil
+        let effect = core(.sendTapped, &state)
+        state.core.host.pick = nil
+        if state.core.reply != nil {
+            state.skill = nil
+            state.recordings = []
+        }
+        return effect
+    }
+
+    /// Keeps what the reply `id` drafted and changed, then names the
+    /// conversation and compacts it when Lifr does.
+    private func finish(_ extra: ReplyChanges?, of id: UUID, in state: inout State) -> Effect<Action> {
+        state.stopped = false
+        state.reloading = true
+        state.leftOut = extra?.leftOut ?? 0
+        if let plan = extra?.plan { draft(plan, in: &state) }
+        var effect: Effect<Action> = .run { [store] send in
+            await send(.reloaded(messageID: id, Result { try await store.snapshot() }))
+        }
+        if state.compactsConversations, state.offersCompact { effect = .merge(effect, compact(&state)) }
+        guard state.namesConversations, !state.conversation.isNamedByHand, state.conversation.name == nil
+        else { return effect }
+        state.naming = true
+        let messages = state.conversation.messages
+        return .merge(
+            effect,
+            .run { [assistant] send in
+                await send(.named(Result { try await assistant.suggestTitle(messages, nil) }))
+            })
+    }
+
+    /// Puts the reply's `plan` on the draft card.
+    private func draft(_ plan: Plan, in state: inout State) {
+        // A model often repeats what this chat already added, and makes
+        // small mistakes Lifr can put right. A plan of only what's there
+        // already leaves the draft as it was, as no plan does; an empty
+        // plan, such as after every task was removed, clears it.
+        let new = plan.leavingOut(state.workspace).repaired(for: state.workspace)
+        if !new.isEmpty || plan.isEmpty { state.conversation.draft = new.isEmpty ? nil : new }
+        check(&state)
     }
 
     /// Summarizes the messages before the last two, after the newest
@@ -1275,115 +983,6 @@ package struct ChatFeature {
             await send(
                 .compacted(through: through, Result { try await assistant.compact(messages, earlier, choice) }))
         }
-    }
-
-    /// Writes the reply to `request`, with background time so it keeps
-    /// going when the person leaves Lifr. Until it's complete, `waiting`
-    /// keeps the request for `resume`.
-    private func reply(
-        _ request: AssistantRequest, picking pick: SkillPick? = nil, for messageID: UUID? = nil, in state: inout State
-    ) -> Effect<Action> {
-        state.waiting = request
-        state.stopped = false
-        if state.replying == nil {
-            state.replying = ""
-            state.replyingThinking = nil
-        }
-        return .run { [assistant, backgroundTime, clock, guidance] send in
-            var request = request
-            // The default when the person's can't be read; the
-            // Instructions screen says why.
-            request.guidance = (try? await guidance.load().text) ?? Guidance.defaultText
-            if let pick, let messageID {
-                // A pick that fails leaves the message without a skill, to
-                // answer as it is.
-                let picked = try? await assistant.pickSkill(
-                    request.messages, pick.candidates, pick.kept?.id, request.model)
-                let id = picked ?? pick.kept?.id
-                if let id, let skill = (pick.candidates + (pick.kept.map { [$0] } ?? [])).first(where: { $0.id == id })
-                {
-                    request.skill = skill
-                    await send(.skillPicked(messageID: messageID, id: id))
-                }
-            }
-            try await backgroundTime.run("Answering") { [request] progressed in
-                try await Self.watch(
-                    request, assistant: assistant, clock: clock, returns: backgroundTime.returns
-                ) { reply in
-                    progressed()
-                    await send(.replied(reply))
-                }
-            }
-        } catch: { error, send in
-            await send(.replyFailed(error))
-        }
-        .cancellable(id: CancelID.reply, cancelInFlight: true)
-    }
-
-    /// Sends each reply to `request`, and stops with `.timedOut` when the
-    /// assistant writes nothing for `stallLimit`. Time in the
-    /// background doesn't count: a model there may be waiting for Lifr to
-    /// be back on screen, so each return starts the wait again.
-    private static func watch(
-        _ request: AssistantRequest, assistant: AssistantClient, clock: any Clock<Duration>,
-        returns: @escaping @Sendable () -> Int, _ each: @escaping @Sendable (AssistantReply) async -> Void
-    ) async throws {
-        let progress = LockIsolated(0)
-        try await withThrowingTaskGroup(of: Void.self) { [request] group in
-            group.addTask {
-                for try await reply in assistant.reply(request) {
-                    progress.withValue { $0 += 1 }
-                    await each(reply)
-                }
-            }
-            group.addTask {
-                var seen = -1
-                var back = -1
-                while progress.value != seen || returns() != back {
-                    seen = progress.value
-                    back = returns()
-                    try await clock.sleep(for: stallLimit)
-                }
-                throw AssistantError.timedOut
-            }
-            try await group.next()
-            group.cancelAll()
-        }
-    }
-
-    /// Takes the attachment `id` off the next message, and deletes its file.
-    private func remove(_ id: UUID, in state: inout State) -> Effect<Action> {
-        guard let attachment = state.pending.first(where: { $0.id == id }) else { return .none }
-        state.pending.removeAll { $0.id == id }
-        state.attachedRecents = state.attachedRecents.filter { $0.value != id }
-        let conversation = state.conversation.id
-        return .run { [attachments] _ in await attachments.remove(attachment, conversation) }
-    }
-
-    /// Starts writing what the person says into the field after what's
-    /// there, or stops, keeping what's written.
-    private func dictate(in state: inout State) -> Effect<Action> {
-        if state.dictating {
-            // The last words still come, until the dictation ends.
-            state.dictating = false
-            return .run { [dictation] _ in await dictation.stop() }
-        }
-        guard state.dictatedAfter == nil else { return .none }
-        state.dictating = true
-        state.dictatedAfter = state.input.trimmingCharacters(in: .whitespacesAndNewlines)
-        return .run { [dictation] send in
-            do {
-                for try await heard in try await dictation.start() {
-                    await send(.dictated(heard))
-                }
-                await send(.dictationEnded)
-            } catch is CancellationError {
-                await send(.dictationEnded)
-            } catch {
-                await send(.dictationFailed(error))
-            }
-        }
-        .cancellable(id: CancelID.dictation, cancelInFlight: true)
     }
 
     private static func attachAlert(_ error: any Error) -> AlertState<Action.Alert> {
@@ -1404,6 +1003,7 @@ package struct ChatFeature {
         state.leftOut = 0
         let changed = state.conversation.changedReplies(hiddenGoingTo: id)
         guard !changed.isEmpty else {
+            state.core.rival = nil
             state.conversation.go(to: id)
             return .none
         }
@@ -1471,9 +1071,9 @@ package struct ChatFeature {
         case .compact: return .send(.compactTapped)
         case .find:
             state.input = ""
-            state.finds = true
-            state.findQuery = details.trimmingCharacters(in: .whitespacesAndNewlines)
-            state.findPosition = max(state.findMatches.count - 1, 0)
+            state.core.finds = true
+            state.core.findQuery = details.trimmingCharacters(in: .whitespacesAndNewlines)
+            state.core.findPosition = max(state.core.findMatches.count - 1, 0)
             return .none
         case .back: return .send(.backTapped)
         case .forward: return .send(.forwardTapped)
@@ -1481,37 +1081,10 @@ package struct ChatFeature {
             state.showsCheckpoints = true
             return .none
         case .rename: return .send(.delegate(.rename))
-        case .model: return .send(.modelTapped)
+        case .model: return .send(.core(.modelTapped))
         case .skills: return .send(.manageSkillsTapped)
         case .new: return .send(.delegate(.new))
         }
-    }
-
-    /// Sends what's in the field, in place of the message being edited if
-    /// there is one.
-    private func send(in state: inout State) -> Effect<Action> {
-        let text = state.input.trimmingCharacters(in: .whitespacesAndNewlines)
-        state.input = ""
-        let skill = state.picked
-        state.skill = nil
-        var sent = state.pending
-        state.pending = []
-        state.attachedRecents = [:]
-        if let editing = state.editing {
-            // The new message keeps what was attached to the old one.
-            let old = (state.conversation.messages + state.conversation.hidden).first { $0.id == editing }
-            sent = (old?.attachments ?? []) + sent
-            state.conversation.go(before: editing)
-            state.editing = nil
-        }
-        state.failure = nil
-        let id = uuid()
-        state.conversation.append(
-            ChatMessage(id: id, role: .person, text: text, at: now, skill: skill?.id, attachments: sent))
-        guard skill == nil, state.conversation.context.picksSkills ?? state.picksSkills else {
-            return reply(request(in: state), in: &state)
-        }
-        return reply(request(in: state), picking: pickable(in: state), for: id, in: &state)
     }
 
     /// The skills Lifr may pick for a message, and the one to keep when it
@@ -1521,29 +1094,9 @@ package struct ChatFeature {
         let candidates = Skill.pickable(
             state.skills, chat: state.conversation.context.picksSkills, app: state.picksSkills)
         let drafting = !(state.conversation.draft?.isEmpty ?? true)
-        let last = state.conversation.messages.dropLast().last { $0.role == .person && $0.skill != nil }?.skill
+        let last = state.conversation.messages.last { $0.role == .person && $0.skill != nil }?.skill
         let kept = drafting ? last.flatMap { id in state.skills.first { $0.id == id && $0.isOn } } : nil
         return SkillPick(candidates: candidates, kept: kept)
-    }
-
-    /// The request for a reply to the last message shown, the person's,
-    /// with its skill and what's attached to it.
-    private func request(in state: State) -> AssistantRequest {
-        let conversation = state.conversation.id
-        let asked = state.conversation.messages.last
-        var request = AssistantRequest(
-            messages: Array(state.conversation.unsummarized), draft: state.conversation.draft, problem: state.problem,
-            workspace: state.workspace, now: now, timeZone: timeZone,
-            writes: AssistantWrites(conversation: conversation),
-            skill: asked?.skill.flatMap { id in state.skills.first { $0.id == id } },
-            attachments: (asked?.attachments ?? []).compactMap { attachment in
-                attachment.kind.input.flatMap { input in
-                    attachments.file(attachment, conversation).map { ModelAttachment(input, file: $0) }
-                }
-            })
-        request.summary = state.conversation.summary?.summary.text
-        request.model = state.conversation.context.model
-        return request
     }
 
     /// Checks the draft against the records as they are now.
@@ -1551,37 +1104,5 @@ package struct ChatFeature {
         state.problem = state.conversation.draft.flatMap { plan in
             state.workspace.problem(with: plan, timeZone: timeZone, now: now)?.description
         }
-    }
-}
-
-/// The skills Lifr may pick for a message sent without one, and the one it
-/// keeps when it picks none.
-private struct SkillPick: Sendable {
-    var candidates: [Skill]
-    var kept: Skill?
-}
-
-extension ModelThinking {
-    /// This, unless the model thought nothing worth showing.
-    fileprivate var shown: ModelThinking? {
-        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self
-    }
-}
-
-extension ChatFeature {
-    /// A reply's text as it's said: its Markdown's words without the marks.
-    static func spoken(_ text: String) -> String {
-        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        let plain = (try? AttributedString(markdown: text, options: options)).map { String($0.characters) } ?? text
-        return plain.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    /// The language `text` is written in, as a BCP 47 tag: the device's
-    /// when it can't be told.
-    static func language(of text: String) -> String {
-        if let language = NLLanguageRecognizer.dominantLanguage(for: text), language != .undetermined {
-            return language.rawValue
-        }
-        return Locale.current.language.languageCode?.identifier ?? "en"
     }
 }

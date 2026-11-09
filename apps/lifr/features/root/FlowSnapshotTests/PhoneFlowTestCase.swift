@@ -1,4 +1,5 @@
 import CaptureKit
+import ChatFeatures
 import ComposableArchitecture
 import FlowKit
 import LifrAPI
@@ -43,15 +44,23 @@ class PhoneFlowTestCase: XCTestCase {
     /// The app's clock, which only moves when a flow says, so the assistant
     /// never stalls.
     let clock = TestClock()
+    /// The models installed: one that reads only text, and for a flow with
+    /// photos one that also reads them, which `seePhotos` runs the assistant on.
+    var library = InMemoryModelLibrary()
 
     func app(
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
-        inputs: Set<ModelInput> = [], lock: LockClient = .always(), assistant: AssistantClient? = nil,
+        inputs: Set<ModelInput> = [], readsPhotos: Bool = false, lock: LockClient = .always(),
+        assistant: AssistantClient? = nil,
         photos: PhotoLibraryClient = .denied, files: [String: PickedFile] = [:],
         tab: RootFeature.Tab = .today, style: UIUserInterfaceStyle = .light, speech: SpeechClient = .inMemory
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
         let ids = LockIsolated(1000)
+        let library = InMemoryModelLibrary(
+            installed: [ModelCatalog.gemma4E2B]
+                + (readsPhotos || inputs.contains(.image) ? [ModelCatalog.gemma4E4B] : []))
+        self.library = library
         let (client, records) = StoreClient.inMemorySyncing(workspace, actor: .user(device: "iPhone", surface: .iPhone))
         self.records = records
         var state = RootFeature.State(platform: .phone)
@@ -59,7 +68,7 @@ class PhoneFlowTestCase: XCTestCase {
         state.tab = tab
         let store = Store(initialState: state) {
             RootFeature()
-        } withDependencies: { [time, widgets, bugReports, copied, clock] in
+        } withDependencies: { [time, widgets, bugReports, copied, clock, library] in
             $0.store = client
             $0.session = InMemorySession().client
             $0.reminders = RemindersClient.inMemory().client
@@ -67,7 +76,7 @@ class PhoneFlowTestCase: XCTestCase {
             $0.assistant = assistant ?? .scripted(replies, inputs: inputs)
             $0.attachments = .inMemory()
             $0.recorder = .scripted(RecorderClient.Recording(data: Data([1]), seconds: 6))
-            $0.dictation = .scripted()
+            $0.dictation = .scripted(["Move my run", "Move my run to Friday"])
             $0.photoLibrary = photos
             $0.fileReader = .scripted(files)
             $0.continuousClock = clock
@@ -75,7 +84,7 @@ class PhoneFlowTestCase: XCTestCase {
             $0.conversations = .inMemory()
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
-            $0.models = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B]).client
+            $0.models = library.client
             $0.speech = speech
             $0.date = DateGenerator { time.value }
             $0.lock = lock
@@ -154,8 +163,8 @@ class PhoneFlowTestCase: XCTestCase {
     }
 
     func send(_ text: String, in id: Conversation.ID, of store: StoreOf<RootFeature>) {
-        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, text))))))
-        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, text)))))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.sendTapped)))))
     }
 
     func draftTitles(_ id: Conversation.ID, in store: StoreOf<RootFeature>) -> [String] {

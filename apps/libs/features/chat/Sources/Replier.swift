@@ -51,20 +51,46 @@ public protocol ChatReplier: Sendable {
     /// Why a reply didn't come, said for the person.
     associatedtype Failure: Error, CustomStringConvertible
 
+    /// What the app tells its replier besides the chat, kept in the chat's
+    /// state, such as the records its assistant looks things up in.
+    associatedtype Host: Equatable, Sendable = NoHost
+
     /// What's sent for the reply to the last message of `request.chat`, and
     /// how to write it. Called as the reply is asked for, so it reads the
     /// chat as it is then.
-    func ask(_ request: ReplyRequest<Message, Context>) -> ReplyAsk<Message.Extra, Failure>
+    func ask(_ request: ReplyRequest<Self>) -> ReplyAsk<Message.Extra, Failure>
+
+    /// The person's message as it's sent, in place of `old` when they
+    /// edited that, with what the app adds to it. Called before `ask`.
+    func sending(_ message: Message, replacing old: Message?, host: Host) -> Message
+
+    /// Whether writing the reply again can help after `failure`: not for a
+    /// message that's too long, or one that already changed something.
+    func canRetry(after failure: Failure) -> Bool
+}
+
+extension ChatReplier {
+    public func sending(_ message: Message, replacing old: Message?, host: Host) -> Message { message }
+    public func canRetry(after failure: Failure) -> Bool { true }
+}
+
+/// What an app that tells its replier nothing besides the chat keeps.
+public struct NoHost: Equatable, Sendable {
+    public init() {}
 }
 
 /// The reply a chat asks for: to the last message of `chat`, from `choice`
 /// for the app's `use`.
-public struct ReplyRequest<Message: ThreadEntry, Context: ConversationContext>: Sendable {
-    public var chat: Conversation<Message, Context>
+public struct ReplyRequest<Replier: ChatReplier>: Sendable {
+    public var chat: Conversation<Replier.Message, Replier.Context>
     /// What the model is told before the messages.
     public var instructions: String
     public var use: ModelUseKey
     public var choice: ModelChoice
+    public var host: Replier.Host
+    /// Whether it's the second model's answer, beside the first's, which
+    /// the person may keep in its place. It shouldn't change anything.
+    public var isRival = false
 }
 
 /// A reply asked for: what it's sent, and how to write it.
@@ -105,12 +131,16 @@ public struct ReplyAsk<Extra: Hashable & Sendable, Failure: Error>: Sendable {
 /// Replies from a model on the device, from the chat's messages that fit
 /// its window, with the photos last sent for a model that reads them.
 public struct ModelReplier: ChatReplier {
+    public typealias Message = ThreadMessage
+    public typealias Context = NoContext
+    public typealias Failure = ModelRuntimeError
+
     @Dependency(\.chatRuntime) private var chatRuntime
     @Dependency(\.chatPhotos) private var chatPhotos
 
     public init() {}
 
-    public func ask(_ request: ReplyRequest<ThreadMessage, NoContext>) -> ReplyAsk<Never, ModelRuntimeError> {
+    public func ask(_ request: ReplyRequest<Self>) -> ReplyAsk<Never, ModelRuntimeError> {
         let model = chatRuntime.runtime(request.use, request.choice)
         let tokens = request.choice.thinkingLevel.tokens
         let chat = request.chat

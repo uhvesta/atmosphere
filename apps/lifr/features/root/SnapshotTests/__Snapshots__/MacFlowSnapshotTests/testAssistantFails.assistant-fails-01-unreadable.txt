@@ -27,8 +27,8 @@
   [Heading] "Plan my week"
   [MenuButton] "Context Window" help: "Nothing used yet"
   [StaticText] "" value: "Plan my week"
-  [StaticText] "" value: "The on-device model wrote answers Lifr couldn't read, twice. Send the message again, or ask for less at once: long plans are the hardest for it."
   [Button] "Retry"
+  [StaticText] "" value: "The on-device model wrote answers Lifr couldn't read, twice. Send the message again, or ask for less at once: long plans are the hardest for it."
   [TextField] ""
   [Button] "Add" help: "Add photos or files" id: plus
   [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"

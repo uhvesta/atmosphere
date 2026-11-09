@@ -3,7 +3,7 @@
 [button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
 [text] "On this device"
 [text] "When should I water the plants?"
-[button] "Thoughts · 4.2 secs. on the GPU" hint: "Shows the thinking"
+[button] "Thoughts · 4.2 secs." hint: "Shows the thinking"
 [text] "I'd water them on Saturday morning."
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"

@@ -52,10 +52,14 @@ private enum NoteFailure: Error, CustomStringConvertible, Equatable {
 /// Answers each message with the next of `answers`, adding a note naming
 /// the model it was asked for, or fails when there are none left.
 private struct NotingReplier: ChatReplier {
-    let answers: LockIsolated<[String]>
-    let asked = LockIsolated<[ReplyRequest<NotedMessage, NoContext>]>([])
+    typealias Message = NotedMessage
+    typealias Context = NoContext
+    typealias Failure = NoteFailure
 
-    func ask(_ request: ReplyRequest<NotedMessage, NoContext>) -> ReplyAsk<String, NoteFailure> {
+    let answers: LockIsolated<[String]>
+    let asked = LockIsolated<[ReplyRequest<NotingReplier>]>([])
+
+    func ask(_ request: ReplyRequest<NotingReplier>) -> ReplyAsk<String, NoteFailure> {
         asked.withValue { $0.append(request) }
         let answer = answers.withValue { $0.isEmpty ? nil : $0.removeFirst() }
         let note = request.choice.model?.rawValue ?? "standard"

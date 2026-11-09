@@ -54,10 +54,10 @@ final class ChatCompactionTests: XCTestCase {
     }
 
     private func send(_ texts: [String], in store: TestStoreOf<ChatFeature>) async {
-        await store.send(.task)
+        await store.send(.core(.task))
         for text in texts {
-            await store.send(.binding(.set(\.input, text)))
-            await store.send(.sendTapped)
+            await store.send(.core(.binding(.set(\.input, text))))
+            await store.send(.core(.sendTapped))
             await store.skipReceivedActions(strict: false)
         }
     }
@@ -102,7 +102,7 @@ final class ChatCompactionTests: XCTestCase {
         let store = chat(leftOut: 2, compacted: compacted)
         await send(["Plan the week", "Add laundry"], in: store)
 
-        await store.send(.binding(.set(\.input, "/compact ")))
+        await store.send(.core(.binding(.set(\.input, "/compact "))))
         await store.skipReceivedActions(strict: false)
 
         XCTAssertEqual(compacted.value.count, 1)

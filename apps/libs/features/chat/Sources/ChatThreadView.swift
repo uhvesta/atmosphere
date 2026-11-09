@@ -8,29 +8,25 @@ import SwiftUI
 
 /// A chat, from its first message to the field: each message with what the
 /// model thought, the branches to switch between, and under the last reply
-/// Retry and Speak. `empty` shows before the first message, and `extra`
-/// shows what the app adds under a reply.
-public struct ChatThreadView<Replier: ChatReplier, Empty: View, Extra: View>: View {
+/// Retry and Speak. The app's `parts` add to it, such as what shows before
+/// the first message and under a reply.
+public struct ChatThreadView<Replier: ChatReplier, Parts: ChatThreadParts>: View
+where Parts.Message == Replier.Message {
     public typealias Message = Replier.Message
 
     @Bindable var store: StoreOf<ChatCore<Replier>>
     let prompt: Text?
-    let empty: Empty
-    let extra: (Message) -> Extra
+    let parts: Parts
 
     @State private var selecting: TextToSelect?
     /// Whether the system's photo picker is open, from + on the Mac.
     @State private var picksPhoto = false
     @State private var photo: PhotosPickerItem?
 
-    public init(
-        store: StoreOf<ChatCore<Replier>>, prompt: Text? = nil, @ViewBuilder empty: () -> Empty,
-        @ViewBuilder extra: @escaping (Message) -> Extra
-    ) {
+    public init(store: StoreOf<ChatCore<Replier>>, prompt: Text? = nil, parts: Parts) {
         self.store = store
         self.prompt = prompt
-        self.empty = empty()
-        self.extra = extra
+        self.parts = parts
     }
 
     public var body: some View {
@@ -44,7 +40,12 @@ public struct ChatThreadView<Replier: ChatReplier, Empty: View, Extra: View>: Vi
                             rewound
                             Divider()
                         }
-                        composer.padding(10)
+                        parts.notices()
+                        VStack(alignment: .leading, spacing: 8) {
+                            parts.above()
+                            composer
+                        }
+                        .padding(10)
                     }
                 }
                 .background(.bar)
@@ -91,8 +92,9 @@ public struct ChatThreadView<Replier: ChatReplier, Empty: View, Extra: View>: Vi
     private var scroll: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                parts.top()
                 if store.thread.messages.isEmpty, store.reply == nil {
-                    empty
+                    parts.empty()
                 }
                 ForEach(store.thread.messages) { message in
                     VStack(alignment: .trailing, spacing: 4) {
@@ -105,6 +107,7 @@ public struct ChatThreadView<Replier: ChatReplier, Empty: View, Extra: View>: Vi
                             reply(message)
                         }
                         branches(at: message)
+                        parts.after(message)
                         if message.id == store.thread.messages.last?.id, store.reply == nil, store.rival == nil {
                             after(message)
                         }
@@ -129,6 +132,7 @@ public struct ChatThreadView<Replier: ChatReplier, Empty: View, Extra: View>: Vi
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                parts.bottom()
             }
             .frame(maxWidth: store.rival == nil ? 720 : 1_080)
             .padding()
@@ -141,10 +145,11 @@ public struct ChatThreadView<Replier: ChatReplier, Empty: View, Extra: View>: Vi
     /// for in Settings, how fast it was written and what the model was
     /// sent.
     @ViewBuilder private func reply(_ message: Message) -> some View {
+        let undo = parts.undo(of: message)
         MessageView(
-            role: message.role, text: message.text, thinking: message.thinking?.model,
-            showsThinking: store.shownThinking.contains(message.id),
-            toggleThinking: { store.send(.thinkingToggled(messageID: message.id)) },
+            role: message.role, text: message.text, thinking: message.thinking?.model, skill: parts.tag(of: message),
+            canUndo: undo != nil, showsThinking: store.shownThinking.contains(message.id),
+            toggleThinking: { store.send(.thinkingToggled(messageID: message.id)) }, undo: { undo?() },
             select: { selecting = TextToSelect(text: $0) },
             attachments: {
                 ForEach(message.photos) { photo in
@@ -153,11 +158,12 @@ public struct ChatThreadView<Replier: ChatReplier, Empty: View, Extra: View>: Vi
                 ForEach(message.files, id: \.self) { file in
                     AttachmentChip(verbatim: file.name, systemImage: "doc.text")
                 }
+                parts.attached(message)
             }
         )
         .contextMenu { menu(for: message) }
         if message.role == .assistant {
-            extra(message)
+            parts.extra(message)
             let prompt = store.showsPrompt && store.prompts[message.id] != nil
             if store.showsSpeed || prompt {
                 ReplyDetails(
@@ -223,21 +229,24 @@ public struct ChatThreadView<Replier: ChatReplier, Empty: View, Extra: View>: Vi
 
     /// Copying a message, editing it or writing its reply again.
     @ViewBuilder private func menu(for message: Message) -> some View {
-        TextMenu(text: message.text) { selecting = TextToSelect(text: $0) }
-        Divider()
+        if !message.text.isEmpty {
+            TextMenu(text: message.text) { selecting = TextToSelect(text: $0) }
+            Divider()
+        }
         if message.role == .person {
             Button("Edit", systemImage: "pencil") { store.send(.editTapped(messageID: message.id)) }
                 .disabled(!store.canGo)
         } else {
             Button("Retry", systemImage: "arrow.clockwise") { store.send(.retryTapped(messageID: message.id)) }
                 .disabled(!store.state.canRetry(message))
-            speak(message)
+            if !message.text.isEmpty { speak(message) }
             if store.showsPrompt, store.prompts[message.id] != nil {
                 Button("Show Prompt", systemImage: "text.magnifyingglass") {
                     store.send(.promptTapped(messageID: message.id))
                 }
             }
         }
+        parts.menu(message)
     }
 
     /// Says the chat is shown as it was earlier, above the field.
@@ -274,8 +283,10 @@ public struct ChatThreadView<Replier: ChatReplier, Empty: View, Extra: View>: Vi
         #if os(macOS)
             if store.readsPhotos {
                 ChatComposer(
-                    text: $store.input, prompt: prompt, model: modelPill, mic: mic, send: sendButton,
-                    submit: { store.send(.sendTapped) }, top: { composerTop }, attach: { attachMenu })
+                    text: $store.input, prompt: fieldPrompt, model: modelPill, mic: mic, send: sendButton,
+                    submit: { store.send(.sendTapped) }, top: { composerTop }, attach: { attachMenu }
+                )
+                .token(parts.token?.name) { parts.token?.remove() }
             } else {
                 addingComposer
             }
@@ -295,12 +306,18 @@ public struct ChatThreadView<Replier: ChatReplier, Empty: View, Extra: View>: Vi
     /// The field with a + that sends `addContextTapped`.
     private var addingComposer: some View {
         ChatComposer(
-            text: $store.input, prompt: prompt, model: modelPill, mic: mic, send: sendButton,
-            submit: { store.send(.sendTapped) }, add: { store.send(.addContextTapped) }, top: { composerTop })
+            text: $store.input, prompt: fieldPrompt, model: modelPill, mic: mic, send: sendButton,
+            submit: { store.send(.sendTapped) }, add: { store.send(.addContextTapped) }, top: { composerTop }
+        )
+        .token(parts.token?.name) { parts.token?.remove() }
     }
 
+    /// What the field asks for: the app's once something's picked for the
+    /// next message.
+    private var fieldPrompt: Text? { parts.token?.prompt ?? prompt }
+
     private var mic: MicButton {
-        MicButton(isOn: store.dictating, mode: .dictate) { store.send(.micTapped) }
+        parts.mic ?? MicButton(isOn: store.dictating, mode: .dictate) { store.send(.micTapped) }
     }
 
     private var sendButton: SendButton {
@@ -336,9 +353,12 @@ public struct ChatThreadView<Replier: ChatReplier, Empty: View, Extra: View>: Vi
             }
             .padding(.horizontal, 4)
         }
-        if !store.pending.isEmpty || !store.pendingPhotos.isEmpty || store.attaching || store.dictating {
+        if !store.pending.isEmpty || !store.pendingPhotos.isEmpty || store.attaching || store.dictating
+            || parts.showsChips
+        {
             ScrollView(.horizontal) {
                 HStack(spacing: 8) {
+                    parts.chips()
                     if store.dictating {
                         Label("Listening…", systemImage: "waveform")
                             .foregroundStyle(.red)
@@ -390,8 +410,8 @@ private struct AddContext<Replier: ChatReplier>: ViewModifier {
 }
 
 /// A photo sent in the chat or attached to the next message, with a button
-/// to take it off when `remove` is set. One whose file isn't on this device
-/// shows as a chip saying so.
+/// to take it off when `remove` is set. One that can't be shown is a chip,
+/// which says so when its file isn't on this device.
 private struct ChatPhoto: View {
     let file: URL?
     var side: CGFloat = 160
@@ -417,7 +437,7 @@ private struct ChatPhoto: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel(Text("Photo"))
         } else {
-            AttachmentChip("Photo", systemImage: "photo", elsewhere: true, remove: remove)
+            AttachmentChip("Photo", systemImage: "photo", elsewhere: file == nil, remove: remove)
         }
     }
 
@@ -430,8 +450,19 @@ private struct ChatPhoto: View {
     }
 }
 
-extension ChatThreadView where Extra == EmptyView {
-    public init(store: StoreOf<ChatCore<Replier>>, prompt: Text? = nil, @ViewBuilder empty: () -> Empty) {
+extension ChatThreadView {
+    /// A chat that adds `empty` before the first message, and `extra` under
+    /// each reply.
+    public init<Empty: View, Extra: View>(
+        store: StoreOf<ChatCore<Replier>>, prompt: Text? = nil, @ViewBuilder empty: () -> Empty,
+        @ViewBuilder extra: @escaping (Message) -> Extra
+    ) where Parts == BasicParts<Message, Empty, Extra> {
+        self.init(store: store, prompt: prompt, parts: BasicParts(start: empty(), reply: extra))
+    }
+
+    public init<Empty: View>(
+        store: StoreOf<ChatCore<Replier>>, prompt: Text? = nil, @ViewBuilder empty: () -> Empty
+    ) where Parts == BasicParts<Message, Empty, EmptyView> {
         self.init(store: store, prompt: prompt, empty: empty) { _ in EmptyView() }
     }
 }

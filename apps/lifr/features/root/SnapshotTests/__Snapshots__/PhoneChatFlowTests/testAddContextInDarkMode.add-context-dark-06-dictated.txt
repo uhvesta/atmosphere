@@ -9,7 +9,7 @@
 [button] "Photo"
 [element] "" value: "Move my run to Friday"
 [button] "Add" hint: "Add photos or files"
-[button] "Model" value: "Apple Intelligence" hint: "Model, Thinking and Context Window"
+[button] "Model" value: "Gemma 4 E4B, On" hint: "Model, Thinking and Context Window"
 [button] "Dictate" hint: "Dictate, on this device"
 [button] "Send"
 [button] "Search"

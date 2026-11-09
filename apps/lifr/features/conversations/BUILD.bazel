@@ -12,8 +12,10 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     visibility = ["//apps/lifr/features/root:__pkg__"],
     deps = [
+        "//apps/libs/features/chat",
         "//apps/libs/kits/assistant",
         "//apps/libs/kits/capture",
+        "//apps/libs/kits/chat",
         "//apps/libs/kits/chatui",
         "//apps/lifr/api",
         "//apps/lifr/clients/assistant",
@@ -36,6 +38,7 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     deps = [
         ":conversations",
+        "//apps/libs/features/chat",
         "//apps/libs/kits/capture",
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/models",

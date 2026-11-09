@@ -108,18 +108,37 @@ public struct ChatCore<Replier: ChatReplier> {
         /// The second model's answer to the last message, until one of the
         /// two is kept.
         public var rival: RivalReply<Message.Extra>?
+        /// What the app tells its replier besides the chat.
+        public var host: Replier.Host
+        /// Whether the app holds the chat: nothing is sent, and it doesn't
+        /// go to another point, such as while the app finishes the last
+        /// reply or its assistant can't run.
+        public var held = false
+        /// Whether the replier can write now, such as while the app's
+        /// assistant can run. When it can't, nothing's sent or written
+        /// again, but the chat can still go to another point.
+        public var canReply = true
+        /// Whether writing the last reply again can help, after it failed.
+        public var retries = true
+        /// Whether the app has something to send with the next message
+        /// besides the field and what's attached, so it can be sent empty.
+        public var sendsEmpty = false
 
-        public init(thread: Chat, model: ModelChoice = .defaults, use: ModelUseKey, instructions: String) {
+        public init(
+            thread: Chat, model: ModelChoice = .defaults, use: ModelUseKey, instructions: String,
+            host: Replier.Host
+        ) {
             self.thread = thread
             self.model = model
             self.use = use
             self.instructions = instructions
+            self.host = host
         }
 
         public var canSend: Bool {
-            reply == nil && rival?.done != false && dictatedAfter == nil && !attaching
+            !held && canReply && reply == nil && rival?.done != false && dictatedAfter == nil && !attaching
                 && (!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pending.isEmpty
-                    || !pendingPhotos.isEmpty)
+                    || !pendingPhotos.isEmpty || sendsEmpty)
         }
 
         /// Whether the chat's model reads photos, so + offers them.
@@ -127,7 +146,7 @@ public struct ChatCore<Replier: ChatReplier> {
 
         /// Whether the chat can go to another branch or write a reply
         /// again: not while one is written.
-        public var canGo: Bool { reply == nil && rival?.done != false && !thread.messages.isEmpty }
+        public var canGo: Bool { !held && reply == nil && rival?.done != false && !thread.messages.isEmpty }
 
         /// The second model, once it's looked up; nil when it isn't picked.
         public var rivalCurrent: RunnableModel? {
@@ -144,8 +163,8 @@ public struct ChatCore<Replier: ChatReplier> {
         /// can be written again: any reply, or the last message when its
         /// reply didn't come.
         public func canRetry(_ message: Message) -> Bool {
-            guard canGo else { return false }
-            return message.role == .assistant || message.id == thread.messages.last?.id
+            guard canGo, canReply else { return false }
+            return message.role == .assistant || (message.id == thread.messages.last?.id && retries)
         }
 
         /// The model the chat runs on, once it's looked up.
@@ -405,11 +424,11 @@ public struct ChatCore<Replier: ChatReplier> {
                 return .none
 
             case .replied(.success(let reply)):
-                state.context = reply.context
+                if let context = reply.context { state.context = context }
                 state.replyPrompt?.context = reply.context
                 // The second model answers the same chat, once the first is
                 // done.
-                let rival = state.compares ? state.rivalModel.map { ask($0, in: state) } : nil
+                let rival = state.compares ? state.rivalModel.map { ask($0, rival: true, in: state) } : nil
                 let kept = keep(
                     reply.text, thinking: reply.thinking, speed: reply.speed, extra: reply.extra, in: &state)
                 guard let (prompt, effect) = rival, let first = state.thread.messages.last,
@@ -427,6 +446,7 @@ public struct ChatCore<Replier: ChatReplier> {
                 state.replyPrompt = nil
                 state.showsReplyThinking = false
                 state.problem = error.description
+                state.retries = replier.canRetry(after: error)
                 return .none
 
             case .promptTapped(let id):
@@ -465,7 +485,7 @@ public struct ChatCore<Replier: ChatReplier> {
                 rival.speed = reply.speed
                 rival.extra = reply.extra
                 rival.prompt.context = reply.context
-                state.rival = reply.text.isEmpty ? nil : rival
+                state.rival = reply.text.isEmpty && reply.extra == nil ? nil : rival
                 return .none
 
             case .rivalReplied(.failure(let error)):
@@ -486,7 +506,7 @@ public struct ChatCore<Replier: ChatReplier> {
                         reply: id, text: rival.text, at: now, thinking: rival.thinking, model: rival.model,
                         speed: rival.speed, extra: rival.extra))
                 state.prompts[id] = rival.prompt
-                state.context = rival.prompt.context
+                if let context = rival.prompt.context { state.context = context }
                 return changed(state)
 
             case .addContextTapped:
@@ -678,16 +698,18 @@ public struct ChatCore<Replier: ChatReplier> {
         state.pending = []
         state.pendingPhotos = []
         state.attachedRecents = [:]
+        var old: Message?
         if let editing = state.editing {
             // The new message keeps the photos and files sent with the old
             // one.
-            let old = (state.thread.messages + state.thread.hidden).first { $0.id == editing }
+            old = (state.thread.messages + state.thread.hidden).first { $0.id == editing }
             files = (old?.files ?? []) + files
             photos = (old?.photos ?? []) + photos
             state.thread.go(before: editing)
             state.editing = nil
         }
-        state.thread.append(Message(person: uuid(), text: text, at: now, files: files, photos: photos))
+        let message = Message(person: uuid(), text: text, at: now, files: files, photos: photos)
+        state.thread.append(replier.sending(message, replacing: old, host: state.host))
         return .merge(changed(state), write(&state))
     }
 
@@ -697,7 +719,8 @@ public struct ChatCore<Replier: ChatReplier> {
         state.replyThinking = nil
         state.showsReplyThinking = false
         state.rival = nil
-        let (prompt, effect) = ask(state.model, in: state)
+        state.retries = true
+        let (prompt, effect) = ask(state.model, rival: false, in: state)
         state.replyPrompt = prompt
         return effect.run(progressed: { .progressed($0) }, replied: { .replied($0) })
             .cancellable(id: CancelID.reply, cancelInFlight: true)
@@ -706,10 +729,12 @@ public struct ChatCore<Replier: ChatReplier> {
     /// Asks `choice` for the reply to the last message: what it's sent,
     /// and the reply as it's written then once it's done.
     private func ask(
-        _ choice: ModelChoice, in state: State
+        _ choice: ModelChoice, rival: Bool, in state: State
     ) -> (ReplyPrompt, ReplyAsk<Message.Extra, Replier.Failure>) {
         let asked = replier.ask(
-            ReplyRequest(chat: state.thread, instructions: state.instructions, use: state.use, choice: choice))
+            ReplyRequest(
+                chat: state.thread, instructions: state.instructions, use: state.use, choice: choice,
+                host: state.host, isRival: rival))
         var prompt = asked.prompt
         let id = choice.model ?? state.standard
         prompt.model = prompt.model ?? state.models.first { $0.id == id }?.name
@@ -729,7 +754,8 @@ public struct ChatCore<Replier: ChatReplier> {
         let shows = state.showsReplyThinking
         state.showsReplyThinking = false
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return .none }
+        // What the app's replier added is kept even without words.
+        guard !text.isEmpty || extra != nil else { return .none }
         let id = uuid()
         state.thread.append(
             Message(
@@ -792,6 +818,15 @@ public typealias ChatThreadFeature = ChatCore<ModelReplier>
 extension ChatCore where Replier == ModelReplier {
     public init() {
         self.init(replier: ModelReplier())
+    }
+}
+
+extension ChatCore.State where Replier.Host == NoHost {
+    public init(
+        thread: Conversation<Replier.Message, Replier.Context>, model: ModelChoice = .defaults, use: ModelUseKey,
+        instructions: String
+    ) {
+        self.init(thread: thread, model: model, use: use, instructions: instructions, host: NoHost())
     }
 }
 

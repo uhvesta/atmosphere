@@ -1,4 +1,5 @@
 import CaptureKit
+import ChatFeatures
 import ComposableArchitecture
 import FlowKit
 import LifrAPI
@@ -44,20 +45,27 @@ final class MacFlowSnapshotTests: XCTestCase {
     private let bugReports = BugReportsClient.inMemory()
     /// What the app last put on the clipboard.
     private let copied = LockIsolated<String?>(nil)
+    /// The models installed: one that reads only text, and for a flow with
+    /// photos one that also reads them, which a flow with photos runs the assistant on.
+    private(set) var library = InMemoryModelLibrary()
 
     private func app(
         _ name: String, workspace: Workspace? = nil, sync: SyncClient = .off, replies: [AssistantReply] = [.example],
-        inputs: Set<ModelInput> = [], lock: LockClient = .always(),
+        inputs: Set<ModelInput> = [], readsPhotos: Bool = false, lock: LockClient = .always(),
         session: InMemorySession = InMemorySession(), assistant: AssistantClient? = nil,
         files: [String: PickedFile] = [:], settings: Bool = false, speech: SpeechClient = .inMemory
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         let workspace = workspace ?? Workspace.sample(now: now, timeZone: .gmt)
         let ids = LockIsolated(1000)
+        let library = InMemoryModelLibrary(
+            installed: [ModelCatalog.gemma4E2B]
+                + (readsPhotos || inputs.contains(.image) ? [ModelCatalog.gemma4E4B] : []))
+        self.library = library
         let (client, records) = StoreClient.inMemorySyncing(workspace, actor: .user(device: "Mac", surface: .mac))
         self.records = records
         let store = Store(initialState: RootFeature.State(platform: .mac)) {
             RootFeature()
-        } withDependencies: { [time, widgets, bugReports, copied] in
+        } withDependencies: { [time, widgets, bugReports, copied, library] in
             $0.store = client
             $0.session = session.client
             $0.reminders = RemindersClient.inMemory().client
@@ -65,7 +73,7 @@ final class MacFlowSnapshotTests: XCTestCase {
             $0.assistant = assistant ?? .scripted(replies, inputs: inputs)
             $0.attachments = .inMemory()
             $0.recorder = .scripted(RecorderClient.Recording(data: Data([1]), seconds: 6))
-            $0.dictation = .scripted()
+            $0.dictation = .scripted(["Move my run", "Move my run to Friday"])
             $0.fileReader = .scripted(files)
             $0.photoLibrary = .denied
             // The assistant never stalls in a flow.
@@ -73,7 +81,7 @@ final class MacFlowSnapshotTests: XCTestCase {
             $0.conversations = .inMemory()
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
-            $0.models = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B]).client
+            $0.models = library.client
             $0.speech = speech
             $0.date = DateGenerator { time.value }
             $0.lock = lock
@@ -114,8 +122,8 @@ final class MacFlowSnapshotTests: XCTestCase {
     }
 
     private func send(_ text: String, in id: Conversation.ID, of store: StoreOf<RootFeature>) {
-        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, text))))))
-        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, text)))))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.sendTapped)))))
     }
 
     /// Runs `body` as Shortcuts or Siri would, on the open app's records,
@@ -256,16 +264,16 @@ final class MacFlowSnapshotTests: XCTestCase {
         store.send(.conversations(.newTapped))
         await flow.step("new")
         let id = try XCTUnwrap(store.conversations.openID)
-        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "/"))))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, "/")))))))
         await flow.step("slash")
         // "/review " turns into the skill's name at the start of the field.
-        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "/review "))))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, "/review ")))))))
         await flow.step("skill-picked")
-        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "what slipped"))))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, "what slipped")))))))
         await flow.step("skill-details")
         store.send(.conversations(.chats(.element(id: id, action: .clearSkillTapped))))
-        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "Tidy my weekend"))))))
-        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, "Tidy my weekend")))))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.sendTapped)))))
         await flow.step("replied-with-draft")
         store.send(.conversations(.chats(.element(id: id, action: .editDraftTapped))))
         await flow.step("edit-draft")
@@ -292,9 +300,9 @@ final class MacFlowSnapshotTests: XCTestCase {
         store.send(.conversations(.newTapped))
         await flow.step("new")
         let id = try XCTUnwrap(store.conversations.openID)
-        store.send(.conversations(.chats(.element(id: id, action: .modelTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.modelTapped)))))
         await flow.step("defaults")
-        let sheet = { (action: ChatModelFeature.Action) in
+        let sheet = { (action: LifrConversations.ChatModelFeature.Action) in
             _ = store.send(.conversations(.chats(.element(id: id, action: .model(.presented(action))))))
         }
         let gemma = ModelCatalog.gemma4E2B.id
@@ -321,31 +329,37 @@ final class MacFlowSnapshotTests: XCTestCase {
             inputs: [.image, .audio]
         )
         .failing([2: .cantRead(.audio)])
-        let (store, flow) = app("assistant-attachments", assistant: assistant)
+        let (store, flow) = app("assistant-attachments", readsPhotos: true, assistant: assistant)
+        // Photos go to a model that reads them.
+        await library.client.select(ModelCatalog.gemma4E4B.id, .assistant)
         store.send(.selected(.conversations))
         store.send(.conversations(.newTapped))
         let id = try XCTUnwrap(store.conversations.openID)
+        // The model's pill names it once the library's read.
+        for _ in 0..<100 where store.conversations.chats[id: id]?.core.standard == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         await flow.step("new")
-        store.send(.conversations(.chats(.element(id: id, action: .photoPicked(Data([1]))))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.photoPicked(Data([1])))))))
         await flow.step("photo", image: false)
-        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.micTapped)))))
         await flow.step("recording")
-        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.micTapped)))))
         store.send(
-            .conversations(.chats(.element(id: id, action: .binding(.set(\.input, "What plant is this?"))))))
+            .conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, "What plant is this?")))))))
         await flow.step("attached")
-        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.sendTapped)))))
         await flow.step("replied")
-        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
-        store.send(.conversations(.chats(.element(id: id, action: .micTapped))))
-        store.send(.conversations(.chats(.element(id: id, action: .binding(.set(\.input, "And this one?"))))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.micTapped)))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.micTapped)))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, "And this one?")))))))
         // Stopping attaches the recording once it's saved.
         for _ in 0..<100 where store.conversations.chats[id: id]?.canSend != true {
             try await Task.sleep(for: .milliseconds(10))
         }
-        store.send(.conversations(.chats(.element(id: id, action: .sendTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.sendTapped)))))
         await flow.step("cant-read")
-        XCTAssertNotNil(store.conversations.chats[id: id]?.failure)
+        XCTAssertNotNil(store.conversations.chats[id: id]?.core.problem)
         flow.finish()
     }
 
@@ -358,22 +372,29 @@ final class MacFlowSnapshotTests: XCTestCase {
         let photo = photoFile()
         let (store, flow) = app(
             "add-context", inputs: [.image], files: ["notes.md": .text(notes), "fern.jpg": .photo(photo)])
+        // Photos go to a model that reads them.
+        await library.client.select(ModelCatalog.gemma4E4B.id, .assistant)
         store.send(.selected(.conversations))
         store.send(.conversations(.newTapped))
         let id = try XCTUnwrap(store.conversations.openID)
         func chat(_ action: ChatFeature.Action) { store.send(.conversations(.chats(.element(id: id, action: action)))) }
+        // The model's pill names it once the library's read.
+        for _ in 0..<100 where store.conversations.chats[id: id]?.core.standard == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         await flow.step("new")
         let picked = [URL(filePath: "/tmp/notes.md"), URL(filePath: "/tmp/fern.jpg")]
-        chat(.filesPicked(.success(picked)))
+        chat(.core(.filesPicked(.success(picked))))
         await flow.step("files")
-        XCTAssertEqual(store.conversations.chats[id: id]?.pending.count, 2)
-        chat(.micTapped)
+        XCTAssertEqual(store.conversations.chats[id: id]?.core.pendingPhotos.count, 1)
+        XCTAssertEqual(store.conversations.chats[id: id]?.core.pending.map(\.name), ["notes.md"])
+        chat(.core(.micTapped))
         await flow.step("dictating")
-        XCTAssertEqual(store.conversations.chats[id: id]?.dictating, true)
-        chat(.micTapped)
+        XCTAssertEqual(store.conversations.chats[id: id]?.core.dictating, true)
+        chat(.core(.micTapped))
         await flow.step("dictated")
         XCTAssertEqual(store.conversations.chats[id: id]?.input, "Move my run to Friday")
-        chat(.sendTapped)
+        chat(.core(.sendTapped))
         await flow.step("sent")
         flow.finish()
     }
@@ -408,17 +429,17 @@ final class MacFlowSnapshotTests: XCTestCase {
         send("Plan my week", in: id, of: store)
         await flow.step("unreadable")
         let asked = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last)
-        XCTAssertNotNil(store.conversations.chats[id: id]?.failure)
+        XCTAssertNotNil(store.conversations.chats[id: id]?.core.problem)
 
-        chat(.retryTapped(messageID: asked.id))
+        chat(.core(.retryTapped(messageID: asked.id)))
         await flow.step("retried")
         XCTAssertEqual(store.conversations.chats[id: id]?.conversation.messages.count, 2)
 
         time.withValue { $0 += 60 }
-        chat(.editTapped(messageID: asked.id))
+        chat(.core(.editTapped(messageID: asked.id)))
         await flow.step("editing")
-        chat(.binding(.set(\.input, "Plan my weekend")))
-        chat(.sendTapped)
+        chat(.core(.binding(.set(\.input, "Plan my weekend"))))
+        chat(.core(.sendTapped))
         await flow.step("edited")
         let edited = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.first)
         XCTAssertEqual(store.conversations.chats[id: id]?.conversation.branches(at: edited.id).count, 2)
@@ -426,7 +447,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         send("Add a task for every day of the year", in: id, of: store)
         await flow.step("too-long")
         let long = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last)
-        XCTAssertEqual(store.conversations.chats[id: id]?.canRetry(long), false)
+        XCTAssertEqual(store.conversations.chats[id: id]?.core.canRetry(long), false)
         flow.finish()
     }
 
@@ -463,7 +484,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         await flow.step("writing")
         XCTAssertEqual(store.conversations.chats[id: id]?.canStop, true)
 
-        chat(.stopTapped)
+        chat(.core(.stopTapped))
         await flow.step("stopped")
         XCTAssertEqual(store.conversations.chats[id: id]?.canStop, false)
         XCTAssertEqual(
@@ -509,7 +530,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         let id = try XCTUnwrap(store.conversations.openID)
         send("Show me some code", in: id, of: store)
         await flow.step("writing")
-        store.send(.conversations(.chats(.element(id: id, action: .stopTapped))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.stopTapped)))))
         store.send(.conversations(.closed))
         store.send(.conversations(.newTapped))
         let next = try XCTUnwrap(store.conversations.openID)
@@ -566,7 +587,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         XCTAssertEqual(store.conversations.chats[id: id]?.offersCompact, true)
 
         // /compact does what the offer's button does.
-        chat(.binding(.set(\.input, "/compact ")))
+        chat(.core(.binding(.set(\.input, "/compact "))))
         await flow.step("compacted")
         let summary = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.summary)
         XCTAssertEqual(store.conversations.chats[id: id]?.offersCompact, false)
@@ -831,14 +852,14 @@ final class MacFlowSnapshotTests: XCTestCase {
         store.send(.conversations(.newTapped))
         let id = try XCTUnwrap(store.conversations.openID)
         func chat(_ action: ChatFeature.Action) { store.send(.conversations(.chats(.element(id: id, action: action)))) }
-        chat(.binding(.set(\.input, "What should I do first?")))
-        chat(.sendTapped)
+        chat(.core(.binding(.set(\.input, "What should I do first?"))))
+        chat(.core(.sendTapped))
         await flow.step("replied")
         let reply = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last)
-        chat(.speakTapped(messageID: reply.id))
+        chat(.core(.speakTapped(messageID: reply.id)))
         await flow.step("speaking")
         XCTAssertEqual(said.value.count, 1)
-        chat(.speakTapped(messageID: reply.id))
+        chat(.core(.speakTapped(messageID: reply.id)))
         await flow.step("stopped")
         flow.finish()
     }

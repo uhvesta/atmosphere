@@ -1,4 +1,5 @@
 import CaptureKit
+import ChatFeatures
 import ComposableArchitecture
 import Foundation
 import LifrAssistantClient
@@ -31,14 +32,18 @@ final class ChatFeatureTests: XCTestCase {
         files: [String: PickedFile] = [:],
         answer: @escaping @Sendable (AssistantRequest) async throws -> AssistantReply
     ) -> TestStoreOf<ChatFeature> {
+        // The shared chat takes photos only for a model its library says
+        // reads them.
+        let seeing = ModelCatalog.gemma4E4B
+        var conversation = Conversation(id: conversationID, createdAt: now)
+        if inputs.contains(.image) { conversation.context.model = ModelChoice(model: seeing.id) }
         let store = TestStore(
-            initialState: ChatFeature.State(
-                conversation: Conversation(id: conversationID, createdAt: now), workspace: workspace)
+            initialState: ChatFeature.State(conversation: conversation, workspace: workspace)
         ) {
             ChatFeature()
         } withDependencies: { [now] in
             $0.store = .inMemory(workspace, actor: .user(device: "iPhone", surface: .iPhone))
-            $0.models = InMemoryModelLibrary().client
+            $0.models = InMemoryModelLibrary(installed: inputs.contains(.image) ? [seeing] : []).client
             $0.skills = .inMemory()
             $0.guidance = .inMemory()
             $0.assistant.availability = { _ in .available }
@@ -91,9 +96,9 @@ final class ChatFeatureTests: XCTestCase {
     }
 
     private func send(_ text: String, in store: TestStoreOf<ChatFeature>) async {
-        await store.send(.task)
-        await store.send(.binding(.set(\.input, text)))
-        await store.send(.sendTapped)
+        await store.send(.core(.task))
+        await store.send(.core(.binding(.set(\.input, text))))
+        await store.send(.core(.sendTapped))
         await store.skipReceivedActions(strict: false)
     }
 
@@ -109,7 +114,7 @@ final class ChatFeatureTests: XCTestCase {
         let qwen = ModelCatalog.qwen35Small.id
 
         // Picked before the first message.
-        await store.send(.modelTapped)
+        await store.send(.core(.modelTapped))
         await store.send(.model(.presented(.task)))
         await store.receive(\.model.presented.loaded)
         XCTAssertEqual(store.state.model?.models.map(\.id), [.apple, qwen])
@@ -120,7 +125,7 @@ final class ChatFeatureTests: XCTestCase {
         await send("Plan the week", in: store)
 
         // Changed after it, for the next message.
-        await store.send(.modelTapped)
+        await store.send(.core(.modelTapped))
         await store.send(.model(.presented(.binding(.set(\.choice.thinking, .off)))))
         await store.send(.model(.dismiss))
         await send("And the weekend", in: store)
@@ -173,362 +178,47 @@ final class ChatFeatureTests: XCTestCase {
             asked.setValue(request)
             return AssistantReply(text: "A fern.", isComplete: true)
         }
-        await store.send(.task)
+        await store.send(.core(.task))
 
-        await store.send(.photoPicked(Data([1])))
+        await store.send(.core(.photoPicked(Data([1]))))
         await store.skipReceivedActions(strict: false)
-        await store.send(.micTapped)
+        await store.send(.core(.micTapped))
         await store.skipReceivedActions(strict: false)
         XCTAssertTrue(store.state.recording)
         XCTAssertFalse(store.state.canSend)
-        await store.send(.micTapped)
+        await store.send(.core(.micTapped))
         await store.skipReceivedActions(strict: false)
-        XCTAssertEqual(store.state.pending.map(\.kind), [.image, .audio])
-        XCTAssertEqual(store.state.pending.last?.seconds, 4)
+        XCTAssertEqual(store.state.core.pendingPhotos.count, 1)
+        XCTAssertEqual(store.state.recordings.map(\.seconds), [4])
         XCTAssertTrue(store.state.canSend)
 
-        await store.send(.sendTapped)
+        await store.send(.core(.sendTapped))
         await store.skipReceivedActions(strict: false)
 
-        XCTAssertEqual(store.state.pending, [])
+        XCTAssertEqual(store.state.core.pendingPhotos, [])
+        XCTAssertEqual(store.state.recordings, [])
         let sent = try XCTUnwrap(store.state.conversation.messages.first)
         XCTAssertEqual(sent.attachments.map(\.kind), [.image, .audio])
         XCTAssertEqual(asked.value?.attachments.map(\.kind), [.image, .audio])
         XCTAssertEqual(store.state.conversation.messages.last?.text, "A fern.")
     }
 
-    func testAModelThatReadsOnlyTextTakesNoPhotosOrRecordings() async {
-        let (workspace, _) = home()
-        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
-        await store.send(.task)
-
-        await store.send(.photoPicked(Data([1])))
-        await store.send(.micTapped)
-        await store.skipReceivedActions(strict: false)
-
-        XCTAssertEqual(store.state.pending, [])
-        XCTAssertFalse(store.state.recording)
-        await store.send(.micTapped)
-    }
-
     func testTheMicRecordsForAModelThatListensAndDictatesForOneThatDoesnt() async {
         let (workspace, _) = home()
         let listens = chat(workspace, inputs: [.audio]) { _ in AssistantReply(text: "", isComplete: true) }
-        await listens.send(.task)
-        await listens.send(.micTapped)
+        await listens.send(.core(.task))
+        await listens.send(.core(.micTapped))
         XCTAssertTrue(listens.state.recording)
-        XCTAssertFalse(listens.state.dictating)
+        XCTAssertFalse(listens.state.core.dictating)
         await listens.send(.cancelRecordingTapped)
 
         let reads = chat(workspace, inputs: [.image]) { _ in AssistantReply(text: "", isComplete: true) }
-        await reads.send(.task)
-        await reads.send(.micTapped)
-        XCTAssertTrue(reads.state.dictating)
+        await reads.send(.core(.task))
+        await reads.send(.core(.micTapped))
+        XCTAssertTrue(reads.state.core.dictating)
         XCTAssertFalse(reads.state.recording)
-        await reads.send(.micTapped)
-        await reads.receive(\.dictationEnded)
-    }
-
-    func testDictationWritesWhatsHeardAfterWhatsTypedUntilStopped() async {
-        let (workspace, _) = home()
-        let store = chat(workspace, dictation: .scripted(["Move my run", "Move my run to Friday"])) { _ in
-            AssistantReply(text: "", isComplete: true)
-        }
-        await store.send(.task)
-        await store.send(.binding(.set(\.input, "Note: ")))
-
-        await store.send(.micTapped)
-        await store.receive(\.dictated)
-        await store.receive(\.dictated)
-
-        XCTAssertEqual(store.state.input, "Note: Move my run to Friday")
-        XCTAssertTrue(store.state.dictating)
-        XCTAssertFalse(store.state.canSend)
-
-        await store.send(.micTapped)
-        await store.receive(\.dictationEnded)
-
-        XCTAssertFalse(store.state.dictating)
-        XCTAssertEqual(store.state.input, "Note: Move my run to Friday")
-        XCTAssertTrue(store.state.canSend)
-    }
-
-    func testDictationThatCantRunOnTheDeviceSaysWhyAndLeavesTheField() async {
-        let (workspace, _) = home()
-        var dictation = DictationClient.scripted()
-        dictation.start = { throw DictationError.unavailable(language: "English") }
-        let store = chat(workspace, dictation: dictation) { _ in AssistantReply(text: "", isComplete: true) }
-        await store.send(.task)
-        await store.send(.binding(.set(\.input, "Buy milk")))
-
-        await store.send(.micTapped)
-        await store.receive(\.dictationFailed)
-
-        XCTAssertFalse(store.state.dictating)
-        XCTAssertEqual(store.state.input, "Buy milk")
-        XCTAssertNotNil(store.state.alert)
-        XCTAssertTrue(store.state.canSend)
-    }
-
-    func testDictationThatStopsPartWayKeepsWhatWasHeardAndSaysWhy() async {
-        let (workspace, _) = home()
-        let (stream, continuation) = AsyncThrowingStream.makeStream(of: String.self)
-        var dictation = DictationClient.scripted()
-        dictation.start = { stream }
-        let store = chat(workspace, dictation: dictation) { _ in AssistantReply(text: "", isComplete: true) }
-        await store.send(.task)
-
-        await store.send(.micTapped)
-        continuation.yield("Water the")
-        await store.receive(\.dictated)
-        continuation.finish(throwing: DictationError.failed("the microphone stopped"))
-        await store.receive(\.dictationFailed)
-
-        XCTAssertEqual(store.state.input, "Water the")
-        XCTAssertFalse(store.state.dictating)
-        XCTAssertNotNil(store.state.alert)
-    }
-
-    func testPlusShowsTheRecentPhotosAndCameraForAModelThatReadsThem() async {
-        let (workspace, _) = home()
-        let recents = [RecentPhoto(id: "fern", thumbnail: Data([1])), RecentPhoto(id: "desk", thumbnail: Data([2]))]
-        let store = chat(workspace, inputs: [.image], photos: .scripted(recents, camera: true)) { _ in
-            AssistantReply(text: "", isComplete: true)
-        }
-        await store.send(.task)
-
-        await store.send(.addContextTapped)
-        await store.receive(\.photosLoaded)
-
-        XCTAssertTrue(store.state.addsContext)
-        XCTAssertFalse(store.state.picksFiles)
-        XCTAssertEqual(store.state.photosAccess, .allowed)
-        XCTAssertEqual(store.state.recentPhotos, recents)
-        XCTAssertTrue(store.state.hasCamera)
-
-        await store.send(.binding(.set(\.addsContext, false)))
-        XCTAssertFalse(store.state.addsContext)
-    }
-
-    func testPlusAsksForThePhotosTheFirstTimeAndShowsNoneWhenRefused() async {
-        let (workspace, _) = home()
-        let asked = LockIsolated(0)
-        var photos = PhotoLibraryClient.denied
-        photos.access = { asked.value == 0 ? .notAsked : .denied }
-        photos.requestAccess = {
-            asked.withValue { $0 += 1 }
-            return .denied
-        }
-        let store = chat(workspace, inputs: [.image], photos: photos) { _ in
-            AssistantReply(text: "", isComplete: true)
-        }
-        await store.send(.task)
-
-        await store.send(.addContextTapped)
-        await store.receive(\.photosLoaded)
-        await store.send(.binding(.set(\.addsContext, false)))
-        await store.send(.addContextTapped)
-        await store.receive(\.photosLoaded)
-
-        XCTAssertEqual(asked.value, 1)
-        XCTAssertEqual(store.state.photosAccess, .denied)
-        XCTAssertEqual(store.state.recentPhotos, [])
-    }
-
-    func testPlusForAModelThatReadsOnlyTextOpensTheFilePicker() async {
-        let (workspace, _) = home()
-        let asked = LockIsolated(false)
-        var photos = PhotoLibraryClient.scripted([])
-        photos.requestAccess = {
-            asked.setValue(true)
-            return .allowed
-        }
-        let store = chat(workspace, photos: photos) { _ in AssistantReply(text: "", isComplete: true) }
-        await store.send(.task)
-
-        await store.send(.addContextTapped)
-        await store.skipReceivedActions(strict: false)
-
-        XCTAssertTrue(store.state.picksFiles)
-        XCTAssertFalse(store.state.addsContext, "There's no sheet holding only Add files")
-        XCTAssertFalse(asked.value)
-        XCTAssertEqual(store.state.recentPhotos, [])
-
-        await store.send(.filesPicked(.success([])))
-        XCTAssertFalse(store.state.picksFiles)
-    }
-
-    func testPlusFollowsTheModelPickedMidChat() async {
-        let (workspace, _) = home()
-        let library = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small])
-        let qwen = ModelCatalog.qwen35Small.id
-        let store = chat(workspace, photos: .scripted([])) { _ in AssistantReply(text: "", isComplete: true) }
-        store.dependencies.models = library.client
-        store.dependencies.assistant.inputs = { $0.model == qwen ? [.image] : [] }
-        await store.send(.task)
-        await store.skipReceivedActions(strict: false)
-
-        await store.send(.addContextTapped)
-        XCTAssertTrue(store.state.picksFiles)
-        await store.send(.filesPicked(.success([])))
-
-        await store.send(.modelTapped)
-        await store.send(.model(.presented(.task)))
-        await store.receive(\.model.presented.loaded)
-        await store.send(.model(.presented(.binding(.set(\.model, qwen)))))
-        await store.send(.model(.dismiss))
-
-        await store.send(.addContextTapped)
-        await store.receive(\.photosLoaded)
-        XCTAssertTrue(store.state.addsContext)
-        XCTAssertFalse(store.state.picksFiles)
-    }
-
-    func testATappedRecentPhotoIsAttachedAndTappedAgainTakenOff() async {
-        let (workspace, _) = home()
-        let recents = [RecentPhoto(id: "fern", thumbnail: Data([1]))]
-        let store = chat(workspace, inputs: [.image], photos: .scripted(recents)) { _ in
-            AssistantReply(text: "", isComplete: true)
-        }
-        await store.send(.task)
-        await store.send(.addContextTapped)
-        await store.receive(\.photosLoaded)
-
-        await store.send(.recentPhotoTapped("fern"))
-        await store.receive(\.recentPhotoAttached)
-
-        XCTAssertEqual(store.state.pending.map(\.kind), [.image])
-        XCTAssertEqual(Set(store.state.attachedRecents.keys), ["fern"])
-        XCTAssertTrue(store.state.addsContext)
-
-        await store.send(.recentPhotoTapped("fern"))
-
-        XCTAssertEqual(store.state.pending, [])
-        XCTAssertEqual(store.state.attachedRecents, [:])
-    }
-
-    func testARecentPhotoRemovedFromItsChipShowsAsNotAttached() async throws {
-        let (workspace, _) = home()
-        let store = chat(
-            workspace, inputs: [.image], photos: .scripted([RecentPhoto(id: "fern", thumbnail: Data([1]))])
-        ) { _ in AssistantReply(text: "", isComplete: true) }
-        await store.send(.task)
-        await store.send(.recentPhotoTapped("fern"))
-        await store.receive(\.recentPhotoAttached)
-        let photo = try XCTUnwrap(store.state.pending.first)
-
-        await store.send(.removeAttachmentTapped(photo.id))
-
-        XCTAssertEqual(store.state.attachedRecents, [:])
-    }
-
-    func testAPhotoFromTheCameraIsAttachedAndClosesPlus() async {
-        let (workspace, _) = home()
-        let store = chat(workspace, inputs: [.image]) { _ in AssistantReply(text: "", isComplete: true) }
-        await store.send(.task)
-        await store.send(.addContextTapped)
-        await store.skipReceivedActions(strict: false)
-
-        await store.send(.photoTaken(Data([1])))
-        await store.receive(\.attached)
-
-        XCTAssertFalse(store.state.addsContext)
-        XCTAssertEqual(store.state.pending.map(\.kind), [.image])
-    }
-
-    func testPickedFilesAttachTheirTextAndPhotosAndTheTextGoesToTheModel() async throws {
-        let (workspace, _) = home()
-        let asked = LockIsolated<AssistantRequest?>(nil)
-        let notes = try FileText(name: "notes.md", text: "Repot the fern in spring.", limit: 100)
-        let store = chat(
-            workspace, inputs: [.image], files: ["notes.md": .text(notes), "fern.jpg": .photo(Data([1]))]
-        ) { request in
-            asked.setValue(request)
-            return AssistantReply(text: "In spring.", isComplete: true)
-        }
-        await store.send(.task)
-        await store.send(.addContextTapped)
-        await store.skipReceivedActions(strict: false)
-
-        await store.send(
-            .filesPicked(.success([URL(filePath: "/picked/notes.md"), URL(filePath: "/picked/fern.jpg")])))
-        await store.receive(\.filesAttached)
-
-        XCTAssertFalse(store.state.addsContext)
-        XCTAssertEqual(store.state.pending.map(\.kind), [.text, .image])
-        XCTAssertEqual(store.state.pending.first?.name, "notes.md")
-        XCTAssertNil(store.state.alert)
-
-        await store.send(.sendTapped)
-        await store.skipReceivedActions(strict: false)
-
-        let sent = try XCTUnwrap(store.state.conversation.messages.first)
-        XCTAssertEqual(sent.attachments.map(\.kind), [.text, .image])
-        // Only the photo is a file for the model; the text is in the prompt.
-        XCTAssertEqual(asked.value?.attachments.map(\.kind), [.image])
-        XCTAssertTrue(
-            try AssistantPrompt.prompt(XCTUnwrap(asked.value)).contains("Repot the fern in spring."))
-    }
-
-    func testAPhotoFileForAModelThatReadsOnlyTextIsntAttachedAndSaysWhy() async throws {
-        let (workspace, _) = home()
-        let notes = try FileText(name: "notes.md", text: "Repot the fern.", limit: 100)
-        let store = chat(workspace, files: ["notes.md": .text(notes), "fern.jpg": .photo(Data([1]))]) { _ in
-            AssistantReply(text: "", isComplete: true)
-        }
-        await store.send(.task)
-
-        await store.send(
-            .filesPicked(.success([URL(filePath: "/picked/notes.md"), URL(filePath: "/picked/fern.jpg")])))
-        await store.receive(\.filesAttached)
-
-        XCTAssertEqual(store.state.pending.map(\.kind), [.text])
-        XCTAssertNotNil(store.state.alert)
-        XCTAssertFalse(store.state.attaching)
-    }
-
-    func testAFileThatCantBeReadSaysSoAndAttachesNothing() async {
-        let (workspace, _) = home()
-        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
-        await store.send(.task)
-
-        await store.send(.filesPicked(.success([URL(filePath: "/picked/scan.pdf")])))
-        await store.receive(\.filesAttached)
-
-        XCTAssertEqual(store.state.pending, [])
-        XCTAssertNotNil(store.state.alert)
-    }
-
-    func testARemovedAttachmentIsntSentOrKept() async throws {
-        let (workspace, _) = home()
-        let attachments = AttachmentsClient.inMemory()
-        let store = chat(workspace, inputs: [.image], attachments: attachments) { _ in
-            AssistantReply(text: "", isComplete: true)
-        }
-        await store.send(.task)
-        await store.send(.photoPicked(Data([1])))
-        await store.skipReceivedActions(strict: false)
-        let photo = try XCTUnwrap(store.state.pending.first)
-
-        await store.send(.removeAttachmentTapped(photo.id))
-        await store.skipReceivedActions(strict: false)
-
-        XCTAssertEqual(store.state.pending, [])
-        XCTAssertFalse(store.state.canSend)
-        XCTAssertNil(attachments.file(photo, conversationID))
-    }
-
-    func testAPhotoThatCantBeReadSaysSoAndAttachesNothing() async {
-        let (workspace, _) = home()
-        let store = chat(workspace, inputs: [.image]) { _ in AssistantReply(text: "", isComplete: true) }
-        await store.send(.task)
-
-        await store.send(.photoPicked(Data()))
-        await store.skipReceivedActions(strict: false)
-
-        XCTAssertEqual(store.state.pending, [])
-        XCTAssertFalse(store.state.attaching)
-        XCTAssertNotNil(store.state.alert)
+        await reads.send(.core(.micTapped))
+        await reads.receive(\.core.dictationEnded)
     }
 
     func testWithoutTheMicrophoneNothingIsRecorded() async {
@@ -538,9 +228,9 @@ final class ChatFeatureTests: XCTestCase {
         let store = chat(workspace, inputs: [.audio], recorder: recorder) { _ in
             AssistantReply(text: "", isComplete: true)
         }
-        await store.send(.task)
+        await store.send(.core(.task))
 
-        await store.send(.micTapped)
+        await store.send(.core(.micTapped))
         await store.skipReceivedActions(strict: false)
 
         XCTAssertFalse(store.state.recording)
@@ -550,28 +240,30 @@ final class ChatFeatureTests: XCTestCase {
     func testACancelledRecordingAttachesNothing() async {
         let (workspace, _) = home()
         let store = chat(workspace, inputs: [.audio]) { _ in AssistantReply(text: "", isComplete: true) }
-        await store.send(.task)
+        await store.send(.core(.task))
 
-        await store.send(.micTapped)
+        await store.send(.core(.micTapped))
         await store.skipReceivedActions(strict: false)
         await store.send(.cancelRecordingTapped)
         await store.skipReceivedActions(strict: false)
 
         XCTAssertFalse(store.state.recording)
-        XCTAssertEqual(store.state.pending, [])
+        XCTAssertEqual(store.state.recordings, [])
     }
 
     func testAttachmentsSentFromAnotherDeviceAreMarked() async {
         let (workspace, _) = home()
         var conversation = Conversation(id: conversationID, createdAt: now)
-        let photo = ChatAttachment(id: UUID(9), kind: .image)
-        conversation.messages = [ChatMessage(id: UUID(8), role: .person, text: "", at: now, attachments: [photo])]
+        let recording = ChatAttachment(id: UUID(9), kind: .audio, seconds: 3)
+        conversation.messages = [
+            ChatMessage(id: UUID(8), role: .person, text: "", at: now, attachments: [recording])
+        ]
         let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
         await store.send(.binding(.set(\.conversation, conversation)))
 
-        await store.send(.task)
+        await store.send(.core(.task))
 
-        XCTAssertEqual(store.state.elsewhere, [photo.id])
+        XCTAssertEqual(store.state.elsewhere, [recording.id])
     }
 
     func testAddingTheDraftSavesItsTasksAndClearsTheCard() async throws {
@@ -657,7 +349,7 @@ final class ChatFeatureTests: XCTestCase {
     func testASuggestionInAnEmptyChatIsSentAsTheMessage() async throws {
         let (workspace, _) = home()
         let store = chat(workspace) { _ in AssistantReply(text: "Here's your week.", isComplete: true) }
-        await store.send(.task)
+        await store.send(.core(.task))
 
         await store.send(.suggestionTapped("Plan my week"))
         await store.skipReceivedActions(strict: false)
@@ -680,7 +372,7 @@ final class ChatFeatureTests: XCTestCase {
         let (workspace, _) = home()
         let plan = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])
         let store = chat(workspace) { _ in AssistantReply(text: "Here's a plan.", plan: plan, isComplete: true) }
-        await store.send(.task)
+        await store.send(.core(.task))
         await store.send(.editDraftTapped)
         XCTAssertFalse(store.state.editsDraft)
 
@@ -834,38 +526,6 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertNil(reopened.conversation.changes[reply.id])
     }
 
-    func testAReplysThinkingIsKeptClosedAndOpensAndClosesWithItsChevron() async throws {
-        let (workspace, _) = home()
-        let thinking = ModelThinking(text: "Rent is due.", duration: .seconds(4), processor: .gpu)
-        let store = chat(workspace) { _ in AssistantReply(text: "Paid.", isComplete: true, thinking: thinking) }
-
-        await send("I paid the rent", in: store)
-        let reply = try XCTUnwrap(store.state.conversation.messages.last)
-        XCTAssertEqual(reply.thinking, thinking)
-        XCTAssertEqual(store.state.shownThinking, [])
-
-        await store.send(.thinkingToggled(messageID: reply.id))
-        XCTAssertEqual(store.state.shownThinking, [reply.id])
-        await store.send(.thinkingToggled(messageID: reply.id))
-        XCTAssertEqual(store.state.shownThinking, [])
-    }
-
-    func testThinkingOpenedWhileTheReplyIsWrittenStaysOpen() async throws {
-        let (workspace, _) = home()
-        let store = chat(workspace) { _ in AssistantReply(text: "") }
-        let thinking = ModelThinking(text: "Rent is due.", processor: .gpu)
-
-        await store.send(.replied(AssistantReply(text: "", thinking: thinking)))
-        XCTAssertEqual(store.state.replyingThinking, thinking)
-        await store.send(.thinkingToggled(messageID: nil))
-        await store.send(.replied(AssistantReply(text: "Paid.", isComplete: true, thinking: thinking)))
-
-        let reply = try XCTUnwrap(store.state.conversation.messages.last)
-        XCTAssertEqual(store.state.shownThinking, [reply.id])
-        XCTAssertNil(store.state.replyingThinking)
-        XCTAssertFalse(store.state.showsReplyThinking)
-    }
-
     func testAReplyWithoutThoughtsShowsNoThinking() async throws {
         let (workspace, _) = home()
         let empty = ModelThinking(text: "  ", duration: .seconds(1), processor: .gpu)
@@ -881,11 +541,11 @@ final class ChatFeatureTests: XCTestCase {
         let store = chat(workspace) { _ in throw AssistantError.tooLong }
 
         await send("Hello", in: store)
-        XCTAssertNil(store.state.replying)
-        XCTAssertNotNil(store.state.failure)
+        XCTAssertNil(store.state.core.reply)
+        XCTAssertNotNil(store.state.core.problem)
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello"])
         let hello = try XCTUnwrap(store.state.conversation.messages.last)
-        XCTAssertFalse(store.state.canRetry(hello), "Sending a message that's too long again can't help")
+        XCTAssertFalse(store.state.core.canRetry(hello), "Sending a message that's too long again can't help")
     }
 
     func testRetrySendsAnUnreadableReplysMessageAgain() async throws {
@@ -902,11 +562,11 @@ final class ChatFeatureTests: XCTestCase {
 
         await send("Hello", in: store)
         let hello = try XCTUnwrap(store.state.conversation.messages.last)
-        XCTAssertTrue(store.state.canRetry(hello))
+        XCTAssertTrue(store.state.core.canRetry(hello))
 
-        await store.send(.retryTapped(messageID: hello.id))
+        await store.send(.core(.retryTapped(messageID: hello.id)))
         await store.skipReceivedActions(strict: false)
-        XCTAssertNil(store.state.failure)
+        XCTAssertNil(store.state.core.problem)
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Done."])
     }
 
@@ -916,11 +576,11 @@ final class ChatFeatureTests: XCTestCase {
         let store = chat(workspace, prewarmed: prewarmed) { _ in AssistantReply(text: "", isComplete: true) }
         store.exhaustivity = .off
 
-        await store.send(.task)
+        await store.send(.core(.task))
         XCTAssertEqual(prewarmed.value, 0)
 
-        await store.send(.binding(.set(\.input, "A")))
-        await store.send(.binding(.set(\.input, "Ad")))
+        await store.send(.core(.binding(.set(\.input, "A"))))
+        await store.send(.core(.binding(.set(\.input, "Ad"))))
         XCTAssertEqual(prewarmed.value, 1)
     }
 
@@ -935,12 +595,12 @@ final class ChatFeatureTests: XCTestCase {
         await send("Hello", in: store)
         XCTAssertNil(store.state.alert)
 
-        await clock.advance(by: ChatFeature.stallLimit * 2)
-        await store.receive(\.replyFailed)
-        XCTAssertNil(store.state.replying)
+        await clock.advance(by: LifrReplier.stallLimit * 2)
+        await store.receive(\.core.replied.failure)
+        XCTAssertNil(store.state.core.reply)
         let hello = try XCTUnwrap(store.state.conversation.messages.last)
-        XCTAssertNotNil(store.state.failure)
-        XCTAssertTrue(store.state.canRetry(hello))
+        XCTAssertNotNil(store.state.core.problem)
+        XCTAssertTrue(store.state.core.canRetry(hello))
     }
 
     func testAReplyThatStallsAfterProposingCanBeTriedAgain() async throws {
@@ -954,11 +614,11 @@ final class ChatFeatureTests: XCTestCase {
         }
 
         await send("Finish rent", in: store)
-        await clock.advance(by: ChatFeature.stallLimit * 2)
-        await store.receive(\.replyFailed)
+        await clock.advance(by: LifrReplier.stallLimit * 2)
+        await store.receive(\.core.replied.failure)
         let finish = try XCTUnwrap(store.state.conversation.messages.last)
-        XCTAssertNotNil(store.state.failure)
-        XCTAssertTrue(store.state.canRetry(finish), "nothing was saved, so sending it again is safe")
+        XCTAssertNotNil(store.state.core.problem)
+        XCTAssertTrue(store.state.core.canRetry(finish), "nothing was saved, so sending it again is safe")
     }
 
     func testAReplyThatKeepsWritingDoesntTimeOut() async throws {
@@ -969,7 +629,7 @@ final class ChatFeatureTests: XCTestCase {
             AssistantReplies { continuation in
                 Task {
                     for step in 1...3 {
-                        try await clock.sleep(for: ChatFeature.stallLimit / 2)
+                        try await clock.sleep(for: LifrReplier.stallLimit / 2)
                         continuation.yield(AssistantReply(text: "Part \(step)"))
                     }
                     continuation.yield(AssistantReply(text: "Done.", isComplete: true))
@@ -979,7 +639,7 @@ final class ChatFeatureTests: XCTestCase {
         }
 
         await send("Hello", in: store)
-        for _ in 1...3 { await clock.advance(by: ChatFeature.stallLimit / 2) }
+        for _ in 1...3 { await clock.advance(by: LifrReplier.stallLimit / 2) }
         await store.skipReceivedActions()
 
         XCTAssertNil(store.state.alert)
@@ -1008,7 +668,7 @@ final class ChatFeatureTests: XCTestCase {
         await send("Hello", in: store)
         // Away for longer than a stall, then back.
         returns.setValue(1)
-        await clock.advance(by: ChatFeature.stallLimit)
+        await clock.advance(by: LifrReplier.stallLimit)
         await store.send(.resume)
         finish.continuation.yield()
         await store.skipReceivedActions()
@@ -1061,21 +721,21 @@ final class ChatFeatureTests: XCTestCase {
         }
 
         await send("Hello", in: store)
-        for _ in 0..<100 where store.state.replying != "Half" {
+        for _ in 0..<100 where store.state.core.reply != "Half" {
             try await Task.sleep(for: .milliseconds(10))
             await store.skipReceivedActions(strict: false)
         }
-        XCTAssertEqual(store.state.replying, "Half")
+        XCTAssertEqual(store.state.core.reply, "Half")
         XCTAssertTrue(store.state.canStop)
 
-        await store.send(.stopTapped)
+        await store.send(.core(.stopTapped))
         finish.continuation.yield()
         await store.skipReceivedActions(strict: false)
 
         XCTAssertFalse(store.state.canStop)
-        XCTAssertNil(store.state.replying)
+        XCTAssertNil(store.state.core.reply)
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Half"])
-        await store.send(.binding(.set(\.input, "Again")))
+        await store.send(.core(.binding(.set(\.input, "Again"))))
         XCTAssertTrue(store.state.canSend)
     }
 
@@ -1087,12 +747,12 @@ final class ChatFeatureTests: XCTestCase {
         }
 
         await send("Hello", in: store)
-        await store.send(.stopTapped)
+        await store.send(.core(.stopTapped))
         await store.skipReceivedActions(strict: false)
 
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello"])
         XCTAssertNil(store.state.alert)
-        XCTAssertNil(store.state.failure)
+        XCTAssertNil(store.state.core.problem)
     }
 
     func testABusyReplyKeepsItsTextAndIsSentAgainOnResume() async throws {
@@ -1108,14 +768,14 @@ final class ChatFeatureTests: XCTestCase {
         }
 
         await send("Hello", in: store)
-        XCTAssertNotNil(store.state.replying)
-        XCTAssertNotNil(store.state.waiting)
+        XCTAssertNotNil(store.state.core.reply)
+        XCTAssertNotNil(store.state.core.reply)
         XCTAssertNil(store.state.alert)
         XCTAssertFalse(store.state.canSend)
 
         await store.send(.resume)
         await store.skipReceivedActions()
-        XCTAssertNil(store.state.waiting)
+        XCTAssertNil(store.state.core.reply)
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Done."])
     }
 
@@ -1131,8 +791,8 @@ final class ChatFeatureTests: XCTestCase {
         var guidance = Guidance()
         try guidance.save("Answer like a pirate.", id: UUID(), at: now)
         store.dependencies.guidance = .inMemory(guidance)
-        await store.send(.binding(.set(\.input, "Hello again")))
-        await store.send(.sendTapped)
+        await store.send(.core(.binding(.set(\.input, "Hello again"))))
+        await store.send(.core(.sendTapped))
         await store.skipReceivedActions(strict: false)
 
         XCTAssertEqual(told.value, [Guidance.defaultText, "Answer like a pirate."])
@@ -1146,9 +806,9 @@ final class ChatFeatureTests: XCTestCase {
             return AssistantReply(text: "Sure.", isComplete: true)
         }
 
-        await store.send(.task)
+        await store.send(.core(.task))
         await store.skipReceivedActions()
-        await store.send(.binding(.set(\.input, "/ti")))
+        await store.send(.core(.binding(.set(\.input, "/ti"))))
         XCTAssertEqual(store.state.slashChoices.first?.id, "tidy")
         await store.send(.pickSkillTapped("tidy"))
         await send("Only HOME", in: store)
@@ -1179,12 +839,12 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.skillsLoaded([off, .tidy]))
 
         XCTAssertNil(store.state.picked)
-        await store.send(.binding(.set(\.input, "/")))
+        await store.send(.core(.binding(.set(\.input, "/"))))
         let skills = store.state.slashChoices.compactMap { if case .skill(let skill) = $0 { skill.id } else { nil } }
         XCTAssertEqual(skills, ["tidy"])
         await store.send(.pickSkillTapped("query"))
         XCTAssertNil(store.state.picked)
-        await store.send(.binding(.set(\.input, "/query ")))
+        await store.send(.core(.binding(.set(\.input, "/query "))))
         XCTAssertNil(store.state.picked)
         XCTAssertEqual(store.state.input, "/query ")
     }
@@ -1195,10 +855,10 @@ final class ChatFeatureTests: XCTestCase {
         let (workspace, _) = home()
         let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
 
-        await store.send(.binding(.set(\.input, "/add")))
+        await store.send(.core(.binding(.set(\.input, "/add"))))
         XCTAssertNil(store.state.picked, "it may still be the start of a longer name")
         XCTAssertEqual(store.state.input, "/add")
-        await store.send(.binding(.set(\.input, "/add ")))
+        await store.send(.core(.binding(.set(\.input, "/add "))))
 
         XCTAssertEqual(store.state.picked?.id, "add")
         XCTAssertEqual(store.state.input, "")
@@ -1209,12 +869,12 @@ final class ChatFeatureTests: XCTestCase {
         let (workspace, _) = home()
         let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
 
-        await store.send(.binding(.set(\.input, "/Add buy milk")))
+        await store.send(.core(.binding(.set(\.input, "/Add buy milk"))))
         XCTAssertEqual(store.state.picked?.id, "add")
         XCTAssertEqual(store.state.input, "buy milk")
 
         await store.send(.clearSkillTapped)
-        await store.send(.binding(.set(\.input, "/tidy\nOnly HOME")))
+        await store.send(.core(.binding(.set(\.input, "/tidy\nOnly HOME"))))
         XCTAssertEqual(store.state.picked?.id, "tidy")
         XCTAssertEqual(store.state.input, "Only HOME")
     }
@@ -1229,10 +889,10 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.skillsLoaded(Skill.builtIn + [addresses]))
 
         for typed in ["/add", "/addr", "/addresses"] {
-            await store.send(.binding(.set(\.input, typed)))
+            await store.send(.core(.binding(.set(\.input, typed))))
             XCTAssertNil(store.state.picked, typed)
         }
-        await store.send(.binding(.set(\.input, "/addresses near home")))
+        await store.send(.core(.binding(.set(\.input, "/addresses near home"))))
         XCTAssertEqual(store.state.picked?.id, addresses.id)
         XCTAssertEqual(store.state.input, "near home")
     }
@@ -1242,7 +902,7 @@ final class ChatFeatureTests: XCTestCase {
         let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
 
         for typed in ["/groceries ", "buy /add milk", "/ add"] {
-            await store.send(.binding(.set(\.input, typed)))
+            await store.send(.core(.binding(.set(\.input, typed))))
             XCTAssertNil(store.state.picked, typed)
             XCTAssertEqual(store.state.input, typed)
         }
@@ -1272,7 +932,7 @@ final class ChatFeatureTests: XCTestCase {
         let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
         await store.send(.pickSkillTapped("review"))
 
-        await store.send(.binding(.set(\.input, "/add more")))
+        await store.send(.core(.binding(.set(\.input, "/add more"))))
         XCTAssertEqual(store.state.picked?.id, "review")
         XCTAssertEqual(store.state.input, "/add more")
     }
@@ -1280,7 +940,7 @@ final class ChatFeatureTests: XCTestCase {
     func testRemovingThePickedSkillKeepsTheDetails() async {
         let (workspace, _) = home()
         let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
-        await store.send(.binding(.set(\.input, "/add buy milk")))
+        await store.send(.core(.binding(.set(\.input, "/add buy milk"))))
 
         await store.send(.clearSkillTapped)
         XCTAssertNil(store.state.picked)
@@ -1296,17 +956,17 @@ final class ChatFeatureTests: XCTestCase {
             store.state.slashChoices.compactMap { if case .command(let command) = $0 { command } else { nil } }
         }
 
-        await store.send(.binding(.set(\.input, "/")))
+        await store.send(.core(.binding(.set(\.input, "/"))))
         XCTAssertEqual(commands(), [.rename, .model, .skills, .new])
         await send("Plan the week", in: store)
-        await store.send(.binding(.set(\.input, "/")))
+        await store.send(.core(.binding(.set(\.input, "/"))))
         XCTAssertTrue(commands().contains(.find))
         XCTAssertFalse(commands().contains(.forward))
-        await store.send(.binding(.set(\.input, "/fi")))
+        await store.send(.core(.binding(.set(\.input, "/fi"))))
         XCTAssertEqual(commands(), [.find])
 
         // Names starting with what's typed come before looser matches.
-        await store.send(.binding(.set(\.input, "/c")))
+        await store.send(.core(.binding(.set(\.input, "/c"))))
         XCTAssertEqual(store.state.slashChoices.prefix(2).map(\.id), ["change", "checkpoints"])
     }
 
@@ -1314,7 +974,7 @@ final class ChatFeatureTests: XCTestCase {
         let (workspace, _) = home()
         let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
 
-        await store.send(.binding(.set(\.input, "/back ")))
+        await store.send(.core(.binding(.set(\.input, "/back "))))
         XCTAssertEqual(store.state.input, "/back ")
     }
 
@@ -1323,11 +983,11 @@ final class ChatFeatureTests: XCTestCase {
         let store = chat(workspace) { _ in AssistantReply(text: "Saturday works.", isComplete: true) }
         await send("Plan saturday", in: store)
 
-        await store.send(.binding(.set(\.input, "/find saturday")))
-        await store.send(.sendTapped)
-        XCTAssertTrue(store.state.finds)
-        XCTAssertEqual(store.state.findQuery, "saturday")
-        XCTAssertEqual(store.state.findMatches.count, 2)
+        await store.send(.core(.binding(.set(\.input, "/find saturday"))))
+        await store.send(.core(.sendTapped))
+        XCTAssertTrue(store.state.core.finds)
+        XCTAssertEqual(store.state.core.findQuery, "saturday")
+        XCTAssertEqual(store.state.core.findMatches.count, 2)
         XCTAssertEqual(store.state.input, "")
         XCTAssertEqual(store.state.conversation.messages.count, 2, "nothing was sent")
     }
@@ -1337,17 +997,17 @@ final class ChatFeatureTests: XCTestCase {
         let store = chat(workspace) { _ in AssistantReply(text: "OK.", isComplete: true) }
         await send("Plan the week", in: store)
 
-        await store.send(.binding(.set(\.input, "/checkpoints ")))
+        await store.send(.core(.binding(.set(\.input, "/checkpoints "))))
         XCTAssertTrue(store.state.showsCheckpoints)
         XCTAssertEqual(store.state.input, "")
 
-        await store.send(.binding(.set(\.input, "/mod")))
+        await store.send(.core(.binding(.set(\.input, "/mod"))))
         await store.send(.pickCommandTapped(.model))
-        await store.receive(\.modelTapped)
+        await store.receive(\.core.modelTapped)
         XCTAssertNotNil(store.state.model)
         XCTAssertEqual(store.state.input, "")
 
-        await store.send(.binding(.set(\.input, "/rename ")))
+        await store.send(.core(.binding(.set(\.input, "/rename "))))
         await store.receive(\.delegate.rename)
     }
 
@@ -1358,11 +1018,11 @@ final class ChatFeatureTests: XCTestCase {
         await send("Plan the week", in: store)
         await send("And the weekend", in: store)
 
-        await store.send(.binding(.set(\.input, "/back ")))
+        await store.send(.core(.binding(.set(\.input, "/back "))))
         await store.skipReceivedActions(strict: false)
         XCTAssertEqual(store.state.conversation.messages.count, 2)
-        await store.send(.binding(.set(\.input, "/forward")))
-        await store.send(.sendTapped)
+        await store.send(.core(.binding(.set(\.input, "/forward"))))
+        await store.send(.core(.sendTapped))
         await store.skipReceivedActions(strict: false)
         XCTAssertEqual(store.state.conversation.messages.count, 4)
     }
@@ -1372,11 +1032,11 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.task)
         await store.send(.newTapped)
         let id = try XCTUnwrap(store.state.openID)
-        await store.send(.chats(.element(id: id, action: .binding(.set(\.input, "Plan the week")))))
-        await store.send(.chats(.element(id: id, action: .sendTapped)))
+        await store.send(.chats(.element(id: id, action: .core(.binding(.set(\.input, "Plan the week"))))))
+        await store.send(.chats(.element(id: id, action: .core(.sendTapped))))
         await store.skipReceivedActions()
 
-        await store.send(.chats(.element(id: id, action: .binding(.set(\.input, "/new ")))))
+        await store.send(.chats(.element(id: id, action: .core(.binding(.set(\.input, "/new "))))))
         await store.skipReceivedActions()
         XCTAssertNotEqual(store.state.openID, id)
         XCTAssertEqual(store.state.chat?.conversation.messages.isEmpty, true)
@@ -1385,16 +1045,16 @@ final class ChatFeatureTests: XCTestCase {
     func testTypingASlashListsTheSkillsThatMatchAndPickingOneTakesItsPlace() async {
         let (workspace, _) = home()
         let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
-        await store.send(.binding(.set(\.input, "ti")))
+        await store.send(.core(.binding(.set(\.input, "ti"))))
         XCTAssertTrue(store.state.slashChoices.isEmpty)
 
-        await store.send(.binding(.set(\.input, "/ti")))
+        await store.send(.core(.binding(.set(\.input, "/ti"))))
         XCTAssertEqual(store.state.slashChoices.first?.id, "tidy")
         await store.send(.pickSkillTapped("tidy"))
 
         XCTAssertEqual(store.state.picked?.id, "tidy")
         XCTAssertEqual(store.state.input, "")
-        await store.send(.binding(.set(\.input, "/ti")))
+        await store.send(.core(.binding(.set(\.input, "/ti"))))
         XCTAssertTrue(store.state.slashChoices.isEmpty)
     }
 
@@ -1402,16 +1062,16 @@ final class ChatFeatureTests: XCTestCase {
         let (workspace, _) = home()
         let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
         store.dependencies.models = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small]).client
-        XCTAssertNil(store.state.current)
+        XCTAssertNil(store.state.core.current)
 
-        await store.send(.task)
-        await store.receive(\.modelsLoaded)
-        XCTAssertEqual(store.state.current?.id, .apple)
-        await store.send(.modelTapped)
+        await store.send(.core(.task))
+        await store.receive(\.core.modelsLoaded)
+        XCTAssertEqual(store.state.core.current?.id, .apple)
+        await store.send(.core(.modelTapped))
         await store.send(.model(.presented(.binding(.set(\.model, ModelCatalog.qwen35Small.id)))))
         await store.send(.model(.dismiss))
 
-        XCTAssertEqual(store.state.current?.id, ModelCatalog.qwen35Small.id)
+        XCTAssertEqual(store.state.core.current?.id, ModelCatalog.qwen35Small.id)
     }
 
     func testAReplySaysHowMuchOfTheWindowItTookUntilTheModelChanges() async {
@@ -1423,19 +1083,19 @@ final class ChatFeatureTests: XCTestCase {
             return reply
         }
         store.dependencies.models = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small]).client
-        XCTAssertNil(store.state.context)
+        XCTAssertNil(store.state.core.context)
         await send("Plan the week", in: store)
-        XCTAssertEqual(store.state.context, used)
+        XCTAssertEqual(store.state.core.context, used)
 
-        await store.send(.modelTapped)
+        await store.send(.core(.modelTapped))
         await store.send(.model(.presented(.binding(.set(\.choice.thinking, .long)))))
         await store.send(.model(.dismiss))
-        XCTAssertEqual(store.state.context, used)
+        XCTAssertEqual(store.state.core.context, used)
 
-        await store.send(.modelTapped)
+        await store.send(.core(.modelTapped))
         await store.send(.model(.presented(.binding(.set(\.model, ModelCatalog.qwen35Small.id)))))
         await store.send(.model(.dismiss))
-        XCTAssertNil(store.state.context)
+        XCTAssertNil(store.state.core.context)
     }
 
     // MARK: - Picking a skill
@@ -1510,7 +1170,7 @@ final class ChatFeatureTests: XCTestCase {
             return "query"
         }
 
-        await store.send(.modelTapped)
+        await store.send(.core(.modelTapped))
         XCTAssertEqual(store.state.model?.picksSkillsHere, true, "it starts at Settings")
         await store.send(.model(.presented(.binding(.set(\.picksSkillsHere, false)))))
         await store.send(.model(.dismiss))
@@ -1534,7 +1194,7 @@ final class ChatFeatureTests: XCTestCase {
         store.dependencies.assistant.pickSkill = { _, _, _, _ in "query" }
         store.state.$picksSkills.withLock { $0 = false }
 
-        await store.send(.modelTapped)
+        await store.send(.core(.modelTapped))
         await store.send(.model(.presented(.binding(.set(\.picksSkillsHere, true)))))
         await store.send(.model(.dismiss))
         await send("How was my week?", in: store)
@@ -1630,10 +1290,10 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(
             store.state.conversation.checkpoints.map(\.message.text), ["one", "two", "two again"])
 
-        await store.send(.branchTapped(messageID: again.id, by: -1))
+        await store.send(.core(.branchTapped(messageID: again.id, by: -1)))
         XCTAssertEqual(texts(store), ["one", "re one", "two", "re two"])
         let two = try XCTUnwrap(store.state.conversation.messages.first { $0.text == "two" })
-        await store.send(.branchTapped(messageID: two.id, by: 1))
+        await store.send(.core(.branchTapped(messageID: two.id, by: 1)))
         XCTAssertEqual(texts(store), ["one", "re one", "two again", "re two again"])
     }
 
@@ -1680,8 +1340,8 @@ final class ChatFeatureTests: XCTestCase {
         await send("two", in: store)
         store.dependencies.assistant.reply = { _ in AssistantReplies { _ in } }
 
-        await store.send(.binding(.set(\.input, "three")))
-        await store.send(.sendTapped)
+        await store.send(.core(.binding(.set(\.input, "three"))))
+        await store.send(.core(.sendTapped))
         await store.send(.backTapped)
         XCTAssertEqual(store.state.conversation.messages.last?.text, "three")
     }
@@ -1692,8 +1352,8 @@ final class ChatFeatureTests: XCTestCase {
         ticking(store)
         await send("one", in: store)
         store.dependencies.assistant.reply = { _ in AssistantReplies { _ in } }
-        await store.send(.binding(.set(\.input, "two")))
-        await store.send(.sendTapped)
+        await store.send(.core(.binding(.set(\.input, "two"))))
+        await store.send(.core(.sendTapped))
         let messages = store.state.conversation.messages
         let reply = try XCTUnwrap(messages.dropFirst().first)
         let asked = try XCTUnwrap(messages.last)
@@ -1702,7 +1362,7 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.forkTapped(messageID: reply.id))
         await store.receive(\.forked)
 
-        XCTAssertNotNil(store.state.replying, "The reply goes on being written")
+        XCTAssertNotNil(store.state.core.reply, "The reply goes on being written")
         XCTAssertEqual(texts(store), ["one", "OK.", "two"])
     }
 
@@ -1716,11 +1376,11 @@ final class ChatFeatureTests: XCTestCase {
         await send("two", in: store)
         let two = try XCTUnwrap(store.state.conversation.messages.first { $0.text == "two" })
 
-        await store.send(.editTapped(messageID: two.id))
+        await store.send(.core(.editTapped(messageID: two.id)))
         XCTAssertEqual(store.state.input, "two")
         await send("two, edited", in: store)
 
-        XCTAssertNil(store.state.editing)
+        XCTAssertNil(store.state.core.editing)
         XCTAssertEqual(texts(store), ["one", "re one", "two, edited", "re two, edited"])
         let edited = try XCTUnwrap(store.state.conversation.messages.first { $0.text == "two, edited" })
         XCTAssertEqual(store.state.conversation.branches(at: edited.id).map(\.text), ["two", "two, edited"])
@@ -1733,10 +1393,10 @@ final class ChatFeatureTests: XCTestCase {
         await send("one", in: store)
         let one = try XCTUnwrap(store.state.conversation.messages.first)
 
-        await store.send(.editTapped(messageID: one.id))
-        await store.send(.cancelEditTapped)
+        await store.send(.core(.editTapped(messageID: one.id)))
+        await store.send(.core(.cancelEditTapped))
 
-        XCTAssertNil(store.state.editing)
+        XCTAssertNil(store.state.core.editing)
         XCTAssertEqual(store.state.input, "")
         XCTAssertEqual(texts(store), ["one", "OK."])
     }
@@ -1755,9 +1415,9 @@ final class ChatFeatureTests: XCTestCase {
         try await applyLast(in: store)
         let paid = try XCTUnwrap(store.state.conversation.messages.first)
 
-        await store.send(.editTapped(messageID: paid.id))
-        await store.send(.binding(.set(\.input, "Hello")))
-        await store.send(.sendTapped)
+        await store.send(.core(.editTapped(messageID: paid.id)))
+        await store.send(.core(.binding(.set(\.input, "Hello"))))
+        await store.send(.core(.sendTapped))
         XCTAssertNotNil(store.state.alert, "Asks before hiding the reply that changed the rent")
         XCTAssertEqual(texts(store), ["I paid the rent", "OK."])
 
@@ -1777,9 +1437,9 @@ final class ChatFeatureTests: XCTestCase {
         ticking(store)
         await send("one", in: store)
         let reply = try XCTUnwrap(store.state.conversation.messages.last)
-        XCTAssertTrue(store.state.canRetry(reply))
+        XCTAssertTrue(store.state.core.canRetry(reply))
 
-        await store.send(.retryTapped(messageID: reply.id))
+        await store.send(.core(.retryTapped(messageID: reply.id)))
         await store.skipReceivedActions(strict: false)
 
         XCTAssertEqual(texts(store), ["one", "reply 2"])
@@ -1790,19 +1450,25 @@ final class ChatFeatureTests: XCTestCase {
     func testAForkOpensAsANewConversationUpToThere() async throws {
         let kept = ConversationsClient.inMemory()
         let attachments = AttachmentsClient.inMemory()
-        let store = list(kept, attachments: attachments)
+        // A model that reads photos, so the chat takes one.
+        let seeing = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E4B])
+        await seeing.client.select(ModelCatalog.gemma4E4B.id, .assistant)
+        let store = list(kept, attachments: attachments, models: seeing)
         await store.send(.task)
         await store.send(.newTapped)
         let id = try XCTUnwrap(store.state.openID)
-        let photo = try await attachments.save(Data([1]), .image, nil, id)
-        await store.send(.chats(.element(id: id, action: .attached(.success(photo)))))
+        await store.send(.chats(.element(id: id, action: .core(.task))))
+        await store.skipReceivedActions()
+        await store.send(.chats(.element(id: id, action: .core(.photoPicked(Data([1]))))))
+        await store.skipReceivedActions()
         for text in ["Plan the week", "And the weekend"] {
-            await store.send(.chats(.element(id: id, action: .binding(.set(\.input, text)))))
-            await store.send(.chats(.element(id: id, action: .sendTapped)))
+            await store.send(.chats(.element(id: id, action: .core(.binding(.set(\.input, text))))))
+            await store.send(.chats(.element(id: id, action: .core(.sendTapped))))
             await store.skipReceivedActions()
         }
         let original = try XCTUnwrap(store.state.chat?.conversation)
         let reply = try XCTUnwrap(original.messages.dropFirst().first?.id)
+        let photo = try XCTUnwrap(original.messages.first?.attachments.first)
 
         await store.send(.chats(.element(id: id, action: .forkTapped(messageID: reply))))
         await store.skipReceivedActions()
@@ -1818,7 +1484,8 @@ final class ChatFeatureTests: XCTestCase {
     }
 
     private func list(
-        _ kept: ConversationsClient, attachments: AttachmentsClient = .inMemory()
+        _ kept: ConversationsClient, attachments: AttachmentsClient = .inMemory(),
+        models: InMemoryModelLibrary = InMemoryModelLibrary()
     ) -> TestStoreOf<ConversationsFeature> {
         let (workspace, _) = home()
         let store = TestStore(initialState: ConversationsFeature.State()) {
@@ -1826,7 +1493,7 @@ final class ChatFeatureTests: XCTestCase {
         } withDependencies: { [now] in
             $0.store = .inMemory(workspace)
             $0.conversations = kept
-            $0.models = InMemoryModelLibrary().client
+            $0.models = models.client
             $0.attachments = attachments
             $0.recorder = .scripted()
             $0.skills = .inMemory()
@@ -1849,9 +1516,9 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.newTapped)
         XCTAssertTrue(store.state.conversations.isEmpty)
         let id = try XCTUnwrap(store.state.openID)
-        await store.send(.chats(.element(id: id, action: .task)))
-        await store.send(.chats(.element(id: id, action: .binding(.set(\.input, "Hello")))))
-        await store.send(.chats(.element(id: id, action: .sendTapped)))
+        await store.send(.chats(.element(id: id, action: .core(.task))))
+        await store.send(.chats(.element(id: id, action: .core(.binding(.set(\.input, "Hello"))))))
+        await store.send(.chats(.element(id: id, action: .core(.sendTapped))))
         await store.skipReceivedActions()
         XCTAssertEqual(store.state.conversations.map(\.title), ["Hello"])
         let saved = try await kept.load()
@@ -1868,10 +1535,10 @@ final class ChatFeatureTests: XCTestCase {
         let before = list(kept)
         await before.send(.newTapped)
         let id = try XCTUnwrap(before.state.openID)
-        await before.send(.chats(.element(id: id, action: .binding(.set(\.input, "Hello")))))
-        await before.send(.chats(.element(id: id, action: .sendTapped)))
+        await before.send(.chats(.element(id: id, action: .core(.binding(.set(\.input, "Hello"))))))
+        await before.send(.chats(.element(id: id, action: .core(.sendTapped))))
         await before.skipReceivedActions()
-        await before.send(.chats(.element(id: id, action: .binding(.set(\.input, "And then")))))
+        await before.send(.chats(.element(id: id, action: .core(.binding(.set(\.input, "And then"))))))
 
         let after = list(kept)
         await after.send(.task)
@@ -1886,8 +1553,8 @@ final class ChatFeatureTests: XCTestCase {
         let before = list(kept)
         await before.send(.newTapped)
         let id = try XCTUnwrap(before.state.openID)
-        await before.send(.chats(.element(id: id, action: .binding(.set(\.input, "Hello")))))
-        await before.send(.chats(.element(id: id, action: .sendTapped)))
+        await before.send(.chats(.element(id: id, action: .core(.binding(.set(\.input, "Hello"))))))
+        await before.send(.chats(.element(id: id, action: .core(.sendTapped))))
         await before.skipReceivedActions()
         await before.send(.closed)
 
@@ -1914,8 +1581,8 @@ final class ChatFeatureTests: XCTestCase {
 
         await store.send(.newTapped)
         let id = try XCTUnwrap(store.state.openID)
-        await store.send(.chats(.element(id: id, action: .binding(.set(\.input, "Plan my week")))))
-        await store.send(.chats(.element(id: id, action: .sendTapped)))
+        await store.send(.chats(.element(id: id, action: .core(.binding(.set(\.input, "Plan my week"))))))
+        await store.send(.chats(.element(id: id, action: .core(.sendTapped))))
         await store.send(.closed)
         XCTAssertNil(store.state.openID)
         XCTAssertNotNil(store.state.chats[id: id], "a chat that's replying is kept")
@@ -1944,8 +1611,8 @@ final class ChatFeatureTests: XCTestCase {
 
         await store.send(.newTapped)
         let first = try XCTUnwrap(store.state.openID)
-        await store.send(.chats(.element(id: first, action: .binding(.set(\.input, "First")))))
-        await store.send(.chats(.element(id: first, action: .sendTapped)))
+        await store.send(.chats(.element(id: first, action: .core(.binding(.set(\.input, "First"))))))
+        await store.send(.chats(.element(id: first, action: .core(.sendTapped))))
         await store.send(.newTapped)
         XCTAssertNotEqual(store.state.openID, first)
 
@@ -2055,41 +1722,6 @@ final class ChatFeatureTests: XCTestCase {
 
         XCTAssertEqual(store.state.found.map(\.id), [today.id])
         XCTAssertNotNil(store.state.searched.during)
-    }
-
-    func testFindingInAChatGoesThroughItsMatchesFromTheNewest() async throws {
-        var conversation = chat("Buy milk")
-        for (index, text) in ["Added buy milk.", "And eggs", "Added eggs and milk."].enumerated() {
-            conversation.append(
-                ChatMessage(
-                    id: UUID(), role: index.isMultiple(of: 2) ? .assistant : .person, text: text,
-                    at: now.addingTimeInterval(Double(index + 1))))
-        }
-        let ids = conversation.messages.map(\.id)
-        let store = list(.inMemory([conversation]))
-        await store.send(.task)
-        await store.skipReceivedActions()
-        await store.send(.opened(conversation.id))
-        func send(_ action: ChatFeature.Action) async {
-            await store.send(.chats(.element(id: conversation.id, action: action)))
-        }
-        var shown: ChatFeature.State? { store.state.chats[id: conversation.id] }
-
-        await send(.findTapped)
-        await send(.binding(.set(\.findQuery, "MILK")))
-        XCTAssertEqual(shown?.findMatches, [ids[0], ids[1], ids[3]])
-        XCTAssertEqual(shown?.currentMatch, ids[3])
-
-        await send(.findMoved(by: -1))
-        XCTAssertEqual(shown?.currentMatch, ids[1])
-        await send(.findMoved(by: 2))
-        XCTAssertEqual(shown?.currentMatch, ids[0], "Past the newest comes round to the oldest")
-
-        await send(.binding(.set(\.findQuery, "bread")))
-        XCTAssertNil(shown?.currentMatch)
-        await send(.findClosed)
-        XCTAssertEqual(shown?.finds, false)
-        XCTAssertEqual(shown?.findQuery, "")
     }
 
     func testOpeningAMessageFoundOnAnotherBranchShowsThatBranch() async throws {
@@ -2280,8 +1912,8 @@ final class ChatFeatureTests: XCTestCase {
         let store = list(.inMemory())
         await store.send(.newTapped)
         let id = try XCTUnwrap(store.state.openID)
-        await store.send(.chats(.element(id: id, action: .binding(.set(\.input, "Plan the week")))))
-        await store.send(.chats(.element(id: id, action: .sendTapped)))
+        await store.send(.chats(.element(id: id, action: .core(.binding(.set(\.input, "Plan the week"))))))
+        await store.send(.chats(.element(id: id, action: .core(.sendTapped))))
         await store.skipReceivedActions()
         await store.finish()
         XCTAssertEqual(store.state.conversations[id: id]?.title, "Plan the week")
@@ -2290,8 +1922,8 @@ final class ChatFeatureTests: XCTestCase {
         on.withLock { $0 = true }
         await store.send(.newTapped)
         let named = try XCTUnwrap(store.state.openID)
-        await store.send(.chats(.element(id: named, action: .binding(.set(\.input, "Plan the week")))))
-        await store.send(.chats(.element(id: named, action: .sendTapped)))
+        await store.send(.chats(.element(id: named, action: .core(.binding(.set(\.input, "Plan the week"))))))
+        await store.send(.chats(.element(id: named, action: .core(.sendTapped))))
         await store.skipReceivedActions()
         await store.finish()
         XCTAssertEqual(store.state.conversations[id: named]?.title, "Planning the week")
@@ -2309,8 +1941,8 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.rename(.presented(.saveTapped)))
         await store.skipReceivedActions()
 
-        await store.send(.chats(.element(id: id, action: .binding(.set(\.input, "Plan the week")))))
-        await store.send(.chats(.element(id: id, action: .sendTapped)))
+        await store.send(.chats(.element(id: id, action: .core(.binding(.set(\.input, "Plan the week"))))))
+        await store.send(.chats(.element(id: id, action: .core(.sendTapped))))
         await store.skipReceivedActions()
         await store.finish()
         XCTAssertEqual(store.state.conversations[id: id]?.title, "Mine")

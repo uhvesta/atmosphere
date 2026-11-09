@@ -8,6 +8,7 @@
 [button, notEnabled] "Next Version"
 [text] "Keep Saturday for the garden and Sunday free."
 [text] "Add a task for every day of the year"
+[button, notEnabled] "Retry"
 [text] "Your message and the draft are more than the on-device model can read at once, even with older messages left out. Shorten the message, ask for less at once, or remove rows from the draft."
 [element] "" value: "Message"
 [button] "Add" hint: "Add photos or files"

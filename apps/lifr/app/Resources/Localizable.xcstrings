@@ -1055,6 +1055,9 @@
     "Find a skill" : {
 
     },
+    "Find in Chat" : {
+
+    },
     "Find in Conversation" : {
 
     },
@@ -2091,6 +2094,9 @@
     "Show" : {
 
     },
+    "Show Prompt" : {
+
+    },
     "Show Them" : {
 
     },
@@ -2272,6 +2278,9 @@
 
     },
     "The assistant may" : {
+
+    },
+    "The assistant stopped without replying. Send the message again." : {
 
     },
     "The draft fills in the fields below on this device. Check it before you save." : {

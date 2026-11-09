@@ -41,6 +41,7 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     deps = [
         ":assistant",
+        "//apps/libs/kits/chat",
         "//apps/lifr/api",
         "//apps/lifr/clients/models",
         "//apps/lifr/clients/store",
