@@ -5,7 +5,31 @@ import TestingKit
 
 func markdownTests() -> [TestCase] {
     blockTests() + listTests() + tableTests() + inlineTests() + writingTests() + streamTests()
-        + plainTextTests() + htmlTests()
+        + plainTextTests() + htmlTests() + bareLinkTests()
+}
+
+private func links(_ text: String) -> [String] {
+    let string = Markdown.inline(text)
+    return string.runs.compactMap { run in run.link.map { _ in String(string[run.range].characters) } }
+}
+
+private func bareLinkTests() -> [TestCase] {
+    [
+        TestCase("given a web address without brackets, then it's a link, without the full stop after it") {
+            try expectEqual(links("See https://example.com/soil."), ["https://example.com/soil"])
+            try expectEqual(links("Or www.example.com today"), ["www.example.com"])
+        },
+        TestCase("given an email address, then it's a link to mail it") {
+            let string = Markdown.inline("Write to a@example.com")
+            try expectEqual(string.runs.compactMap(\.link?.scheme), ["mailto"])
+        },
+        TestCase("given a file name or an address in code, then it stays text") {
+            try expectEqual(links("Open main.rs and `https://example.com`"), [])
+        },
+        TestCase("given a Markdown link, then it keeps its own words") {
+            try expectEqual(links("[the guide](https://example.com) and https://a.com"), ["the guide", "https://a.com"])
+        },
+    ]
 }
 
 private func htmlTests() -> [TestCase] {

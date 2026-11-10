@@ -72,7 +72,37 @@ enum Markdown {
             return linkSchemes.contains(url.scheme?.lowercased() ?? "") ? nil : run.range
         }
         for range in unsafe { string[range].link = nil }
+        linkBareAddresses(in: &string)
         return string
+    }
+
+    /// Links web and mail addresses written without Markdown's brackets.
+    /// Only those that read as an address, starting `http`, `https` or
+    /// `www.`, or an email: a name like `main.rs` stays text. Code and
+    /// what's linked already are left as they are.
+    private static func linkBareAddresses(in string: inout AttributedString) {
+        let plain = String(string.characters)
+        guard plain.contains("http") || plain.contains("www.") || plain.contains("@"),
+            let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+        else { return }
+        let matches = detector.matches(in: plain, range: NSRange(plain.startIndex..., in: plain))
+        for match in matches {
+            guard let url = match.url, linkSchemes.contains(url.scheme?.lowercased() ?? ""),
+                let found = Range(match.range, in: plain)
+            else { continue }
+            let written = plain[found].lowercased()
+            guard written.hasPrefix("http://") || written.hasPrefix("https://") || written.hasPrefix("www.")
+                || url.scheme?.lowercased() == "mailto"
+            else { continue }
+            let start = string.characters.index(
+                string.startIndex, offsetBy: plain.distance(from: plain.startIndex, to: found.lowerBound))
+            let end = string.characters.index(start, offsetBy: plain.distance(from: found.lowerBound, to: found.upperBound))
+            let range = start..<end
+            let taken = string[range].runs.contains { run in
+                run.link != nil || run.inlinePresentationIntent?.contains(.code) == true
+            }
+            if !taken { string[range].link = url }
+        }
     }
 
     /// `text`'s words without its Markdown, on one line: what a list of
