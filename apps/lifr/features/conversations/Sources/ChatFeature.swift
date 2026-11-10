@@ -383,6 +383,13 @@ package struct ChatFeature {
                 state.availability = assistant.availability(state.conversation.context.model)
                 state.today = CalendarDate(now, in: timeZone)
                 state.inputs = assistant.inputs(state.conversation.context.model)
+                // A draft kept from before is checked against the records
+                // as they are now, so Add says whether it can add it.
+                if let draft = state.conversation.draft {
+                    let repaired = draft.repaired(for: state.workspace)
+                    if !repaired.isEmpty { state.conversation.draft = repaired }
+                }
+                check(&state)
                 let conversation = state.conversation.id
                 state.elsewhere = Set(
                     state.conversation.messages.flatMap(\.attachments)
@@ -863,7 +870,9 @@ package struct ChatFeature {
                         .saved(
                             Result {
                                 try await store.save { workspace, context throws(LifrError) in
-                                    var change = try workspace.apply(plan, timeZone: timeZone, in: context)
+                                    // The records may have changed since the draft was made.
+                                    var change = try workspace.apply(
+                                        plan.repaired(for: workspace), timeZone: timeZone, in: context)
                                     change.conversation = conversation
                                     return change
                                 }
@@ -899,6 +908,8 @@ package struct ChatFeature {
 
             case .saved(.failure(let error)):
                 state.problem = String(describing: error)
+                // The draft says what's wrong with its plan.
+                if case .plan? = error as? LifrError { return .none }
                 state.alert = AlertState {
                     TextState("Couldn't save")
                 } message: {

@@ -350,6 +350,38 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.workspace.tasks.values.contains { $0.title == "Buy soil" })
     }
 
+    func testADraftKeptFromBeforeIsCheckedWhenOpenedAndAddsItsAvenueToAnEmptyStore() async throws {
+        var conversation = Conversation(id: conversationID, createdAt: now)
+        conversation.draft = Plan(tasks: [
+            Plan.TaskDraft(title: "Cardio", subtasks: [Plan.TaskDraft(title: "Cardio")], place: "GYM")
+        ])
+        let store = chat(Workspace()) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.binding(.set(\.conversation, conversation)))
+
+        await store.send(.core(.task))
+        XCTAssertNil(store.state.problem)
+        XCTAssertTrue(store.state.canAdd)
+        await store.send(.addTapped)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertNil(store.state.conversation.draft)
+        XCTAssertEqual(store.state.workspace.avenues.values.map(\.key.rawValue), ["GYM"])
+        XCTAssertEqual(store.state.workspace.tasks.values.map(\.title), ["Cardio"])
+    }
+
+    func testADraftThatCantBeAddedSaysWhyOnTheCardWithoutAnAlert() async throws {
+        let (workspace, _) = home()
+        let plan = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])
+        let store = chat(workspace) { _ in AssistantReply(text: "Here's a plan.", plan: plan, isComplete: true) }
+        await send("Plan repotting", in: store)
+
+        await store.send(.saved(.failure(LifrError.plan(at: "task 1", .noPlace))))
+
+        XCTAssertNotNil(store.state.problem)
+        XCTAssertNil(store.state.alert)
+        XCTAssertNotNil(store.state.conversation.draft)
+    }
+
     func testRemovingEveryRowDiscardsTheDraft() async throws {
         let (workspace, _) = home()
         let plan = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])
