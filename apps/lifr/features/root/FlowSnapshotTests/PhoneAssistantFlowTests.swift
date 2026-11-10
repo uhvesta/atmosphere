@@ -99,8 +99,7 @@ final class PhoneAssistantFlowTests: PhoneFlowTestCase {
 
         flow.tap("Edit")
         await flow.step("edit-second-draft")
-        // The Reading row's Remove, then the run's.
-        flow.tap("Remove", occurrence: 1)
+        flow.tap("Remove Go for a run")
         await flow.step("bad-row-removed")
         let chat = try XCTUnwrap(store.conversations.chats[id: id])
         XCTAssertNil(chat.problem, "Removing the row the problem was about left the problem")
