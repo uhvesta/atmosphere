@@ -63,6 +63,28 @@ final class ChatThreadTests: XCTestCase {
         XCTAssertEqual(store.state.thread.messages.map(\.stopped), [false, true])
     }
 
+    func testStoppingBeforeAnyWordsSaysSoUntilItsAskedAgain() async throws {
+        let waiting: ScriptedRuntime.Step = { _, _ throws(ModelRuntimeError) in
+            try? await Task.sleep(for: .seconds(30))
+            return .string("Friend.")
+        }
+        let store = chat(Runs([waiting, ScriptedRuntime.answer("Friend.")]))
+        await store.send(.binding(.set(\.input, "Amigo?")))
+        await store.send(.sendTapped)
+        await store.send(.stopTapped)
+        await store.settle()
+        XCTAssertEqual(store.texts, ["Amigo?"])
+        XCTAssertTrue(store.state.stoppedBeforeReplying)
+        XCTAssertNil(store.state.problem)
+
+        let asked = try store.state.thread.messages.last.unwrap()
+        await store.send(.retryTapped(messageID: asked.id))
+        XCTAssertFalse(store.state.stoppedBeforeReplying)
+        await store.receive(\.replied)
+        await store.settle()
+        XCTAssertEqual(store.texts, ["Amigo?", "Friend."])
+    }
+
     func testAFailedReplySaysWhyAndRetryAsksAgain() async throws {
         let runs = Runs([ScriptedRuntime.fail(.failed("the model stopped")), ScriptedRuntime.answer("Friend.")])
         let store = chat(runs)

@@ -268,8 +268,13 @@ where Parts.Message == Replier.Message {
             .frame(maxWidth: .infinity, alignment: .leading)
         } else if store.problem == nil {
             VStack(alignment: .leading, spacing: 6) {
-                Label("No reply came to this message.", systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.secondary)
+                if store.stoppedBeforeReplying {
+                    Label("Stopped before it replied", systemImage: "stop.circle")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label("No reply came to this message.", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                }
                 retry.buttonStyle(.bordered)
             }
             .font(.callout)

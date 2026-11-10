@@ -39,6 +39,9 @@ public struct ChatCore<Replier: ChatReplier> {
         /// What the model thinks before the reply, as it's written.
         public var replyThinking: ThreadThinking?
         public var showsReplyThinking = false
+        /// Whether the person stopped the last reply before it wrote
+        /// anything, so its message waits for one without a problem.
+        public var stoppedBeforeReplying = false
         /// The replies whose thinking is open.
         public var shownThinking: Set<UUID> = []
         public var problem: String?
@@ -306,6 +309,7 @@ public struct ChatCore<Replier: ChatReplier> {
                 }
                 guard let reply = state.reply else { return .none }
                 let thinking = state.replyThinking
+                state.stoppedBeforeReplying = reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 return .merge(
                     .cancel(id: CancelID.reply), keep(reply, thinking: thinking, speed: nil, stopped: true, in: &state))
 
@@ -735,6 +739,7 @@ public struct ChatCore<Replier: ChatReplier> {
         state.reply = ""
         state.replyThinking = nil
         state.showsReplyThinking = false
+        state.stoppedBeforeReplying = false
         state.rival = nil
         state.retries = true
         let (prompt, effect) = ask(state.model, rival: false, in: state)
