@@ -343,6 +343,29 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.workspace.tasks.values.contains { $0.title == "Buy soil" && $0.deletedAt == nil })
     }
 
+    func testUndoingAnAddedDraftElsewherePutsTheDraftBack() async throws {
+        let (workspace, _) = home()
+        let plan = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])
+        let store = chat(workspace) { _ in AssistantReply(text: "Here's a plan.", plan: plan, isComplete: true) }
+        await send("Plan repotting", in: store)
+        await store.send(.addTapped)
+        await store.skipReceivedActions()
+        let entry = try XCTUnwrap(store.state.conversation.added.last)
+
+        // Undone with the Undo toast or ⌘Z, the chat sees only the records.
+        let saved = try await withDependencies {
+            $0 = store.dependencies
+            $0.uuid = .incrementing
+        } operation: {
+            try await store.dependencies.store.revert(entries: [entry])
+        }
+        var state = store.state
+        state.show(saved.snapshot)
+
+        XCTAssertEqual(state.conversation.draft, plan)
+        XCTAssertTrue(state.canAdd)
+    }
+
     func testEditingTheDraftChecksItAndAddAddsWhatTheCardShows() async throws {
         let (workspace, _) = home()
         let plan = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])

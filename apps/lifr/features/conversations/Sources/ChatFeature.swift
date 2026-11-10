@@ -138,12 +138,15 @@ package struct ChatFeature {
         }
 
         /// Lets go of replies' changes that were all undone, so they don't
-        /// offer Undo again.
+        /// offer Undo again, and puts back a draft whose add was undone.
         private mutating func forgetUndone() {
-            guard !conversation.changes.isEmpty else { return }
+            guard !conversation.changes.isEmpty || !addedDrafts.isEmpty else { return }
             let undone = workspace.undoneEntries
             for (message, entries) in conversation.changes where undone.isSuperset(of: entries) {
                 conversation.changes[message] = nil
+            }
+            if conversation.draft == nil, let entry = addedDrafts.keys.first(where: undone.contains) {
+                conversation.draft = addedDrafts.removeValue(forKey: entry)
             }
         }
 
