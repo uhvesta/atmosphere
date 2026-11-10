@@ -10,11 +10,27 @@ extension View {
         formStyle(.grouped)
             #if os(macOS)
                 .modifier(FitsForm(width: width, maxHeight: height))
+                .modifier(ClosesSheet())
             #endif
     }
 }
 
+extension EnvironmentValues {
+    /// Closes the sheet the view is in, when the sheet says how.
+    @Entry fileprivate var closeSheet: DismissAction?
+}
+
 #if os(macOS)
+    /// Hands the sheet's own dismiss to what's inside it: in a Mac sheet's
+    /// toolbar, the environment's dismiss doesn't close the sheet.
+    private struct ClosesSheet: ViewModifier {
+        @Environment(\.dismiss) private var dismiss
+
+        func body(content: Content) -> some View {
+            content.environment(\.closeSheet, dismiss)
+        }
+    }
+
     /// Sizes a sheet to the form in it: the height it has plus however much
     /// the form overflows or falls short, up to `maxHeight`. Each change in
     /// the form's size sizes it again, so it settles once the form has laid
@@ -41,11 +57,12 @@ extension View {
 /// Done, closing the sheet it's in.
 public struct DismissButton: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.closeSheet) private var closeSheet
 
     public init() {}
 
     public var body: some View {
-        Button("Done") { dismiss() }
+        Button("Done") { (closeSheet ?? dismiss)() }
     }
 }
 
