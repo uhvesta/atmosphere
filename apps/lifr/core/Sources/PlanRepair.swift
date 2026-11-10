@@ -16,6 +16,10 @@ extension Plan {
     ///   says, and a Sub task with its task's title is left out;
     /// - a task placed in a Project its Avenue doesn't have goes in that
     ///   Project, which the plan adds;
+    /// - a task with the name of a Project in its Avenue stands for that
+    ///   Project: its Sub tasks go in it;
+    /// - a task an Avenue already has open, by title, is left out, and its
+    ///   new Sub tasks go under the one that's there;
     /// - in a workspace with no Avenues yet, an Avenue the plan puts things
     ///   in without adding is added, as there's none it could mean.
     /// Anything it can't be sure of is left for `Workspace.problem(with:)`
@@ -88,7 +92,9 @@ extension Plan {
             }
             return task
         }
+        plan.tasks = plan.tasks.flatMap { task in Self.projectSteps(task, places: places) ?? [task] }
         plan.intoNewProjects(in: workspace)
+        plan.leaveOutOpen(in: workspace)
         plan.tasks = Self.merged(plan.tasks).map(Self.dated)
         plan.projects = plan.projects.map { project in
             var project = project
@@ -96,6 +102,67 @@ extension Plan {
             return project
         }
         return plan
+    }
+
+    /// The Sub tasks of `task`, placed in the Project its title names in
+    /// its Avenue; nil when it names none. A model writes a task for a
+    /// Project that's there with the Project's tasks as its steps.
+    private static func projectSteps(_ task: TaskDraft, places: PlaceNames) -> [TaskDraft]? {
+        guard !task.subtasks.isEmpty, let key = task.place, !key.contains("/"),
+            let project = places.project(named: task.title, in: key)
+        else { return nil }
+        return task.subtasks.map { step in
+            var step = step
+            step.place = key + "/" + project
+            return step
+        }
+    }
+
+    /// Leaves out each task that its Avenue already has open by the same
+    /// title, such as one this chat added that the model writes again.
+    /// What's new under it goes under the one that's there.
+    private mutating func leaveOutOpen(in workspace: Workspace) {
+        func open(_ title: String, in key: String) -> LifrTask? {
+            guard let avenue = workspace.avenues.values.first(where: { $0.key.rawValue == key }) else { return nil }
+            let title = title.trimmingCharacters(in: .whitespaces)
+            return workspace.tasks.values
+                .filter {
+                    $0.avenueID == avenue.id && $0.deletedAt == nil && $0.isOpen
+                        && $0.title.caseInsensitiveCompare(title) == .orderedSame
+                }
+                .min { ($0.parentID == nil ? 0 : 1, $0.createdAt) < ($1.parentID == nil ? 0 : 1, $1.createdAt) }
+        }
+        func kept(_ task: TaskDraft, in key: String) -> [TaskDraft] {
+            let steps = task.subtasks.filter { open($0.title, in: key) == nil }
+            guard let existing = open(task.title, in: key) else {
+                var task = task
+                task.subtasks = steps
+                return [task]
+            }
+            // A Sub task can't have its own.
+            guard existing.parentID == nil else { return [] }
+            let code = workspace.displayCode(of: existing)
+            return steps.map { step in
+                var step = step
+                step.place = nil
+                step.parent = code
+                return step
+            }
+        }
+        tasks = tasks.flatMap { task in
+            guard task.parent == nil, let place = task.place,
+                let key = place.split(separator: "/", maxSplits: 1).first.map(String.init)
+            else { return [task] }
+            return kept(task, in: key)
+        }
+        projects = projects.map { project in
+            var project = project
+            // Sub tasks of one that's there leave the new Project.
+            let all = project.tasks.flatMap { kept($0, in: project.avenue) }
+            project.tasks = all.filter { $0.parent == nil }
+            tasks += all.filter { $0.parent != nil }
+            return project
+        }
     }
 
     /// Moves each task placed in a Project its Avenue doesn't have into

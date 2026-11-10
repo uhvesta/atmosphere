@@ -49,6 +49,35 @@ func planRepairTests() -> [TestCase] {
             try expectEqual(repaired.projects.flatMap(\.tasks).map(\.title), ["Pack a list", "Book a room"])
             _ = try fixture.workspace.apply(repaired, timeZone: gmt, in: fixture.context)
         },
+        TestCase("given tasks the Avenue already has open, when repaired, then only what's new is added") {
+            let fixture = try Fixture()
+            let stretch = try fixture.task("Stretch for ten minutes")
+            try fixture.task("Water the plants", status: .done)
+            let plan = Plan(
+                projects: [.init(name: "Trip", avenue: "HEALTH", tasks: [.init(title: "stretch for ten minutes")])],
+                tasks: [
+                    .init(title: "Stretch for ten minutes", subtasks: [.init(title: "Warm up")], place: "HEALTH"),
+                    .init(title: "Water the plants", place: "HEALTH"),
+                    .init(title: "Call mom", subtasks: [.init(title: "Stretch for ten minutes")], place: "Health"),
+                ])
+            let repaired = plan.repaired(for: fixture.workspace)
+            try expectEqual(repaired.projects.flatMap(\.tasks), [])
+            try expectEqual(repaired.tasks.map(\.title), ["Warm up", "Water the plants", "Call mom"])
+            try expectEqual(repaired.tasks.first?.parent, fixture.workspace.displayCode(of: stretch))
+            try expectEqual(repaired.tasks.last?.subtasks, [])
+            _ = try fixture.workspace.apply(repaired, timeZone: gmt, in: fixture.context)
+        },
+        TestCase("given a task named like a Project in its Avenue, when repaired, then its steps go in the Project") {
+            let fixture = try Fixture()
+            let plan = Plan(tasks: [
+                .init(title: "half marathon", subtasks: [.init(title: "Buy shoes")], place: "HEALTH"),
+                .init(title: "Half marathon", place: "HEALTH"),
+            ])
+            let repaired = plan.repaired(for: fixture.workspace)
+            try expectEqual(repaired.tasks.map(\.title), ["Buy shoes", "Half marathon"])
+            try expectEqual(repaired.tasks.map(\.place), ["HEALTH/Half marathon", "HEALTH"])
+            _ = try fixture.workspace.apply(repaired, timeZone: gmt, in: fixture.context)
+        },
         TestCase("given a place nothing is close to, when repaired, then it stays for the person to fix") {
             let fixture = try Fixture()
             let plan = Plan(tasks: [.init(title: "A", place: "GARDEN")])
