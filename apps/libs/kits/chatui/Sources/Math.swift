@@ -39,10 +39,10 @@ enum Math {
             } else if char == "\\", index + 1 < chars.count, chars[index + 1] == "(",
                 let close = find(["\\", ")"], in: chars, from: index + 2)
             {
-                out += escaped(Math.text(String(chars[(index + 2)..<close])))
+                out += marked(Math.text(String(chars[(index + 2)..<close])))
                 index = close + 2
             } else if char == "$", let close = dollarClose(chars, from: index) {
-                out += escaped(Math.text(String(chars[(index + 1)..<close])))
+                out += marked(Math.text(String(chars[(index + 1)..<close])))
                 index = close + 1
             } else {
                 out.append(char)
@@ -82,6 +82,50 @@ enum Math {
             index += 1
         }
         return nil
+    }
+
+    /// Whether each character of maths as text is a variable, shown in
+    /// italics: Latin letters one or two together, such as the m and c of
+    /// mc², but not words such as sin or area, nor ln.
+    static func variables(in text: String) -> [Bool] {
+        let chars = Array(text)
+        var marks = [Bool](repeating: false, count: chars.count)
+        var start = 0
+        while start < chars.count {
+            guard chars[start].isASCII, chars[start].isLetter else {
+                start += 1
+                continue
+            }
+            var end = start
+            while end < chars.count, chars[end].isLetter { end += 1 }
+            let run = String(chars[start..<end])
+            if run.count <= 2, run.allSatisfy(\.isASCII), !["ln", "lg"].contains(run) {
+                for index in start..<end { marks[index] = true }
+            }
+            start = end
+        }
+        return marks
+    }
+
+    /// A block of maths as text, its variables in italics.
+    static func styled(_ latex: String) -> AttributedString {
+        let text = Math.text(latex)
+        var string = AttributedString()
+        for (char, isVariable) in zip(text, variables(in: text)) {
+            var piece = AttributedString(String(char))
+            if isVariable { piece.inlinePresentationIntent = .emphasized }
+            string += piece
+        }
+        return string
+    }
+
+    /// Maths as text, escaped for Markdown, its variables in italics.
+    private static func marked(_ text: String) -> String {
+        var out = ""
+        for (char, isVariable) in zip(text, variables(in: text)) {
+            out += isVariable ? "*\(char)*" : escaped(String(char))
+        }
+        return out
     }
 
     private static func escaped(_ text: String) -> String {

@@ -63,7 +63,7 @@ private struct MarkdownBlockView: View, Equatable {
         case .table(let table):
             TableBlock(table: table)
         case .math(let latex):
-            Text(verbatim: Math.text(latex))
+            Text(Math.styled(latex))
                 .font(.system(.title3, design: .serif))
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity)

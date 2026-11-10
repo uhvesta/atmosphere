@@ -17,8 +17,14 @@ func mathTests() -> [TestCase] {
             try expectEqual(Math.text(#"\text{area} = \left( w \cdot h \right)"#), "area = ( w · h )")
         },
         TestCase("given inline maths, then its symbols, which Markdown doesn't read") {
-            try expectEqual(Math.inline(#"So $x^2 + y_1$ and \(\beta\)."#), #"So x² + y₁ and β."#)
-            try expectEqual(Math.inline(#"$a_b$"#), #"a\_b"#)
+            try expectEqual(Math.inline(#"So $x^2 + y_1$ and \(\beta\)."#), #"So *x*² + *y*₁ and β."#)
+            try expectEqual(Math.inline(#"$a_b$"#), #"*a*\_*b*"#)
+        },
+        TestCase("given maths, then letters alone or in pairs are variables, and words aren't") {
+            let text = Math.text(#"E = mc^2 + \sin x + \ln y + \text{area}"#)
+            try expectEqual(text, "E = mc² + sin x + ln y + area")
+            let italic = String(zip(text, Math.variables(in: text)).compactMap { $1 ? $0 : nil })
+            try expectEqual(italic, "Emcxy")
         },
         TestCase("given prices or code, then no maths") {
             try expectEqual(Math.inline("It's $5 and $10."), "It's $5 and $10.")
