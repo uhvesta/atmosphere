@@ -34,7 +34,7 @@
   [StaticText] "" value: "Recording, 6 s"
   [StaticText] "" value: "And this one?"
   [Button, disabled] "Retry"
-  [StaticText] "" value: "The model picked for the assistant can't listen to recordings. Pick one that can, such as Gemma 4 E4B, in Settings › Models, or remove the recording and send the message again."
+  [StaticText] "" value: "This chat's model can't listen to recordings. Pick one that can, such as Gemma 4 E4B, with the Model button by the message box, or send the message again without the recording."
   [TextField] ""
   [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button] "Model" value: "Gemma 4 E4B, On" help: "Model, Thinking and Context Window"
