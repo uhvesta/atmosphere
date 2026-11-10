@@ -1050,6 +1050,9 @@
     "Download" : {
 
     },
+    "Download %@" : {
+
+    },
     "Download model" : {
 
     },
@@ -1299,6 +1302,9 @@
     "It changed again since, here or on another device, and undoing would lose that change. Open it to change it back by hand." : {
 
     },
+    "It has %@. An archived Project moves to Archived, where you can restore it." : {
+
+    },
     "It has %@. Archiving takes the Project out of the sidebar; you can restore it from Archived." : {
 
     },
@@ -1333,6 +1339,9 @@
 
     },
     "Keep" : {
+
+    },
+    "Keep %@'s Answer" : {
 
     },
     "Keep Changes" : {
@@ -1729,6 +1738,9 @@
     "No changes older than 90 days." : {
 
     },
+    "No changes yet." : {
+
+    },
     "No connected apps" : {
 
     },
@@ -2022,6 +2034,9 @@
     "Remove %@?" : {
 
     },
+    "Remove Photo" : {
+
+    },
     "Remove due date" : {
 
     },
@@ -2309,10 +2324,19 @@
     "Stop Recording" : {
 
     },
+    "Stop Recording Steps" : {
+
+    },
     "Stop Speaking" : {
 
     },
     "Stop Syncing" : {
+
+    },
+    "Stop and attach the clip" : {
+
+    },
+    "Stop and keep what you said" : {
 
     },
     "Stop locking Lifr" : {

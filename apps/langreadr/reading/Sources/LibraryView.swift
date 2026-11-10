@@ -128,6 +128,7 @@ struct LibraryView: View {
                 Button("File", systemImage: "folder") { choosingFile = true }
             }
             .buttonStyle(.bordered)
+            .lineLimit(1)
             #if os(macOS)
                 // The sidebar is too narrow for each icon and title.
                 .labelStyle(.titleOnly)

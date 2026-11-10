@@ -6,7 +6,7 @@
 [button] "Models"
 [button, text] "Spanish · 1 min"
 [text] "Import"
-[button] "Photo"
 [button] "Text"
+[button] "Photo"
 [button] "Web"
 [button] "File"

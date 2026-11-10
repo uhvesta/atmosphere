@@ -6,7 +6,7 @@
 [text] "Due"
 [button] "Remove due date"
 [text] "Archive this Project?"
-[text] "It has 1 open task. Archiving takes the Project out of the sidebar; you can restore it from Archived."
+[text] "It has 1 open task. An archived Project moves to Archived, where you can restore it."
 [button] "Avenue, Health"
 [text] "Progress"
 [text] "0 of 1 done"

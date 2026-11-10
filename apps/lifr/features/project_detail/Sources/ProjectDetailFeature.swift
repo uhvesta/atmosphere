@@ -193,7 +193,7 @@ extension AlertState where Action == Workspace.OpenTasks {
             ButtonState(role: .cancel) { TextState("Cancel") }
         } message: {
             TextState(
-                "It has \(open). Archiving takes the Project out of the sidebar; you can restore it from Archived.")
+                "It has \(open). An archived Project moves to Archived, where you can restore it.")
         }
     }
 }

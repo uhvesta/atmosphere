@@ -21,14 +21,17 @@ public struct ChatExperimentsSection: View {
                 Text("Speed")
                 Text("Under each reply: its model, tokens a second, time to first token, tokens in and out.")
             }
+            .accessibilityLabel(Text("Speed"))
             Toggle(isOn: $showsPrompt) {
                 Text("Prompt")
                 Text("A button under each reply shows exactly what the model was sent.")
             }
+            .accessibilityLabel(Text("Prompt"))
             Toggle(isOn: $compares) {
                 Text("Compare")
                 Text("Ask a second model too, see both answers and keep one.")
             }
+            .accessibilityLabel(Text("Compare"))
         } header: {
             Text("Experiments")
         } footer: {

@@ -173,7 +173,7 @@ struct DraftEditor: View {
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(plan.avenues.indices, id: \.self) { index in
                     let avenue = $plan.avenues.element(index, or: .init(key: "", name: ""))
-                    Row(symbol: "square.stack.3d.up") {
+                    Row(symbol: "square.stack.3d.up", name: avenue.wrappedValue.name) {
                         TextField("Avenue name", text: avenue.name).accessibilityLabel("Avenue name")
                         TextField("KEY", text: avenue.key).accessibilityLabel("Key").frame(maxWidth: 100)
                     } remove: {
@@ -181,7 +181,7 @@ struct DraftEditor: View {
                     }
                 }
                 ForEach(plan.labels.indices, id: \.self) { index in
-                    Row(symbol: "tag") {
+                    Row(symbol: "tag", name: plan.labels.indices.contains(index) ? plan.labels[index].name : "") {
                         TextField("Label", text: $plan.labels.element(index, or: .init(name: "")).name)
                             .accessibilityLabel("Label")
                     } remove: {
@@ -190,7 +190,7 @@ struct DraftEditor: View {
                 }
                 ForEach(plan.projects.indices, id: \.self) { index in
                     let project = $plan.projects.element(index, or: .init(name: "", avenue: ""))
-                    Row(symbol: "flag") {
+                    Row(symbol: "flag", name: project.wrappedValue.name) {
                         TextField("Project name", text: project.name).accessibilityLabel("Project name")
                     } remove: {
                         plan.projects.remove(at: index)
@@ -237,7 +237,7 @@ private struct Tasks: View {
     var body: some View {
         ForEach(tasks.indices, id: \.self) { index in
             let task = $tasks.element(index, or: .init(title: ""))
-            Row(symbol: "circle") {
+            Row(symbol: "circle", name: task.wrappedValue.title) {
                 TextField("Title", text: task.title).accessibilityLabel("Title")
             } remove: {
                 tasks.remove(at: index)
@@ -267,7 +267,7 @@ private struct Tasks: View {
             .font(.caption)
             .padding(.leading, 28)
             ForEach(task.wrappedValue.subtasks.indices, id: \.self) { subtask in
-                Row(symbol: "circle") {
+                Row(symbol: "circle", name: task.wrappedValue.subtasks.indices.contains(subtask) ? task.wrappedValue.subtasks[subtask].title : "") {
                     TextField("Sub task", text: task.subtasks.element(subtask, or: .init(title: "")).title)
                         .accessibilityLabel("Sub task")
                 } remove: {
@@ -302,17 +302,20 @@ private struct Meaning<Field: View>: View {
 /// A draft row: its symbol, its fields, and a button that removes it.
 private struct Row<Fields: View>: View {
     let symbol: String
+    /// What the row holds, so Remove can say what it takes out.
+    let name: String
     @ViewBuilder let fields: Fields
     let remove: () -> Void
 
     var body: some View {
         HStack {
-            Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 20)
+            Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 20).accessibilityHidden(true)
             fields
             Button("Remove", systemImage: "xmark.circle.fill", role: .destructive, action: remove)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
+                .accessibilityLabel(name.isEmpty ? String(localized: "Remove") : String(localized: "Remove \(name)"))
         }
     }
 }

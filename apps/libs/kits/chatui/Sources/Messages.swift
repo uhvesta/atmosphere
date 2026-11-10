@@ -300,6 +300,7 @@ public struct AttachmentChip: View {
                     .labelStyle(.iconOnly)
                     .buttonStyle(.borderless)
                     .tint(.secondary)
+                    .accessibilityLabel(Text("Remove ") + title)
             }
         }
         .font(.callout)

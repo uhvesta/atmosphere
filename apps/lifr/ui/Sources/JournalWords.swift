@@ -147,7 +147,7 @@ package struct JournalWords {
         switch value {
         case .text(let text): text
         case .number(let number): String(number)
-        case .day(let day): day.description
+        case .day(let day): day.readable()
         case .time(let time): time.description
         case .moment(let date): date.formatted(date: .abbreviated, time: .shortened)
         case .taskStatus(let status): status.title

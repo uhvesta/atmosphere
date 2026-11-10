@@ -115,12 +115,8 @@ public struct SummaryMarker: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Button {
-                    withAnimation { isExpanded.toggle() }
-                } label: {
-                    Label("Summarized up to here", systemImage: isExpanded ? "chevron.down" : "chevron.right")
-                }
-                .accessibilityValue(isExpanded ? Text("Shown") : Text("Hidden"))
+                Label("Summarized up to here", systemImage: "text.append")
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Button("Forget Summary", role: .destructive, action: forget)
                     .disabled(!canForget)
@@ -131,6 +127,12 @@ public struct SummaryMarker: View {
                 .lineLimit(isExpanded ? nil : 2)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
+            // The first lines show; the rest opens.
+            Button(isExpanded ? "Show Less" : "Show More") {
+                withAnimation(.snappy(duration: 0.25)) { isExpanded.toggle() }
+            }
+            .buttonStyle(.borderless)
+            .fontWeight(.semibold)
         }
         .font(.footnote)
         .padding(10)
@@ -339,7 +341,16 @@ public struct MicButton: View {
         // Red while it listens, like the system's own.
         .buttonStyle(RoundButtonStyle(prominent: isOn))
         .tint(isOn ? .red : nil)
-        .help(mode == .record ? "Record a clip for the model to hear" : "Dictate, on this device")
+        .help(help)
+    }
+
+    private var help: LocalizedStringKey {
+        switch (mode, isOn) {
+        case (.record, false): "Record a clip for the model to hear"
+        case (.record, true): "Stop and attach the clip"
+        case (.dictate, false): "Dictate, on this device"
+        case (.dictate, true): "Stop and keep what you said"
+        }
     }
 }
 

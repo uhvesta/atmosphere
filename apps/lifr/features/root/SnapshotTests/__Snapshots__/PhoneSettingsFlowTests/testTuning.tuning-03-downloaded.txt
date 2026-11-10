@@ -27,5 +27,5 @@
 [button] "Upcoming"
 [button] "Avenues"
 [button] "Assistant"
-[text] "A KV cache at 8 or 4 bits keeps less memory for each token read, and its answers drift further from 16 bits'."
+[text] "A KV cache at 8 or 4 bits keeps less memory for each token read, and its answers drift further from a 16-bit cache's."
 [text] "Flash attention works out attention in one step, which takes less memory; a cache under 16 bits needs it. Layers not on the GPU run on the CPU."

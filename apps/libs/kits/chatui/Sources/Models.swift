@@ -36,6 +36,7 @@ public struct ModelRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.name).font(.headline)
                     Text(details).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
                 action
@@ -69,8 +70,10 @@ public struct ModelRow: View {
         "\(model.summary) · \(Self.bytes(model.downloadSize)) · \(model.license)"
     }
 
+    /// A size such as 3.66 GB, kept on one line.
     private static func bytes(_ count: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
+            .replacingOccurrences(of: " ", with: "\u{00A0}")
     }
 
     @ViewBuilder private var action: some View {
@@ -83,11 +86,14 @@ public struct ModelRow: View {
             Button("Resume", action: start)
         case .failed:
             Button("Download model", action: start)
+                .accessibilityLabel(Text("Download \(model.name)"))
         case nil:
             if isInstalled {
                 Button("Remove", role: .destructive, action: remove)
+                    .accessibilityLabel(Text("Remove \(model.name)"))
             } else {
                 Button("Download model", action: start)
+                    .accessibilityLabel(Text("Download \(model.name)"))
             }
         }
     }

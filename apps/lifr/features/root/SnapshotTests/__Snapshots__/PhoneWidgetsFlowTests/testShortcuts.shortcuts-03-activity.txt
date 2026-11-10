@@ -13,7 +13,7 @@
 [text] "Changed task “Water the plants”, Nov 3 at 10:00 AM, Shortcuts, Water the plants · Status: To Do → Done, Water the plants · Closed: — → Nov 3, 2026 at 2:00 AM"
 [button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 3 Sub tasks closed, WORK-0006"
 [button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
-[text] "Added task “Buy oat milk”, Nov 3 at 10:00 AM, Shortcuts, Buy oat milk · Code: — → WD0Z, Buy oat milk · Title: — → Buy oat milk, Buy oat milk · Details: — → , Buy oat milk · Status: — → To Do, Buy oat milk · Priority: — → None, Buy oat milk · Due date: — → 2026-11-03, Buy oat milk · Avenue: — → Health, Buy oat milk · Labels: — → "
+[text] "Added task “Buy oat milk”, Nov 3 at 10:00 AM, Shortcuts, Buy oat milk · Code: — → WD0Z, Buy oat milk · Title: — → Buy oat milk, Buy oat milk · Details: — → , Buy oat milk · Status: — → To Do, Buy oat milk · Priority: — → None, Buy oat milk · Due date: — → Tue, Nov 3, Buy oat milk · Avenue: — → Health, Buy oat milk · Labels: — → "
 [header, text] "Today"
 [button] "Buy oat milk" value: "To Do, Today, HEALTH-WD0Z"
 [button] "Show changes older than 90 days" hint: "Older changes can be looked at but not reverted"

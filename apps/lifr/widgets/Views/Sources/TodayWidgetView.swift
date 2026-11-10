@@ -94,6 +94,8 @@ package struct TodayWidgetView: View {
     private var locked: some View {
         Label("Unlock Lifr to see them", systemImage: "lock.fill")
             .font(.caption)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
             .foregroundStyle(.secondary)
     }
 

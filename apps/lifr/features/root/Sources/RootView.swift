@@ -445,7 +445,7 @@ private struct RecordingBar: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Recording steps")
+        .accessibilityLabel("Stop Recording Steps")
         .accessibilityHint("Stops recording and describes the bug")
     }
 }

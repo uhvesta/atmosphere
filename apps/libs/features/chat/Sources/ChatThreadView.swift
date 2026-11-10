@@ -562,6 +562,7 @@ private struct ChatPhoto: View {
             .overlay(alignment: .topTrailing) {
                 if let remove {
                     Button("Remove", systemImage: "xmark.circle.fill", action: remove)
+                        .accessibilityLabel(Text("Remove Photo"))
                         .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
                         .symbolRenderingMode(.palette)

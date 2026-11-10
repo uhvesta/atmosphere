@@ -17,7 +17,7 @@
 [text] "Replies come from the model on this device. Pick another from the model button by the field."
 [button] "Paste"
 [button] "Photo" hint: "Opens it"
-[button] "Remove"
+[button] "Remove Photo"
 [element] "" value: "Message"
 [button] "Add" hint: "Add photos or files"
 [button] "Model" value: "Gemma 4 E4B, On" hint: "Model, Thinking and Context Window"

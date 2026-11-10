@@ -272,6 +272,7 @@ public struct TuneScreen: View {
                         Button("Duplicate") { actions.duplicate(index) }
                         Spacer()
                         Button("Remove", role: .destructive) { actions.remove(index) }
+                            .accessibilityLabel(Text("Remove \(candidate.title(in: state.model))"))
                             .disabled(state.candidates.count < 2)
                     }
                     .buttonStyle(.borderless)
@@ -285,7 +286,7 @@ public struct TuneScreen: View {
                 Text(
                     """
                     A KV cache at 8 or 4 bits keeps less memory for each token read, and its answers drift \
-                    further from 16 bits'.
+                    further from a 16-bit cache's.
                     """)
                 Text(
                     """
@@ -313,6 +314,7 @@ public struct TuneScreen: View {
                         ProgressView().controlSize(.small)
                     } else {
                         Button("Download") { actions.download(variant) }
+                            .accessibilityLabel(Text("Download \(variant.title)"))
                             .disabled(state.downloading != nil || state.isRunning)
                     }
                 }

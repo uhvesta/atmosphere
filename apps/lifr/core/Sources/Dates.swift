@@ -54,6 +54,13 @@ package struct CalendarDate: Hashable, Comparable, Codable, Sendable, CustomStri
         return Date(timeIntervalSince1970: TimeInterval(days) * 86_400 + 43_200)
     }
 
+    /// The day as people read it, such as "Sun, Dec 6" in English.
+    package func readable(_ locale: Locale = .current) -> String {
+        noonUTC.formatted(
+            Date.FormatStyle(locale: locale, calendar: Self.utcCalendar, timeZone: .gmt)
+                .weekday(.abbreviated).month(.abbreviated).day())
+    }
+
     /// A Gregorian calendar in UTC, for math on `noonUTC`.
     package static var utcCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)

@@ -28,7 +28,8 @@ package struct ActivityView: View {
             }
             Section {
                 if rows.isEmpty {
-                    Text("No changes match.").foregroundStyle(.secondary)
+                    Text(store.author == nil && store.kind == nil && store.period == .all ? "No changes yet." : "No changes match.")
+                        .foregroundStyle(.secondary)
                 }
                 ForEach(rows) { row in
                     if row.canRevert {

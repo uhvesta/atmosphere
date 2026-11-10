@@ -9,7 +9,7 @@
 [button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
 [header, text] "Today"
 [button] "Water the plants" value: "To Do, Today, HOME-0010"
-[button] "Recording steps" hint: "Stops recording and describes the bug"
+[button] "Stop Recording Steps" hint: "Stops recording and describes the bug"
 [button] "Search"
 [button, selected] "Today"
 [button] "Upcoming"

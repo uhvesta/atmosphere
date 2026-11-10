@@ -14,7 +14,7 @@
 [text] "Spring half marathon"
 [image] "to"
 [text] "Due date:"
-[text] "2026-12-06"
+[text] "Sun, Dec 6"
 [text] "Applied"
 [button] "Undo"
 [button] "Copy" hint: "Copy this reply"

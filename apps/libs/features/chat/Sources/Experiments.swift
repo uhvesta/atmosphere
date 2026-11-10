@@ -168,6 +168,8 @@ struct Comparison<Message: ThreadEntry>: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(!rival.done)
+                .accessibilityLabel(
+                    model.map { String(localized: "Keep \($0)'s Answer") } ?? String(localized: "Keep This Answer"))
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .topLeading)
