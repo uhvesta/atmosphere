@@ -15,6 +15,7 @@
 [button] "What's overdue?"
 [button] "What did I finish this week?"
 [button] "Add files"
+[button] "Paste"
 [button] "Photo"
 [element] "" value: "Message"
 [button] "Add" hint: "Add photos or files"

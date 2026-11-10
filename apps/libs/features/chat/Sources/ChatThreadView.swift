@@ -364,7 +364,18 @@ where Parts.Message == Replier.Message {
             .disabled(store.attaching)
         Button("Add Files…", systemImage: "doc") { store.picksFiles = true }
             .disabled(store.attaching)
+        #if os(macOS)
+            Button("Paste Photo", systemImage: "doc.on.clipboard") { store.send(.photoPicked(Self.copiedPhoto)) }
+                .disabled(store.attaching || Self.copiedPhoto == nil)
+        #endif
     }
+
+    #if os(macOS)
+        /// A photo on the clipboard, as copied from Preview or a web page.
+        private static var copiedPhoto: Data? {
+            NSPasteboard.general.data(forType: .png) ?? NSPasteboard.general.data(forType: .tiff)
+        }
+    #endif
 
     /// The field with a + that sends `addContextTapped`.
     private var addingComposer: some View {

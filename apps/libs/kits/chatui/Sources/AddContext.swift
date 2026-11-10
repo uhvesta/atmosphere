@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 #if os(iOS)
     /// What + opens on the iPhone: for a model that reads photos, the
     /// camera and the person's recent photos in a row, with Photos for the
-    /// whole library; then Add files, for documents whose text goes in as
+    /// whole library, and Paste for a copied photo; then Add files, for documents whose text goes in as
     /// context.
     public struct AddContextSheet: View {
         /// What the sheet shows of the photos, for a model that reads them.
@@ -66,18 +66,30 @@ import UniformTypeIdentifiers
                 if let photos {
                     row(photos)
                 }
-                Button {
-                    importsFiles = true
-                } label: {
-                    Label("Add files", systemImage: "arrow.up.doc")
-                        .font(.body.weight(.medium))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
+                HStack(spacing: 10) {
+                    Button {
+                        importsFiles = true
+                    } label: {
+                        Label("Add files", systemImage: "arrow.up.doc")
+                            .font(.body.weight(.medium))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .frame(height: 52)
+                            .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    if photos != nil {
+                        PasteButton(payloadType: PastedPhoto.self) { pasted in
+                            let data = pasted.first?.data
+                            Task { @MainActor in photoPicked(data) }
+                        }
+                        .labelStyle(.titleAndIcon)
+                        .controlSize(.large)
+                        .buttonBorderShape(.roundedRectangle(radius: 16))
                         .frame(height: 52)
-                        .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
                 }
-                .buttonStyle(.plain)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 20)
@@ -260,6 +272,15 @@ import UniformTypeIdentifiers
             public func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
                 dismiss()
             }
+        }
+    }
+
+    /// A photo on the clipboard, as Paste takes it.
+    private struct PastedPhoto: Transferable {
+        let data: Data
+
+        static var transferRepresentation: some TransferRepresentation {
+            DataRepresentation(importedContentType: .image) { PastedPhoto(data: $0) }
         }
     }
 #endif

@@ -13,6 +13,7 @@
 [button] "Photo" hint: "Attaches it to the message"
 [image] "Sparkle"
 [button] "Add files"
+[button] "Paste"
 [text] "Ask anything"
 [text] "Replies come from the model on this device. Pick another from the model button by the field."
 [element] "" value: "Message"

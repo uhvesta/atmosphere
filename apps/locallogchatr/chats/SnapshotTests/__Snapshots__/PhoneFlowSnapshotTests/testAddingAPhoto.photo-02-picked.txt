@@ -15,6 +15,7 @@
 [text] "Ask anything"
 [button] "Add files"
 [text] "Replies come from the model on this device. Pick another from the model button by the field."
+[button] "Paste"
 [button] "Photo" hint: "Opens it"
 [button] "Remove"
 [element] "" value: "Message"
