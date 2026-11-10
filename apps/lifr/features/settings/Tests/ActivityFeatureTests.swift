@@ -87,6 +87,23 @@ final class ActivityFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.rows(now: now.addingTimeInterval(2 * 24 * 60 * 60), calendar: .current), [])
     }
 
+    func testTrashingATaskSaysItsInTheTrashNotWhen() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let task = records.task("Run", in: records.avenue("HEALTH", "Health"))
+        let client = StoreClient.inMemory(records.workspace, actor: .user(device: "Mac", surface: .mac))
+        let workspace = try await withDependencies { [now] in
+            $0.date.now = now
+            $0.uuid = .incrementing
+        } operation: {
+            try await client.moveToTrash(task.id).snapshot.workspace
+        }
+        let rows = ActivityFeature.State(workspace: workspace).rows(now: now, calendar: .current)
+
+        XCTAssertEqual(rows.first?.summary, "Trashed task “Run”")
+        XCTAssertEqual(
+            rows.first?.changes.map { [$0.field, $0.before, $0.after] }, [["In Trash", "No", "Yes"]])
+    }
+
     func testRevertingAChangePutsItBackAndMarksIt() async throws {
         let (store, task) = try await activity()
         let newest = try XCTUnwrap(store.state.workspace.journal.last)

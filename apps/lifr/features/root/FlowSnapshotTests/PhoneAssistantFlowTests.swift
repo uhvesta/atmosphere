@@ -59,6 +59,47 @@ final class PhoneAssistantFlowTests: PhoneFlowTestCase {
         flow.finish()
     }
 
+    /// A draft edited and the edit cancelled, then discarded, then the
+    /// chat forked from its reply.
+    func testAssistantDraftCancelDiscardFork() async throws {
+        let plan = Plan(tasks: [
+            .init(title: "Buy soil", place: "HOME"), .init(title: "Repot the fern", place: "HOME"),
+        ])
+        let (store, flow) = app(
+            "assistant-draft-cancel",
+            replies: [AssistantReply(text: "Here's a plan for repotting.", plan: plan, isComplete: true)])
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        store.send(.conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, "Plan repotting")))))))
+        store.send(.conversations(.chats(.element(id: id, action: .core(.sendTapped)))))
+        await flow.step("drafted", image: false)
+        let drafted = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.draft)
+
+        flow.tap("Edit")
+        await flow.step("editing", image: false)
+        flow.tap("Remove Buy soil")
+        await flow.step("row-removed")
+        XCTAssertEqual(store.conversations.chats[id: id]?.conversation.draft?.tasks.count, 1)
+        flow.tap("Cancel")
+        await flow.step("cancelled")
+        XCTAssertEqual(store.conversations.chats[id: id]?.conversation.draft, drafted, "Cancel kept the edit")
+        XCTAssertEqual(store.conversations.chats[id: id]?.editsDraft, false)
+
+        flow.tap("Discard")
+        await flow.step("discarded")
+        XCTAssertNil(store.conversations.chats[id: id]?.conversation.draft)
+        XCTAssertFalse(store.workspace?.tasks.values.contains { $0.title == "Buy soil" } ?? true)
+
+        let reply = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last?.id)
+        store.send(.conversations(.chats(.element(id: id, action: .forkTapped(messageID: reply)))))
+        await flow.step("forked")
+        let fork = try XCTUnwrap(store.conversations.openID)
+        XCTAssertNotEqual(fork, id, "Forking didn't open the fork")
+        XCTAssertEqual(store.conversations.chats[id: fork]?.conversation.messages.count, 2)
+        flow.finish()
+    }
+
     /// Adding an Avenue from a chat, then asking for more in the same chat.
     /// The model's next draft repeats the Avenue just added and puts a task
     /// in an Avenue that isn't there. The draft leaves out what's already

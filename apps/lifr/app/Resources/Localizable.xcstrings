@@ -1284,6 +1284,9 @@
     "In Progress with no activity for %lld days." : {
 
     },
+    "In Trash" : {
+
+    },
     "In use" : {
 
     },
@@ -1712,6 +1715,9 @@
 
     },
     "Next Version" : {
+
+    },
+    "No" : {
 
     },
     "No Avenues" : {
@@ -2815,6 +2821,9 @@
 
     },
     "Written %@" : {
+
+    },
+    "Yes" : {
 
     },
     "You already have a skill called %@. Pick another name." : {

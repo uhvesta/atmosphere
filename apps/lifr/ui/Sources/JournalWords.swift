@@ -26,7 +26,18 @@ package struct JournalWords {
         return steps.flatMap { step in
             let record = name(step)
             return step.fields.filter { !hidden.contains($0.field) }.map { change in
-                FieldWords(
+                // When a record was trashed reads as whether it's in the
+                // Trash; a deleted comment is gone, not in the Trash.
+                if change.field == .deletedAt {
+                    let yes = String(localized: "Yes")
+                    let no = String(localized: "No")
+                    let field =
+                        step.record.kind == .comment ? String(localized: "Deleted") : String(localized: "In Trash")
+                    return FieldWords(
+                        record: record, field: field, before: change.before == nil ? no : yes,
+                        after: change.after == nil ? no : yes)
+                }
+                return FieldWords(
                     record: record, field: change.field.title, before: change.before.map(text),
                     after: change.after.map(text))
             }

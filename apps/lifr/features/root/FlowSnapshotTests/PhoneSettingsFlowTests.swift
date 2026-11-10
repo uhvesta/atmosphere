@@ -63,6 +63,35 @@ final class PhoneSettingsFlowTests: PhoneFlowTestCase {
         flow.finish()
     }
 
+    /// Reverting the latest change from Activity, after confirming it.
+    func testActivityRevert() async throws {
+        let (store, flow) = app("activity-revert")
+        await flow.step("launch", image: false)
+        // A task added in the app, for Activity to list.
+        store.send(.newTaskTapped)
+        let home = try XCTUnwrap(store.workspace?.avenues.values.first { $0.key.rawValue == "HOME" }?.id)
+        store.send(.quickAdd(.presented(.binding(.set(\.title, "Buy soil")))))
+        store.send(.quickAdd(.presented(.binding(.set(\.avenueID, home)))))
+        store.send(.quickAdd(.presented(.addTapped)))
+        await flow.step("added", image: false)
+        store.isSettingsShown = true
+        store.send(.settings(.activityTapped))
+        await flow.step("activity")
+        let journal = try XCTUnwrap(store.settings.activity?.workspace.journal)
+        let latest = try XCTUnwrap(journal.last)
+        store.send(.settings(.activity(.presented(.revertTapped(latest.id)))))
+        await flow.step("confirm")
+        store.send(.settings(.activity(.presented(.confirm(.presented(.revert([latest.id])))))))
+        await flow.step("reverted")
+        let after = try XCTUnwrap(store.settings.activity?.workspace.journal)
+        XCTAssertEqual(after.count, journal.count + 1)
+        XCTAssertEqual(after.last?.reverts, [latest.id])
+        XCTAssertFalse(
+            store.workspace?.tasks.values.contains { $0.title == "Buy soil" && $0.deletedAt == nil } ?? true,
+            "The reverted task is still there")
+        flow.finish()
+    }
+
     /// Settings, its Activity, Models (with a larger window for Gemma) and
     /// Skills.
     func testSettings() async {
