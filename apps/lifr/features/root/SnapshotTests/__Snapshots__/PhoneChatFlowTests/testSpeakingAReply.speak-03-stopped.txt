@@ -9,7 +9,7 @@
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [header, text] "Draft"
-[text] "6 tasks"
+[text] "2 tasks"
 [text] "Clean up living room, Sat, Nov 7 · Home"
 [text] "Vacuum"
 [text] "Dust"

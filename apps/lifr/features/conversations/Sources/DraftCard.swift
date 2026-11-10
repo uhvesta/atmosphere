@@ -23,7 +23,9 @@ struct DraftCard: View {
                     .font(.headline)
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
-                Text(plan.taskCount == 1 ? "1 task" : "\(plan.taskCount) tasks")
+                // Tasks, not their Sub tasks, as the change says once it's added.
+                let count = plan.projects.flatMap(\.tasks).count + plan.tasks.count
+                Text(count == 1 ? "1 task" : "\(count) tasks")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier(ModelText.identifier)

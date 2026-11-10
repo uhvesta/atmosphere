@@ -23,7 +23,7 @@
 [element] "Sub task" value: "Dust"
 [button] "Remove Dust"
 [header, text] "Draft"
-[text] "6 tasks"
+[text] "2 tasks"
 [element] "Title" value: "Buy new clothes"
 [text] "Clean up living room, Sat, Nov 7 · Home"
 [button] "Remove Buy new clothes"

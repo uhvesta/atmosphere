@@ -35,7 +35,7 @@
   [Button] "Copy" help: "Copy this reply"
   [Button] "Speak" help: "Read this reply aloud"
   [Heading] "Draft"
-  [StaticText] "" value: "6 tasks"
+  [StaticText] "" value: "2 tasks"
   [StaticText] "" value: "Clean up living room, Sat, Nov 7 · Home"
   [StaticText] "" value: "Vacuum"
   [StaticText] "" value: "Dust"

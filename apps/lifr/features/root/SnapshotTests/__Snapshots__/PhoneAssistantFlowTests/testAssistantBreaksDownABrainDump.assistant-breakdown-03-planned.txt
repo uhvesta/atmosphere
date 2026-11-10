@@ -13,7 +13,7 @@
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
 [header, text] "Draft"
-[text] "8 tasks"
+[text] "4 tasks"
 [text] "New Project Move flat, Sat, Dec 5 · Home"
 [text] "Get the old deposit back, Fri, Nov 20 · Home › Move flat"
 [text] "Photograph each room"
