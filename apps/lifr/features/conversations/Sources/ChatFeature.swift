@@ -53,6 +53,8 @@ package struct ChatFeature {
         @Presents package var model: ChatModelFeature.State?
         /// Whether the draft's editor is open.
         package var editsDraft = false
+        /// The draft as it was when its editor opened, put back on Cancel.
+        package var draftBeforeEdit: Plan?
         /// The drafts this chat added, by the journal entry that added
         /// them: undone, the draft is back to add again.
         package var addedDrafts: [UUID: Plan] = [:]
@@ -272,6 +274,8 @@ package struct ChatFeature {
         /// A suggestion in an empty chat: sent as the person's message.
         case suggestionTapped(String)
         case editDraftTapped
+        /// Closes the draft's editor, putting back the draft it opened on.
+        case cancelEditDraftTapped
         case cancelRecordingTapped
         case recordingStarted(Result<Void, any Error>)
         case recorded(Result<ChatAttachment, any Error>)
@@ -542,6 +546,17 @@ package struct ChatFeature {
             case .editDraftTapped:
                 guard state.canChangeDraft else { return .none }
                 state.editsDraft = true
+                state.draftBeforeEdit = state.conversation.draft
+                return .none
+
+            case .cancelEditDraftTapped:
+                guard state.editsDraft else { return .none }
+                state.editsDraft = false
+                if let draft = state.draftBeforeEdit {
+                    state.conversation.draft = draft
+                    check(&state)
+                }
+                state.draftBeforeEdit = nil
                 return .none
 
             case .core(.micTapped) where state.inputs.contains(.audio):

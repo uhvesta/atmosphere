@@ -447,6 +447,20 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.workspace.tasks.values.contains { $0.title == "Buy soil" })
     }
 
+    func testCancellingTheDraftsEditorPutsBackTheDraftItOpenedOn() async throws {
+        let (workspace, _) = home()
+        let plan = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])
+        let store = chat(workspace) { _ in AssistantReply(text: "Here's a plan.", plan: plan, isComplete: true) }
+        await send("Plan repotting", in: store)
+        let drafted = store.state.conversation.draft
+        await store.send(.editDraftTapped)
+        await edit(Plan(tasks: [Plan.TaskDraft(title: "Buy pots", place: "HOME")]), in: store)
+
+        await store.send(.cancelEditDraftTapped)
+        XCTAssertFalse(store.state.editsDraft)
+        XCTAssertEqual(store.state.conversation.draft, drafted)
+    }
+
     func testADraftLeavesOutAnAvenueThisChatAlreadyAdded() async throws {
         let (workspace, _) = home()
         let reading = Plan.AvenueDraft(key: "READ", name: "Reading")

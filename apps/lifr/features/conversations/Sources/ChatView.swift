@@ -68,6 +68,9 @@ package struct ChatView: View {
                     )
                     .navigationTitle("Edit Draft")
                     .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { store.send(.cancelEditDraftTapped) }
+                        }
                         ToolbarItem(placement: .confirmationAction) {
                             // The environment's dismiss doesn't close this
                             // sheet on the Mac.
