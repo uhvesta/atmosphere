@@ -455,7 +455,7 @@ private struct CopyReplyButton: View {
 
     var body: some View {
         Button(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc") {
-            copyToClipboard(text)
+            copyMessage(text)
             copied = true
         }
         .disabled(text.isEmpty)

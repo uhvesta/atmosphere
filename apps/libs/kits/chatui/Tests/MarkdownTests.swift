@@ -5,7 +5,32 @@ import TestingKit
 
 func markdownTests() -> [TestCase] {
     blockTests() + listTests() + tableTests() + inlineTests() + writingTests() + streamTests()
-        + plainTextTests()
+        + plainTextTests() + htmlTests()
+}
+
+private func htmlTests() -> [TestCase] {
+    [
+        TestCase("given a heading and a paragraph with marks, then HTML with the same formatting") {
+            try expectEqual(
+                Markdown.html("## Plan\n\nBuy **soil** and *seeds*, see [the guide](https://example.com)."),
+                "<h2>Plan</h2>\n<p>Buy <strong>soil</strong> and <em>seeds</em>, see <a href=\"https://example.com\">the guide</a>.</p>")
+        },
+        TestCase("given lists and tasks, then ul and ol with their items") {
+            try expectEqual(
+                Markdown.html("- [x] Dig\n- [ ] Water\n\n3. Sow\n4. Wait"),
+                "<ul><li>☑ Dig</li><li>☐ Water</li></ul>\n<ol start=\"3\"><li>Sow</li><li>Wait</li></ol>")
+        },
+        TestCase("given code with angle brackets, then they're escaped in a pre") {
+            try expectEqual(
+                Markdown.html("```swift\nif a < b && c {}\n```"),
+                "<pre><code>if a &lt; b &amp;&amp; c {}</code></pre>")
+        },
+        TestCase("given a table, then rows of header and data cells") {
+            try expectEqual(
+                Markdown.html("| Task | Day |\n|---|---|\n| `Soil` | Sat |"),
+                "<table><tr><th>Task</th><th>Day</th></tr><tr><td><code>Soil</code></td><td>Sat</td></tr></table>")
+        },
+    ]
 }
 
 private func plainTextTests() -> [TestCase] {

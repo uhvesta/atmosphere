@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 #if os(macOS)
     import AppKit
@@ -13,6 +14,20 @@ public func copyToClipboard(_ text: String) {
         NSPasteboard.general.setString(text, forType: .string)
     #else
         UIPasteboard.general.string = text
+    #endif
+}
+
+/// Puts a message on the clipboard as formatted text, for apps such as
+/// Notes and Mail, and as its Markdown, for apps that only take plain text.
+public func copyMessage(_ markdown: String) {
+    let html = Markdown.html(markdown)
+    #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.declareTypes([.html, .string], owner: nil)
+        NSPasteboard.general.setString(html, forType: .html)
+        NSPasteboard.general.setString(markdown, forType: .string)
+    #else
+        UIPasteboard.general.items = [[UTType.html.identifier: html, UTType.plainText.identifier: markdown]]
     #endif
 }
 
@@ -44,7 +59,7 @@ public struct TextMenu: View {
     }
 
     public var body: some View {
-        Button("Copy", systemImage: "doc.on.doc") { copyToClipboard(text) }
+        Button("Copy", systemImage: "doc.on.doc") { copyMessage(text) }
         Button("Select Text", systemImage: "selection.pin.in.out") { select(text) }
         ShareLink(item: text)
     }
