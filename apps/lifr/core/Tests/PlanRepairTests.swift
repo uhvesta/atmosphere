@@ -162,5 +162,26 @@ func planRepairTests() -> [TestCase] {
             try expectEqual(repaired.tasks.first?.due, "friday")
             try expectEqual(repaired.tasks.first?.priority, .high)
         },
+        TestCase("given no Avenues yet and a plan that names one it doesn't add, when repaired, then it's added") {
+            var workspace = Workspace()
+            let context = Context(actor: .user(device: "Mac", surface: .mac), now: Date(timeIntervalSince1970: 0))
+            let plan = Plan(
+                projects: [.init(name: "Gym", avenue: "Fitness", tasks: [.init(title: "Cardio")])],
+                tasks: [.init(title: "Legs", place: "HEALTH"), .init(title: "Stretch", place: "fitness/Gym")])
+            let repaired = plan.repaired(for: workspace)
+            try expectEqual(repaired.avenues.map(\.key), ["FITNESS", "HEALTH"])
+            try expectEqual(repaired.avenues.map(\.name), ["Fitness", "Health"])
+            _ = try workspace.apply(repaired, timeZone: gmt, in: context)
+            try expectEqual(workspace.avenues.count, 2)
+            try expectEqual(workspace.tasks.count, 3)
+        },
+        TestCase("given a Sub task with its task's title, when repaired, then it's left out") {
+            let fixture = try Fixture()
+            let plan = Plan(tasks: [
+                .init(title: "Cardio", subtasks: [.init(title: "cardio"), .init(title: "Warm up")], place: "HEALTH")
+            ])
+            let repaired = plan.repaired(for: fixture.workspace)
+            try expectEqual(repaired.tasks.first?.subtasks.map(\.title), ["Warm up"])
+        },
     ]
 }

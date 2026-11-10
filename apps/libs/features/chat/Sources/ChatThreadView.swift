@@ -181,7 +181,9 @@ where Parts.Message == Replier.Message {
                 }
                 if let reply = store.reply {
                     ReplyInProgress(
-                        text: reply, thinking: store.replyThinking?.model, showsThinking: store.showsReplyThinking,
+                        text: reply, thinking: store.replyThinking?.model,
+                        thinks: store.state.current?.thinks != false && store.model.thinkingLevel != .off,
+                        showsThinking: store.showsReplyThinking,
                         toggleThinking: { store.send(.thinkingToggled(messageID: nil)) })
                 }
                 if let problem = store.problem {

@@ -190,18 +190,23 @@ public struct ThinkingDisclosure: View {
 }
 
 /// A reply being written: what the model thinks, then its words, with
-/// "Thinking…" until either comes and "Writing…" between them.
+/// "Thinking…" until either comes and "Writing…" between them. With
+/// thinking off, it's "Writing…" from the start, so the person sees their
+/// choice was kept.
 public struct ReplyInProgress: View {
     let text: String
     let thinking: ModelThinking?
+    let thinks: Bool
     let showsThinking: Bool
     let toggleThinking: () -> Void
 
     public init(
-        text: String, thinking: ModelThinking?, showsThinking: Bool, toggleThinking: @escaping () -> Void
+        text: String, thinking: ModelThinking?, thinks: Bool = true, showsThinking: Bool,
+        toggleThinking: @escaping () -> Void
     ) {
         self.text = text
         self.thinking = thinking
+        self.thinks = thinks
         self.showsThinking = showsThinking
         self.toggleThinking = toggleThinking
     }
@@ -210,8 +215,10 @@ public struct ReplyInProgress: View {
         if let thinking {
             ThinkingDisclosure(thinking: thinking, isExpanded: showsThinking, toggle: toggleThinking)
         }
-        if text.isEmpty, thinking == nil {
+        if text.isEmpty, thinking == nil, thinks {
             working(Text("Thinking…"))
+        } else if text.isEmpty, thinking == nil {
+            working(Text("Writing…"))
         } else if text.isEmpty, thinking?.duration != nil {
             // Done thinking, the model may write for a while before any of
             // its words can be shown, as when it looks things up.

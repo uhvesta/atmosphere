@@ -303,7 +303,7 @@ private struct SyncSection: View {
         Section {
             LabeledContent("Status", value: status)
             Button("Sync Now") { store.send(.syncNowTapped) }
-                .disabled(store.sync.status == .syncing)
+                .disabled(store.sync.status == .syncing || store.sync.status == .failed(.notSetUp))
         } header: {
             Text("Sync")
         } footer: {
@@ -320,6 +320,10 @@ private struct SyncSection: View {
     private var status: String {
         switch store.sync.status {
         case .syncing: return String(localized: "Syncing…")
+        // Not a failure to retry: this build has no iCloud, or the device
+        // isn't signed in.
+        case .failed(.notSetUp): return String(localized: "Off")
+        case .failed(.noAccount): return String(localized: "Not signed in")
         case .failed: return String(localized: "Didn't finish")
         case .idle:
             guard let last = store.sync.lastSynced else { return String(localized: "Not synced yet") }

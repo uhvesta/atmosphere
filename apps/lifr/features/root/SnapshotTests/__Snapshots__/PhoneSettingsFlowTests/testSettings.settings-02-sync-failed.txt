@@ -12,7 +12,7 @@
 [button] "Fix the bike's back brake" value: "Procrastinated, Low priority, Overdue, Oct 29, HOME-0011"
 [header, text] "Sync"
 [button] "Book physio appointment" value: "To Do, Medium priority, Overdue, Nov 1, HEALTH-0005"
-[text] "Status, Didn't finish"
+[text] "Status, Not signed in"
 [button] "Sync Now"
 [button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 3 Sub tasks closed, WORK-0006"
 [text] "Sign in to iCloud in Settings to sync your records between devices. Until then they stay on this device, and nothing is lost."

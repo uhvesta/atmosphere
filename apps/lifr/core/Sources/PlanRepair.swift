@@ -13,7 +13,9 @@ extension Plan {
     ///   under the parent; a place on a task that can't have one is
     ///   dropped;
     /// - the same task twice in one place becomes one, keeping what either
-    ///   says.
+    ///   says, and a Sub task with its task's title is left out;
+    /// - in a workspace with no Avenues yet, an Avenue the plan puts things
+    ///   in without adding is added, as there's none it could mean.
     /// Anything it can't be sure of is left for `Workspace.problem(with:)`
     /// to report, such as an Avenue key that's neither there nor added: a
     /// key a letter from one that's there, such as WEALTH for HEALTH, may
@@ -22,6 +24,7 @@ extension Plan {
     package func repaired(for workspace: Workspace) -> Plan {
         var plan = self
         let places = PlaceNames(workspace)
+        if places.avenues.isEmpty { plan.avenues += plan.missingAvenues }
         var renamed: [String: String] = [:]
         plan.avenues.removeAll { draft in
             guard let avenue = places.avenue(named: draft.name) else { return false }
@@ -134,9 +137,30 @@ extension Plan {
         task.start = date(task.start)
         task.due = date(task.due)
         task.dueTime = date(task.dueTime)
-        var titles: Set<String> = []
+        var titles: Set<String> = [task.title.lowercased()]
         task.subtasks = task.subtasks.filter { titles.insert($0.title.lowercased()).inserted }.map(dated)
         return task
+    }
+
+    /// New Avenues for the places that name one the plan doesn't add, by
+    /// key or name: the key from its letters, and the name as written, or
+    /// in title case when only a key was written.
+    private var missingAvenues: [AvenueDraft] {
+        let named =
+            projects.map(\.avenue)
+            + tasks.filter { $0.parent == nil }.compactMap { task in
+                task.place?.split(separator: "/", maxSplits: 1).first.map(String.init)
+            }
+        var known = Set(avenues.flatMap { [$0.key.lowercased(), $0.name.lowercased()] })
+        var added: [AvenueDraft] = []
+        for text in named.map({ $0.trimmingCharacters(in: .whitespaces) }) where !known.contains(text.lowercased()) {
+            let letters = String(text.filter { $0.isLetter && $0.isASCII }.prefix(10))
+            guard let key = try? AvenueKey(letters), !known.contains(key.rawValue.lowercased()) else { continue }
+            let name = text == key.rawValue ? text.capitalized : text
+            added.append(AvenueDraft(key: key.rawValue, name: name))
+            known.formUnion([text.lowercased(), key.rawValue.lowercased(), name.lowercased()])
+        }
+        return added
     }
 
     /// Nil for a date that says there's none, such as "none" or "".
