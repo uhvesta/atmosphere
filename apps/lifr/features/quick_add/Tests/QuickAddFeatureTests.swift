@@ -129,4 +129,18 @@ final class QuickAddFeatureTests: XCTestCase {
         await store.receive(\.added.success)
         return try await store.dependencies.store.load()
     }
+
+    func testCancellingClosesWithoutAddingTheTask() async throws {
+        _ = home
+        let store = try quickAdd()
+        let dismissed = LockIsolated(false)
+        store.dependencies.dismiss = DismissEffect { dismissed.setValue(true) }
+
+        await store.send(.binding(.set(\.title, "Call the plumber")))
+        await store.send(.cancelTapped)
+
+        XCTAssertTrue(dismissed.value)
+        let workspace = try await store.dependencies.store.load()
+        XCTAssertEqual(workspace.tasks.count, 0)
+    }
 }

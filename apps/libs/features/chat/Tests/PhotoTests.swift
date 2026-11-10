@@ -138,4 +138,20 @@ final class PhotoTests: XCTestCase {
         try files.removeAll(chat)
         XCTAssertNil(files.file(kept, chat: chat))
     }
+
+    func testRemovingAnAttachedPhotoTakesItOffAndDeletesItsFile() async throws {
+        let kept = ChatPhotosClient.inMemory()
+        let store = await seeing(Runs([], inputs: [.image]), kept: kept)
+        await store.send(.photoTaken(try photo()))
+        await store.receive(\.photoAttached)
+        let attached = try store.state.pendingPhotos.first.unwrap()
+        let file = try kept.file(attached, store.state.thread.id).unwrap()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+
+        await store.send(.removePhotoTapped(attached.id)).finish()
+
+        XCTAssertEqual(store.state.pendingPhotos, [])
+        XCTAssertFalse(store.state.canSend)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "The removed photo's file was kept")
+    }
 }

@@ -180,6 +180,34 @@ final class SettingsFeatureTests: XCTestCase {
         await store.receive(\.loaded)
         await store.finish()
     }
+
+    func testLaunchAtLoginIsReadAndTurnedOn() async {
+        let session = InMemorySession()
+        let store = await settings(session)
+        await store.receive(\.launchAtLoginLoaded)
+        XCTAssertFalse(store.state.launchesAtLogin)
+
+        await store.send(.launchAtLoginToggled(true)).finish()
+
+        XCTAssertTrue(store.state.launchesAtLogin)
+        let launches = await session.client.launchesAtLogin()
+        XCTAssertTrue(launches)
+        await store.skipInFlightEffects()
+    }
+
+    func testALoginItemMacOSRefusesPutsTheSwitchBackAndSaysWhy() async {
+        let store = await settings(InMemorySession())
+        await store.receive(\.launchAtLoginLoaded)
+        store.dependencies.session.setLaunchesAtLogin = { _ in throw SessionError.loginItemFailed(reason: "not allowed") }
+
+        await store.send(.launchAtLoginToggled(true))
+        await store.receive(\.launchAtLoginLoaded)
+        await store.receive(\.loginItemFailed)
+
+        XCTAssertFalse(store.state.launchesAtLogin)
+        XCTAssertNotNil(store.state.alert)
+        await store.skipInFlightEffects()
+    }
 }
 
 @MainActor

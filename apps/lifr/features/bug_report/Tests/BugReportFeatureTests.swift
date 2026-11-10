@@ -76,6 +76,23 @@ final class BugReportFeatureTests: XCTestCase {
         XCTAssertFalse(copied.value?.contains("Buy milk") ?? true)
         XCTAssertTrue(copied.value?.contains("The task vanished") ?? false)
     }
+
+    func testCancellingClosesWithoutKeepingTheReport() async throws {
+        let reports = BugReportsClient.inMemory()
+        let dismissed = LockIsolated(false)
+        let store = TestStore(initialState: BugReportFeature.State(report: .sample(includesPersonal: false))) {
+            BugReportFeature()
+        } withDependencies: {
+            $0.bugReports = reports
+            $0.dismiss = DismissEffect { dismissed.setValue(true) }
+        }
+
+        await store.send(.cancelTapped)
+
+        XCTAssertTrue(dismissed.value)
+        let saved = try await reports.load().reports
+        XCTAssertEqual(saved, [])
+    }
 }
 
 @MainActor

@@ -167,4 +167,31 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.workspace?.tasks[review.id]?.status, .done)
         XCTAssertNil(store.state.banner)
     }
+
+    func testCancellingARescheduleKeepsTheDueDate() async {
+        let stretch = records.task("Stretch", in: health)
+        let store = await load()
+
+        await store.send(.rowAction(stretch.id, .reschedule))
+        await store.send(.reschedule(.presented(.binding(.set(\.date, now.addingTimeInterval(3 * 24 * 60 * 60))))))
+        await store.send(.reschedule(.presented(.cancelTapped)))
+        await store.receive(\.reschedule.dismiss)
+
+        XCTAssertNil(store.state.reschedule)
+        XCTAssertNil(store.state.workspace?.tasks[stretch.id]?.dueDate)
+    }
+
+    func testDismissingTheBannerKeepsTheChange() async {
+        let review = records.task("Review", in: health)
+        let read = records.task("Read", in: health, parent: review, status: .done)
+        records.setStatus(.done, of: review)
+        let store = await load()
+
+        await store.send(.rowAction(read.id, .status(.todo)))
+        await store.receive(\.delegate.saved)
+        await store.send(.bannerDismissed)
+
+        XCTAssertNil(store.state.banner)
+        XCTAssertNotEqual(store.state.workspace?.tasks[review.id]?.status, .done, "Dismissing the banner undid the change")
+    }
 }

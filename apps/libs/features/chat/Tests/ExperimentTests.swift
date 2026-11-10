@@ -156,4 +156,16 @@ final class ExperimentTests: XCTestCase {
         XCTAssertNil(store.state.rival?.speed)
         XCTAssertTrue(store.state.canGo)
     }
+
+    func testTakingOffTheSecondModelAsksOnlyTheFirst() async throws {
+        let runs = Runs([ScriptedRuntime.answer("Friend.")])
+        let store = await comparing(runs)
+        await store.send(.rivalRemoved)
+        XCTAssertNil(store.state.rivalCurrent)
+
+        await store.ask("Amigo?")
+        XCTAssertEqual(runs.choices.value.map(\.model), [nil])
+        XCTAssertNil(store.state.rival)
+        XCTAssertEqual(store.texts, ["Amigo?", "Friend."])
+    }
 }

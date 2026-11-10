@@ -350,4 +350,36 @@ final class TaskDetailFeatureTests: XCTestCase {
 
         XCTAssertEqual(store.state.subtasks.map(\.status), [.inProgress])
     }
+
+    func testPickingATimeAndAStartDateSavesThem() async throws {
+        let stretch = records.task("Stretch", in: health, due: 3)
+        let store = try makeStore(stretch)
+        let seven = try TimeOfDay("07:00")
+        let wednesday = try CalendarDate(year: 2026, month: 11, day: 4)
+
+        await store.send(.dueTimePicked(seven))
+        await store.receive(\.delegate.saved)
+        await store.send(.startDatePicked(wednesday))
+        await store.receive(\.delegate.saved)
+
+        XCTAssertEqual(store.state.dueTime, seven)
+        XCTAssertEqual(store.state.startDate, wednesday)
+        let saved = try await store.dependencies.store.load().tasks[stretch.id]
+        XCTAssertEqual(saved?.dueTime, seven)
+        XCTAssertEqual(saved?.startDate, wednesday)
+    }
+
+    func testDismissingTheBannerKeepsTheReopenedParent() async throws {
+        let review = records.task("Review", in: health)
+        let read = records.task("Read", in: health, parent: review, status: .done)
+        records.setStatus(.done, of: review)
+        let store = try makeStore(review)
+
+        await store.send(.subtaskToggled(read.id))
+        await store.receive(\.delegate.saved)
+        await store.send(.bannerDismissed)
+
+        XCTAssertNil(store.state.banner)
+        XCTAssertEqual(store.state.row.status, .inProgress)
+    }
 }

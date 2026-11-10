@@ -139,4 +139,31 @@ final class AvenueFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.avenues.map(\.openCount), [0])
         XCTAssertEqual(store.state.avenue?.list.sections.map(\.title), ["Done"])
     }
+
+    func testCancellingANewAvenueAddsNothing() async {
+        _ = health
+        let store = await avenues()
+
+        await store.send(.newAvenueTapped)
+        await store.send(.newAvenue(.presented(.binding(.set(\.key, "home")))))
+        await store.send(.newAvenue(.presented(.cancelTapped)))
+        await store.receive(\.newAvenue.dismiss)
+
+        XCTAssertNil(store.state.newAvenue)
+        XCTAssertEqual(store.state.avenues.map(\.key), ["HEALTH"])
+    }
+
+    func testCancellingAnEditKeepsTheAvenueAsItWas() async throws {
+        let store = avenue(.avenue(health.id))
+
+        await store.send(.editAvenueTapped)
+        XCTAssertEqual(store.state.editAvenue?.name, "Health")
+        await store.send(.editAvenue(.presented(.binding(.set(\.name, "Wellness")))))
+        await store.send(.editAvenue(.presented(.cancelTapped)))
+        await store.receive(\.editAvenue.dismiss)
+
+        XCTAssertNil(store.state.editAvenue)
+        let workspace = try await store.dependencies.store.load()
+        XCTAssertEqual(workspace.avenues[health.id]?.name, "Health")
+    }
 }

@@ -174,4 +174,15 @@ final class ProjectDetailFeatureTests: XCTestCase {
         XCTAssertNotNil(store.state.alert)
         XCTAssertEqual(store.state.name, "Half marathon")
     }
+
+    func testSavesTheDetailsOnSubmit() async throws {
+        guard let store = detail() else { return }
+
+        await store.send(.binding(.set(\.details, "Train four days a week")))
+        await store.send(.detailsSubmitted)
+        await store.receive(\.delegate.saved)
+
+        let workspace = try await store.dependencies.store.load()
+        XCTAssertEqual(workspace.projects[marathon.id]?.details, "Train four days a week")
+    }
 }

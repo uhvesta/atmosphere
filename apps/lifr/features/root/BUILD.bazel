@@ -51,7 +51,10 @@ swift_library(
     testonly = True,
     srcs = glob(["Tests/*.swift"]),
     target_compatible_with = ["//bazel/xcode"],
-    deps = [":root"] + _DEPS,
+    deps = [
+        ":root",
+        "//apps/lifr/clients/models",
+    ] + _DEPS,
 )
 
 macos_unit_test(

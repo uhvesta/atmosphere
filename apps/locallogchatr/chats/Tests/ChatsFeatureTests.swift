@@ -184,4 +184,29 @@ final class ChatsFeatureTests: XCTestCase {
         try shelf.delete(chat)
         XCTAssertTrue(shelf.chats().chats.isEmpty)
     }
+
+    func testCancellingARenameKeepsTheName() async throws {
+        let chat = saved("What's a monad?")
+        let shelf = ChatShelfClient.inMemory([chat])
+        let store = chats(shelf)
+        await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.renameTapped(chat.id))
+        await store.send(.binding(.set(\.name, "Monads")))
+        await store.send(.renameCancelled)
+
+        XCTAssertNil(store.state.renaming)
+        XCTAssertEqual(store.state.chats[id: chat.id]?.thread.title, "What's a monad?")
+        XCTAssertEqual(try shelf.chats().chats.first.unwrap().conversation.title, "What's a monad?")
+    }
+
+    func testAProblemGoesAwayOnceSeen() async throws {
+        let store = chats(.full())
+        await store.send(.newTapped)
+        let id = try store.state.openID.unwrap()
+        await ask("Hi", in: id, of: store)
+        await store.send(.problemDismissed)
+        XCTAssertNil(store.state.problem)
+    }
 }

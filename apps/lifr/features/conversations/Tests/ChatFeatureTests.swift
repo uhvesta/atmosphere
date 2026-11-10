@@ -1936,4 +1936,17 @@ final class ChatFeatureTests: XCTestCase {
         await store.finish()
         XCTAssertEqual(store.state.conversations[id: id]?.title, "Mine")
     }
+
+    func testCancellingARenameClosesWithoutRenaming() async {
+        let dismissed = LockIsolated(false)
+        let store = TestStore(initialState: RenameFeature.State(chat("Plan the week"))) {
+            RenameFeature()
+        } withDependencies: {
+            $0.dismiss = DismissEffect { dismissed.setValue(true) }
+        }
+        await store.send(.binding(.set(\.name, "Weekly plan"))) { $0.name = "Weekly plan" }
+        await store.send(.cancelTapped)
+
+        XCTAssertTrue(dismissed.value)
+    }
 }

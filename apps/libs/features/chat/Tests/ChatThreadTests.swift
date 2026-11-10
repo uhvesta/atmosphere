@@ -336,4 +336,21 @@ final class ChatThreadTests: XCTestCase {
         XCTAssertFalse(turn.prompt.contains("Message 0 "))
         XCTAssertLessThan(turn.prompt.count, ContextBudget.appleOnDevice.room * 3)
     }
+
+    func testBackToLatestShowsWhatCameAfterAnEarlierPoint() async throws {
+        var thread = ChatThread(id: UUID(999), createdAt: epoch)
+        thread.append(ThreadMessage(role: .person, text: "Amigo?", at: epoch))
+        thread.append(ThreadMessage(role: .assistant, text: "Friend.", at: epoch))
+        let earlier = try thread.messages.last.unwrap().id
+        thread.append(ThreadMessage(role: .person, text: "Hola?", at: epoch))
+        thread.append(ThreadMessage(role: .assistant, text: "Hello.", at: epoch))
+        thread.go(to: earlier)
+        XCTAssertNotNil(thread.forward)
+        let store = chat(Runs([]), thread: thread)
+        XCTAssertEqual(store.texts, ["Amigo?", "Friend."])
+
+        await store.send(.latestTapped)
+        XCTAssertEqual(store.texts, ["Amigo?", "Friend.", "Hola?", "Hello."])
+        XCTAssertNil(store.state.thread.forward)
+    }
 }

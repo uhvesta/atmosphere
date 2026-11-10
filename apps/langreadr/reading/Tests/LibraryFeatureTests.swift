@@ -106,4 +106,32 @@ final class LibraryFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.books.first?.language, Language("it"))
         XCTAssertEqual(shelf.books().books.first?.language, Language("it"))
     }
+
+    func testCancellingAnImportAddsNothing() async {
+        let store = library()
+        await store.send(.importTapped(.text))
+        await store.send(.importing(.presented(.binding(.set(\.text, "Bonjour.")))))
+        await store.send(.importing(.presented(.cancelTapped)))
+        await store.receive(\.importing.dismiss)
+        XCTAssertNil(store.state.importing)
+        XCTAssertTrue(store.state.books.isEmpty)
+    }
+
+    func testABookThatCantBeSavedSaysWhy() async {
+        var shelf = ShelfClient.inMemory()
+        shelf.save = { book throws(ShelfError) in
+            throw .write(book: book.title, underlying: CocoaError(.fileWriteOutOfSpace))
+        }
+        let store = library(shelf: shelf)
+        await submit(.text, "Bonjour.", in: store)
+        await store.receive(\.saveFailed)
+        XCTAssertNotNil(store.state.alert)
+    }
+
+    func testAPhotoThatCantBeReadSaysWhy() async {
+        let store = library()
+        await store.send(.pickFailed("The photo couldn't be loaded."))
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertTrue(store.state.books.isEmpty)
+    }
 }

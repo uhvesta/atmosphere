@@ -4,6 +4,7 @@ import LifrAPI
 import LifrAvenue
 import LifrCore
 import LifrLockClient
+import LifrModelsClient
 import LifrQuickAdd
 import LifrRemindersClient
 import LifrRoot
@@ -866,6 +867,51 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.locksApp)
         XCTAssertNotNil(store.state.lockAlert)
         await task.cancel()
+    }
+
+    func testTurningTheAPIOffTellsTheSession() async {
+        let session = InMemorySession()
+        let store = makeStore(.mac, session: session)
+
+        await store.send(.apiSwitched(false))
+        await store.finish()
+
+        XCTAssertFalse(store.state.isAPIEnabled)
+        let enabled = await session.client.isAPIEnabled()
+        XCTAssertFalse(enabled)
+    }
+
+    func testAnAPISwitchThatFailsPutsTheSwitchBackAndSaysWhy() async {
+        let store = makeStore(.mac)
+        store.dependencies.session.setAPIEnabled = { _ in throw SessionError.apiSwitchFailed(reason: "socket busy") }
+
+        await store.send(.apiSwitched(false))
+        await store.receive(\.apiEnabledLoaded)
+        await store.receive(\.apiSwitchFailed)
+
+        XCTAssertTrue(store.state.isAPIEnabled)
+        XCTAssertNotNil(store.state.apiSwitchError)
+    }
+
+    func testReportABugOpensANewReport() async {
+        let store = makeStore(.mac)
+        store.dependencies.models.selection = { _ in "gemma-4-e2b" }
+
+        await store.send(.reportBugTapped)
+
+        XCTAssertEqual(store.state.bugReport?.report.device.assistantModel, "gemma-4-e2b")
+    }
+
+    func testReportABugWhileRecordingStepsStopsTheRecording() async {
+        let store = makeStore(.mac)
+        store.dependencies.models.selection = { _ in "gemma-4-e2b" }
+
+        await store.send(.recordStepsTapped)
+        XCTAssertTrue(store.state.isRecordingSteps)
+        await store.send(.reportBugTapped)
+        await store.receive(\.stopRecordingTapped)
+
+        XCTAssertFalse(store.state.isRecordingSteps)
     }
 }
 
