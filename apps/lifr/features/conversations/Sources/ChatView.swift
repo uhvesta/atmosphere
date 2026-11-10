@@ -183,7 +183,8 @@ private struct LifrParts: ChatThreadParts {
     @ViewBuilder func bottom() -> some View {
         if let draft = store.conversation.draft {
             DraftCard(
-                plan: draft, meanings: meanings, problem: store.problem, canAdd: store.canAdd
+                plan: draft, meanings: meanings, problem: store.problem, canChange: store.canChangeDraft,
+                canAdd: store.canAdd
             ) {
                 store.send(.addTapped)
             } discard: {

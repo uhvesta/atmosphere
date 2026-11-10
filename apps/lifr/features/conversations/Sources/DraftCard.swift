@@ -11,6 +11,8 @@ struct DraftCard: View {
     let plan: Plan
     let meanings: DraftMeanings
     let problem: String?
+    /// False while a reply is still writing the plan.
+    let canChange: Bool
     let canAdd: Bool
     let add: () -> Void
     let discard: () -> Void
@@ -54,9 +56,11 @@ struct DraftCard: View {
             }
             HStack {
                 Button("Discard", role: .destructive, action: discard)
+                    .disabled(!canChange)
                 Spacer()
                 Button("Edit", action: edit)
                     .buttonStyle(.bordered)
+                    .disabled(!canChange)
                 // Named for VoiceOver apart from the composer's Add.
                 Button("Add", action: add)
                     .buttonStyle(.borderedProminent)

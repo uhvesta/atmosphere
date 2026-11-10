@@ -2598,6 +2598,9 @@
     "This model doesn't count its tokens, so the counts are guessed from the text's length." : {
 
     },
+    "Thoughts" : {
+
+    },
     "Thoughts · %@" : {
 
     },

@@ -901,6 +901,49 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.canSend)
     }
 
+    func testADraftCantBeAddedOrDiscardedWhileAReplyMayStillChangeIt() async throws {
+        let (workspace, _) = home()
+        let finish = AsyncStream.makeStream(of: Void.self)
+        let first = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])
+        let whole = Plan(tasks: first.tasks + [Plan.TaskDraft(title: "Buy pots", place: "HOME")])
+        let store = chat(workspace) { _ in AssistantReply(text: "Here's a plan.", plan: first, isComplete: true) }
+        await send("Plan repotting", in: store)
+        XCTAssertTrue(store.state.canAdd)
+
+        store.dependencies.assistant.reply = { _ in
+            AssistantReplies { continuation in
+                Task {
+                    continuation.yield(AssistantReply(text: "Adding"))
+                    var wake = finish.stream.makeAsyncIterator()
+                    _ = await wake.next()
+                    continuation.yield(AssistantReply(text: "Added pots.", plan: whole, isComplete: true))
+                    continuation.finish()
+                }
+            }
+        }
+        await send("And pots", in: store)
+        for _ in 0..<100 where store.state.core.reply != "Adding" {
+            try await Task.sleep(for: .milliseconds(10))
+            await store.skipReceivedActions(strict: false)
+        }
+        XCTAssertFalse(store.state.canAdd)
+        await store.send(.addTapped)
+        await store.send(.discardDraftTapped)
+        await store.send(.editDraftTapped)
+        XCTAssertEqual(store.state.conversation.draft, first)
+        XCTAssertFalse(store.state.editsDraft)
+
+        finish.continuation.yield()
+        for _ in 0..<100 where store.state.core.reply != nil {
+            try await Task.sleep(for: .milliseconds(10))
+            await store.skipReceivedActions(strict: false)
+        }
+        await store.skipReceivedActions(strict: false)
+        XCTAssertTrue(store.state.canAdd)
+        XCTAssertEqual(store.state.conversation.draft?.tasks.count, 2)
+        XCTAssertFalse(store.state.workspace.tasks.values.contains { $0.title == "Buy soil" })
+    }
+
     func testStoppingBeforeAnyWordsAddsNoReply() async throws {
         let (workspace, _) = home()
         let store = chat(workspace) { _ in

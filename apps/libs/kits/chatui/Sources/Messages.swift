@@ -130,15 +130,22 @@ public struct ThinkingDisclosure: View {
     let toggle: () -> Void
     /// Opens the thoughts to select part of; nil while they're written.
     var select: ((String) -> Void)?
+    /// The answer has begun, so the model is done thinking, though how
+    /// long it took is known only once the answer's done.
+    var answering = false
 
     public init(
-        thinking: ModelThinking, isExpanded: Bool, toggle: @escaping () -> Void, select: ((String) -> Void)? = nil
+        thinking: ModelThinking, isExpanded: Bool, toggle: @escaping () -> Void, select: ((String) -> Void)? = nil,
+        answering: Bool = false
     ) {
         self.thinking = thinking
         self.isExpanded = isExpanded
         self.toggle = toggle
         self.select = select
+        self.answering = answering
     }
+
+    private var isThinking: Bool { thinking.duration == nil && !answering }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -148,7 +155,7 @@ public struct ThinkingDisclosure: View {
                         .font(.caption.weight(.semibold))
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     Text(summary)
-                    if thinking.duration == nil { ProgressView().controlSize(.mini) }
+                    if isThinking { ProgressView().controlSize(.mini) }
                 }
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -178,7 +185,9 @@ public struct ThinkingDisclosure: View {
     private var thoughts: String { thinking.text.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private var summary: String {
-        guard let duration = thinking.duration else { return String(localized: "Thinking…") }
+        guard let duration = thinking.duration else {
+            return answering ? String(localized: "Thoughts") : String(localized: "Thinking…")
+        }
         let time = duration.formatted(
             .units(allowed: [.seconds], width: .abbreviated, fractionalPart: .show(length: 1)))
         switch thinking.processor {
@@ -213,7 +222,8 @@ public struct ReplyInProgress: View {
 
     public var body: some View {
         if let thinking {
-            ThinkingDisclosure(thinking: thinking, isExpanded: showsThinking, toggle: toggleThinking)
+            ThinkingDisclosure(
+                thinking: thinking, isExpanded: showsThinking, toggle: toggleThinking, answering: !text.isEmpty)
         }
         if text.isEmpty, thinking == nil, thinks {
             working(Text("Thinking…"))

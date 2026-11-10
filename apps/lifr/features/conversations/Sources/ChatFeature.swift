@@ -177,7 +177,11 @@ package struct ChatFeature {
         /// some of the conversation.
         package var offersCompact: Bool { leftOut > 0 && canCompact }
 
-        package var canAdd: Bool { conversation.draft != nil && problem == nil }
+        /// Whether the draft can be added, edited or discarded: not while a
+        /// reply is still writing it.
+        package var canChangeDraft: Bool { conversation.draft != nil && core.reply == nil }
+
+        package var canAdd: Bool { canChangeDraft && problem == nil }
 
         /// Whether the conversation can go back, forward or to another
         /// branch: not while a reply is written or its changes are read.
@@ -536,7 +540,7 @@ package struct ChatFeature {
                 return .send(.core(.sendTapped))
 
             case .editDraftTapped:
-                guard state.conversation.draft != nil else { return .none }
+                guard state.canChangeDraft else { return .none }
                 state.editsDraft = true
                 return .none
 
@@ -840,6 +844,7 @@ package struct ChatFeature {
                 return .none
 
             case .discardDraftTapped:
+                guard state.canChangeDraft else { return .none }
                 state.conversation.draft = nil
                 state.problem = nil
                 state.editsDraft = false

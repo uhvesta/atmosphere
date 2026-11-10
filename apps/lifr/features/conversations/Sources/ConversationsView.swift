@@ -133,11 +133,17 @@ package struct ConversationsView: View {
     @ViewBuilder private var results: some View {
         let found = store.state.found
         let related = found.filter(\.isRelated)
-        Section {
-            ForEach(found.filter { !$0.isRelated }) { row($0) }
-        } header: {
-            if let during = store.searched.during {
+        // A header only when there's something to say: on the Mac, an empty
+        // one still takes its space.
+        if let during = store.searched.during {
+            Section {
+                ForEach(found.filter { !$0.isRelated }) { row($0) }
+            } header: {
                 Text("Written \(during.start..<during.end.addingTimeInterval(-1), format: .interval.month().day())")
+            }
+        } else {
+            Section {
+                ForEach(found.filter { !$0.isRelated }) { row($0) }
             }
         }
         if !related.isEmpty {
