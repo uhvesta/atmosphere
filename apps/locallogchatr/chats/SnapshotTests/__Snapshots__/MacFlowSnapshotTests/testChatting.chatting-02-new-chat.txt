@@ -15,7 +15,7 @@
     [Button] "New Chat"
     [Button] "Settings"
     [Button] "Hide Sidebar"
-    [MenuButton] "Context Window" help: "Nothing used yet"
+    [Button] "Context Window" value: "Nothing used yet"
     [TextField/SearchField] ""
       [Button] "Search"
   [Button/CloseButton] ""

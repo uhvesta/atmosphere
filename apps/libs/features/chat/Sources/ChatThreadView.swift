@@ -605,13 +605,7 @@ public struct ChatContextButton: View {
     }
 
     public var body: some View {
-        Menu {
-            Text(ContextRing.description(of: context))
-        } label: {
-            ContextRing(context)
-        }
-        .menuIndicator(.hidden)
-        .help(ContextRing.description(of: context))
+        ContextButton(context)
     }
 }
 

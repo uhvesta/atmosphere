@@ -92,7 +92,7 @@ package struct RootView: View {
         }
         .sheet(item: $store.scope(state: \.bugReport, action: \.bugReport)) { store in
             NavigationStack { BugReportView(store: store) }
-                .sheetLayout(height: 480)
+                .sheetLayout()
                 .interactiveDismissDisabled()
         }
         .sheet(item: $store.scope(state: \.syncReview, action: \.syncReview)) { store in

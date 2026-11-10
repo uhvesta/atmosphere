@@ -189,8 +189,8 @@ public struct ThinkingDisclosure: View {
     }
 }
 
-/// A reply being written: what the model thinks, then its words, or
-/// "Thinking…" until either comes.
+/// A reply being written: what the model thinks, then its words, with
+/// "Thinking…" until either comes and "Writing…" between them.
 public struct ReplyInProgress: View {
     let text: String
     let thinking: ModelThinking?
@@ -211,15 +211,23 @@ public struct ReplyInProgress: View {
             ThinkingDisclosure(thinking: thinking, isExpanded: showsThinking, toggle: toggleThinking)
         }
         if text.isEmpty, thinking == nil {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Thinking…")
-            }
-            .foregroundStyle(.secondary)
-            .accessibilityElement(children: .combine)
+            working(Text("Thinking…"))
+        } else if text.isEmpty, thinking?.duration != nil {
+            // Done thinking, the model may write for a while before any of
+            // its words can be shown, as when it looks things up.
+            working(Text("Writing…"))
         } else {
             MarkdownText(text: text, isWriting: true).foregroundStyle(.secondary)
         }
+    }
+
+    private func working(_ label: Text) -> some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            label
+        }
+        .foregroundStyle(.secondary)
+        .accessibilityElement(children: .combine)
     }
 }
 

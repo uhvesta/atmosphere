@@ -25,10 +25,12 @@
     [Row/OutlineRow] ""
       [Button] "Plan my week, Nov 3 at 10:00 AM, Start with the urgent tasks, then"
   [Heading] "Plan my week"
-  [MenuButton] "Context Window" help: "Nothing used yet"
+  [Button] "Context Window" value: "Nothing used yet" help: "Nothing used yet"
+  [Heading] "Tuesday, November 3 at 10:00 AM"
   [StaticText] "" value: "Plan my week"
   [StaticText] "" value: "Start with the urgent tasks, then"
   [Button] "Retry" help: "Write this reply again"
+  [Button] "Copy" help: "Copy this reply"
   [Button] "Speak" help: "Read this reply aloud"
   [TextField] ""
   [Button] "Add" help: "Add photos or files" id: plus

@@ -256,6 +256,30 @@ final class EngineTurnTests: XCTestCase {
         XCTAssertEqual(answer, .string("Nothing's due."))
     }
 
+    func testAToolTurnShowsItsAnswerAsItsWrittenAndGoesOnWhileItCallsTools() async throws {
+        let tool = ModelTool(name: "overview", description: "", parameters: []) { _ in "Nothing's due." }
+        let chat = FakeChat([#"{"tool":"overview","arguments":{}}"#, #"{"answer":{"text":"All clear"#])
+        let partials = Locked<[JSONValue]>([])
+
+        _ = try? await EngineTurn.respond(
+            to: ModelTurn(instructions: "", prompt: "Anything due?", tools: [tool], schema: reply),
+            on: FakeEngine(chat: chat)
+        ) { partial in partials.withValue { $0.append(partial) } }
+
+        XCTAssertEqual(partials.value, [.object([:]), .object(["text": "All clear"])])
+    }
+
+    func testAnAnswerWithASchemaShowsAsItsWritten() async throws {
+        let chat = FakeChat([#"{"text":"Do"#])
+        let partials = Locked<[JSONValue]>([])
+
+        _ = try? await EngineTurn.respond(
+            to: ModelTurn(instructions: "", prompt: "Hi", schema: reply), on: FakeEngine(chat: chat)
+        ) { partial in partials.withValue { $0.append(partial) } }
+
+        XCTAssertEqual(partials.value, [.object(["text": "Do"])])
+    }
+
     func testAModelThatKeepsCallingToolsMustAnswerInTheEnd() async throws {
         let calls = Locked(0)
         let tool = ModelTool(name: "overview", description: "", parameters: []) { _ in

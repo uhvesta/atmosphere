@@ -78,6 +78,23 @@ final class ChatThreadTests: XCTestCase {
         XCTAssertEqual(store.texts, ["Amigo?", "Friend."])
     }
 
+    func testAnEmptyReplySaysSoAndRetryAsksAgain() async throws {
+        let runs = Runs([ScriptedRuntime.answer(" \n"), ScriptedRuntime.answer("Friend.")])
+        let store = chat(runs)
+        await store.ask("Amigo?")
+        XCTAssertNotNil(store.state.problem)
+        XCTAssertNil(store.state.reply)
+        XCTAssertEqual(store.texts, ["Amigo?"])
+        let asked = try store.state.thread.messages.last.unwrap()
+        XCTAssertTrue(store.state.canRetry(asked))
+
+        await store.send(.retryTapped(messageID: asked.id))
+        await store.receive(\.replied)
+        await store.settle()
+        XCTAssertNil(store.state.problem)
+        XCTAssertEqual(store.texts, ["Amigo?", "Friend."])
+    }
+
     func testRetryingAReplyKeepsTheOldOneOnItsOwnBranch() async throws {
         let store = chat(Runs([ScriptedRuntime.answer("Friend."), ScriptedRuntime.answer("Pal.")]))
         await store.ask("Amigo?")

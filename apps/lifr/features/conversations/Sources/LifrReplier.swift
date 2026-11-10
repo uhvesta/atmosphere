@@ -90,12 +90,20 @@ package enum ReplyFailure: Error, CustomStringConvertible {
     case assistant(AssistantError)
     /// The assistant ended without a word.
     case noReply
+    /// The model finished, maybe after thinking, without writing an answer.
+    case emptyReply
     case failed(any Error)
 
     package var description: String {
         switch self {
         case .assistant(let error): error.description
         case .noReply: String(localized: "The assistant stopped without replying. Send the message again.")
+        case .emptyReply:
+            String(
+                localized: """
+                    The model finished without writing an answer, which happens when it thinks for too long. \
+                    Retry, or set Thinking lower or off in the model menu, or pick another model.
+                    """)
         case .failed(let error): String(describing: error)
         }
     }
@@ -197,9 +205,7 @@ private struct Writer: Sendable {
         if let pick {
             // A pick that fails leaves the message without a skill, to
             // answer as it is.
-            let id =
-                (try? await assistant.pickSkill(request.messages, pick.candidates, pick.kept?.id, request.model))
-                ?? pick.kept?.id
+            let id = await pickedSkill(pick, for: request) ?? pick.kept?.id
             let skills = pick.candidates + (pick.kept.map { [$0] } ?? [])
             if let id, let skill = skills.first(where: { $0.id == id }) {
                 request.skill = skill
@@ -217,6 +223,12 @@ private struct Writer: Sendable {
             }
         }
         guard let reply = last.value else { throw ReplyFailure.noReply }
+        // Nothing to show or apply would leave an empty bubble.
+        if reply.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, reply.proposal == nil,
+            reply.plan == nil
+        {
+            throw ReplyFailure.emptyReply
+        }
         return ChatReply(
             text: reply.text, thinking: reply.thinking?.shown, context: reply.context,
             speed: reply.speed.map {
@@ -229,6 +241,24 @@ private struct Writer: Sendable {
                 ReplyPrompt(
                     instructions: $0.instructions, prompt: $0.prompt, photos: $0.photos, context: reply.context)
             })
+    }
+
+    /// The skill the assistant picks from `pick` for `request`, or nil
+    /// when it can't, or takes longer than `stallLimit`: a pick is short,
+    /// and the reply waits for it.
+    private func pickedSkill(_ pick: SkillPick, for request: AssistantRequest) async -> String? {
+        await withTaskGroup(of: String?.self) { [assistant, clock] group in
+            group.addTask {
+                try? await assistant.pickSkill(request.messages, pick.candidates, pick.kept?.id, request.model)
+            }
+            group.addTask {
+                try? await clock.sleep(for: LifrReplier.stallLimit)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
     }
 
     /// Sends each reply to `request`, and stops with `.timedOut` when the

@@ -71,9 +71,9 @@
   [PopUpButton] "" value: "Off"
   [StaticText] "" value: "A cache under 16 bits needs flash attention. Turn flash attention on, or keep the cache at 16 bits."
   [Button] "Duplicate"
-  [Button] "Remove"
+  [Button] "Remove llama.cpp · GPU · KV 4-bit · flash off"
   [Button] "llama.cpp · CPU"
-  [StaticText] "" value: "A KV cache at 8 or 4 bits keeps less memory for each token read, and its answers drift further from 16 bits'."
+  [StaticText] "" value: "A KV cache at 8 or 4 bits keeps less memory for each token read, and its answers drift further from a 16-bit cache's."
   [StaticText] "" value: "Flash attention works out attention in one step, which takes less memory; a cache under 16 bits needs it. Layers not on the GPU run on the CPU."
   [Toolbar] ""
     [Button] "Back" id: chevron.backward

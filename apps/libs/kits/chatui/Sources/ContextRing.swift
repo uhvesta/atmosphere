@@ -35,6 +35,32 @@ public struct ContextRing: View {
     }
 }
 
+/// The ring as a button that opens to say how full the window is. A
+/// button and a popover, not a menu, because a Mac menu's button draws
+/// only text and images, which leaves the ring out.
+public struct ContextButton: View {
+    let use: ContextUse?
+    @State private var showing = false
+
+    public init(_ use: ContextUse?) {
+        self.use = use
+    }
+
+    public var body: some View {
+        Button {
+            showing = true
+        } label: {
+            ContextRing(use)
+        }
+        .help(ContextRing.description(of: use))
+        .popover(isPresented: $showing) {
+            Text(ContextRing.description(of: use))
+                .padding()
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+}
+
 /// A slice of a circle from twelve o'clock, clockwise, `fraction` of the
 /// way round, and at least a twelfth of it once anything is used, so a
 /// little use reads as a slice rather than a clock hand.

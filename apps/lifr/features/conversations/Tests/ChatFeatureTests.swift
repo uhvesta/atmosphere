@@ -627,6 +627,20 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Done."])
     }
 
+    func testAReplyThatThoughtButWroteNothingSaysSoAndCanBeTriedAgain() async throws {
+        let (workspace, _) = home()
+        let store = chat(workspace) { _ in
+            AssistantReply(text: "  ", isComplete: true, thinking: ModelThinking(text: "Let me see…"))
+        }
+
+        await send("Add a task to call Mum", in: store)
+        XCTAssertNil(store.state.core.reply)
+        XCTAssertNotNil(store.state.core.problem)
+        XCTAssertEqual(store.state.conversation.messages.map(\.role), [.person], "no empty bubble is kept")
+        let asked = try XCTUnwrap(store.state.conversation.messages.last)
+        XCTAssertTrue(store.state.core.canRetry(asked))
+    }
+
     func testOpeningTheChatLoadsNoModelUntilThePersonWrites() async {
         let (workspace, _) = home()
         let prewarmed = LockIsolated(0)

@@ -1,5 +1,5 @@
 [Window/StandardWindow] "Today"
-  [Button] "Recording steps" help: "Stops recording and describes the bug"
+  [Button] "Stop Recording Steps" help: "Stops recording and describes the bug"
   [Outline] "Sidebar"
     [Row/OutlineRow, selected] ""
       [StaticText] "" value: "Today"

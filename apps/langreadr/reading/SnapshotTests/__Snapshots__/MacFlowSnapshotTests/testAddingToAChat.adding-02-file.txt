@@ -41,12 +41,13 @@
     [StaticText] "" value: "El mercado"
     [StaticText] "" value: "“Hola amigo. ¿Vamos al mercado”"
     [StaticText] "" value: "Ask what it means, how it's said, or why it's written this way."
-    [Button] "notes.md"
+    [Button] "notes.md" help: "Opens it"
+    [Button] "Remove notes.md"
     [TextField] ""
     [Button] "Add" help: "Add photos or files" id: plus
     [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
     [Button] "Dictate" help: "Dictate, on this device" id: mic
     [Button] "Send" id: arrow.up
-    [MenuButton] "Context Window" help: "Nothing used yet"
+    [Button] "Context Window" value: "Nothing used yet" help: "Nothing used yet"
     [Button] "Done"
     [Button] "Open in chat"

@@ -429,6 +429,21 @@ public struct ChatCore<Replier: ChatReplier> {
                 state.replyPrompt?.context = reply.context
                 // The second model answers the same chat, once the first is
                 // done.
+                // A reply with nothing in it says so, rather than leaving
+                // the chat as if nothing happened.
+                if reply.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, reply.extra == nil {
+                    state.reply = nil
+                    state.replyThinking = nil
+                    state.replyPrompt = nil
+                    state.showsReplyThinking = false
+                    state.problem = String(
+                        localized: """
+                            The model finished without writing an answer, which happens when it thinks for too \
+                            long. Retry, or set Thinking lower or off in the model menu, or pick another model.
+                            """)
+                    state.retries = true
+                    return .none
+                }
                 let rival = state.compares ? state.rivalModel.map { ask($0, rival: true, in: state) } : nil
                 let kept = keep(
                     reply.text, thinking: reply.thinking, speed: reply.speed, extra: reply.extra, in: &state)

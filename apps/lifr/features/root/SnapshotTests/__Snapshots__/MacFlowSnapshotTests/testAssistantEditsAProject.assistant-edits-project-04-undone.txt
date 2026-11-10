@@ -25,7 +25,8 @@
     [Row/OutlineRow] ""
       [Button] "Rename the Half marathon to “Spring hal…, Nov 3 at 10:00 AM, I renamed it to Spring half marathon, due 6 December."
   [Heading] "Rename the Half marathon to “Spring hal…"
-  [MenuButton] "Context Window" help: "5% used, 1,578 of 32,768 tokens"
+  [Button] "Context Window" value: "5% used, 1,578 of 32,768 tokens" help: "5% used, 1,578 of 32,768 tokens"
+  [Heading] "Tuesday, November 3 at 10:00 AM"
   [Unknown] "Skill: change"
   [StaticText] "" value: "Rename the Half marathon to “Spring half marathon”, due 2026-12-06"
   [StaticText] "" value: "I renamed it to Spring half marathon, due 6 December."
@@ -35,9 +36,10 @@
   [Image] "to" id: arrow.right
   [StaticText] "" value: "Spring half marathon"
   [StaticText] "" value: "Due date:"
-  [StaticText] "" value: "2026-12-06"
+  [StaticText] "" value: "Sun, Dec 6"
   [StaticText] "" value: "Applied, then undone"
   [Button] "Retry" help: "Write this reply again"
+  [Button] "Copy" help: "Copy this reply"
   [Button] "Speak" help: "Read this reply aloud"
   [TextField] ""
   [Button] "Add" help: "Add photos or files" id: plus

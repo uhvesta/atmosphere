@@ -12,7 +12,7 @@
       [PopUpButton] "" value: "All time"
     [Row/OutlineRow] ""
     [Row/OutlineRow] ""
-      [StaticText] "" value: "No changes match."
+      [StaticText] "" value: "No changes yet."
     [Row/OutlineRow] ""
       [Button] "Show changes older than 90 days" help: "Older changes can be looked at but not reverted"
   [Toolbar] ""

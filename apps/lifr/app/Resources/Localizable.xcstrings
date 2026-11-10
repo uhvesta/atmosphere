@@ -2487,6 +2487,9 @@
     "The key starts each task's code, such as HEALTH-7K2Q. Use 2 to 10 letters." : {
 
     },
+    "The model finished without writing an answer, which happens when it thinks for too long. Retry, or set Thinking lower or off in the model menu, or pick another model." : {
+
+    },
     "The model of this chat can't read photos, so %@ wasn't attached. Pick a model that reads them, or attach a text file." : {
 
     },
@@ -2794,6 +2797,9 @@
 
     },
     "Writing skills" : {
+
+    },
+    "Writing…" : {
 
     },
     "Written %@" : {

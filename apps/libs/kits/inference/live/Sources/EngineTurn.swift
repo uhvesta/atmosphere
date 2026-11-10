@@ -86,7 +86,8 @@ enum EngineTurn {
         let thought = turn.thinking
         let thinks = thought == nil ? nil : turn.thinkingTokens
         guard turn.tools.isEmpty else {
-            return try await withTools(turn, answer: answer, chat: chat, chats: chats, journal: journal)
+            return try await withTools(
+                turn, answer: answer, chat: chat, chats: chats, journal: journal, partial: partial)
         }
         guard let answer else {
             let text = try await chat.send(
@@ -97,12 +98,17 @@ enum EngineTurn {
         }
         let text = try await chat.send(
             turn.prompt, attachments: turn.attachments, format: JSONSchema.text(answer), thinkingTokens: thinks,
-            thought: thought, speed: turn.speed, partial: { _ in })
+            thought: thought, speed: turn.speed
+        ) { written in
+            // What's written so far, so the reply shows as it's written.
+            if let value = PartialJSON.value(written) { partial(value) }
+        }
         return try parse(text)
     }
 
     private static func withTools(
-        _ turn: ModelTurn, answer: JSONSchema.Node?, chat first: any EngineChat, chats: Chats, journal: Journal
+        _ turn: ModelTurn, answer: JSONSchema.Node?, chat first: any EngineChat, chats: Chats, journal: Journal,
+        partial: @escaping @Sendable (JSONValue) -> Void
     ) async throws(ModelRuntimeError) -> JSONValue {
         var chat = first
         let calling = JSONSchema.text(step(tools: turn.tools, answer: answer))
@@ -134,8 +140,14 @@ enum EngineTurn {
             let thinks = turn.thinking != nil && round == min(done.count, toolRounds)
             let text = try await chat.send(
                 message, attachments: attachments, format: format, thinkingTokens: thinks ? turn.thinkingTokens : nil,
-                thought: thought, speed: measured,
-                partial: { _ in })
+                thought: thought, speed: measured
+            ) { written in
+                // The answer as it's written, and nothing yet while the
+                // model calls a tool, so the turn is seen to go on.
+                guard case .object(let fields)? = PartialJSON.value(written) else { return }
+                let sofar = fields["answer"]
+                partial(answer == nil ? .string(sofar?.text ?? "") : sofar ?? .object([:]))
+            }
             let written = try parse(text)
             attachments = []
             switch try Step(written) {

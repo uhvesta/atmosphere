@@ -6,9 +6,8 @@
   [Image] "Sparkle" id: sparkles
   [StaticText] "" value: "Ask anything"
   [StaticText] "" value: "Replies come from the model on this device. Pick another from the model button by the field."
-  [Group] "Photo"
-    [Image] ""
-    [Button] "Remove"
+  [Button] "Remove Photo"
+  [Button] "Photo" help: "Opens it"
   [TextField] ""
   [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button] "Model" value: "Gemma 4 E4B, On" help: "Model, Thinking and Context Window"
@@ -18,7 +17,7 @@
     [Button] "New Chat"
     [Button] "Settings"
     [Button] "Hide Sidebar"
-    [MenuButton] "Context Window" help: "Nothing used yet"
+    [Button] "Context Window" value: "Nothing used yet"
     [TextField/SearchField] ""
       [Button] "Search"
   [Button/CloseButton] ""

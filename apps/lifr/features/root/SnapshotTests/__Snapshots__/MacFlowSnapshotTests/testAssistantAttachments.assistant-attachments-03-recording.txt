@@ -26,18 +26,19 @@
   [Button] "New conversation"
   [Outline] ""
   [Heading] "New conversation"
-  [MenuButton] "Context Window" help: "Nothing used yet"
+  [Button] "Context Window" value: "Nothing used yet" help: "Nothing used yet"
   [StaticText] "" value: "Ask about your tasks, change them, or plan what to add."
   [Button] "Plan my week"
   [Button] "What's overdue?"
   [Button] "What did I finish this week?"
   [StaticText] "" value: "Recording…"
   [Button] "Cancel"
-  [Button] "Photo"
+  [StaticText] "" value: "Photo"
+  [Button] "Remove Photo"
   [TextField] ""
   [MenuButton] "Add" help: "Add photos or files" id: plus
   [Button] "Model" value: "Gemma 4 E4B, On" help: "Model, Thinking and Context Window"
-  [Button] "Stop Recording" help: "Record a clip for the model to hear" id: stop.fill
+  [Button] "Stop Recording" help: "Stop and attach the clip" id: stop.fill
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""
     [Button] "Hide Sidebar"

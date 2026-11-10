@@ -27,7 +27,8 @@
     [Row/OutlineRow] ""
       [Button] "I called the plumber, Nov 3 at 10:00 AM, I'd mark it done."
   [Heading] "I called the plumber"
-  [MenuButton] "Context Window" help: "5% used, 1,574 of 32,768 tokens"
+  [Button] "Context Window" value: "5% used, 1,574 of 32,768 tokens" help: "5% used, 1,574 of 32,768 tokens"
+  [Heading] "Tuesday, November 3 at 10:00 AM"
   [Unknown] "Skill: change"
   [StaticText] "" value: "I called the plumber"
   [StaticText] "" value: "I'd mark it done."
@@ -48,6 +49,7 @@
   [StaticText] "" value: "Applied"
   [Button] "Undo"
   [Button] "Retry" help: "Write this reply again"
+  [Button] "Copy" help: "Copy this reply"
   [Button] "Speak" help: "Read this reply aloud"
   [TextField] ""
   [Button] "Add" help: "Add photos or files" id: plus

@@ -4,14 +4,39 @@ extension View {
     /// Lays out a sheet the same way on iPhone and Mac. A Mac sheet doesn't
     /// take its window's form style, so its form falls back to columns with
     /// the labels against the edge, and it's only as big as its content
-    /// asks, so it gets a size of its own.
-    public func sheetLayout(width: CGFloat = 480, height: CGFloat = 420) -> some View {
+    /// asks, which for a form is nothing, so on a Mac it grows or shrinks
+    /// to fit its form, up to `height`, and scrolls past that.
+    public func sheetLayout(width: CGFloat = 480, height: CGFloat = 640) -> some View {
         formStyle(.grouped)
             #if os(macOS)
-                .frame(minWidth: width, idealWidth: width, minHeight: height, idealHeight: height)
+                .modifier(FitsForm(width: width, maxHeight: height))
             #endif
     }
 }
+
+#if os(macOS)
+    /// Sizes a sheet to the form in it: the height it has plus however much
+    /// the form overflows or falls short, up to `maxHeight`. Each change in
+    /// the form's size sizes it again, so it settles once the form has laid
+    /// all its rows out. A sheet with nothing that scrolls keeps
+    /// `maxHeight`.
+    private struct FitsForm: ViewModifier {
+        let width: CGFloat
+        let maxHeight: CGFloat
+        @State private var height: CGFloat?
+
+        func body(content: Content) -> some View {
+            content
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.contentSize.height + geometry.contentInsets.top - geometry.containerSize.height
+                } action: { _, overflow in
+                    guard abs(overflow) >= 1 else { return }
+                    height = min(max((height ?? maxHeight) + overflow, 160), maxHeight)
+                }
+                .frame(width: width, height: height ?? maxHeight)
+        }
+    }
+#endif
 
 /// Done, closing the sheet it's in.
 public struct DismissButton: View {

@@ -107,6 +107,37 @@
             }
         }
 
+        /// Scrolls the list that holds the first element labelled `label` so
+        /// the element is at the top of it, or as near as the list goes, as a
+        /// person would to bring a row into view.
+        public func scroll(to label: String, file: StaticString = #filePath, line: UInt = #line) {
+            window.layoutIfNeeded()
+            guard
+                let element = AccessibilityTree.readingOrder(AccessibilityTree.elements(in: window))
+                    .first(where: { $0.accessibilityLabel == label })
+            else {
+                XCTFail(
+                    "There's no \"\(label)\" on the screen. Check the step before shows it.", file: file, line: line)
+                return
+            }
+            let frame = element.accessibilityFrame
+            let lists = Self.scrollViews(in: window).filter {
+                !$0.isHidden && $0.alpha > 0 && $0.contentSize.height > $0.bounds.height
+                    && $0.convert($0.bounds, to: nil).insetBy(dx: 0, dy: -$0.contentSize.height).contains(
+                        CGPoint(x: frame.midX, y: frame.midY))
+            }
+            guard let list = lists.max(by: { $0.contentSize.height < $1.contentSize.height }) else {
+                XCTFail("Nothing on the screen scrolls \"\(label)\".", file: file, line: line)
+                return
+            }
+            let insets = list.adjustedContentInset
+            let top = list.convert(list.bounds, to: nil).minY + insets.top
+            let end = max(-insets.top, list.contentSize.height + insets.bottom - list.bounds.height)
+            let offset = min(max(list.contentOffset.y + frame.minY - top, -insets.top), end)
+            list.setContentOffset(CGPoint(x: list.contentOffset.x, y: offset), animated: false)
+            list.layoutIfNeeded()
+        }
+
         private static func scrollViews(in view: UIView) -> [UIScrollView] {
             let own = (view as? UIScrollView).map { [$0] } ?? []
             return own + view.subviews.flatMap(scrollViews)

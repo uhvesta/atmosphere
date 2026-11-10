@@ -111,13 +111,7 @@ package struct ChatView: View {
     /// How full the model's window was at the last reply, which opens to
     /// say how much. /compact makes room.
     private var contextMenu: some View {
-        Menu {
-            Text(ContextRing.description(of: store.core.context))
-        } label: {
-            ContextRing(store.core.context)
-        }
-        .menuIndicator(.hidden)
-        .help(ContextRing.description(of: store.core.context))
+        ContextButton(store.core.context)
     }
 
     #if os(macOS)
