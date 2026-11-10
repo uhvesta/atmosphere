@@ -14,6 +14,8 @@ extension Plan {
     ///   dropped;
     /// - the same task twice in one place becomes one, keeping what either
     ///   says, and a Sub task with its task's title is left out;
+    /// - a task placed in a Project its Avenue doesn't have goes in that
+    ///   Project, which the plan adds;
     /// - in a workspace with no Avenues yet, an Avenue the plan puts things
     ///   in without adding is added, as there's none it could mean.
     /// Anything it can't be sure of is left for `Workspace.problem(with:)`
@@ -86,6 +88,7 @@ extension Plan {
             }
             return task
         }
+        plan.intoNewProjects(in: workspace)
         plan.tasks = Self.merged(plan.tasks).map(Self.dated)
         plan.projects = plan.projects.map { project in
             var project = project
@@ -93,6 +96,35 @@ extension Plan {
             return project
         }
         return plan
+    }
+
+    /// Moves each task placed in a Project its Avenue doesn't have into
+    /// that Project, which the plan adds. A model names the Project it
+    /// means to make in the task's place and leaves it out of the plan. A
+    /// task placed in a Project the plan adds stays where it is.
+    private mutating func intoNewProjects(in workspace: Workspace) {
+        let planned = projects.count
+        tasks.removeAll { task in
+            guard let place = task.place else { return false }
+            let parts = place.split(separator: "/", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count == 2, !parts[1].isEmpty,
+                let avenue = workspace.avenues.values.first(where: { $0.key.rawValue == parts[0] }),
+                !workspace.projects.values.contains(where: {
+                    $0.avenueID == avenue.id && $0.name.caseInsensitiveCompare(parts[1]) == .orderedSame
+                })
+            else { return false }
+            let index = projects.firstIndex {
+                $0.avenue == parts[0] && $0.name.caseInsensitiveCompare(parts[1]) == .orderedSame
+            }
+            if let index, index < planned { return false }
+            let unplaced = Self.unplaced(task)
+            if let index {
+                projects[index].tasks.append(unplaced)
+            } else {
+                projects.append(ProjectDraft(name: parts[1], avenue: parts[0], tasks: [unplaced]))
+            }
+            return true
+        }
     }
 
     /// `tasks` with each whose parent, or Project, is the title of another
