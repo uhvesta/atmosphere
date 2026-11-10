@@ -13,6 +13,9 @@ private func lineBreakTests() -> [TestCase] {
         TestCase("given <br> in a line, as in a table's cell, then the words break onto a new line") {
             try expectEqual(String(Markdown.inline("Dig<br>Water<BR/>Wait<br />Pick").characters), "Dig\nWater\nWait\nPick")
         },
+        TestCase("given an entity such as &amp;, then the character it stands for") {
+            try expectEqual(String(Markdown.inline("Salt &amp; pepper, 5&nbsp;g, &lt;3").characters), "Salt & pepper, 5\u{00A0}g, <3")
+        },
         TestCase("given <br> in code, then it stays as written") {
             try expectEqual(String(Markdown.inline("Use `a<br>b` here").characters), "Use a<br>b here")
         },

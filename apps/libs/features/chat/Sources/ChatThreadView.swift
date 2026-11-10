@@ -5,6 +5,7 @@ import ComposableArchitecture
 import ModelsClient
 import PhotosUI
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// A chat, from its first message to the field: each message with what the
 /// model thought, the branches to switch between, and under the last reply
@@ -27,6 +28,8 @@ where Parts.Message == Replier.Message {
     /// Whether the end of the chat is in view; when it isn't, a button
     /// goes back to it.
     @State private var atEnd = true
+    /// Whether files are being dragged over the chat.
+    @State private var dropping = false
 
     public init(store: StoreOf<ChatCore<Replier>>, prompt: Text? = nil, parts: Parts) {
         self.store = store
@@ -81,6 +84,21 @@ where Parts.Message == Replier.Message {
                 Task { store.send(.photoPicked(try? await item.loadTransferable(type: Data.self))) }
             }
             .modifier(AddContext(store: store))
+            .dropDestination(for: DroppedFile.self) { files, _ in
+                guard !files.isEmpty else { return false }
+                store.send(.filesPicked(.success(files.map(\.url))))
+                return true
+            } isTargeted: { dropping = $0 }
+            .overlay {
+                if dropping {
+                    RoundedRectangle(cornerRadius: 16)
+                        .strokeBorder(.tint, lineWidth: 3)
+                        .background(.tint.opacity(0.08), in: .rect(cornerRadius: 16))
+                        .padding(6)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
             .background { findShortcut }
             .task { await store.send(.task).finish() }
     }
@@ -586,4 +604,20 @@ public struct ChatContextButton: View {
 extension ThreadThinking {
     /// As ChatUI shows it.
     var model: ModelThinking { ModelThinking(text: text, duration: duration) }
+}
+
+/// A photo or document dropped on a chat, copied where the app can read
+/// it, to attach as a picked one is.
+private struct DroppedFile: Transferable {
+    let url: URL
+
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(importedContentType: .item) { received in
+            let folder = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let copy = folder.appending(path: received.file.lastPathComponent)
+            try FileManager.default.copyItem(at: received.file, to: copy)
+            return DroppedFile(url: copy)
+        }
+    }
 }
