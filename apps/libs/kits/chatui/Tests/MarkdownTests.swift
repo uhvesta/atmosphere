@@ -5,7 +5,19 @@ import TestingKit
 
 func markdownTests() -> [TestCase] {
     blockTests() + listTests() + tableTests() + inlineTests() + writingTests() + streamTests()
-        + plainTextTests() + htmlTests() + bareLinkTests() + lineBreakTests()
+        + plainTextTests() + htmlTests() + bareLinkTests() + lineBreakTests() + longMessageTests()
+}
+
+private func longMessageTests() -> [TestCase] {
+    [
+        TestCase("given a question of a few lines, then it shows whole") {
+            try expect(!PersonText.isLong("How do I plant seedlings?\nThey're tomatoes."), "a short message was cut")
+        },
+        TestCase("given pasted notes of many lines or characters, then only their first lines show") {
+            try expect(PersonText.isLong(Array(repeating: "Note", count: 20).joined(separator: "\n")), "20 lines")
+            try expect(PersonText.isLong(String(repeating: "Soil and seeds. ", count: 60)), "960 characters")
+        },
+    ]
 }
 
 private func lineBreakTests() -> [TestCase] {

@@ -155,6 +155,17 @@ final class ChatSnapshotTests: XCTestCase {
         - [ ] Buy seeds
         """
 
+    /// Pasted notes, longer than a message shows until it's opened.
+    private var longMessage: ChatFeature.State {
+        var conversation = Conversation(id: UUID(0), createdAt: now)
+        let notes = (1...16).map { "Day \($0): watered the tomatoes, checked the soil." }.joined(separator: "\n")
+        conversation.messages = [
+            ChatMessage(id: UUID(1), role: .person, text: "Here are my notes:\n" + notes, at: now),
+            ChatMessage(id: UUID(2), role: .assistant, text: "Water every **two** days.", at: now),
+        ]
+        return ChatFeature.State(conversation: conversation, workspace: .sample(now: now, timeZone: .gmt))
+    }
+
     /// A chat with nothing in it yet and / typed, listing the skills.
     private var slash: ChatFeature.State {
         var state = ChatFeature.State(
@@ -198,6 +209,7 @@ final class ChatSnapshotTests: XCTestCase {
         assertScreenImages(of: screen(slash), named: "slash", images: [.proMaxLight, .proMaxDark])
         assertScreenImages(of: screen(markdown), named: "markdown", images: [.proMaxLight, .proMaxDark])
         assertScreenImages(of: screen(tasks), named: "tasks", images: [.proMaxLight, .proMaxDark])
+        assertScreenImages(of: screen(longMessage), named: "long-message", images: [.proMaxLight])
     }
 
     /// The sheet picking the chat's model, on Qwen3.5 thinking long,

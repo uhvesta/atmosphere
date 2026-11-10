@@ -55,11 +55,7 @@ public struct MessageView<Attachments: View>: View {
                     // The skill starts the text, as it did in the field.
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         if let skill { SkillToken(skill) }
-                        if !text.isEmpty {
-                            // Marks such as **bold** read as they do in a reply.
-                            Text(InlineText.styled(text))
-                                .selectableOnMac()
-                        }
+                        if !text.isEmpty { PersonText(text: text) }
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
@@ -78,6 +74,38 @@ public struct MessageView<Attachments: View>: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: role == .person ? .trailing : .leading)
+    }
+}
+
+/// The person's words, with marks such as **bold** read as they are in a
+/// reply. A long message, such as pasted notes, shows its first lines,
+/// with Show More for the rest.
+struct PersonText: View {
+    let text: String
+    @State private var expanded = false
+
+    /// The lines a long message shows until it's opened.
+    static let shownLines = 10
+
+    /// Whether `text` is long enough to show only its first lines.
+    static func isLong(_ text: String) -> Bool {
+        text.count > 700 || text.split(separator: "\n", omittingEmptySubsequences: false).count > shownLines + 2
+    }
+
+    var body: some View {
+        let long = Self.isLong(text)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(InlineText.styled(text))
+                .lineLimit(long && !expanded ? Self.shownLines : nil)
+                .selectableOnMac()
+            if long {
+                Button(expanded ? "Show Less" : "Show More") {
+                    withAnimation(.snappy(duration: 0.25)) { expanded.toggle() }
+                }
+                .font(.callout.weight(.semibold))
+                .buttonStyle(.borderless)
+            }
+        }
     }
 }
 
