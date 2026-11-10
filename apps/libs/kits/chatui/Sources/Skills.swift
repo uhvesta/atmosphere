@@ -105,6 +105,8 @@ public struct SlashSuggestions: View {
             }
         }
         .scrollBounceBehavior(.basedOnSize)
+        // Shows there's more below when not all fit.
+        .scrollIndicatorsFlash(onAppear: true)
         .frame(maxHeight: 240)
         .fixedSize(horizontal: false, vertical: true)
         // The shadow goes on the card alone: on the scroll view, it would be

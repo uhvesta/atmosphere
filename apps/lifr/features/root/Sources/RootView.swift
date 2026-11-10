@@ -50,10 +50,22 @@ package struct RootView: View {
         .task { await store.send(.task).finish() }
     }
 
-    /// Whether the Undo toast and banners show above the tab bar: on
-    /// iPhone, except while a chat is open.
+    /// Whether the Undo toast and banners show at the bottom: on iPhone
+    /// above the tab bar, except while a chat is open; on the Mac, where
+    /// at the top they'd cover the first rows, except in the assistant,
+    /// whose composer is at the bottom.
     private var bannersAtBottom: Bool {
-        store.platform == .phone && !(store.tab == .conversations && store.conversations.openID != nil)
+        switch store.platform {
+        case .phone: !(store.tab == .conversations && store.conversations.openID != nil)
+        case .mac: store.selection != .conversations
+        }
+    }
+
+    /// How far the banners sit from the edge they show at: clear of the
+    /// tab bar or the toolbar.
+    private var bannerInset: CGFloat {
+        guard bannersAtBottom else { return 60 }
+        return store.platform == .phone ? 64 : 20
     }
 
     private var content: some View {
@@ -66,8 +78,8 @@ package struct RootView: View {
         .overlay(alignment: bannersAtBottom ? .bottom : .top) {
             // On iPhone above the tab bar, clear of every screen's own
             // controls, but under the title while a chat is open, whose
-            // field is just above the tab bar. On the Mac under the toolbar,
-            // small enough to leave the sidebar and the chat's composer free.
+            // field is just above the tab bar. On the Mac small enough to
+            // leave the sidebar free.
             VStack(spacing: 8) {
                 if store.isRecordingSteps {
                     RecordingBar { store.send(.stopRecordingTapped) }
@@ -81,7 +93,7 @@ package struct RootView: View {
                 }
             }
             .frame(maxWidth: store.platform == .phone ? .infinity : 440)
-            .padding(bannersAtBottom ? .bottom : .top, bannersAtBottom ? 64 : 60)
+            .padding(bannersAtBottom ? .bottom : .top, bannerInset)
             .animation(.default, value: store.toast?.id)
         }
         .modifier(RegistersUndo(store: store))

@@ -431,7 +431,8 @@ package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible 
             availability.description
         case .tooLong:
             "Your message and the draft are more than the on-device model can read at once, even with older "
-                + "messages left out. Shorten the message, ask for less at once, or remove rows from the draft."
+                + "messages left out. Shorten the message or ask for less at once; if there's a draft, remove "
+                + "some of its rows."
         case .timedOut:
             "The assistant stopped answering, so Lifr stopped waiting. Send the message again; if it keeps "
                 + "happening, ask for less at once."
@@ -449,11 +450,11 @@ package enum AssistantError: Error, Hashable, Sendable, CustomStringConvertible 
         case .interrupted(let reason):
             "\(reason.description) Send the message again."
         case .cantRead(.image):
-            "The model picked for the assistant can't read photos. Pick one that can, such as Gemma 4 E4B, in "
-                + "Settings › Models, or remove the photo and send the message again."
+            "This chat's model can't read photos. Pick one that can, such as Gemma 4 E4B, with the Model "
+                + "button by the message box, or send the message again without the photo."
         case .cantRead(.audio):
-            "The model picked for the assistant can't listen to recordings. Pick one that can, such as Gemma 4 "
-                + "E4B, in Settings › Models, or remove the recording and send the message again."
+            "This chat's model can't listen to recordings. Pick one that can, such as Gemma 4 E4B, with the "
+                + "Model button by the message box, or send the message again without the recording."
         case .failed(let detail):
             "The assistant stopped: \(detail). Send the message again."
         }
