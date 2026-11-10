@@ -198,7 +198,9 @@ final class SettingsFeatureTests: XCTestCase {
     func testALoginItemMacOSRefusesPutsTheSwitchBackAndSaysWhy() async {
         let store = await settings(InMemorySession())
         await store.receive(\.launchAtLoginLoaded)
-        store.dependencies.session.setLaunchesAtLogin = { _ in throw SessionError.loginItemFailed(reason: "not allowed") }
+        store.dependencies.session.setLaunchesAtLogin = { _ in
+            throw SessionError.loginItemFailed(reason: "not allowed")
+        }
 
         await store.send(.launchAtLoginToggled(true))
         await store.receive(\.launchAtLoginLoaded)

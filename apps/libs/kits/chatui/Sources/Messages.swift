@@ -307,7 +307,7 @@ public struct AttachmentChip: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(Color.secondary.opacity(0.15), in: .capsule)
-        .accessibilityElement(children: open == nil ? .combine : .contain)
+        .accessibilityElement(children: open == nil && remove == nil ? .combine : .contain)
     }
 
     private var label: some View {

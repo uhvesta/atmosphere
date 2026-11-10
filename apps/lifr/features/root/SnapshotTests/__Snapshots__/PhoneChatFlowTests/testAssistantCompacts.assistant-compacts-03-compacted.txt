@@ -8,7 +8,6 @@
 [text] "Summarized up to here"
 [button] "Forget Summary" hint: "Send the messages above again, as far as they fit"
 [text] "The person planned the week: cleaning the living room on Saturday and buying new clothes. Both are drafted."
-[button] "Show More"
 [text] "And the weekend?"
 [text] "Keep Saturday for the garden and Sunday free."
 [button] "Copy" hint: "Copy this reply"

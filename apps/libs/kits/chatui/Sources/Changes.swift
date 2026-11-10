@@ -16,6 +16,25 @@ public struct ChangedField: Hashable, Codable, Sendable {
         self.after = after
     }
 
+    /// Each change in words, for the activity log: "Priority: None → High",
+    /// with the record's name when the entry changed more than one. Fields
+    /// that stayed empty are left out, and a record that's new lists only
+    /// what it was made with: "Title: Buy oat milk".
+    public static func lines(_ changes: [ChangedField]) -> [String] {
+        func shown(_ value: String?) -> String? {
+            guard let value, !value.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+            return value
+        }
+        let kept = changes.filter { shown($0.before) != nil || shown($0.after) != nil }
+        let showsRecord = Set(kept.map(\.record)).count > 1
+        let isNew = kept.count > 1 && kept.allSatisfy { shown($0.before) == nil }
+        return kept.map { change in
+            let name = showsRecord ? "\(change.record) · \(change.field)" : change.field
+            if isNew, let after = shown(change.after) { return "\(name): \(after)" }
+            return "\(name): \(shown(change.before) ?? "—") → \(shown(change.after) ?? "—")"
+        }
+    }
+
     /// The changes, with those to the same record in a row together, in
     /// the order they come.
     public static func byRecord(_ changes: [ChangedField]) -> [(record: String, fields: [ChangedField])] {
@@ -229,17 +248,12 @@ public struct ActivityEntryRow: View {
                     .foregroundStyle(.secondary)
             }
             Text(author).font(.subheadline).foregroundStyle(.secondary)
-            ForEach(Array(changes.enumerated()), id: \.offset) { _, change in
-                Text(Self.describe(change, showsRecord: changes.count > 1))
+            ForEach(Array(ChangedField.lines(changes).enumerated()), id: \.offset) { _, line in
+                Text(line)
                     .font(.caption)
             }
         }
         .accessibilityElement(children: .combine)
     }
 
-    /// "Priority: None → High", with the record when there's more than one.
-    private static func describe(_ change: ChangedField, showsRecord: Bool) -> String {
-        let name = showsRecord ? "\(change.record) · \(change.field)" : change.field
-        return "\(name): \(change.before ?? "—") → \(change.after ?? "—")"
-    }
 }

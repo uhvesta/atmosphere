@@ -21,7 +21,7 @@ package struct ConversationsView: View {
             .alert($store.scope(state: \.alert, action: \.alert))
             .sheet(item: $store.scope(state: \.rename, action: \.rename)) { store in
                 RenameView(store: store)
-                    .sheetLayout(height: 200)
+                    .sheetLayout(height: 340)
             }
     }
 

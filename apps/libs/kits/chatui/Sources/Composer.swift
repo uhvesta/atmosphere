@@ -105,6 +105,10 @@ public struct SummaryMarker: View {
     let forget: () -> Void
 
     @State private var isExpanded = false
+    /// The text's height in full and in its first lines, to offer Show
+    /// More only when there's more to show.
+    @State private var fullHeight: CGFloat = 0
+    @State private var shownHeight: CGFloat = 0
 
     public init(text: String, canForget: Bool, forget: @escaping () -> Void) {
         self.text = text
@@ -127,12 +131,21 @@ public struct SummaryMarker: View {
                 .lineLimit(isExpanded ? nil : 2)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
+                .onGeometryChange(for: CGFloat.self, of: \.size.height) { shownHeight = $0 }
+                .background {
+                    Text(text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .hidden()
+                        .onGeometryChange(for: CGFloat.self, of: \.size.height) { fullHeight = $0 }
+                }
             // The first lines show; the rest opens.
-            Button(isExpanded ? "Show Less" : "Show More") {
-                withAnimation(.snappy(duration: 0.25)) { isExpanded.toggle() }
+            if isExpanded || fullHeight > shownHeight + 1 {
+                Button(isExpanded ? "Show Less" : "Show More") {
+                    withAnimation(.snappy(duration: 0.25)) { isExpanded.toggle() }
+                }
+                .buttonStyle(.borderless)
+                .fontWeight(.semibold)
             }
-            .buttonStyle(.borderless)
-            .fontWeight(.semibold)
         }
         .font(.footnote)
         .padding(10)

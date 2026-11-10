@@ -88,7 +88,9 @@ where Parts.Message == Replier.Message {
                 guard !files.isEmpty else { return false }
                 store.send(.filesPicked(.success(files.map(\.url))))
                 return true
-            } isTargeted: { dropping = $0 }
+            } isTargeted: {
+                dropping = $0
+            }
             .overlay {
                 if dropping {
                     RoundedRectangle(cornerRadius: 16)
@@ -216,9 +218,9 @@ where Parts.Message == Replier.Message {
                     ) { opened = .photo($0) }
                 }
                 ForEach(message.files, id: \.self) { file in
-                    AttachmentChip(verbatim: file.name, systemImage: "doc.text") {
-                        opened = .file(name: file.name, text: file.text)
-                    }
+                    AttachmentChip(
+                        verbatim: file.name, systemImage: "doc.text",
+                        open: { opened = .file(name: file.name, text: file.text) })
                 }
                 parts.attached(message)
             }

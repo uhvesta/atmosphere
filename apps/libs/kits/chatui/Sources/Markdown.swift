@@ -108,12 +108,12 @@ enum Markdown {
                 let found = Range(match.range, in: plain)
             else { continue }
             let written = plain[found].lowercased()
-            guard written.hasPrefix("http://") || written.hasPrefix("https://") || written.hasPrefix("www.")
-                || url.scheme?.lowercased() == "mailto"
-            else { continue }
+            let isWeb = written.hasPrefix("http://") || written.hasPrefix("https://") || written.hasPrefix("www.")
+            guard isWeb || url.scheme?.lowercased() == "mailto" else { continue }
             let start = string.characters.index(
                 string.startIndex, offsetBy: plain.distance(from: plain.startIndex, to: found.lowerBound))
-            let end = string.characters.index(start, offsetBy: plain.distance(from: found.lowerBound, to: found.upperBound))
+            let end = string.characters.index(
+                start, offsetBy: plain.distance(from: found.lowerBound, to: found.upperBound))
             let range = start..<end
             let taken = string[range].runs.contains { run in
                 run.link != nil || run.inlinePresentationIntent?.contains(.code) == true

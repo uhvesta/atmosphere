@@ -192,6 +192,7 @@ final class TaskListFeatureTests: XCTestCase {
         await store.send(.bannerDismissed)
 
         XCTAssertNil(store.state.banner)
-        XCTAssertNotEqual(store.state.workspace?.tasks[review.id]?.status, .done, "Dismissing the banner undid the change")
+        XCTAssertNotEqual(
+            store.state.workspace?.tasks[review.id]?.status, .done, "Dismissing the banner undid the change")
     }
 }

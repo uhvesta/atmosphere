@@ -28,7 +28,8 @@ package struct ActivityView: View {
             }
             Section {
                 if rows.isEmpty {
-                    Text(store.author == nil && store.kind == nil && store.period == .all ? "No changes yet." : "No changes match.")
+                    let filtered = store.author != nil || store.kind != nil || store.period != .all
+                    Text(filtered ? "No changes match." : "No changes yet.")
                         .foregroundStyle(.secondary)
                 }
                 ForEach(rows) { row in

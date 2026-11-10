@@ -267,7 +267,8 @@ private struct Tasks: View {
             .font(.caption)
             .padding(.leading, 28)
             ForEach(task.wrappedValue.subtasks.indices, id: \.self) { subtask in
-                Row(symbol: "circle", name: task.wrappedValue.subtasks.indices.contains(subtask) ? task.wrappedValue.subtasks[subtask].title : "") {
+                let subtasks = task.wrappedValue.subtasks
+                Row(symbol: "circle", name: subtasks.indices.contains(subtask) ? subtasks[subtask].title : "") {
                     TextField("Sub task", text: task.subtasks.element(subtask, or: .init(title: "")).title)
                         .accessibilityLabel("Sub task")
                 } remove: {

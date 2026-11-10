@@ -23,10 +23,13 @@ private func longMessageTests() -> [TestCase] {
 private func lineBreakTests() -> [TestCase] {
     [
         TestCase("given <br> in a line, as in a table's cell, then the words break onto a new line") {
-            try expectEqual(String(Markdown.inline("Dig<br>Water<BR/>Wait<br />Pick").characters), "Dig\nWater\nWait\nPick")
+            try expectEqual(
+                String(Markdown.inline("Dig<br>Water<BR/>Wait<br />Pick").characters), "Dig\nWater\nWait\nPick")
         },
         TestCase("given an entity such as &amp;, then the character it stands for") {
-            try expectEqual(String(Markdown.inline("Salt &amp; pepper, 5&nbsp;g, &lt;3").characters), "Salt & pepper, 5\u{00A0}g, <3")
+            try expectEqual(
+                String(Markdown.inline("Salt &amp; pepper, 5&nbsp;g, &lt;3").characters),
+                "Salt & pepper, 5\u{00A0}g, <3")
         },
         TestCase("given <br> in code, then it stays as written") {
             try expectEqual(String(Markdown.inline("Use `a<br>b` here").characters), "Use a<br>b here")
@@ -53,7 +56,8 @@ private func bareLinkTests() -> [TestCase] {
             try expectEqual(links("Open main.rs and `https://example.com`"), [])
         },
         TestCase("given a Markdown link, then it keeps its own words") {
-            try expectEqual(links("[the guide](https://example.com) and https://a.com"), ["the guide", "https://a.com"])
+            try expectEqual(
+                links("[the guide](https://example.com) and https://a.com"), ["the guide", "https://a.com"])
         },
     ]
 }
@@ -63,7 +67,8 @@ private func htmlTests() -> [TestCase] {
         TestCase("given a heading and a paragraph with marks, then HTML with the same formatting") {
             try expectEqual(
                 Markdown.html("## Plan\n\nBuy **soil** and *seeds*, see [the guide](https://example.com)."),
-                "<h2>Plan</h2>\n<p>Buy <strong>soil</strong> and <em>seeds</em>, see <a href=\"https://example.com\">the guide</a>.</p>")
+                "<h2>Plan</h2>\n<p>Buy <strong>soil</strong> and <em>seeds</em>, "
+                    + "see <a href=\"https://example.com\">the guide</a>.</p>")
         },
         TestCase("given lists and tasks, then ul and ol with their items") {
             try expectEqual(
@@ -100,7 +105,8 @@ private func plainTextTests() -> [TestCase] {
             try expectEqual(Markdown.plainText("Buy soil on Saturday"), "Buy soil on Saturday")
         },
         TestCase("given a line the person typed with inline marks, then its words without them") {
-            try expectEqual(Markdown.plainLine("How do I plant the **seedlings**, *today*?"),
+            try expectEqual(
+                Markdown.plainLine("How do I plant the **seedlings**, *today*?"),
                 "How do I plant the seedlings, today?")
         },
         TestCase("given a typed line that looks like a list or heading, then it stays as typed") {
