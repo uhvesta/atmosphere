@@ -68,6 +68,13 @@ package struct RootView: View {
         return store.platform == .phone ? 64 : 20
     }
 
+    /// Where the banners show. In the Mac's assistant, over the chat at
+    /// the right, clear of the list of conversations.
+    private var bannerAlignment: Alignment {
+        if bannersAtBottom { return .bottom }
+        return store.platform == .mac ? .topTrailing : .top
+    }
+
     private var content: some View {
         Group {
             switch store.platform {
@@ -75,7 +82,7 @@ package struct RootView: View {
             case .mac: MacRootView(store: store)
             }
         }
-        .overlay(alignment: bannersAtBottom ? .bottom : .top) {
+        .overlay(alignment: bannerAlignment) {
             // On iPhone above the tab bar, clear of every screen's own
             // controls, but under the title while a chat is open, whose
             // field is just above the tab bar. On the Mac small enough to
@@ -94,6 +101,7 @@ package struct RootView: View {
             }
             .frame(maxWidth: store.platform == .phone ? .infinity : 440)
             .padding(bannersAtBottom ? .bottom : .top, bannerInset)
+            .padding(.trailing, bannerAlignment == .topTrailing ? 24 : 0)
             .animation(.default, value: store.toast?.id)
         }
         .modifier(RegistersUndo(store: store))

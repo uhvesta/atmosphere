@@ -217,13 +217,16 @@ package enum AssistantPrompt {
             - Leave out the Avenues, Projects and labels listed below, such as those the person added earlier \
             in this chat.
             - Leave "plan" out while you are still asking questions.
+            - A plan is a draft: nothing in it is added until the person taps Add. Say in "message" what you \
+            drafted, never that you added or created it.
 
             Today is \(today), a \(weekday(today)).
             """
         text += "\n\nAvenues and their Projects:\n"
         text +=
             lookup.places.isEmpty
-            ? "(none yet)\n"
+            ? "(none yet: put what the person asks for in a new Avenue in the plan's \"avenues\", with a KEY "
+                + "and a name that fit it)\n"
             : lookup.places.map { place in
                 "- \(place.key) (\(place.name))"
                     + (place.projects.isEmpty ? "" : ": " + place.projects.map { "\"\($0)\"" }.joined(separator: ", "))

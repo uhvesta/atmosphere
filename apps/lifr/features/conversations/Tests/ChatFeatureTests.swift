@@ -326,6 +326,23 @@ final class ChatFeatureTests: XCTestCase {
             store.state.workspace.journal.first { $0.id == entry }?.conversation, conversationID)
     }
 
+    func testUndoingAnAddedDraftPutsTheDraftBack() async throws {
+        let (workspace, _) = home()
+        let plan = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])
+        let store = chat(workspace) { _ in AssistantReply(text: "Here's a plan.", plan: plan, isComplete: true) }
+        await send("Plan repotting", in: store)
+        await store.send(.addTapped)
+        await store.skipReceivedActions()
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+
+        await store.send(.undoTapped(messageID: reply.id))
+        await store.skipReceivedActions()
+
+        XCTAssertEqual(store.state.conversation.draft, plan)
+        XCTAssertTrue(store.state.canAdd)
+        XCTAssertFalse(store.state.workspace.tasks.values.contains { $0.title == "Buy soil" && $0.deletedAt == nil })
+    }
+
     func testEditingTheDraftChecksItAndAddAddsWhatTheCardShows() async throws {
         let (workspace, _) = home()
         let plan = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])

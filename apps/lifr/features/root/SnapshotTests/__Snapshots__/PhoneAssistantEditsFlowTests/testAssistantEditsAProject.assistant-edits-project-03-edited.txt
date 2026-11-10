@@ -1,6 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "Rename the Half marathon to “Spring hal…, Actions Menu"
-[button] "Context Window" value: "5% used, 1,578 of 32,768 tokens" hint: "5% used, 1,578 of 32,768 tokens"
+[button] "Context Window" value: "5% used, 1,626 of 32,768 tokens" hint: "5% used, 1,626 of 32,768 tokens"
 [text] "On this device"
 [text] "Changed “Spring half marathon”"
 [button] "Undo"

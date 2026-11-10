@@ -53,6 +53,9 @@ package struct ChatFeature {
         @Presents package var model: ChatModelFeature.State?
         /// Whether the draft's editor is open.
         package var editsDraft = false
+        /// The drafts this chat added, by the journal entry that added
+        /// them: undone, the draft is back to add again.
+        package var addedDrafts: [UUID: Plan] = [:]
         /// The proposal being edited, before it's checked again.
         package var editingProposal: ProposalEdit?
         /// The reply whose proposal is being applied or checked again.
@@ -889,8 +892,16 @@ package struct ChatFeature {
                     for (message, entries) in state.conversation.changes where reverted.isSuperset(of: entries) {
                         state.conversation.changes[message] = nil
                     }
+                    if state.conversation.draft == nil,
+                        let entry = saved.change.reverts.first(where: { state.addedDrafts[$0] != nil })
+                    {
+                        state.conversation.draft = state.addedDrafts.removeValue(forKey: entry)
+                    }
                 } else {
                     // The plan was added.
+                    if let entry = saved.change.entry, let draft = state.conversation.draft {
+                        state.addedDrafts[entry] = draft
+                    }
                     state.conversation.draft = nil
                     state.editsDraft = false
                     state.problem = nil

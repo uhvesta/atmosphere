@@ -1,6 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "ugh I have to move flat, get the deposi…, Actions Menu"
-[button] "Context Window" value: "5% used, 1,534 of 32,768 tokens" hint: "5% used, 1,534 of 32,768 tokens"
+[button] "Context Window" value: "5% used, 1,582 of 32,768 tokens" hint: "5% used, 1,582 of 32,768 tokens"
 [text] "On this device"
 [text] "Added 4 tasks"
 [button] "Undo"
