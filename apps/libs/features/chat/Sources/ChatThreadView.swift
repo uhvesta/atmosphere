@@ -492,6 +492,7 @@ private struct CopyReplyButton: View {
         }
         .disabled(text.isEmpty)
         .help("Copy this reply")
+        .sensoryFeedback(.success, trigger: copied) { _, copied in copied }
         .task(id: copied) {
             guard copied else { return }
             try? await Task.sleep(for: .seconds(2))

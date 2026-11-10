@@ -200,6 +200,7 @@ private struct CodeBlock: View {
                 .font(.caption)
                 .buttonStyle(.borderless)
                 .accessibilityLabel(copied ? Text("Copied") : Text("Copy Code"))
+                .sensoryFeedback(.success, trigger: copied) { _, copied in copied }
             }
             .padding(.horizontal, 10)
             .padding(.top, 6)
