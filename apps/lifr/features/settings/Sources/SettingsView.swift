@@ -342,10 +342,16 @@ private struct LockSection: View {
         } header: {
             Text("Privacy")
         } footer: {
-            Text(
-                "Lifr asks when it opens, and when you come back after a minute away. The app switcher shows "
-                    + "nothing while it's locked. Widgets show counts only. Apps you connected keep their access; "
-                    + "revoke them in Connected apps on the Mac.")
+            #if os(macOS)
+                Text(
+                    "Lifr asks when it opens, and when you come back after a minute away. Widgets show counts "
+                        + "only. Apps you connected keep their access; revoke them in Connected apps.")
+            #else
+                Text(
+                    "Lifr asks when it opens, and when you come back after a minute away. The app switcher shows "
+                        + "nothing while it's locked. Widgets show counts only. Apps you connected keep their access; "
+                        + "revoke them in Connected apps on the Mac.")
+            #endif
         }
     }
 

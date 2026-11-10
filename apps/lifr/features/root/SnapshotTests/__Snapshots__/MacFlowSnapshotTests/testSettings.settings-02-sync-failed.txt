@@ -13,7 +13,7 @@
   [Heading] "Privacy"
   [StaticText] "" value: "Lock with Face ID"
   [CheckBox/Switch] "" value: "0"
-  [StaticText] "" value: "Lifr asks when it opens, and when you come back after a minute away. The app switcher shows nothing while it's locked. Widgets show counts only. Apps you connected keep their access; revoke them in Co"
+  [StaticText] "" value: "Lifr asks when it opens, and when you come back after a minute away. Widgets show counts only. Apps you connected keep their access; revoke them in Connected apps."
   [Button] "Activity"
   [StaticText] "" value: "Every change, who made it, and from where. Any of them can be reverted."
   [Heading] "Assistant"
