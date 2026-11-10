@@ -18,6 +18,8 @@ public protocol ThreadEntry: ChatEntry {
     /// The model that wrote a reply, by name.
     var model: String? { get }
     var speed: ThreadSpeed? { get }
+    /// Whether the person stopped the reply before the model finished it.
+    var stopped: Bool { get set }
 
     /// The person's message, sent with `files` and `photos`.
     init(person id: UUID, text: String, at: Date, files: [ThreadFile], photos: [ThreadPhoto])

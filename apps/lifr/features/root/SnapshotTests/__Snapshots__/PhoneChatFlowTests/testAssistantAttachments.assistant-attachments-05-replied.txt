@@ -4,7 +4,7 @@
 [text] "On this device"
 [header, text] "Tuesday, November 3 at 10:00 AM"
 [text] "Photo"
-[text] "Recording, 6 s"
+[button] "Recording, 6 s" hint: "Opens it"
 [text] "What plant is this?"
 [text] "A Boston fern. Water it when the top of the soil is dry."
 [button] "Copy" hint: "Copy this reply"

@@ -287,6 +287,25 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.core(.task))
 
         XCTAssertEqual(store.state.elsewhere, [recording.id])
+        await store.send(.recordingTapped(recording.id))
+        XCTAssertNil(store.state.playing)
+    }
+
+    func testTappingASentRecordingPlaysItsFile() async throws {
+        let (workspace, _) = home()
+        let attachments = AttachmentsClient.inMemory()
+        let recording = try await attachments.save(Data([1]), .audio, 3, conversationID)
+        var conversation = Conversation(id: conversationID, createdAt: now)
+        conversation.messages = [
+            ChatMessage(id: UUID(8), role: .person, text: "", at: now, attachments: [recording])
+        ]
+        let store = chat(workspace, attachments: attachments) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.binding(.set(\.conversation, conversation)))
+
+        await store.send(.recordingTapped(recording.id))
+
+        XCTAssertEqual(store.state.playing, attachments.file(recording, conversationID))
+        XCTAssertNotNil(store.state.playing)
     }
 
     func testAddingTheDraftSavesItsTasksAndClearsTheCard() async throws {

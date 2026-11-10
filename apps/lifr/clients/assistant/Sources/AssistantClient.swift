@@ -113,6 +113,8 @@ package struct ChatMessage: ChatEntry {
     package var model: String?
     /// How fast the model read the conversation and wrote a reply.
     package var speed: ThreadSpeed?
+    /// Whether the person stopped the reply before the model finished it.
+    package var stopped = false
 
     package init(
         id: UUID, role: Role, text: String, at: Date, skill: String? = nil, attachments: [ChatAttachment] = [],
@@ -131,11 +133,12 @@ package struct ChatMessage: ChatEntry {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, role, text, at, skill, attachments, thinking, proposal, model, speed
+        case id, role, text, at, skill, attachments, thinking, proposal, model, speed, stopped
     }
 
     /// Reads messages saved before they had attachments, thinking,
-    /// proposals, a model or a speed as having none.
+    /// proposals, a model or a speed as having none, and before stopping
+    /// was kept as not stopped.
     package init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -148,6 +151,7 @@ package struct ChatMessage: ChatEntry {
         proposal = try container.decodeIfPresent(Proposal.self, forKey: .proposal)
         model = try container.decodeIfPresent(String.self, forKey: .model)
         speed = try container.decodeIfPresent(ThreadSpeed.self, forKey: .speed)
+        stopped = try container.decodeIfPresent(Bool.self, forKey: .stopped) ?? false
     }
 
     package func encode(to encoder: any Encoder) throws {
@@ -162,6 +166,7 @@ package struct ChatMessage: ChatEntry {
         try container.encodeIfPresent(proposal, forKey: .proposal)
         try container.encodeIfPresent(model, forKey: .model)
         try container.encodeIfPresent(speed, forKey: .speed)
+        if stopped { try container.encode(stopped, forKey: .stopped) }
     }
 }
 

@@ -8,6 +8,7 @@ import LifrCore
 import LifrModelsClient
 import LifrSkills
 import LifrUI
+import QuickLook
 import SwiftUI
 
 package struct ChatView: View {
@@ -28,6 +29,7 @@ package struct ChatView: View {
             ChatThreadView(
                 store: store.scope(state: \.core, action: \.core), parts: LifrParts(store: store, meanings: meanings))
         }
+        .quickLookPreview($store.playing)
         .sheet(isPresented: $store.showsCheckpoints) {
             NavigationStack {
                 CheckpointList(
@@ -237,7 +239,8 @@ private struct LifrParts: ChatThreadParts {
 
     @ViewBuilder func attached(_ message: ChatMessage) -> some View {
         ForEach(message.attachments.filter { $0.kind == .audio }) { recording in
-            recording.chip(elsewhere: store.elsewhere.contains(recording.id))
+            let elsewhere = store.elsewhere.contains(recording.id)
+            recording.chip(elsewhere: elsewhere, open: elsewhere ? nil : { store.send(.recordingTapped(recording.id)) })
         }
     }
 
@@ -286,12 +289,15 @@ private struct LifrParts: ChatThreadParts {
 extension ChatAttachment {
     /// The attachment's chip: on the next message with a button to remove
     /// it, or on a sent one, saying when its file is on another device.
-    fileprivate func chip(elsewhere: Bool, remove: (() -> Void)? = nil) -> AttachmentChip {
+    fileprivate func chip(
+        elsewhere: Bool, open: (() -> Void)? = nil, remove: (() -> Void)? = nil
+    ) -> AttachmentChip {
         switch kind {
         case .image: AttachmentChip("Photo", systemImage: "photo", elsewhere: elsewhere, remove: remove)
         case .audio:
             AttachmentChip(
-                "Recording, \(seconds ?? 0) s", systemImage: "waveform", elsewhere: elsewhere, remove: remove)
+                "Recording, \(seconds ?? 0) s", systemImage: "waveform", elsewhere: elsewhere, open: open,
+                remove: remove)
         case .text:
             AttachmentChip(verbatim: name ?? "File", systemImage: "doc.text", remove: remove)
         }

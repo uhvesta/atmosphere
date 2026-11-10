@@ -26,8 +26,11 @@ struct LoggedRuntime: ModelRuntime {
             return tool
         }
         print("TOOLS \(turn.tools.map(\.name))\nINSTRUCTIONS\n\(turn.instructions)\nPROMPT\n\(turn.prompt)")
+        let clock = ContinuousClock()
+        let start = clock.now
         let answer = try await base.respond(to: turn, partial: partial)
-        print("ANSWER \(answer)")
+        let thinks = turn.thinking == nil ? "no" : "up to \(turn.thinkingTokens) tokens"
+        print("ANSWER after \(clock.now - start), thinking \(thinks)\n\(answer)")
         return answer
     }
 }

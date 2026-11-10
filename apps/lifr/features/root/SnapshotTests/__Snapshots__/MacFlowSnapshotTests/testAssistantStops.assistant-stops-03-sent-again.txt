@@ -29,6 +29,7 @@
   [Heading] "Tuesday, November 3 at 10:00 AM"
   [StaticText] "" value: "Plan my week"
   [StaticText] "" value: "Start with the urgent tasks, then"
+  [StaticText] "" value: "Stopped before it finished"
   [StaticText] "" value: "And the weekend?"
   [StaticText] "" value: "Keep Saturday for the garden."
   [Button] "Retry" help: "Write this reply again"

@@ -290,6 +290,23 @@ final class LiveAssistantTests: XCTestCase {
         XCTAssertEqual(replies.last?.isComplete, true)
     }
 
+    func testAReplyAskedForAgainThinksOnlyTheFirstTime() async {
+        let model = ScriptedRuntime(steps: [
+            ScriptedRuntime.think(
+                "Gardens need a plan.", for: .seconds(3), then: ScriptedRuntime.fail(.decodingFailure)),
+            ScriptedRuntime.fail(.decodingFailure),
+            ScriptedRuntime.answer("I'd add Water plants."),
+        ])
+
+        let (replies, error) = await replies(.live(runtime: { _, _ in model }), request("Plan the garden"))
+
+        XCTAssertNil(error)
+        XCTAssertEqual(model.turns.count, 3)
+        XCTAssertEqual(model.turns.map { $0.thinking != nil }, [true, false, false])
+        XCTAssertEqual(replies.last?.thinking?.text, "Gardens need a plan.")
+        XCTAssertEqual(replies.last?.text, "I'd add Water plants.")
+    }
+
     func testNamingAConversationDoesntWaitForThinking() async throws {
         let model = ScriptedRuntime(steps: [ScriptedRuntime.answer("Garden plans")])
 

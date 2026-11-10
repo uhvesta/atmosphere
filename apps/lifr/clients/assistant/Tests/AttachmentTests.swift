@@ -28,6 +28,14 @@ final class AttachmentTests: XCTestCase {
         XCTAssertEqual(message.text, "Hi")
         XCTAssertEqual(message.attachments, [])
         XCTAssertNil(message.thinking)
+        XCTAssertFalse(message.stopped)
+    }
+
+    func testAReplyThePersonStoppedIsKeptAsStopped() throws {
+        var message = ChatMessage(id: UUID(), role: .assistant, text: "A fe", at: now)
+        message.stopped = true
+        let read = try JSONDecoder().decode(ChatMessage.self, from: JSONEncoder().encode(message))
+        XCTAssertTrue(read.stopped)
     }
 
     func testWhatTheModelThoughtAndWhoWroteItAreKeptWithItsReply() throws {

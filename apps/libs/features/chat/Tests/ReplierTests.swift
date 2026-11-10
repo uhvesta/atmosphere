@@ -17,6 +17,7 @@ private struct NotedMessage: ThreadEntry {
     var thinking: ThreadThinking?
     var model: String?
     var speed: ThreadSpeed?
+    var stopped = false
     var note: String?
 
     init(person id: UUID, text: String, at: Date, files: [ThreadFile], photos: [ThreadPhoto]) {

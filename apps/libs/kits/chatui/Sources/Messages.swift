@@ -274,11 +274,13 @@ public struct AttachmentChip: View {
     var open: (() -> Void)?
 
     public init(
-        _ title: LocalizedStringKey, systemImage: String, elsewhere: Bool = false, remove: (() -> Void)? = nil
+        _ title: LocalizedStringKey, systemImage: String, elsewhere: Bool = false, open: (() -> Void)? = nil,
+        remove: (() -> Void)? = nil
     ) {
         self.title = Text(title)
         self.systemImage = systemImage
         self.elsewhere = elsewhere
+        self.open = open
         self.remove = remove
     }
 

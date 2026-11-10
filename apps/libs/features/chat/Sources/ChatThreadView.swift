@@ -227,6 +227,12 @@ where Parts.Message == Replier.Message {
         )
         .contextMenu { menu(for: message) }
         if message.role == .assistant {
+            if message.stopped {
+                Label("Stopped before it finished", systemImage: "stop.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             parts.extra(message)
             let prompt = store.showsPrompt && store.prompts[message.id] != nil
             if store.showsSpeed || prompt {

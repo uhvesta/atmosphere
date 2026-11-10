@@ -60,6 +60,7 @@ final class ChatThreadTests: XCTestCase {
         await store.settle()
         XCTAssertNil(store.state.reply)
         XCTAssertEqual(store.texts, ["Amigo?", "It means"])
+        XCTAssertEqual(store.state.thread.messages.map(\.stopped), [false, true])
     }
 
     func testAFailedReplySaysWhyAndRetryAsksAgain() async throws {

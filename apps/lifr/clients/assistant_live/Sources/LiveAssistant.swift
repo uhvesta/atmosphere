@@ -355,12 +355,14 @@ enum LiveAssistant {
     }
 
     /// Has the model think before `turn` as long as the conversation asks,
-    /// or not at all.
+    /// or not at all. Once a reply: asked again, it answers from what it
+    /// thought already, so a reply thinks no longer than its budget. On a
+    /// phone, thinking again before each retry took minutes.
     private static func think(
         _ turn: inout ModelTurn, _ request: AssistantRequest, _ thoughts: Thoughts,
         _ continuation: AssistantReplies.Continuation
     ) {
-        guard let tokens = request.model.thinkingLevel.tokens else { return }
+        guard let tokens = request.model.thinkingLevel.tokens, thoughts.value == nil else { return }
         turn.thinking = thoughts.attempt(continuation)
         turn.thinkingTokens = tokens
     }

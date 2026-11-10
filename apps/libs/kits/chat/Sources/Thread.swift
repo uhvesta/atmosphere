@@ -21,10 +21,13 @@ public struct ThreadMessage: ChatEntry {
     /// How fast the model read the chat and wrote a reply; nil when it
     /// wasn't measured.
     public var speed: ThreadSpeed?
+    /// Whether the person stopped the reply before the model finished it.
+    public var stopped: Bool
 
     public init(
         id: UUID = UUID(), role: ChatRole, text: String, at: Date, files: [ThreadFile] = [],
-        photos: [ThreadPhoto] = [], thinking: ThreadThinking? = nil, model: String? = nil, speed: ThreadSpeed? = nil
+        photos: [ThreadPhoto] = [], thinking: ThreadThinking? = nil, model: String? = nil, speed: ThreadSpeed? = nil,
+        stopped: Bool = false
     ) {
         self.id = id
         self.role = role
@@ -35,12 +38,16 @@ public struct ThreadMessage: ChatEntry {
         self.thinking = thinking
         self.model = model
         self.speed = speed
+        self.stopped = stopped
     }
 
-    private enum CodingKeys: String, CodingKey { case id, role, text, at, files, photos, thinking, model, speed }
+    private enum CodingKeys: String, CodingKey {
+        case id, role, text, at, files, photos, thinking, model, speed, stopped
+    }
 
     /// A message kept before files, photos, thinking, its model or its
-    /// speed were kept has none.
+    /// speed were kept has none, and one kept before stopping was kept
+    /// wasn't stopped.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
@@ -52,6 +59,7 @@ public struct ThreadMessage: ChatEntry {
         thinking = try container.decodeIfPresent(ThreadThinking.self, forKey: .thinking)
         model = try container.decodeIfPresent(String.self, forKey: .model)
         speed = try container.decodeIfPresent(ThreadSpeed.self, forKey: .speed)
+        stopped = try container.decodeIfPresent(Bool.self, forKey: .stopped) ?? false
     }
 }
 

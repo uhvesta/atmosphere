@@ -65,6 +65,8 @@ package struct ChatFeature {
         /// Recordings of this conversation whose files aren't on this
         /// device, such as those sent from another one.
         package var elsewhere: Set<UUID> = []
+        /// The file of the sent recording being played.
+        package var playing: URL?
         /// Whether the model was asked to load, once the person started
         /// writing. Opening a chat doesn't: Lifr reopens the last one at
         /// launch, and a model takes gigabytes.
@@ -264,6 +266,8 @@ package struct ChatFeature {
         case recordingStarted(Result<Void, any Error>)
         case recorded(Result<ChatAttachment, any Error>)
         case removeRecordingTapped(UUID)
+        /// A sent recording's chip: plays it.
+        case recordingTapped(UUID)
         /// Lifr is back on screen: send a stopped reply's request again.
         case resume
         case reloaded(messageID: UUID, Result<Snapshot, any Error>)
@@ -575,6 +579,14 @@ package struct ChatFeature {
                 state.recordings.removeAll { $0.id == id }
                 let conversation = state.conversation.id
                 return .run { [attachments] _ in await attachments.remove(recording, conversation) }
+
+            case .recordingTapped(let id):
+                guard
+                    let recording = state.conversation.messages.lazy.flatMap(\.attachments)
+                        .first(where: { $0.id == id && $0.kind == .audio })
+                else { return .none }
+                state.playing = attachments.file(recording, state.conversation.id)
+                return .none
 
             case .core(.stopTapped):
                 state.stopped = false

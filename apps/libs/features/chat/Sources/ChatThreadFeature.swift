@@ -307,7 +307,7 @@ public struct ChatCore<Replier: ChatReplier> {
                 guard let reply = state.reply else { return .none }
                 let thinking = state.replyThinking
                 return .merge(
-                    .cancel(id: CancelID.reply), keep(reply, thinking: thinking, speed: nil, in: &state))
+                    .cancel(id: CancelID.reply), keep(reply, thinking: thinking, speed: nil, stopped: true, in: &state))
 
             case .retryTapped(let id):
                 let messages = state.thread.messages
@@ -759,10 +759,10 @@ public struct ChatCore<Replier: ChatReplier> {
     }
 
     /// Ends the reply, keeping what's written of it, and how fast when it
-    /// was all written.
+    /// was all written, or that the person stopped it.
     private func keep(
-        _ text: String, thinking: ThreadThinking?, speed: ThreadSpeed?, extra: Message.Extra? = nil,
-        in state: inout State
+        _ text: String, thinking: ThreadThinking?, speed: ThreadSpeed?, stopped: Bool = false,
+        extra: Message.Extra? = nil, in state: inout State
     ) -> Effect<Action> {
         state.reply = nil
         state.replyThinking = nil
@@ -774,9 +774,10 @@ public struct ChatCore<Replier: ChatReplier> {
         // What the app's replier added is kept even without words.
         guard !text.isEmpty || extra != nil else { return .none }
         let id = uuid()
-        state.thread.append(
-            Message(
-                reply: id, text: text, at: now, thinking: thinking, model: prompt?.model, speed: speed, extra: extra))
+        var reply = Message(
+            reply: id, text: text, at: now, thinking: thinking, model: prompt?.model, speed: speed, extra: extra)
+        reply.stopped = stopped
+        state.thread.append(reply)
         state.prompts[id] = prompt
         // Thinking open while the reply was written stays open.
         if shows, thinking != nil { state.shownThinking.insert(id) }

@@ -5,6 +5,7 @@
 [header, text] "Tuesday, November 3 at 10:00 AM"
 [text] "Plan my week"
 [text] "Start with the urgent tasks, then"
+[text] "Stopped before it finished"
 [button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"

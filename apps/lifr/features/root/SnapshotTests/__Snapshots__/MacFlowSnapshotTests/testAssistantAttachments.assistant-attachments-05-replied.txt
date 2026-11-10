@@ -28,7 +28,7 @@
   [Button] "Context Window" value: "Nothing used yet" help: "Nothing used yet"
   [Heading] "Tuesday, November 3 at 10:00 AM"
   [StaticText] "" value: "Photo"
-  [StaticText] "" value: "Recording, 6 s"
+  [Button] "Recording, 6 s" help: "Opens it"
   [StaticText] "" value: "What plant is this?"
   [StaticText] "" value: "A Boston fern. Water it when the top of the soil is dry."
   [Button] "Retry" help: "Write this reply again"
