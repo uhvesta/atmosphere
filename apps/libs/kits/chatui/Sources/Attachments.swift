@@ -117,8 +117,17 @@ struct FileViewer: View {
             #endif
             .toolbar {
                 ToolbarItemGroup(placement: .cancellationAction) {
-                    Button("Copy All", systemImage: "doc.on.doc") { copyToClipboard(text) }
-                    ShareLink(item: text, subject: Text(verbatim: name))
+                    // A Mac sheet's bar shows one item of a group, so the
+                    // two go in a row of their own.
+                    #if os(macOS)
+                        HStack {
+                            Button("Copy All", systemImage: "doc.on.doc") { copyToClipboard(text) }
+                            ShareLink(item: text, subject: Text(verbatim: name))
+                        }
+                    #else
+                        Button("Copy All", systemImage: "doc.on.doc") { copyToClipboard(text) }
+                        ShareLink(item: text, subject: Text(verbatim: name))
+                    #endif
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     DismissButton()
