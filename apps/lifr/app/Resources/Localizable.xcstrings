@@ -384,6 +384,9 @@
     "A KV cache at 8 or 4 bits keeps less memory for each token read, and its answers drift further from 16 bits'." : {
 
     },
+    "A KV cache at 8 or 4 bits keeps less memory for each token read, and its answers drift further from a 16-bit cache's." : {
+
+    },
     "A button under each reply shows exactly what the model was sent." : {
 
     },
@@ -2026,6 +2029,9 @@
 
     },
     "Remove" : {
+
+    },
+    "Remove " : {
 
     },
     "Remove %@" : {
