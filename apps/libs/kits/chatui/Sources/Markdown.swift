@@ -72,8 +72,25 @@ enum Markdown {
             return linkSchemes.contains(url.scheme?.lowercased() ?? "") ? nil : run.range
         }
         for range in unsafe { string[range].link = nil }
+        breakLines(in: &string)
         linkBareAddresses(in: &string)
         return string
+    }
+
+    /// Breaks the line at each `<br>`, which models write in a table's
+    /// cells where Markdown has no way to; in code it stays as written.
+    private static func breakLines(in string: inout AttributedString) {
+        let plain = String(string.characters)
+        guard plain.localizedCaseInsensitiveContains("<br") else { return }
+        let breaks = plain.matches(of: /(?i)<br\s*\/?>/).reversed()
+        for found in breaks {
+            let start = string.characters.index(
+                string.startIndex, offsetBy: plain.distance(from: plain.startIndex, to: found.range.lowerBound))
+            let end = string.characters.index(
+                start, offsetBy: plain.distance(from: found.range.lowerBound, to: found.range.upperBound))
+            let inCode = string[start..<end].runs.contains { $0.inlinePresentationIntent?.contains(.code) == true }
+            if !inCode { string.replaceSubrange(start..<end, with: AttributedString("\n")) }
+        }
     }
 
     /// Links web and mail addresses written without Markdown's brackets.

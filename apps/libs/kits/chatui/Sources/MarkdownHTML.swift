@@ -15,7 +15,7 @@ extension Markdown {
     private static func html(_ block: MarkdownBlock) -> String {
         switch block {
         case .paragraph(let text):
-            return "<p>\(htmlInline(text).replacingOccurrences(of: "\n", with: "<br>"))</p>"
+            return "<p>\(htmlInline(text))</p>"
         case .heading(let level, let text):
             let level = min(max(level, 1), 6)
             return "<h\(level)>\(htmlInline(text))</h\(level)>"
@@ -55,7 +55,7 @@ extension Markdown {
     }
 
     /// Inline Markdown as HTML: bold, italics, strikethrough, code and
-    /// links, the rest escaped.
+    /// links, the rest escaped, and its line breaks as <br>.
     private static func htmlInline(_ text: String) -> String {
         let string = inline(text)
         return string.runs.map { run in
@@ -67,7 +67,7 @@ extension Markdown {
             if intent.contains(.stronglyEmphasized) { out = "<strong>\(out)</strong>" }
             if let link = run.link { out = "<a href=\"\(escaped(link.absoluteString))\">\(out)</a>" }
             return out
-        }.joined()
+        }.joined().replacingOccurrences(of: "\n", with: "<br>")
     }
 
     private static func escaped(_ text: String) -> String {

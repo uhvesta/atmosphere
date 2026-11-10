@@ -5,7 +5,18 @@ import TestingKit
 
 func markdownTests() -> [TestCase] {
     blockTests() + listTests() + tableTests() + inlineTests() + writingTests() + streamTests()
-        + plainTextTests() + htmlTests() + bareLinkTests()
+        + plainTextTests() + htmlTests() + bareLinkTests() + lineBreakTests()
+}
+
+private func lineBreakTests() -> [TestCase] {
+    [
+        TestCase("given <br> in a line, as in a table's cell, then the words break onto a new line") {
+            try expectEqual(String(Markdown.inline("Dig<br>Water<BR/>Wait<br />Pick").characters), "Dig\nWater\nWait\nPick")
+        },
+        TestCase("given <br> in code, then it stays as written") {
+            try expectEqual(String(Markdown.inline("Use `a<br>b` here").characters), "Use a<br>b here")
+        },
+    ]
 }
 
 private func links(_ text: String) -> [String] {
