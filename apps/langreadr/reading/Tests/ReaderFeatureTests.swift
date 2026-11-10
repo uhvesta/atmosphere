@@ -118,6 +118,66 @@ final class ReaderFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.destination?.chat?.compact, true)
     }
 
+    func testCancellingAHighlightPicksNothingAndAsksNothing() async throws {
+        let store = await reader(try spanish())
+        let (paragraph, amigo) = try word("amigo", in: store)
+        await store.send(.binding(.set(\.isHighlighting, true)))
+        await store.send(.wordTapped(paragraph: paragraph, amigo))
+        await store.send(.cancelHighlightTapped)
+        XCTAssertFalse(store.state.isHighlighting)
+        XCTAssertNil(store.state.picked)
+        await store.send(.askTapped)
+        XCTAssertTrue(store.state.book.chats.isEmpty)
+        XCTAssertNil(store.state.destination)
+    }
+
+    func testAPassagesChatOpensFullFromItsSheet() async throws {
+        let store = await reader(try spanish("Hola amigo."))
+        let (paragraph, hola) = try word("Hola", in: store)
+        await store.send(.binding(.set(\.isHighlighting, true)))
+        await store.send(.wordTapped(paragraph: paragraph, hola))
+        await store.send(.askTapped)
+        XCTAssertEqual(store.state.destination?.chat?.compact, true)
+        await store.send(.destination(.presented(.chat(.openFullTapped))))
+        XCTAssertEqual(store.state.destination?.chat?.compact, false)
+    }
+
+    func testAParagraphsBubbleReopensItsLatestChat() async throws {
+        let store = await reader(try spanish("Hola amigo."))
+        let (paragraph, hola) = try word("Hola", in: store)
+        let (_, amigo) = try word("amigo", in: store)
+        await store.send(.chatBubbleTapped(paragraph: paragraph))
+        XCTAssertNil(store.state.destination)
+
+        for span in [hola, amigo] {
+            await store.send(.binding(.set(\.isHighlighting, true)))
+            await store.send(.wordTapped(paragraph: paragraph, span))
+            await store.send(.askTapped)
+            await store.send(.destination(.dismiss))
+        }
+        let latest = try store.state.book.chats(in: paragraph).last.unwrap()
+        XCTAssertEqual(latest.passage.text, "amigo")
+        await store.send(.chatBubbleTapped(paragraph: paragraph))
+        XCTAssertEqual(store.state.destination?.chat?.id, latest.id)
+        XCTAssertEqual(store.state.destination?.chat?.compact, true)
+    }
+
+    func testTheChatsListOpensTheOnePickedFull() async throws {
+        let store = await reader(try spanish("Hola amigo."))
+        let (paragraph, hola) = try word("Hola", in: store)
+        await store.send(.binding(.set(\.isHighlighting, true)))
+        await store.send(.wordTapped(paragraph: paragraph, hola))
+        await store.send(.askTapped)
+        await store.send(.destination(.dismiss))
+        let chat = try store.state.book.chats.first.unwrap()
+
+        await store.send(.chatsTapped)
+        XCTAssertEqual(store.state.destination?.chats?.chats.map(\.id), [chat.id])
+        await store.send(.destination(.presented(.chats(.chatTapped(chat.id)))))
+        XCTAssertEqual(store.state.destination?.chat?.id, chat.id)
+        XCTAssertEqual(store.state.destination?.chat?.compact, false)
+    }
+
     func testAReplyToAQuestionIsKeptInThePassagesChat() async throws {
         let store = await reader(
             try spanish("Hola amigo."), steps: [ScriptedRuntime.answer("It's a greeting.", partials: ["It's"])])

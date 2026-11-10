@@ -79,6 +79,7 @@ final class ChatCompactionTests: XCTestCase {
         await send(["Plan the week", "Add laundry"], in: store)
 
         await store.send(.compactTapped)
+        await store.receive(\.compacted)
         await store.skipReceivedActions(strict: false)
 
         XCTAssertEqual(compacted.value.first?.0.map(\.text), ["Plan the week", "Noted."])

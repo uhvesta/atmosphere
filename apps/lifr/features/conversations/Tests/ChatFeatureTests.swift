@@ -233,6 +233,47 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.recordings, [])
     }
 
+    func testARemovedRecordingIsntSentAndItsFileIsDeleted() async throws {
+        let (workspace, _) = home()
+        let attachments = AttachmentsClient.inMemory()
+        let asked = LockIsolated<AssistantRequest?>(nil)
+        let store = chat(workspace, inputs: [.audio], attachments: attachments) { request in
+            asked.setValue(request)
+            return AssistantReply(text: "Noted.", isComplete: true)
+        }
+        await store.send(.core(.task))
+        await store.send(.core(.micTapped))
+        await store.receive(\.recordingStarted)
+        await store.send(.core(.micTapped))
+        await store.receive(\.recorded.success)
+        let recording = try XCTUnwrap(store.state.recordings.first)
+        XCTAssertNotNil(attachments.file(recording, conversationID))
+
+        await store.send(.removeRecordingTapped(recording.id))
+        await store.finish()
+        XCTAssertEqual(store.state.recordings, [])
+        XCTAssertNil(attachments.file(recording, conversationID))
+
+        await store.send(.core(.binding(.set(\.input, "Hello"))))
+        await store.send(.core(.sendTapped))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(asked.value?.attachments.isEmpty, true)
+    }
+
+    func testARecordingThatCantBeKeptSaysWhyAndAttachesNothing() async {
+        let (workspace, _) = home()
+        let store = chat(workspace, inputs: [.audio], recorder: .scripted(.init(data: Data(), seconds: 0))) { _ in
+            AssistantReply(text: "", isComplete: true)
+        }
+        await store.send(.core(.task))
+        await store.send(.core(.micTapped))
+        await store.send(.core(.micTapped))
+        await store.receive(\.recorded.failure)
+        XCTAssertFalse(store.state.core.attaching)
+        XCTAssertEqual(store.state.recordings, [])
+        XCTAssertNotNil(store.state.alert)
+    }
+
     func testAttachmentsSentFromAnotherDeviceAreMarked() async {
         let (workspace, _) = home()
         var conversation = Conversation(id: conversationID, createdAt: now)
@@ -299,6 +340,20 @@ final class ChatFeatureTests: XCTestCase {
         await edit(Plan(), in: store)
         XCTAssertNil(store.state.conversation.draft)
         XCTAssertNil(store.state.problem)
+    }
+
+    func testDiscardingTheDraftAddsNothingAndClosesItsEditor() async throws {
+        let (workspace, _) = home()
+        let plan = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])
+        let store = chat(workspace) { _ in AssistantReply(text: "Here's a plan.", plan: plan, isComplete: true) }
+        await send("Plan repotting", in: store)
+        await store.send(.editDraftTapped)
+        XCTAssertTrue(store.state.editsDraft)
+
+        await store.send(.discardDraftTapped)
+        XCTAssertNil(store.state.conversation.draft)
+        XCTAssertFalse(store.state.editsDraft)
+        XCTAssertFalse(store.state.workspace.tasks.values.contains { $0.title == "Buy soil" })
     }
 
     func testADraftLeavesOutAnAvenueThisChatAlreadyAdded() async throws {
@@ -430,7 +485,7 @@ final class ChatFeatureTests: XCTestCase {
         edit.actions = [.task(TaskChange(code: code, status: "lots"))]
         await store.send(.binding(.set(\.editingProposal, edit)))
         await store.send(.editProposalDone)
-        await store.skipReceivedActions(strict: false)
+        await store.receive(\.reproposed)
         XCTAssertNotNil(store.state.editingProposal?.problem, "a status Lifr doesn't know is said in the editor")
 
         edit.actions = [.task(TaskChange(code: code, status: "in_progress"))]
@@ -776,7 +831,7 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.canSend)
 
         await store.send(.resume)
-        await store.skipReceivedActions()
+        await store.receive(\.reloaded)
         XCTAssertNil(store.state.core.reply)
         XCTAssertEqual(store.state.conversation.messages.map(\.text), ["Hello", "Done."])
     }
@@ -897,6 +952,29 @@ final class ChatFeatureTests: XCTestCase {
         await store.send(.core(.binding(.set(\.input, "/addresses near home"))))
         XCTAssertEqual(store.state.picked?.id, addresses.id)
         XCTAssertEqual(store.state.input, "near home")
+    }
+
+    func testASkillMadeWhileManagingSkillsCanBePickedOnceTheSheetCloses() async throws {
+        let (workspace, _) = home()
+        let skills = SkillsClient.inMemory()
+        let store = chat(workspace) { _ in AssistantReply(text: "", isComplete: true) }
+        store.dependencies.skills = skills
+        await store.send(.core(.task))
+        await store.skipReceivedActions(strict: false)
+
+        await store.send(.manageSkillsTapped)
+        XCTAssertNotNil(store.state.manageSkills)
+        let addresses = try XCTUnwrap(
+            Skill(
+                userNamed: "addresses", summary: "Find addresses.", instructions: "Find addresses.", tools: [],
+                draftsPlans: false))
+        try await skills.save(addresses)
+        await store.send(.manageSkills(.dismiss))
+        await store.receive(\.skillsLoaded)
+        XCTAssertNil(store.state.manageSkills)
+
+        await store.send(.core(.binding(.set(\.input, "/addresses near home"))))
+        XCTAssertEqual(store.state.picked?.id, addresses.id)
     }
 
     func testANameNoSkillHasOrOneMidwayStaysText() async {
@@ -1411,6 +1489,7 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(texts(store), ["I paid the rent", "OK."])
 
         await store.send(.alert(.presented(.resend(undo: true))))
+        await store.receive(\.sendConfirmed)
         await store.skipReceivedActions(strict: false)
         XCTAssertEqual(texts(store), ["Hello", "OK."])
         XCTAssertEqual(store.state.workspace.tasks[rent.id]?.status, .todo)
@@ -1434,6 +1513,31 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(texts(store), ["one", "reply 2"])
         let again = try XCTUnwrap(store.state.conversation.messages.last)
         XCTAssertEqual(store.state.conversation.branches(at: again.id).map(\.text), ["reply 1", "reply 2"])
+    }
+
+    func testRetryingAReplyThatChangedTasksAsksAndCanKeepTheChanges() async throws {
+        let (workspace, rent) = home()
+        let code = workspace.displayCode(of: rent)
+        let count = LockIsolated(0)
+        let store = chat(workspace) { request in
+            count.withValue { $0 += 1 }
+            guard count.value == 1 else { return AssistantReply(text: "Again.", isComplete: true) }
+            return await Self.proposing([TaskChange(code: code, status: "done")], in: request)
+        }
+        ticking(store)
+        await send("I paid the rent", in: store)
+        try await applyLast(in: store)
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+
+        await store.send(.core(.retryTapped(messageID: reply.id)))
+        XCTAssertNotNil(store.state.alert, "Asks before hiding the reply that changed the rent")
+        XCTAssertEqual(count.value, 1)
+
+        await store.send(.alert(.presented(.retry(reply.id, undo: false))))
+        await store.receive(\.retryConfirmed)
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.conversation.messages.last?.text, "Again.")
+        XCTAssertEqual(store.state.workspace.tasks[rent.id]?.status, .done)
     }
 
     func testAForkOpensAsANewConversationUpToThere() async throws {
@@ -1582,6 +1686,36 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.chats.isEmpty, "a finished chat off screen is let go")
         let saved = try await kept.load()
         XCTAssertEqual(saved.first?.messages.count, 2)
+    }
+
+    func testABusyReplyInTheListIsSentAgainWhenLifrIsBack() async throws {
+        let store = list(ConversationsClient.inMemory())
+        let attempts = LockIsolated(0)
+        store.dependencies.assistant.reply = { _ in
+            AssistantReplies { continuation in
+                let attempt = attempts.withValue {
+                    $0 += 1
+                    return $0
+                }
+                if attempt == 1 {
+                    continuation.finish(throwing: AssistantError.busy)
+                } else {
+                    continuation.yield(AssistantReply(text: "Done.", isComplete: true))
+                    continuation.finish()
+                }
+            }
+        }
+        await store.send(.newTapped)
+        let id = try XCTUnwrap(store.state.openID)
+        await store.send(.chats(.element(id: id, action: .core(.binding(.set(\.input, "Hello"))))))
+        await store.send(.chats(.element(id: id, action: .core(.sendTapped))))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(attempts.value, 1)
+
+        await store.send(.resumed)
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(attempts.value, 2)
+        XCTAssertEqual(store.state.conversations[id: id]?.messages.map(\.text), ["Hello", "Done."])
     }
 
     func testOpeningAnotherChatDoesntStopAReply() async throws {
