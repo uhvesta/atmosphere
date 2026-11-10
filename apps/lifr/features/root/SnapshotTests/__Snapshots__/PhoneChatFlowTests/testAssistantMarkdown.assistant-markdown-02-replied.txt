@@ -13,7 +13,7 @@
 [text] "Basil"
 [text] "Water them in the morning."
 [button] "Copy Code"
-[text] "swift code" value: "let due = "Saturday""
+[text] "Swift code" value: "let due = "Saturday""
 [text] "Task"
 [text] "Day"
 [text] "Buy soil"

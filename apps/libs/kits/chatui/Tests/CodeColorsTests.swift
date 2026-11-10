@@ -4,6 +4,12 @@ import TestingKit
 
 func codeColorsTests() -> [TestCase] {
     [
+        TestCase("given a fence's short tag, then the language's name") {
+            try expectEqual(["py", "TS", "sh", "cpp"].map(CodeSyntax.name(of:)), ["Python", "TypeScript", "Shell", "C++"])
+        },
+        TestCase("given a language it doesn't know, then the tag as written") {
+            try expectEqual(CodeSyntax.name(of: "nim"), "nim")
+        },
         TestCase("given Swift, then its keywords, strings, numbers and comments") {
             let runs = try CodeSyntax.of("swift").unwrap().runs("let name = \"Soil\" // 2 bags\nreturn 42")
             try expectEqual(

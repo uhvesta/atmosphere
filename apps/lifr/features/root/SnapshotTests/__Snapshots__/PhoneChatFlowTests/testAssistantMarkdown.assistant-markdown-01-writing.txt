@@ -6,7 +6,7 @@
 [text] "Show me some code"
 [text] "Start with Buy soil."
 [button] "Copy Code"
-[text] "swift code" value: "let due = "Satur"
+[text] "Swift code" value: "let due = "Satur"
 [element] "" value: "Message"
 [button] "Add" hint: "Add photos or files"
 [button] "Model" value: "Apple Intelligence" hint: "Model, Thinking and Context Window"

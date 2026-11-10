@@ -181,8 +181,8 @@ private struct CodeBlock: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 if let language {
-                    Text(verbatim: language)
-                        .font(.caption.monospaced())
+                    Text(verbatim: CodeSyntax.name(of: language))
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true)
                 }
@@ -211,7 +211,7 @@ private struct CodeBlock: View {
                     .padding(.horizontal, 10)
                     .padding(.top, 4)
                     .padding(.bottom, 10)
-                    .accessibilityLabel(language.map { Text("\($0) code") } ?? Text("Code"))
+                    .accessibilityLabel(language.map { Text("\(CodeSyntax.name(of: $0)) code") } ?? Text("Code"))
                     .accessibilityValue(code)
                     .accessibilityIdentifier(ModelText.identifier)
             }

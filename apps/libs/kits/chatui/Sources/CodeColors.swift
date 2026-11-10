@@ -45,6 +45,28 @@ struct CodeSyntax: Sendable {
         }
     }
 
+    /// A fence's language as its name is written, such as Python for
+    /// `py`; one this doesn't know, as the model wrote it.
+    static func name(of language: String) -> String {
+        names[language.lowercased()] ?? language
+    }
+
+    private static let names: [String: String] = [
+        "py": "Python", "python": "Python", "rb": "Ruby", "ruby": "Ruby", "r": "R", "pl": "Perl", "perl": "Perl",
+        "sh": "Shell", "shell": "Shell", "bash": "Bash", "zsh": "Zsh", "fish": "Fish", "console": "Terminal",
+        "powershell": "PowerShell", "ps1": "PowerShell", "yaml": "YAML", "yml": "YAML", "toml": "TOML",
+        "ini": "INI", "dockerfile": "Dockerfile", "makefile": "Makefile", "make": "Makefile", "json": "JSON",
+        "jsonc": "JSON", "sql": "SQL", "sqlite": "SQLite", "postgres": "PostgreSQL", "postgresql": "PostgreSQL",
+        "mysql": "MySQL", "lua": "Lua", "haskell": "Haskell", "hs": "Haskell", "swift": "Swift", "rust": "Rust",
+        "rs": "Rust", "js": "JavaScript", "javascript": "JavaScript", "jsx": "JSX", "ts": "TypeScript",
+        "typescript": "TypeScript", "tsx": "TSX", "go": "Go", "c": "C", "cpp": "C++", "c++": "C++", "cc": "C++",
+        "cs": "C#", "csharp": "C#", "java": "Java", "kotlin": "Kotlin", "kt": "Kotlin", "objc": "Objective-C",
+        "objective-c": "Objective-C", "php": "PHP", "html": "HTML", "css": "CSS", "scss": "SCSS", "xml": "XML",
+        "md": "Markdown", "markdown": "Markdown", "diff": "Diff", "text": "Text", "txt": "Text",
+        "plaintext": "Text", "dart": "Dart", "scala": "Scala", "elixir": "Elixir", "ex": "Elixir",
+        "graphql": "GraphQL", "latex": "LaTeX", "tex": "LaTeX", "mermaid": "Mermaid", "zig": "Zig",
+    ]
+
     /// `code` cut into runs, each with what it is, or nil for the rest.
     func runs(_ code: String) -> [(text: String, token: CodeToken?)] {
         let chars = Array(code)
