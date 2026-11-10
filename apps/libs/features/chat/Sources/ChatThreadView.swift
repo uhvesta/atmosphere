@@ -24,6 +24,9 @@ where Parts.Message == Replier.Message {
     /// Whether the system's photo picker is open, from + on the Mac.
     @State private var picksPhoto = false
     @State private var photo: PhotosPickerItem?
+    /// Whether the end of the chat is in view; when it isn't, a button
+    /// goes back to it.
+    @State private var atEnd = true
 
     public init(store: StoreOf<ChatCore<Replier>>, prompt: Text? = nil, parts: Parts) {
         self.store = store
@@ -89,8 +92,36 @@ where Parts.Message == Replier.Message {
                     guard let id else { return }
                     withAnimation { proxy.scrollTo(id, anchor: .center) }
                 }
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.visibleRect.maxY >= geometry.contentSize.height - 80
+                } action: { _, atEnd in
+                    withAnimation(.easeOut(duration: 0.2)) { self.atEnd = atEnd }
+                }
+                .overlay(alignment: .bottom) {
+                    if !atEnd {
+                        Button {
+                            withAnimation { proxy.scrollTo(Self.end, anchor: .bottom) }
+                        } label: {
+                            Image(systemName: "arrow.down")
+                                .font(.body.weight(.semibold))
+                                .frame(width: 40, height: 40)
+                                .background(.regularMaterial, in: .circle)
+                                .overlay { Circle().strokeBorder(.quaternary) }
+                                .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+                                .contentShape(.circle)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(Text("Go to Latest"))
+                        .help("Go to the latest message")
+                        .padding(.bottom, 10)
+                        .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                    }
+                }
         }
     }
+
+    /// The end of the chat, to scroll back to.
+    private static var end: String { "end" }
 
     private var scroll: some View {
         ScrollView {
@@ -141,6 +172,7 @@ where Parts.Message == Replier.Message {
                 }
                 parts.bottom()
             }
+            .overlay(alignment: .bottom) { Color.clear.frame(height: 1).id(Self.end) }
             .frame(maxWidth: store.rival == nil ? 720 : 1_080)
             .padding()
             .frame(maxWidth: .infinity)
