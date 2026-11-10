@@ -1728,6 +1728,32 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(reopened.state.conversations.map(\.title), ["Hello"])
     }
 
+    func testTheNewestCopyOfAChatIsKeptWhenAnOlderOneIsSlowToSave() async throws {
+        let stored = ConversationsClient.inMemory()
+        let saves = LockIsolated(0)
+        var kept = stored
+        kept.save = { conversation in
+            let first = saves.withValue { count in
+                count += 1
+                return count == 1
+            }
+            if first { try await Task.sleep(for: .milliseconds(200)) }
+            try await stored.save(conversation)
+        }
+        let store = list(kept)
+
+        await store.send(.newTapped)
+        let id = try XCTUnwrap(store.state.openID)
+        await store.send(.chats(.element(id: id, action: .core(.binding(.set(\.input, "Hello"))))))
+        await store.send(.chats(.element(id: id, action: .core(.sendTapped))))
+        await store.skipReceivedActions()
+        await store.finish()
+
+        XCTAssertGreaterThan(saves.value, 1)
+        let saved = try await stored.load()
+        XCTAssertEqual(saved.map(\.messages.count), [2])
+    }
+
     func testLifrReopensTheChatThatWasOpenWithWhatWasTypedInIt() async throws {
         let kept = ConversationsClient.inMemory()
         let before = list(kept)

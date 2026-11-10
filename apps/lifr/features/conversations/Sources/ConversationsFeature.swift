@@ -195,6 +195,7 @@ package struct ConversationsFeature {
     @Dependency(\.timeZone) private var timeZone
     @Dependency(\.relatedWords) private var relatedWords
     @Dependency(\.continuousClock) private var clock
+    @Dependency(\.saveQueue) private var saves
 
     private enum CancelID { case related }
 
@@ -392,10 +393,8 @@ package struct ConversationsFeature {
             for conversation in changed { state.conversations[id: conversation.id] = conversation }
             if case .chats = action { state.prune() }
             guard !changed.isEmpty else { return .none }
-            return .run { [conversations] _ in
+            return kept { [conversations] in
                 for conversation in changed { try await conversations.save(conversation) }
-            } catch: { error, send in
-                await send(.failed(error))
             }
         }
     }
@@ -413,18 +412,23 @@ package struct ConversationsFeature {
     }
 
     private func save(_ conversation: Conversation) -> Effect<Action> {
-        .run { [conversations] _ in
-            try await conversations.save(conversation)
-        } catch: { error, send in
-            await send(.failed(error))
-        }
+        kept { [conversations] in try await conversations.save(conversation) }
     }
 
     private func delete(_ ids: [UUID], in state: inout State) -> Effect<Action> {
         state.remove(ids)
-        return .run { [conversations, attachments] _ in
+        return kept { [conversations, attachments] in
             try await conversations.delete(ids)
             for id in ids { await attachments.removeAll(id) }
+        }
+    }
+
+    /// Changes the kept chats after the changes made before this one, and
+    /// says if it couldn't.
+    private func kept(_ work: @escaping @Sendable () async throws -> Void) -> Effect<Action> {
+        let change = saves.enqueue(work)
+        return .run { _ in
+            try await change.value
         } catch: { error, send in
             await send(.failed(error))
         }
