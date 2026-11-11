@@ -1,0 +1,21 @@
+[package]
+name = "khodr-agent"
+description = "Khodr's agent interface, and the runtime and scripted backend that implement it in process."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "khodr_agent"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

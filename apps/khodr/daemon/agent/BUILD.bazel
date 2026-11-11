@@ -1,0 +1,30 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# The agent interface every backend implements, the runtime the in-process
+# backends share (turns, approvals, forks, history on disk) and the scripted
+# backend that tests run on.
+rust_library(
+    name = "agent",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "khodr_agent",
+    visibility = ["//apps/khodr/daemon:__subpackages__"],
+    deps = [
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:uuid",
+    ],
+)
+
+rust_test(
+    name = "agent_test",
+    crate = ":agent",
+    deps = ["@crates//:tempfile"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
