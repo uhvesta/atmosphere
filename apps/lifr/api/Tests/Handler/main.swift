@@ -6,5 +6,6 @@ await runSuites([
     ("Requests", requestTests()),
     ("Wire", wireTests()),
     ("Plan files", planFileTests()),
+    ("Plan prompts", planPromptTests()),
     ("Adding plans", addPlanTests()),
 ])

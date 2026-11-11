@@ -1270,7 +1270,7 @@ final class ChatFeatureTests: XCTestCase {
         }
 
         await store.send(.core(.binding(.set(\.input, "/"))))
-        XCTAssertEqual(commands(), [.rename, .model, .skills, .new])
+        XCTAssertEqual(commands(), [.rename, .model, .skills, .new, .export, .paste])
         await send("Plan the week", in: store)
         await store.send(.core(.binding(.set(\.input, "/"))))
         XCTAssertTrue(commands().contains(.find))

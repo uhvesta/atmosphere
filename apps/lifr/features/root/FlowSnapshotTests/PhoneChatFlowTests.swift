@@ -150,6 +150,52 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         flow.finish()
     }
 
+    /// Planning with another chat assistant: /export copies a prompt and
+    /// says so, then /paste puts the plan in its reply on the draft card,
+    /// and a reply that can't be read offers a fix-up prompt.
+    func testPlanWithAnotherAssistant() async throws {
+        let (store, flow) = app("plan-elsewhere")
+        store.tab = .conversations
+        store.send(.conversations(.newTapped))
+        let id = try XCTUnwrap(store.conversations.openID)
+        func chat(_ action: ChatFeature.Action) { store.send(.conversations(.chats(.element(id: id, action: action)))) }
+        chat(.core(.binding(.set(\.input, "/ex"))))
+        await flow.step("command")
+        chat(.pickCommandTapped(.export))
+        await flow.step("copied")
+        XCTAssertTrue(copied.value?.contains("HOME: Home") ?? false)
+        chat(.alert(.dismiss))
+
+        copied.setValue(
+            """
+            Here's a plan.
+
+            ```toml
+            # Lifr plan v1
+
+            [[project]]
+            name = "Spring clean"
+            avenue = "HOME"
+
+              [[project.task]]
+              title = "Clear the garage"
+              due = "saturday"
+
+              [[project.task]]
+              title = "Wash the windows"
+            ```
+            """)
+        chat(.core(.binding(.set(\.input, "/paste "))))
+        await flow.step("pasted")
+        XCTAssertEqual(store.conversations.chats[id: id]?.conversation.draft?.projects.map(\.name), ["Spring clean"])
+
+        copied.setValue("```toml\n[[task]]\ntitel = \"Wash the car\"\n```")
+        chat(.core(.binding(.set(\.input, "/paste "))))
+        await flow.step("unreadable")
+        XCTAssertNotNil(store.conversations.chats[id: id]?.alert)
+        flow.finish()
+    }
+
     /// Asking about a photo and a recording, with a model that reads both:
     /// attaching each, sending them, the reply, then a model that can't.
     func testAssistantAttachments() async throws {

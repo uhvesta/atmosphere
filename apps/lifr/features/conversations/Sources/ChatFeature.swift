@@ -2,9 +2,11 @@ import CaptureKit
 import ChatFeatures
 import ComposableArchitecture
 import Foundation
+import LifrAPI
 import LifrAssistantClient
 import LifrCore
 import LifrModelsClient
+import LifrPasteboardClient
 import LifrSkills
 import LifrStoreClient
 
@@ -308,6 +310,13 @@ package struct ChatFeature {
         /// place.
         case compactTapped
         case compacted(through: UUID, Result<String, any Error>)
+        /// Copies a prompt for another assistant to plan `goal`.
+        case exportPlanTapped(goal: String)
+        /// Reads the clipboard for another assistant's reply.
+        case pastePlanTapped
+        /// The text on the clipboard, put on the draft card when it
+        /// holds a plan.
+        case planPasted(String?)
         /// Removes the summary that ends at the message, so the messages it
         /// covers are sent again as far as they fit.
         case forgetSummaryTapped(UUID)
@@ -353,6 +362,8 @@ package struct ChatFeature {
             case resend(undo: Bool)
             /// Writes the reply to the message, or the reply, again.
             case retry(UUID, undo: Bool)
+            /// Copies a prompt for the other assistant to fix its plan.
+            case copyFixUp(String)
         }
 
         @CasePathable
@@ -400,6 +411,7 @@ package struct ChatFeature {
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
     @Dependency(\.uuid) private var uuid
+    @Dependency(\.pasteboard) private var pasteboard
 
     package init() {}
 
@@ -720,6 +732,33 @@ package struct ChatFeature {
                             + "are still sent.")
                 }
                 return .none
+
+            case .exportPlanTapped(let goal):
+                let prompt = PlanPrompt.make(
+                    goal: goal, workspace: state.workspace, today: CalendarDate(now, in: timeZone),
+                    timeZone: timeZone)
+                state.alert = AlertState {
+                    TextState("Prompt Copied")
+                } actions: {
+                    ButtonState(role: .cancel) { TextState("OK") }
+                } message: {
+                    TextState(
+                        "Paste it into any chat assistant. It names your Avenues, Projects and labels, but no "
+                            + "tasks. Then copy its whole reply and type /paste here to review the plan.")
+                }
+                return .run { [pasteboard] _ in await pasteboard.copy(prompt) }
+
+            case .pastePlanTapped:
+                return .run { [pasteboard] send in
+                    let text = await pasteboard.read()
+                    await send(.planPasted(text))
+                }
+
+            case .planPasted(let text):
+                return pasted(text, in: &state)
+
+            case .alert(.presented(.copyFixUp(let prompt))):
+                return .run { [pasteboard] _ in await pasteboard.copy(prompt) }
 
             case .forgetSummaryTapped(let id):
                 guard !state.compacting else { return .none }
@@ -1087,6 +1126,54 @@ package struct ChatFeature {
         check(&state)
     }
 
+    /// Puts the plan in another assistant's reply `text` on the draft
+    /// card, to review before it's added. When it can't be read, says
+    /// where, and offers a prompt for the assistant to fix it.
+    private func pasted(_ text: String?, in state: inout State) -> Effect<Action> {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            state.alert = AlertState {
+                TextState("Nothing to Paste")
+            } actions: {
+                ButtonState(role: .cancel) { TextState("OK") }
+            } message: {
+                TextState(
+                    "The clipboard has no text. Copy the other assistant's whole reply, then type /paste again.")
+            }
+            return .none
+        }
+        let plan: Plan
+        do {
+            plan = try PlanPrompt.read(text)
+        } catch {
+            let fixUp = PlanPrompt.fixUp(text, error: error)
+            state.alert = AlertState {
+                TextState("Couldn't Read the Plan")
+            } actions: {
+                ButtonState(action: .copyFixUp(fixUp)) { TextState("Copy a Fix-up Prompt") }
+                ButtonState(role: .cancel) { TextState("Cancel") }
+            } message: {
+                TextState(
+                    "\(error.description) Nothing was added. Copy a fix-up prompt, paste it into the same chat, "
+                        + "then copy its new reply and type /paste again.")
+            }
+            return .none
+        }
+        guard !plan.isEmpty else {
+            state.alert = AlertState {
+                TextState("No Plan in the Reply")
+            } actions: {
+                ButtonState(role: .cancel) { TextState("OK") }
+            } message: {
+                TextState(
+                    "The text copied has no tasks, Projects, Avenues or labels. Copy the reply with the ```toml "
+                        + "block, then type /paste again.")
+            }
+            return .none
+        }
+        draft(plan, in: &state)
+        return .none
+    }
+
     /// Summarizes the messages before the last two, after the newest
     /// summary, which the new one takes in.
     private func compact(_ state: inout State) -> Effect<Action> {
@@ -1200,6 +1287,10 @@ package struct ChatFeature {
         case .model: return .send(.core(.modelTapped))
         case .skills: return .send(.manageSkillsTapped)
         case .new: return .send(.delegate(.new))
+        case .export:
+            state.input = ""
+            return .send(.exportPlanTapped(goal: details.trimmingCharacters(in: .whitespacesAndNewlines)))
+        case .paste: return .send(.pastePlanTapped)
         }
     }
 

@@ -1057,6 +1057,12 @@
     "Copy Code" : {
 
     },
+    "Copy a Fix-up Prompt" : {
+
+    },
+    "Copy a prompt to plan with another chat assistant." : {
+
+    },
     "Copy as Markdown" : {
 
     },
@@ -1064,6 +1070,9 @@
 
     },
     "Copy this reply" : {
+
+    },
+    "Couldn't Read the Plan" : {
 
     },
     "Couldn't apply" : {
@@ -2204,6 +2213,9 @@
     "No Labels" : {
 
     },
+    "No Plan in the Reply" : {
+
+    },
     "No Priority" : {
 
     },
@@ -2316,6 +2328,9 @@
 
     },
     "Nothing is due today." : {
+
+    },
+    "Nothing to Paste" : {
 
     },
     "Nothing used yet" : {
@@ -2497,6 +2512,9 @@
 
     },
     "Prompt" : {
+
+    },
+    "Prompt Copied" : {
 
     },
     "Put back recent changes." : {
@@ -2739,6 +2757,9 @@
 
     },
     "Review Changes…" : {
+
+    },
+    "Review the plan in another assistant's reply, copied to the clipboard." : {
 
     },
     "Revoke" : {
@@ -3149,6 +3170,9 @@
 
     },
     "The assistant stopped without replying. Send the message again." : {
+
+    },
+    "The clipboard has no text. Copy the other assistant's whole reply, then type /paste again." : {
 
     },
     "The comment is empty. Say or type what to add." : {

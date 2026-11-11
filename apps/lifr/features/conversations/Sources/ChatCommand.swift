@@ -15,6 +15,8 @@ package enum ChatCommand: String, CaseIterable, Equatable, Sendable {
     case model
     case skills
     case new
+    case export
+    case paste
 
     /// What follows the / to run it.
     package var name: String { rawValue }
@@ -31,6 +33,8 @@ package enum ChatCommand: String, CaseIterable, Equatable, Sendable {
         case .model: String(localized: "Pick the model, thinking and context window.")
         case .skills: String(localized: "Turn skills on or off, or write your own.")
         case .new: String(localized: "Start a new conversation.")
+        case .export: String(localized: "Copy a prompt to plan with another chat assistant.")
+        case .paste: String(localized: "Review the plan in another assistant's reply, copied to the clipboard.")
         }
     }
 
@@ -42,7 +46,8 @@ package enum ChatCommand: String, CaseIterable, Equatable, Sendable {
         case .find, .checkpoints: !state.conversation.messages.isEmpty
         case .back: state.canGo && state.conversation.back != nil
         case .forward: state.canGo && state.conversation.forward != nil
-        case .rename, .model, .skills, .new: true
+        case .rename, .model, .skills, .new, .export: true
+        case .paste: state.core.reply == nil && !state.editsDraft
         }
     }
 }

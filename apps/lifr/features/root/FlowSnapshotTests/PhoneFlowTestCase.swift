@@ -94,7 +94,11 @@ class PhoneFlowTestCase: XCTestCase {
             $0.bugRecorder = BugRecorder(now: { time.value })
             $0.bugReports = bugReports
             $0.deviceInfo = .testValue
-            $0.pasteboard = PasteboardClient { copied.setValue($0) }
+            $0.pasteboard = PasteboardClient {
+                copied.setValue($0)
+            } read: {
+                copied.value
+            }
             $0.withRandomNumberGenerator = WithRandomNumberGenerator(SeededRandomNumberGenerator())
             $0.uuid = UUIDGenerator {
                 ids.withValue {
