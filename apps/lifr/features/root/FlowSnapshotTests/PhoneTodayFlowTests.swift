@@ -61,11 +61,7 @@ final class PhoneTodayFlowTests: PhoneFlowTestCase {
         store.send(.calendar(.monthStepped(-1)))
         store.send(.calendar(.monthsTapped))
         await flow.step("months")
-        if let day = store.calendar.months?.first(where: { $0.id == store.calendar.month })?.weeks.joined()
-            .first(where: { $0.isInMonth && $0.date.day == 9 })
-        {
-            store.send(.calendar(.daySelected(day.date)))
-        }
+        flow.tap("Mon, Nov 9, 1 due")
         await flow.step("months-day-picked")
         flow.finish()
     }

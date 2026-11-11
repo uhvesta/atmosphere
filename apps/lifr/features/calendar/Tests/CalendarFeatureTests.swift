@@ -125,6 +125,19 @@ final class CalendarFeatureTests: XCTestCase {
         XCTAssertNil(store.state.months)
     }
 
+    func testPickingAMonthOnTheLongPageGoesBackToItOnTodayOrItsFirstDay() async throws {
+        let store = await load()
+
+        await store.send(.monthsTapped)
+        await store.send(.monthPicked(try day("2027-02-01")))
+        XCTAssertNil(store.state.months)
+        XCTAssertEqual(store.state.selected, try day("2027-02-01"))
+
+        await store.send(.monthsTapped)
+        await store.send(.monthPicked(try day("2026-11-01")))
+        XCTAssertEqual(store.state.selected, try day("2026-11-03"))
+    }
+
     func testAnotherMonthSelectsItsFirstDayAndTodayComesBack() async throws {
         let store = await load()
 

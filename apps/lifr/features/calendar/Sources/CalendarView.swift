@@ -101,17 +101,28 @@ private struct MonthBlock: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(month.id.monthTitle(locale))
-                .font(.title2.bold())
-                .padding(.horizontal)
-                .padding(.bottom, 8)
-                .accessibilityAddTraits(.isHeader)
+            Button {
+                store.send(.monthPicked(month.id))
+            } label: {
+                Text(month.id.monthTitle(locale))
+                    .font(.title2.bold())
+                    .foregroundStyle(month.weeks.joined().contains(where: \.isToday) ? Color.red : .primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal)
+            .padding(.bottom, 8)
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityHint("Shows this month")
             ForEach(Array(month.weeks.enumerated()), id: \.offset) { _, week in
                 Divider()
                 HStack(spacing: 0) {
                     ForEach(week) { day in
                         if day.isInMonth {
-                            DayCell(day: day, isSelected: day.date == selected, store: store)
+                            // Nothing can be dragged onto this page, so its
+                            // days take only taps.
+                            DayCell(day: day, isSelected: day.date == selected, acceptsDrops: false, store: store)
                         } else {
                             Color.clear.frame(maxWidth: .infinity, minHeight: 46)
                         }
@@ -205,6 +216,7 @@ private struct MonthGrid: View {
 private struct DayCell: View {
     var day: CalendarDay
     var isSelected: Bool
+    var acceptsDrops = true
     var store: StoreOf<CalendarFeature>
     @State private var isTargeted = false
 
@@ -236,13 +248,7 @@ private struct DayCell: View {
             .opacity(day.isInMonth ? 1 : 0.4)
         }
         .buttonStyle(.plain)
-        .dropDestination(for: String.self) { ids, _ in
-            let dropped = ids.compactMap(UUID.init(uuidString:))
-            for id in dropped { store.send(.dropped(id, on: day.date)) }
-            return !dropped.isEmpty
-        } isTargeted: {
-            isTargeted = $0
-        }
+        .modifier(DayDrop(day: day.date, isOn: acceptsDrops, isTargeted: $isTargeted, store: store))
         .accessibilityLabel(accessibilityLabel)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
@@ -271,5 +277,27 @@ private struct DayCell: View {
         let date = Text(day.date.readable())
         let tasks = day.colors.isEmpty ? Text("nothing due") : Text("\(day.colors.count) due")
         return day.hasOverdue ? Text("\(date), \(tasks), overdue") : Text("\(date), \(tasks)")
+    }
+}
+
+/// Takes tasks dropped on a day, when `isOn`.
+private struct DayDrop: ViewModifier {
+    var day: CalendarDate
+    var isOn: Bool
+    @Binding var isTargeted: Bool
+    var store: StoreOf<CalendarFeature>
+
+    func body(content: Content) -> some View {
+        if isOn {
+            content.dropDestination(for: String.self) { ids, _ in
+                let dropped = ids.compactMap(UUID.init(uuidString:))
+                for id in dropped { store.send(.dropped(id, on: day)) }
+                return !dropped.isEmpty
+            } isTargeted: {
+                isTargeted = $0
+            }
+        } else {
+            content
+        }
     }
 }

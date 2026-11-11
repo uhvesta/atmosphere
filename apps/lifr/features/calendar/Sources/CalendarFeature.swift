@@ -37,6 +37,9 @@ package struct CalendarFeature {
         case dropped(UUID, on: CalendarDate)
         /// Opens the months on one long page.
         case monthsTapped
+        /// A month's title on the long page: goes back to that month,
+        /// on today when it's this month and its first day otherwise.
+        case monthPicked(CalendarDate)
         case monthsDismissed
     }
 
@@ -72,6 +75,12 @@ package struct CalendarFeature {
             case .monthsTapped:
                 guard let month = state.month, let workspace = state.list.workspace else { return .none }
                 state.months = months(around: month, in: workspace, state)
+                return .none
+
+            case .monthPicked(let month):
+                let today = CalendarDate(now, in: timeZone)
+                select(today.firstOfMonth == month.firstOfMonth ? today : month.firstOfMonth, in: &state)
+                state.months = nil
                 return .none
 
             case .monthsDismissed:
