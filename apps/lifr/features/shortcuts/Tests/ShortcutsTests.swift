@@ -68,19 +68,18 @@ final class ShortcutsTests: XCTestCase {
         XCTAssertEqual(after, before)
     }
 
-    func testWithNoAvenueAddsNothingAndSaysToAddOne() async throws {
+    func testWithNoAvenuePickedAddsToTheInbox() async throws {
         let store = StoreClient.inMemory(RecordsBuilder(now: now, timeZone: .gmt).workspace)
         let now = now
         let shortcuts = Shortcuts(store: store, locksApp: { false }, now: { now }, timeZone: .gmt)
 
-        do {
-            _ = try await shortcuts.add("Buy milk", avenue: nil, due: .today)
-            XCTFail("Expected it to fail")
-        } catch {
-            XCTAssertEqual(error as? ShortcutError, .noAvenue)
-        }
-        let tasks = try await store.load().tasks
-        XCTAssertTrue(tasks.isEmpty)
+        _ = try await shortcuts.add("Buy milk", avenue: nil, due: .today)
+        _ = try await shortcuts.add("Buy eggs", avenue: nil, due: .none)
+
+        let workspace = try await store.load()
+        XCTAssertEqual(workspace.avenues.count, 1)
+        XCTAssertEqual(Set(workspace.tasks.values.map(\.avenueID)), [Avenue.inboxID])
+        XCTAssertEqual(workspace.tasks.count, 2)
     }
 
     func testTodayCountsAndNamesItsTasks() async throws {

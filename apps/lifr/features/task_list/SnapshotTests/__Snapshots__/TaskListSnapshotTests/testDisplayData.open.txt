@@ -65,7 +65,7 @@
   ▿ TaskSection
     - id: "todo"
     - notes: 0 key/value pairs
-    ▿ rows: 6 elements
+    ▿ rows: 7 elements
       ▿ TaskRowData
         - avenue: "Health"
         - code: "HEALTH-0004"
@@ -166,4 +166,14 @@
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Call the plumber"
+      ▿ TaskRowData
+        - avenue: "Inbox"
+        - code: "INBOX-0018"
+        - due: Optional<Due>.none
+        - fullCode: "INBOX-0018"
+        - id: 00000000-0000-0000-0000-000000001801
+        - priority: Priority.none
+        - status: TaskStatus.todo
+        - subtasks: Optional<Progress>.none
+        - title: "Pick up a birthday card"
     - title: "To Do"

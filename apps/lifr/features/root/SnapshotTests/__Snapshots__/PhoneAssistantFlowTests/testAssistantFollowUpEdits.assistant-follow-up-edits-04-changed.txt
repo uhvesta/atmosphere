@@ -1,6 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "Add a task to buy milk, in HOME, Actions Menu"
-[button] "Context Window" value: "4% used, 1,379 of 32,768 tokens" hint: "4% used, 1,379 of 32,768 tokens"
+[button] "Context Window" value: "4% used, 1,385 of 32,768 tokens" hint: "4% used, 1,385 of 32,768 tokens"
 [text] "On this device"
 [header, text] "Tuesday, November 3 at 10:00 AM"
 [element] "Skill: add"

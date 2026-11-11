@@ -212,17 +212,20 @@ package struct EditAvenueView: View {
                     }
                 }
             }
-            Section {
-                if store.isArchived {
-                    Button("Restore Avenue", systemImage: "arrow.uturn.backward") { store.send(.restoreTapped) }
-                } else {
-                    Button("Archive Avenue", systemImage: "archivebox", role: .destructive) {
-                        store.send(.archiveTapped)
+            // The Inbox can't be archived.
+            if !store.isInbox {
+                Section {
+                    if store.isArchived {
+                        Button("Restore Avenue", systemImage: "arrow.uturn.backward") { store.send(.restoreTapped) }
+                    } else {
+                        Button("Archive Avenue", systemImage: "archivebox", role: .destructive) {
+                            store.send(.archiveTapped)
+                        }
                     }
-                }
-            } footer: {
-                if !store.isArchived {
-                    Text("Archiving hides the Avenue and its tasks. You can restore it from Archived.")
+                } footer: {
+                    if !store.isArchived {
+                        Text("Archiving hides the Avenue and its tasks. You can restore it from Archived.")
+                    }
                 }
             }
         }

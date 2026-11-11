@@ -107,6 +107,25 @@ package struct Workspace: Hashable, Codable, Sendable {
         return avenue
     }
 
+    /// Adds the Inbox if there isn't one, first in the Avenue order. Returns
+    /// whether it added it.
+    @discardableResult
+    package mutating func ensureInbox(in context: Context) -> Bool {
+        guard avenues[Avenue.inboxID] == nil else { return false }
+        var key = AvenueKey(reconciled: "INBOX")
+        var number = 2
+        while avenues.values.contains(where: { $0.key == key }) {
+            key = Self.suffixed(AvenueKey(reconciled: "INBOX"), number)
+            number += 1
+        }
+        avenues[Avenue.inboxID] = Avenue(
+            id: Avenue.inboxID, key: key, name: "Inbox", color: "gray", symbol: "tray",
+            sortOrder: SortKey.between(nil, avenues.values.map(\.sortOrder).min()), agentAccess: .full,
+            createdAt: context.now, archivedAt: nil
+        )
+        return true
+    }
+
     /// Changes an Avenue's key, for example after reconciliation suffixed it.
     package mutating func setKey(_ key: String, ofAvenue id: UUID) throws(LifrError) {
         var avenue = try avenue(id)
@@ -255,6 +274,7 @@ package struct Workspace: Hashable, Codable, Sendable {
         -> Change
     {
         var avenue = try avenue(id)
+        guard !avenue.isInbox else { throw .inboxCannotBeArchived }
         let open = openTopLevelTasks(where: { $0.avenueID == id })
         var change = Change()
         if !open.isEmpty {

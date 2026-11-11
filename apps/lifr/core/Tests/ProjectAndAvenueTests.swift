@@ -115,5 +115,47 @@ func projectAndAvenueTests() -> [TestCase] {
             try expectEqual(project.name, "Half marathon")
             try expectEqual(fixture.get(task).projectID, fixture.marathon.id)
         },
+        TestCase("given no Inbox, when one is ensured, then it's added first in the order, once") {
+            let fixture = try Fixture()
+            try expectEqual(fixture.workspace.ensureInbox(in: fixture.context), true)
+            try expectEqual(fixture.workspace.ensureInbox(in: fixture.context), false)
+            let order = fixture.workspace.avenues.values.sorted { $0.sortOrder < $1.sortOrder }
+            try expectEqual(order.map(\.isInbox), [true, false])
+            try expectEqual(order.first?.key.rawValue, "INBOX")
+        },
+        TestCase("given an Avenue keyed INBOX already, when the Inbox is added, then it takes another key") {
+            let fixture = try Fixture()
+            try fixture.workspace.createAvenue(key: "INBOX", name: "Mine", in: fixture.context)
+            fixture.workspace.ensureInbox(in: fixture.context)
+            let inbox = try fixture.workspace.avenues[Avenue.inboxID].unwrap("no Inbox")
+            try expectEqual(inbox.key.needsRename, true)
+        },
+        TestCase("given the Inbox, when it's archived, then that's refused and it stays") {
+            let fixture = try Fixture()
+            fixture.workspace.ensureInbox(in: fixture.context)
+            try expectError(.inboxCannotBeArchived) {
+                try fixture.workspace.archive(avenue: Avenue.inboxID, openTasks: .closeAsWontDo, in: fixture.context)
+            }
+            try expectEqual(fixture.workspace.avenues[Avenue.inboxID]?.archivedAt, nil)
+        },
+        TestCase("given two devices that each made an Inbox, when they sync, then one Inbox holds both tasks") {
+            let phone = try Fixture()
+            let mac = Fixture(copying: phone, device: "Mac")
+            var tasks: [UUID] = []
+            for device in [phone, mac] {
+                device.workspace.ensureInbox(in: device.context)
+                let change = try device.workspace.createTask(
+                    Workspace.NewTask(title: "Call \(tasks.count)", avenueID: Avenue.inboxID), in: device.context)
+                try tasks.append(change.previous.first { $0.value == nil }.unwrap("no new task").key)
+            }
+            let macTask = try mac.workspace.tasks[tasks[1]].unwrap("no Mac task")
+            let macInbox = try mac.workspace.avenues[Avenue.inboxID].unwrap("no Mac Inbox")
+            phone.workspace.importSynced(records: [
+                RecordID(.avenue, Avenue.inboxID): .avenue(macInbox), RecordID(.task, macTask.id): .task(macTask),
+            ])
+            _ = phone.workspace.reconcile(in: phone.context)
+            try expectEqual(phone.workspace.avenues.values.filter { $0.name == "Inbox" }.count, 1)
+            try expectEqual(Set(tasks.compactMap { phone.workspace.tasks[$0]?.avenueID }), [Avenue.inboxID])
+        },
     ]
 }

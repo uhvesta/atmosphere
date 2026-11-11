@@ -16,6 +16,8 @@
       [StaticText] "" value: "Trash"
     [Row/OutlineRow] ""
       [Heading] "Avenues"
+    [Row/OutlineRow] ""
+      [StaticText] "Inbox" value: "1"
     [Row/OutlineRow, selected] ""
       [StaticText] "Health" value: "4"
     [Row/OutlineRow] ""

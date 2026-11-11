@@ -9,7 +9,7 @@
 [button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
 [header, text] "Today"
 [button] "Water the plants" value: "To Do, Today, HOME-0010"
-[button] "Buy oat milk" value: "To Do, Today, HEALTH-WD0Z"
+[button] "Buy oat milk" value: "To Do, Today, INBOX-WD0Z"
 [button] "Search"
 [button, selected] "Today"
 [button] "Upcoming"

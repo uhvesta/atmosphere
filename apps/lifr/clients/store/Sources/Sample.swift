@@ -8,6 +8,7 @@ extension Workspace {
     /// same records.
     package static func sample(now: Date, timeZone: TimeZone) -> Workspace {
         var records = RecordsBuilder(now: now, timeZone: timeZone)
+        let inbox = records.inbox()
         let health = records.avenue("HEALTH", "Health", color: "green", symbol: "heart")
         let work = records.avenue("WORK", "Work", color: "blue", symbol: "briefcase")
         let home = records.avenue("HOME", "Home", color: "orange", symbol: "house")
@@ -26,6 +27,7 @@ extension Workspace {
         let marathon = records.project("Half marathon", in: health)
         records.task("Buy running shoes", in: health, project: marathon, priority: .high, due: 1)
         records.reminder(.at(now + 2 * 60 * 60), on: review)
+        records.task("Pick up a birthday card", in: inbox)
         return records.workspace
     }
 }
@@ -60,6 +62,15 @@ package struct RecordsBuilder {
                 id: standInID, key: AvenueKey(reconciled: key.uppercased()), name: name, color: color,
                 symbol: symbol, sortOrder: "", agentAccess: .full, createdAt: now, archivedAt: nil)
         }
+    }
+
+    /// The Inbox, added first if there isn't one.
+    package mutating func inbox() -> Avenue {
+        workspace.ensureInbox(in: Context(actor: .user(device: "iPhone", surface: .iPhone), now: now))
+        return workspace.avenues[Avenue.inboxID]
+            ?? Avenue(
+                id: Avenue.inboxID, key: AvenueKey(reconciled: "INBOX"), name: "Inbox", color: "gray",
+                symbol: "tray", sortOrder: "", agentAccess: .full, createdAt: now, archivedAt: nil)
     }
 
     package mutating func project(_ name: String, in avenue: Avenue) -> Project {

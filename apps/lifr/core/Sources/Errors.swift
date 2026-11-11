@@ -34,6 +34,7 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
     case projectHasOpenTasks(project: UUID, open: [UUID])
     /// Archiving would hide these; retry with `openTasks: .closeAsWontDo`.
     case avenueHasOpenTasks(avenue: UUID, open: [UUID])
+    case inboxCannotBeArchived
     case emptyComment
     case notCommentAuthor(comment: UUID)
     case inTrash(UUID)
@@ -96,6 +97,9 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
         case .avenueHasOpenTasks(_, let open):
             "This Avenue still has \(counted(open.count, "open task", "open tasks")), and archiving hides them. "
                 + "Move them to another Avenue first, or confirm to close them as Won't Do."
+        case .inboxCannotBeArchived:
+            "The Inbox can't be archived, since it's where tasks go when no Avenue is picked. Move its tasks "
+                + "to other Avenues, or close them, to empty it."
         case .emptyComment:
             "A comment can't be empty. Write something, or delete the comment."
         case .notCommentAuthor:

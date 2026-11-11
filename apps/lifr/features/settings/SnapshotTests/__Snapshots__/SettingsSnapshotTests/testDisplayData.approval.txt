@@ -1,5 +1,9 @@
 ▿ (3 elements)
-  ▿ avenues: 3 elements
+  ▿ avenues: 4 elements
+    ▿ AvenueAccess
+      - access: AgentAccess.full
+      - id: 1B0C5E00-1AB0-4C00-8000-000000000001
+      - name: "Inbox"
     ▿ AvenueAccess
       - access: AgentAccess.full
       - id: 00000000-0000-0000-0000-000000000101

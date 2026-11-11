@@ -1,6 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "I called the plumber, Actions Menu"
-[button] "Context Window" value: "5% used, 1,593 of 32,768 tokens" hint: "5% used, 1,593 of 32,768 tokens"
+[button] "Context Window" value: "5% used, 1,598 of 32,768 tokens" hint: "5% used, 1,598 of 32,768 tokens"
 [text] "On this device"
 [header, text] "Tuesday, November 3 at 10:00 AM"
 [element] "Skill: change"

@@ -1,4 +1,12 @@
-▿ 3 elements
+▿ 4 elements
+  ▿ AvenueRow
+    - color: "gray"
+    - id: 1B0C5E00-1AB0-4C00-8000-000000000001
+    - key: "INBOX"
+    - name: "Inbox"
+    - openCount: 1
+    - projects: 0 elements
+    - symbol: "tray"
   ▿ AvenueRow
     - color: "green"
     - id: 00000000-0000-0000-0000-000000000101

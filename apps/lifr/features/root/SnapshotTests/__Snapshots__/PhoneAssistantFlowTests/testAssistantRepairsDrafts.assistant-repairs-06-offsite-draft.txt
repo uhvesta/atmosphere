@@ -4,7 +4,7 @@
 [text] "I added Stretch after every run to your Half marathon project."
 [button] "Conversations" id: BackButton
 [button] "Add a task to stretch after every run t…, Actions Menu"
-[button] "Context Window" value: "4% used, 1,341 of 32,768 tokens" hint: "4% used, 1,341 of 32,768 tokens"
+[button] "Context Window" value: "4% used, 1,347 of 32,768 tokens" hint: "4% used, 1,347 of 32,768 tokens"
 [text] "On this device"
 [button] "Undo"
 [element] "Skill: add"

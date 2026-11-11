@@ -28,7 +28,9 @@
     [Row/OutlineRow] ""
       [Heading] "Avenues"
     [Row/OutlineRow] ""
-      [StaticText] "Health" value: "5"
+      [StaticText] "Inbox" value: "2"
+    [Row/OutlineRow] ""
+      [StaticText] "Health" value: "4"
     [Row/OutlineRow] ""
       [StaticText] "Half marathon" value: "1"
     [Row/OutlineRow] ""
@@ -56,7 +58,7 @@
     [Row/OutlineRow] ""
       [Button] "Water the plants" value: "To Do, Today, HOME-0010" id: HOME-0010
     [Row/OutlineRow] ""
-      [Button] "Buy oat milk" value: "To Do, Today, HEALTH-WD0Z" id: HEALTH-WD0Z
+      [Button] "Buy oat milk" value: "To Do, Today, INBOX-WD0Z" id: INBOX-WD0Z
   [StaticText] "" value: "No task selected"
   [Toolbar] ""
     [Button] "Hide Sidebar"

@@ -28,6 +28,8 @@
     [Row/OutlineRow] ""
       [Heading] "Avenues"
     [Row/OutlineRow] ""
+      [StaticText] "Inbox" value: "1"
+    [Row/OutlineRow] ""
       [StaticText] "Health" value: "4"
     [Row/OutlineRow] ""
       [StaticText] "Half marathon" value: "1"

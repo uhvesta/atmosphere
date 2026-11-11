@@ -47,12 +47,12 @@ package struct Shortcuts: Sendable {
         package var isLocked: Bool
     }
 
-    /// Adds a task called `title`, in `avenue` or the first one.
+    /// Adds a task called `title`, in `avenue` or the Inbox.
     package func add(_ title: String, avenue: UUID?, due: Due) async throws -> Item {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw ShortcutError.noTitle }
-        let first = try await avenues().first?.id
-        guard let avenue = avenue ?? first else { throw ShortcutError.noAvenue }
+        if avenue == nil { try await store.ensureInbox() }
+        let avenue = avenue ?? Avenue.inboxID
         var new = Workspace.NewTask(title: title, avenueID: avenue)
         let now = now()
         new.dueDate =
@@ -148,8 +148,6 @@ package enum ShortcutError: Error, Hashable, Sendable, CustomStringConvertible {
     case noTask
     /// The new task's title was empty.
     case noTitle
-    /// There's no Avenue to add the task to.
-    case noAvenue
     /// The store saved, but the new task wasn't in what it returned.
     case notSaved
 
@@ -159,8 +157,6 @@ package enum ShortcutError: Error, Hashable, Sendable, CustomStringConvertible {
             String(localized: "Lifr is locked. Open Lifr and unlock it to finish tasks.")
         case .noTask:
             String(localized: "That task isn't in Lifr any more. Pick another.")
-        case .noAvenue:
-            String(localized: "Lifr has no Avenue to add the task to. Open Lifr and add one first.")
         case .noTitle:
             String(localized: "The task needs a title. Say or type what to add.")
         case .notSaved:

@@ -11,7 +11,10 @@
     - "Buy running shoes"
     - "Call the plumber"
     - "Renew passport"
-  ▿ avenues: 3 elements
+  ▿ avenues: 4 elements
+    ▿ (2 elements)
+      - .0: "Inbox"
+      - .1: 1
     ▿ (2 elements)
       - .0: "Health"
       - .1: 4

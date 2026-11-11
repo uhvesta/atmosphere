@@ -1,6 +1,7 @@
 [button] "New Avenue"
 [header] "Avenues"
 [button] "2 changes need review, Review"
+[button] "Inbox, INBOX, 0" value: "0 open"
 [button] "Health, HEALTH, 2" value: "2 open"
 [button] "Race day, 1" value: "1 open"
 [button] "Home, HOME, 0" value: "0 open"

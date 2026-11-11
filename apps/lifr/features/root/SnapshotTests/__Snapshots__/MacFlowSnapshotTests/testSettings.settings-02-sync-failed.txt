@@ -43,6 +43,8 @@
   [Button] "Bug Reports"
   [StaticText] "" value: "Reports you saved, encrypted on this Mac. Choose Help › Report a Bug to make one."
   [Heading] "Agent access"
+  [StaticText] "" value: "Inbox"
+  [PopUpButton] "" value: "Read and write"
   [StaticText] "" value: "Health"
   [PopUpButton] "" value: "Read and write"
   [StaticText] "" value: "Work"

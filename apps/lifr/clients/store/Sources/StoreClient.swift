@@ -267,6 +267,16 @@ extension StoreClient {
         }
     }
 
+    /// `Workspace.ensureInbox`: adds the Inbox if there isn't one. Saves
+    /// nothing when there is.
+    package func ensureInbox() async throws {
+        guard try await load().avenues[Avenue.inboxID] == nil else { return }
+        _ = try await save { workspace, context in
+            workspace.ensureInbox(in: context)
+            return Change()
+        }
+    }
+
     /// `Workspace.purgeTrash`: deletes what has been in the trash longer
     /// than it's kept. Saves nothing when there's nothing to delete.
     package func purgeTrash(now: Date) async throws {

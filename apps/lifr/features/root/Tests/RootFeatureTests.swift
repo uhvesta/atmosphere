@@ -18,7 +18,12 @@ import XCTest
 final class RootFeatureTests: XCTestCase {
     /// 2026-11-03 10:00 UTC.
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
-    private lazy var records = RecordsBuilder(now: now, timeZone: .gmt)
+    private lazy var records = {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        // Opening adds the Inbox when there's none; most tests start after.
+        _ = records.inbox()
+        return records
+    }()
     private lazy var health = records.avenue("HEALTH", "Health")
 
     private let request = ApprovalRequest(
@@ -62,8 +67,8 @@ final class RootFeatureTests: XCTestCase {
 
         XCTAssertEqual(store.state.today.list.rows.map(\.title), ["Run"])
         XCTAssertEqual(store.state.upcoming.list.rows.map(\.title), ["Stretch"])
-        XCTAssertEqual(store.state.avenues.avenues.map(\.name), ["Health"])
-        XCTAssertEqual(store.state.settings.avenues.map(\.name), ["Health"])
+        XCTAssertEqual(store.state.avenues.avenues.map(\.name), ["Inbox", "Health"])
+        XCTAssertEqual(store.state.settings.avenues.map(\.name), ["Inbox", "Health"])
         await store.receive(\.remindersScheduled)
         XCTAssertEqual(reminders.scheduled.map(\.taskID), [run.id])
         await task.cancel()
@@ -481,6 +486,17 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.trash.rows.map(\.title), ["Recent"])
         let saved = try await client.load()
         XCTAssertNil(saved.tasks[old.id])
+        await task.cancel()
+    }
+
+    func testOpeningWithNoInboxAddsOneWithNothingToUndo() async throws {
+        let client = StoreClient.inMemory(RecordsBuilder(now: now, timeZone: .gmt).workspace)
+        let store = makeStore(.phone, store: client)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        XCTAssertEqual(store.state.avenues.avenues.map(\.id), [Avenue.inboxID])
+        XCTAssertNil(store.state.toast)
         await task.cancel()
     }
 

@@ -78,6 +78,14 @@ package struct Avenue: Identifiable, Hashable, Codable, Sendable {
         self.createdAt = createdAt
         self.archivedAt = archivedAt
     }
+
+    /// The Inbox's ID. It's the same on every device, so two devices that each
+    /// made an Inbox before syncing end up with one.
+    package static let inboxID = UUID(
+        uuid: (0x1B, 0x0C, 0x5E, 0x00, 0x1A, 0xB0, 0x4C, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01))
+
+    /// Where tasks go when no Avenue is picked. It can't be archived.
+    package var isInbox: Bool { id == Self.inboxID }
 }
 
 package enum ProjectStatus: String, Hashable, Codable, Sendable, CaseIterable {

@@ -1,7 +1,7 @@
 ▿ (2 elements)
-  ▿ .0: 3 elements
+  ▿ .0: 4 elements
+    - "Inbox"
     - "Health"
     - "Work"
     - "Home"
-  ▿ .1: 1 element
-    - "Half marathon"
+  - .1: 0 elements

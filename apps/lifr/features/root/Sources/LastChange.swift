@@ -25,7 +25,8 @@ package struct LastChange: Equatable, Sendable {
     package var number: Int
 
     /// `nil` for saves that change no task, Project or Avenue, such as a
-    /// new comment, Settings or what an Avenue shares with apps, and for
+    /// new comment, Settings, what an Avenue shares with apps or adding the
+    /// Inbox, and for
     /// Undo itself, which isn't a change to undo in turn.
     package init?(_ saved: Saved, id: UUID) {
         let change = saved.change
@@ -65,8 +66,10 @@ package struct LastChange: Equatable, Sendable {
 
     /// Whether `step` is one Undo offers: not only what an Avenue shares
     /// with apps, which is a setting, changed where it's shown.
+    /// Adding the Inbox isn't undoable: Lifr adds it, and it has to stay.
     private static func isUndoable(_ step: JournalStep) -> Bool {
-        step.fields.contains { $0.field != .agentAccess }
+        guard step.before != nil || step.record != RecordID(.avenue, Avenue.inboxID) else { return false }
+        return step.fields.contains { $0.field != .agentAccess }
     }
 
     /// What a change to a Project or an Avenue did, in words.

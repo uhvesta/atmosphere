@@ -29,6 +29,8 @@ package struct EditAvenueFeature {
         package var color: String
         package var symbol: String
         package var isArchived: Bool
+        /// The Inbox can't be archived, so it isn't offered.
+        package var isInbox: Bool
         /// Open top-level tasks, which archiving closes.
         package var openCount: Int
         @Presents package var confirmArchive: AlertState<Action.ConfirmArchive>?
@@ -42,6 +44,7 @@ package struct EditAvenueFeature {
             color = avenue.color
             symbol = avenue.symbol
             isArchived = avenue.archivedAt != nil
+            isInbox = avenue.isInbox
             openCount = workspace.tasks.values.count {
                 $0.avenueID == id && $0.deletedAt == nil && $0.isOpen && !$0.isSubtask
             }

@@ -1,6 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "Add a task to stretch after every run t…, Actions Menu"
-[button] "Context Window" value: "4% used, 1,256 of 32,768 tokens" hint: "4% used, 1,256 of 32,768 tokens"
+[button] "Context Window" value: "4% used, 1,262 of 32,768 tokens" hint: "4% used, 1,262 of 32,768 tokens"
 [text] "On this device"
 [header, text] "Tuesday, November 3 at 10:00 AM"
 [element] "Skill: add"
