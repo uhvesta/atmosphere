@@ -681,7 +681,7 @@ final class RootFeatureTests: XCTestCase {
         await store.send(.updated(Update(workspace: synced.workspace, number: synced.number)))
 
         await store.send(.undoTapped(id))
-        XCTAssertNotNil(store.state.undoAlert)
+        XCTAssertNotNil(store.state.notice)
         XCTAssertEqual(store.state.workspace?.tasks[run.id]?.status, .done)
         XCTAssertEqual(store.state.workspace?.tasks[run.id]?.title, "Run 5 km")
         await task.cancel()
@@ -799,7 +799,7 @@ final class RootFeatureTests: XCTestCase {
         await store.send(.updated(Update(workspace: synced.workspace, number: synced.number)))
 
         await store.send(.undoTapped(id))
-        XCTAssertNotNil(store.state.undoAlert)
+        XCTAssertNotNil(store.state.notice)
         XCTAssertEqual(store.state.workspace?.projects[marathon.id]?.name, "Spring half")
         await task.cancel()
     }
@@ -896,7 +896,7 @@ final class RootFeatureTests: XCTestCase {
         await store.send(.updated(Update(workspace: synced.workspace, number: synced.number)))
 
         await store.send(.redoTapped(redo.id))
-        XCTAssertNotNil(store.state.undoAlert)
+        XCTAssertNotNil(store.state.notice)
         XCTAssertEqual(store.state.workspace?.tasks[run.id]?.status, .todo)
         XCTAssertEqual(store.state.workspace?.tasks[run.id]?.title, "Run 5 km")
         await task.cancel()
@@ -1043,6 +1043,89 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.today.list.detail?.id, stretch.id)
         XCTAssertNotNil(store.state.today.list.detail?.statusPicker)
         await task.cancel()
+    }
+
+    func testATaskLinkFromTheAssistantTabLandsOnTheTask() async throws {
+        let stretch = records.task("Stretch", in: health, due: 3)
+        let store = makeStore(.phone)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.binding(.set(\.tab, .conversations)))
+
+        await store.send(.urlOpened(try XCTUnwrap(DeepLink.task(stretch.id, picksStatus: false).url)))
+        await store.receive(\.reopen)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.tab, .today)
+        XCTAssertEqual(store.state.today.list.detail?.id, stretch.id)
+        await task.cancel()
+    }
+
+    func testALinkBeforeTheRecordsLoadIsFollowedOnceTheyDo() async throws {
+        let stretch = records.task("Stretch", in: health, due: 3)
+        let store = makeStore(.phone)
+
+        await store.send(.urlOpened(try XCTUnwrap(URL(string: "lifr://task/\(stretch.id.uuidString)"))))
+        await store.send(.urlOpened(try XCTUnwrap(URL(string: "lifr://add?title=Buy%20milk"))))
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.today.list.detail?.id, stretch.id)
+        XCTAssertEqual(store.state.quickAdd?.title, "Buy milk")
+        await task.cancel()
+    }
+
+    func testALinkToATaskLifrDoesntHaveSaysSoAndGoesToToday() async throws {
+        let store = makeStore(.phone)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.binding(.set(\.tab, .conversations)))
+
+        await store.send(.linkOpened(.task(UUID(), picksStatus: false)))
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertNotNil(store.state.notice)
+        XCTAssertEqual(store.state.tab, .today)
+        XCTAssertNil(store.state.today.list.detail)
+
+        await store.send(.urlOpened(try XCTUnwrap(URL(string: "https://example.com/task"))))
+        XCTAssertNotNil(store.state.notice)
+        await task.cancel()
+    }
+
+    func testALinkWaitsForTheLockAndIsFollowedOnceUnlocked() async throws {
+        let (store, _) = locked(.always(failing: .cancelled))
+        let task = await store.send(.task)
+        await store.receive(\.unlocked)
+        await store.skipReceivedActions(strict: false)
+        XCTAssertTrue(store.state.isLocked)
+
+        await store.send(.linkOpened(.calendar(try CalendarDate("2026-11-09"))))
+        XCTAssertEqual(store.state.tab, .today)
+
+        await store.send(.unlocked(.success(())))
+        await store.receive(\.linkOpened)
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.tab, .upcoming)
+        XCTAssertTrue(store.state.upcomingShowsCalendar)
+        XCTAssertEqual(store.state.calendar.selected, try CalendarDate("2026-11-09"))
+        await task.cancel()
+    }
+
+    func testLinksReadBackWhatTheyName() throws {
+        let id = UUID()
+        let links: [DeepLink] = [
+            .task(id, picksStatus: false), .task(id, picksStatus: true), .today,
+            .calendar(try CalendarDate("2026-11-09")), .add(title: nil), .add(title: "Call mum & dad"),
+        ]
+        for link in links {
+            XCTAssertEqual(try XCTUnwrap(link.url).absoluteString.hasPrefix("lifr://"), true)
+            XCTAssertEqual(DeepLink(try XCTUnwrap(link.url)), link)
+        }
+        for bad in ["lifr://task/not-an-id", "lifr://calendar/9-11-2026", "lifr://nowhere", "https://lifr.app/today"] {
+            XCTAssertNil(DeepLink(try XCTUnwrap(URL(string: bad))), bad)
+        }
     }
 
     func testTheBadgeCountsWhatsDueAndFollowsTheSetting() async {

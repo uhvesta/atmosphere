@@ -128,7 +128,8 @@ package struct RootView: View {
             .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring, value: store.syncBanner)
         }
         .modifier(RegistersUndo(store: store))
-        .alert($store.scope(state: \.undoAlert, action: \.undoAlert))
+        .alert($store.scope(state: \.notice, action: \.notice))
+        .onOpenURL { store.send(.urlOpened($0)) }
         .sheet(item: $store.scope(state: \.quickAdd, action: \.quickAdd)) { store in
             NavigationStack { QuickAddView(store: store) }
                 .sheetLayout()

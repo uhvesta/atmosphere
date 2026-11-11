@@ -1649,6 +1649,9 @@
     "It changed again since, here or on another device, and undoing would lose that change. Open it to change it back by hand." : {
 
     },
+    "It doesn't name a task, a day or a list in Lifr. If another app made it, that app may need updating." : {
+
+    },
     "It has %@. An archived Project moves to Archived, where you can restore it." : {
 
     },
@@ -1659,6 +1662,9 @@
 
     },
     "It was deleted here, and %@ changed it." : {
+
+    },
+    "It was deleted, or it's on another device that hasn't synced yet. Look in Trash, or sync and open the link again." : {
 
     },
     "It's deleted here and from iCloud, and can't be undone. Tasks it changed stay." : {
@@ -1753,6 +1759,9 @@
 
     },
     "Lifr can't open its data" : {
+
+    },
+    "Lifr can't open this link" : {
 
     },
     "Lifr couldn't confirm the task was added. Open Lifr to check Today before adding it again." : {
@@ -3083,6 +3092,9 @@
 
     },
     "That photo is no longer in your library, or access to it was turned off. Pick another." : {
+
+    },
+    "That task isn't in Lifr" : {
 
     },
     "That task isn't in Lifr any more. Pick another." : {

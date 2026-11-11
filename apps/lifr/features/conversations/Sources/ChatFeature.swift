@@ -503,7 +503,7 @@ package struct ChatFeature {
                 if let editing = state.core.editing {
                     let changed = state.conversation.changedReplies(hiddenGoingBefore: editing)
                     guard changed.isEmpty else {
-                        state.alert = undoAlert(
+                        state.alert = notice(
                             changed, in: state, undo: .resend(undo: true), keep: .resend(undo: false))
                         return .none
                     }
@@ -533,7 +533,7 @@ package struct ChatFeature {
                 else { return .none }
                 let changed = state.conversation.changedReplies(hiddenGoingTo: asked.id)
                 guard changed.isEmpty else {
-                    state.alert = undoAlert(
+                    state.alert = notice(
                         changed, in: state, undo: .retry(id, undo: true), keep: .retry(id, undo: false))
                     return .none
                 }
@@ -1123,13 +1123,13 @@ package struct ChatFeature {
             state.conversation.go(to: id)
             return .none
         }
-        state.alert = undoAlert(changed, in: state, undo: .go(to: id, undo: true), keep: .go(to: id, undo: false))
+        state.alert = notice(changed, in: state, undo: .go(to: id, undo: true), keep: .go(to: id, undo: false))
         return .none
     }
 
     /// Asks whether to undo the task changes of the replies `changed`,
     /// which what the person asked for hides.
-    private func undoAlert(
+    private func notice(
         _ changed: [UUID], in state: State, undo: Action.Alert, keep: Action.Alert
     ) -> AlertState<Action.Alert> {
         let count = changed.reduce(0) { $0 + (state.conversation.changes[$1]?.count ?? 0) }

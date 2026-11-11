@@ -24,6 +24,17 @@
 	<string>Lifr opens the camera when you tap Camera in a chat, to take a photo for the assistant to look at. The photo stays on this device.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Lifr shows your recent photos when you tap + in a chat, so you can attach one for the assistant to look at. Only the photos you attach are used, and they stay on this device.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Lifr links</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>lifr</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Avesta Barzegar</string>
 </dict>

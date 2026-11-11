@@ -156,8 +156,9 @@ package struct RootFeature {
         @Presents package var quickAdd: QuickAddFeature.State?
         @Presents package var approval: ApprovalFeature.State?
         @Presents package var syncReview: SyncReviewFeature.State?
-        /// Why Undo couldn't revert the last change.
-        @Presents package var undoAlert: AlertState<Never>?
+        /// A short message: why Undo or Redo couldn't, or that a link
+        /// named a task Lifr doesn't have.
+        @Presents package var notice: AlertState<Never>?
         @Shared(.lastChange) package var lastChange
         /// The change Undo just took back, which Redo puts back, until
         /// something else changes.
@@ -176,6 +177,8 @@ package struct RootFeature {
         /// A task to show the statuses for once it opens, as Change Status…
         /// on its reminder asks.
         package var statusPickPending: UUID?
+        /// A link opened while Lifr was locked, followed once it's unlocked.
+        package var pendingLink: DeepLink?
         /// Whether sync runs often while open, rather than every so often.
         @Shared(.syncsContinuously) package var syncsContinuously
         /// Whether the records are hidden until the person confirms it's
@@ -341,7 +344,7 @@ package struct RootFeature {
         /// five seconds.
         case toastShown(UUID)
         case toastExpired(UUID)
-        case undoAlert(PresentationAction<Never>)
+        case notice(PresentationAction<Never>)
         case syncBannerDismissed
         case syncChanged(SyncState)
         /// The app came to the front: lock it if it was away long enough,
@@ -380,6 +383,9 @@ package struct RootFeature {
         /// The person opened a reminder's notification: show its task, from
         /// Today if no list is showing.
         case reminderOpened(UUID)
+        /// A `lifr://` link, from a widget, Shortcuts or another app.
+        case urlOpened(URL)
+        case linkOpened(DeepLink)
         /// Change Status… on a reminder: its task, with the statuses to pick.
         case reminderStatusRequested(UUID)
         /// The badge setting changed.
@@ -540,7 +546,12 @@ package struct RootFeature {
                 return .merge(effects)
 
             case .loaded(.success(let snapshot)):
-                let shown = show(snapshot, in: &state)
+                var shown = show(snapshot, in: &state)
+                if !state.isLocked, let link = state.pendingLink {
+                    // A link that came before the records: follow it now.
+                    state.pendingLink = nil
+                    shown = .concatenate(shown, .send(.linkOpened(link)))
+                }
                 guard let place = state.restoring else { return shown }
                 state.restoring = nil
                 let selects: Effect<Action> =
@@ -559,6 +570,30 @@ package struct RootFeature {
             case .reminderStatusRequested(let id):
                 state.statusPickPending = id
                 return .send(.reminderOpened(id))
+
+            case .urlOpened(let url):
+                guard let link = DeepLink(url) else {
+                    state.notice = AlertState {
+                        TextState("Lifr can't open this link")
+                    } actions: {
+                        ButtonState(role: .cancel) { TextState("OK") }
+                    } message: {
+                        TextState(
+                            """
+                            It doesn't name a task, a day or a list in Lifr. If another app made it, that app \
+                            may need updating.
+                            """)
+                    }
+                    return .none
+                }
+                return .send(.linkOpened(link))
+
+            case .linkOpened(let link):
+                guard !state.isLocked else {
+                    state.pendingLink = link
+                    return .none
+                }
+                return open(link, in: &state)
 
             case .badgeCountChanged:
                 return scheduleReminders(state)
@@ -771,7 +806,7 @@ package struct RootFeature {
                 else { return .none }
                 state.redo = nil
                 guard redo.isCurrent(in: workspace) else {
-                    state.undoAlert = AlertState {
+                    state.notice = AlertState {
                         TextState("Couldn't redo")
                     } actions: {
                         ButtonState(role: .cancel) { TextState("OK") }
@@ -801,7 +836,7 @@ package struct RootFeature {
                 return .merge(show(saved.snapshot, in: &state), .run { [feedback] _ in await feedback(.tap) })
 
             case .redone(_, .failure(let error)):
-                state.undoAlert = .failed("Couldn't redo", error)
+                state.notice = .failed("Couldn't redo", error)
                 return .none
 
             case .undoTapped(let id):
@@ -811,7 +846,7 @@ package struct RootFeature {
                 state.undoing = last
                 guard last.isCurrent(in: workspace) else {
                     state.$lastChange.withLock { $0 = nil }
-                    state.undoAlert = AlertState {
+                    state.notice = AlertState {
                         TextState("Couldn't undo")
                     } actions: {
                         ButtonState(role: .cancel) { TextState("OK") }
@@ -846,7 +881,7 @@ package struct RootFeature {
 
             case .undone(.failure(let error)):
                 state.undoing = nil
-                state.undoAlert = .failed("Couldn't undo", error)
+                state.notice = .failed("Couldn't undo", error)
                 return .none
 
             case .toastShown(let id):
@@ -946,7 +981,7 @@ package struct RootFeature {
 
             case .binding, .remindersScheduled, .today, .upcoming, .calendar, .trash, .procrastinated, .avenues,
                 .search, .savedFilter, .anytime, .later, .logbook,
-                .avenue, .board, .conversations, .settings, .quickAdd, .approval, .undoAlert, .syncReview,
+                .avenue, .board, .conversations, .settings, .quickAdd, .approval, .notice, .syncReview,
                 .lockAlert:
                 return .none
             }
@@ -957,7 +992,7 @@ package struct RootFeature {
         .ifLet(\.$quickAdd, action: \.quickAdd) { QuickAddFeature() }
         .ifLet(\.$approval, action: \.approval) { ApprovalFeature() }
         .ifLet(\.$syncReview, action: \.syncReview) { SyncReviewFeature() }
-        .ifLet(\.$undoAlert, action: \.undoAlert)
+        .ifLet(\.$notice, action: \.notice)
         .ifLet(\.$lockAlert, action: \.lockAlert)
         .ifLet(\.$bugReport, action: \.bugReport) { BugReportFeature() }
         .ifLet(\.$goToTask, action: \.goToTask) { GoToTaskFeature() }
@@ -1026,7 +1061,9 @@ package struct RootFeature {
         case .unlocked(.success):
             state.isLocked = false
             state.isUnlocking = false
-            return .none
+            guard let link = state.pendingLink else { return .none }
+            state.pendingLink = nil
+            return .send(.linkOpened(link))
 
         case .unlocked(.failure(let error)):
             state.isUnlocking = false
@@ -1137,6 +1174,45 @@ package struct RootFeature {
             asOf: now, from: start, until: tomorrow, rows: rows(at: now), locked: state.locksApp, later: [next])
         return .run { [glance] _ in await glance.write(today) }
             .cancellable(id: CancelID.glance)
+    }
+
+    /// Follows a link: a task from wherever the person is, Today, a day in
+    /// the calendar, or Quick Add. Before the records load, a task waits
+    /// like a reminder's and anything else waits in `pendingLink`.
+    private func open(_ link: DeepLink, in state: inout State) -> Effect<Action> {
+        if case .task(let id, let picksStatus) = link {
+            if let workspace = state.workspace, workspace.tasks[id].map({ $0.deletedAt != nil }) ?? true {
+                state.notice = AlertState {
+                    TextState("That task isn't in Lifr")
+                } actions: {
+                    ButtonState(role: .cancel) { TextState("OK") }
+                } message: {
+                    TextState(
+                        """
+                        It was deleted, or it's on another device that hasn't synced yet. Look in Trash, or \
+                        sync and open the link again.
+                        """)
+                }
+                return .send(.goTo(.today))
+            }
+            return .send(picksStatus ? .reminderStatusRequested(id) : .reminderOpened(id))
+        }
+        guard state.workspace != nil else {
+            state.pendingLink = link
+            return .none
+        }
+        switch link {
+        case .task:
+            return .none
+        case .today:
+            return .send(.goTo(.today))
+        case .calendar(let date):
+            return .concatenate(.send(.goTo(.calendar)), .send(.calendar(.daySelected(date))))
+        case .add(let title):
+            showQuickAdd(.task, in: &state)
+            if let title { state.quickAdd?.title = title }
+            return .none
+        }
     }
 
     /// Quick Add for `kind`, starting where `adds` says, or in the list on
