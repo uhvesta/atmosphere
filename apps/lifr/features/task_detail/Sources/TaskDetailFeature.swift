@@ -61,6 +61,8 @@ package struct TaskDetailFeature {
         package var notificationsDenied = false
         package var timeline: [TimelineEntry]
         package var showsCommentsOnly = false
+        /// Whether the timeline shows every entry, not just the latest.
+        package var showsWholeTimeline = false
         package var newSubtaskTitle = ""
         package var newComment = ""
         /// The comment being edited, and its text as typed.
@@ -150,8 +152,22 @@ package struct TaskDetailFeature {
 
         /// What the timeline shows: everything, or comments only.
         package var visibleTimeline: [TimelineEntry] {
-            showsCommentsOnly ? timeline.filter(\.isComment) : timeline
+            let entries = showsCommentsOnly ? timeline.filter(\.isComment) : timeline
+            guard !showsWholeTimeline else { return entries }
+            return entries.enumerated()
+                .filter { $0.offset < State.latestShown || $0.element.id == editingCommentID }
+                .map(\.element)
         }
+
+        /// How many of the timeline's entries Show All would add.
+        package var hiddenTimelineCount: Int {
+            guard !showsWholeTimeline else { return 0 }
+            let entries = showsCommentsOnly ? timeline.filter(\.isComment) : timeline
+            return entries.count - visibleTimeline.count
+        }
+
+        /// The latest entries the timeline shows before Show All.
+        package static let latestShown = 3
 
         /// Shows `snapshot`'s records, keeping what the person is typing,
         /// unless later ones are shown already. False when the task is gone,
@@ -163,6 +179,7 @@ package struct TaskDetailFeature {
                 return false
             }
             refreshed.showsCommentsOnly = showsCommentsOnly
+            refreshed.showsWholeTimeline = showsWholeTimeline
             refreshed.newSubtaskTitle = newSubtaskTitle
             refreshed.newComment = newComment
             if let editingCommentID, refreshed.timeline.contains(where: { $0.id == editingCommentID }) {

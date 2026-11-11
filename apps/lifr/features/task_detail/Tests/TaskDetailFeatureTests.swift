@@ -165,6 +165,23 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.visibleTimeline.map(\.text), ["Trail **and** road"])
     }
 
+    func testTheTimelineShowsTheLatestEntriesUntilShowAll() async throws {
+        let shoes = records.task("Buy running shoes", in: health)
+        let store = try makeStore(shoes)
+        for status in [TaskStatus.inProgress, .todo, .inProgress, .todo] {
+            await store.send(.statusPicked(status))
+            await store.receive(\.delegate.saved)
+        }
+
+        XCTAssertEqual(store.state.timeline.count, 5)
+        XCTAssertEqual(store.state.visibleTimeline.map(\.id), store.state.timeline.prefix(3).map(\.id))
+        XCTAssertEqual(store.state.hiddenTimelineCount, 2)
+
+        await store.send(.binding(.set(\.showsWholeTimeline, true)))
+        XCTAssertEqual(store.state.visibleTimeline.map(\.id), store.state.timeline.map(\.id))
+        XCTAssertEqual(store.state.hiddenTimelineCount, 0)
+    }
+
     func testPickingAPriorityRecordsIt() async throws {
         let shoes = records.task("Buy running shoes", in: health)
         let store = try makeStore(shoes)

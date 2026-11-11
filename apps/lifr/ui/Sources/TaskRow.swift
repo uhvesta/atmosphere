@@ -29,6 +29,7 @@ package struct TaskRow: View {
             .buttonStyle(.plain)
             VStack(alignment: .leading, spacing: 4) {
                 Text(row.title)
+                    .lineLimit(2)
                     .strikethrough(row.status.isClosed)
                     .foregroundStyle(row.status.isClosed ? .secondary : .primary)
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: row.status)

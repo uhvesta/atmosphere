@@ -477,6 +477,7 @@ private struct Sidebar: View {
 
     @ViewBuilder private var lists: some View {
         Label("Today", systemImage: "sun.max")
+            .badge(store.today.list.rows.count)
             .tag(RootFeature.SidebarItem.today)
         Label("Upcoming", systemImage: "calendar")
             .badge(store.upcoming.list.rows.count)

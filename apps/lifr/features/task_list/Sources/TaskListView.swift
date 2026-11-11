@@ -220,7 +220,10 @@ package struct TaskListRow: View {
         .accessibilityAction { store.send(.rowTapped(row.id)) }
         .swipeActions(edge: .leading, allowsFullSwipe: false) {
             if !store.isSelecting, row.status != .inProgress {
-                Button(row.status == .procrastinated ? "Restart" : "Start") {
+                Button(
+                    row.status == .procrastinated ? "Restart" : "Start",
+                    systemImage: row.status == .procrastinated ? "arrow.clockwise" : "play"
+                ) {
                     store.send(.rowAction(row.id, .status(.inProgress)))
                 }
                 .tint(.blue)
@@ -228,7 +231,7 @@ package struct TaskListRow: View {
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             ForEach(trailingActions, id: \.self) { action in
-                Button(action.title) { store.send(.rowAction(row.id, action)) }
+                Button(action.title, systemImage: action.systemImage) { store.send(.rowAction(row.id, action)) }
                     .tint(action.tint)
             }
         }
@@ -375,6 +378,18 @@ extension RowAction {
         case .status(let status): status.title
         case .reschedule: String(localized: "Reschedule")
         case .pickStatus: String(localized: "Status")
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .status(.done): "checkmark"
+        case .status(.wontDo): "xmark"
+        case .status(.procrastinated): "hourglass"
+        case .status(.inProgress): "play"
+        case .status(.todo): "circle"
+        case .reschedule: "calendar"
+        case .pickStatus: "ellipsis.circle"
         }
     }
 

@@ -90,9 +90,11 @@ package struct TaskDetailView: View {
                     .frame(minHeight: 120)
                 HStack {
                     Button("Cancel") { store.send(.detailsCancelled) }
+                        .keyboardShortcut(.cancelAction)
                     Spacer()
                     Button("Save") { store.send(.detailsSaved) }
                         .bold()
+                        .keyboardShortcut(.return, modifiers: .command)
                 }
                 .buttonStyle(.borderless)
             } else {
@@ -413,6 +415,9 @@ package struct TaskDetailView: View {
                         }
                     }
                 }
+            }
+            if store.hiddenTimelineCount > 0 {
+                Button("Show All (\(store.hiddenTimelineCount) More)") { store.showsWholeTimeline = true }
             }
             HStack {
                 TextField("Add a comment", text: $store.newComment, axis: .vertical)
