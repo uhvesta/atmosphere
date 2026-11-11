@@ -84,4 +84,5 @@
     [Button] "Remove Shoes"
     [TextField] "Sub task" value: "Jacket"
     [Button] "Remove Jacket"
+    [Button] "Cancel"
     [Button] "Done"
