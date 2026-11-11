@@ -47,6 +47,9 @@ package struct TaskListView<Header: View>: View {
                     ForEach(section.rows) { row in
                         TaskListRow(row: row, note: section.notes[row.id], store: store)
                     }
+                    .onMove(
+                        perform: store.canReorder
+                            ? { store.send(.moved(section: section.id, from: $0, to: $1)) } : nil)
                 }
             }
         }
@@ -61,6 +64,17 @@ package struct TaskListView<Header: View>: View {
             }
         }
         .task { await store.send(.task).finish() }
+        .toolbar {
+            ToolbarItem(placement: .secondaryAction) {
+                Menu {
+                    Picker("Sort", selection: Binding(get: { store.sort }, set: { store.send(.sortPicked($0)) })) {
+                        ForEach(store.sorts, id: \.self) { Text($0.title).tag($0) }
+                    }
+                } label: {
+                    Label("Sort", systemImage: "arrow.up.arrow.down")
+                }
+            }
+        }
         .modifier(TaskListPresentations(store: store))
     }
 }
@@ -133,8 +147,9 @@ package struct TaskListRow: View {
         }
         .contentShape(Rectangle())
         .onTapGesture { store.send(.rowTapped(row.id)) }
-        // Onto a day in the calendar, to move it there.
-        .draggable(row.id.uuidString)
+        // Onto a day in the calendar, to move it there. A list in manual
+        // order drags rows to reorder them instead.
+        .modifier(DraggableTask(id: row.id, isOn: !store.canReorder))
         .accessibilityElement(children: .combine)
         .accessibilityHint(note ?? "")
         .accessibilityAction { store.send(.rowTapped(row.id)) }
@@ -158,6 +173,20 @@ package struct TaskListRow: View {
             }
             Divider()
             Button("Reschedule…") { store.send(.rowAction(row.id, .reschedule)) }
+        }
+    }
+}
+
+/// Lets a row be dragged out as its task's ID, when `isOn`.
+private struct DraggableTask: ViewModifier {
+    var id: UUID
+    var isOn: Bool
+
+    func body(content: Content) -> some View {
+        if isOn {
+            content.draggable(id.uuidString)
+        } else {
+            content
         }
     }
 }

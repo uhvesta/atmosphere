@@ -1,6 +1,7 @@
 [button] "llama.cpp · GPU · KV 4-bit · flash off"
 [button] "Settings"
 [button] "Add"
+[button] "More"
 [button] "Models" id: BackButton
 [header] "Tune Gemma 4 E2B"
 [button] "Runs on, GPU"

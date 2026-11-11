@@ -967,6 +967,9 @@
     "Couldn't load your tasks" : {
 
     },
+    "Couldn't move it" : {
+
+    },
     "Couldn't open %@ (%@). If it's in iCloud Drive or another app's storage, check it has downloaded, then add it again." : {
       "localizations" : {
         "en" : {
@@ -1674,7 +1677,13 @@
         }
       }
     },
+    "Move Down" : {
+
+    },
     "Move Them to %@" : {
+
+    },
+    "Move Up" : {
 
     },
     "Move to" : {

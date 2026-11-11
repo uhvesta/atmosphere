@@ -549,6 +549,49 @@ package struct Workspace: Hashable, Codable, Sendable {
         return change
     }
 
+    // MARK: - Manual order
+
+    /// Puts a task between two others in manual order: after `lower` and
+    /// before `upper`, either nil at an end. Only the moved task changes, and
+    /// moving doesn't count as activity on it.
+    package mutating func reorder(
+        task id: UUID, after lower: UUID?, before upper: UUID?, in context: Context
+    ) throws(LifrError) -> Change {
+        var task = try liveTask(id)
+        var change = Change()
+        let key = Self.key(
+            after: try lower.map(self.task)?.sortOrder, before: try upper.map(self.task)?.sortOrder)
+        guard key != task.sortOrder else { return change }
+        change.previous[id] = .some(task)
+        task.sortOrder = key
+        task.updatedAt = context.now
+        tasks[id] = task
+        return change
+    }
+
+    /// Puts an Avenue between two others in the sidebar's order.
+    package mutating func reorder(avenue id: UUID, after lower: UUID?, before upper: UUID?) throws(LifrError) {
+        var avenue = try avenue(id)
+        avenue.sortOrder = Self.key(
+            after: try lower.map(self.avenue)?.sortOrder, before: try upper.map(self.avenue)?.sortOrder)
+        avenues[id] = avenue
+    }
+
+    /// Puts a Project between two others in its Avenue's order.
+    package mutating func reorder(project id: UUID, after lower: UUID?, before upper: UUID?) throws(LifrError) {
+        var project = try project(id)
+        project.sortOrder = Self.key(
+            after: try lower.map(self.project)?.sortOrder, before: try upper.map(self.project)?.sortOrder)
+        projects[id] = project
+    }
+
+    /// A sort key between two neighbours'. Two with the same key, which two
+    /// devices can make, leave no room between them, so it goes after both.
+    private static func key(after lower: String?, before upper: String?) -> String {
+        guard let lower, let upper, lower >= upper else { return SortKey.between(lower, upper) }
+        return SortKey.between(lower, nil)
+    }
+
     /// Restores every task `change` touched to how it was, and removes tasks
     /// it created. History is kept, with an `undo` event per restored task.
     package mutating func undo(_ change: Change, in context: Context) -> Change {

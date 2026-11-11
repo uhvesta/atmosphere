@@ -26,15 +26,26 @@ package struct TaskListFeature {
         /// Every status, from a row's Status swipe.
         @Presents package var statusPicker: ConfirmationDialogState<StatusPick>?
         @Presents package var alert: AlertState<Never>?
+        /// The order within sections, remembered per list on this device.
+        @Shared package var sort: TaskSort
 
         package init(query: TaskQuery) {
             self.query = query
+            // App storage keys can't have periods.
+            let list = query.listID.replacingOccurrences(of: ".", with: "-")
+            _sort = Shared(wrappedValue: .smart, .appStorage("lifrTaskSort-\(list)"))
         }
 
         package init(query: TaskQuery, workspace: Workspace, now: Date, timeZone: TimeZone) {
-            self.query = query
+            self.init(query: query)
             show(Snapshot(workspace, number: 0), now: now, timeZone: timeZone)
         }
+
+        /// The sorts this list offers: Manual only where rows can be dragged.
+        package var sorts: [TaskSort] { TaskSort.allCases.filter { $0 != .manual || query.reorders } }
+
+        /// Whether rows can be dragged into a new order now.
+        package var canReorder: Bool { query.reorders && sort == .manual }
 
         package var isEmpty: Bool { sections.allSatisfy(\.rows.isEmpty) }
 
@@ -49,6 +60,16 @@ package struct TaskListFeature {
             guard saves.isLatest(snapshot) else { return }
             workspace = snapshot.workspace
             sections = query.sections(snapshot.workspace, now, timeZone).filter { !$0.rows.isEmpty }
+            let sort = sorts.contains(sort) ? sort : .smart
+            if sort != .smart {
+                let tasks = snapshot.workspace.tasks
+                for index in sections.indices {
+                    sections[index].rows.sort { lhs, rhs in
+                        guard let left = tasks[lhs.id], let right = tasks[rhs.id] else { return false }
+                        return sort.areInOrder(left, right)
+                    }
+                }
+            }
             // A task trashed, here or elsewhere, closes.
             if var detail {
                 self.detail = detail.refresh(from: snapshot, now: now, timeZone: timeZone) ? detail : nil
@@ -67,6 +88,9 @@ package struct TaskListFeature {
         case rowAction(UUID, RowAction)
         case saved(Result<Saved, any Error>)
         case bannerUndoTapped
+        case sortPicked(TaskSort)
+        /// Rows dragged within a section, as `onMove` reports them.
+        case moved(section: String, from: IndexSet, to: Int)
         case bannerDismissed
         case detail(PresentationAction<TaskDetailFeature.Action>)
         case reschedule(PresentationAction<RescheduleFeature.Action>)
@@ -152,6 +176,27 @@ package struct TaskListFeature {
                 guard let change = state.banner?.undo else { return .none }
                 state.banner = nil
                 return save { try await $0.undo(change) }
+
+            case .sortPicked(let sort):
+                state.$sort.withLock { $0 = sort }
+                if let snapshot = state.snapshot { state.show(snapshot, now: now, timeZone: timeZone) }
+                return .none
+
+            case .moved(let sectionID, let source, let destination):
+                guard state.canReorder, source.count == 1, let from = source.first,
+                    let index = state.sections.firstIndex(where: { $0.id == sectionID }),
+                    state.sections[index].rows.indices.contains(from)
+                else { return .none }
+                var rows = state.sections[index].rows
+                let row = rows.remove(at: from)
+                let to = min(destination > from ? destination - 1 : destination, rows.count)
+                rows.insert(row, at: to)
+                guard to != from else { return .none }
+                // Shown at once; the save's reply confirms it.
+                state.sections[index].rows = rows
+                let lower = to > 0 ? rows[to - 1].id : nil
+                let upper = to + 1 < rows.count ? rows[to + 1].id : nil
+                return save { try await $0.reorder(task: row.id, after: lower, before: upper) }
 
             case .bannerDismissed:
                 state.banner = nil

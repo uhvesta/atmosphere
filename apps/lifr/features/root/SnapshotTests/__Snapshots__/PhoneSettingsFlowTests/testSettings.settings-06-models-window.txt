@@ -1,5 +1,6 @@
 [button] "Settings"
 [button] "Add"
+[button] "More"
 [text] "Gemma 4 E2B"
 [button] "Remove Gemma 4 E2B"
 [button] "Settings" id: BackButton

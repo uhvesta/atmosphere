@@ -267,6 +267,30 @@ extension StoreClient {
         }
     }
 
+    /// `Workspace.reorder(task:after:before:)`: puts a task between two
+    /// others in manual order.
+    package func reorder(task id: UUID, after lower: UUID?, before upper: UUID?) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            try workspace.reorder(task: id, after: lower, before: upper, in: context)
+        }
+    }
+
+    /// `Workspace.reorder(avenue:after:before:)`.
+    package func reorder(avenue id: UUID, after lower: UUID?, before upper: UUID?) async throws -> Saved {
+        try await save { (workspace, _) throws(LifrError) in
+            try workspace.reorder(avenue: id, after: lower, before: upper)
+            return Change()
+        }
+    }
+
+    /// `Workspace.reorder(project:after:before:)`.
+    package func reorder(project id: UUID, after lower: UUID?, before upper: UUID?) async throws -> Saved {
+        try await save { (workspace, _) throws(LifrError) in
+            try workspace.reorder(project: id, after: lower, before: upper)
+            return Change()
+        }
+    }
+
     /// `Workspace.ensureInbox`: adds the Inbox if there isn't one. Saves
     /// nothing when there is.
     package func ensureInbox() async throws {

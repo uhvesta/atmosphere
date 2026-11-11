@@ -1,5 +1,6 @@
 [button] "Settings"
 [button] "Add"
+[button] "More"
 [button] "Later"
 [button] "Done"
 [header] "Review Changes"

@@ -1,5 +1,6 @@
 [button] "Settings"
 [button] "Add"
+[button] "More"
 [header] "Today"
 [button] "Procrastinated" value: "2 stalled"
 [header, text] "Overdue"

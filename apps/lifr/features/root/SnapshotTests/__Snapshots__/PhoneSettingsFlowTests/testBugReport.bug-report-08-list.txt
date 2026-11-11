@@ -1,5 +1,6 @@
 [button] "Settings"
 [button] "Add"
+[button] "More"
 [button] "Settings" id: BackButton
 [header] "Today"
 [header] "Bug Reports"

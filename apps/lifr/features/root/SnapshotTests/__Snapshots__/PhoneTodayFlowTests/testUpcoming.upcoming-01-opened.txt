@@ -1,6 +1,7 @@
 [button, selected] "List"
 [button] "Calendar"
 [button] "Add"
+[button] "More"
 [header] "Upcoming"
 [header, text] "Tomorrow"
 [button] "Buy running shoes" value: "To Do, High priority, Nov 4, HEALTH-0016"

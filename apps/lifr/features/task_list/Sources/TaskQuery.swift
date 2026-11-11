@@ -26,24 +26,32 @@ package struct TaskQuery: Equatable, Sendable {
     /// What a task added from this list starts with, or `nil` when the list
     /// doesn't offer adding, such as search results.
     package var adds: NewTaskDefaults?
+    /// Names the list for its remembered sort, which stays when the query
+    /// changes in other ways, such as an Avenue's grouping.
+    package var listID: String
+    /// Whether rows can be dragged into a manual order. Only lists of one
+    /// Avenue or Project can, since every task has one order.
+    package var reorders: Bool
     package var sections: @Sendable (_ workspace: Workspace, _ now: Date, _ timeZone: TimeZone) -> [TaskSection]
 
     package init(
-        key: String, empty: Empty,
+        key: String, listID: String? = nil, empty: Empty,
         trailingActions: [RowAction] = [.status(.done), .status(.wontDo), .pickStatus],
-        adds: NewTaskDefaults? = NewTaskDefaults(),
+        adds: NewTaskDefaults? = NewTaskDefaults(), reorders: Bool = false,
         sections: @escaping @Sendable (Workspace, Date, TimeZone) -> [TaskSection]
     ) {
         self.key = key
+        self.listID = listID ?? key
         self.empty = empty
         self.trailingActions = trailingActions
         self.adds = adds
+        self.reorders = reorders
         self.sections = sections
     }
 
     package static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.key == rhs.key && lhs.empty == rhs.empty && lhs.trailingActions == rhs.trailingActions
-            && lhs.adds == rhs.adds
+        lhs.key == rhs.key && lhs.listID == rhs.listID && lhs.empty == rhs.empty
+            && lhs.trailingActions == rhs.trailingActions && lhs.adds == rhs.adds && lhs.reorders == rhs.reorders
     }
 }
 

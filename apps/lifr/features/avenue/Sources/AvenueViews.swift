@@ -6,6 +6,29 @@ import LifrTaskList
 import LifrUI
 import SwiftUI
 
+/// Move Up and Move Down for a row in a list of `ids`, each left out at
+/// its end of the list.
+package struct MoveButtons: View {
+    var ids: [UUID]
+    var id: UUID
+    var move: (_ up: Bool) -> Void
+
+    package init(ids: [UUID], id: UUID, move: @escaping (_ up: Bool) -> Void) {
+        self.ids = ids
+        self.id = id
+        self.move = move
+    }
+
+    package var body: some View {
+        if ids.first != id {
+            Button("Move Up", systemImage: "arrow.up") { move(true) }
+        }
+        if ids.last != id {
+            Button("Move Down", systemImage: "arrow.down") { move(false) }
+        }
+    }
+}
+
 /// Every Avenue with its open task count, and its active Projects under it.
 package struct AvenuesView<Footer: View>: View {
     @Bindable package var store: StoreOf<AvenuesFeature>
@@ -36,6 +59,11 @@ package struct AvenuesView<Footer: View>: View {
                         }
                     }
                     .accessibilityValue("\(avenue.openCount) open")
+                    .contextMenu {
+                        MoveButtons(
+                            ids: store.avenues.map(\.id), id: avenue.id,
+                            move: { store.send(.moveAvenue(avenue.id, up: $0)) })
+                    }
                     ForEach(avenue.projects) { project in
                         Button {
                             store.send(.opened(.project(project.id)))
@@ -44,6 +72,11 @@ package struct AvenuesView<Footer: View>: View {
                                 .padding(.leading)
                         }
                         .accessibilityValue("\(project.openCount) open")
+                        .contextMenu {
+                            MoveButtons(
+                                ids: avenue.projects.map(\.id), id: project.id,
+                                move: { store.send(.moveProject(project.id, up: $0)) })
+                        }
                     }
                 }
             }

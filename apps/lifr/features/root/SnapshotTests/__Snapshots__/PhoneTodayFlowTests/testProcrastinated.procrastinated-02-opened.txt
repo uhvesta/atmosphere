@@ -1,4 +1,5 @@
 [button] "Today" id: BackButton
+[button] "More"
 [header] "Procrastinated"
 [header, text] "Stalled"
 [button] "Plan long runs" value: "Procrastinated, HEALTH-0013" hint: "In Progress with no activity for 12 days."

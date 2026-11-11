@@ -26,11 +26,15 @@ final class TaskListFeatureTests: XCTestCase {
         }
     }
 
-    private func load() async -> TestStoreOf<TaskListFeature> {
-        let store = TestStore(initialState: TaskListFeature.State(query: open)) {
+    private func load(
+        reordering: Bool = false, client: StoreClient? = nil
+    ) async -> TestStoreOf<TaskListFeature> {
+        var query = open
+        query.reorders = reordering
+        let store = TestStore(initialState: TaskListFeature.State(query: query)) {
             TaskListFeature()
         } withDependencies: { [now, records] in
-            $0.store = .inMemory(records.workspace)
+            $0.store = client ?? .inMemory(records.workspace)
             $0.date.now = now
             $0.timeZone = .gmt
             $0.uuid = .incrementing
@@ -49,6 +53,44 @@ final class TaskListFeatureTests: XCTestCase {
         let store = await load()
 
         XCTAssertEqual(store.state.sections.map(\.id), ["todo", "inProgress"])
+    }
+
+    func testSortingByTitleOrdersEachSectionAToZ() async {
+        records.task("Stretch", in: health, priority: .high)
+        records.task("Buy shoes", in: health)
+        records.task("Long run", in: health, priority: .urgent)
+        let store = await load()
+        XCTAssertEqual(store.state.rows.map(\.title), ["Long run", "Stretch", "Buy shoes"])
+
+        await store.send(.sortPicked(.title))
+
+        XCTAssertEqual(store.state.rows.map(\.title), ["Buy shoes", "Long run", "Stretch"])
+    }
+
+    func testAListThatCantBeReorderedOffersNoManualSortAndIgnoresDrags() async {
+        records.task("One", in: health)
+        records.task("Two", in: health)
+        let store = await load()
+        XCTAssertFalse(store.state.sorts.contains(.manual))
+
+        await store.send(.moved(section: "todo", from: [1], to: 0))
+
+        XCTAssertEqual(store.state.rows.map(\.title), ["One", "Two"])
+    }
+
+    func testDraggingTheThirdRowToTheTopInManualOrderKeepsThatOrderAfterReloading() async throws {
+        for title in ["One", "Two", "Three"] { records.task(title, in: health) }
+        let client = StoreClient.inMemory(records.workspace)
+        let store = await load(reordering: true, client: client)
+        await store.send(.sortPicked(.manual))
+
+        await store.send(.moved(section: "todo", from: [2], to: 0))
+        XCTAssertEqual(store.state.rows.map(\.title), ["Three", "One", "Two"])
+        await store.receive(\.saved)
+
+        let reloaded = TaskListFeature.State(
+            query: store.state.query, workspace: try await client.load(), now: now, timeZone: .gmt)
+        XCTAssertEqual(reloaded.rows.map(\.title), ["Three", "One", "Two"])
     }
 
     func testAnEmptyQueryIsEmpty() async {

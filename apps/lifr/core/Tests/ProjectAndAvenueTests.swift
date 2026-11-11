@@ -157,5 +157,49 @@ func projectAndAvenueTests() -> [TestCase] {
             try expectEqual(phone.workspace.avenues.values.filter { $0.name == "Inbox" }.count, 1)
             try expectEqual(Set(tasks.compactMap { phone.workspace.tasks[$0]?.avenueID }), [Avenue.inboxID])
         },
+        TestCase("given three tasks in manual order, when the third moves to the top, then the order is 3, 1, 2") {
+            let fixture = try Fixture()
+            let tasks = try ["One", "Two", "Three"].map { try fixture.task($0) }
+            let change = try fixture.workspace.reorder(
+                task: tasks[2].id, after: nil, before: tasks[0].id, in: fixture.context)
+            let order = try tasks.map { try fixture.get($0) }
+                .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
+            try expectEqual(order.map(\.title), ["Three", "One", "Two"])
+            try expectEqual(Set(change.previous.keys), [tasks[2].id])
+        },
+        TestCase("given a task moved between two others, when it's undone, then it's back where it was") {
+            let fixture = try Fixture()
+            let tasks = try ["One", "Two", "Three"].map { try fixture.task($0) }
+            let change = try fixture.workspace.reorder(
+                task: tasks[0].id, after: tasks[1].id, before: tasks[2].id, in: fixture.context)
+            _ = fixture.workspace.undo(change, in: fixture.context)
+            try expectEqual(fixture.get(tasks[0]).sortOrder, tasks[0].sortOrder)
+        },
+        TestCase("given two tasks with the same key, when one moves between them, then it goes after both") {
+            let fixture = try Fixture()
+            let tasks = try ["One", "Two", "Three"].map { try fixture.task($0) }
+            var tied = tasks[1]
+            tied.sortOrder = tasks[0].sortOrder
+            fixture.workspace.importSynced(records: [RecordID(.task, tied.id): .task(tied)])
+            _ = try fixture.workspace.reorder(
+                task: tasks[2].id, after: tasks[0].id, before: tasks[1].id, in: fixture.context)
+            try expectEqual(fixture.get(tasks[2]).sortOrder > tasks[0].sortOrder, true)
+        },
+        TestCase("given Avenues, when the last moves to the top, then it sorts first") {
+            let fixture = try Fixture()
+            let home = try fixture.workspace.createAvenue(key: "HOME", name: "Home", in: fixture.context)
+            try fixture.workspace.reorder(avenue: home.id, after: nil, before: fixture.health.id)
+            let order = fixture.workspace.avenues.values.sorted { $0.sortOrder < $1.sortOrder }.map(\.name)
+            try expectEqual(order, ["Home", "Health"])
+        },
+        TestCase("given a missing neighbour, then reordering is refused and changes nothing") {
+            let fixture = try Fixture()
+            let task = try fixture.task("One")
+            let missing = UUID(sequence: 999)
+            try expectError(.notFound(.task, missing.uuidString)) {
+                try fixture.workspace.reorder(task: task.id, after: missing, before: nil, in: fixture.context)
+            }
+            try expectEqual(fixture.get(task).sortOrder, task.sortOrder)
+        },
     ]
 }

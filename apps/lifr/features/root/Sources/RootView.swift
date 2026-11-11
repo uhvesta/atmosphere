@@ -428,6 +428,10 @@ private struct AvenueItems: View {
         .contextMenu {
             Button("New Task in \(avenue.name)") { store.send(.newTaskInTapped(.avenue(avenue.id))) }
             Button("New Project…") { store.send(.newProjectTapped(avenue.id)) }
+            Divider()
+            MoveButtons(
+                ids: store.avenues.avenues.map(\.id), id: avenue.id,
+                move: { store.send(.avenues(.moveAvenue(avenue.id, up: $0))) })
         }
         ForEach(avenue.projects) { project in
             Label(project.name, systemImage: "folder")
@@ -436,6 +440,10 @@ private struct AvenueItems: View {
                 .tag(RootFeature.SidebarItem.scope(.project(project.id)))
                 .contextMenu {
                     Button("New Task in \(project.name)") { store.send(.newTaskInTapped(.project(project.id))) }
+                    Divider()
+                    MoveButtons(
+                        ids: avenue.projects.map(\.id), id: project.id,
+                        move: { store.send(.avenues(.moveProject(project.id, up: $0))) })
                 }
         }
     }

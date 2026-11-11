@@ -1,5 +1,6 @@
 [button] "Settings"
 [button] "Add"
+[button] "More"
 [header] "Today"
 [button] "2 changes need review, Review"
 [text] "Nothing due today"

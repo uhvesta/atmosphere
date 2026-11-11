@@ -36,11 +36,11 @@ extension TaskQuery {
     /// Avenue's key, since every row shares it.
     package static func scope(_ scope: AvenueScope, by grouping: Grouping) -> TaskQuery {
         TaskQuery(
-            key: "\(scope)-\(grouping.rawValue)",
+            key: "\(scope)-\(grouping.rawValue)", listID: "\(scope)",
             empty: .init(
                 "No tasks yet", systemImage: "tray",
                 description: String(localized: "Tasks you add here, or move here, show up in this list.")),
-            adds: NewTaskDefaults(scope: scope.newTaskScope)
+            adds: NewTaskDefaults(scope: scope.newTaskScope), reorders: true
         ) { workspace, now, timeZone in
             let tasks = workspace.listedTasks.filter { task in
                 guard !task.isSubtask else { return false }

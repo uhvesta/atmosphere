@@ -60,6 +60,38 @@ final class AvenueFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.avenues[0].projects.map(\.openCount), [1])
     }
 
+    func testMovingAnAvenueSwapsItWithItsNeighbour() async {
+        _ = (health, home)
+        let work = records.avenue("WORK", "Work")
+        let store = await avenues()
+
+        await store.send(.moveAvenue(health.id, up: false))
+        await store.receive(\.moved.success)
+        XCTAssertEqual(store.state.avenues.map(\.name), ["Home", "Health", "Work"])
+
+        await store.send(.moveAvenue(work.id, up: true))
+        await store.receive(\.moved.success)
+        XCTAssertEqual(store.state.avenues.map(\.name), ["Home", "Work", "Health"])
+    }
+
+    func testMovingTheFirstAvenueUpChangesNothing() async {
+        _ = (health, home)
+        let store = await avenues()
+
+        await store.send(.moveAvenue(health.id, up: true))
+        XCTAssertEqual(store.state.avenues.map(\.name), ["Health", "Home"])
+    }
+
+    func testMovingAProjectUpPutsItFirstInItsAvenue() async {
+        records.project("Half marathon", in: health)
+        let stretch = records.project("Stretching", in: health)
+        let store = await avenues()
+
+        await store.send(.moveProject(stretch.id, up: true))
+        await store.receive(\.moved.success)
+        XCTAssertEqual(store.state.avenues[0].projects.map(\.name), ["Stretching", "Half marathon"])
+    }
+
     func testGroupsAnAvenueByStatusThenByProject() async {
         let marathon = records.project("Half marathon", in: health)
         records.task("Buy running shoes", in: health, project: marathon)

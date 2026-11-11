@@ -50,6 +50,7 @@
   [StaticText] "" value: "No task selected"
   [Toolbar] ""
     [Button] "Hide Sidebar"
+    [MenuButton] "Sort" id: arrow.up.arrow.down
     [MenuButton] "Add" help: "Add a task or Project" id: add
   [Button/CloseButton] ""
   [Button/ZoomButton] ""

@@ -1,6 +1,7 @@
 [text] "Picking a skill asks the model which skill fits each message you send without one, among those marked Use Automatically in Skills; with none, the assistant just talks. Names each new conversation after its first reply, on this device, with the model picked in Models. Names you give are kept. Compacting summarizes older messages once they no longer fit what the model reads; without it, a chat offers Compact then. Conversations stay on this device unless you choose Sync on one in Conversations. Instructions stay on this device. Skills sync through iCloud, encrypted end to end."
 [button] "Settings"
 [button] "Add"
+[button] "More"
 [button] "Done"
 [header] "Settings"
 [header] "Today"

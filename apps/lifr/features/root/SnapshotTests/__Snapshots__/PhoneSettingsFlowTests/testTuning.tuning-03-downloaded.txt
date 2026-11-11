@@ -1,5 +1,6 @@
 [button] "Settings"
 [button] "Add"
+[button] "More"
 [button] "Models" id: BackButton
 [header] "Today"
 [header] "Tune Gemma 4 E2B"

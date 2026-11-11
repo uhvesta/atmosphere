@@ -1,5 +1,6 @@
 [button] "Settings"
 [button] "Add"
+[button] "More"
 [button] "Cancel"
 [button, notEnabled] "Save"
 [header] "Today"

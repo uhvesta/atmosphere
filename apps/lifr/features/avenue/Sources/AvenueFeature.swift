@@ -257,6 +257,11 @@ package struct AvenuesFeature {
         case show(Snapshot)
         case opened(AvenueScope)
         case newAvenueTapped
+        /// Swaps an Avenue with the one above or below it.
+        case moveAvenue(UUID, up: Bool)
+        /// Swaps a Project with the one above or below it in its Avenue.
+        case moveProject(UUID, up: Bool)
+        case moved(Result<Saved, any Error>)
         case avenue(PresentationAction<AvenueFeature.Action>)
         case newAvenue(PresentationAction<NewAvenueFeature.Action>)
         case alert(PresentationAction<Never>)
@@ -302,6 +307,30 @@ package struct AvenuesFeature {
                 state.newAvenue = NewAvenueFeature.State()
                 return .none
 
+            case .moveAvenue(let id, let up):
+                guard let (lower, upper) = Self.neighbours(of: id, in: state.avenues.map(\.id), up: up)
+                else { return .none }
+                return .run { [store] send in
+                    await send(.moved(Result { try await store.reorder(avenue: id, after: lower, before: upper) }))
+                }
+
+            case .moveProject(let id, let up):
+                guard let row = state.avenues.first(where: { $0.projects.contains { $0.id == id } }),
+                    let (lower, upper) = Self.neighbours(of: id, in: row.projects.map(\.id), up: up)
+                else { return .none }
+                return .run { [store] send in
+                    await send(.moved(Result { try await store.reorder(project: id, after: lower, before: upper) }))
+                }
+
+            case .moved(.success(let saved)):
+                guard state.saves.isLatest(saved) else { return .none }
+                state.show(saved.snapshot, now: now, timeZone: timeZone)
+                return .send(.delegate(.saved(saved.snapshot)))
+
+            case .moved(.failure(let error)):
+                state.alert = .failed("Couldn't move it", error)
+                return .none
+
             case .avenue(.presented(.delegate(.saved(let snapshot)))),
                 .newAvenue(.presented(.delegate(.saved(let snapshot)))):
                 state.show(snapshot, now: now, timeZone: timeZone)
@@ -314,6 +343,20 @@ package struct AvenuesFeature {
         .ifLet(\.$avenue, action: \.avenue) { AvenueFeature() }
         .ifLet(\.$newAvenue, action: \.newAvenue) { NewAvenueFeature() }
         .ifLet(\.$alert, action: \.alert)
+    }
+
+    /// The rows to put `id` between to move it one place up or down in
+    /// `ids`, or `nil` when it's already at that end.
+    private static func neighbours(of id: UUID, in ids: [UUID], up: Bool) -> (UUID?, UUID?)? {
+        guard let index = ids.firstIndex(of: id) else { return nil }
+        let target = up ? index - 1 : index + 1
+        guard ids.indices.contains(target) else { return nil }
+        var rest = ids
+        rest.remove(at: index)
+        rest.insert(id, at: target)
+        let lower = target > 0 ? rest[target - 1] : nil
+        let upper = target + 1 < rest.count ? rest[target + 1] : nil
+        return (lower, upper)
     }
 }
 

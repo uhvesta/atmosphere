@@ -1,5 +1,6 @@
 [button] "Settings"
 [button] "Add"
+[button] "More"
 [button] "Settings" id: BackButton
 [element] "" value: "SHA-256 (optional)"
 [header] "Models"

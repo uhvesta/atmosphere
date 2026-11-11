@@ -1,4 +1,5 @@
 [button] "Filters"
+[button] "More"
 [header] "Search"
 [text] "Search your tasks"
 [text] "Search titles, details and comments, or filter by Avenue, status, priority, label and date."
