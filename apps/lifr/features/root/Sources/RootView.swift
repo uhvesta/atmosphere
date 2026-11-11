@@ -581,8 +581,8 @@ private struct AvenueItems: View {
     }
 }
 
-/// Takes tasks dragged from a list onto a sidebar item, highlighting the
-/// item while a drag is over it.
+/// Takes tasks dragged from a list, or text dragged in from another app,
+/// onto a sidebar item, highlighting the item while a drag is over it.
 private struct TaskDrop: ViewModifier {
     var item: RootFeature.SidebarItem
     var store: StoreOf<RootFeature>
@@ -590,10 +590,14 @@ private struct TaskDrop: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .dropDestination(for: String.self) { ids, _ in
-                let dropped = ids.compactMap(UUID.init(uuidString:))
-                store.send(.tasksDropped(dropped, on: item))
-                return !dropped.isEmpty
+            .dropDestination(for: String.self) { items, _ in
+                let ids = items.compactMap(UUID.init(uuidString:))
+                if ids.count == items.count {
+                    store.send(.tasksDropped(ids, on: item))
+                } else {
+                    store.send(.textDropped(items.joined(separator: "\n"), on: item))
+                }
+                return !items.isEmpty
             } isTargeted: {
                 isTargeted = $0
             }

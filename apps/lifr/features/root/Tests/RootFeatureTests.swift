@@ -489,6 +489,46 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testDroppingTextAddsATaskForEachLineWhereTheItemPutsIt() async throws {
+        let races = records.project("Races", in: health)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.textDropped("- Book the 10k\n\n- Buy gels", on: .scope(.project(races.id))))
+        await store.receive(\.today.delegate.saved)
+        let inRaces = store.state.workspace?.tasks.values.filter { $0.projectID == races.id }
+        XCTAssertEqual(inRaces?.map(\.title).sorted(), ["Book the 10k", "Buy gels"])
+        XCTAssertEqual(inRaces?.map(\.avenueID), [health.id, health.id])
+
+        await store.send(.textDropped("Call the physio", on: .today))
+        await store.receive(\.today.delegate.saved)
+        let call = try XCTUnwrap(store.state.workspace?.tasks.values.first { $0.title == "Call the physio" })
+        XCTAssertEqual(call.avenueID, Avenue.inboxID)
+        XCTAssertEqual(call.dueDate, try CalendarDate("2026-11-03"))
+
+        await store.send(.textDropped("Ignored", on: .trash))
+        XCTAssertNil(store.state.workspace?.tasks.values.first { $0.title == "Ignored" })
+        await task.cancel()
+    }
+
+    func testTextSentFromAnotherAppOpensQuickAddOrAddsEachLine() async throws {
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.textSent("  Renew the passport \n"))
+        await store.receive(\.linkOpened)
+        XCTAssertEqual(store.state.quickAdd?.title, "Renew the passport")
+        await store.send(.quickAdd(.dismiss))
+
+        await store.send(.textSent("- Pack\n- Label boxes"))
+        await store.receive(\.quickAdd.presented.added.success)
+        let titles = Set(store.state.quickAdd.map { $0.workspace.tasks.values.map(\.title) } ?? [])
+        XCTAssertTrue(titles.isSuperset(of: ["Pack", "Label boxes"]))
+        await task.cancel()
+    }
+
     func testLeavingAListClosesItsTaskAndLeavingTheAssistantClosesItsChat() async {
         let run = records.task("Run", in: health, due: 0)
         let store = makeStore(.mac)

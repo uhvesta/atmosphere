@@ -411,6 +411,13 @@ package struct RootFeature {
         /// Tasks dragged onto a sidebar item: an Avenue or Project moves
         /// them there, Today makes them due today and Upcoming tomorrow.
         case tasksDropped([UUID], on: SidebarItem)
+        /// Text dragged in from another app onto a sidebar item: a task
+        /// for each line, in that Avenue or Project, or in the Inbox due
+        /// today or tomorrow.
+        case textDropped(String, on: SidebarItem)
+        /// Text sent from another app with the Mac's Services menu: Quick
+        /// Add with one line as its title, or a task for each of several.
+        case textSent(String)
         case savedFilter(PresentationAction<SearchFeature.Action>)
         case conversations(ConversationsFeature.Action)
         case avenue(AvenueFeature.Action)
@@ -723,6 +730,17 @@ package struct RootFeature {
 
             case .tasksDropped(let ids, let item):
                 return dropped(ids, on: item, in: state)
+
+            case .textDropped(let text, let item):
+                return dropped(text, on: item, in: state)
+
+            case .textSent(let text):
+                let lines = QuickAddFeature.lines(text)
+                guard lines.count > 1, !state.isLocked, state.workspace != nil else {
+                    return .send(.linkOpened(.add(title: lines.first)))
+                }
+                showQuickAdd(.task, in: &state)
+                return .send(.quickAdd(.presented(.linesPasted(text))))
 
             case .savedFilterMoved(let id, let up):
                 let ids = state.workspace?.sortedSavedFilters.map(\.id) ?? []
@@ -1308,6 +1326,37 @@ package struct RootFeature {
         }
         return .run { [feedback] send in
             let saved = await Result { try await save() }
+            if case .success = saved { await feedback(.tap) }
+            await send(list(slot, .saved(saved)))
+        }
+    }
+
+    /// Adds a task for each line of `text` where `item` puts it, as one
+    /// change, through the list shown.
+    private func dropped(_ text: String, on item: SidebarItem, in state: State) -> Effect<Action> {
+        guard let workspace = state.workspace, let slot = state.currentList else { return .none }
+        let today = CalendarDate(now, in: timeZone)
+        var avenueID = Avenue.inboxID
+        var projectID: UUID?
+        var due: CalendarDate?
+        switch item {
+        case .scope(.avenue(let id)): avenueID = id
+        case .scope(.project(let id)):
+            guard let project = workspace.projects[id] else { return .none }
+            avenueID = project.avenueID
+            projectID = id
+        case .today: due = today
+        case .upcoming: due = today.adding(days: 1)
+        default: return .none
+        }
+        let tasks = QuickAddFeature.lines(text).map { title in
+            var new = Workspace.NewTask(title: title, avenueID: avenueID, projectID: projectID)
+            new.dueDate = due
+            return new
+        }
+        guard !tasks.isEmpty else { return .none }
+        return .run { [store, feedback] send in
+            let saved = await Result { try await store.createTasks(tasks) }
             if case .success = saved { await feedback(.tap) }
             await send(list(slot, .saved(saved)))
         }

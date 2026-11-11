@@ -566,6 +566,9 @@
     "Add a label from a task’s Labels section." : {
 
     },
+    "Add a task for each line copied" : {
+
+    },
     "Add a task or Project" : {
 
     },
@@ -629,6 +632,9 @@
 
     },
     "Adds a comment to a task in Lifr." : {
+
+    },
+    "Adds a task for each line copied" : {
 
     },
     "Adds a task to Lifr, due today unless you pick otherwise." : {
@@ -2864,6 +2870,9 @@
 
     },
     "Select Text" : {
+
+    },
+    "Select some text to add to Lifr, then choose Add to Lifr again." : {
 
     },
     "Send" : {

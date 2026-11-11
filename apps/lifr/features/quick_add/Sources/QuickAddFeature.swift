@@ -268,7 +268,7 @@ package struct QuickAddFeature {
 
     /// The lines of pasted text, without list markers such as "- ", "* ",
     /// "1. " or "[ ] ", and without blank ones.
-    static func lines(_ text: String) -> [String] {
+    package static func lines(_ text: String) -> [String] {
         text.components(separatedBy: .newlines).compactMap { line in
             var rest = Substring(line.trimmingCharacters(in: .whitespaces))
             for marker in ["- ", "* ", "• ", "+ "] where rest.hasPrefix(marker) {

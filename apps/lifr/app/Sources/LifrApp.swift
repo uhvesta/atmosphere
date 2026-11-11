@@ -53,6 +53,7 @@ struct LifrApp: App {
             // The Mac keeps syncing and scheduling reminders from the menu
             // bar with every window closed, so the work outlives windows.
             if case .success = Storage.opened { Storage.start() }
+            NSApplication.shared.servicesProvider = Storage.services
         #endif
     }
 
@@ -122,6 +123,9 @@ private enum Storage {
         shortcuts: { shortcuts })
 
     #if os(macOS)
+        /// Kept for as long as Lifr runs, for the Services menu's Add to Lifr.
+        static let services = AddToLifrService { root.send(.textSent($0)) }
+
         /// The root store's long-lived work, kept for as long as Lifr runs.
         private static var running: Task<Void, Never>?
 
@@ -337,3 +341,28 @@ private final class ReminderNotifications: NSObject, UNUserNotificationCenterDel
         try? await UNUserNotificationCenter.current().add(request)
     }
 }
+
+#if os(macOS)
+    /// The Services menu's Add to Lifr: hands the text selected in another
+    /// app to `add`, and brings Lifr forward.
+    @MainActor
+    private final class AddToLifrService: NSObject {
+        private let add: @MainActor (String) -> Void
+
+        init(add: @escaping @MainActor (String) -> Void) {
+            self.add = add
+        }
+
+        @objc func addToLifr(
+            _ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>
+        ) {
+            guard let text = pasteboard.string(forType: .string), !text.isEmpty else {
+                let message = String(localized: "Select some text to add to Lifr, then choose Add to Lifr again.")
+                error.pointee = message as NSString
+                return
+            }
+            NSApplication.shared.activate()
+            add(text)
+        }
+    }
+#endif
