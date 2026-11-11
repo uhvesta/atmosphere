@@ -4,13 +4,13 @@ members = [
     "tools/bootstrap/lib",
     "tools/bootstrap/lock",
     "tools/bootstrap/revup",
-    "apps/khodr/proto/plugin",
-    "apps/khodr/daemon/agent",
-    "apps/khodr/daemon/workspace",
-    "apps/khodr/daemon/wire",
-    "apps/khodr/daemon/khodrd",
-    "apps/khodr/daemon/cli",
-    "apps/khodr/e2e/sshd",
+    "apps/humata/proto/plugin",
+    "apps/humata/daemon/agent",
+    "apps/humata/daemon/workspace",
+    "apps/humata/daemon/wire",
+    "apps/humata/daemon/humatad",
+    "apps/humata/daemon/cli",
+    "apps/humata/e2e/sshd",
 ]
 resolver = "3"
 

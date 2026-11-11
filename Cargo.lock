@@ -986,6 +986,85 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "humata-agent"
+version = "0.0.0"
+dependencies = [
+ "humata-workspace",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "ureq",
+ "uuid",
+]
+
+[[package]]
+name = "humata-cli"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "humata-protoc-gen-prost"
+version = "0.0.0"
+dependencies = [
+ "prost",
+ "prost-types",
+ "protoc-gen-prost",
+]
+
+[[package]]
+name = "humata-test-sshd"
+version = "0.0.0"
+dependencies = [
+ "rand",
+ "russh",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "humata-wire"
+version = "0.0.0"
+dependencies = [
+ "prost",
+ "ruzstd",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "humata-workspace"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "humatad"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "prost",
+ "rusqlite",
+ "ruzstd",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1091,83 +1170,6 @@ checksum = "01737161ba802849cfd486b5bd209d38ba4943494c249a8126005170c7621edd"
 dependencies = [
  "crypto-common",
  "rand_core",
-]
-
-[[package]]
-name = "khodr-agent"
-version = "0.0.0"
-dependencies = [
- "khodr-workspace",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tokio",
- "ureq",
- "uuid",
-]
-
-[[package]]
-name = "khodr-cli"
-version = "0.0.0"
-dependencies = [
- "clap",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "khodr-protoc-gen-prost"
-version = "0.0.0"
-dependencies = [
- "prost",
- "prost-types",
- "protoc-gen-prost",
-]
-
-[[package]]
-name = "khodr-test-sshd"
-version = "0.0.0"
-dependencies = [
- "rand",
- "russh",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "khodr-wire"
-version = "0.0.0"
-dependencies = [
- "prost",
- "ruzstd",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "khodr-workspace"
-version = "0.0.0"
-dependencies = [
- "serde",
- "tempfile",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "khodrd"
-version = "0.0.0"
-dependencies = [
- "clap",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "tokio",
- "uuid",
 ]
 
 [[package]]

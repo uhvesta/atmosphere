@@ -1,5 +1,5 @@
 {
-  "checksum": "7d808aa3c619b5a04ea0de86fb2761cd6d8cd311216ab97e7258195764c045dd",
+  "checksum": "ba14536b3c63201d08523addf6a7878589e2ffba13380ad9fc1e55b67f61cc87",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -4669,6 +4669,265 @@
       ],
       "version": "1.10.1"
     },
+    "humata-agent 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          },
+          {
+            "id": "ureq 3.5.1",
+            "target": "ureq"
+          },
+          {
+            "id": "uuid 1.29.2",
+            "target": "uuid"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata_agent",
+      "name": "humata-agent",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata_agent",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata-cli 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "clap 4.6.7",
+            "target": "clap"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "name": "humata-cli",
+      "repository": null,
+      "targets": [],
+      "version": "0.0.0"
+    },
+    "humata-protoc-gen-prost 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "prost 0.14.5",
+            "target": "prost"
+          },
+          {
+            "id": "prost-types 0.14.5",
+            "target": "prost_types"
+          },
+          {
+            "id": "protoc-gen-prost 0.5.0",
+            "target": "protoc_gen_prost"
+          }
+        ],
+        "edition": "2024"
+      },
+      "name": "humata-protoc-gen-prost",
+      "repository": null,
+      "targets": [],
+      "version": "0.0.0"
+    },
+    "humata-test-sshd 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "rand 0.10.3",
+            "target": "rand"
+          },
+          {
+            "id": "russh 0.65.1",
+            "target": "russh"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "name": "humata-test-sshd",
+      "repository": null,
+      "targets": [],
+      "version": "0.0.0"
+    },
+    "humata-wire 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "prost 0.14.5",
+            "target": "prost"
+          },
+          {
+            "id": "ruzstd 0.9.1",
+            "target": "ruzstd"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata_wire",
+      "name": "humata-wire",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata_wire",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humata-workspace 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humata_workspace",
+      "name": "humata-workspace",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humata_workspace",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
+    "humatad 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "clap 4.6.7",
+            "target": "clap"
+          },
+          {
+            "id": "prost 0.14.5",
+            "target": "prost"
+          },
+          {
+            "id": "rusqlite 0.42.0",
+            "target": "rusqlite"
+          },
+          {
+            "id": "ruzstd 0.9.1",
+            "target": "ruzstd"
+          },
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
+          },
+          {
+            "id": "sha2 0.11.1",
+            "target": "sha2"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          },
+          {
+            "id": "uuid 1.29.2",
+            "target": "uuid"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "humatad",
+      "name": "humatad",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humatad",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
     "hybrid-array 0.4.15": {
       "common_attrs": {
         "crate_features": [
@@ -5150,257 +5409,6 @@
         }
       ],
       "version": "0.3.0"
-    },
-    "khodr-agent 0.0.0": {
-      "common_attrs": {
-        "deps": [
-          {
-            "id": "serde 1.0.229",
-            "target": "serde"
-          },
-          {
-            "id": "serde_json 1.0.154",
-            "target": "serde_json"
-          },
-          {
-            "id": "thiserror 2.0.21",
-            "target": "thiserror"
-          },
-          {
-            "id": "tokio 1.54.1",
-            "target": "tokio"
-          },
-          {
-            "id": "ureq 3.5.1",
-            "target": "ureq"
-          },
-          {
-            "id": "uuid 1.29.2",
-            "target": "uuid"
-          }
-        ],
-        "deps_dev": [
-          {
-            "id": "tempfile 3.27.0",
-            "target": "tempfile"
-          }
-        ],
-        "edition": "2024"
-      },
-      "library_target_name": "khodr_agent",
-      "name": "khodr-agent",
-      "repository": null,
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "khodr_agent",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.0.0"
-    },
-    "khodr-cli 0.0.0": {
-      "common_attrs": {
-        "deps": [
-          {
-            "id": "clap 4.6.7",
-            "target": "clap"
-          },
-          {
-            "id": "thiserror 2.0.21",
-            "target": "thiserror"
-          },
-          {
-            "id": "tokio 1.54.1",
-            "target": "tokio"
-          }
-        ],
-        "edition": "2024"
-      },
-      "name": "khodr-cli",
-      "repository": null,
-      "targets": [],
-      "version": "0.0.0"
-    },
-    "khodr-protoc-gen-prost 0.0.0": {
-      "common_attrs": {
-        "deps": [
-          {
-            "id": "prost 0.14.5",
-            "target": "prost"
-          },
-          {
-            "id": "prost-types 0.14.5",
-            "target": "prost_types"
-          },
-          {
-            "id": "protoc-gen-prost 0.5.0",
-            "target": "protoc_gen_prost"
-          }
-        ],
-        "edition": "2024"
-      },
-      "name": "khodr-protoc-gen-prost",
-      "repository": null,
-      "targets": [],
-      "version": "0.0.0"
-    },
-    "khodr-test-sshd 0.0.0": {
-      "common_attrs": {
-        "deps": [
-          {
-            "id": "rand 0.10.3",
-            "target": "rand"
-          },
-          {
-            "id": "russh 0.65.1",
-            "target": "russh"
-          },
-          {
-            "id": "thiserror 2.0.21",
-            "target": "thiserror"
-          },
-          {
-            "id": "tokio 1.54.1",
-            "target": "tokio"
-          }
-        ],
-        "edition": "2024"
-      },
-      "name": "khodr-test-sshd",
-      "repository": null,
-      "targets": [],
-      "version": "0.0.0"
-    },
-    "khodr-wire 0.0.0": {
-      "common_attrs": {
-        "deps": [
-          {
-            "id": "prost 0.14.5",
-            "target": "prost"
-          },
-          {
-            "id": "ruzstd 0.9.1",
-            "target": "ruzstd"
-          },
-          {
-            "id": "thiserror 2.0.21",
-            "target": "thiserror"
-          },
-          {
-            "id": "tokio 1.54.1",
-            "target": "tokio"
-          }
-        ],
-        "edition": "2024"
-      },
-      "library_target_name": "khodr_wire",
-      "name": "khodr-wire",
-      "repository": null,
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "khodr_wire",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.0.0"
-    },
-    "khodr-workspace 0.0.0": {
-      "common_attrs": {
-        "deps": [
-          {
-            "id": "serde 1.0.229",
-            "target": "serde"
-          },
-          {
-            "id": "thiserror 2.0.21",
-            "target": "thiserror"
-          },
-          {
-            "id": "tokio 1.54.1",
-            "target": "tokio"
-          }
-        ],
-        "deps_dev": [
-          {
-            "id": "tempfile 3.27.0",
-            "target": "tempfile"
-          }
-        ],
-        "edition": "2024"
-      },
-      "library_target_name": "khodr_workspace",
-      "name": "khodr-workspace",
-      "repository": null,
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "khodr_workspace",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.0.0"
-    },
-    "khodrd 0.0.0": {
-      "common_attrs": {
-        "deps": [
-          {
-            "id": "clap 4.6.7",
-            "target": "clap"
-          },
-          {
-            "id": "rusqlite 0.42.0",
-            "target": "rusqlite"
-          },
-          {
-            "id": "serde 1.0.229",
-            "target": "serde"
-          },
-          {
-            "id": "serde_json 1.0.154",
-            "target": "serde_json"
-          },
-          {
-            "id": "sha2 0.11.1",
-            "target": "sha2"
-          },
-          {
-            "id": "thiserror 2.0.21",
-            "target": "thiserror"
-          },
-          {
-            "id": "tokio 1.54.1",
-            "target": "tokio"
-          },
-          {
-            "id": "uuid 1.29.2",
-            "target": "uuid"
-          }
-        ],
-        "deps_dev": [
-          {
-            "id": "tempfile 3.27.0",
-            "target": "tempfile"
-          }
-        ],
-        "edition": "2024"
-      },
-      "library_target_name": "khodrd",
-      "name": "khodrd",
-      "repository": null,
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "khodrd",
-            "crate_root": "src/lib.rs"
-          }
-        }
-      ],
-      "version": "0.0.0"
     },
     "libbz2-rs-sys 0.2.6": {
       "common_attrs": {
@@ -13264,13 +13272,13 @@
     "bootstrap 0.0.0": "tools/bootstrap/lib",
     "bootstrap-lock 0.0.0": "tools/bootstrap/lock",
     "bootstrap-revup 0.0.0": "tools/bootstrap/revup",
-    "khodr-agent 0.0.0": "apps/khodr/daemon/agent",
-    "khodr-cli 0.0.0": "apps/khodr/daemon/cli",
-    "khodr-protoc-gen-prost 0.0.0": "apps/khodr/proto/plugin",
-    "khodr-test-sshd 0.0.0": "apps/khodr/e2e/sshd",
-    "khodr-wire 0.0.0": "apps/khodr/daemon/wire",
-    "khodr-workspace 0.0.0": "apps/khodr/daemon/workspace",
-    "khodrd 0.0.0": "apps/khodr/daemon/khodrd",
+    "humata-agent 0.0.0": "apps/humata/daemon/agent",
+    "humata-cli 0.0.0": "apps/humata/daemon/cli",
+    "humata-protoc-gen-prost 0.0.0": "apps/humata/proto/plugin",
+    "humata-test-sshd 0.0.0": "apps/humata/e2e/sshd",
+    "humata-wire 0.0.0": "apps/humata/daemon/wire",
+    "humata-workspace 0.0.0": "apps/humata/daemon/workspace",
+    "humatad 0.0.0": "apps/humata/daemon/humatad",
     "swift-catalog 0.0.0": "tools/swift_catalog"
   }
 }

@@ -95,10 +95,10 @@ register_toolchains(
     "@rust_toolchains//:all",
 )
 
-# prost for Khodr's protocol, from the workspace's crates. Ahead of
+# prost for Humata's protocol, from the workspace's crates. Ahead of
 # rules_rust_prost's default toolchain, which pins an older prost. See
-# apps/khodr/proto/BUILD.bazel.
-register_toolchains("//apps/khodr/proto:prost_toolchain")
+# apps/humata/proto/BUILD.bazel.
+register_toolchains("//apps/humata/proto:prost_toolchain")
 
 # MARK: - Swift
 
@@ -217,11 +217,11 @@ test_model = use_repo_rule("//apps/libs/kits/inference/litert:test_model.bzl", "
 
 test_model(name = "lifr_test_model")
 
-# MARK: - Khodr
+# MARK: - Humata
 
 # The Copilot CLI, one repository per platform, each fetched only when a
-# build for that platform uses it. See apps/khodr/copilot/copilot.bzl.
-copilot_cli = use_repo_rule("//apps/khodr/copilot:copilot.bzl", "copilot_cli")
+# build for that platform uses it. See apps/humata/copilot/copilot.bzl.
+copilot_cli = use_repo_rule("//apps/humata/copilot:copilot.bzl", "copilot_cli")
 
 copilot_cli(
     name = "copilot_cli_darwin_arm64",

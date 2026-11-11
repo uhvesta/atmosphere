@@ -1,0 +1,26 @@
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# The daemon client over humatad's Unix socket. Only the app and end-to-end
+# tests depend on this; features use //apps/humata/clients/daemon.
+swift_library(
+    name = "daemon_live",
+    package_name = "humata",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "HumataDaemonLive",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/humata/app:__pkg__",
+        "//apps/humata/e2e:__pkg__",
+    ],
+    # humata_swift brings SwiftProtobuf with it.
+    deps = [
+        "//apps/humata/clients/daemon",
+        "//apps/humata/proto:humata_swift",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

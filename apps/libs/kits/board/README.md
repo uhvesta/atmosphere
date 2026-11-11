@@ -1,6 +1,6 @@
 # Board
 
-SwiftUI columns and cards for a board, such as Lifr's tasks or Khodr's
+SwiftUI columns and cards for a board, such as Lifr's tasks or Humata's
 tasks and subtasks. The views take plain data and closures and have no
 store, so they work with TCA, with an observable model, or in a preview.
 The app supplies every word they show.

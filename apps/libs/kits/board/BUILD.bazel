@@ -10,7 +10,7 @@ swift_library(
     module_name = "Board",
     target_compatible_with = ["//bazel/xcode"],
     visibility = [
-        "//apps/khodr/features:__subpackages__",
+        "//apps/humata/features:__subpackages__",
         "//apps/lifr/features:__subpackages__",
     ],
 )

@@ -1,0 +1,19 @@
+[package]
+name = "humata-workspace"
+description = "Humata's copies of a session's code: a git worktree per repository, and a hidden snapshot after every turn."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "humata_workspace"
+path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

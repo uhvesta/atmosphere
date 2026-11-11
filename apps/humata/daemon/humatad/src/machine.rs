@@ -1,0 +1,429 @@
+//! What a host does for the daemon about the machine itself: takes its
+//! variables and setup script, reports how it is, and clones repositories.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
+
+use humata_agent::Env;
+use humata_wire::pb;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tokio::process::Command;
+
+use crate::error::HostError;
+use crate::hex;
+
+/// The most of a setup script's or git's output kept, from its end.
+const OUTPUT_KEPT: usize = 8 * 1024;
+
+/// How long a setup script may run.
+const SETUP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// How long `copilot --version` may take.
+const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The variables that give agents a GitHub token.
+const TOKENS: [&str; 3] = ["GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"];
+
+/// The last run of the setup script, kept beside the host's sessions so a
+/// script that succeeded isn't run again on every connection.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct SetupRun {
+    /// SHA-256 of the script, in hex.
+    script: String,
+    succeeded: bool,
+    output: String,
+    ran_unix_ms: i64,
+}
+
+impl SetupRun {
+    fn wire(&self) -> pb::SetupResult {
+        pb::SetupResult {
+            ran: true,
+            succeeded: self.succeeded,
+            output: self.output.clone(),
+            ran_unix_ms: self.ran_unix_ms,
+        }
+    }
+}
+
+/// This machine as a host: its folder, the variables its agents get and the
+/// Copilot program they run.
+pub struct Machine {
+    state: PathBuf,
+    env: Env,
+    copilot: PathBuf,
+}
+
+impl Machine {
+    pub fn new(state: PathBuf, env: Env, copilot: PathBuf) -> Self {
+        Self {
+            state,
+            env,
+            copilot,
+        }
+    }
+
+    fn setup_file(&self) -> PathBuf {
+        self.state.join("setup.json")
+    }
+
+    fn last_setup(&self) -> Option<SetupRun> {
+        let bytes = std::fs::read(self.setup_file()).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// Sets the agents' variables, and runs `script` if it changed since it
+    /// last ran or failed then.
+    pub async fn configure(
+        &self,
+        configure: pb::ConfigureHost,
+    ) -> Result<pb::SetupResult, HostError> {
+        let env: BTreeMap<String, String> = configure
+            .env
+            .into_iter()
+            .map(|var| (var.name, var.value))
+            .collect();
+        self.env.replace(env);
+        if configure.setup_script.trim().is_empty() {
+            return Ok(pb::SetupResult::default());
+        }
+        let digest = hex(&Sha256::digest(configure.setup_script.as_bytes()));
+        if let Some(last) = self.last_setup()
+            && last.script == digest
+            && last.succeeded
+        {
+            return Ok(last.wire());
+        }
+        let run = self.run_setup(&configure.setup_script, digest).await;
+        let path = self.setup_file();
+        let json = serde_json::to_vec(&run).unwrap_or_default();
+        std::fs::create_dir_all(&self.state)
+            .and_then(|()| std::fs::write(&path, json))
+            .map_err(|source| HostError::SaveSetup { path, source })?;
+        Ok(run.wire())
+    }
+
+    async fn run_setup(&self, script: &str, digest: String) -> SetupRun {
+        let home = std::env::var_os("HOME").map_or_else(|| self.state.clone(), PathBuf::from);
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .current_dir(home)
+            .envs(self.env.vars())
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .output();
+        let (succeeded, output) = match tokio::time::timeout(SETUP_TIMEOUT, child).await {
+            Err(_) => (
+                false,
+                format!(
+                    "Stopped after {} minutes without finishing.",
+                    SETUP_TIMEOUT.as_secs() / 60
+                ),
+            ),
+            Ok(Err(error)) => (false, format!("Couldn't run /bin/sh: {error}")),
+            Ok(Ok(output)) => (output.status.success(), printed(&output)),
+        };
+        SetupRun {
+            script: digest,
+            succeeded,
+            output,
+            ran_unix_ms: now(),
+        }
+    }
+
+    pub async fn status(&self, program_version: String) -> pb::HostStatus {
+        let platform = run(Command::new("uname").arg("-sm"))
+            .await
+            .map(|out| out.trim().to_owned())
+            .unwrap_or_default();
+        let free_disk_bytes = run(Command::new("df").arg("-Pk").arg(existing(&self.state)))
+            .await
+            .and_then(|out| free_kilobytes(&out))
+            .map_or(0, |kilobytes| kilobytes * 1024);
+        let mut version = Command::new(&self.copilot);
+        version.arg("--version").envs(self.env.vars());
+        let (copilot_version, copilot_problem) = match tokio::time::timeout(
+            VERSION_TIMEOUT,
+            version.stdin(Stdio::null()).kill_on_drop(true).output(),
+        )
+        .await
+        {
+            Err(_) => (
+                String::new(),
+                format!("`{} --version` didn't finish", self.copilot.display()),
+            ),
+            Ok(Err(error)) => (
+                String::new(),
+                format!(
+                    "couldn't run {}: {error}. Install the Copilot CLI on this host, or set HUMATA_COPILOT to it",
+                    self.copilot.display()
+                ),
+            ),
+            Ok(Ok(output)) if output.status.success() => (
+                String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+                String::new(),
+            ),
+            Ok(Ok(output)) => (String::new(), printed(&output)),
+        };
+        let github_token = TOKENS.iter().any(|name| {
+            self.env.has(name) || std::env::var_os(name).is_some_and(|value| !value.is_empty())
+        });
+        pb::HostStatus {
+            program_version,
+            platform,
+            free_disk_bytes,
+            copilot_version,
+            copilot_problem,
+            github_token,
+            setup: self.last_setup().map(|run| run.wire()),
+        }
+    }
+
+    /// Clones each repository under `repos/<folder>`, or fetches it if it is
+    /// there already, and says where each is.
+    pub async fn clone(
+        &self,
+        clone: pb::CloneRepositories,
+    ) -> Result<Vec<pb::Repository>, HostError> {
+        let folder = self.state.join("repos").join(plain(&clone.folder)?);
+        let mut cloned = Vec::new();
+        for repository in clone.repositories {
+            let path = folder.join(plain(&repository.name)?);
+            let mut git = Command::new("git");
+            git.envs(self.env.vars()).stdin(Stdio::null());
+            if path.join(".git").exists() {
+                git.arg("-C")
+                    .arg(&path)
+                    .args(["pull", "--ff-only", "--quiet"]);
+            } else {
+                std::fs::create_dir_all(&folder).map_err(|source| HostError::CreateFolder {
+                    path: folder.clone(),
+                    source,
+                })?;
+                git.arg("clone").arg(&repository.url).arg(&path);
+            }
+            let output = git
+                .output()
+                .await
+                .map_err(|source| HostError::RunGit { source })?;
+            if !output.status.success() {
+                return Err(HostError::Clone {
+                    url: repository.url,
+                    path,
+                    output: printed(&output),
+                });
+            }
+            cloned.push(pb::Repository {
+                name: repository.name,
+                path: path.display().to_string(),
+            });
+        }
+        Ok(cloned)
+    }
+}
+
+/// `name` if it is one plain folder name, not a path.
+fn plain(name: &str) -> Result<&str, HostError> {
+    let mut parts = Path::new(name).components();
+    match (parts.next(), parts.next()) {
+        (Some(std::path::Component::Normal(_)), None) => Ok(name),
+        _ => Err(HostError::NotAName {
+            name: name.to_owned(),
+        }),
+    }
+}
+
+/// The nearest folder at or above `path` that exists, for `df`.
+fn existing(path: &Path) -> &Path {
+    path.ancestors()
+        .find(|path| path.exists())
+        .unwrap_or(Path::new("/"))
+}
+
+/// The available kilobytes in `df -Pk`'s output.
+fn free_kilobytes(output: &str) -> Option<u64> {
+    output
+        .lines()
+        .nth(1)?
+        .split_whitespace()
+        .nth(3)?
+        .parse()
+        .ok()
+}
+
+async fn run(command: &mut Command) -> Option<String> {
+    let output = command.stdin(Stdio::null()).output().await.ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// What a program printed, both streams, cut to its last [`OUTPUT_KEPT`]
+/// bytes.
+fn printed(output: &std::process::Output) -> String {
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    let text = text.trim();
+    if text.len() <= OUTPUT_KEPT {
+        return text.to_owned();
+    }
+    let mut start = text.len() - OUTPUT_KEPT;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &text[start..])
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn machine(state: &Path) -> Machine {
+        Machine::new(
+            state.to_owned(),
+            Env::default(),
+            PathBuf::from("/nonexistent/copilot"),
+        )
+    }
+
+    fn configure(script: &str, env: &[(&str, &str)]) -> pb::ConfigureHost {
+        pb::ConfigureHost {
+            env: env
+                .iter()
+                .map(|(name, value)| pb::EnvVar {
+                    name: (*name).to_owned(),
+                    value: (*value).to_owned(),
+                })
+                .collect(),
+            setup_script: script.to_owned(),
+        }
+    }
+
+    fn scratch() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    #[tokio::test]
+    async fn the_setup_script_runs_with_the_variables_and_not_again_once_it_succeeded() {
+        let state = scratch();
+        let counter = state.path().join("runs");
+        let script = format!("echo \"$GREETING\" >> {}", counter.display());
+        let machine = machine(state.path());
+
+        let first = machine
+            .configure(configure(&script, &[("GREETING", "hello")]))
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let again = machine
+            .configure(configure(&script, &[("GREETING", "hello")]))
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(first.ran && first.succeeded);
+        assert_eq!(again.ran_unix_ms, first.ran_unix_ms);
+        assert_eq!(
+            std::fs::read_to_string(&counter).ok().as_deref(),
+            Some("hello\n")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_setup_script_runs_again_and_says_what_it_printed() {
+        let state = scratch();
+        let machine = machine(state.path());
+        let script = "echo missing tool; exit 3";
+
+        let first = machine
+            .configure(configure(script, &[]))
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let status = machine.status("test".to_owned()).await;
+
+        assert!(first.ran && !first.succeeded);
+        assert!(first.output.contains("missing tool"));
+        assert_eq!(status.setup, Some(first));
+    }
+
+    #[tokio::test]
+    async fn the_status_has_the_disk_and_a_token_given_by_the_daemon_and_says_why_copilot_is_missing()
+     {
+        let state = scratch();
+        let machine = machine(state.path());
+        let _ = machine
+            .configure(configure("", &[("GH_TOKEN", "secret")]))
+            .await;
+
+        let status = machine.status("test".to_owned()).await;
+
+        assert!(status.free_disk_bytes > 0);
+        assert!(!status.platform.is_empty());
+        assert!(status.github_token);
+        assert!(status.copilot_version.is_empty());
+        assert!(!status.copilot_problem.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cloning_twice_fetches_and_a_path_for_a_name_is_refused() {
+        let state = scratch();
+        let origin = state.path().join("origin");
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@localhost")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@localhost")
+                .status()
+                .unwrap_or_else(|error| panic!("{error}"));
+            assert!(status.success());
+        };
+        let origin_path = origin.display().to_string();
+        git(&["init", "-q", &origin_path]);
+        git(&[
+            "-C",
+            &origin_path,
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "first",
+        ]);
+        let machine = machine(&state.path().join("host"));
+        let request = |name: &str| pb::CloneRepositories {
+            folder: "project".to_owned(),
+            repositories: vec![pb::RemoteRepository {
+                name: name.to_owned(),
+                url: origin_path.clone(),
+            }],
+        };
+
+        let first = machine
+            .clone(request("app"))
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+        let second = machine
+            .clone(request("app"))
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert_eq!(first, second);
+        assert!(Path::new(&first[0].path).join(".git").exists());
+        assert!(matches!(
+            machine.clone(request("../escape")).await,
+            Err(HostError::NotAName { .. })
+        ));
+    }
+}

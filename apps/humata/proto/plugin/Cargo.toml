@@ -1,0 +1,18 @@
+[package]
+name = "humata-protoc-gen-prost"
+description = "protoc-gen-prost from the workspace's pinned prost, for Humata's protocol."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "protoc-gen-prost"
+path = "main.rs"
+
+[dependencies]
+prost.workspace = true
+protoc-gen-prost.workspace = true
+# Not used by the plugin: listed so @crates exposes it to the prost toolchain
+# in apps/humata/proto/BUILD.bazel.
+prost-types.workspace = true

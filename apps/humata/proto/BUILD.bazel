@@ -1,0 +1,49 @@
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
+load("@rules_rust_prost//:defs.bzl", "rust_prost_library", "rust_prost_toolchain")
+load("@rules_swift//proto:swift_proto_library.bzl", "swift_proto_library")
+
+# Humata's protocol (humata/v1/humata.proto), generated for the Rust daemon and
+# the Swift clients.
+
+proto_library(
+    name = "humata_proto",
+    srcs = ["humata/v1/humata.proto"],
+)
+
+rust_prost_library(
+    name = "humata_rust",
+    proto = ":humata_proto",
+    visibility = ["//apps/humata:__subpackages__"],
+)
+
+swift_proto_library(
+    name = "humata_swift",
+    module_name = "HumataProto",
+    protos = [":humata_proto"],
+    visibility = ["//apps/humata:__subpackages__"],
+)
+
+# Generates the Rust types with the workspace's prost, so they are the same
+# crate the daemon encodes and decodes with. Registered in MODULE.bazel ahead
+# of rules_rust_prost's own toolchain, which pins an older prost.
+rust_prost_toolchain(
+    name = "prost_toolchain_impl",
+    prost_plugin = "//apps/humata/proto/plugin:protoc-gen-prost",
+    prost_runtime = "@crates//:prost",
+    prost_types = "@crates//:prost-types",
+    # No tonic: the protocol has its own framing. The rule counts this
+    # flag's default as a tonic attribute, so it must be cleared.
+    tonic_plugin_flag = "",
+)
+
+toolchain(
+    name = "prost_toolchain",
+    toolchain = ":prost_toolchain_impl",
+    toolchain_type = "@rules_rust_prost//:toolchain_type",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

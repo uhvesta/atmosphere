@@ -1,0 +1,16 @@
+[package]
+name = "humata-cli"
+description = "humata: Humata's sessions from the command line, through the daemon."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "humata"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
