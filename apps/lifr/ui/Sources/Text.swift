@@ -69,6 +69,7 @@ extension TaskRowData {
     package func accessibilityValue(_ locale: Locale) -> String {
         var parts = [status.title]
         if let priority = priority.title { parts.append("\(priority) priority") }
+        if let starts { parts.append(String(localized: "Starts \(starts.formatted(locale))")) }
         if let due { parts.append(due.text(locale)) }
         if repeats { parts.append(String(localized: "Repeats")) }
         if let subtasks { parts.append("\(subtasks.closed) of \(subtasks.total) Sub tasks closed") }

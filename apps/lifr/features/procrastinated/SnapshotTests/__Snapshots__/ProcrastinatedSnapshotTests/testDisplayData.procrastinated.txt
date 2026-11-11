@@ -17,6 +17,7 @@
         - id: 00000000-0000-0000-0000-000000001301
         - priority: Priority.none
         - repeats: false
+        - starts: Optional<CalendarDate>.none
         - status: TaskStatus.procrastinated
         - subtasks: Optional<Progress>.none
         - title: "Plan long runs"
@@ -35,6 +36,7 @@
         - id: 00000000-0000-0000-0000-000000001101
         - priority: Priority.low
         - repeats: false
+        - starts: Optional<CalendarDate>.none
         - status: TaskStatus.procrastinated
         - subtasks: Optional<Progress>.none
         - title: "Fix the bike\'s back brake"

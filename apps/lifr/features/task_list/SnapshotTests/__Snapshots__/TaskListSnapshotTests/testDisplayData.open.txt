@@ -18,6 +18,7 @@
         - id: 00000000-0000-0000-0000-000000000601
         - priority: Priority.urgent
         - repeats: false
+        - starts: Optional<CalendarDate>.none
         - status: TaskStatus.inProgress
         ▿ subtasks: Optional<Progress>
           ▿ some: Progress
@@ -50,6 +51,7 @@
         - id: 00000000-0000-0000-0000-000000001101
         - priority: Priority.low
         - repeats: false
+        - starts: Optional<CalendarDate>.none
         - status: TaskStatus.procrastinated
         - subtasks: Optional<Progress>.none
         - title: "Fix the bike\'s back brake"
@@ -61,6 +63,7 @@
         - id: 00000000-0000-0000-0000-000000001301
         - priority: Priority.none
         - repeats: false
+        - starts: Optional<CalendarDate>.none
         - status: TaskStatus.procrastinated
         - subtasks: Optional<Progress>.none
         - title: "Plan long runs"
@@ -87,6 +90,7 @@
         - id: 00000000-0000-0000-0000-000000000401
         - priority: Priority.high
         - repeats: false
+        - starts: Optional<CalendarDate>.none
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Long run, 10 km"
@@ -105,6 +109,7 @@
         - id: 00000000-0000-0000-0000-000000001701
         - priority: Priority.high
         - repeats: false
+        - starts: Optional<CalendarDate>.none
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Buy running shoes"
@@ -123,6 +128,7 @@
         - id: 00000000-0000-0000-0000-000000000501
         - priority: Priority.medium
         - repeats: false
+        - starts: Optional<CalendarDate>.none
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Book physio appointment"
@@ -141,6 +147,7 @@
         - id: 00000000-0000-0000-0000-000000001201
         - priority: Priority.medium
         - repeats: false
+        - starts: Optional<CalendarDate>.none
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Renew passport"
@@ -154,6 +161,7 @@
         - id: 00000000-0000-0000-0000-000000001001
         - priority: Priority.none
         - repeats: false
+        - starts: Optional<CalendarDate>.none
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Water the plants"
@@ -172,6 +180,7 @@
         - id: 00000000-0000-0000-0000-000000001401
         - priority: Priority.none
         - repeats: false
+        - starts: Optional<CalendarDate>.none
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Call the plumber"
@@ -183,6 +192,7 @@
         - id: 00000000-0000-0000-0000-000000001901
         - priority: Priority.none
         - repeats: false
+        - starts: Optional<CalendarDate>.none
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Pick up a birthday card"
@@ -194,6 +204,11 @@
         - id: 00000000-0000-0000-0000-000000001501
         - priority: Priority.none
         - repeats: false
+        ▿ starts: Optional<CalendarDate>
+          ▿ some: 2026-11-07
+            - year: 2026
+            - month: 11
+            - day: 7
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Plant the spring bulbs"

@@ -279,6 +279,38 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertNil(store.state.banner)
     }
 
+    func testRescheduleShortcutsCountFromToday() throws {
+        // Tuesday.
+        let today = try CalendarDate("2026-11-03")
+        XCTAssertEqual(RescheduleFeature.Shortcut.today.day(from: today), today)
+        XCTAssertEqual(RescheduleFeature.Shortcut.tomorrow.day(from: today), try CalendarDate("2026-11-04"))
+        XCTAssertEqual(RescheduleFeature.Shortcut.thisWeekend.day(from: today), try CalendarDate("2026-11-07"))
+        XCTAssertEqual(RescheduleFeature.Shortcut.nextWeek.day(from: today), try CalendarDate("2026-11-09"))
+        let saturday = try CalendarDate("2026-11-07")
+        let sunday = try CalendarDate("2026-11-08")
+        let monday = try CalendarDate("2026-11-09")
+        XCTAssertEqual(RescheduleFeature.Shortcut.thisWeekend.day(from: saturday), saturday)
+        XCTAssertEqual(RescheduleFeature.Shortcut.thisWeekend.day(from: sunday), sunday)
+        XCTAssertEqual(RescheduleFeature.Shortcut.nextWeek.day(from: sunday), monday)
+        XCTAssertEqual(RescheduleFeature.Shortcut.nextWeek.day(from: monday), try CalendarDate("2026-11-16"))
+    }
+
+    func testAShortcutOrClearSavesInOneTap() async throws {
+        let stretch = records.task("Stretch", in: health, due: 0)
+        let store = await load()
+
+        await store.send(.rowAction(stretch.id, .reschedule))
+        await store.send(.reschedule(.presented(.shortcutPicked(.thisWeekend))))
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.workspace?.tasks[stretch.id]?.dueDate, try CalendarDate("2026-11-07"))
+        XCTAssertNil(store.state.reschedule)
+
+        await store.send(.rowAction(stretch.id, .reschedule))
+        await store.send(.reschedule(.presented(.clearTapped)))
+        await store.receive(\.delegate.saved)
+        XCTAssertNil(store.state.workspace?.tasks[stretch.id]?.dueDate)
+    }
+
     func testCancellingARescheduleKeepsTheDueDate() async {
         let stretch = records.task("Stretch", in: health)
         let store = await load()

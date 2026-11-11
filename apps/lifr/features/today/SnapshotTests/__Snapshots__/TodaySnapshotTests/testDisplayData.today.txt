@@ -20,6 +20,7 @@
           - id: 00000000-0000-0000-0000-000000001101
           - priority: Priority.low
           - repeats: false
+          - starts: Optional<CalendarDate>.none
           - status: TaskStatus.procrastinated
           - subtasks: Optional<Progress>.none
           - title: "Fix the bike\'s back brake"
@@ -38,6 +39,7 @@
           - id: 00000000-0000-0000-0000-000000000501
           - priority: Priority.medium
           - repeats: false
+          - starts: Optional<CalendarDate>.none
           - status: TaskStatus.todo
           - subtasks: Optional<Progress>.none
           - title: "Book physio appointment"
@@ -56,6 +58,7 @@
           - id: 00000000-0000-0000-0000-000000000601
           - priority: Priority.urgent
           - repeats: false
+          - starts: Optional<CalendarDate>.none
           - status: TaskStatus.inProgress
           ▿ subtasks: Optional<Progress>
             ▿ some: Progress
@@ -80,6 +83,7 @@
           - id: 00000000-0000-0000-0000-000000000401
           - priority: Priority.high
           - repeats: false
+          - starts: Optional<CalendarDate>.none
           - status: TaskStatus.todo
           - subtasks: Optional<Progress>.none
           - title: "Long run, 10 km"
@@ -98,6 +102,7 @@
           - id: 00000000-0000-0000-0000-000000001001
           - priority: Priority.none
           - repeats: false
+          - starts: Optional<CalendarDate>.none
           - status: TaskStatus.todo
           - subtasks: Optional<Progress>.none
           - title: "Water the plants"

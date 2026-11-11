@@ -38,7 +38,7 @@
     [Row/OutlineRow] ""
       [Heading] "Starts Sat, Nov 7"
     [Row/OutlineRow] ""
-      [Button] "Plant the spring bulbs" value: "To Do, HOME-0015" id: HOME-0015
+      [Button] "Plant the spring bulbs" value: "To Do, Starts Nov 7, HOME-0015" id: HOME-0015
   [StaticText] "" value: "No task selected"
   [Toolbar] ""
     [Button] "Hide Sidebar"

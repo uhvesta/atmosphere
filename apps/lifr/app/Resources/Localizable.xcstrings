@@ -2069,6 +2069,9 @@
     "Next Version" : {
 
     },
+    "Next Week" : {
+
+    },
     "No" : {
 
     },
@@ -2193,6 +2196,9 @@
 
     },
     "Notifications are off" : {
+
+    },
+    "Notifications are off for Lifr, so reminders won't ring here. Turn them on in Settings." : {
 
     },
     "OK" : {
@@ -3081,6 +3087,9 @@
 
     },
     "This Week" : {
+
+    },
+    "This Weekend" : {
 
     },
     "This can't be undone. Tasks the assistant added or changed stay." : {

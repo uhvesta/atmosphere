@@ -101,6 +101,8 @@ package struct QuickAddView: View {
         }
     }
 
+    private var hasDueDay: Bool { store.entry?.dueDate != nil || store.due != .none }
+
     /// A field the title sets shows as a chip instead of its picker, so the
     /// two never disagree; removing the chip brings the picker back.
     @ViewBuilder
@@ -122,7 +124,7 @@ package struct QuickAddView: View {
                 }
             }
         }
-        if store.entry?.dueDate == nil || store.entry?.priority == nil {
+        if store.entry?.dueDate == nil || store.entry?.priority == nil || hasDueDay {
             Section {
                 if store.entry?.dueDate == nil {
                     Picker("Due", selection: $store.due) {
@@ -131,6 +133,12 @@ package struct QuickAddView: View {
                     .pickerStyle(.segmented)
                     if store.due == .pick {
                         DatePicker("Due", selection: $store.pickedDate, displayedComponents: .date)
+                    }
+                }
+                if hasDueDay, store.entry?.dueTime == nil {
+                    Toggle("Add a time", isOn: $store.addsTime)
+                    if store.addsTime {
+                        DatePicker("Time", selection: $store.pickedTime, displayedComponents: .hourAndMinute)
                     }
                 }
                 if store.entry?.priority == nil {

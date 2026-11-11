@@ -51,6 +51,12 @@ package struct TaskRow: View {
     private var details: some View {
         TaskCodeLabel(row.code)
             .fixedSize()
+        if let starts = row.starts {
+            Text("Starts \(starts.formatted(locale))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize()
+        }
         if let due = row.due {
             Text(due.text(locale))
                 .font(.caption)

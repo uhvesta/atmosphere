@@ -430,6 +430,11 @@ final class TaskDetailFeatureTests: XCTestCase {
         let saved = try await store.dependencies.store.load().tasks[stretch.id]
         XCTAssertEqual(saved?.dueTime, seven)
         XCTAssertEqual(saved?.startDate, wednesday)
+        // Its row says when it starts, while that's ahead.
+        XCTAssertEqual(store.state.row.starts, wednesday)
+        await store.send(.startDatePicked(try CalendarDate(year: 2026, month: 11, day: 3)))
+        await store.receive(\.delegate.saved)
+        XCTAssertNil(store.state.row.starts)
     }
 
     func testDismissingTheBannerKeepsTheReopenedParent() async throws {

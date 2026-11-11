@@ -82,6 +82,28 @@ final class QuickAddFeatureTests: XCTestCase {
         XCTAssertEqual(workspace.reminders.values.map(\.trigger), [.beforeDue(seconds: 6 * 3600)])
     }
 
+    func testAddATimeGivesTheDueDayATime() async throws {
+        _ = (health, home)
+        let store = try quickAdd()
+        await store.send(.binding(.set(\.title, "Call plumber")))
+        await store.send(.binding(.set(\.due, .tomorrow)))
+        await store.send(.binding(.set(\.addsTime, true)))
+        await store.send(.binding(.set(\.pickedTime, now + 5 * 3600)))
+        await store.send(.addTapped)
+        let workspace = try await saved(store)
+        XCTAssertEqual(workspace.tasks.values.first { $0.title == "Call plumber" }?.dueTime, try TimeOfDay("15:00"))
+    }
+
+    func testAddATimeWithNoDueDayAddsNoTime() async throws {
+        _ = (health, home)
+        let store = try quickAdd()
+        await store.send(.binding(.set(\.title, "Call dentist")))
+        await store.send(.binding(.set(\.addsTime, true)))
+        await store.send(.addTapped)
+        let workspace = try await saved(store)
+        XCTAssertNil(workspace.tasks.values.first { $0.title == "Call dentist" }?.dueTime)
+    }
+
     func testANewTaskWithNoDueDateGetsNoReminder() async throws {
         _ = (health, home)
         let store = try quickAdd()

@@ -58,6 +58,9 @@ package struct QuickAddFeature {
         package var projectID: UUID?
         package var due = Due.none
         package var pickedDate: Date
+        /// Whether the due day has a time, for a title that gives none.
+        package var addsTime = false
+        package var pickedTime: Date
         package var priority = Priority.none
         package var subtaskMode = false
         /// The task Sub tasks are added to, once Sub task mode added it.
@@ -80,6 +83,9 @@ package struct QuickAddFeature {
 
         package init(workspace: Workspace, now: Date, timeZone: TimeZone, locale: Locale = .current) {
             pickedDate = now
+            // The next whole hour.
+            let hours = (now.timeIntervalSinceReferenceDate / 3600).rounded(.down)
+            pickedTime = Date(timeIntervalSinceReferenceDate: hours * 3600 + 3600)
             self.workspace = workspace
             today = CalendarDate(now, in: timeZone)
             let order = DateFormatter.dateFormat(fromTemplate: "Md", options: 0, locale: locale) ?? "M/d"
@@ -180,7 +186,9 @@ package struct QuickAddFeature {
                     new.projectID = entry?.avenueID == nil ? state.projectID : entry?.projectID
                     new.priority = entry?.priority ?? state.priority
                     new.dueDate = entry?.dueDate ?? dueDate(state)
-                    new.dueTime = entry?.dueTime
+                    new.dueTime =
+                        entry?.dueTime
+                        ?? (state.addsTime && new.dueDate != nil ? TimeOfDay(state.pickedTime, in: timeZone) : nil)
                     new.labelIDs = entry?.labelIDs ?? []
                     if new.dueDate != nil, let trigger = state.defaultReminder.trigger(dueTime: new.dueTime) {
                         new.reminders = [trigger]

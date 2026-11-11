@@ -378,8 +378,24 @@ struct RescheduleView: View {
     var body: some View {
         NavigationStack {
             Form {
-                DatePicker("Due", selection: $store.date, displayedComponents: .date)
-                    .datePickerStyle(.graphical)
+                Section {
+                    ForEach(RescheduleFeature.Shortcut.allCases, id: \.self) { shortcut in
+                        Button {
+                            store.send(.shortcutPicked(shortcut))
+                        } label: {
+                            Label(shortcut.title, systemImage: shortcut.symbol)
+                        }
+                    }
+                    Button(role: .destructive) {
+                        store.send(.clearTapped)
+                    } label: {
+                        Label("No due date", systemImage: "xmark.circle")
+                    }
+                }
+                Section {
+                    DatePicker("Due", selection: $store.date, displayedComponents: .date)
+                        .datePickerStyle(.graphical)
+                }
             }
             .navigationTitle(store.title)
             .toolbar {

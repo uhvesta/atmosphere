@@ -77,6 +77,8 @@
       [RadioButton/Segment] "Today" value: "1"
       [RadioButton/Segment] "Tomorrow" value: "0"
       [RadioButton/Segment] "Pick" value: "0"
+    [StaticText] "" value: "Add a time"
+    [CheckBox/Switch] "" value: "0"
     [StaticText] "" value: "Priority"
     [PopUpButton] "" value: "None"
     [StaticText] "" value: "Add Sub tasks next"

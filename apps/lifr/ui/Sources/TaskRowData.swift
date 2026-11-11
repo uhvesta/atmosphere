@@ -31,6 +31,8 @@ package struct TaskRowData: Identifiable, Hashable, Sendable {
     package var subtasks: Progress?
     /// Whether closing it brings the next one.
     package var repeats = false
+    /// The day it starts, while that's still ahead.
+    package var starts: CalendarDate?
 
     package init(_ task: LifrTask, in workspace: Workspace, now: Date, timeZone: TimeZone) {
         let today = CalendarDate(now, in: timeZone)
@@ -42,6 +44,7 @@ package struct TaskRowData: Identifiable, Hashable, Sendable {
         priority = task.priority
         avenue = workspace.avenues[task.avenueID]?.name ?? ""
         repeats = task.recurrence != nil
+        if let start = task.startDate, start > today { starts = start }
         if let dueDate = task.dueDate {
             if task.isOverdue(today: today, time: TimeOfDay(now, in: timeZone)) {
                 due = .overdue(dueDate, task.dueTime)
