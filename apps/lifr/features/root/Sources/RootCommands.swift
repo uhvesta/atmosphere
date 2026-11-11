@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import LifrConversations
 import LifrCore
 import LifrLockClient
 import LifrSettings
@@ -6,8 +7,9 @@ import LifrUI
 import SwiftUI
 
 /// The File menu's new items, Find, the View menu's Go to items, the Task
-/// menu for the open task, the Sync menu, and Help's shortcuts and bug
-/// reports. Items that don't apply are disabled, not hidden.
+/// menu for the open task, the Chat menu's plan prompt, the Sync menu, and
+/// Help's shortcuts and bug reports. Items that don't apply are disabled,
+/// not hidden.
 package struct RootCommands: Commands {
     package var store: StoreOf<RootFeature>
 
@@ -79,6 +81,14 @@ package struct RootCommands: Commands {
                 .disabled(store.openTaskID == nil)
             Button("No Due Date") { store.send(.dueShortcut(.none)) }
                 .disabled(store.openTaskID == nil)
+        }
+        CommandMenu("Chat") {
+            Button("Export Plan Prompt") { store.send(.chatCommandChosen(.export)) }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(store.state.openChatID == nil)
+            Button("Paste Plan Reply") { store.send(.chatCommandChosen(.paste)) }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+                .disabled(store.state.openChatID == nil)
         }
         CommandMenu("Sync") {
             Button("Sync Now") { store.send(.syncNowTapped) }

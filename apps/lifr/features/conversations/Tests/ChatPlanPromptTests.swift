@@ -73,6 +73,29 @@ final class ChatPlanPromptTests: XCTestCase {
         XCTAssertTrue(store.state.conversation.messages.isEmpty, "nothing was sent")
     }
 
+    func testExportFromTheMenuPlansWhatsTypedInTheField() async throws {
+        let clipboard = LockIsolated<String?>(nil)
+        let (store, _) = chat(clipboard)
+
+        await store.send(.core(.binding(.set(\.input, "Move flat"))))
+        await store.send(.commandChosen(.export))
+        await store.receive(\.exportPlanTapped)
+        await store.finish()
+
+        XCTAssertTrue(try XCTUnwrap(clipboard.value).contains("Move flat"))
+        XCTAssertEqual(store.state.input, "")
+        XCTAssertTrue(store.state.conversation.messages.isEmpty, "nothing was sent")
+    }
+
+    func testPasteFromTheMenuPutsTheReplysPlanOnTheDraftCard() async throws {
+        let (store, _) = chat(LockIsolated<String?>(reply))
+
+        await store.send(.commandChosen(.paste))
+        await store.receive(\.planPasted)
+
+        XCTAssertEqual(store.state.conversation.draft?.tasks.map(\.title), ["Book the van"])
+    }
+
     func testPastingAReplyPutsItsPlanOnTheDraftCardWithoutAddingIt() async throws {
         let clipboard = LockIsolated<String?>(reply)
         let (store, workspace) = chat(clipboard)

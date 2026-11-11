@@ -812,6 +812,24 @@ final class RootFeatureTests: XCTestCase {
         }
     }
 
+    func testThePlanCommandsAreOfferedOnlyWithAConversationOnScreen() async {
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertNil(store.state.openChatID)
+
+        await store.send(.selected(.conversations))
+        await store.send(.conversations(.newTapped))
+        await store.skipReceivedActions(strict: false)
+        let id = store.state.openChatID
+        XCTAssertNotNil(id)
+        XCTAssertEqual(id, store.state.conversations.openID)
+
+        await store.send(.selected(.today))
+        XCTAssertNil(store.state.openChatID)
+        await task.cancel()
+    }
+
     func testPrintIsOfferedForAShownListThatHasTasksAndNotWhileLocked() async {
         records.task("Run", in: health, due: 0)
         let store = makeStore(.mac)

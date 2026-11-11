@@ -259,6 +259,13 @@ package struct RootFeature {
             }
         }
 
+        /// The conversation on screen, for the Mac's plan commands. `nil`
+        /// while locked or with none open.
+        package var openChatID: UUID? {
+            guard !isLocked, selection == .conversations || tab == .conversations else { return nil }
+            return conversations.openID
+        }
+
         /// The Mac's list on screen, with its title, to print. `nil` while
         /// locked, or with no list or an empty one shown.
         package var printable: (title: String, list: TaskListFeature.State)? {
@@ -361,6 +368,8 @@ package struct RootFeature {
         case dueShortcut(DueShortcut)
         /// Go to Task…
         case goToTaskTapped
+        /// A chat command from the menu, for the conversation on screen.
+        case chatCommandChosen(ChatCommand)
         case goToTask(PresentationAction<GoToTaskFeature.Action>)
         /// Help › Keyboard Shortcuts.
         case shortcutsTapped
@@ -855,6 +864,10 @@ package struct RootFeature {
                     }
                     return .none
                 }
+
+            case .chatCommandChosen(let command):
+                guard let id = state.openChatID else { return .none }
+                return .send(.conversations(.chats(.element(id: id, action: .commandChosen(command)))))
 
             case .goToTaskTapped:
                 guard let workspace = state.workspace else { return .none }

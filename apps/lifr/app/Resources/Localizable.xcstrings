@@ -1469,6 +1469,9 @@
     "Expires after" : {
 
     },
+    "Export Plan Prompt" : {
+
+    },
     "Failed" : {
 
     },
@@ -2440,6 +2443,9 @@
 
     },
     "Paste Photo" : {
+
+    },
+    "Paste Plan Reply" : {
 
     },
     "Pause" : {

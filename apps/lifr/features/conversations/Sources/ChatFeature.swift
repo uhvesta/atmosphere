@@ -314,6 +314,9 @@ package struct ChatFeature {
         case exportPlanTapped(goal: String)
         /// Reads the clipboard for another assistant's reply.
         case pastePlanTapped
+        /// A command picked from the Mac's menu: runs as if typed, with
+        /// what's in the field as its details.
+        case commandChosen(ChatCommand)
         /// The text on the clipboard, put on the draft card when it
         /// holds a plan.
         case planPasted(String?)
@@ -747,6 +750,9 @@ package struct ChatFeature {
                             + "tasks. Then copy its whole reply and type /paste here to review the plan.")
                 }
                 return .run { [pasteboard] _ in await pasteboard.copy(prompt) }
+
+            case .commandChosen(let command):
+                return run(command, details: state.input, in: &state)
 
             case .pastePlanTapped:
                 return .run { [pasteboard] send in
