@@ -259,6 +259,28 @@ package struct RootFeature {
             }
         }
 
+        /// The Mac's list on screen, with its title, to print. `nil` while
+        /// locked, or with no list or an empty one shown.
+        package var printable: (title: String, list: TaskListFeature.State)? {
+            guard platform == .mac, !isLocked, let slot = currentList, let list = self[list: slot], !list.isEmpty
+            else { return nil }
+            let title: String? =
+                switch selection {
+                case .today: String(localized: "Today")
+                case .upcoming: String(localized: "Upcoming")
+                case .calendar: String(localized: "Calendar")
+                case .procrastinated: String(localized: "Procrastinated")
+                case .search: String(localized: "Search")
+                case .anytime: Shelf.anytime.title
+                case .later: Shelf.later.title
+                case .logbook: Shelf.logbook.title
+                case .scope: avenue?.title
+                case .savedFilter(let id): workspace?.savedFilters[id]?.name
+                case .conversations, .trash, nil: nil
+                }
+            return (title ?? "Lifr", list)
+        }
+
         package subscript(list slot: ListSlot) -> TaskListFeature.State? {
             switch slot {
             case .today: today.list

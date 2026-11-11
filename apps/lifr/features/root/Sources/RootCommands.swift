@@ -24,6 +24,16 @@ package struct RootCommands: Commands {
             Button("New Project") { store.send(.newProjectTapped(nil)) }
                 .keyboardShortcut("n", modifiers: [.command, .option])
         }
+        #if os(macOS)
+            CommandGroup(replacing: .printItem) {
+                Button("Print…") {
+                    guard let (title, list) = store.state.printable else { return }
+                    ListPrinter.print(title: title, markdown: list.markdown)
+                }
+                .keyboardShortcut("p")
+                .disabled(store.state.printable == nil)
+            }
+        #endif
         CommandGroup(after: .textEditing) {
             Divider()
             Button("Find") { store.send(.goTo(.search)) }

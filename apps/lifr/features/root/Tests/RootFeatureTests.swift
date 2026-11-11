@@ -802,6 +802,26 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testPrintIsOfferedForAShownListThatHasTasksAndNotWhileLocked() async {
+        records.task("Run", in: health, due: 0)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        XCTAssertEqual(store.state.printable?.title, "Today")
+        XCTAssertTrue(store.state.printable?.list.markdown.contains("Run") == true)
+
+        await store.send(.selected(.scope(.avenue(health.id))))
+        XCTAssertEqual(store.state.printable?.title, "Health")
+
+        await store.send(.selected(.logbook))
+        XCTAssertNil(store.state.printable, "nothing closed yet")
+
+        await store.send(.selected(.conversations))
+        XCTAssertNil(store.state.printable)
+        await task.cancel()
+    }
+
     func testAddTaskOnAnAvenueOrProjectPageOpensQuickAddThere() async {
         let marathon = records.project("Half marathon", in: health)
         let store = makeStore(.phone)
