@@ -319,12 +319,18 @@ private struct Sidebar: View {
         .navigationTitle("Lifr")
         .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
         .safeAreaInset(edge: .bottom) {
-            Button {
-                store.send(.newAvenueTapped)
-            } label: {
-                Label("New Avenue", systemImage: "plus")
+            VStack(alignment: .leading, spacing: 6) {
+                Button {
+                    store.send(.newAvenueTapped)
+                } label: {
+                    Label("New Avenue", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                Text(SyncStatusText.status(store.sync))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(Text("Sync: \(SyncStatusText.status(store.sync))"))
             }
-            .buttonStyle(.borderless)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
         }

@@ -2469,7 +2469,13 @@
     "Sync Now" : {
 
     },
+    "Sync continuously" : {
+
+    },
     "Sync conversations" : {
+
+    },
+    "Sync: %@" : {
 
     },
     "Synced" : {

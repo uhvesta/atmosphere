@@ -101,6 +101,10 @@ package struct MenuBarContent: View {
             }
         }
         Divider()
+        Text("Sync: \(SyncStatusText.status(store.sync))")
+        Button("Sync Now") { store.send(.syncNowTapped) }
+            .disabled(store.sync.status == .syncing || store.sync.status == .failed(.notSetUp))
+        Divider()
         Toggle(
             "Local API",
             isOn: Binding(get: { store.isAPIEnabled }, set: { store.send(.apiSwitched($0)) }))

@@ -800,6 +800,50 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertEqual(syncs.value, 1)
     }
 
+    func testSyncingContinuouslyChecksEveryTwoMinutes() async {
+        let syncs = LockIsolated(0)
+        let store = makeStore(.phone, sync: counting(syncs))
+        let clock = TestClock()
+        store.dependencies.continuousClock = clock
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertEqual(syncs.value, 1)
+
+        await clock.advance(by: .seconds(2 * 60))
+        XCTAssertEqual(syncs.value, 2)
+        await task.cancel()
+    }
+
+    func testWithContinuousSyncOffItChecksEveryFifteenMinutes() async {
+        let syncs = LockIsolated(0)
+        let store = makeStore(.phone, sync: counting(syncs))
+        let clock = TestClock()
+        store.dependencies.continuousClock = clock
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.settings(.syncContinuouslyToggled(false)))
+        XCTAssertFalse(store.state.syncsContinuously)
+        await clock.advance(by: .seconds(14 * 60))
+        XCTAssertEqual(syncs.value, 1)
+        await clock.advance(by: .seconds(60))
+        XCTAssertEqual(syncs.value, 2)
+        await task.cancel()
+    }
+
+    func testGoingToTheBackgroundSyncsOnlyWhileContinuous() async {
+        let syncs = LockIsolated(0)
+        let store = makeStore(.phone, sync: counting(syncs))
+        await store.send(.backgrounded)
+        await store.finish()
+        XCTAssertEqual(syncs.value, 1)
+
+        await store.send(.settings(.syncContinuouslyToggled(false)))
+        await store.send(.backgrounded)
+        await store.finish()
+        XCTAssertEqual(syncs.value, 1)
+    }
+
     func testSyncNowOnTheMacSyncs() async {
         let syncs = LockIsolated(0)
         let store = makeStore(.mac, sync: counting(syncs))

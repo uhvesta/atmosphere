@@ -104,6 +104,8 @@ package struct RootFeature {
         package var dismissedToast: UUID?
         /// Whether Lifr asks for Face ID, Touch ID or the passcode.
         @Shared(.locksApp) package var locksApp
+        /// Whether sync runs often while open, rather than every so often.
+        @Shared(.syncsContinuously) package var syncsContinuously
         /// Whether the records are hidden until the person confirms it's
         /// them.
         package var isLocked = false
@@ -111,6 +113,9 @@ package struct RootFeature {
         package var biometry = Biometry.faceID
         /// Whether the system is asking the person to confirm.
         package var isUnlocking = false
+        /// Whether the app's lifetime work, such as the sync timer, has
+        /// started.
+        package var isRunning = false
         /// Why the last try to unlock failed.
         package var lockMessage: String?
         /// When the app last went to the background.
@@ -288,11 +293,13 @@ package struct RootFeature {
         case approval(PresentationAction<ApprovalFeature.Action>)
     }
 
-    private enum CancelID { case reminders, glance }
+    private enum CancelID { case reminders, glance, syncTimer }
 
     /// How often sync runs while the app is open, for what other devices
     /// sent.
     static let syncInterval = Duration.seconds(15 * 60)
+    /// How often it runs while Lifr syncs continuously.
+    static let continuousSyncInterval = Duration.seconds(2 * 60)
 
     @Dependency(\.store) private var store
     @Dependency(\.session) private var session
@@ -319,6 +326,10 @@ package struct RootFeature {
             // The widgets show only counts while the lock is on.
             .onChange(of: \.locksApp) { _, _ in
                 Reduce { state, _ in .merge(writeGlance(state), scheduleReminders(state)) }
+            }
+            // The timer restarts at the new pace.
+            .onChange(of: \.syncsContinuously) { _, _ in
+                Reduce { state, _ in state.isRunning ? syncTimer(state) : .none }
             }
             .transformDependency(\.self) { dependencies in
                 dependencies.store = dependencies.store.telling(dependencies.sync).recordingChanges(
@@ -363,11 +374,10 @@ package struct RootFeature {
                     .run { [sync] send in
                         for await state in await sync.states() { await send(.syncChanged(state)) }
                     },
-                    .run { [sync, clock] _ in
-                        _ = await sync.sync()
-                        for await _ in clock.timer(interval: Self.syncInterval) { _ = await sync.sync() }
-                    },
+                    .run { [sync] _ in _ = await sync.sync() },
+                    syncTimer(state),
                 ]
+                state.isRunning = true
                 state.biometry = lock.biometry()
                 if state.place != Place() {
                     state.restoring = state.place
@@ -613,7 +623,13 @@ package struct RootFeature {
                 guard state.sync.status != .syncing else { return .none }
                 return .run { [sync] _ in _ = await sync.sync() }
 
-            case .backgrounded, .unlockTapped, .unlocked:
+            case .backgrounded:
+                // What changed here reaches the other devices before Lifr
+                // is suspended.
+                guard state.syncsContinuously, state.sync.status != .syncing else { return .none }
+                return .run { [sync] _ in _ = await sync.sync() }
+
+            case .unlockTapped, .unlocked:
                 return .none
 
             case .syncReviewTapped:
@@ -695,6 +711,16 @@ package struct RootFeature {
         default:
             return .none
         }
+    }
+
+    /// Syncs every so often while the app runs, more often while it syncs
+    /// continuously. Starting it again replaces the one running.
+    private func syncTimer(_ state: State) -> Effect<Action> {
+        let interval = state.syncsContinuously ? Self.continuousSyncInterval : Self.syncInterval
+        return .run { [sync, clock] _ in
+            for await _ in clock.timer(interval: interval) { _ = await sync.sync() }
+        }
+        .cancellable(id: CancelID.syncTimer, cancelInFlight: true)
     }
 
     /// Away, unlocking and what happens when it fails.

@@ -301,7 +301,13 @@ private struct SyncSection: View {
 
     var body: some View {
         Section {
-            LabeledContent("Status", value: status)
+            LabeledContent("Status", value: SyncStatusText.status(store.sync))
+            Toggle(
+                "Sync continuously",
+                isOn: Binding(
+                    get: { store.syncsContinuously }, set: { store.send(.syncContinuouslyToggled($0)) })
+            )
+            .disabled(isUnavailable)
             Button("Sync Now") { store.send(.syncNowTapped) }
                 .disabled(store.sync.status == .syncing || store.sync.status == .failed(.notSetUp))
         } header: {
@@ -309,16 +315,31 @@ private struct SyncSection: View {
         } footer: {
             if case .failed(let error) = store.sync.status {
                 Text(error.description)
+            } else if store.syncsContinuously {
+                Text(
+                    "Each change syncs with your other devices through iCloud as soon as you make it, and "
+                        + "Lifr checks for theirs every few minutes while it's open. A change made on two "
+                        + "devices at once that can't be merged waits for you to review it.")
             } else {
                 Text(
-                    "Your records sync with your other devices through iCloud. A change made on two devices "
-                        + "at once that can't be merged waits for you to review it.")
+                    "Your records sync with your other devices through iCloud every so often, and when Lifr "
+                        + "opens. A change made on two devices at once that can't be merged waits for you to "
+                        + "review it.")
             }
         }
     }
 
-    private var status: String {
-        switch store.sync.status {
+    /// This build has no iCloud, or the device isn't signed in.
+    private var isUnavailable: Bool {
+        store.sync.status == .failed(.notSetUp) || store.sync.status == .failed(.noAccount)
+    }
+}
+
+/// Where sync is, in a few words: in Settings, the Mac's sidebar and its
+/// menu bar.
+package enum SyncStatusText {
+    package static func status(_ sync: SyncState) -> String {
+        switch sync.status {
         case .syncing: return String(localized: "Syncing…")
         // Not a failure to retry: this build has no iCloud, or the device
         // isn't signed in.
@@ -326,7 +347,7 @@ private struct SyncSection: View {
         case .failed(.noAccount): return String(localized: "Not signed in")
         case .failed: return String(localized: "Didn't finish")
         case .idle:
-            guard let last = store.sync.lastSynced else { return String(localized: "Not synced yet") }
+            guard let last = sync.lastSynced else { return String(localized: "Not synced yet") }
             return String(localized: "Synced \(last.formatted(date: .abbreviated, time: .shortened))")
         }
     }

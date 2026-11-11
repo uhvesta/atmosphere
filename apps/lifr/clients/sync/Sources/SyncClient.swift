@@ -19,8 +19,9 @@ package struct SyncClient: Sendable {
 
 extension SyncClient {
     /// Syncs through `syncer`. `changed` waits `settle` for more changes
-    /// before syncing.
-    package static func syncing(_ syncer: Syncer, settle: Duration = .seconds(5)) -> Self {
+    /// before syncing; by default a second while Lifr syncs continuously,
+    /// and five otherwise.
+    package static func syncing(_ syncer: Syncer, settle: Duration? = nil) -> Self {
         let soon = LockIsolated<Task<Void, Never>?>(nil)
         return SyncClient(
             states: { await syncer.stream() },
@@ -30,7 +31,8 @@ extension SyncClient {
                 soon.withValue { task in
                     task?.cancel()
                     task = Task {
-                        try? await Task.sleep(for: settle)
+                        let continuous = Shared(.syncsContinuously).wrappedValue
+                        try? await Task.sleep(for: settle ?? .seconds(continuous ? 1 : 5))
                         guard !Task.isCancelled else { return }
                         await syncer.sync()
                     }
@@ -42,6 +44,15 @@ extension SyncClient {
     package static let off = SyncClient(
         states: { AsyncStream { $0.yield(SyncState()) } }, sync: { SyncState() }, resolve: { _ in SyncState() },
         changed: {})
+}
+
+extension SharedKey where Self == AppStorageKey<Bool>.Default {
+    /// Whether Lifr syncs every change at once and checks often for other
+    /// devices' changes while open, rather than every so often. This device
+    /// only; on unless the person turns it off.
+    package static var syncsContinuously: Self {
+        Self[.appStorage("lifrSyncsContinuously"), default: true]
+    }
 }
 
 extension StoreClient {

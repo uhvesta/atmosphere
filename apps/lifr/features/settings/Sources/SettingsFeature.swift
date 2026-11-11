@@ -51,6 +51,9 @@ package struct SettingsFeature {
         @Shared(.chatShowsSpeed) package var showsSpeed
         @Shared(.chatShowsPrompt) package var showsPrompt
         @Shared(.chatCompares) package var compares
+        /// Whether sync runs often while open. The app restarts its timer
+        /// when this changes.
+        @Shared(.syncsContinuously) package var syncsContinuously
         /// Where sync is. The app passes each change on.
         package var sync = SyncState()
         /// Kept so the Activity log opens on what's shown.
@@ -105,6 +108,7 @@ package struct SettingsFeature {
         case installCLITapped
         case activityTapped
         case syncNowTapped
+        case syncContinuouslyToggled(Bool)
         case activity(PresentationAction<ActivityFeature.Action>)
         case skillsTapped
         case skills(PresentationAction<SkillsFeature.Action>)
@@ -264,6 +268,10 @@ package struct SettingsFeature {
             case .syncNowTapped:
                 guard state.sync.status != .syncing else { return .none }
                 return .run { [sync] _ in _ = await sync.sync() }
+
+            case .syncContinuouslyToggled(let on):
+                state.$syncsContinuously.withLock { $0 = on }
+                return .none
 
             case .modelsTapped:
                 state.models = ModelsFeature.State()
