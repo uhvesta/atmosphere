@@ -134,15 +134,12 @@ package struct AvenueView: View {
             if let project = store.scope(state: \.project, action: \.project) {
                 ProjectDetailView(store: project)
             }
-            if store.canGroupByProject {
-                Picker(
-                    "Group by", selection: Binding(get: { store.grouping }, set: { store.send(.groupingPicked($0)) })
-                ) {
-                    ForEach(Grouping.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .listRowBackground(Color.clear)
+            Picker(
+                "Group by", selection: Binding(get: { store.grouping }, set: { store.send(.groupingPicked($0)) })
+            ) {
+                ForEach(store.groupings, id: \.self) { Text($0.title).tag($0) }
             }
+            .pickerStyle(.menu)
         }
         .emptyBelowHeader(store.project != nil)
         .navigationTitle(store.title)

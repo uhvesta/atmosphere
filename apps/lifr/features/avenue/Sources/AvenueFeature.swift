@@ -63,6 +63,11 @@ package struct AvenueFeature {
         package var canGroupByProject: Bool {
             if case .avenue = scope { true } else { false }
         }
+
+        /// The groupings offered: by Project only for a whole Avenue.
+        package var groupings: [Grouping] {
+            canGroupByProject ? Grouping.allCases : Grouping.allCases.filter { $0 != .project }
+        }
     }
 
     package enum Action: BindableAction {

@@ -10,6 +10,7 @@
 [text] "Archived"
 [text] "0 of 0 done"
 [button] "Restore Project"
+[button] "Group by, Status"
 [text] "No tasks yet"
 [text] "Tasks you add here, or move here, show up in this list."
 [text] "Archived “Spring half marathon”"

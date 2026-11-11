@@ -57,6 +57,9 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Complete the Project once its tasks are closed."
     [Row/OutlineRow] ""
+      [StaticText] "" value: "Group by"
+      [PopUpButton] "" value: "Status"
+    [Row/OutlineRow] ""
       [Heading] "To Do"
     [Row/OutlineRow] ""
       [Button] "Buy running shoes" value: "To Do, High priority, Nov 4, HOME-0017" id: 0017
