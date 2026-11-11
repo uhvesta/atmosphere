@@ -41,6 +41,12 @@ package struct ActivityView: View {
                         ActivityRowView(row: row)
                     }
                 }
+            } header: {
+                if rows.contains(where: \.canRevert) {
+                    Text(revertHint)
+                        .font(.footnote)
+                        .fontWeight(.regular)
+                }
             } footer: {
                 if store.archived == nil {
                     Button("Show changes older than 90 days") { store.send(.olderTapped) }
@@ -55,6 +61,15 @@ package struct ActivityView: View {
         .navigationTitle("Activity")
         .confirmationDialog($store.scope(state: \.confirm, action: \.confirm))
         .alert($store.scope(state: \.alert, action: \.alert))
+    }
+
+    /// How to revert a change, in the gesture the platform uses for it.
+    private var revertHint: LocalizedStringKey {
+        #if os(macOS)
+            "Control-click a change to revert it."
+        #else
+            "Swipe left on a change, or touch and hold it, to revert it."
+        #endif
     }
 
     @ViewBuilder
