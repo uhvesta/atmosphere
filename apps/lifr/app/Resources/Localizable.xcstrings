@@ -1325,6 +1325,12 @@
     "Due Date" : {
 
     },
+    "Due Today" : {
+
+    },
+    "Due Tomorrow" : {
+
+    },
     "Due today and overdue" : {
 
     },
@@ -1416,6 +1422,9 @@
 
     },
     "Filters, %lld set" : {
+
+    },
+    "Find" : {
 
     },
     "Find Related Conversations" : {
@@ -1518,6 +1527,9 @@
 
     },
     "Go to Latest" : {
+
+    },
+    "Go to Task…" : {
 
     },
     "Go to the latest message" : {
@@ -1675,6 +1687,9 @@
 
     },
     "Key" : {
+
+    },
+    "Keyboard Shortcuts" : {
 
     },
     "Label" : {
@@ -2210,6 +2225,9 @@
     "Nothing" : {
 
     },
+    "Nothing due today" : {
+
+    },
     "Nothing is due today." : {
 
     },
@@ -2256,6 +2274,9 @@
 
     },
     "Open" : {
+
+    },
+    "Open Lifr" : {
 
     },
     "Open Lifr and unlock it to see them." : {
@@ -2380,6 +2401,9 @@
 
     },
     "Put back recent changes." : {
+
+    },
+    "Quit Lifr" : {
 
     },
     "Quit Lifr and open it again. If this keeps happening, share these details in a bug report." : {
@@ -2609,6 +2633,9 @@
     "Review Changes" : {
 
     },
+    "Review Changes…" : {
+
+    },
     "Revoke" : {
 
     },
@@ -2726,6 +2753,9 @@
 
     },
     "Settings" : {
+
+    },
+    "Settings…" : {
 
     },
     "Setups" : {

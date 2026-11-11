@@ -101,8 +101,9 @@ extension Priority {
     package static let shortcuts: [Priority] = [.none, .low, .medium, .high, .urgent]
 }
 
-/// The menu bar item: quick add, and the apps connected through the CLI. The
-/// icon gets a dot while one is connected.
+/// The menu bar item: quick add, Today's first tasks, the apps connected
+/// through the CLI, sync, and the way back to the window. The icon gets a
+/// dot while an app is connected.
 package struct MenuBarLabel: View {
     package var store: StoreOf<RootFeature>
 
@@ -123,6 +124,12 @@ package struct MenuBarLabel: View {
 
 package struct MenuBarContent: View {
     package var store: StoreOf<RootFeature>
+    @Environment(\.openWindow) private var openWindow
+
+    /// The main window's id, so the menu bar can open it again once closed.
+    package static let windowID = "main"
+    /// How many of Today's tasks the menu shows.
+    static let todayLimit = 5
 
     package init(store: StoreOf<RootFeature>) {
         self.store = store
@@ -135,11 +142,61 @@ package struct MenuBarContent: View {
         } else {
             unlocked
         }
+        Divider()
+        Button("Open Lifr") { showWindow() }
+        #if os(macOS)
+            SettingsLink { Text("Settings…") }
+                .keyboardShortcut(",")
+            Button("Quit Lifr") { NSApplication.shared.terminate(nil) }
+                .keyboardShortcut("q")
+        #endif
+    }
+
+    /// Today's first tasks, each with Open and the statuses it can move to.
+    /// A status that needs a question, such as closing a task with open
+    /// subtasks, asks in the window.
+    @ViewBuilder private var today: some View {
+        let rows = store.today.list.rows.prefix(Self.todayLimit)
+        Section("Today") {
+            if rows.isEmpty {
+                Text("Nothing due today")
+            }
+            ForEach(rows) { row in
+                Menu(row.title) {
+                    Button("Open") {
+                        store.send(.reminderOpened(row.id))
+                        showWindow()
+                    }
+                    Divider()
+                    ForEach(TaskStatus.shortcuts.filter { $0 != row.status }, id: \.self) { status in
+                        Button(status.title) {
+                            store.send(.today(.list(.rowAction(row.id, .status(status)))))
+                            if store.today.list.prompt != nil { showWindow() }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Brings the window forward, or opens it again once closed.
+    private func showWindow() {
+        #if os(macOS)
+            let windows = NSApplication.shared.windows
+            if let window = windows.first(where: { $0.identifier?.rawValue.hasPrefix(Self.windowID) == true }) {
+                window.makeKeyAndOrderFront(nil)
+            } else {
+                openWindow(id: Self.windowID)
+            }
+            NSApplication.shared.activate()
+        #endif
     }
 
     @ViewBuilder private var unlocked: some View {
         Button("New Task") { store.send(.newTaskTapped) }
             .keyboardShortcut("n")
+        Divider()
+        today
         Divider()
         if store.apps.isEmpty {
             Text("No connected apps")

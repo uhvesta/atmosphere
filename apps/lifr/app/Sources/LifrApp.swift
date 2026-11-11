@@ -80,7 +80,7 @@ struct LifrApp: App {
     }
 
     private var window: some Scene {
-        WindowGroup {
+        WindowGroup(id: MenuBarContent.windowID) {
             switch Storage.opened {
             case .success(let store):
                 RootView(store: Storage.root)
