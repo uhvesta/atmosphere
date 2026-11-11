@@ -185,7 +185,7 @@ package struct QuickAddFeature {
         switch state.due {
         case .none: nil
         case .today: CalendarDate(now, in: timeZone)
-        case .tomorrow: CalendarDate(now + 24 * 60 * 60, in: timeZone)
+        case .tomorrow: CalendarDate(now, in: timeZone).adding(days: 1)
         case .pick: CalendarDate(state.pickedDate, in: timeZone)
         }
     }

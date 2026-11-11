@@ -14,7 +14,7 @@ extension TaskQuery {
             description: String(localized: "Tasks due in the next two weeks show up here, by day."))
     ) { workspace, now, timeZone in
         let today = CalendarDate(now, in: timeZone)
-        let days = (1...14).map { CalendarDate(now + Double($0) * 24 * 60 * 60, in: timeZone) }
+        let days = (1...14).map { today.adding(days: $0) }
         let open = workspace.listedTasks.filter { $0.isOpen && $0.dueDate.map { $0 > today } == true }
         return days.enumerated().map { offset, day in
             TaskSection(

@@ -117,7 +117,7 @@ package struct TaskDetailView: View {
                     }
                 } else {
                     Button("Add a time") {
-                        store.send(.dueTimePicked(TimeOfDay(self.date(due, at: nil) + 9 * 3600, in: timeZone)))
+                        store.send(.dueTimePicked(try? TimeOfDay("09:00")))
                     }
                 }
             }

@@ -89,7 +89,7 @@ package struct RecordsBuilder {
         new.labelIDs = Set(labels.map(\.id))
         new.status = status
         new.priority = priority
-        new.dueDate = days.map { CalendarDate(now + Double($0) * 24 * 60 * 60, in: timeZone) }
+        new.dueDate = days.map { CalendarDate(now, in: timeZone).adding(days: $0) }
         do {
             new.dueTime = try time.map { time throws(LifrError) in try TimeOfDay(time) }
         } catch {

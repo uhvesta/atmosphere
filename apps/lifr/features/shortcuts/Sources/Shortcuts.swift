@@ -58,7 +58,7 @@ package struct Shortcuts: Sendable {
         new.dueDate =
             switch due {
             case .today: CalendarDate(now, in: timeZone)
-            case .tomorrow: CalendarDate(now + 24 * 60 * 60, in: timeZone)
+            case .tomorrow: CalendarDate(now, in: timeZone).adding(days: 1)
             case .none: nil
             }
         let saved = try await store.createTask(new)

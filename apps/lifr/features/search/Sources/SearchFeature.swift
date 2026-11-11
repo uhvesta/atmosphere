@@ -69,7 +69,7 @@ package struct SearchFilter: Hashable, Sendable {
         case .overdue: guard task.isOverdue(today: today, time: TimeOfDay(now, in: timeZone)) else { return false }
         case .today: guard task.dueDate == today else { return false }
         case .nextSevenDays:
-            let last = CalendarDate(now + 7 * 24 * 60 * 60, in: timeZone)
+            let last = today.adding(days: 7)
             guard let date = task.dueDate, date >= today, date <= last else { return false }
         case .none: guard task.dueDate == nil else { return false }
         }

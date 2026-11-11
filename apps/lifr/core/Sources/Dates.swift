@@ -54,6 +54,12 @@ package struct CalendarDate: Hashable, Comparable, Codable, Sendable, CustomStri
         return Date(timeIntervalSince1970: TimeInterval(days) * 86_400 + 43_200)
     }
 
+    /// The day `days` after this one, or before it when negative: by the
+    /// calendar, so a day with a daylight saving change counts once.
+    package func adding(days: Int) -> CalendarDate {
+        CalendarDate(noonUTC + TimeInterval(days) * 86_400, in: .gmt)
+    }
+
     /// The day as people read it, such as "Sun, Dec 6" in English.
     package func readable(_ locale: Locale = .current) -> String {
         noonUTC.formatted(

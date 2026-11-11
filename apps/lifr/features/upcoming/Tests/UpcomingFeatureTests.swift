@@ -2,6 +2,7 @@ import ComposableArchitecture
 import Foundation
 import LifrCore
 import LifrStoreClient
+import LifrTaskList
 import LifrUpcoming
 import XCTest
 
@@ -36,6 +37,18 @@ final class UpcomingFeatureTests: XCTestCase {
 
         XCTAssertEqual(store.state.list.sections.map(\.title), ["Tomorrow", "Monday, Nov 9"])
         XCTAssertEqual(store.state.list.sections.map(\.rows.count), [1, 2])
+    }
+
+    func testOnADaylightSavingChangeTomorrowIsTheNextDayAndNoDayRepeats() throws {
+        // 2026-11-01 00:30 in New York, the night clocks go back an hour.
+        let night = Date(timeIntervalSince1970: 1_793_507_400)
+        let newYork = try XCTUnwrap(TimeZone(identifier: "America/New_York"))
+
+        let days = TaskQuery.upcoming.sections(records.workspace, night, newYork).map(\.id)
+
+        XCTAssertEqual(days.first, "2026-11-02")
+        XCTAssertEqual(days.last, "2026-11-15")
+        XCTAssertEqual(Set(days).count, 14)
     }
 
     func testLeavesOutTodayOverdueClosedAndLaterTasks() async {
