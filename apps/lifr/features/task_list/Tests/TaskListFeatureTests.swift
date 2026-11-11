@@ -67,6 +67,19 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.sections.map(\.id), ["inProgress"])
     }
 
+    func testTheCheckboxAsksWhichStatusInsteadOfFinishing() async {
+        let stretch = records.task("Stretch", in: health)
+        let store = await load()
+
+        await store.send(.toggled(stretch.id))
+        XCTAssertNotNil(store.state.statusPicker)
+        XCTAssertEqual(store.state.workspace?.tasks[stretch.id]?.status, .todo)
+
+        await store.send(.statusPicker(.presented(StatusPick(task: stretch.id, status: .done))))
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.workspace?.tasks[stretch.id]?.status, .done)
+    }
+
     func testTheStatusSwipeOffersEveryOtherStatusAndSetsThePickedOne() async {
         let stretch = records.task("Stretch", in: health)
         let store = await load()
@@ -85,7 +98,7 @@ final class TaskListFeatureTests: XCTestCase {
         records.task("Read", in: health, parent: review)
         let store = await load()
 
-        await store.send(.toggled(review.id))
+        await store.send(.rowAction(review.id, .status(.done)))
         await store.receive(\.saved)
         XCTAssertNotNil(store.state.prompt)
 
@@ -100,7 +113,7 @@ final class TaskListFeatureTests: XCTestCase {
         records.task("Read", in: health, parent: review)
         let store = await load()
 
-        await store.send(.toggled(review.id))
+        await store.send(.rowAction(review.id, .status(.done)))
         await store.receive(\.saved)
         await store.send(.prompt(.presented(.finishDroppingSubtasks(task: review.id))))
         await store.receive(\.delegate.saved)
@@ -132,6 +145,7 @@ final class TaskListFeatureTests: XCTestCase {
 
         await store.send(.rowTapped(review.id))
         await store.send(.detail(.presented(.subtaskToggled(read.id))))
+        await store.send(.detail(.presented(.statusPicker(.presented(StatusPick(task: read.id, status: .todo))))))
         await store.receive(\.detail.delegate.saved)
 
         XCTAssertEqual(store.state.sections.map(\.id), ["inProgress"])

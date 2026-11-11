@@ -163,7 +163,7 @@ final class SearchFeatureTests: XCTestCase {
         let store = await load()
         await store.send(.binding(.set(\.filter.text, "shoes")))
 
-        await store.send(.list(.toggled(shoes.id)))
+        await store.send(.list(.rowAction(shoes.id, .status(.done))))
         await store.receive(\.delegate.saved)
 
         XCTAssertTrue(store.state.list.isEmpty)

@@ -36,7 +36,7 @@ package struct SettingsView: View {
             SyncSection(store: store)
             LockSection(store: store)
             Section {
-                Button("Activity") { store.send(.activityTapped) }
+                PushButton("Activity") { store.send(.activityTapped) }
             } footer: {
                 Text("Every change, who made it, and from where. Any of them can be reverted.")
             }
@@ -44,9 +44,9 @@ package struct SettingsView: View {
                 Toggle("Pick a skill automatically", isOn: Binding($picksSkills))
                 Toggle("Name conversations", isOn: Binding($namesConversations))
                 Toggle("Compact long conversations", isOn: Binding($compactsConversations))
-                Button("Instructions") { store.send(.instructionsTapped) }
-                Button("Models") { store.send(.modelsTapped) }
-                Button("Skills") { store.send(.skillsTapped) }
+                PushButton("Instructions") { store.send(.instructionsTapped) }
+                PushButton("Models") { store.send(.modelsTapped) }
+                PushButton("Skills") { store.send(.skillsTapped) }
             } header: {
                 Text("Assistant")
             } footer: {
@@ -63,7 +63,7 @@ package struct SettingsView: View {
                 showsSpeed: Binding(store.$showsSpeed), showsPrompt: Binding(store.$showsPrompt),
                 compares: Binding(store.$compares))
             Section {
-                Button("Bug Reports") { store.send(.bugReportsTapped) }
+                PushButton("Bug Reports") { store.send(.bugReportsTapped) }
             } footer: {
                 Text(bugReportsFooter)
             }
@@ -362,5 +362,33 @@ private struct LockSection: View {
         case .opticID: "Lock with Optic ID"
         case .passcode: "Lock with passcode"
         }
+    }
+}
+
+/// A row that opens a screen inside Settings, with the chevron that says so.
+private struct PushButton: View {
+    let title: LocalizedStringKey
+    let action: () -> Void
+
+    init(_ title: LocalizedStringKey, action: @escaping () -> Void) {
+        self.title = title
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                Text(title).foregroundStyle(Color.primary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.footnote.bold())
+                    .foregroundStyle(Color.secondary.opacity(0.6))
+                    .accessibilityHidden(true)
+            }
+            .contentShape(.rect)
+        }
+        // A form tints a button and, on the Mac, draws it as a push button;
+        // this is a row that opens a screen.
+        .buttonStyle(.plain)
     }
 }

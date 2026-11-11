@@ -2031,6 +2031,24 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertNil(saved.first { $0.id == first.id }?.archivedAt)
     }
 
+    func testSearchingTheArchiveFindsOnlyArchivedOnesThatHaveIt() async throws {
+        let milk = chat("Buy milk")
+        let oat = chat("Oat milk")
+        let other = chat("Call mum")
+        let store = list(.inMemory([milk, oat, other]))
+        await store.send(.task)
+        await store.skipReceivedActions()
+        await store.send(.archiveTapped(milk.id))
+        await store.send(.archiveTapped(other.id))
+        await store.finish()
+
+        await store.send(.searched("milk"))
+        XCTAssertEqual(store.state.archivedFound.map(\.id), [milk.id])
+
+        await store.send(.searched(""))
+        XCTAssertEqual(Set(store.state.archivedFound.map(\.id)), [milk.id, other.id])
+    }
+
     func testSearchingFindsConversationsByNameOrMessage() async throws {
         let milk = chat("Buy milk")
         var trip = chat("Plan the trip")

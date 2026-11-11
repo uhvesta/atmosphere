@@ -29,7 +29,7 @@ final class PhoneTodayFlowTests: PhoneFlowTestCase {
         let (store, flow) = app("today")
         await flow.step("launch")
         let water = try task("Water the plants", in: store)
-        store.send(.today(.list(.toggled(water))))
+        store.send(.today(.list(.rowAction(water, .status(.done)))))
         await flow.step("finished-with-undo")
         let review = try task("Review Q4 roadmap", in: store)
         store.send(.today(.list(.rowAction(review, .status(.done)))))

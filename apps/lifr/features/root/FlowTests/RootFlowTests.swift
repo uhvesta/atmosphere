@@ -388,7 +388,7 @@ final class RootFlowTests: XCTestCase {
         await synced(mac)
 
         // Different fields of one task merge without asking.
-        await phone.send(.today(.list(.toggled(run.id))))
+        await phone.send(.today(.list(.rowAction(run.id, .status(.done)))))
         await phone.receive(\.today.delegate.saved)
         try await change(macClient) { (workspace, context) throws(LifrError) in
             try workspace.edit(run.id, Workspace.TaskEdit(priority: .high), in: context)

@@ -146,7 +146,7 @@ final class RootFeatureTests: XCTestCase {
         let task = await store.send(.task)
         await store.receive(\.loaded)
 
-        await store.send(.today(.list(.toggled(run.id))))
+        await store.send(.today(.list(.rowAction(run.id, .status(.done)))))
         await store.receive(\.today.delegate.saved)
 
         XCTAssertEqual(store.state.workspace?.tasks[run.id]?.status, .done)
@@ -165,9 +165,9 @@ final class RootFeatureTests: XCTestCase {
         await store.receive(\.loaded)
 
         // Run is ticked off on Today, then Stretch on Upcoming.
-        await store.send(.today(.list(.toggled(run.id))))
+        await store.send(.today(.list(.rowAction(run.id, .status(.done)))))
         guard let first = await held.next() else { return XCTFail("the save never ran") }
-        await store.send(.upcoming(.list(.toggled(stretch.id))))
+        await store.send(.upcoming(.list(.rowAction(stretch.id, .status(.done)))))
         guard let second = await held.next() else { return XCTFail("the save never ran") }
         XCTAssertLessThan(first, second)
 
@@ -201,7 +201,7 @@ final class RootFeatureTests: XCTestCase {
         let task = await store.send(.task)
         await store.receive(\.loaded)
 
-        await store.send(.today(.list(.toggled(run.id))))
+        await store.send(.today(.list(.rowAction(run.id, .status(.done)))))
         guard let save = await held.next() else { return XCTFail("the save never ran") }
         // The Mac's change arrives after the save, before its reply.
         let update = sync(now: now) { $0.applySynced(tasks: [stretchOnMac]) }
@@ -231,7 +231,7 @@ final class RootFeatureTests: XCTestCase {
         let store = makeStore(.phone, store: replies.client(client))
         let task = await store.send(.task)
         await store.receive(\.loaded)
-        await store.send(.today(.list(.toggled(run.id))))
+        await store.send(.today(.list(.rowAction(run.id, .status(.done)))))
         guard let save = await held.next() else { return XCTFail("the save never ran") }
         replies.release(save)
         await store.receive(\.today.delegate.saved)
@@ -745,6 +745,53 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testOpeningAReminderFromChatsShowsItsTaskFromToday() async {
+        let stretch = records.task("Stretch", in: health, due: 3)
+        let store = makeStore(.phone)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.binding(.set(\.tab, .conversations)))
+
+        await store.send(.reminderOpened(stretch.id))
+        await store.receive(\.reopen)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.tab, .today)
+        XCTAssertEqual(store.state.today.list.detail?.id, stretch.id)
+        await task.cancel()
+    }
+
+    func testAReminderOpenedAtLaunchShowsItsTaskOnceTheRecordsLoad() async {
+        let stretch = records.task("Stretch", in: health, due: 3)
+        let store = makeStore(.mac)
+
+        await store.send(.reminderOpened(stretch.id))
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.receive(\.reopen)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.selection, .today)
+        XCTAssertEqual(store.state.today.list.detail?.id, stretch.id)
+        await task.cancel()
+    }
+
+    func testWhileLockedRemindersDontSayWhatsDue() async {
+        let run = records.task("Run", in: health, due: 0)
+        records.reminder(.at(now + 60 * 60), on: run)
+        let reminders = RemindersClient.inMemory()
+        let (store, _) = locked(.always())
+        store.dependencies.reminders = reminders.client
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.receive(\.remindersScheduled)
+
+        XCTAssertEqual(reminders.scheduled.map(\.taskID), [run.id])
+        XCTAssertFalse(reminders.scheduled.contains { $0.title.contains("Run") || $0.body.contains("HEALTH") })
+        await task.cancel()
+    }
+
     func testComingToTheFrontSyncs() async {
         let syncs = LockIsolated(0)
         let store = makeStore(.phone, sync: counting(syncs))
@@ -767,7 +814,7 @@ final class RootFeatureTests: XCTestCase {
         let store = makeStore(.phone, sync: counting(syncs))
         let task = await store.send(.task)
         await store.receive(\.loaded)
-        await store.send(.today(.list(.toggled(run.id))))
+        await store.send(.today(.list(.rowAction(run.id, .status(.done)))))
         await store.receive(\.today.delegate.saved)
         await store.skipReceivedActions()
         await task.cancel()

@@ -735,7 +735,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         await flow.step("recording")
         store.send(.selected(.today))
         let water = try XCTUnwrap(store.workspace?.tasks.values.first { $0.title == "Water the plants" }?.id)
-        store.send(.today(.list(.toggled(water))))
+        store.send(.today(.list(.rowAction(water, .status(.done)))))
         await flow.step("acted")
         store.send(.stopRecordingTapped)
         await flow.step("describe")

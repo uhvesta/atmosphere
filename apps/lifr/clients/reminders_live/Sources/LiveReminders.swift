@@ -42,8 +42,10 @@ extension RemindersClient {
                     content.sound = .default
                     content.threadIdentifier = reminder.taskID.uuidString
                     content.userInfo = [taskIDKey: reminder.taskID.uuidString]
+                    // With its time zone, so the trigger fires at this
+                    // instant even if the device's zone changes first.
                     let components = Calendar.current.dateComponents(
-                        [.year, .month, .day, .hour, .minute, .second], from: reminder.fireAt)
+                        [.timeZone, .year, .month, .day, .hour, .minute, .second], from: reminder.fireAt)
                     let request = UNNotificationRequest(
                         identifier: reminder.id.uuidString, content: content,
                         trigger: UNCalendarNotificationTrigger(dateMatching: components, repeats: false))

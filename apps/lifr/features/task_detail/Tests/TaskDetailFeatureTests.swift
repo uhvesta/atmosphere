@@ -92,6 +92,7 @@ final class TaskDetailFeatureTests: XCTestCase {
         let store = try makeStore(review)
 
         await store.send(.subtaskToggled(read.id))
+        await store.send(.statusPicker(.presented(StatusPick(task: read.id, status: .todo))))
         await store.receive(\.delegate.saved)
         XCTAssertEqual(store.state.row.status, .inProgress)
         XCTAssertEqual(store.state.subtasks.map(\.status), [.todo])
@@ -103,6 +104,20 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.row.status, .done)
         XCTAssertEqual(store.state.subtasks.map(\.status), [.done])
         XCTAssertNil(store.state.banner)
+    }
+
+    func testASubtasksCheckboxAsksWhichStatusAndSavesThePickedOne() async throws {
+        let review = records.task("Review", in: health)
+        let read = records.task("Read", in: health, parent: review)
+        let store = try makeStore(review)
+
+        await store.send(.subtaskToggled(read.id))
+        XCTAssertNotNil(store.state.statusPicker)
+        XCTAssertEqual(store.state.subtasks.first?.status, .todo)
+
+        await store.send(.statusPicker(.presented(StatusPick(task: read.id, status: .wontDo))))
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.subtasks.first?.status, .wontDo)
     }
 
     func testAddingASubtaskToADoneTaskReopensItUntilUndone() async throws {
@@ -376,6 +391,7 @@ final class TaskDetailFeatureTests: XCTestCase {
         let store = try makeStore(review)
 
         await store.send(.subtaskToggled(read.id))
+        await store.send(.statusPicker(.presented(StatusPick(task: read.id, status: .todo))))
         await store.receive(\.delegate.saved)
         await store.send(.bannerDismissed)
 

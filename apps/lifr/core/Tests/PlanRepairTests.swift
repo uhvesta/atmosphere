@@ -6,6 +6,16 @@ func planRepairTests() -> [TestCase] {
     let gmt = TimeZone.gmt
 
     return [
+        TestCase("given one task twice in other case, spacing or a full stop, when repaired, then it's added once") {
+            let fixture = try Fixture()
+            let plan = Plan(tasks: [
+                .init(title: "Book physio", place: "Health"),
+                .init(title: "book  physio.", place: "HEALTH "),
+                .init(title: "Book a run", place: "Health"),
+            ])
+            let repaired = plan.repaired(for: fixture.workspace)
+            try expectEqual(repaired.tasks.map(\.title), ["Book physio", "Book a run"])
+        },
         TestCase(
             "given places by name, in another case, a Project typo or only a Project, when repaired, then they add"
         ) {

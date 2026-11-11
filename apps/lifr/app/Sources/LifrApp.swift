@@ -26,6 +26,7 @@ import LifrStoreLive
 import LifrSyncClient
 import LifrSyncLive
 import SwiftUI
+import UserNotifications
 
 #if canImport(InferenceKitLlama)
     import InferenceKitLlama
@@ -46,6 +47,7 @@ struct LifrApp: App {
     init() {
         let shortcuts = Storage.shortcuts
         AppDependencyManager.shared.add { shortcuts }
+        UNUserNotificationCenter.current().delegate = Storage.notifications
     }
 
     var body: some Scene {
@@ -100,6 +102,10 @@ private enum Storage {
     static let opened = Result { () throws(LiveStoreError) in try LiveStore(modelContainer: LiveStore.onDisk()) }
 
     static let actor = Actor.user(device: deviceName, surface: surface)
+
+    /// Kept for as long as Lifr runs: the notification center holds its
+    /// delegate weakly.
+    static let notifications = ReminderNotifications { root.send(.reminderOpened($0)) }
 
     /// One store for every screen, so each change shows everywhere.
     static let root = Store(initialState: RootFeature.State(platform: platform)) {
@@ -243,5 +249,28 @@ private enum Storage {
         #else
             UIDevice.current.name
         #endif
+    }
+}
+
+/// Shows a reminder while Lifr is open, and opens its task when the person
+/// taps the notification.
+private final class ReminderNotifications: NSObject, UNUserNotificationCenterDelegate, Sendable {
+    private let open: @MainActor @Sendable (UUID) -> Void
+
+    init(open: @escaping @MainActor @Sendable (UUID) -> Void) {
+        self.open = open
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter, willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .list, .sound]
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        guard let raw = response.notification.request.content.userInfo[RemindersClient.taskIDKey] as? String,
+            let id = UUID(uuidString: raw)
+        else { return }
+        await open(id)
     }
 }

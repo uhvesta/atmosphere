@@ -281,12 +281,21 @@ extension Plan {
     /// place of the first: fields the first leaves empty come from the
     /// others, and their Sub tasks are added.
     private static func merged(_ tasks: [TaskDraft]) -> [TaskDraft] {
+        /// Names that differ only in case, spacing or a closing full stop.
+        func sameName(_ one: String?, _ other: String?) -> Bool {
+            func key(_ name: String?) -> String? {
+                name.map {
+                    $0.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+                        .trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+                }
+            }
+            return key(one) == key(other)
+        }
         var kept: [TaskDraft] = []
         for task in tasks {
             guard
                 let index = kept.firstIndex(where: {
-                    $0.title.caseInsensitiveCompare(task.title) == .orderedSame
-                        && $0.place?.lowercased() == task.place?.lowercased() && $0.parent == task.parent
+                    sameName($0.title, task.title) && sameName($0.place, task.place) && $0.parent == task.parent
                 })
             else {
                 kept.append(task)

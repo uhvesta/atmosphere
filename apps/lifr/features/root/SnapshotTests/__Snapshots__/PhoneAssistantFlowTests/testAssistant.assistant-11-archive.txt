@@ -1,6 +1,7 @@
 [button] "Conversations" id: BackButton
 [button] "Delete All"
 [header] "Archived"
+[searchField] "Search archived" value: "Search archived"
 [text] "Tidy my weekend"
 [text] "Nov 3 at 10:00 AM"
 [text] "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."

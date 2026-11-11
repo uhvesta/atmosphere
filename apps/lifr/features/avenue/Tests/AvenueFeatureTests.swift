@@ -132,7 +132,7 @@ final class AvenueFeatureTests: XCTestCase {
         let store = await avenues()
 
         await store.send(.opened(.avenue(health.id)))
-        await store.send(.avenue(.presented(.list(.toggled(stretch.id)))))
+        await store.send(.avenue(.presented(.list(.rowAction(stretch.id, .status(.done))))))
         await store.receive(\.avenue.list.delegate.saved)
         await store.receive(\.avenue.delegate.saved)
 

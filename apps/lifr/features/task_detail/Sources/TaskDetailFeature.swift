@@ -57,6 +57,8 @@ package struct TaskDetailFeature {
         @Presents package var subtask: TaskDetailFeature.State?
         @Presents package var prompt: AlertState<StatusPrompt>?
         @Presents package var alert: AlertState<Never>?
+        /// What a Sub task's checkbox can move it to.
+        @Presents package var statusPicker: ConfirmationDialogState<StatusPick>?
 
         /// `nil` when the task isn't in `workspace` or is in the trash.
         package init?(id: UUID, workspace: Workspace, now: Date, timeZone: TimeZone) {
@@ -191,6 +193,7 @@ package struct TaskDetailFeature {
         case bannerDismissed
         case prompt(PresentationAction<StatusPrompt>)
         case alert(PresentationAction<Never>)
+        case statusPicker(PresentationAction<StatusPick>)
         case delegate(Delegate)
 
         @CasePathable
@@ -298,8 +301,11 @@ package struct TaskDetailFeature {
 
             case .subtaskToggled(let id):
                 guard let subtask = state.subtasks.first(where: { $0.id == id }) else { return .none }
-                let status: TaskStatus = subtask.status.isClosed ? .todo : .done
-                return save { try await $0.setStatus(status, id) }
+                state.statusPicker = .statuses(for: id, title: subtask.title, status: subtask.status)
+                return .none
+
+            case .statusPicker(.presented(let pick)):
+                return save { try await $0.setStatus(pick.status, pick.task) }
 
             case .addSubtaskSubmitted:
                 let title = state.newSubtaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -381,13 +387,14 @@ package struct TaskDetailFeature {
                 }
                 return .none
 
-            case .binding, .prompt, .alert, .delegate, .subtask:
+            case .binding, .prompt, .alert, .statusPicker, .delegate, .subtask:
                 return .none
             }
         }
         .ifLet(\.$subtask, action: \.subtask) { TaskDetailFeature() }
         .ifLet(\.$prompt, action: \.prompt)
         .ifLet(\.$alert, action: \.alert)
+        .ifLet(\.$statusPicker, action: \.statusPicker)
     }
 
     private func edit(_ state: State, _ edit: Workspace.TaskEdit) -> Effect<Action> {

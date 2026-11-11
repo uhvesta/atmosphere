@@ -272,6 +272,9 @@ package struct RootFeature {
         case bugReport(PresentationAction<BugReportFeature.Action>)
         /// Opens the task the person had open when Lifr last ran.
         case reopen(UUID)
+        /// The person opened a reminder's notification: show its task, from
+        /// Today if no list is showing.
+        case reminderOpened(UUID)
         case today(TodayFeature.Action)
         case upcoming(UpcomingFeature.Action)
         case procrastinated(ProcrastinatedFeature.Action)
@@ -315,7 +318,7 @@ package struct RootFeature {
             }
             // The widgets show only counts while the lock is on.
             .onChange(of: \.locksApp) { _, _ in
-                Reduce { state, _ in writeGlance(state) }
+                Reduce { state, _ in .merge(writeGlance(state), scheduleReminders(state)) }
             }
             .transformDependency(\.self) { dependencies in
                 dependencies.store = dependencies.store.telling(dependencies.sync).recordingChanges(
@@ -400,6 +403,24 @@ package struct RootFeature {
             case .reopen(let id):
                 guard let slot = state.currentList, state.workspace?.tasks[id] != nil else { return .none }
                 return .send(list(slot, .rowTapped(id)))
+
+            case .reminderOpened(let id):
+                guard state.workspace != nil else {
+                    // Still opening: go there once the records load.
+                    let place =
+                        state.platform == .phone ? Place(tab: .today, task: id) : Place(sidebar: .today, task: id)
+                    state.$place.withLock { $0 = place }
+                    if state.restoring != nil { state.restoring = place }
+                    return .none
+                }
+                guard state.currentList == nil else { return .send(.reopen(id)) }
+                switch state.platform {
+                case .phone:
+                    state.tab = .today
+                    return .send(.reopen(id))
+                case .mac:
+                    return .concatenate(.send(.selected(.today)), .send(.reopen(id)))
+                }
 
             case .loaded(.failure):
                 // Each screen loads on its own too, and says what failed.
@@ -751,19 +772,22 @@ package struct RootFeature {
         state.board?.list.show(snapshot, now: now, timeZone: timeZone)
         state.settings.show(snapshot)
         state.conversations.show(snapshot)
-        let scheduled = workspace.scheduledReminders(now: now, timeZone: timeZone)
-        return .merge(
-            effects + [
-                writeGlance(state),
-                .run { [reminders] send in
-                    // Notifications that are off, or a device that refuses
-                    // them, leave the reminders saved and ringing elsewhere;
-                    // the detail screen says so when one is added.
-                    try? await reminders.schedule(scheduled)
-                    await send(.remindersScheduled)
-                }
-                .cancellable(id: CancelID.reminders, cancelInFlight: true),
-            ])
+        return .merge(effects + [writeGlance(state), scheduleReminders(state)])
+    }
+
+    /// Schedules this device's notifications for the reminders in `state`,
+    /// without titles while the lock is on.
+    private func scheduleReminders(_ state: State) -> Effect<Action> {
+        guard let workspace = state.workspace else { return .none }
+        let scheduled = workspace.scheduledReminders(now: now, timeZone: timeZone, hidingTitles: state.locksApp)
+        return .run { [reminders] send in
+            // Notifications that are off, or a device that refuses them,
+            // leave the reminders saved and ringing elsewhere; the detail
+            // screen says so when one is added.
+            try? await reminders.schedule(scheduled)
+            await send(.remindersScheduled)
+        }
+        .cancellable(id: CancelID.reminders, cancelInFlight: true)
     }
 
     /// Gives the widgets Today as `state` has it, and tomorrow's for after

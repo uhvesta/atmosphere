@@ -27,13 +27,22 @@ extension Workspace {
 
     /// What this device should have scheduled: the reminders of open tasks
     /// that aren't in the trash or an archived Avenue and that fire after
-    /// `now`, soonest first, at most `reminderLimit`.
-    package func scheduledReminders(now: Date, timeZone: TimeZone) -> [ScheduledReminder] {
+    /// `now`, soonest first, at most `reminderLimit`. With `hidingTitles`,
+    /// as when the app lock is on, each says only that a task is due, so
+    /// the lock screen doesn't show what.
+    package func scheduledReminders(
+        now: Date, timeZone: TimeZone, hidingTitles: Bool = false
+    ) -> [ScheduledReminder] {
         let scheduled = reminders.values.compactMap { reminder -> ScheduledReminder? in
             guard let task = tasks[reminder.taskID], task.deletedAt == nil, task.isOpen,
                 avenues[task.avenueID]?.archivedAt == nil,
                 let fireAt = reminder.fireDate(for: task, in: timeZone), fireAt > now
             else { return nil }
+            guard !hidingTitles else {
+                return ScheduledReminder(
+                    id: reminder.id, taskID: task.id, title: String(localized: "Reminder"),
+                    body: String(localized: "Open Lifr to see the task."), fireAt: fireAt)
+            }
             return ScheduledReminder(
                 id: reminder.id, taskID: task.id, title: task.title,
                 body: dueText(task) ?? displayCode(of: task), fireAt: fireAt)

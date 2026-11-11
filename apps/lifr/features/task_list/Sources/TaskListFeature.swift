@@ -115,8 +115,11 @@ package struct TaskListFeature {
                 return .none
 
             case .toggled(let id):
+                // Closing a task is a choice, so the checkbox asks which
+                // status rather than finishing it outright.
                 guard let row = state.rows.first(where: { $0.id == id }) else { return .none }
-                return setStatus(row.status.isClosed ? .todo : .done, id)
+                state.statusPicker = .statuses(for: row.id, title: row.title, status: row.status)
+                return .none
 
             case .rowAction(let id, .status(let status)):
                 return setStatus(status, id)
@@ -129,7 +132,7 @@ package struct TaskListFeature {
 
             case .rowAction(let id, .pickStatus):
                 guard let row = state.rows.first(where: { $0.id == id }) else { return .none }
-                state.statusPicker = .statuses(for: row)
+                state.statusPicker = .statuses(for: row.id, title: row.title, status: row.status)
                 return .none
 
             case .statusPicker(.presented(let pick)):
@@ -195,33 +198,6 @@ package struct TaskListFeature {
     private func save(_ operation: @escaping @Sendable (StoreClient) async throws -> Saved) -> Effect<Action> {
         .run { [store] send in
             await send(.saved(Result { try await operation(store) }))
-        }
-    }
-}
-
-/// A status picked for a task from a row's Status swipe.
-package struct StatusPick: Equatable, Sendable {
-    package var task: UUID
-    package var status: TaskStatus
-
-    package init(task: UUID, status: TaskStatus) {
-        self.task = task
-        self.status = status
-    }
-}
-
-extension ConfirmationDialogState where Action == StatusPick {
-    /// Every status but the row's own.
-    static func statuses(for row: TaskRowData) -> Self {
-        ConfirmationDialogState(titleVisibility: .visible) {
-            TextState(row.title)
-        } actions: {
-            for status in TaskStatus.allCases where status != row.status {
-                ButtonState(action: StatusPick(task: row.id, status: status)) { TextState(status.title) }
-            }
-            ButtonState(role: .cancel) { TextState("Cancel") }
-        } message: {
-            TextState("Currently \(row.status.title).")
         }
     }
 }

@@ -216,7 +216,7 @@ struct ArchivedConversationsView: View {
 
     var body: some View {
         List {
-            ForEach(store.state.archived) { conversation in
+            ForEach(store.state.archivedFound) { conversation in
                 ConversationListRow(conversation: conversation, replying: false)
                     .swipeActions(edge: .leading, allowsFullSwipe: false) {
                         UnarchiveButton(id: conversation.id, store: store).tint(.indigo)
@@ -230,11 +230,16 @@ struct ArchivedConversationsView: View {
                     }
             }
         }
+        .searchable(
+            text: Binding(get: { store.query }, set: { store.send(.searched($0)) }), prompt: "Search archived"
+        )
         .overlay {
             if store.state.archived.isEmpty {
                 ContentUnavailableView(
                     "No archived conversations", systemImage: "archivebox",
                     description: Text(archiveHint))
+            } else if store.state.archivedFound.isEmpty {
+                ContentUnavailableView.search(text: store.query)
             }
         }
         .navigationTitle("Archived")

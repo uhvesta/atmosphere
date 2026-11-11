@@ -46,6 +46,7 @@ package struct TaskDetailView: View {
         }
         .alert($store.scope(state: \.prompt, action: \.prompt))
         .alert($store.scope(state: \.alert, action: \.alert))
+        .confirmationDialog($store.scope(state: \.statusPicker, action: \.statusPicker))
     }
 
     @ViewBuilder

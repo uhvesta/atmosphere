@@ -80,6 +80,13 @@ package struct ConversationsFeature {
                 }
         }
 
+        /// The archive's conversations that have the query, or all of it
+        /// when nothing's searched for.
+        package var archivedFound: [Conversation] {
+            guard !query.isEmpty else { return archived }
+            return archived.filter { $0.match(searched, related: related) != nil }
+        }
+
         /// The chat on screen.
         package var chat: ChatFeature.State? { openID.flatMap { chats[id: $0] } }
 

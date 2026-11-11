@@ -67,7 +67,7 @@ final class UpcomingFeatureTests: XCTestCase {
         let shoes = records.task("Buy running shoes", in: health, due: 1)
         let store = await load()
 
-        await store.send(.list(.toggled(shoes.id)))
+        await store.send(.list(.rowAction(shoes.id, .status(.done))))
         await store.receive(\.list.delegate.saved)
 
         XCTAssertTrue(store.state.list.isEmpty)

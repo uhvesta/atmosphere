@@ -38,7 +38,7 @@ final class PhoneSettingsFlowTests: PhoneFlowTestCase {
         store.send(.recordStepsTapped)
         await flow.step("recording")
         let water = try task("Water the plants", in: store)
-        store.send(.today(.list(.toggled(water))))
+        store.send(.today(.list(.rowAction(water, .status(.done)))))
         await flow.step("acted")
         store.send(.shaken)
         await flow.step("describe")

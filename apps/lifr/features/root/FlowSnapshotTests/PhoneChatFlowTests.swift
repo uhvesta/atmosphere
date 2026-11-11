@@ -182,6 +182,10 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         store.send(.conversations(.chats(.element(id: id, action: .core(.sendTapped)))))
         await flow.step("replied")
         store.send(.conversations(.chats(.element(id: id, action: .core(.micTapped)))))
+        // A stop before the microphone starts keeps nothing.
+        for _ in 0..<100 where store.conversations.chats[id: id]?.recordingLive != true {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         store.send(.conversations(.chats(.element(id: id, action: .core(.micTapped)))))
         store.send(.conversations(.chats(.element(id: id, action: .core(.binding(.set(\.input, "And this one?")))))))
         // Stopping attaches the recording once it's saved.
