@@ -174,6 +174,13 @@ struct DraftEditor: View {
     let meanings: DraftMeanings
     let problem: String?
 
+    /// A due date as VoiceOver reads it: "None" for an empty field, whose
+    /// placeholder would otherwise be read as its value.
+    static func spoken(_ due: String?) -> Text {
+        guard let due, !due.isEmpty else { return Text("None") }
+        return Text(due)
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
@@ -207,6 +214,7 @@ struct DraftEditor: View {
                         }
                         Meaning(meanings.day(project.wrappedValue.due)) {
                             TextField("Due", text: project.due.orEmpty).accessibilityLabel("Due")
+                                .accessibilityValue(Self.spoken(project.wrappedValue.due))
                         }
                     }
                     .font(.caption)
@@ -258,6 +266,7 @@ private struct Tasks: View {
                 .fixedSize()
                 Meaning(day(task.wrappedValue.due)) {
                     TextField("Due", text: task.due.orEmpty).accessibilityLabel("Due")
+                        .accessibilityValue(DraftEditor.spoken(task.wrappedValue.due))
                 }
                 if showsPlace {
                     if let parent = task.wrappedValue.parent {

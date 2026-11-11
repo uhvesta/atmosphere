@@ -9,7 +9,7 @@
 [element] "Title" value: "Repot the fern"
 [button] "Remove Repot the fern"
 [button] "Priority, No priority"
-[element] "Due" value: "Due"
+[element] "Due" value: "None"
 [element] "Avenue or KEY/Project" value: "HOME"
 [text] "Home"
 [header, text] "Tuesday, November 3 at 10:00 AM"

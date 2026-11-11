@@ -29,7 +29,7 @@
 [text] "Clean up living room, Sat, Nov 7 · Home"
 [button] "Remove Buy new clothes"
 [button] "Priority, No priority"
-[element] "Due" value: "Due"
+[element] "Due" value: "None"
 [element] "Avenue or KEY/Project" value: "HOME"
 [text] "Vacuum"
 [text] "Dust"
