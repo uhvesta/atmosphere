@@ -89,6 +89,13 @@ package struct TaskListFeature {
         /// The picked tasks, in the order shown.
         package var selectedIDs: [UUID] { rows.map(\.id).filter(selection.contains) }
 
+        /// The row the keyboard is on: the last one moved to or picked, or
+        /// else the open task.
+        package var cursor: UUID? {
+            let ids = rows.map(\.id)
+            return [selectionAnchor, detail?.id].compactMap { $0 }.first(where: ids.contains)
+        }
+
         /// The records shown, with their place in the store's order.
         package var snapshot: Snapshot? { workspace.map { Snapshot($0, number: saves.latest) } }
 
@@ -176,6 +183,15 @@ package struct TaskListFeature {
         /// A row ⇧-clicked on the Mac: picks the rows from the last one picked.
         case selectionExtended(to: UUID)
         case selectAllTapped
+        /// ↑ or ↓ on the Mac, with ⇧ to pick the rows passed too.
+        case cursorMoved(up: Bool, extending: Bool)
+        /// Return on the Mac: opens the row the keyboard is on.
+        case openCursorTapped
+        /// Space on the Mac: the statuses for the row the keyboard is on.
+        case cursorStatusTapped
+        /// ⌫ on the Mac: the picked tasks, or the row the keyboard is on,
+        /// to the Trash.
+        case trashKeyPressed
         /// A change to every picked task.
         case bulk(BulkEdit)
         /// Due in this many days from today, or no due date, for every
@@ -256,7 +272,7 @@ package struct TaskListFeature {
                 return .none
 
             case .selectTapped, .selectionToggled, .selectionExtended, .selectAllTapped, .bulk, .bulkDue, .bulkSaved,
-                .bulkPrompt(.presented):
+                .bulkPrompt(.presented), .cursorMoved, .openCursorTapped, .cursorStatusTapped, .trashKeyPressed:
                 return picking(&state, action)
 
             case .toggled(let id):
@@ -422,6 +438,39 @@ package struct TaskListFeature {
             let ids = Set(state.rows.map(\.id))
             state.selection = state.selection == ids ? [] : ids
             return .none
+
+        case .cursorMoved(let up, let extending):
+            let ids = state.rows.map(\.id)
+            guard !ids.isEmpty else { return .none }
+            let next: UUID
+            if let cursor = state.cursor, let index = ids.firstIndex(of: cursor) {
+                next = ids[up ? max(index - 1, 0) : min(index + 1, ids.count - 1)]
+                if extending {
+                    state.isSelecting = true
+                    state.selection.formUnion([cursor, next])
+                }
+            } else {
+                next = (up ? ids.last : ids.first) ?? ids[0]
+                if extending {
+                    state.isSelecting = true
+                    state.selection.insert(next)
+                }
+            }
+            state.selectionAnchor = next
+            return .none
+
+        case .openCursorTapped:
+            guard let cursor = state.cursor else { return .none }
+            return .send(.rowTapped(cursor))
+
+        case .cursorStatusTapped:
+            guard let cursor = state.cursor else { return .none }
+            return .send(.rowAction(cursor, .pickStatus))
+
+        case .trashKeyPressed:
+            let ids = state.isSelecting ? state.selectedIDs : state.cursor.map { [$0] } ?? []
+            guard !ids.isEmpty else { return .none }
+            return bulk(.trash, ids)
 
         case .bulk(let edit):
             return bulk(edit, state.selectedIDs)

@@ -1,7 +1,7 @@
 [Window/StandardWindow] "Search"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""
-      [StaticText] "" value: "Today"
+      [StaticText] "Today" value: "5"
     [Row/OutlineRow] ""
       [StaticText] "Upcoming" value: "3"
     [Row/OutlineRow] ""

@@ -486,6 +486,53 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.selection, [])
     }
 
+    func testArrowsMoveTheCursorAndStopAtTheEnds() async {
+        records.task("A", in: health)
+        records.task("B", in: health)
+        records.task("C", in: health)
+        let store = await load()
+        let ids = store.state.rows.map(\.id)
+
+        await store.send(.cursorMoved(up: false, extending: false))
+        XCTAssertEqual(store.state.cursor, ids[0])
+        await store.send(.cursorMoved(up: true, extending: false))
+        XCTAssertEqual(store.state.cursor, ids[0])
+        await store.send(.cursorMoved(up: false, extending: false))
+        await store.send(.cursorMoved(up: false, extending: false))
+        await store.send(.cursorMoved(up: false, extending: false))
+        XCTAssertEqual(store.state.cursor, ids[2])
+        XCTAssertFalse(store.state.isSelecting)
+
+        await store.send(.cursorMoved(up: true, extending: true))
+        XCTAssertEqual(store.state.cursor, ids[1])
+        XCTAssertEqual(store.state.selection, [ids[1], ids[2]])
+
+        await store.send(.openCursorTapped)
+        await store.receive(\.rowTapped)
+    }
+
+    func testTheTrashKeyTrashesThePickedTasksAsOneChange() async throws {
+        records.task("Run", in: health)
+        records.task("Swim", in: health)
+        records.task("Ride", in: health)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = await load(client: client)
+        let ids = store.state.rows.map(\.id)
+
+        await store.send(.cursorMoved(up: false, extending: false))
+        await store.send(.cursorMoved(up: false, extending: true))
+        await store.send(.trashKeyPressed)
+        await store.receive(\.bulkSaved)
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.rows.map(\.id), [ids[2]])
+
+        let journal = try await client.load().journal
+        let entry = try XCTUnwrap(journal.last?.id)
+        _ = try await changing { try await client.revert(entries: [entry]) }
+        let tasks = try await client.load().tasks
+        XCTAssertEqual(ids.filter { tasks[$0]?.deletedAt == nil }, ids)
+    }
+
     func testOneUndoRevertsTheWholeChange() async throws {
         let run = records.task("Run", in: health)
         let swim = records.task("Swim", in: health)

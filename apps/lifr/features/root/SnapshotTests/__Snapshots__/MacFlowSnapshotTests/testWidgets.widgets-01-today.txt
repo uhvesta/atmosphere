@@ -12,7 +12,7 @@
 [Window/StandardWindow] "Today"
   [Outline] "Sidebar"
     [Row/OutlineRow, selected] ""
-      [StaticText] "" value: "Today"
+      [StaticText] "Today" value: "5"
     [Row/OutlineRow] ""
       [StaticText] "Upcoming" value: "3"
     [Row/OutlineRow] ""

@@ -83,7 +83,7 @@ package struct TaskListView<Header: View>: View {
             }
         }
         // Rows move in, out and between sections, a sync's changes too.
-        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .snappy, value: store.sections)
+        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .snappy(duration: 0.25), value: store.sections)
         .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring, value: store.banner)
         .safeAreaInset(edge: .bottom) {
             if store.isSelecting {
@@ -93,6 +93,23 @@ package struct TaskListView<Header: View>: View {
         .task { await store.send(.task).finish() }
         #if os(iOS)
             .refreshable { await store.send(.pulled).finish() }
+        #else
+            .onKeyPress(keys: [.upArrow, .downArrow]) { press in
+                store.send(.cursorMoved(up: press.key == .upArrow, extending: press.modifiers.contains(.shift)))
+                return .handled
+            }
+            .onKeyPress(.return) {
+                store.send(.openCursorTapped)
+                return .handled
+            }
+            .onKeyPress(.space) {
+                store.send(.cursorStatusTapped)
+                return .handled
+            }
+            .onKeyPress(keys: [.delete, .deleteForward]) { _ in
+                store.send(.trashKeyPressed)
+                return .handled
+            }
         #endif
         .toolbar {
             ToolbarItem(placement: .secondaryAction) {
@@ -210,6 +227,12 @@ package struct TaskListRow: View {
             }
         }
         .contentShape(Rectangle())
+        #if os(macOS)
+            // Where ↑ ↓, Return, Space and ⌫ act.
+            .listRowBackground(
+                store.cursor == row.id && !store.isSelecting
+                    ? RoundedRectangle(cornerRadius: 6).fill(.tint.opacity(0.15)) : nil)
+        #endif
         .onTapGesture { tapped() }
         .accessibilityAddTraits(store.isSelecting && isPicked ? .isSelected : [])
         // Onto a day in the calendar, to move it there. A list in manual

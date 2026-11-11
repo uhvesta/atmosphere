@@ -3,7 +3,7 @@
   [Button] "Undo"
   [Outline] "Sidebar"
     [Row/OutlineRow, selected] ""
-      [StaticText] "" value: "Today"
+      [StaticText] "Today" value: "6"
     [Row/OutlineRow] ""
       [StaticText] "Upcoming" value: "3"
     [Row/OutlineRow] ""

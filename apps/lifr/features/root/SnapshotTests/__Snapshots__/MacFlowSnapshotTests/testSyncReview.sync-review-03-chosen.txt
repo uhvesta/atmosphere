@@ -35,6 +35,7 @@
   [StaticText] "" value: "Sync: Synced Nov 3, 2026 at 2:00 AM"
   [StaticText] "" value: "Nothing due today"
   [StaticText] "" value: "Tasks due today, and overdue ones, show up here."
+  [Button] "Add a Task for Today"
   [Outline] ""
   [StaticText] "" value: "No task selected"
   [Toolbar] ""

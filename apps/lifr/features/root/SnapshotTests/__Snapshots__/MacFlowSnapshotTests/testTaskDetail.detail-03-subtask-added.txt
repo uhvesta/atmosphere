@@ -3,7 +3,7 @@
   [Button] "Undo"
   [Outline] "Sidebar"
     [Row/OutlineRow, selected] ""
-      [StaticText] "" value: "Today"
+      [StaticText] "Today" value: "5"
     [Row/OutlineRow] ""
       [StaticText] "Upcoming" value: "3"
     [Row/OutlineRow] ""
@@ -102,8 +102,7 @@
   [StaticText] "" value: "You on iPhone, Nov 3 at 10:00 AM, Added Sub task "Send summary to the team" (WORK-0009)"
   [StaticText] "" value: "You on iPhone, Nov 3 at 10:00 AM, Added Sub task "Leave comments" (WORK-0008)"
   [StaticText] "" value: "You on iPhone, Nov 3 at 10:00 AM, Added Sub task "Read the draft" (WORK-0007)"
-  [StaticText] "" value: "You on iPhone, Nov 3 at 10:00 AM, Created"
-  [StaticText] "" value: "You on Mac, Nov 3 at 10:00 AM, Added Sub task "Book a room" (WORK-WD0Z)"
+  [Button] "Show All (2 More)"
   [StaticText] "" value: "Add a comment"
   [TextField] ""
   [Button, disabled] "Send comment" id: paperplane.fill
