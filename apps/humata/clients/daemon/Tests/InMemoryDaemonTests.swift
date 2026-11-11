@@ -158,7 +158,7 @@ final class InMemoryDaemonTests: XCTestCase {
         let chat = try await daemon.client.fork(session.id, two.id, nil, true)
         XCTAssertEqual(chat.workingDirectory, session.workingDirectory)
         XCTAssertEqual(daemon.files(of: chat.id), daemon.files(of: session.id))
-        let changes = try await daemon.client.changes(fork.id)
+        let changes = try await daemon.client.changes(fork.id, ChangesQuery())
         XCTAssertTrue(changes.contains { $0.patch.contains("+three") })
         XCTAssertFalse(changes.contains { $0.patch.contains("+two") })
     }

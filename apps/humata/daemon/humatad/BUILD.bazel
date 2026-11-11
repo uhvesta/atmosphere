@@ -6,7 +6,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 rust_library(
     name = "humatad_lib",
     srcs = glob(
-        ["src/*.rs"],
+        ["src/**/*.rs"],
         exclude = ["src/main.rs"],
     ),
     crate_name = "humatad",

@@ -172,6 +172,81 @@ enum ItemCommand {
     },
 }
 
+/// A file of a session, by its repository's name there and its path in it.
+#[derive(clap::Args)]
+struct FileArgs {
+    session: String,
+    repository: String,
+    path: String,
+}
+
+#[derive(clap::Args)]
+struct EditArgs {
+    #[command(flatten)]
+    file: FileArgs,
+    /// Only the hunk starting at these lines, before and after, as
+    /// `OLD:NEW` from `humata changes`; the whole file if unset.
+    #[arg(long, value_parser = hunk_at)]
+    hunk: Option<(u32, u32)>,
+    /// The context the hunk was read with.
+    #[arg(long, default_value_t = 3)]
+    context: u32,
+}
+
+fn hunk_at(text: &str) -> Result<(u32, u32), String> {
+    let (old, new) = text
+        .split_once(':')
+        .ok_or_else(|| format!("{text:?} isn't OLD:NEW, such as 12:14"))?;
+    let number = |part: &str| {
+        part.trim()
+            .parse::<u32>()
+            .map_err(|_| format!("{part:?} isn't a line number"))
+    };
+    Ok((number(old)?, number(new)?))
+}
+
+#[derive(Subcommand)]
+enum ReviewCommand {
+    /// Comment on lines of a file as it is in the session's copy, and print
+    /// the new thread's id. It is sent with the next review.
+    Comment {
+        #[command(flatten)]
+        file: FileArgs,
+        line: u32,
+        /// The last line, if more than one.
+        #[arg(long)]
+        end: Option<u32>,
+        /// The text picked in rendered Markdown.
+        #[arg(long, default_value = "")]
+        quote: String,
+        text: String,
+    },
+    /// Add a comment to a thread, sent with the next review.
+    Reply { thread: String, text: String },
+    /// Resolve a thread.
+    Resolve {
+        thread: String,
+        /// Open it again instead.
+        #[arg(long)]
+        undo: bool,
+    },
+    /// Delete a comment not sent yet.
+    Delete { comment: String },
+    /// Print a session's threads, with your comments and the agent's
+    /// replies.
+    Threads { session: String },
+    /// Send your comments not sent yet to the agent, as one message.
+    Send { session: String },
+    /// Mark a file viewed as it is now; it stays viewed until it changes.
+    Viewed {
+        #[command(flatten)]
+        file: FileArgs,
+        /// Mark it not viewed instead.
+        #[arg(long)]
+        undo: bool,
+    },
+}
+
 #[derive(Subcommand)]
 enum BoardCommand {
     /// Print a project's board changes, newest first.
@@ -355,8 +430,40 @@ enum Command {
         #[arg(long)]
         undo: bool,
     },
-    /// Print what a session changed in each repository, as a diff.
-    Changes { session: String },
+    /// Print what a session changed in each repository, as a diff:
+    /// everything since its copy was made, unless asked for another range.
+    Changes {
+        session: String,
+        /// Only what isn't staged yet.
+        #[arg(long, conflicts_with_all = ["staged", "branch", "turn"])]
+        unstaged: bool,
+        /// Only what is staged.
+        #[arg(long, conflicts_with_all = ["branch", "turn"])]
+        staged: bool,
+        /// Since the copy's work left this branch.
+        #[arg(long, conflicts_with = "turn")]
+        branch: Option<String>,
+        /// What this turn changed; the first is 1.
+        #[arg(long)]
+        turn: Option<u32>,
+        /// Unchanged lines around each change.
+        #[arg(long)]
+        context: Option<u32>,
+        /// Only this file, as REPOSITORY/PATH with the repository's name in
+        /// the session.
+        #[arg(long)]
+        file: Option<String>,
+    },
+    /// Stage a file's changes in the session's copy, or one hunk's.
+    Stage(EditArgs),
+    /// Unstage a file's staged changes, or one hunk's.
+    Unstage(EditArgs),
+    /// Throw away a file's unstaged changes, or one hunk's. A file git
+    /// doesn't know is removed. This can't be undone.
+    Revert(EditArgs),
+    /// Comment on a session's changes and send the comments to its agent.
+    #[command(subcommand)]
+    Review(ReviewCommand),
     /// Print a session's events.
     History { session: String },
     /// Print a session's events, then each new one, until interrupted.
@@ -463,6 +570,10 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             )?;
         }
         Command::Host(command) => host(&client, command).await?,
+        Command::Stage(edit) => edit_changes(&client, edit, pb::ChangeAction::Stage).await?,
+        Command::Unstage(edit) => edit_changes(&client, edit, pb::ChangeAction::Unstage).await?,
+        Command::Revert(edit) => edit_changes(&client, edit, pb::ChangeAction::Revert).await?,
+        Command::Review(command) => review(&client, command).await?,
         Command::Inbox => match client.call(Request::ListInbox(pb::ListInbox {})).await? {
             Response::Inbox(inbox) => {
                 for entry in &inbox.entries {
@@ -647,9 +758,39 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             )
             .await?;
         }
-        Command::Changes { session } => {
+        Command::Changes {
+            session,
+            unstaged,
+            staged,
+            branch,
+            turn,
+            context,
+            file,
+        } => {
+            let kind = match (unstaged, staged, &branch, turn) {
+                (true, ..) => pb::ChangeRangeKind::Unstaged,
+                (_, true, ..) => pb::ChangeRangeKind::Staged,
+                (_, _, Some(_), _) => pb::ChangeRangeKind::Branch,
+                (_, _, _, Some(_)) => pb::ChangeRangeKind::Turn,
+                _ => pb::ChangeRangeKind::Session,
+            };
+            let file = file.map(|file| {
+                let (repository, path) = file.split_once('/').unwrap_or(("", &file));
+                pb::FileRef {
+                    repository: repository.to_owned(),
+                    path: path.to_owned(),
+                }
+            });
             let request = Request::ReadChanges(pb::ReadChanges {
                 session_id: session,
+                range: Some(pb::ChangeRange {
+                    kind: kind.into(),
+                    branch: branch.unwrap_or_default(),
+                    turn: turn.unwrap_or_default(),
+                }),
+                context,
+                file,
+                whole_file: false,
             });
             match client.call(request).await? {
                 Response::Changes(changes) => print!("{}", print::changes(&changes)),
@@ -1017,6 +1158,141 @@ fn session_event(item: Result<pb::StreamItem, pb::Error>) -> Result<pb::SessionE
             message: error.message,
         })),
     }
+}
+
+fn file_ref(file: &FileArgs) -> pb::FileRef {
+    pb::FileRef {
+        repository: file.repository.clone(),
+        path: file.path.clone(),
+    }
+}
+
+async fn edit_changes(
+    client: &Client,
+    edit: EditArgs,
+    action: pb::ChangeAction,
+) -> Result<(), CliError> {
+    let request = pb::request::Kind::EditChanges(pb::EditChanges {
+        session_id: edit.file.session.clone(),
+        file: Some(file_ref(&edit.file)),
+        action: action.into(),
+        hunk: edit.hunk.map(|(old_start, new_start)| pb::HunkAt {
+            old_start,
+            new_start,
+            context: edit.context,
+        }),
+    });
+    expect_ok(
+        client.call(request).await?,
+        |response| matches!(response, pb::response::Kind::ChangesEdited(_)),
+        "ChangesEdited",
+    )
+}
+
+async fn review(client: &Client, command: ReviewCommand) -> Result<(), CliError> {
+    use pb::request::Kind as Request;
+    use pb::response::Kind as Response;
+    let saved = |response: Response| match response {
+        Response::ThreadSaved(pb::ThreadSaved {
+            thread: Some(thread),
+        }) => Ok(thread),
+        other => Err(unexpected("the thread", &other)),
+    };
+    match command {
+        ReviewCommand::Comment {
+            file,
+            line,
+            end,
+            quote,
+            text,
+        } => {
+            let request = Request::CreateThread(pb::CreateThread {
+                session_id: file.session.clone(),
+                file: Some(file_ref(&file)),
+                start_line: line,
+                end_line: end.unwrap_or(line),
+                quote,
+                text,
+            });
+            println!("{}", saved(client.call(request).await?)?.id);
+        }
+        ReviewCommand::Reply { thread, text } => {
+            let request = Request::ReplyToThread(pb::ReplyToThread {
+                thread_id: thread,
+                text,
+            });
+            saved(client.call(request).await?)?;
+        }
+        ReviewCommand::Resolve { thread, undo } => {
+            let request = Request::ResolveThread(pb::ResolveThread {
+                thread_id: thread,
+                resolved: !undo,
+            });
+            saved(client.call(request).await?)?;
+        }
+        ReviewCommand::Delete { comment } => {
+            let request = Request::DeleteComment(pb::DeleteComment {
+                comment_id: comment,
+            });
+            expect_ok(
+                client.call(request).await?,
+                |response| matches!(response, Response::CommentDeleted(_)),
+                "CommentDeleted",
+            )?;
+        }
+        ReviewCommand::Threads { session } => {
+            let request = Request::ListThreads(pb::ListThreads {
+                session_id: session,
+            });
+            match client.call(request).await? {
+                Response::Threads(threads) => {
+                    for thread in &threads.threads {
+                        print!("{}", print::thread(thread));
+                    }
+                }
+                other => return Err(unexpected("the threads", &other)),
+            }
+        }
+        ReviewCommand::Send { session } => {
+            let request = Request::SendReview(pb::SendReview {
+                session_id: session,
+            });
+            match client.call(request).await? {
+                Response::ReviewSent(sent) => println!("{}", sent.comments),
+                other => return Err(unexpected("the review sent", &other)),
+            }
+        }
+        ReviewCommand::Viewed { file, undo } => {
+            // Viewed as it is now: with the contents the diff shows.
+            let request = Request::ReadChanges(pb::ReadChanges {
+                session_id: file.session.clone(),
+                file: Some(file_ref(&file)),
+                ..Default::default()
+            });
+            let blob = match client.call(request).await? {
+                Response::Changes(changes) => changes
+                    .repositories
+                    .iter()
+                    .flat_map(|repository| &repository.files)
+                    .map(|diff| diff.blob.clone())
+                    .next()
+                    .unwrap_or_default(),
+                other => return Err(unexpected("the changes", &other)),
+            };
+            let request = Request::MarkViewed(pb::MarkViewed {
+                session_id: file.session.clone(),
+                file: Some(file_ref(&file)),
+                blob,
+                viewed: !undo,
+            });
+            expect_ok(
+                client.call(request).await?,
+                |response| matches!(response, Response::FileViewed(_)),
+                "FileViewed",
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn expect_ok(

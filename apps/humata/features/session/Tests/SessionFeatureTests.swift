@@ -47,6 +47,31 @@ final class SessionFeatureTests: XCTestCase {
         await watching.cancel()
     }
 
+    func testTheReviewIsReadWhenPickedAndAgainWhenATurnEnds() async throws {
+        let daemon = InMemoryDaemon { text in [.write(path: "\(text).txt", contents: text)] }
+        let project = try await daemon.client.createProject("Humata", [Repository(path: "/code/humata")], "")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, approvalMode: .allowEverything, projectID: project.id))
+        try await daemon.client.send(session.id, "one", .enqueue)
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        let watching = await store.send(.task)
+        await store.send(.tabPicked(.review))
+        await store.receive(\.review.loaded)
+        XCTAssertEqual(store.state.review.files.map(\.path), ["one.txt"])
+
+        try await daemon.client.send(session.id, "two", .enqueue)
+        await store.receive(\.review.loaded, timeout: .seconds(1))
+        XCTAssertEqual(store.state.review.files.map(\.path), ["one.txt", "two.txt"])
+        XCTAssertEqual(store.state.review.turns, 2)
+        await watching.cancel()
+    }
+
     func testABlankMessageIsNotSent() async throws {
         let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
         var state = SessionFeature.State(session: session)

@@ -131,6 +131,25 @@ rust_test(
     deps = ["@crates//:tempfile"],
 )
 
+# Code review: a comment sent as a review, answered and fixed by the agent.
+rust_test(
+    name = "review_test",
+    srcs = [
+        "common.rs",
+        "review_test.rs",
+    ],
+    crate_root = "review_test.rs",
+    data = [
+        "//apps/humata/daemon/cli:humata",
+        "//apps/humata/daemon/humatad",
+    ],
+    env = {
+        "HUMATA": "$(rootpath //apps/humata/daemon/cli:humata)",
+        "HUMATAD": "$(rootpath //apps/humata/daemon/humatad)",
+    },
+    deps = ["@crates//:tempfile"],
+)
+
 # Where humatad is in the runfiles, for the Swift test to start it.
 genrule(
     name = "binaries_swift",

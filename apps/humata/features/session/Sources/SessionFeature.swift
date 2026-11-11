@@ -1,15 +1,24 @@
 import ComposableArchitecture
 import Foundation
 import HumataDaemonClient
+import HumataReview
 
 /// One session: its events as they happen, a message to send, permissions
 /// to answer and what the session may do without asking, and forks, with
-/// the code or chat only, including editing an earlier message.
+/// the code or chat only, including editing an earlier message; and its
+/// changes, to review.
 @Reducer
 package struct SessionFeature {
+    package enum Tab: Hashable, Sendable {
+        case chat
+        case review
+    }
+
     @ObservableState
     package struct State: Equatable {
         package var session: Session
+        package var tab = Tab.chat
+        package var review: ReviewFeature.State
         /// Every event but the reply's parts as it streams, oldest first.
         package var events: IdentifiedArrayOf<SessionEvent> = []
         /// The reply so far, until its whole message arrives.
@@ -27,6 +36,7 @@ package struct SessionFeature {
 
         package init(session: Session) {
             self.session = session
+            review = ReviewFeature.State(sessionID: session.id, turns: session.turns)
         }
 
         /// Whether a turn has started and not yet ended.
@@ -63,6 +73,12 @@ package struct SessionFeature {
         }
 
         mutating func receive(_ event: SessionEvent) {
+            defer {
+                if case .turnStarted = event.kind {
+                    let started = events.filter { $0.kind == .turnStarted }.count
+                    review.turns = max(review.turns, started)
+                }
+            }
             switch event.kind {
             case .assistantDelta(let text):
                 streaming += text
@@ -101,6 +117,8 @@ package struct SessionFeature {
         case failed(String)
         case alert(PresentationAction<Never>)
         case delegate(Delegate)
+        case tabPicked(Tab)
+        case review(ReviewFeature.Action)
 
         @CasePathable
         package enum Delegate: Equatable {
@@ -117,10 +135,17 @@ package struct SessionFeature {
 
     package var body: some ReducerOf<Self> {
         BindingReducer()
+        Scope(state: \.review, action: \.review) {
+            ReviewFeature()
+        }
         Reduce { state, action in
             switch action {
-            case .binding, .delegate, .alert:
+            case .binding, .delegate, .alert, .review:
                 return .none
+
+            case .tabPicked(let tab):
+                state.tab = tab
+                return tab == .review ? .send(.review(.refresh)) : .none
 
             case .task:
                 state.disconnected = false
@@ -140,7 +165,9 @@ package struct SessionFeature {
 
             case .received(let event):
                 state.receive(event)
-                return .none
+                // The agent may have answered the review, or changed the code.
+                guard case .turnEnded = event.kind, state.tab == .review else { return .none }
+                return .send(.review(.refresh))
 
             case .watchEnded(let failure):
                 state.disconnected = true

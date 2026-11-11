@@ -14,6 +14,10 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use crate::board::{Change, Item, ItemFields, ItemPatch, Priority, Status};
 use crate::error::StoreError;
 
+mod review;
+
+pub use review::{Comment, NewThread, Review, Thread};
+
 /// Each step takes the schema from its index to the next version; the
 /// version is kept in `PRAGMA user_version`.
 const MIGRATIONS: &[&str] = &["
@@ -86,6 +90,51 @@ const MIGRATIONS: &[&str] = &["
         history BLOB
     );
     CREATE INDEX remote_sessions_by_host ON remote_sessions (host);
+", "
+    -- Review threads on lines of a session's files. `code` is the lines it
+    -- was left on and `before` the lines above them, each a JSON array, to
+    -- find them again as the file changes.
+    CREATE TABLE review_threads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        repository TEXT NOT NULL,
+        path TEXT NOT NULL,
+        start_line INTEGER NOT NULL,
+        end_line INTEGER NOT NULL,
+        outdated INTEGER NOT NULL DEFAULT 0,
+        code TEXT NOT NULL,
+        before TEXT NOT NULL,
+        quote TEXT NOT NULL,
+        resolved INTEGER NOT NULL DEFAULT 0,
+        created_unix_ms INTEGER NOT NULL
+    );
+    CREATE INDEX review_threads_by_session ON review_threads (session_id, id);
+    -- Each review as sent to the agent, to find its replies in the
+    -- session's history.
+    CREATE TABLE reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        message TEXT NOT NULL,
+        sent_unix_ms INTEGER NOT NULL
+    );
+    CREATE INDEX reviews_by_session ON reviews (session_id, id);
+    -- Your comments; the agent's replies are read from the history.
+    CREATE TABLE review_comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_id INTEGER NOT NULL REFERENCES review_threads (id) ON DELETE CASCADE,
+        text TEXT NOT NULL,
+        review_id INTEGER REFERENCES reviews (id),
+        created_unix_ms INTEGER NOT NULL
+    );
+    CREATE INDEX review_comments_by_thread ON review_comments (thread_id, id);
+    -- Files marked viewed, with the contents they had then.
+    CREATE TABLE viewed_files (
+        session_id TEXT NOT NULL,
+        repository TEXT NOT NULL,
+        path TEXT NOT NULL,
+        blob TEXT NOT NULL,
+        PRIMARY KEY (session_id, repository, path)
+    );
 "];
 
 #[derive(Clone, Debug, PartialEq, Eq)]

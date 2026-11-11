@@ -299,10 +299,256 @@ package struct RepositoryChanges: Hashable, Sendable {
     package var name: String
     /// A unified diff; empty if nothing changed.
     package var patch: String
+    /// The patch's files, read into lines.
+    package var files: [FileDiff]
 
-    package init(name: String, patch: String) {
+    package init(name: String, patch: String, files: [FileDiff] = []) {
         self.name = name
         self.patch = patch
+        self.files = files
+    }
+}
+
+/// Which of a session's changes to read.
+package enum ChangeRange: Hashable, Sendable {
+    /// Everything since its copy was made.
+    case session
+    /// In the copy, not staged yet.
+    case unstaged
+    /// Staged in the copy, not committed yet.
+    case staged
+    /// From where the copy's work and the branch meet to the files in the copy.
+    case branch(String)
+    /// What one turn changed; the first is 1.
+    case turn(Int)
+}
+
+/// A file, by its repository's name in the session and its path there.
+package struct FileRef: Hashable, Sendable {
+    package var repository: String
+    package var path: String
+
+    package init(repository: String, path: String) {
+        self.repository = repository
+        self.path = path
+    }
+}
+
+package struct ChangesQuery: Hashable, Sendable {
+    package var range: ChangeRange
+    /// Unchanged lines shown around each change.
+    package var context: Int
+    /// Only this file.
+    package var file: FileRef?
+    /// Every line of `file`, even when it didn't change.
+    package var wholeFile: Bool
+
+    package init(range: ChangeRange = .session, context: Int = 3, file: FileRef? = nil, wholeFile: Bool = false) {
+        self.range = range
+        self.context = context
+        self.file = file
+        self.wholeFile = wholeFile
+    }
+}
+
+package enum FileStatus: Hashable, Sendable {
+    case modified
+    case added
+    case deleted
+    case renamed
+    /// Read as a whole file, and the same at both ends of the range.
+    case unchanged
+}
+
+package struct FileDiff: Hashable, Sendable {
+    package var path: String
+    /// Where a renamed file was.
+    package var oldPath: String?
+    package var status: FileStatus
+    package var binary: Bool
+    /// Names its contents at the end of the range; empty for a deleted file.
+    package var blob: String
+    package var hunks: [Hunk]
+    /// Marked viewed with these contents.
+    package var viewed: Bool
+
+    package init(
+        path: String,
+        oldPath: String? = nil,
+        status: FileStatus,
+        binary: Bool = false,
+        blob: String = "",
+        hunks: [Hunk],
+        viewed: Bool = false
+    ) {
+        self.path = path
+        self.oldPath = oldPath
+        self.status = status
+        self.binary = binary
+        self.blob = blob
+        self.hunks = hunks
+        self.viewed = viewed
+    }
+}
+
+package struct Hunk: Hashable, Sendable {
+    package var oldStart: Int
+    package var oldCount: Int
+    package var newStart: Int
+    package var newCount: Int
+    /// What git shows after the hunk's range, such as the function it's in.
+    package var header: String
+    package var lines: [DiffLine]
+
+    package init(oldStart: Int, oldCount: Int, newStart: Int, newCount: Int, header: String = "", lines: [DiffLine]) {
+        self.oldStart = oldStart
+        self.oldCount = oldCount
+        self.newStart = newStart
+        self.newCount = newCount
+        self.header = header
+        self.lines = lines
+    }
+}
+
+package struct DiffLine: Hashable, Sendable {
+    package enum Kind: Hashable, Sendable {
+        case context
+        case added
+        case removed
+    }
+
+    package var kind: Kind
+    /// Its number before the change; nil for an added line.
+    package var old: Int?
+    /// Its number after; nil for a removed line.
+    package var new: Int?
+    package var text: String
+
+    package init(kind: Kind, old: Int?, new: Int?, text: String) {
+        self.kind = kind
+        self.old = old
+        self.new = new
+        self.text = text
+    }
+}
+
+package enum ChangeAction: Hashable, Sendable {
+    /// Stages the copy's unstaged changes.
+    case stage
+    /// Unstages staged changes, keeping them in the copy.
+    case unstage
+    /// Throws away the copy's unstaged changes; a new file is removed.
+    case revert
+}
+
+/// A hunk, by where it starts in the diff the action works on, read with
+/// `context` lines.
+package struct HunkAt: Hashable, Sendable {
+    package var oldStart: Int
+    package var newStart: Int
+    package var context: Int
+
+    package init(oldStart: Int, newStart: Int, context: Int) {
+        self.oldStart = oldStart
+        self.newStart = newStart
+        self.context = context
+    }
+}
+
+/// Stages, unstages or reverts a file or one of its hunks.
+package struct ChangeEdit: Hashable, Sendable {
+    package var file: FileRef
+    package var action: ChangeAction
+    package var hunk: HunkAt?
+
+    package init(file: FileRef, action: ChangeAction, hunk: HunkAt? = nil) {
+        self.file = file
+        self.action = action
+        self.hunk = hunk
+    }
+}
+
+/// Comments on lines of a file, kept with those lines as the code changes.
+package struct ReviewThread: Identifiable, Hashable, Sendable {
+    package var id: String
+    package var file: FileRef
+    /// Where it is in the file as it is now, from 1.
+    package var startLine: Int
+    package var endLine: Int
+    /// The lines it was left on have changed, so it's where they were.
+    package var outdated: Bool
+    /// The lines as they were when it was left.
+    package var code: [String]
+    /// In rendered Markdown, the text it was left on.
+    package var quote: String
+    package var resolved: Bool
+    package var comments: [ReviewComment]
+
+    package init(
+        id: String,
+        file: FileRef,
+        startLine: Int,
+        endLine: Int,
+        outdated: Bool = false,
+        code: [String] = [],
+        quote: String = "",
+        resolved: Bool = false,
+        comments: [ReviewComment]
+    ) {
+        self.id = id
+        self.file = file
+        self.startLine = startLine
+        self.endLine = endLine
+        self.outdated = outdated
+        self.code = code
+        self.quote = quote
+        self.resolved = resolved
+        self.comments = comments
+    }
+
+    /// Comments not sent to the agent yet.
+    package var pending: Int { comments.filter { $0.author == .you && !$0.sent }.count }
+}
+
+package struct ReviewComment: Identifiable, Hashable, Sendable {
+    package enum Author: Hashable, Sendable {
+        case you
+        case agent
+    }
+
+    package var id: String
+    package var author: Author
+    package var text: String
+    /// Sent to the agent; only a comment not sent yet can be deleted.
+    package var sent: Bool
+    package var time: Date
+    /// The agent's: the turn it answered in, whose changes are its fix.
+    package var turn: Int?
+
+    package init(id: String, author: Author, text: String, sent: Bool, time: Date, turn: Int? = nil) {
+        self.id = id
+        self.author = author
+        self.text = text
+        self.sent = sent
+        self.time = time
+        self.turn = turn
+    }
+}
+
+/// A comment to leave on a file's lines.
+package struct NewThread: Hashable, Sendable {
+    package var file: FileRef
+    package var startLine: Int
+    package var endLine: Int
+    package var quote: String
+    package var text: String
+
+    package init(file: FileRef, startLine: Int, endLine: Int, quote: String = "", text: String) {
+        self.file = file
+        self.startLine = startLine
+        self.endLine = endLine
+        self.quote = quote
+        self.text = text
     }
 }
 
@@ -505,6 +751,9 @@ package enum ErrorCode: Hashable, Sendable {
     case unknownItem
     case unknownBoardChange
     case unknownHost
+    case unknownThread
+    /// What the request worked on changed since it was read.
+    case changed
     case unknown
 }
 

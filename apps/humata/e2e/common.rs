@@ -42,7 +42,21 @@ impl Humata {
         stdout
     }
 
+    /// Runs `humata` expecting it to fail, and returns what it said why.
+    #[allow(dead_code, reason = "not every test sees a command fail")]
+    pub fn fails(&self, arguments: &[&str]) -> String {
+        let output = Command::new(&self.cli)
+            .arg("--socket")
+            .arg(&self.socket)
+            .args(arguments)
+            .output()
+            .unwrap_or_else(|error| panic!("couldn't run humata: {error}"));
+        assert!(!output.status.success(), "humata {arguments:?} succeeded");
+        String::from_utf8_lossy(&output.stderr).into_owned()
+    }
+
     /// The (kind, detail) of each line `humata` printed for events.
+    #[allow(dead_code, reason = "not every test reads the history")]
     pub fn said(&self, arguments: &[&str]) -> Vec<(String, String)> {
         self.run(arguments)
             .lines()
@@ -120,6 +134,7 @@ impl Humata {
     }
 }
 
+#[allow(dead_code, reason = "not every test reads the history")]
 pub fn pairs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs
         .iter()

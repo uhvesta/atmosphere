@@ -9,6 +9,7 @@
 //! snapshot's HEAD and puts the snapshot's files in it.
 
 mod error;
+mod review;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -18,6 +19,10 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 pub use error::WorkspaceError;
+pub use review::{
+    Action, Changes, Edit, FileDiff, FileRef, FileStatus, Hunk, HunkAt, Line, LineKind, Query,
+    Range,
+};
 
 /// A repository a session works in, as the project names it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,14 +55,6 @@ pub struct Snapshot {
     /// A commit, on no branch, of every file in the worktree that git
     /// doesn't ignore, with `head` as its parent.
     pub commit: String,
-}
-
-/// What a session changed in one repository, since its copy was made.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Changes {
-    pub name: String,
-    /// A unified diff; empty if nothing changed.
-    pub patch: String,
 }
 
 /// The sessions' copies of their repositories, under one folder.
@@ -133,52 +130,6 @@ impl Workspaces {
             });
         }
         Ok(snapshots)
-    }
-
-    /// What changed in each repository since `base`: up to the files in its
-    /// checkout now, or, without one, up to its snapshot in `latest`.
-    pub async fn changes(
-        &self,
-        session: &str,
-        repositories: &[Repository],
-        base: &[Snapshot],
-        latest: &[Snapshot],
-        checkouts: &[Checkout],
-    ) -> Result<Vec<Changes>, WorkspaceError> {
-        let mut all = Vec::with_capacity(repositories.len());
-        for repository in repositories {
-            let named = |snapshots: &[Snapshot]| {
-                snapshots
-                    .iter()
-                    .find(|snapshot| snapshot.name == repository.name)
-                    .cloned()
-            };
-            let Some(from) = named(base) else {
-                all.push(Changes {
-                    name: repository.name.clone(),
-                    patch: String::new(),
-                });
-                continue;
-            };
-            let checkout = checkouts
-                .iter()
-                .find(|checkout| checkout.name == repository.name && checkout.path.is_dir());
-            let to = match (checkout, named(latest)) {
-                (Some(checkout), _) => self.capture(session, &checkout.path).await?.1,
-                (None, Some(latest)) => latest.commit,
-                (None, None) => from.commit.clone(),
-            };
-            let patch = git(
-                &repository.path,
-                &["diff", "--no-color", "--no-ext-diff", &from.head, &to],
-            )
-            .await?;
-            all.push(Changes {
-                name: repository.name.clone(),
-                patch,
-            });
-        }
-        Ok(all)
     }
 
     /// Removes the worktrees, with whatever is in them that wasn't
@@ -337,6 +288,15 @@ async fn git(directory: &Path, arguments: &[&str]) -> Result<String, WorkspaceEr
     run(directory, None, arguments).await
 }
 
+/// Runs git with `input` on its standard input.
+async fn git_with_input(
+    directory: &Path,
+    arguments: &[&str],
+    input: &str,
+) -> Result<String, WorkspaceError> {
+    run_with(directory, None, arguments, Some(input)).await
+}
+
 async fn git_with_index(
     directory: &Path,
     index: &Path,
@@ -350,12 +310,27 @@ async fn run(
     index: Option<&Path>,
     arguments: &[&str],
 ) -> Result<String, WorkspaceError> {
+    run_with(directory, index, arguments, None).await
+}
+
+async fn run_with(
+    directory: &Path,
+    index: Option<&Path>,
+    arguments: &[&str],
+    input: Option<&str>,
+) -> Result<String, WorkspaceError> {
     let mut command = Command::new("git");
     command
         .arg("-C")
         .arg(directory)
         .args(arguments)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
@@ -368,8 +343,16 @@ async fn run(
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
     }
-    let output = command
-        .output()
+    let mut child = command
+        .spawn()
+        .map_err(|source| WorkspaceError::GitMissing { source })?;
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        use tokio::io::AsyncWriteExt;
+        // A git that stops reading early says why on its standard error.
+        let _ = stdin.write_all(input.as_bytes()).await;
+    }
+    let output = child
+        .wait_with_output()
         .await
         .map_err(|source| WorkspaceError::GitMissing { source })?;
     if !output.status.success() {

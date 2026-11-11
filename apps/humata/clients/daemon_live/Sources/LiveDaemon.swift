@@ -124,13 +124,74 @@ extension DaemonClient {
                 }
                 return try Session(updated.session)
             },
-            changes: { session in
-                var read = Humata_V1_ReadChanges()
-                read.sessionID = session
-                guard case .changes(let changes) = try await daemon.call(.readChanges(read)) else {
+            changes: { session, query in
+                guard case .changes(let changes) = try await daemon.call(.readChanges(query.proto(session))) else {
                     throw DaemonError.unexpected("something other than the session's changes")
                 }
-                return changes.repositories.map { RepositoryChanges(name: $0.name, patch: $0.patch) }
+                return changes.repositories.map(RepositoryChanges.init)
+            },
+            editChanges: { session, edit in
+                var request = Humata_V1_EditChanges()
+                request.sessionID = session
+                request.file = edit.file.proto
+                request.action = edit.action.proto
+                if let hunk = edit.hunk {
+                    request.hunk.oldStart = UInt32(hunk.oldStart)
+                    request.hunk.newStart = UInt32(hunk.newStart)
+                    request.hunk.context = UInt32(hunk.context)
+                }
+                _ = try await daemon.call(.editChanges(request))
+            },
+            markViewed: { session, file, blob, viewed in
+                var mark = Humata_V1_MarkViewed()
+                mark.sessionID = session
+                mark.file = file.proto
+                mark.blob = blob
+                mark.viewed = viewed
+                _ = try await daemon.call(.markViewed(mark))
+            },
+            createThread: { session, thread in
+                var create = Humata_V1_CreateThread()
+                create.sessionID = session
+                create.file = thread.file.proto
+                create.startLine = UInt32(thread.startLine)
+                create.endLine = UInt32(thread.endLine)
+                create.quote = thread.quote
+                create.text = thread.text
+                return try ReviewThread(saved: await daemon.call(.createThread(create)))
+            },
+            replyToThread: { thread, text in
+                var reply = Humata_V1_ReplyToThread()
+                reply.threadID = thread
+                reply.text = text
+                return try ReviewThread(saved: await daemon.call(.replyToThread(reply)))
+            },
+            resolveThread: { thread, resolved in
+                var resolve = Humata_V1_ResolveThread()
+                resolve.threadID = thread
+                resolve.resolved = resolved
+                return try ReviewThread(saved: await daemon.call(.resolveThread(resolve)))
+            },
+            deleteComment: { comment in
+                var delete = Humata_V1_DeleteComment()
+                delete.commentID = comment
+                _ = try await daemon.call(.deleteComment(delete))
+            },
+            threads: { session in
+                var list = Humata_V1_ListThreads()
+                list.sessionID = session
+                guard case .threads(let threads) = try await daemon.call(.listThreads(list)) else {
+                    throw DaemonError.unexpected("something other than the review's threads")
+                }
+                return threads.threads.map(ReviewThread.init)
+            },
+            sendReview: { session in
+                var send = Humata_V1_SendReview()
+                send.sessionID = session
+                guard case .reviewSent(let sent) = try await daemon.call(.sendReview(send)) else {
+                    throw DaemonError.unexpected("something other than the sent review")
+                }
+                return Int(sent.comments)
             },
             items: { project in
                 var list = Humata_V1_ListItems()

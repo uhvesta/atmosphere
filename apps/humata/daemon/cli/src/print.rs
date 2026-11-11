@@ -145,6 +145,35 @@ pub fn changes(changes: &pb::Changes) -> String {
     }
 }
 
+/// `<thread id>\t<repository>/<path>:<start>-<end>\t<state>`, then a line
+/// `\t<comment id>\t<you|agent>\t<turn>\t<text>` for each comment.
+pub fn thread(thread: &pb::ReviewThread) -> String {
+    let file = thread
+        .file
+        .as_ref()
+        .map(|file| format!("{}/{}", file.repository, file.path))
+        .unwrap_or_default();
+    let mut state = if thread.resolved { "resolved" } else { "open" }.to_owned();
+    if thread.outdated {
+        state.push_str(",outdated");
+    }
+    let mut text = format!(
+        "{}\t{file}:{}-{}\t{state}\n",
+        thread.id, thread.start_line, thread.end_line
+    );
+    for comment in &thread.comments {
+        let author = match comment.author() {
+            pb::CommentAuthor::You => "you",
+            pb::CommentAuthor::Agent => "agent",
+        };
+        text.push_str(&format!(
+            "\t{}\t{author}\t{}\t{}\n",
+            comment.id, comment.turn, comment.text
+        ));
+    }
+    text
+}
+
 fn status(status: pb::ItemStatus) -> &'static str {
     match status {
         pb::ItemStatus::Unspecified | pb::ItemStatus::Todo => "todo",

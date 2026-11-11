@@ -20,6 +20,8 @@ extension ErrorCode {
             case .unknownItem: .unknownItem
             case .unknownBoardChange: .unknownBoardChange
             case .unknownHost: .unknownHost
+            case .unknownThread: .unknownThread
+            case .changed: .changed
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -279,5 +281,149 @@ extension HostHealth {
                 copilot: status.copilotVersion.isEmpty
                     ? .failure(CopilotProblem(status.copilotProblem)) : .success(status.copilotVersion),
                 githubToken: status.githubToken, setup: status.hasSetup ? SetupResult(status.setup) : nil))
+    }
+}
+
+extension ChangesQuery {
+    func proto(_ session: String) -> Humata_V1_ReadChanges {
+        var read = Humata_V1_ReadChanges()
+        read.sessionID = session
+        switch range {
+        case .session: read.range.kind = .session
+        case .unstaged: read.range.kind = .unstaged
+        case .staged: read.range.kind = .staged
+        case .branch(let branch):
+            read.range.kind = .branch
+            read.range.branch = branch
+        case .turn(let turn):
+            read.range.kind = .turn
+            read.range.turn = UInt32(max(turn, 0))
+        }
+        read.context = UInt32(max(context, 0))
+        if let file { read.file = file.proto }
+        read.wholeFile = wholeFile
+        return read
+    }
+}
+
+extension FileRef {
+    init(_ file: Humata_V1_FileRef) {
+        self.init(repository: file.repository, path: file.path)
+    }
+
+    var proto: Humata_V1_FileRef {
+        var file = Humata_V1_FileRef()
+        file.repository = repository
+        file.path = path
+        return file
+    }
+}
+
+extension ChangeAction {
+    var proto: Humata_V1_ChangeAction {
+        switch self {
+        case .stage: .stage
+        case .unstage: .unstage
+        case .revert: .revert
+        }
+    }
+}
+
+extension RepositoryChanges {
+    init(_ changes: Humata_V1_RepositoryChanges) {
+        self.init(name: changes.name, patch: changes.patch, files: changes.files.map(FileDiff.init))
+    }
+}
+
+extension FileDiff {
+    init(_ file: Humata_V1_FileDiff) {
+        self.init(
+            path: file.path,
+            oldPath: file.oldPath.isEmpty ? nil : file.oldPath,
+            status: FileStatus(file.status),
+            binary: file.binary,
+            blob: file.blob,
+            hunks: file.hunks.map(Hunk.init),
+            viewed: file.viewed
+        )
+    }
+}
+
+extension FileStatus {
+    init(_ status: Humata_V1_FileStatus) {
+        self =
+            switch status {
+            case .added: .added
+            case .deleted: .deleted
+            case .renamed: .renamed
+            case .unchanged: .unchanged
+            case .modified, .UNRECOGNIZED: .modified
+            }
+    }
+}
+
+extension Hunk {
+    init(_ hunk: Humata_V1_Hunk) {
+        self.init(
+            oldStart: Int(hunk.oldStart),
+            oldCount: Int(hunk.oldCount),
+            newStart: Int(hunk.newStart),
+            newCount: Int(hunk.newCount),
+            header: hunk.header,
+            lines: hunk.lines.map(DiffLine.init)
+        )
+    }
+}
+
+extension DiffLine {
+    init(_ line: Humata_V1_DiffLine) {
+        let kind: Kind =
+            switch line.kind {
+            case .added: .added
+            case .removed: .removed
+            case .context, .UNRECOGNIZED: .context
+            }
+        self.init(
+            kind: kind,
+            old: line.old == 0 ? nil : Int(line.old),
+            new: line.new == 0 ? nil : Int(line.new),
+            text: line.text
+        )
+    }
+}
+
+extension ReviewThread {
+    init(_ thread: Humata_V1_ReviewThread) {
+        self.init(
+            id: thread.id,
+            file: FileRef(thread.file),
+            startLine: Int(thread.startLine),
+            endLine: Int(thread.endLine),
+            outdated: thread.outdated,
+            code: thread.code,
+            quote: thread.quote,
+            resolved: thread.resolved,
+            comments: thread.comments.map(ReviewComment.init)
+        )
+    }
+
+    init(saved response: Humata_V1_Response.OneOf_Kind) throws {
+        guard case .threadSaved(let saved) = response else {
+            throw DaemonError.unexpected("something other than the saved thread")
+        }
+        self.init(saved.thread)
+    }
+}
+
+extension ReviewComment {
+    init(_ comment: Humata_V1_ReviewComment) {
+        self.init(
+            id: comment.id,
+            author: comment.author == .agent ? .agent : .you,
+            text: comment.text,
+            sent: comment.sent,
+            time: date(comment.timeUnixMs),
+            turn: comment.turn == 0 ? nil : Int(comment.turn)
+        )
     }
 }

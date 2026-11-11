@@ -18,6 +18,8 @@ use crate::hosts::{self, HostConfig, Hosts, Remote, Ssh};
 use crate::store::Store;
 use humata_agent::Repository;
 
+mod review;
+
 /// Answers clients: sessions on this Mac go to the local host, others to the
 /// host they run on. Projects, and where each session is, are the daemon's.
 pub struct Daemon {
@@ -699,7 +701,49 @@ impl Daemon {
                 }
                 host
             }
-            Request::ReadChanges(read) => self.host_of(&read.session_id).await?,
+            Request::ReadChanges(read) => {
+                let host = self.host_of(&read.session_id).await?;
+                return self.read_changes(&host, std::mem::take(read)).await;
+            }
+            Request::EditChanges(edit) => self.host_of(&edit.session_id).await?,
+            Request::MarkViewed(mark) => {
+                self.mark_viewed(mark)?;
+                return Ok(Reply::Response(Response::FileViewed(pb::FileViewed {})));
+            }
+            Request::CreateThread(create) => {
+                let thread = self.create_thread(std::mem::take(create)).await?;
+                return Ok(Reply::Response(Response::ThreadSaved(pb::ThreadSaved {
+                    thread: Some(thread),
+                })));
+            }
+            Request::ReplyToThread(reply) => {
+                let thread = self.reply_to_thread(reply).await?;
+                return Ok(Reply::Response(Response::ThreadSaved(pb::ThreadSaved {
+                    thread: Some(thread),
+                })));
+            }
+            Request::ResolveThread(resolve) => {
+                let thread = self.resolve_thread(resolve).await?;
+                return Ok(Reply::Response(Response::ThreadSaved(pb::ThreadSaved {
+                    thread: Some(thread),
+                })));
+            }
+            Request::DeleteComment(delete) => {
+                self.delete_comment(delete)?;
+                return Ok(Reply::Response(Response::CommentDeleted(
+                    pb::CommentDeleted {},
+                )));
+            }
+            Request::ListThreads(list) => {
+                let threads = self.threads(&list.session_id).await?;
+                return Ok(Reply::Response(Response::Threads(pb::Threads { threads })));
+            }
+            Request::SendReview(send) => {
+                let comments = self.send_review(&send.session_id).await?;
+                return Ok(Reply::Response(Response::ReviewSent(pb::ReviewSent {
+                    comments,
+                })));
+            }
         };
         let mut reply = self.forward(&host, request).await?;
         if let Reply::Response(

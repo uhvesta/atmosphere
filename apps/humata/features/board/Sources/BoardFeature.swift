@@ -265,8 +265,8 @@ package struct ItemFeature {
                     for session in sessions {
                         // A session whose copy is gone, or whose host is away,
                         // just shows no count.
-                        guard let changes = try? await daemon.changes(session) else { continue }
-                        await send(.changesRead(session, files: changes.map(\.files).reduce(0, +)))
+                        guard let changes = try? await daemon.changes(session, ChangesQuery()) else { continue }
+                        await send(.changesRead(session, files: changes.map(\.files.count).reduce(0, +)))
                     }
                 }
 
@@ -353,13 +353,6 @@ package struct ItemFeature {
 }
 
 extension ItemFeature.Destination.State: Equatable {}
-
-extension RepositoryChanges {
-    /// How many files its patch touches.
-    var files: Int {
-        patch.split(separator: "\n").filter { $0.hasPrefix("+++ ") }.count
-    }
-}
 
 /// A new task, or a subtask of one: its title, spec and priority.
 @Reducer

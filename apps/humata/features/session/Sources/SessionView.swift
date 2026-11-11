@@ -2,6 +2,7 @@ import ChatKit
 import ChatUI
 import ComposableArchitecture
 import HumataDaemonClient
+import HumataReview
 import InferenceKit
 import SwiftUI
 
@@ -20,7 +21,11 @@ package struct SessionView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            chat
+            if store.tab == .review {
+                ReviewView(store: store.scope(state: \.review, action: \.review))
+            } else {
+                chat
+            }
             if store.disconnected {
                 ChatNotice(
                     "Lost the connection to Humata's daemon.", systemImage: "bolt.horizontal.circle",
@@ -42,7 +47,7 @@ package struct SessionView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .padding()
-            } else {
+            } else if store.tab == .chat {
                 composer
                     .padding([.horizontal, .bottom])
             }
@@ -61,6 +66,16 @@ package struct SessionView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Spacer()
+            Picker("View", selection: Binding(get: { store.tab }, set: { store.send(.tabPicked($0)) })) {
+                Text("Chat").tag(SessionFeature.Tab.chat)
+                Text(store.review.pending > 0 ? "Review (\(store.review.pending))" : "Review")
+                    .tag(SessionFeature.Tab.review)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .help("The chat, or the session's changes to review")
             Spacer()
             if let usage = store.usage {
                 Text(Self.describe(usage))

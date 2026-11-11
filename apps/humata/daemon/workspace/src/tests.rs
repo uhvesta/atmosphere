@@ -132,18 +132,38 @@ async fn changes_are_everything_since_the_copy_was_made_new_files_included() {
         .snapshot("s", 0, &checkouts)
         .await
         .expect("snapshotted");
+    let checkpoints = [base];
     let unchanged = workspaces
-        .changes("s", repositories, &base, &[], &checkouts)
+        .changes(
+            "s",
+            repositories,
+            &checkpoints,
+            &checkouts,
+            &Query::default(),
+        )
         .await
         .expect("compared");
     assert_eq!(unchanged[0].patch, "");
 
     std::fs::write(checkouts[0].path.join("NEW.md"), "added\n").expect("wrote");
     let changes = workspaces
-        .changes("s", repositories, &base, &[], &checkouts)
+        .changes(
+            "s",
+            repositories,
+            &checkpoints,
+            &checkouts,
+            &Query::default(),
+        )
         .await
         .expect("compared");
     assert!(changes[0].patch.contains("+added"), "{changes:?}");
+    let [file] = changes[0].files.as_slice() else {
+        panic!("{changes:?}")
+    };
+    assert_eq!(
+        (file.path.as_str(), file.status),
+        ("NEW.md", FileStatus::Added)
+    );
 }
 
 #[tokio::test]
@@ -165,7 +185,13 @@ async fn removing_a_copy_keeps_its_snapshots() {
     workspaces.remove(&checkouts).await.expect("removed");
     assert!(!checkouts[0].path.exists());
     let changes = workspaces
-        .changes("s", repositories, &snapshot, &snapshot, &[])
+        .changes(
+            "s",
+            repositories,
+            &[snapshot.clone(), snapshot.clone()],
+            &[],
+            &Query::default(),
+        )
         .await
         .expect("compared");
     assert!(changes[0].patch.contains("+kept"), "{changes:?}");
@@ -274,3 +300,5 @@ async fn a_folder_without_git_or_without_commits_is_refused() {
         "{result:?}"
     );
 }
+
+mod review;

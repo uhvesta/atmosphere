@@ -1,0 +1,49 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# A session's changes as a code review: ranges, files by repository, diffs
+# with context, whole files and rendered Markdown, threads of comments sent
+# to the agent as one review, staging and reverting. A TCA reducer with a
+# SwiftUI view. Needs Xcode: build with `--config=xcode`.
+swift_library(
+    name = "review",
+    package_name = "humata",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "HumataReview",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/humata/app:__subpackages__",
+        "//apps/humata/features:__subpackages__",
+    ],
+    deps = [
+        "//apps/humata/clients/daemon",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# TestStore tests, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "humata",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":review",
+        "//apps/humata/clients/daemon",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

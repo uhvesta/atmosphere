@@ -16,7 +16,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::error::AgentError;
-use humata_workspace::{Changes, Snapshot, WorkspaceError, Workspaces};
+use humata_workspace::{Changes, Edit, Query, Snapshot, WorkspaceError, Workspaces};
 
 use crate::event::{
     ApprovalMode, Event, EventKind, ForkOptions, Parent, PermissionKind, SendMode, SessionId,
@@ -674,26 +674,36 @@ impl<R: Runner> Agent for LocalAgent<R> {
         Ok(session.lock().record.clone())
     }
 
-    async fn changes(&self, id: &SessionId) -> Result<Vec<Changes>, AgentError> {
+    async fn changes(&self, id: &SessionId, query: &Query) -> Result<Vec<Changes>, AgentError> {
         let session = self.session(id)?;
         let record = session.lock().record.clone();
         if record.repositories.is_empty() {
             return Ok(Vec::new());
         }
-        let history = session.log.events();
-        let base = history
+        let checkpoints: Vec<Vec<Snapshot>> = session
+            .log
+            .events()
             .iter()
-            .find_map(|event| event.kind.snapshots())
+            .filter_map(|event| event.kind.snapshots())
             .map(<[Snapshot]>::to_vec)
-            .unwrap_or_default();
+            .collect();
         self.workspaces(id)?
             .changes(
                 id.as_str(),
                 &record.repositories,
-                &base,
-                &last_checkpoint(&history),
+                &checkpoints,
                 &record.checkouts,
+                query,
             )
+            .await
+            .map_err(workspace_failed(id))
+    }
+
+    async fn edit_changes(&self, id: &SessionId, edit: &Edit) -> Result<(), AgentError> {
+        let session = self.session(id)?;
+        let checkouts = session.lock().record.checkouts.clone();
+        self.workspaces(id)?
+            .edit(&checkouts, edit)
             .await
             .map_err(workspace_failed(id))
     }

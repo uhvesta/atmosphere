@@ -589,6 +589,7 @@ async fn an_archived_session_is_put_away_and_refuses_messages() {
     let changes = client
         .call(pb::request::Kind::ReadChanges(pb::ReadChanges {
             session_id: session.id.clone(),
+            ..Default::default()
         }))
         .await;
     let Ok(pb::response::Kind::Changes(changes)) = changes else {

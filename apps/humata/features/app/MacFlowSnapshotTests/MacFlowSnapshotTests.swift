@@ -3,6 +3,7 @@ import FlowKit
 import HumataAppFeature
 import HumataDaemonClient
 import HumataProjects
+import HumataReview
 import HumataSession
 import SwiftUI
 import XCTest
@@ -107,6 +108,80 @@ final class MacFlowSnapshotTests: XCTestCase {
         XCTAssertEqual(daemon.files(of: fork.id), ["/notes.md": "notes", "/readme.md": "readme"])
         XCTAssertEqual(daemon.files(of: session.id), ["/notes.md": "notes", "/changelog.md": "changelog"])
         await flow.step("went its own way")
+        flow.finish()
+    }
+
+    /// A session's changes reviewed: a comment on a changed line is sent as
+    /// a review, the agent answers in the thread and edits the line, and its
+    /// fix is shown. A Markdown file reads rendered, commented on by block.
+    func testAReview() async throws {
+        let notes = "# Sum\n\nAdds two numbers, `a` and `b`.\n\nCall it from the command line.\n"
+        let daemon = InMemoryDaemon { text in
+            if text.contains("[thread 1]") {
+                return [
+                    .write(
+                        path: "sum.py",
+                        contents: "def total(a, b):\n    \"\"\"Adds a and b.\"\"\"\n    return a + b\n"),
+                    .say("[thread 1]\nRenamed it to `total` and said what it does."),
+                ]
+            }
+            return [
+                .write(path: "sum.py", contents: "def add(a, b):\n    \"\"\"Adds a and b.\"\"\"\n    return a + b\n"),
+                .write(path: "README.md", contents: notes),
+                .say("Wrote sum.py and its README."),
+            ]
+        }
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "Sum", approvalMode: .allowEverything, projectID: project.id))
+        try await daemon.client.send(session.id, "Write a sum function", .enqueue)
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("review", AppView(store: store))
+        let sum = FileRef(repository: "code", path: "sum.py")
+
+        try await until { store.sidebar.sessions.count == 1 && store.daemon == .running }
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { store.session != nil }
+        store.send(.session(.presented(.tabPicked(.review))))
+        try await until { store.session?.review.files.count == 2 }
+        store.send(.session(.presented(.review(.fileSelected(sum)))))
+        await flow.step("changes")
+
+        store.send(.session(.presented(.review(.lineTapped(1, extending: false)))))
+        store.send(
+            .session(.presented(.review(.binding(.set(\.comment, "Call it `total`; `add` reads like a verb."))))))
+        await flow.step("commenting")
+
+        store.send(.session(.presented(.review(.commentSaved))))
+        try await until { store.session?.review.pending == 1 }
+        await flow.step("commented")
+
+        store.send(.session(.presented(.review(.sendTapped))))
+        try await until { store.session?.review.threads.first?.comments.count == 2 }
+        await flow.step("answered")
+
+        let thread = try XCTUnwrap(store.session?.review.threads.first)
+        store.send(.session(.presented(.review(.showFixTapped(thread.id)))))
+        try await until { store.session?.review.range == .turn(2) && store.session?.review.loading == false }
+        await flow.step("fix")
+
+        store.send(.session(.presented(.review(.rangePicked(.session)))))
+        try await until { store.session?.review.loading == false }
+        store.send(.session(.presented(.review(.fileSelected(FileRef(repository: "code", path: "README.md"))))))
+        store.send(.session(.presented(.review(.renderedToggled))))
+        try await until { store.session?.review.whole?.path == "README.md" }
+        store.send(
+            .session(
+                .presented(.review(.blockTapped(startLine: 3, endLine: 3, quote: "Adds two numbers, `a` and `b`.")))))
+        store.send(.session(.presented(.review(.binding(.set(\.comment, "Say what it returns too."))))))
+        await flow.step("markdown")
         flow.finish()
     }
 

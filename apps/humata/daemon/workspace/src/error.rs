@@ -47,4 +47,30 @@ pub enum WorkspaceError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error(
+        "the session doesn't work in a repository named {name:?}. Read its changes to see the names of its repositories"
+    )]
+    UnknownRepository { name: String },
+
+    #[error(
+        "the session's copy of {repository} was put away when it was archived, so there is nothing to stage, unstage or compare there. Unarchive the session to make its copy again"
+    )]
+    NoCopy { repository: String },
+
+    #[error("the session has no turn {turn}: its turns are numbered from 1 to {turns}")]
+    UnknownTurn { turn: usize, turns: usize },
+
+    #[error(
+        "there's no branch or commit {branch:?} in {repository} to compare the session's copy with. Check its name with `git branch --all` there"
+    )]
+    UnknownBranch { branch: String, repository: String },
+
+    #[error(
+        "that change to {path} isn't there any more; the file changed since it was read. Read the changes again and pick the change from them"
+    )]
+    ChangeGone { path: String },
+
+    #[error("{repository} has no file {path} at the end of these changes")]
+    NoSuchFile { path: String, repository: String },
 }

@@ -27,8 +27,23 @@ package struct DaemonClient: Sendable {
         @Sendable (_ session: String, _ before: String?, _ name: String?, _ chatOnly: Bool) async throws -> Session
     /// Renames, archives or unarchives, or marks the session as the keeper.
     package var update: @Sendable (_ session: String, _ update: SessionUpdate) async throws -> Session
-    /// What the session changed in each repository since it began.
-    package var changes: @Sendable (_ session: String) async throws -> [RepositoryChanges]
+    /// What the session changed in each repository over the query's range.
+    package var changes: @Sendable (_ session: String, _ query: ChangesQuery) async throws -> [RepositoryChanges]
+    /// Stages, unstages or reverts a file or hunk in the session's copy.
+    package var editChanges: @Sendable (_ session: String, _ edit: ChangeEdit) async throws -> Void
+    /// Marks a file viewed with the contents `blob` names, or not viewed.
+    package var markViewed:
+        @Sendable (_ session: String, _ file: FileRef, _ blob: String, _ viewed: Bool) async throws -> Void
+    package var createThread: @Sendable (_ session: String, _ thread: NewThread) async throws -> ReviewThread
+    /// Adds a comment, sent with the next review.
+    package var replyToThread: @Sendable (_ thread: String, _ text: String) async throws -> ReviewThread
+    package var resolveThread: @Sendable (_ thread: String, _ resolved: Bool) async throws -> ReviewThread
+    /// Deletes a comment not sent yet; a thread left without comments goes too.
+    package var deleteComment: @Sendable (_ comment: String) async throws -> Void
+    /// The session's threads, where their lines are now, with the agent's replies.
+    package var threads: @Sendable (_ session: String) async throws -> [ReviewThread]
+    /// Sends every comment not sent yet as one message; returns how many.
+    package var sendReview: @Sendable (_ session: String) async throws -> Int
     /// The project's board, its items' statuses as shown: tasks by
     /// priority, then by when they were added, each followed by its subtasks.
     package var items: @Sendable (_ project: String) async throws -> [Item]

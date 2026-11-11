@@ -89,6 +89,15 @@ message Request {
     ConfigureHost configure_host = 27;
     ReadHostStatus read_host_status = 28;
     CloneRepositories clone_repositories = 29;
+    EditChanges edit_changes = 30;
+    // Review threads are the daemon's; a host refuses these.
+    MarkViewed mark_viewed = 31;
+    CreateThread create_thread = 32;
+    ReplyToThread reply_to_thread = 33;
+    ResolveThread resolve_thread = 34;
+    DeleteComment delete_comment = 35;
+    ListThreads list_threads = 36;
+    SendReview send_review = 37;
   }
 }
 
@@ -124,6 +133,12 @@ message Response {
     HostConfigured host_configured = 27;
     HostStatus host_status = 28;
     RepositoriesCloned repositories_cloned = 29;
+    ChangesEdited changes_edited = 30;
+    FileViewed file_viewed = 31;
+    ThreadSaved thread_saved = 32;
+    CommentDeleted comment_deleted = 33;
+    Threads threads = 34;
+    ReviewSent review_sent = 35;
   }
 }
 
@@ -150,6 +165,9 @@ enum ErrorCode {
   ERROR_CODE_UNKNOWN_ITEM = 12;
   ERROR_CODE_UNKNOWN_BOARD_CHANGE = 13;
   ERROR_CODE_UNKNOWN_HOST = 14;
+  ERROR_CODE_UNKNOWN_THREAD = 15;
+  // What the request worked on changed since it was read; read it again.
+  ERROR_CODE_CHANGED = 16;
 }
 
 enum Backend {
@@ -314,9 +332,42 @@ message SessionUpdated {
   SessionInfo session = 1;
 }
 
-// What a session changed in each repository since its copy was made.
+// What a session changed in each repository over a range of its history.
 message ReadChanges {
   string session_id = 1;
+  // Unset: everything since its copy was made.
+  ChangeRange range = 2;
+  // Unchanged lines shown around each change; unset is 3.
+  optional uint32 context = 3;
+  // Only this file. With whole_file, every line of it, with its lines even
+  // when it didn't change.
+  FileRef file = 4;
+  bool whole_file = 5;
+}
+
+enum ChangeRangeKind {
+  // Everything since the session's copy was made.
+  CHANGE_RANGE_KIND_SESSION = 0;
+  // In the copy, not staged yet.
+  CHANGE_RANGE_KIND_UNSTAGED = 1;
+  // Staged in the copy, not committed yet.
+  CHANGE_RANGE_KIND_STAGED = 2;
+  // From where the copy's work and `branch` meet to the files in the copy.
+  CHANGE_RANGE_KIND_BRANCH = 3;
+  // What turn `turn` changed; the session's first turn is 1.
+  CHANGE_RANGE_KIND_TURN = 4;
+}
+
+message ChangeRange {
+  ChangeRangeKind kind = 1;
+  string branch = 2;
+  uint32 turn = 3;
+}
+
+// A file, by its repository's name in the session and its path there.
+message FileRef {
+  string repository = 1;
+  string path = 2;
 }
 
 message Changes {
@@ -327,6 +378,178 @@ message RepositoryChanges {
   string name = 1;
   // A unified diff; empty if nothing changed.
   string patch = 2;
+  repeated FileDiff files = 3;
+}
+
+enum FileStatus {
+  FILE_STATUS_MODIFIED = 0;
+  FILE_STATUS_ADDED = 1;
+  FILE_STATUS_DELETED = 2;
+  FILE_STATUS_RENAMED = 3;
+  // Read as a whole file, and the same at both ends of the range.
+  FILE_STATUS_UNCHANGED = 4;
+}
+
+message FileDiff {
+  string path = 1;
+  // Where a renamed file was.
+  string old_path = 2;
+  FileStatus status = 3;
+  bool binary = 4;
+  // Names its contents at the end of the range; empty for a deleted file.
+  string blob = 5;
+  repeated Hunk hunks = 6;
+  // Marked viewed, with these contents. The daemon fills it in.
+  bool viewed = 7;
+}
+
+message Hunk {
+  uint32 old_start = 1;
+  uint32 old_count = 2;
+  uint32 new_start = 3;
+  uint32 new_count = 4;
+  // What git shows after the hunk's range, such as the function it's in.
+  string header = 5;
+  repeated DiffLine lines = 6;
+}
+
+enum DiffLineKind {
+  DIFF_LINE_KIND_CONTEXT = 0;
+  DIFF_LINE_KIND_ADDED = 1;
+  DIFF_LINE_KIND_REMOVED = 2;
+}
+
+message DiffLine {
+  DiffLineKind kind = 1;
+  // Its number before the change; 0 for an added line.
+  uint32 old = 2;
+  // Its number after; 0 for a removed line.
+  uint32 new = 3;
+  string text = 4;
+}
+
+enum ChangeAction {
+  CHANGE_ACTION_UNSPECIFIED = 0;
+  // Stages the copy's unstaged changes.
+  CHANGE_ACTION_STAGE = 1;
+  // Unstages staged changes, keeping them in the copy.
+  CHANGE_ACTION_UNSTAGE = 2;
+  // Throws away the copy's unstaged changes; a file git didn't know is
+  // removed.
+  CHANGE_ACTION_REVERT = 3;
+}
+
+// A hunk, by where it starts in the diff the action works on, read with
+// `context` lines: the unstaged changes to stage or revert, the staged ones
+// to unstage.
+message HunkAt {
+  uint32 old_start = 1;
+  uint32 new_start = 2;
+  uint32 context = 3;
+}
+
+// Stages, unstages or reverts a file or, given `hunk`, one of its hunks.
+message EditChanges {
+  string session_id = 1;
+  FileRef file = 2;
+  ChangeAction action = 3;
+  HunkAt hunk = 4;
+}
+
+message ChangesEdited {}
+
+// Marks a file viewed with the contents `blob` names, or not viewed. It
+// stays viewed until its contents change.
+message MarkViewed {
+  string session_id = 1;
+  FileRef file = 2;
+  string blob = 3;
+  bool viewed = 4;
+}
+
+message FileViewed {}
+
+// Comments on lines `start_line` to `end_line` of a file as it is in the
+// session's copy; in rendered Markdown, on `quote`, the text picked there.
+message CreateThread {
+  string session_id = 1;
+  FileRef file = 2;
+  uint32 start_line = 3;
+  uint32 end_line = 4;
+  string quote = 5;
+  string text = 6;
+}
+
+// Adds a comment to the thread, sent with the next review.
+message ReplyToThread {
+  string thread_id = 1;
+  string text = 2;
+}
+
+message ResolveThread {
+  string thread_id = 1;
+  bool resolved = 2;
+}
+
+message ThreadSaved {
+  ReviewThread thread = 1;
+}
+
+// Deletes a comment not sent yet; a thread left without comments goes too.
+message DeleteComment {
+  string comment_id = 1;
+}
+
+message CommentDeleted {}
+
+message ListThreads {
+  string session_id = 1;
+}
+
+message Threads {
+  repeated ReviewThread threads = 1;
+}
+
+// Sends every comment not sent yet, on threads not resolved, to the agent
+// as one message, asking it to answer each thread.
+message SendReview {
+  string session_id = 1;
+}
+
+message ReviewSent {
+  uint32 comments = 1;
+}
+
+message ReviewThread {
+  string id = 1;
+  string session_id = 2;
+  FileRef file = 3;
+  // Where it is in the file as it is now, from 1.
+  uint32 start_line = 4;
+  uint32 end_line = 5;
+  // The lines it was left on have changed, so it's where they were.
+  bool outdated = 6;
+  // The lines as they were when it was left.
+  repeated string code = 7;
+  string quote = 8;
+  bool resolved = 9;
+  repeated ReviewComment comments = 10;
+}
+
+enum CommentAuthor {
+  COMMENT_AUTHOR_YOU = 0;
+  COMMENT_AUTHOR_AGENT = 1;
+}
+
+message ReviewComment {
+  string id = 1;
+  CommentAuthor author = 2;
+  string text = 3;
+  // Sent to the agent; only a comment not sent yet can be deleted.
+  bool sent = 4;
+  int64 time_unix_ms = 5;
+  // The agent's: the turn it answered in, whose changes are its fix.
+  uint32 turn = 6;
 }
 
 message SessionForked {

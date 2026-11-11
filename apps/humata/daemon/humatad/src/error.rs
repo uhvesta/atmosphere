@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use humata_agent::AgentError;
+use humata_agent::{AgentError, WorkspaceError};
 use humata_wire::{ClientError, WireError, pb};
 
 /// What the host role can fail at, answered to the daemon as an error.
@@ -28,6 +28,18 @@ pub enum HostError {
         "only the daemon keeps projects and the board; send this to humatad's daemon on your Mac, not a host"
     )]
     NotForHosts,
+
+    #[error("say which file: give its repository's name in the session and its path there")]
+    NoFile,
+
+    #[error("say what to do with the changes: stage, unstage or revert them")]
+    NoAction,
+
+    #[error("say which branch to compare the session's copy with")]
+    NoBranch,
+
+    #[error("say which turn's changes to show; the session's first turn is 1")]
+    NoTurn,
 
     #[error(
         "couldn't record the setup script's run in {path}; check that the folder is writable and the disk isn't full. The script will run again next time"
@@ -77,12 +89,29 @@ impl HostError {
             Self::Agent(AgentError::Archived { .. }) => pb::ErrorCode::Archived,
             Self::Agent(AgentError::ArchiveWhileWorking { .. }) => pb::ErrorCode::Busy,
             Self::Agent(AgentError::NoWorkspaces { .. }) => pb::ErrorCode::InvalidRequest,
+            Self::Agent(AgentError::Workspace {
+                source: WorkspaceError::ChangeGone { .. },
+                ..
+            }) => pb::ErrorCode::Changed,
+            Self::Agent(AgentError::Workspace {
+                source:
+                    WorkspaceError::UnknownRepository { .. }
+                    | WorkspaceError::NoCopy { .. }
+                    | WorkspaceError::UnknownTurn { .. }
+                    | WorkspaceError::UnknownBranch { .. }
+                    | WorkspaceError::NoSuchFile { .. },
+                ..
+            }) => pb::ErrorCode::InvalidRequest,
             Self::Agent(AgentError::Workspace { .. }) => pb::ErrorCode::BackendFailed,
             Self::Agent(_) => pb::ErrorCode::StorageFailed,
             Self::UnknownBackend { .. } => pb::ErrorCode::UnknownBackend,
-            Self::NoWorkingDirectory | Self::NotForHosts | Self::NotAName { .. } => {
-                pb::ErrorCode::InvalidRequest
-            }
+            Self::NoWorkingDirectory
+            | Self::NotForHosts
+            | Self::NotAName { .. }
+            | Self::NoFile
+            | Self::NoAction
+            | Self::NoBranch
+            | Self::NoTurn => pb::ErrorCode::InvalidRequest,
             Self::FellBehind { .. } | Self::RunGit { .. } | Self::Clone { .. } => {
                 pb::ErrorCode::BackendFailed
             }
@@ -152,6 +181,19 @@ pub enum StoreError {
     #[error("a task or subtask needs a title; give it one")]
     NoTitle,
 
+    #[error("there is no review thread {id:?}; list the session's threads to find its id")]
+    UnknownThread { id: String },
+
+    #[error(
+        "there is no comment of yours {id:?} to delete; list the session's threads to find its id. The agent's replies can't be deleted"
+    )]
+    UnknownComment { id: String },
+
+    #[error(
+        "comment {id:?} was sent to the agent with a review, so it can't be taken back; reply to the thread instead"
+    )]
+    CommentSent { id: String },
+
     #[error(
         "{title:?} is a subtask, and a subtask can't have its own; add this under its task instead"
     )]
@@ -185,6 +227,34 @@ pub enum StoreError {
 pub enum DaemonError {
     #[error(transparent)]
     Store(#[from] StoreError),
+
+    /// The session's host said no; its message says why.
+    #[error("{message}")]
+    Refused {
+        code: pb::ErrorCode,
+        message: String,
+    },
+
+    #[error("say which file: give its repository's name in the session and its path there")]
+    NoFile,
+
+    #[error("a comment needs some text; write what you want the agent to know or change")]
+    NoComment,
+
+    #[error(
+        "lines {start} to {end} aren't in {path}, which has {lines} lines now; read the file again and pick lines in it"
+    )]
+    LinesOutside {
+        path: String,
+        start: u32,
+        end: u32,
+        lines: usize,
+    },
+
+    #[error(
+        "there is nothing to send: every comment was sent already or is on a resolved thread. Comment on a line, or reply to a thread, first"
+    )]
+    NothingToReview,
 
     #[error(
         "a project needs at least one repository; give the folder of each its sessions work in"
@@ -314,8 +384,11 @@ impl DaemonError {
             Self::Store(StoreError::UnknownItem { .. }) => pb::ErrorCode::UnknownItem,
             Self::Store(StoreError::UnknownSession { .. }) => pb::ErrorCode::UnknownSession,
             Self::Store(StoreError::UnknownChange { .. }) => pb::ErrorCode::UnknownBoardChange,
+            Self::Store(StoreError::UnknownThread { .. }) => pb::ErrorCode::UnknownThread,
             Self::Store(
                 StoreError::NoTitle
+                | StoreError::UnknownComment { .. }
+                | StoreError::CommentSent { .. }
                 | StoreError::NestedSubtask { .. }
                 | StoreError::ParentInAnotherProject { .. }
                 | StoreError::ItemInAnotherProject { .. }
@@ -323,6 +396,10 @@ impl DaemonError {
                 | StoreError::ParentRemoved { .. },
             ) => pb::ErrorCode::InvalidRequest,
             Self::Store(_) => pb::ErrorCode::StorageFailed,
+            Self::Refused { code, .. } => *code,
+            Self::NoFile | Self::NoComment | Self::LinesOutside { .. } | Self::NothingToReview => {
+                pb::ErrorCode::InvalidRequest
+            }
             Self::UnknownHost { .. } => pb::ErrorCode::UnknownHost,
             Self::SaveHosts { .. } => pb::ErrorCode::StorageFailed,
             Self::HostExists { .. }

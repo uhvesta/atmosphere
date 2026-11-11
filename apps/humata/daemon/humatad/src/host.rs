@@ -7,9 +7,10 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use humata_agent::{
-    Agent, AgentError, ApprovalMode, CopilotOptions, CopilotProvider, CopilotRunner, Env, Event,
-    EventId, ForkOptions, LocalAgent, LocalModelConfig, LocalModelRunner, Script, ScriptedRunner,
-    SendMode, SessionId, SessionRecord, SessionUpdate, StartOptions, Watch, Workspaces,
+    Agent, AgentError, ApprovalMode, CopilotOptions, CopilotProvider, CopilotRunner, Edit, Env,
+    Event, EventId, ForkOptions, LocalAgent, LocalModelConfig, LocalModelRunner, Query, Script,
+    ScriptedRunner, SendMode, SessionId, SessionRecord, SessionUpdate, StartOptions, Watch,
+    Workspaces,
 };
 use humata_wire::{Reply, Service, ServiceFuture, describe, error, pb};
 use tokio::sync::{broadcast, mpsc};
@@ -54,7 +55,12 @@ trait Backend: Send + Sync {
         session: &'a SessionId,
         update: SessionUpdate,
     ) -> BoxFuture<'a, SessionRecord>;
-    fn changes<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Vec<humata_agent::Changes>>;
+    fn changes<'a>(
+        &'a self,
+        session: &'a SessionId,
+        query: &'a Query,
+    ) -> BoxFuture<'a, Vec<humata_agent::Changes>>;
+    fn edit_changes<'a>(&'a self, session: &'a SessionId, edit: &'a Edit) -> BoxFuture<'a, ()>;
 }
 
 impl<A> Backend for A
@@ -134,8 +140,23 @@ where
                 .map_err(Into::into)
         })
     }
-    fn changes<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Vec<humata_agent::Changes>> {
-        Box::pin(async move { Agent::changes(self, session).await.map_err(Into::into) })
+    fn changes<'a>(
+        &'a self,
+        session: &'a SessionId,
+        query: &'a Query,
+    ) -> BoxFuture<'a, Vec<humata_agent::Changes>> {
+        Box::pin(async move {
+            Agent::changes(self, session, query)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn edit_changes<'a>(&'a self, session: &'a SessionId, edit: &'a Edit) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            Agent::edit_changes(self, session, edit)
+                .await
+                .map_err(Into::into)
+        })
     }
 }
 
@@ -312,7 +333,14 @@ impl Host {
             | Request::RemoveHost(_)
             | Request::CheckHost(_)
             | Request::InstallHost(_)
-            | Request::ListSshHosts(_) => {
+            | Request::ListSshHosts(_)
+            | Request::MarkViewed(_)
+            | Request::CreateThread(_)
+            | Request::ReplyToThread(_)
+            | Request::ResolveThread(_)
+            | Request::DeleteComment(_)
+            | Request::ListThreads(_)
+            | Request::SendReview(_) => {
                 return Err(HostError::NotForHosts);
             }
             Request::ConfigureHost(configure) => Response::HostConfigured(pb::HostConfigured {
@@ -362,17 +390,21 @@ impl Host {
                 })
             }
             Request::ReadChanges(read) => {
-                let session = SessionId::new(read.session_id);
-                let changes = self.owner(&session)?.1.changes(&session).await?;
+                let session = SessionId::new(read.session_id.clone());
+                let query = convert::query(&read)?;
+                let changes = self.owner(&session)?.1.changes(&session, &query).await?;
                 Response::Changes(pb::Changes {
-                    repositories: changes
-                        .into_iter()
-                        .map(|changes| pb::RepositoryChanges {
-                            name: changes.name,
-                            patch: changes.patch,
-                        })
-                        .collect(),
+                    repositories: changes.iter().map(convert::changes).collect(),
                 })
+            }
+            Request::EditChanges(edit) => {
+                let session = SessionId::new(edit.session_id.clone());
+                let edit = convert::edit(&edit)?;
+                self.owner(&session)?
+                    .1
+                    .edit_changes(&session, &edit)
+                    .await?;
+                Response::ChangesEdited(pb::ChangesEdited {})
             }
             Request::ReadHistory(read) => {
                 let session = SessionId::new(read.session_id);

@@ -3,11 +3,13 @@
 use std::path::PathBuf;
 
 use humata_agent::{
-    ApprovalMode, Event, EventKind, PermissionKind, Repository, SendMode, SessionRecord,
+    Action, ApprovalMode, Changes, Edit, Event, EventKind, FileDiff, FileRef, FileStatus, Hunk,
+    HunkAt, Line, LineKind, PermissionKind, Query, Range, Repository, SendMode, SessionRecord,
     SessionState,
 };
 use humata_wire::pb;
 
+use crate::error::HostError;
 use crate::store::Project;
 
 pub fn event(event: &Event) -> pb::SessionEvent {
@@ -199,5 +201,112 @@ pub fn project(project: Project) -> pb::Project {
         repositories: project.repositories.iter().map(wire_repository).collect(),
         instructions: project.instructions,
         created_unix_ms: project.created_unix_ms,
+    }
+}
+
+/// What a ReadChanges asks for.
+pub fn query(read: &pb::ReadChanges) -> Result<Query, HostError> {
+    let range = match &read.range {
+        None => Range::Session,
+        Some(range) => match range.kind() {
+            pb::ChangeRangeKind::Session => Range::Session,
+            pb::ChangeRangeKind::Unstaged => Range::Unstaged,
+            pb::ChangeRangeKind::Staged => Range::Staged,
+            pb::ChangeRangeKind::Branch if range.branch.is_empty() => {
+                return Err(HostError::NoBranch);
+            }
+            pb::ChangeRangeKind::Branch => Range::Branch(range.branch.clone()),
+            pb::ChangeRangeKind::Turn if range.turn == 0 => return Err(HostError::NoTurn),
+            pb::ChangeRangeKind::Turn => Range::Turn(range.turn as usize),
+        },
+    };
+    let only = read.file.as_ref().map(file_ref);
+    if read.whole_file && only.is_none() {
+        return Err(HostError::NoFile);
+    }
+    Ok(Query {
+        range,
+        context: read.context.unwrap_or(3),
+        only,
+        whole_file: read.whole_file,
+    })
+}
+
+fn file_ref(file: &pb::FileRef) -> FileRef {
+    FileRef {
+        repository: file.repository.clone(),
+        path: file.path.clone(),
+    }
+}
+
+/// An EditChanges as the edit it asks for.
+pub fn edit(edit: &pb::EditChanges) -> Result<Edit, HostError> {
+    let file = edit.file.as_ref().map(file_ref).ok_or(HostError::NoFile)?;
+    let action = match edit.action() {
+        pb::ChangeAction::Unspecified => return Err(HostError::NoAction),
+        pb::ChangeAction::Stage => Action::Stage,
+        pb::ChangeAction::Unstage => Action::Unstage,
+        pb::ChangeAction::Revert => Action::Revert,
+    };
+    Ok(Edit {
+        file,
+        action,
+        hunk: edit.hunk.as_ref().map(|hunk| HunkAt {
+            old_start: hunk.old_start,
+            new_start: hunk.new_start,
+            context: hunk.context,
+        }),
+    })
+}
+
+pub fn changes(changes: &Changes) -> pb::RepositoryChanges {
+    pb::RepositoryChanges {
+        name: changes.name.clone(),
+        patch: changes.patch.clone(),
+        files: changes.files.iter().map(file_diff).collect(),
+    }
+}
+
+fn file_diff(file: &FileDiff) -> pb::FileDiff {
+    let status = match file.status {
+        FileStatus::Modified => pb::FileStatus::Modified,
+        FileStatus::Added => pb::FileStatus::Added,
+        FileStatus::Deleted => pb::FileStatus::Deleted,
+        FileStatus::Renamed => pb::FileStatus::Renamed,
+        FileStatus::Unchanged => pb::FileStatus::Unchanged,
+    };
+    pb::FileDiff {
+        path: file.path.clone(),
+        old_path: file.old_path.clone().unwrap_or_default(),
+        status: status.into(),
+        binary: file.binary,
+        blob: file.blob.clone().unwrap_or_default(),
+        hunks: file.hunks.iter().map(hunk).collect(),
+        viewed: false,
+    }
+}
+
+fn hunk(hunk: &Hunk) -> pb::Hunk {
+    pb::Hunk {
+        old_start: hunk.old_start,
+        old_count: hunk.old_count,
+        new_start: hunk.new_start,
+        new_count: hunk.new_count,
+        header: hunk.header.clone(),
+        lines: hunk.lines.iter().map(line).collect(),
+    }
+}
+
+fn line(line: &Line) -> pb::DiffLine {
+    let kind = match line.kind {
+        LineKind::Context => pb::DiffLineKind::Context,
+        LineKind::Added => pb::DiffLineKind::Added,
+        LineKind::Removed => pb::DiffLineKind::Removed,
+    };
+    pb::DiffLine {
+        kind: kind.into(),
+        old: line.old.unwrap_or(0),
+        new: line.new.unwrap_or(0),
+        text: line.text.clone(),
     }
 }

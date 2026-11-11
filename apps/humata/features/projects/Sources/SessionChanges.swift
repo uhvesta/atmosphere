@@ -117,8 +117,8 @@ package struct CompareFeature {
                 state.failure = nil
                 let (left, right) = (state.left.id, state.right.id)
                 return .run { send in
-                    async let leftChanges = daemon.changes(left)
-                    async let rightChanges = daemon.changes(right)
+                    async let leftChanges = daemon.changes(left, ChangesQuery())
+                    async let rightChanges = daemon.changes(right, ChangesQuery())
                     await send(.loaded(left: try await leftChanges, right: try await rightChanges))
                 } catch: { error, send in
                     await send(.loadFailed(error.localizedDescription))

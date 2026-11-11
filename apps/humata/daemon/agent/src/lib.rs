@@ -30,7 +30,10 @@ pub use event::{
     ApprovalMode, Event, EventId, EventKind, ForkOptions, Parent, PermissionKind, SendMode,
     SessionId, SessionRecord, SessionState, SessionUpdate, StartOptions,
 };
-pub use humata_workspace::{Changes, Checkout, Repository, Snapshot, Workspaces};
+pub use humata_workspace::{
+    Action, Changes, Checkout, Edit, FileDiff, FileRef, FileStatus, Hunk, HunkAt, Line, LineKind,
+    Query, Range, Repository, Snapshot, WorkspaceError, Workspaces,
+};
 pub use local_model::{DEFAULT_BASE_URL, LocalModelConfig, LocalModelError, LocalModelRunner};
 pub use runtime::{LocalAgent, Runner, Turn};
 pub use scripted::{Rule, Script, ScriptedError, ScriptedRunner, Step};
@@ -107,10 +110,18 @@ pub trait Agent: Send + Sync {
         update: SessionUpdate,
     ) -> impl Future<Output = Result<SessionRecord, Self::Error>> + Send;
 
-    /// What the session changed in each of its repositories since its copy
-    /// was made; none for a session without repositories.
+    /// What the session changed in each of its repositories over `query`'s
+    /// range; none for a session without repositories.
     fn changes(
         &self,
         session: &SessionId,
+        query: &Query,
     ) -> impl Future<Output = Result<Vec<Changes>, Self::Error>> + Send;
+
+    /// Stages, unstages or reverts a file or a hunk in the session's copy.
+    fn edit_changes(
+        &self,
+        session: &SessionId,
+        edit: &Edit,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }

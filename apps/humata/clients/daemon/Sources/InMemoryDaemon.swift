@@ -21,21 +21,22 @@ package final class InMemoryDaemon: Sendable {
     }
 
     /// A turn stopped at a permission request, with the steps after it.
-    private struct Paused {
+    struct Paused {
         var request: String
         var step: Step
         var callID: String
         var rest: [Step]
     }
 
-    /// A file the agent wrote, and the event that says it did.
-    private struct Write: Hashable {
+    /// A file written in a copy, and the event it came after: the agent's
+    /// writes and the person's reverts. Nil contents removed it.
+    struct Write: Hashable {
         var event: String
         var path: String
-        var contents: String
+        var contents: String?
     }
 
-    private struct State {
+    struct State {
         var projects: [Project] = []
         var sessions: [Session] = []
         var histories: [String: [SessionEvent]] = [:]
@@ -66,11 +67,19 @@ package final class InMemoryDaemon: Sendable {
         var nextSession = 1
         var nextEvent = 1
         var nextRequest = 1
+        /// Each copy's staged files, by copy; nil contents staged a removal.
+        var staged: [String: [String: String?]] = [:]
+        /// The contents each session marked viewed, by file.
+        var viewed: [String: [FileRef: String]] = [:]
+        var threads: [Thread] = []
+        var reviews: [Review] = []
+        var nextThread = 1
+        var nextComment = 1
     }
 
-    private let state = LockIsolated(State())
+    let state = LockIsolated(State())
     private let script: @Sendable (String) -> [Step]
-    private let start: Date
+    let start: Date
     private let sshConfigHosts: [String]
 
     /// `sshHosts` are the hosts its ~/.ssh/config names.
@@ -104,7 +113,7 @@ package final class InMemoryDaemon: Sendable {
     package func files(of session: String) -> [String: String] {
         state.withValue { state in
             let writes = state.copyOf[session].flatMap { state.copies[$0] } ?? []
-            return Dictionary(writes.map { ($0.path, $0.contents) }, uniquingKeysWith: { _, last in last })
+            return Self.contents(after: writes)
         }
     }
 
@@ -136,10 +145,15 @@ package final class InMemoryDaemon: Sendable {
                 try self.fork(session, before: before, name: name, chatOnly: chatOnly)
             },
             update: { session, update in try self.update(session, update) },
-            changes: { session in
-                try self.known(session)
-                return self.changes(session)
-            },
+            changes: { session, query in try self.changes(session, query) },
+            editChanges: { session, edit in try self.editChanges(session, edit) },
+            markViewed: { session, file, blob, viewed in try self.markViewed(session, file, blob, viewed) },
+            createThread: { session, thread in try self.createThread(session, thread) },
+            replyToThread: { thread, text in try self.replyToThread(thread, text) },
+            resolveThread: { thread, resolved in try self.resolveThread(thread, resolved) },
+            deleteComment: { comment in try self.deleteComment(comment) },
+            threads: { session in try self.threads(session) },
+            sendReview: { session in try self.sendReview(session) },
             items: { project in try self.items(project) },
             createItem: { project, fields in try self.createItem(project, fields) },
             updateItem: { item, update in try self.updateItem(item, update) },
@@ -168,11 +182,11 @@ package final class InMemoryDaemon: Sendable {
         )
     }
 
-    private static func unknown(_ session: String) -> DaemonError {
+    static func unknown(_ session: String) -> DaemonError {
         .refused(.unknownSession, message: "There is no session \(session); list sessions to find its id.")
     }
 
-    private func known(_ session: String) throws {
+    func known(_ session: String) throws {
         guard state.value.histories[session] != nil else { throw Self.unknown(session) }
     }
 
@@ -257,7 +271,7 @@ package final class InMemoryDaemon: Sendable {
         return "\(folder)/\(repository.name)"
     }
 
-    private func send(_ session: String, _ text: String, _ mode: SendMode) throws {
+    func send(_ session: String, _ text: String, _ mode: SendMode) throws {
         try known(session)
         if state.value.sessions.first(where: { $0.id == session })?.archived == true {
             throw DaemonError.refused(
@@ -401,7 +415,7 @@ package final class InMemoryDaemon: Sendable {
     /// Adds an event to the session's history and tells its watchers.
     /// Returns its id.
     @discardableResult
-    private func append(_ kind: SessionEvent.Kind, to session: String) -> String {
+    func append(_ kind: SessionEvent.Kind, to session: String) -> String {
         let (event, watchers) = state.withValue { state in
             let event = SessionEvent(id: "e\(state.nextEvent)", time: start + Double(state.nextEvent), kind: kind)
             state.nextEvent += 1
@@ -495,16 +509,6 @@ package final class InMemoryDaemon: Sendable {
             }
             return state.sessions[index]
         }
-    }
-
-    /// The session's files as one patch, each new since it began.
-    private func changes(_ session: String) -> [RepositoryChanges] {
-        let patch = files(of: session).sorted { $0.key < $1.key }.map { path, contents in
-            let lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map { "+\($0)" }
-            return (["--- /dev/null", "+++ b\(path)", "@@ -0,0 +1,\(lines.count) @@"] + lines)
-                .joined(separator: "\n")
-        }
-        return [RepositoryChanges(name: "code", patch: patch.joined(separator: "\n"))]
     }
 
     private func watch(_ session: String) -> AsyncThrowingStream<SessionEvent, any Error> {

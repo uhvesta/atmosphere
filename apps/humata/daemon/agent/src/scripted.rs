@@ -970,7 +970,11 @@ mod tests {
                 matches!(refused, Err(AgentError::Archived { .. })),
                 "{refused:?}"
             );
-            let changes = fixture.agent.changes(&id).await.expect("compared");
+            let changes = fixture
+                .agent
+                .changes(&id, &crate::Query::default())
+                .await
+                .expect("compared");
             assert!(changes[0].patch.contains("+one"), "{changes:?}");
 
             let unarchive = SessionUpdate {
@@ -984,7 +988,11 @@ mod tests {
                 .expect("unarchived");
             let events = fixture.turn(&id, "two", 2).await;
             assert_eq!(failed(&events), Vec::<String>::new());
-            let changes = fixture.agent.changes(&id).await.expect("compared");
+            let changes = fixture
+                .agent
+                .changes(&id, &crate::Query::default())
+                .await
+                .expect("compared");
             assert!(changes[0].patch.contains("+two"), "{changes:?}");
         }
 

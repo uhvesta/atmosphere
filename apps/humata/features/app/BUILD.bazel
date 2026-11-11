@@ -62,6 +62,7 @@ flow_snapshot_test(
         "//apps/humata/features/board",
         "//apps/humata/features/hosts",
         "//apps/humata/features/projects",
+        "//apps/humata/features/review",
         "//apps/humata/features/session",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
