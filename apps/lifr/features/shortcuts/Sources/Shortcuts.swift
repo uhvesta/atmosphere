@@ -1,4 +1,5 @@
 import Foundation
+import LifrAPI
 import LifrCore
 import LifrStoreClient
 import LifrTaskList
@@ -111,6 +112,17 @@ package struct Shortcuts: Sendable {
         return ids.compactMap { workspace.tasks[$0] }.filter { $0.deletedAt == nil }.map { item($0, in: workspace) }
     }
 
+    /// A prompt to plan `goal` with another chat assistant: it names the
+    /// Avenues, Projects and labels but no task. Refused while the lock is
+    /// on, since it would leave the app.
+    package func planPrompt(goal: String) async throws -> String {
+        guard !locksApp() else { throw ShortcutError.locked }
+        let workspace = try await store.load()
+        let now = now()
+        return PlanPrompt.make(
+            goal: goal, workspace: workspace, today: CalendarDate(now, in: timeZone), timeZone: timeZone)
+    }
+
     /// Every Avenue, in the sidebar's order.
     package func avenues() async throws -> [Item] {
         let workspace = try await store.load()
@@ -196,7 +208,7 @@ package enum ShortcutError: Error, Hashable, Sendable, CustomStringConvertible {
     package var description: String {
         switch self {
         case .locked:
-            String(localized: "Lifr is locked. Open Lifr and unlock it to change tasks.")
+            String(localized: "Lifr is locked. Open Lifr and unlock it, then run the shortcut again.")
         case .noComment:
             String(localized: "The comment is empty. Say or type what to add.")
         case .noTask:

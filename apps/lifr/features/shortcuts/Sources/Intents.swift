@@ -273,6 +273,33 @@ package struct OpenTaskIntent: AppIntent {
     }
 }
 
+/// Makes a prompt to plan something with another chat assistant, for a
+/// shortcut to copy or pass on. Paste the assistant's reply into a Lifr chat
+/// with /paste to review the plan.
+package struct PlanPromptIntent: AppIntent {
+    package static let title: LocalizedStringResource = "Make a Plan Prompt"
+    package static let description = IntentDescription(
+        """
+        Makes a prompt asking another chat assistant for a plan Lifr can read. It names your Avenues, \
+        Projects and labels, but no tasks. Paste the reply into a Lifr chat with /paste.
+        """)
+
+    @Parameter(title: "Goal", requestValueDialog: "What do you want to plan?")
+    package var goal: String
+
+    @AppDependency private var shortcuts: Shortcuts
+
+    package init() {}
+
+    package static var parameterSummary: some ParameterSummary {
+        Summary("Make a prompt to plan \(\.$goal)")
+    }
+
+    package func perform() async throws -> some IntentResult & ReturnsValue<String> {
+        .result(value: try await shortcuts.planPrompt(goal: goal))
+    }
+}
+
 /// What Siri offers without setting anything up.
 package struct LifrAppShortcuts: AppShortcutsProvider {
     package static var appShortcuts: [AppShortcut] {

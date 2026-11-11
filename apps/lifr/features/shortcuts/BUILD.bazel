@@ -16,6 +16,7 @@ swift_library(
         "//apps/lifr/features/root:__pkg__",
     ],
     deps = [
+        "//apps/lifr/api",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "//apps/lifr/features/task_list",

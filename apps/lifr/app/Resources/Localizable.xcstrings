@@ -1610,6 +1610,9 @@
     "Go to the latest message" : {
 
     },
+    "Goal" : {
+
+    },
     "Going on from an earlier point. What came after is kept." : {
 
     },
@@ -1874,6 +1877,9 @@
     "Lifr is locked. Open Lifr and unlock it to finish tasks." : {
 
     },
+    "Lifr is locked. Open Lifr and unlock it, then run the shortcut again." : {
+
+    },
     "Lifr isn't allowed to use the microphone. Turn on Lifr in System Settings › Privacy & Security › Microphone, then record again." : {
 
     },
@@ -1943,7 +1949,13 @@
     "Make Sub Task Of…" : {
 
     },
+    "Make a Plan Prompt" : {
+
+    },
     "Make changes" : {
+
+    },
+    "Makes a prompt asking another chat assistant for a plan Lifr can read. It names your Avenues, Projects and labels, but no tasks. Paste the reply into a Lifr chat with /paste." : {
 
     },
     "Manage Skills…" : {
@@ -3528,6 +3540,9 @@
 
     },
     "What did you expect" : {
+
+    },
+    "What do you want to plan?" : {
 
     },
     "What happened" : {

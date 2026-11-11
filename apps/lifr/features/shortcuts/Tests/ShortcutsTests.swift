@@ -42,6 +42,26 @@ final class ShortcutsTests: XCTestCase {
         XCTAssertEqual(reminders.map(\.taskID), [run.id])
     }
 
+    func testThePlanPromptNamesTheGoalAndAvenuesButNoTask() async throws {
+        let (shortcuts, _) = shortcuts()
+
+        let prompt = try await shortcuts.planPrompt(goal: "Run a half marathon")
+
+        XCTAssertTrue(prompt.contains("Run a half marathon"))
+        XCTAssertTrue(prompt.contains("HEALTH"))
+        XCTAssertFalse(prompt.contains("Long run"))
+    }
+
+    func testThePlanPromptIsRefusedWhileLocked() async throws {
+        let (shortcuts, _) = shortcuts(locked: true)
+        do {
+            _ = try await shortcuts.planPrompt(goal: "Run a half marathon")
+            XCTFail("Making a plan prompt while locked should be refused")
+        } catch let error as ShortcutError {
+            XCTAssertEqual(error, .locked)
+        }
+    }
+
     func testDoneIsRefusedWhileLocked() async throws {
         let (shortcuts, store) = shortcuts(locked: true)
         let loaded = try await store.load()
