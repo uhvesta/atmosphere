@@ -8,7 +8,7 @@
   [StaticText] "" value: "Replies come from the model on this device. Pick another from the model button by the field."
   [TextField] ""
   [Button] "Add" help: "Add photos or files" id: plus
-  [Button] "Model" value: "Qwen3.5 2B, Long" help: "Model, Thinking and Context Window"
+  [Button] "Model" value: "Qwen3.5 2B, Long Thinking" help: "Model, Thinking and Context Window"
   [Button] "Dictate" help: "Dictate, on this device" id: mic
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""

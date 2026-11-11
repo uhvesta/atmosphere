@@ -10,7 +10,7 @@
   [Button] "Photo" help: "Opens it"
   [TextField] ""
   [MenuButton] "Add" help: "Add photos or files" id: plus
-  [Button] "Model" value: "Gemma 4 E4B, On" help: "Model, Thinking and Context Window"
+  [Button] "Model" value: "Gemma 4 E4B, Thinking" help: "Model, Thinking and Context Window"
   [Button] "Dictate" help: "Dictate, on this device" id: mic
   [Button] "Send" id: arrow.up
   [Toolbar] ""

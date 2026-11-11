@@ -37,7 +37,7 @@
   [Button] "Remove Photo"
   [TextField] ""
   [MenuButton] "Add" help: "Add photos or files" id: plus
-  [Button] "Model" value: "Gemma 4 E4B, On" help: "Model, Thinking and Context Window"
+  [Button] "Model" value: "Gemma 4 E4B, Thinking" help: "Model, Thinking and Context Window"
   [Button] "Stop Recording" help: "Stop and attach the clip" id: stop.fill
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""

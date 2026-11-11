@@ -37,7 +37,7 @@
   [StaticText] "" value: "This chat's model can't listen to recordings. Pick one that can, such as Gemma 4 E4B, with the Model button by the message box, or send the message again without the recording."
   [TextField] ""
   [MenuButton] "Add" help: "Add photos or files" id: plus
-  [Button] "Model" value: "Gemma 4 E4B, On" help: "Model, Thinking and Context Window"
+  [Button] "Model" value: "Gemma 4 E4B, Thinking" help: "Model, Thinking and Context Window"
   [Button] "Record" help: "Record a clip for the model to hear" id: mic
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""

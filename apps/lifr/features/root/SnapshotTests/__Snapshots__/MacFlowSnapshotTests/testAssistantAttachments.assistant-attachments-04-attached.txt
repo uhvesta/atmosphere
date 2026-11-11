@@ -37,7 +37,7 @@
   [Button] "Remove Photo"
   [TextField] "" value: "What plant is this?"
   [MenuButton] "Add" help: "Add photos or files" id: plus
-  [Button] "Model" value: "Gemma 4 E4B, On" help: "Model, Thinking and Context Window"
+  [Button] "Model" value: "Gemma 4 E4B, Thinking" help: "Model, Thinking and Context Window"
   [Button] "Record" help: "Record a clip for the model to hear" id: mic
   [Button] "Send" id: arrow.up
   [Toolbar] ""

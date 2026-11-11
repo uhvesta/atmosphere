@@ -77,7 +77,7 @@
     [TextField] "Title" value: "Buy new clothes"
     [Button] "Remove Buy new clothes"
     [PopUpButton] "Priority" value: "No priority"
-    [TextField] "Due"
+    [TextField] "Due" value: "None"
     [TextField] "Avenue or KEY/Project" value: "HOME"
     [StaticText] "" value: "Home"
     [TextField] "Sub task" value: "Shoes"
