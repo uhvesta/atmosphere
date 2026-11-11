@@ -16,6 +16,7 @@ swift_library(
         "//apps/khodr/clients/daemon",
         "//apps/khodr/clients/daemon_live",
         "//apps/khodr/features/app",
+        "//apps/khodr/features/projects",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

@@ -14,5 +14,6 @@ path = "src/lib.rs"
 
 [dependencies]
 prost.workspace = true
+ruzstd.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

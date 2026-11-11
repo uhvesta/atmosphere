@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use khodr_agent::{
-    Agent, CopilotOptions, CopilotProvider, CopilotRunner, Event, EventKind, ForkOptions,
+    Agent, CopilotOptions, CopilotProvider, CopilotRunner, Env, Event, EventKind, ForkOptions,
     LocalAgent, SendMode, SessionId, SessionState, StartOptions,
 };
 use serde_json::{Value, json};
@@ -28,6 +28,9 @@ enum Reply {
 #[derive(Default)]
 struct Model {
     replies: Mutex<Vec<Reply>>,
+    /// Replies by the last user message's text, ahead of `replies`; for
+    /// tests that mustn't depend on how many requests the CLI makes.
+    answers: Vec<(&'static str, Reply)>,
     /// The messages of each chat request, as JSON.
     requests: Mutex<Vec<String>>,
 }
@@ -50,6 +53,23 @@ impl Model {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(messages);
+        let last_user = body["messages"]
+            .as_array()
+            .and_then(|messages| {
+                messages
+                    .iter()
+                    .rev()
+                    .find(|message| message["role"] == "user")
+            })
+            .map(|message| message["content"].to_string())
+            .unwrap_or_default();
+        if let Some((_, reply)) = self
+            .answers
+            .iter()
+            .find(|(text, _)| last_user.contains(text))
+        {
+            return reply.clone();
+        }
         let mut replies = self.replies.lock().unwrap_or_else(PoisonError::into_inner);
         if replies.is_empty() {
             Reply::Text("Done.")
@@ -165,10 +185,15 @@ struct Setup {
 
 impl Setup {
     async fn new(replies: Vec<Reply>) -> Self {
-        let model = Arc::new(Model {
+        Self::with_model(Model {
             replies: Mutex::new(replies),
             ..Model::default()
-        });
+        })
+        .await
+    }
+
+    async fn with_model(model: Model) -> Self {
+        let model = Arc::new(model);
         let base_url = serve(model.clone()).await;
         let dir = || tempfile::tempdir().expect("a temporary folder");
         Self {
@@ -189,7 +214,7 @@ impl Setup {
         let runner = CopilotRunner::new(CopilotOptions {
             program: std::path::absolute(program).expect("an absolute path"),
             state: self.state.path().join("copilot"),
-            env: vec![
+            env: Env::new([
                 ("HOME".into(), home.clone()),
                 ("COPILOT_HOME".into(), format!("{home}/copilot")),
                 // Offline, it makes no network calls but the model's, and
@@ -197,7 +222,7 @@ impl Setup {
                 ("COPILOT_OFFLINE".into(), "true".into()),
                 ("COPILOT_PROVIDER_BASE_URL".into(), self.base_url.clone()),
                 ("COPILOT_MODEL".into(), "fake".into()),
-            ],
+            ]),
             provider: Some(CopilotProvider {
                 kind: "openai".into(),
                 base_url: self.base_url.clone(),
@@ -440,7 +465,11 @@ async fn sessions_carry_on_after_a_restart() {
 
 #[tokio::test]
 async fn an_aborted_turn_stops_and_the_next_one_runs() {
-    let setup = Setup::new(vec![Reply::Hang, Reply::Text("Back.")]).await;
+    let setup = Setup::with_model(Model {
+        answers: vec![("apricot", Reply::Hang), ("banana", Reply::Text("Back."))],
+        ..Model::default()
+    })
+    .await;
     let agent = setup.agent();
     let session = agent.start(setup.start_options()).await.expect("start");
 
@@ -468,5 +497,5 @@ async fn an_aborted_turn_stops_and_the_next_one_runs() {
             .iter()
             .any(|event| matches!(event.kind, EventKind::TurnEnded { aborted: true }))
     );
-    assert_eq!(replies(&events), vec!["Back."]);
+    assert_eq!(replies(&events), vec!["Back."], "{events:#?}");
 }

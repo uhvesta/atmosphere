@@ -217,12 +217,13 @@ async fn a_call_fails_when_the_other_side_goes_away() {
             protocol_version: pb::ProtocolVersion::Current.into(),
             role: pb::Role::Host.into(),
             program_version: "test".to_owned(),
+            accepts_zstd: false,
         };
         let envelope = pb::Envelope {
             id: 0,
             body: Some(pb::envelope::Body::Hello(hello)),
         };
-        let _ = crate::write(&mut their_writer, &envelope).await;
+        let _ = crate::write(&mut their_writer, &envelope, false).await;
         let _ = crate::read(&mut their_reader).await;
         // Reads the request, then hangs up without answering.
         let _ = crate::read(&mut their_reader).await;
@@ -256,12 +257,13 @@ async fn a_peer_on_another_protocol_version_is_refused() {
                 protocol_version: 99,
                 role: pb::Role::Host.into(),
                 program_version: "9.0".to_owned(),
+                accepts_zstd: false,
             };
             let envelope = pb::Envelope {
                 id: 0,
                 body: Some(pb::envelope::Body::Hello(hello)),
             };
-            let _ = crate::write(&mut theirs, &envelope).await;
+            let _ = crate::write(&mut theirs, &envelope, false).await;
             tokio::time::sleep(Duration::from_secs(5)).await;
         })
     })
@@ -281,7 +283,7 @@ async fn a_peer_that_does_not_say_hello_is_refused() {
                 id: 1,
                 body: Some(pb::envelope::Body::Cancel(pb::Cancel {})),
             };
-            let _ = crate::write(&mut theirs, &envelope).await;
+            let _ = crate::write(&mut theirs, &envelope, false).await;
             tokio::time::sleep(Duration::from_secs(5)).await;
         })
     })
@@ -338,5 +340,89 @@ async fn a_frame_cut_off_in_the_middle_is_truncated() {
     assert!(
         matches!(result, Err(WireError::Truncated { length: 10, .. })),
         "{result:?}"
+    );
+}
+
+fn long_history() -> pb::Envelope {
+    let text = "the agent ran the tests and they passed. ".repeat(500);
+    pb::Envelope {
+        id: 7,
+        body: Some(pb::envelope::Body::Request(pb::Request {
+            kind: Some(pb::request::Kind::SendMessage(pb::SendMessage {
+                session_id: "known".to_owned(),
+                text,
+                ..Default::default()
+            })),
+        })),
+    }
+}
+
+#[tokio::test]
+async fn a_long_envelope_for_a_peer_that_reads_zstd_is_smaller_and_reads_back_the_same() {
+    let envelope = long_history();
+    let mut plain = Vec::new();
+    crate::write(&mut plain, &envelope, false)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let mut compressed = Vec::new();
+    crate::write(&mut compressed, &envelope, true)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    assert!(compressed.len() * 4 < plain.len());
+    let read = crate::read(&mut compressed.as_slice())
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(read, Some(envelope));
+}
+
+#[tokio::test]
+async fn a_corrupt_compressed_envelope_is_refused() {
+    let mut compressed = Vec::new();
+    crate::write(&mut compressed, &long_history(), true)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let middle = compressed.len() / 2;
+    compressed.truncate(middle);
+    let body = (middle - 4) as u32 | (1 << 31);
+    compressed[..4].copy_from_slice(&body.to_be_bytes());
+
+    let read = crate::read(&mut compressed.as_slice()).await;
+    assert!(
+        matches!(
+            read,
+            Err(WireError::Decompress { .. } | WireError::Decode { .. })
+        ),
+        "{read:?}"
+    );
+}
+
+#[tokio::test]
+async fn peers_that_read_zstd_send_long_messages_compressed_and_still_answer() {
+    let (client, server) = duplex(1 << 20);
+    let (server_read, server_write) = split(server);
+    tokio::spawn(serve(
+        server_read,
+        server_write,
+        pb::Role::Host,
+        "test",
+        Arc::new(Echo::default()),
+    ));
+    let (client_read, client_write) = split(client);
+    let client = Client::connect(client_read, client_write, pb::Role::Daemon, "test")
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    assert!(client.peer().accepts_zstd);
+    let Some(pb::envelope::Body::Request(pb::Request {
+        kind: Some(request),
+    })) = long_history().body
+    else {
+        panic!("not a request");
+    };
+    let answer = client.call(request).await;
+    assert!(
+        matches!(answer, Ok(pb::response::Kind::MessageSent(_))),
+        "{answer:?}"
     );
 }

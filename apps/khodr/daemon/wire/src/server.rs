@@ -46,10 +46,11 @@ where
     S: Service + ?Sized,
 {
     let peer = handshake(&mut reader, &mut writer, role, program_version).await?;
+    let compress = peer.accepts_zstd;
     let (outgoing, mut queue) = mpsc::channel::<pb::Envelope>(OUTGOING);
     let writing = tokio::spawn(async move {
         while let Some(envelope) = queue.recv().await {
-            frame::write(&mut writer, &envelope).await?;
+            frame::write(&mut writer, &envelope, compress).await?;
         }
         Ok::<_, WireError>(())
     });

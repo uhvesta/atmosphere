@@ -3,6 +3,7 @@ import Foundation
 import KhodrAppFeature
 import KhodrDaemonClient
 import KhodrDaemonLive
+import KhodrProjects
 import SwiftUI
 
 /// Khodr: a window for directing coding agents, over khodrd.
@@ -14,6 +15,7 @@ struct KhodrApp: App {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
         $0.daemon = .live(programVersion: version)
         $0.daemonService = .live(socket: DaemonClient.defaultSocket, programVersion: version)
+        $0.notifications = .live()
     }
 
     var body: some Scene {

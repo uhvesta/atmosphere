@@ -2,6 +2,7 @@ import ComposableArchitecture
 import FlowKit
 import KhodrAppFeature
 import KhodrDaemonClient
+import KhodrProjects
 import KhodrSession
 import SwiftUI
 import XCTest
@@ -34,6 +35,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         } withDependencies: {
             $0.daemon = daemon.client
             $0.daemonService = .previewValue
+            $0.notifications = .previewValue
             $0.continuousClock = TestClock()
         }
         let flow = FlowRecorder("edit", AppView(store: store))
@@ -81,6 +83,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         } withDependencies: {
             $0.daemon = daemon.client
             $0.daemonService = .previewValue
+            $0.notifications = .previewValue
             $0.continuousClock = TestClock()
         }
         let flow = FlowRecorder("fork", AppView(store: store))
@@ -134,6 +137,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         } withDependencies: {
             $0.daemon = daemon.client
             $0.daemonService = .previewValue
+            $0.notifications = .previewValue
             $0.continuousClock = TestClock()
         }
         let flow = FlowRecorder("board", AppView(store: store))
@@ -161,6 +165,63 @@ final class MacFlowSnapshotTests: XCTestCase {
         store.send(.sidebar(.selected(.inbox)))
         try await until { store.sidebar.selection == .inbox }
         await flow.step("inbox")
+        flow.finish()
+    }
+
+    /// Two hosts: one set up and working, one Khodr isn't installed on
+    /// yet; adding a third from the SSH config; and a session whose host
+    /// went offline.
+    func testHosts() async throws {
+        let daemon = InMemoryDaemon(sshHosts: ["build-box", "gpu", "mini"])
+        _ = try await daemon.client.addHost("build-box", "build-box")
+        _ = try await daemon.client.installHost("build-box")
+        _ = try await daemon.client.updateHost(
+            "build-box",
+            HostUpdate(
+                setEnv: ["GH_TOKEN": "secret", "CARGO_HOME": "/opt/cargo"],
+                setupScript: "sudo apt-get install -y ripgrep\ncurl -fsSL https://gh.io/copilot-install | bash\n"))
+        _ = try await daemon.client.addHost("gpu", "me@10.0.0.7")
+        let project = try await daemon.client.createProject("khodr", [Repository(path: "/code/khodr")], "")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .copilot, name: "Profile the build", host: "build-box", projectID: project.id))
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("hosts", AppView(store: store))
+
+        try await until { store.daemon == .running && store.sidebar.sessions.count == 1 }
+        store.send(.sidebar(.selected(.hosts)))
+        try await until {
+            if case .known(.reachable) = store.hosts?.health["build-box"],
+                case .known(.unreachable) = store.hosts?.health["gpu"]
+            {
+                return true
+            }
+            return false
+        }
+        await flow.step("hosts")
+
+        store.send(.hosts(.presented(.selected("gpu"))))
+        try await until { store.hosts?.selection == "gpu" }
+        await flow.step("not installed")
+
+        store.send(.hosts(.presented(.addTapped)))
+        try await until { store.hosts?.destination?.add?.sshHosts.isEmpty == false }
+        store.send(.hosts(.presented(.destination(.presented(.add(.sshHostPicked("mini")))))))
+        try await until { store.hosts?.destination?.add?.destination == "mini" }
+        await flow.step("add host")
+
+        store.send(.hosts(.presented(.destination(.dismiss))))
+        daemon.setOffline("build-box", true)
+        store.send(.sidebar(.selected(.session(session.id))))
+        store.send(.sidebar(.refresh))
+        try await until { store.session?.session.hostOffline == true }
+        await flow.step("offline session")
         flow.finish()
     }
 

@@ -13,7 +13,9 @@ rust_library(
     deps = [
         "//apps/khodr/daemon/agent",
         "//apps/khodr/daemon/wire",
+        "@crates//:prost",
         "@crates//:rusqlite",
+        "@crates//:ruzstd",
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:sha2",

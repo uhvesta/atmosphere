@@ -3,181 +3,250 @@
 //! stdin and stdout (in practice `ssh <host> khodrd host --stdio`).
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
-use std::process::Stdio;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, PoisonError, RwLock};
 
-use khodr_wire::{
-    Client, ClientError, Reply, Service, ServiceFuture, describe, error, pb, streams,
-};
-use serde::Deserialize;
-use tokio::io::AsyncReadExt;
-use tokio::process::{Child, Command};
+use khodr_wire::{ClientError, Reply, Service, ServiceFuture, describe, error, pb, streams};
 use tokio::sync::mpsc;
 
 use crate::board::{self, Item, ItemFields, ItemPatch, Priority, Status};
+use crate::convert;
+use crate::error::DaemonError;
 use crate::error::StoreError;
-use crate::error::{DaemonError, StartError};
 use crate::host::Host;
+use crate::hosts::{self, HostConfig, Hosts, Remote, Ssh};
 use crate::store::Store;
-use crate::{VERSION, convert};
 use khodr_agent::Repository;
-
-/// The hosts file: each host by name, and the command that reaches its
-/// `khodrd host --stdio`.
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Hosts {
-    #[serde(default)]
-    pub hosts: BTreeMap<String, HostConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HostConfig {
-    /// The program and its arguments, for example
-    /// `["ssh", "build", "khodrd", "host", "--stdio"]`.
-    pub command: Vec<String>,
-}
-
-impl Hosts {
-    /// The hosts in `path`; none if there is no such file.
-    pub fn load(path: &std::path::Path) -> Result<Self, StartError> {
-        match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|source| StartError::BadHosts {
-                path: path.to_owned(),
-                source,
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(source) => Err(StartError::ReadHosts {
-                path: path.to_owned(),
-                source,
-            }),
-        }
-    }
-}
-
-/// A host reached through a command, connected on first use and again after
-/// the connection drops.
-struct Remote {
-    name: String,
-    command: Vec<String>,
-    connection: tokio::sync::Mutex<Option<(Arc<Client>, Child)>>,
-}
-
-/// What the command printed on stderr, kept for the error if it fails.
-const STDERR_KEPT: usize = 4096;
-
-impl Remote {
-    async fn client(&self, hosts: &std::path::Path) -> Result<Arc<Client>, DaemonError> {
-        let mut connection = self.connection.lock().await;
-        if let Some((client, _)) = connection.as_ref()
-            && client.is_connected()
-        {
-            return Ok(client.clone());
-        }
-        *connection = None;
-        let Some((program, arguments)) = self.command.split_first() else {
-            return Err(DaemonError::NoCommand {
-                host: self.name.clone(),
-                hosts: hosts.to_owned(),
-            });
-        };
-        let mut child = Command::new(program)
-            .args(arguments)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|source| DaemonError::Spawn {
-                host: self.name.clone(),
-                program: program.clone(),
-                source,
-            })?;
-        let (Some(stdin), Some(stdout), Some(mut stderr)) =
-            (child.stdin.take(), child.stdout.take(), child.stderr.take())
-        else {
-            let source = std::io::Error::other("its stdin, stdout and stderr weren't connected");
-            return Err(DaemonError::Spawn {
-                host: self.name.clone(),
-                program: program.clone(),
-                source,
-            });
-        };
-        let said = Arc::new(Mutex::new(String::new()));
-        tokio::spawn({
-            let said = said.clone();
-            async move {
-                let mut buffer = [0_u8; 1024];
-                while let Ok(read) = stderr.read(&mut buffer).await
-                    && read > 0
-                {
-                    let mut said = said.lock().unwrap_or_else(PoisonError::into_inner);
-                    if said.len() < STDERR_KEPT {
-                        said.push_str(&String::from_utf8_lossy(&buffer[..read]));
-                    }
-                }
-            }
-        });
-        match Client::connect(stdout, stdin, pb::Role::Daemon, VERSION).await {
-            Ok(client) => {
-                let client = Arc::new(client);
-                *connection = Some((client.clone(), child));
-                Ok(client)
-            }
-            Err(source) => {
-                // Lets the command finish printing why it stopped.
-                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
-                let stderr = said.lock().unwrap_or_else(PoisonError::into_inner).clone();
-                Err(DaemonError::Connect {
-                    host: self.name.clone(),
-                    stderr,
-                    source,
-                })
-            }
-        }
-    }
-}
 
 /// Answers clients: sessions on this Mac go to the local host, others to the
 /// host they run on. Projects, and where each session is, are the daemon's.
 pub struct Daemon {
     local: Arc<Host>,
-    remotes: HashMap<String, Remote>,
+    remotes: RwLock<BTreeMap<String, Arc<Remote>>>,
+    /// Held while the hosts file is changed, so changes don't race.
+    editing: tokio::sync::Mutex<()>,
     hosts_file: PathBuf,
     store: Store,
+    /// This khodrd's build, which managed hosts are kept at.
+    build: String,
 }
 
 impl Daemon {
-    pub fn new(local: Host, store: Store, hosts: Hosts, hosts_file: PathBuf) -> Self {
+    pub fn new(
+        local: Host,
+        store: Store,
+        hosts: Hosts,
+        hosts_file: PathBuf,
+        build: String,
+    ) -> Self {
         let remotes = hosts
             .hosts
             .into_iter()
-            .map(|(name, config)| {
-                let remote = Remote {
-                    name: name.clone(),
-                    command: config.command,
-                    connection: tokio::sync::Mutex::new(None),
-                };
-                (name, remote)
-            })
+            .map(|(name, config)| (name.clone(), Arc::new(Remote::new(name, config))))
             .collect();
         Self {
             local: Arc::new(local),
-            remotes,
+            remotes: RwLock::new(remotes),
+            editing: tokio::sync::Mutex::new(()),
             hosts_file,
             store,
+            build,
         }
     }
 
-    fn remote(&self, host: &str) -> Result<&Remote, DaemonError> {
+    fn remote(&self, host: &str) -> Result<Arc<Remote>, DaemonError> {
         self.remotes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .get(host)
+            .cloned()
             .ok_or_else(|| DaemonError::UnknownHost {
                 host: host.to_owned(),
                 hosts: self.hosts_file.clone(),
             })
+    }
+
+    fn remote_names(&self) -> Vec<String> {
+        self.remotes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// The hosts as they are now, for the hosts file.
+    fn hosts(&self) -> Hosts {
+        let remotes = self.remotes.read().unwrap_or_else(PoisonError::into_inner);
+        Hosts {
+            hosts: remotes
+                .iter()
+                .map(|(name, remote)| (name.clone(), remote.config()))
+                .collect(),
+        }
+    }
+
+    fn add_host(&self, add: pb::AddHost) -> Result<pb::HostInfo, DaemonError> {
+        let name = add.name.trim().to_owned();
+        let named = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if !named {
+            return Err(DaemonError::BadHostName { name });
+        }
+        let destination = add.ssh_destination.trim().to_owned();
+        if destination.is_empty() {
+            return Err(DaemonError::NoDestination);
+        }
+        let folder = Some(add.folder.trim().trim_end_matches('/'))
+            .filter(|folder| !folder.is_empty())
+            .unwrap_or(hosts::DEFAULT_FOLDER)
+            .to_owned();
+        let config = HostConfig {
+            ssh: Some(Ssh {
+                destination,
+                config: convert::optional(add.ssh_config).map(PathBuf::from),
+                folder,
+            }),
+            ..HostConfig::default()
+        };
+        let mut hosts = self.hosts();
+        if hosts.hosts.contains_key(&name) {
+            return Err(DaemonError::HostExists { host: name });
+        }
+        hosts.hosts.insert(name.clone(), config.clone());
+        hosts.save(&self.hosts_file)?;
+        let info = config.info(&name);
+        self.remotes
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(name.clone(), Arc::new(Remote::new(name, config)));
+        Ok(info)
+    }
+
+    async fn update_host(&self, update: pb::UpdateHost) -> Result<pb::HostInfo, DaemonError> {
+        let remote = self.remote(&update.name)?;
+        let mut config = remote.config();
+        for var in update.set_env {
+            config.env.insert(var.name, var.value);
+        }
+        for name in update.unset_env {
+            config.env.remove(&name);
+        }
+        if let Some(script) = update.setup_script {
+            config.setup_script = script;
+        }
+        let mut hosts = self.hosts();
+        hosts.hosts.insert(update.name.clone(), config.clone());
+        hosts.save(&self.hosts_file)?;
+        let info = config.info(&update.name);
+        remote.reconfigure(config).await?;
+        Ok(info)
+    }
+
+    async fn remove_host(&self, name: &str) -> Result<(), DaemonError> {
+        let remote = self.remote(name)?;
+        let mut hosts = self.hosts();
+        hosts.hosts.remove(name);
+        hosts.save(&self.hosts_file)?;
+        self.remotes
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(name);
+        remote.disconnect().await;
+        self.store.forget_host(name)?;
+        Ok(())
+    }
+
+    fn managed(&self, name: &str) -> Result<(Arc<Remote>, Ssh), DaemonError> {
+        let remote = self.remote(name)?;
+        let ssh = remote.config().ssh.ok_or_else(|| DaemonError::NotManaged {
+            host: name.to_owned(),
+        })?;
+        Ok((remote, ssh))
+    }
+
+    async fn install_host(
+        &self,
+        install: pb::InstallHost,
+    ) -> Result<pb::HostInstalled, DaemonError> {
+        let (remote, ssh) = self.managed(&install.name)?;
+        remote
+            .install(&ssh, convert::optional(install.binary).map(PathBuf::from))
+            .await?;
+        remote.disconnect().await;
+        let client = remote.client(&self.hosts_file, &self.build).await?;
+        Ok(pb::HostInstalled {
+            program_version: client.peer().program_version.clone(),
+        })
+    }
+
+    async fn check_host(&self, name: &str) -> Result<pb::HostHealth, DaemonError> {
+        let remote = self.remote(name)?;
+        let status = match remote.client(&self.hosts_file, &self.build).await {
+            Ok(client) => {
+                remote
+                    .call(
+                        &client,
+                        pb::request::Kind::ReadHostStatus(pb::ReadHostStatus {}),
+                    )
+                    .await
+            }
+            Err(failure) => Err(failure),
+        };
+        Ok(match status {
+            Ok(pb::response::Kind::HostStatus(status)) => pb::HostHealth {
+                name: name.to_owned(),
+                reachable: true,
+                problem: String::new(),
+                status: Some(status),
+            },
+            Ok(_) => pb::HostHealth {
+                name: name.to_owned(),
+                reachable: true,
+                problem: "it answered with something else than its status; install this build of khodrd on it".to_owned(),
+                status: None,
+            },
+            Err(failure) => pb::HostHealth {
+                name: name.to_owned(),
+                reachable: false,
+                problem: describe(&failure),
+                status: None,
+            },
+        })
+    }
+
+    /// `project`'s repositories as cloned on `host`, cloning or updating
+    /// them there from each one's `origin`.
+    async fn clone_on(
+        &self,
+        host: &str,
+        project: &crate::store::Project,
+    ) -> Result<Vec<pb::Repository>, DaemonError> {
+        let mut repositories = Vec::new();
+        for repository in &project.repositories {
+            repositories.push(pb::RemoteRepository {
+                name: repository.name.clone(),
+                url: origin(host, &repository.path).await?,
+            });
+        }
+        let request = pb::request::Kind::CloneRepositories(pb::CloneRepositories {
+            folder: project.id.clone(),
+            repositories,
+        });
+        let remote = self.remote(host)?;
+        let client = remote.client(&self.hosts_file, &self.build).await?;
+        match remote.call(&client, request).await? {
+            pb::response::Kind::RepositoriesCloned(cloned) => Ok(cloned.repositories),
+            _ => Err(DaemonError::Host {
+                host: host.to_owned(),
+                source: ClientError::Unexpected {
+                    expected: "the repositories cloned",
+                    got: "another answer".to_owned(),
+                },
+            }),
+        }
     }
 
     /// Sends `request` to `host` ("" for this Mac).
@@ -185,7 +254,10 @@ impl Daemon {
         if host.is_empty() {
             return Ok(self.local.clone().handle(request).await);
         }
-        let client = self.remote(host)?.client(&self.hosts_file).await?;
+        let client = self
+            .remote(host)?
+            .client(&self.hosts_file, &self.build)
+            .await?;
         let failed = |source: ClientError| match source {
             ClientError::Refused { code, message } => Ok(Reply::Response(error(code, message))),
             source => Err(DaemonError::Host {
@@ -338,25 +410,61 @@ impl Daemon {
     }
 
     /// Every host's sessions, or only `project`'s if it isn't empty. A host
-    /// that can't be reached is left out, so one machine being off doesn't
-    /// hide the rest.
+    /// that can't be reached shows what it last had, marked offline, so one
+    /// machine being off doesn't hide the rest.
     async fn list(&self, project: &str) -> Result<pb::Sessions, DaemonError> {
         let mut all = Vec::new();
-        let hosts = std::iter::once("").chain(self.remotes.keys().map(String::as_str));
+        let hosts = std::iter::once(String::new()).chain(self.remote_names());
         for host in hosts {
             let request = pb::request::Kind::ListSessions(pb::ListSessions::default());
-            if let Ok(Reply::Response(pb::response::Kind::Sessions(sessions))) =
-                self.forward(host, request).await
-            {
-                for mut session in sessions.sessions {
-                    self.own(&mut session, host, None, None)?;
-                    if project.is_empty() || session.project_id == project {
-                        all.push(session);
+            let sessions = match self.forward(&host, request).await {
+                Ok(Reply::Response(pb::response::Kind::Sessions(sessions))) => {
+                    if !host.is_empty() {
+                        self.store.cache_sessions(&host, &sessions.sessions)?;
                     }
+                    sessions.sessions
+                }
+                _ if host.is_empty() => Vec::new(),
+                _ => {
+                    let mut cached = self.store.cached_sessions(&host)?;
+                    for session in &mut cached {
+                        session.host_offline = true;
+                    }
+                    cached
+                }
+            };
+            for mut session in sessions {
+                self.own(&mut session, &host, None, None)?;
+                if project.is_empty() || session.project_id == project {
+                    all.push(session);
                 }
             }
         }
         Ok(pb::Sessions { sessions: all })
+    }
+
+    /// `session`'s history from its host, kept for when it is offline, or as
+    /// last kept if it is.
+    async fn history(&self, host: &str, read: pb::ReadHistory) -> Result<Reply, DaemonError> {
+        let session = read.session_id.clone();
+        match self
+            .forward(host, pb::request::Kind::ReadHistory(read))
+            .await
+        {
+            Ok(Reply::Response(pb::response::Kind::History(history))) => {
+                if !host.is_empty() {
+                    self.store.cache_history(&session, &history)?;
+                }
+                Ok(Reply::Response(pb::response::Kind::History(history)))
+            }
+            Err(failure) if failure.code() == pb::ErrorCode::HostUnavailable => {
+                match self.store.cached_history(&session)? {
+                    Some(history) => Ok(Reply::Response(pb::response::Kind::History(history))),
+                    None => Err(failure),
+                }
+            }
+            other => other,
+        }
     }
 
     fn create_project(&self, create: pb::CreateProject) -> Result<pb::Project, DaemonError> {
@@ -398,7 +506,7 @@ impl Daemon {
 
     /// Fills in what `start` leaves to its project and item, and returns
     /// them.
-    fn from_project(
+    async fn from_project(
         &self,
         start: &mut pb::StartSession,
     ) -> Result<(Option<String>, Option<String>), DaemonError> {
@@ -422,17 +530,15 @@ impl Daemon {
         }
         let project = self.store.project(&project_id)?;
         if start.working_directory.is_empty() && start.repositories.is_empty() {
-            if !start.host.is_empty() {
-                return Err(DaemonError::NoRemoteDirectory {
-                    project: project.name,
-                    host: start.host.clone(),
-                });
-            }
-            start.repositories = project
-                .repositories
-                .iter()
-                .map(convert::wire_repository)
-                .collect();
+            start.repositories = if start.host.is_empty() {
+                project
+                    .repositories
+                    .iter()
+                    .map(convert::wire_repository)
+                    .collect()
+            } else {
+                self.clone_on(&start.host, &project).await?
+            };
         }
         if start.instructions.is_empty() {
             start.instructions = project.instructions;
@@ -515,7 +621,7 @@ impl Daemon {
                 return Ok(Reply::Response(Response::Inbox(inbox)));
             }
             Request::StartSession(start) => {
-                (project, item) = self.from_project(start)?;
+                (project, item) = self.from_project(start).await?;
                 // The host runs it on itself; only the daemon knows hosts by
                 // name.
                 std::mem::take(&mut start.host)
@@ -531,7 +637,56 @@ impl Daemon {
             }
             Request::SendMessage(message) => self.host_of(&message.session_id).await?,
             Request::Approve(approve) => self.host_of(&approve.session_id).await?,
-            Request::ReadHistory(read) => self.host_of(&read.session_id).await?,
+            Request::ReadHistory(read) => {
+                let host = self.host_of(&read.session_id).await?;
+                return self.history(&host, std::mem::take(read)).await;
+            }
+            Request::ListHosts(_) => {
+                let hosts = self
+                    .hosts()
+                    .hosts
+                    .iter()
+                    .map(|(name, config)| config.info(name))
+                    .collect();
+                return Ok(Reply::Response(Response::Hosts(pb::Hosts { hosts })));
+            }
+            Request::AddHost(add) => {
+                let _editing = self.editing.lock().await;
+                let host = self.add_host(std::mem::take(add))?;
+                return Ok(Reply::Response(Response::HostSaved(pb::HostSaved {
+                    host: Some(host),
+                })));
+            }
+            Request::UpdateHost(update) => {
+                let _editing = self.editing.lock().await;
+                let host = self.update_host(std::mem::take(update)).await?;
+                return Ok(Reply::Response(Response::HostSaved(pb::HostSaved {
+                    host: Some(host),
+                })));
+            }
+            Request::RemoveHost(remove) => {
+                let _editing = self.editing.lock().await;
+                self.remove_host(&remove.name).await?;
+                return Ok(Reply::Response(Response::HostRemoved(pb::HostRemoved {})));
+            }
+            Request::CheckHost(check) => {
+                let health = self.check_host(&check.name).await?;
+                return Ok(Reply::Response(Response::HostHealth(health)));
+            }
+            Request::InstallHost(install) => {
+                let installed = self.install_host(std::mem::take(install)).await?;
+                return Ok(Reply::Response(Response::HostInstalled(installed)));
+            }
+            Request::ListSshHosts(_) => {
+                return Ok(Reply::Response(Response::SshHosts(pb::SshHosts {
+                    names: ssh_config_hosts(),
+                })));
+            }
+            Request::ConfigureHost(_)
+            | Request::ReadHostStatus(_)
+            | Request::CloneRepositories(_) => {
+                return Err(DaemonError::ForHostsOnly);
+            }
             Request::WatchSession(watch) => self.host_of(&watch.session_id).await?,
             Request::AbortTurn(abort) => self.host_of(&abort.session_id).await?,
             Request::SetApprovalMode(set) => self.host_of(&set.session_id).await?,
@@ -563,6 +718,37 @@ impl Daemon {
         }
         Ok(reply)
     }
+}
+
+/// The hosts in `~/.ssh/config`; none if it can't be read.
+fn ssh_config_hosts() -> Vec<String> {
+    std::env::var_os("HOME")
+        .map(|home| Path::new(&home).join(".ssh/config"))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|config| hosts::ssh_hosts(&config))
+        .unwrap_or_default()
+}
+
+/// The URL `host` clones the repository at `path` from: its `origin`.
+async fn origin(host: &str, path: &Path) -> Result<String, DaemonError> {
+    let no_origin = |source| DaemonError::NoOrigin {
+        host: host.to_owned(),
+        path: path.to_owned(),
+        source,
+    };
+    let output = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["remote", "get-url", "origin"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|source| no_origin(Some(source)))?;
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !output.status.success() || url.is_empty() {
+        return Err(no_origin(None));
+    }
+    Ok(url)
 }
 
 /// `instructions`, followed by the specs a session on `item` reads: its

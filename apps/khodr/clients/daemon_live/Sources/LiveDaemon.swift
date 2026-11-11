@@ -196,6 +196,64 @@ extension DaemonClient {
                 }
                 return history.events.compactMap(SessionEvent.init)
             },
+            hosts: {
+                guard case .hosts(let hosts) = try await daemon.call(.listHosts(Khodr_V1_ListHosts())) else {
+                    throw DaemonError.unexpected("something other than the hosts")
+                }
+                return hosts.hosts.map(RemoteHost.init)
+            },
+            addHost: { name, destination in
+                var add = Khodr_V1_AddHost()
+                add.name = name
+                add.sshDestination = destination
+                guard case .hostSaved(let saved) = try await daemon.call(.addHost(add)) else {
+                    throw DaemonError.unexpected("something other than the added host")
+                }
+                return RemoteHost(saved.host)
+            },
+            updateHost: { host, update in
+                var request = Khodr_V1_UpdateHost()
+                request.name = host
+                request.setEnv = update.setEnv.sorted { $0.key < $1.key }.map { name, value in
+                    var variable = Khodr_V1_EnvVar()
+                    variable.name = name
+                    variable.value = value
+                    return variable
+                }
+                request.unsetEnv = update.unsetEnv
+                if let script = update.setupScript { request.setupScript = script }
+                guard case .hostSaved(let saved) = try await daemon.call(.updateHost(request)) else {
+                    throw DaemonError.unexpected("something other than the updated host")
+                }
+                return RemoteHost(saved.host)
+            },
+            removeHost: { host in
+                var remove = Khodr_V1_RemoveHost()
+                remove.name = host
+                _ = try await daemon.call(.removeHost(remove))
+            },
+            checkHost: { host in
+                var check = Khodr_V1_CheckHost()
+                check.name = host
+                guard case .hostHealth(let health) = try await daemon.call(.checkHost(check)) else {
+                    throw DaemonError.unexpected("something other than the host's health")
+                }
+                return HostHealth(health)
+            },
+            installHost: { host in
+                var install = Khodr_V1_InstallHost()
+                install.name = host
+                guard case .hostInstalled(let installed) = try await daemon.call(.installHost(install)) else {
+                    throw DaemonError.unexpected("something other than the installed version")
+                }
+                return installed.programVersion
+            },
+            sshHosts: {
+                guard case .sshHosts(let hosts) = try await daemon.call(.listSshHosts(Khodr_V1_ListSshHosts())) else {
+                    throw DaemonError.unexpected("something other than the SSH config's hosts")
+                }
+                return hosts.names
+            },
             watch: { session in
                 AsyncThrowingStream { continuation in
                     let task = Task {

@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import KhodrBoard
+import KhodrHosts
 import KhodrProjects
 import KhodrSession
 import SwiftUI
@@ -27,6 +28,8 @@ package struct AppView: View {
         } detail: {
             if store.sidebar.selection == .inbox {
                 InboxView(entries: store.sidebar.inbox) { store.send(.sidebar(.selected(.session($0)))) }
+            } else if let hosts = store.scope(state: \.hosts, action: \.hosts.presented) {
+                HostsView(store: hosts)
             } else if let board = store.scope(state: \.board, action: \.board.presented) {
                 NavigationStack {
                     BoardView(store: board)

@@ -27,6 +27,13 @@ package struct SessionView: View {
                     action: "Reconnect"
                 ) { store.send(.task) }
             }
+            if store.session.hostOffline, let host = store.session.host {
+                ChatNotice(
+                    LocalizedStringKey(
+                        "Can't reach \(host), so this is the session as it last was. Khodr reconnects when you "
+                            + "send a message; check \(host) in Hosts if it doesn't."),
+                    systemImage: "wifi.slash")
+            }
             if store.session.archived {
                 Label(
                     "This session is archived. Unarchive it from the sidebar to work in it again; its code comes "

@@ -7,6 +7,8 @@ mod convert;
 mod daemon;
 mod error;
 mod host;
+mod hosts;
+mod machine;
 mod socket;
 mod store;
 
@@ -15,8 +17,9 @@ use std::sync::Arc;
 
 pub use error::StartError;
 
-use daemon::{Daemon, Hosts};
+use daemon::Daemon;
 use host::Host;
+use hosts::Hosts;
 use khodr_wire::pb;
 use sha2::{Digest, Sha256};
 use store::Store;
@@ -85,7 +88,7 @@ pub async fn host_stdio(state: &Path, cache: &Path) -> Result<(), StartError> {
         tokio::io::stdin(),
         tokio::io::stdout(),
         pb::Role::Host,
-        VERSION,
+        &build(),
         host,
     )
     .await
@@ -105,14 +108,15 @@ pub async fn daemon(
 ) -> Result<(), StartError> {
     let store = Store::open(&state.join("khodr.sqlite3"))?;
     let local = Host::open(&state.join("host"), &cache.join("worktrees")).await?;
+    // Read before serving: an update may replace the file while it runs.
+    let build: Arc<str> = build().into();
     let daemon = Arc::new(Daemon::new(
         local,
         store,
         Hosts::load(hosts)?,
         hosts.to_owned(),
+        build.to_string(),
     ));
-    // Read before serving: an update may replace the file while it runs.
-    let build: Arc<str> = build().into();
     let listener = socket::listen(socket).await?;
     let serving = async {
         loop {

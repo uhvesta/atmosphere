@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use khodr_agent::{
-    Agent, AgentError, ApprovalMode, CopilotOptions, CopilotProvider, CopilotRunner, Event,
+    Agent, AgentError, ApprovalMode, CopilotOptions, CopilotProvider, CopilotRunner, Env, Event,
     EventId, ForkOptions, LocalAgent, LocalModelConfig, LocalModelRunner, Script, ScriptedRunner,
     SendMode, SessionId, SessionRecord, SessionUpdate, StartOptions, Watch, Workspaces,
 };
@@ -16,6 +16,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::convert;
 use crate::error::HostError;
+use crate::machine::Machine;
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, HostError>> + Send + 'a>>;
 
@@ -143,6 +144,10 @@ pub struct Host {
     backends: HashMap<pb::Backend, Arc<dyn Backend>>,
     /// Which backend runs each session.
     owners: Mutex<HashMap<SessionId, pb::Backend>>,
+    machine: Machine,
+    /// What this khodrd is, read when it started, since an install may
+    /// replace the executable while it runs.
+    program_version: String,
 }
 
 impl Host {
@@ -150,6 +155,10 @@ impl Host {
     /// copies of the code they work in go under `worktrees`.
     pub async fn open(state: &Path, worktrees: &Path) -> Result<Self, HostError> {
         let workspaces = || Workspaces::new(worktrees);
+        // Empty until the daemon sends the host's variables after connecting.
+        let env = Env::default();
+        let copilot_program = std::env::var_os("KHODR_COPILOT")
+            .map_or_else(|| PathBuf::from("copilot"), PathBuf::from);
         let scripted = LocalAgent::open(
             state.join("scripted"),
             ScriptedRunner::new(Script::default()),
@@ -159,17 +168,17 @@ impl Host {
         let local_model = LocalModelRunner::new(LocalModelConfig {
             base_url: std::env::var("KHODR_LOCAL_URL").ok(),
             api_key: std::env::var("KHODR_LOCAL_API_KEY").ok(),
-        });
+        })
+        .with_env(env.clone());
         let local =
             LocalAgent::open(state.join("local"), local_model)?.with_workspaces(workspaces());
         // Signed in with `copilot login`, it uses GitHub's models; given a
         // provider, by the session or here, a model server of its own.
         let copilot_state = state.join("copilot");
         let copilot_runner = CopilotRunner::new(CopilotOptions {
-            program: std::env::var_os("KHODR_COPILOT")
-                .map_or_else(|| PathBuf::from("copilot"), PathBuf::from),
+            program: copilot_program.clone(),
             state: copilot_state.join("backend"),
-            env: Vec::new(),
+            env: env.clone(),
             provider: std::env::var("KHODR_COPILOT_PROVIDER_URL")
                 .ok()
                 .map(|base_url| CopilotProvider {
@@ -193,6 +202,8 @@ impl Host {
         Ok(Self {
             backends,
             owners: Mutex::new(owners),
+            machine: Machine::new(state.to_owned(), env, copilot_program),
+            program_version: crate::build(),
         })
     }
 
@@ -294,8 +305,26 @@ impl Host {
             | Request::ListItems(_)
             | Request::ReadBoardLog(_)
             | Request::RevertBoardChange(_)
-            | Request::ListInbox(_) => {
+            | Request::ListInbox(_)
+            | Request::ListHosts(_)
+            | Request::AddHost(_)
+            | Request::UpdateHost(_)
+            | Request::RemoveHost(_)
+            | Request::CheckHost(_)
+            | Request::InstallHost(_)
+            | Request::ListSshHosts(_) => {
                 return Err(HostError::NotForHosts);
+            }
+            Request::ConfigureHost(configure) => Response::HostConfigured(pb::HostConfigured {
+                setup: Some(self.machine.configure(configure).await?),
+            }),
+            Request::ReadHostStatus(_) => {
+                Response::HostStatus(self.machine.status(self.program_version.clone()).await)
+            }
+            Request::CloneRepositories(clone) => {
+                Response::RepositoriesCloned(pb::RepositoriesCloned {
+                    repositories: self.machine.clone(clone).await?,
+                })
             }
             Request::AbortTurn(abort) => {
                 let session = SessionId::new(abort.session_id);

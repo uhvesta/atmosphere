@@ -91,12 +91,17 @@ fn or_dash(text: &str) -> String {
 
 /// `<id>\t<host>\t<state>\t<parent>\t<project>\t<approval mode>\t<backend>\t<model>\t<marks>\t<working directory>\t<name>`,
 /// with `-` for this Mac, no parent, no project, the default model or no
-/// marks. The marks are `archived` and `keeper`, joined by commas.
+/// marks. The marks are `archived`, `keeper` and `offline` (its host can't
+/// be reached, so this is as it last was), joined by commas.
 pub fn session(session: &pb::SessionInfo) -> String {
-    let marks: Vec<&str> = [(session.archived, "archived"), (session.keeper, "keeper")]
-        .into_iter()
-        .filter_map(|(set, mark)| set.then_some(mark))
-        .collect();
+    let marks: Vec<&str> = [
+        (session.archived, "archived"),
+        (session.keeper, "keeper"),
+        (session.host_offline, "offline"),
+    ]
+    .into_iter()
+    .filter_map(|(set, mark)| set.then_some(mark))
+    .collect();
     format!(
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         session.id,
@@ -227,5 +232,58 @@ pub fn inbox_entry(entry: &pb::InboxEntry) -> String {
         session
             .map(|session| session.name.as_str())
             .unwrap_or_default(),
+    )
+}
+
+pub fn host(host: &pb::HostInfo) -> String {
+    let env = if host.env_names.is_empty() {
+        "-".to_owned()
+    } else {
+        host.env_names.join(",")
+    };
+    let setup = if host.setup_script.trim().is_empty() {
+        "no setup"
+    } else {
+        "setup"
+    };
+    format!(
+        "{}\t{}\t{env}\t{setup}",
+        host.name,
+        or_dash(&host.ssh_destination)
+    )
+}
+
+fn setup(setup: Option<&pb::SetupResult>) -> String {
+    match setup {
+        Some(setup) if setup.ran && setup.succeeded => "setup ok".to_owned(),
+        Some(setup) if setup.ran => format!(
+            "setup failed: {}",
+            setup.output.lines().last().unwrap_or_default()
+        ),
+        _ => "no setup".to_owned(),
+    }
+}
+
+pub fn health(health: &pb::HostHealth) -> String {
+    let Some(status) = health.status.as_ref().filter(|_| health.reachable) else {
+        return format!("{}\tunreachable\t{}", health.name, health.problem);
+    };
+    let copilot = if status.copilot_version.is_empty() {
+        format!("no copilot: {}", status.copilot_problem)
+    } else {
+        format!("copilot {}", status.copilot_version)
+    };
+    let token = if status.github_token {
+        "token"
+    } else {
+        "no token"
+    };
+    format!(
+        "{}\treachable\tkhodrd {}\t{}\t{} GB free\t{copilot}\t{token}\t{}",
+        health.name,
+        status.program_version,
+        status.platform,
+        status.free_disk_bytes / 1_000_000_000,
+        setup(status.setup.as_ref()),
     )
 }

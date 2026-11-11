@@ -91,12 +91,14 @@ package struct Session: Identifiable, Hashable, Sendable {
     package var itemID: String?
     /// How many turns it has finished.
     package var turns: Int
+    /// Its host can't be reached, so this is as it last was.
+    package var hostOffline: Bool
 
     package init(
         id: String, name: String, backend: Backend, workingDirectory: String, model: String? = nil,
         state: SessionState = .idle, parentID: String? = nil, forkedBeforeEventID: String? = nil, host: String? = nil,
         approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil, archived: Bool = false,
-        keeper: Bool = false, itemID: String? = nil, turns: Int = 0
+        keeper: Bool = false, itemID: String? = nil, turns: Int = 0, hostOffline: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -113,6 +115,7 @@ package struct Session: Identifiable, Hashable, Sendable {
         self.keeper = keeper
         self.itemID = itemID
         self.turns = turns
+        self.hostOffline = hostOffline
     }
 }
 
@@ -393,6 +396,99 @@ package enum SendMode: Hashable, Sendable {
     case steer
 }
 
+/// A machine sessions run on, reached over SSH.
+package struct RemoteHost: Identifiable, Hashable, Sendable {
+    package var name: String
+    /// What `ssh` connects to, such as a Host in ~/.ssh/config; nil for a
+    /// host reached by a command of its own, which Khodr can't install on.
+    package var sshDestination: String?
+    /// The variables set for its agents. Their values never come back from
+    /// the daemon.
+    package var envNames: [String]
+    /// Run on the host when it changes, or until it succeeds.
+    package var setupScript: String
+
+    package init(name: String, sshDestination: String?, envNames: [String] = [], setupScript: String = "") {
+        self.name = name
+        self.sshDestination = sshDestination
+        self.envNames = envNames
+        self.setupScript = setupScript
+    }
+
+    package var id: String { name }
+}
+
+/// What to change about a host; nil and empty leave it as it is.
+package struct HostUpdate: Hashable, Sendable {
+    /// Variables to set or replace, by name.
+    package var setEnv: [String: String]
+    package var unsetEnv: [String]
+    package var setupScript: String?
+
+    package init(setEnv: [String: String] = [:], unsetEnv: [String] = [], setupScript: String? = nil) {
+        self.setEnv = setEnv
+        self.unsetEnv = unsetEnv
+        self.setupScript = setupScript
+    }
+}
+
+/// How a host's setup script last ran.
+package struct SetupResult: Hashable, Sendable {
+    package var succeeded: Bool
+    /// What it printed, cut to the end if it was long.
+    package var output: String
+    package var time: Date
+
+    package init(succeeded: Bool, output: String, time: Date) {
+        self.succeeded = succeeded
+        self.output = output
+        self.time = time
+    }
+}
+
+/// What a reachable host says about itself.
+package struct HostStatus: Hashable, Sendable {
+    package var programVersion: String
+    /// Its system and architecture, as `uname -sm` prints them.
+    package var platform: String
+    package var freeDiskBytes: UInt64
+    /// Copilot's version, or why it couldn't be run.
+    package var copilot: Result<String, CopilotProblem>
+    /// Whether its agents have a GitHub token; without one, Copilot needs
+    /// `copilot login` there.
+    package var githubToken: Bool
+    /// Nil when it has no setup script.
+    package var setup: SetupResult?
+
+    package init(
+        programVersion: String, platform: String, freeDiskBytes: UInt64, copilot: Result<String, CopilotProblem>,
+        githubToken: Bool, setup: SetupResult? = nil
+    ) {
+        self.programVersion = programVersion
+        self.platform = platform
+        self.freeDiskBytes = freeDiskBytes
+        self.copilot = copilot
+        self.githubToken = githubToken
+        self.setup = setup
+    }
+}
+
+/// Why Copilot couldn't be run on a host.
+package struct CopilotProblem: Error, Hashable, Sendable {
+    package var message: String
+
+    package init(_ message: String) {
+        self.message = message
+    }
+}
+
+/// Whether a host answered, and how it is.
+package enum HostHealth: Hashable, Sendable {
+    case reachable(HostStatus)
+    /// Why it couldn't be reached, for the person who has to fix it.
+    case unreachable(String)
+}
+
 /// What the daemon said went wrong.
 package enum ErrorCode: Hashable, Sendable {
     case unknownSession
@@ -408,6 +504,7 @@ package enum ErrorCode: Hashable, Sendable {
     case archived
     case unknownItem
     case unknownBoardChange
+    case unknownHost
     case unknown
 }
 

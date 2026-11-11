@@ -42,6 +42,19 @@ package struct DaemonClient: Sendable {
     /// Every session waiting on you: approvals, then failures, then replies.
     package var inbox: @Sendable () async throws -> [InboxEntry]
     package var history: @Sendable (_ session: String) async throws -> [SessionEvent]
+    package var hosts: @Sendable () async throws -> [RemoteHost]
+    /// Adds a host Khodr reaches with `ssh destination` and installs itself on.
+    package var addHost: @Sendable (_ name: String, _ destination: String) async throws -> RemoteHost
+    package var updateHost: @Sendable (_ host: String, _ update: HostUpdate) async throws -> RemoteHost
+    /// Forgets the host and its sessions; nothing on it is removed.
+    package var removeHost: @Sendable (_ host: String) async throws -> Void
+    /// Connects to the host, updating Khodr's program there first if it
+    /// is of this Mac's kind, and reports how it is.
+    package var checkHost: @Sendable (_ host: String) async throws -> HostHealth
+    /// Copies Khodr's program to the host; returns its version.
+    package var installHost: @Sendable (_ host: String) async throws -> String
+    /// The hosts named in ~/.ssh/config, to add one by.
+    package var sshHosts: @Sendable () async throws -> [String]
     /// The session's history, then each new event. Ends when the calling task
     /// is cancelled; throws if the connection drops.
     package var watch: @Sendable (_ session: String) async -> AsyncThrowingStream<SessionEvent, any Error> = { _ in

@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use khodr_wire::{Client, ClientError, Service, pb};
 
-use crate::daemon::{Daemon, HostConfig, Hosts};
+use crate::daemon::Daemon;
 use crate::host::Host;
+use crate::hosts::{HostConfig, Hosts};
 use crate::store::Store;
 
 const SCRIPT: &str = r#"{"rules": [
@@ -279,6 +280,7 @@ async fn daemon(state: &Path, hosts: Hosts) -> Client {
                 store,
                 hosts,
                 state.join("hosts.json"),
+                "test".to_owned(),
             )))
             .await
         }
@@ -308,7 +310,7 @@ async fn the_daemon_refuses_a_host_it_does_not_know() {
         matches!(
             started,
             Err(ClientError::Refused {
-                code: pb::ErrorCode::InvalidRequest,
+                code: pb::ErrorCode::UnknownHost,
                 ..
             })
         ),
@@ -328,12 +330,14 @@ async fn a_host_whose_command_fails_is_unavailable_and_the_rest_still_list() {
                 "-c".to_owned(),
                 "echo no route >&2; exit 1".to_owned(),
             ],
+            ..HostConfig::default()
         },
     );
     hosts.hosts.insert(
         "missing".to_owned(),
         HostConfig {
             command: vec!["/nonexistent/khodrd".to_owned()],
+            ..HostConfig::default()
         },
     );
     let client = daemon(state.path(), hosts).await;

@@ -11,6 +11,7 @@ rust_library(
     deps = [
         "//apps/khodr/proto:khodr_rust",
         "@crates//:prost",
+        "@crates//:ruzstd",
         "@crates//:thiserror",
         "@crates//:tokio",
     ],

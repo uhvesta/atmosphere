@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import KhodrBoard
 import KhodrDaemonClient
+import KhodrHosts
 import KhodrProjects
 import KhodrSession
 
@@ -17,6 +18,8 @@ package struct AppFeature {
         @Presents package var session: SessionFeature.State?
         /// The open board; nil unless one is picked.
         @Presents package var board: BoardFeature.State?
+        /// The hosts; nil unless they're open.
+        @Presents package var hosts: HostsFeature.State?
 
         package init() {}
     }
@@ -45,6 +48,7 @@ package struct AppFeature {
         case sidebar(ProjectsFeature.Action)
         case session(PresentationAction<SessionFeature.Action>)
         case board(PresentationAction<BoardFeature.Action>)
+        case hosts(PresentationAction<HostsFeature.Action>)
     }
 
     @Dependency(\.daemon) var daemon
@@ -96,6 +100,9 @@ package struct AppFeature {
                 return .run { _ in service.openLoginItems() }
 
             case .sidebar(.loaded(_, let sessions, _)):
+                if let open = state.session?.session.id, let listed = sessions.first(where: { $0.id == open }) {
+                    state.session?.session.hostOffline = listed.hostOffline
+                }
                 guard state.daemon == .updatePending, !Self.anyBusy(sessions) else { return .none }
                 return restart(&state)
 
@@ -107,12 +114,14 @@ package struct AppFeature {
 
             case .sidebar(.delegate(.openSession(let session))):
                 state.board = nil
+                state.hosts = nil
                 guard state.session?.session.id != session.id else { return .none }
                 state.session = SessionFeature.State(session: session)
                 return .none
 
             case .sidebar(.delegate(.openBoard(let project))):
                 state.session = nil
+                state.hosts = nil
                 guard state.board?.project.id != project.id else { return .none }
                 state.board = BoardFeature.State(project: project)
                 return .none
@@ -120,22 +129,35 @@ package struct AppFeature {
             case .sidebar(.delegate(.openInbox)):
                 state.session = nil
                 state.board = nil
+                state.hosts = nil
                 return .none
+
+            case .sidebar(.delegate(.openHosts)):
+                state.session = nil
+                state.board = nil
+                if state.hosts == nil { state.hosts = HostsFeature.State() }
+                return .none
+
+            case .hosts(.presented(.removed)):
+                // Its sessions went with it.
+                return .send(.sidebar(.refresh))
 
             case .session(.presented(.delegate(.openSession(let session)))),
                 .board(.presented(.delegate(.openSession(let session)))):
                 if state.sidebar.sessions[id: session.id] == nil { state.sidebar.sessions.append(session) }
                 state.sidebar.selection = .session(session.id)
                 state.board = nil
+                state.hosts = nil
                 state.session = SessionFeature.State(session: session)
                 return .send(.sidebar(.refresh))
 
-            case .sidebar, .session, .board:
+            case .sidebar, .session, .board, .hosts:
                 return .none
             }
         }
         .ifLet(\.$session, action: \.session) { SessionFeature() }
         .ifLet(\.$board, action: \.board) { BoardFeature() }
+        .ifLet(\.$hosts, action: \.hosts) { HostsFeature() }
     }
 
     private func restart(_ state: inout State) -> Effect<Action> {

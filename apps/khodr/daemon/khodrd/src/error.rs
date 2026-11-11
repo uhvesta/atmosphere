@@ -28,6 +28,42 @@ pub enum HostError {
         "only the daemon keeps projects and the board; send this to khodrd's daemon on your Mac, not a host"
     )]
     NotForHosts,
+
+    #[error(
+        "couldn't record the setup script's run in {path}; check that the folder is writable and the disk isn't full. The script will run again next time"
+    )]
+    SaveSetup {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "couldn't create the folder {path} for repositories on this host; check that it is writable"
+    )]
+    CreateFolder {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("couldn't run git on this host; install git there and check that it is on the PATH")]
+    RunGit {
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "git couldn't clone or update {url} in {path} on this host (it said: {output}). Check that the host can reach the remote and has credentials for it; if the folder is a broken clone, delete it so it is cloned again, after saving any work in it"
+    )]
+    Clone {
+        url: String,
+        path: PathBuf,
+        output: String,
+    },
+
+    #[error("{name:?} isn't a plain folder name; give a name without slashes or ..")]
+    NotAName { name: String },
 }
 
 impl HostError {
@@ -44,8 +80,13 @@ impl HostError {
             Self::Agent(AgentError::Workspace { .. }) => pb::ErrorCode::BackendFailed,
             Self::Agent(_) => pb::ErrorCode::StorageFailed,
             Self::UnknownBackend { .. } => pb::ErrorCode::UnknownBackend,
-            Self::NoWorkingDirectory | Self::NotForHosts => pb::ErrorCode::InvalidRequest,
-            Self::FellBehind { .. } => pb::ErrorCode::BackendFailed,
+            Self::NoWorkingDirectory | Self::NotForHosts | Self::NotAName { .. } => {
+                pb::ErrorCode::InvalidRequest
+            }
+            Self::FellBehind { .. } | Self::RunGit { .. } | Self::Clone { .. } => {
+                pb::ErrorCode::BackendFailed
+            }
+            Self::SaveSetup { .. } | Self::CreateFolder { .. } => pb::ErrorCode::StorageFailed,
         }
     }
 }
@@ -159,13 +200,11 @@ pub enum DaemonError {
         source: Option<std::io::Error>,
     },
 
-    #[error(
-        "project {project:?} has its repository on this Mac, so a session on host {host:?} needs the folder to work in there; give it one"
-    )]
-    NoRemoteDirectory { project: String, host: String },
+    #[error("only a host answers this; the daemon sends it to its hosts itself")]
+    ForHostsOnly,
 
     #[error(
-        "there is no host named {host:?}; add it to {hosts}, or leave the host empty for this Mac"
+        "there is no host named {host:?}; add it with `khodr host add` (it is kept in {hosts}), or leave the host empty for this Mac"
     )]
     UnknownHost { host: String, hosts: PathBuf },
 
@@ -182,12 +221,73 @@ pub enum DaemonError {
         source: std::io::Error,
     },
 
-    #[error("couldn't reach host {host:?}{}", said(.stderr))]
+    #[error("couldn't reach host {host:?}{}{}", said(.stderr), if *.managed {
+        "; check that `ssh` to it works without a password prompt, and install khodrd there with `khodr host install` if it isn't yet"
+    } else {
+        "; check its command in the hosts file and that khodrd runs on it"
+    })]
     Connect {
         host: String,
+        managed: bool,
         stderr: String,
         #[source]
         source: WireError,
+    },
+
+    #[error("there is already a host named {host:?}; pick another name, or remove that one first")]
+    HostExists { host: String },
+
+    #[error("{name:?} can't name a host; use letters, digits, '-', '_' or '.'")]
+    BadHostName { name: String },
+
+    #[error("a host needs what `ssh` connects to, such as a Host in ~/.ssh/config or user@machine")]
+    NoDestination,
+
+    #[error(
+        "host {host:?} is reached by a command of its own, so Khodr can't install on it or check it over SSH; add it again by its SSH destination to have Khodr manage it"
+    )]
+    NotManaged { host: String },
+
+    #[error(
+        "host {host:?} is {theirs:?} and this Mac is {ours:?}, so this khodrd won't run there; build khodrd for {theirs:?} and give its path to install"
+    )]
+    OtherPlatform {
+        host: String,
+        theirs: String,
+        ours: String,
+    },
+
+    #[error("couldn't read the khodrd to install, {path}; check that it exists and is readable")]
+    ReadBinary {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("`{script}` over SSH on host {host:?} failed{}; check that `ssh` to it works without a password prompt and its disk isn't full", said(.output))]
+    Ssh {
+        host: String,
+        script: String,
+        output: String,
+    },
+
+    #[error(
+        "couldn't save the hosts file {path}; check that its folder is writable. The change isn't saved"
+    )]
+    SaveHosts {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "the repository {path} has no `origin` remote, so host {host:?} can't clone it; add one with `git remote add origin <url>` that the host can reach, or give the session a folder on the host to work in"
+    )]
+    NoOrigin {
+        host: String,
+        path: PathBuf,
+        #[source]
+        source: Option<std::io::Error>,
     },
 
     #[error("host {host:?} didn't answer")]
@@ -223,12 +323,22 @@ impl DaemonError {
                 | StoreError::ParentRemoved { .. },
             ) => pb::ErrorCode::InvalidRequest,
             Self::Store(_) => pb::ErrorCode::StorageFailed,
-            Self::UnknownHost { .. }
+            Self::UnknownHost { .. } => pb::ErrorCode::UnknownHost,
+            Self::SaveHosts { .. } => pb::ErrorCode::StorageFailed,
+            Self::HostExists { .. }
+            | Self::BadHostName { .. }
+            | Self::NoDestination
+            | Self::NotManaged { .. }
+            | Self::OtherPlatform { .. }
+            | Self::ReadBinary { .. }
+            | Self::NoOrigin { .. }
             | Self::NoCommand { .. }
             | Self::NotAFolder { .. }
             | Self::NoRepositories
-            | Self::NoRemoteDirectory { .. } => pb::ErrorCode::InvalidRequest,
-            Self::Spawn { .. } | Self::Connect { .. } => pb::ErrorCode::HostUnavailable,
+            | Self::ForHostsOnly => pb::ErrorCode::InvalidRequest,
+            Self::Spawn { .. } | Self::Connect { .. } | Self::Ssh { .. } => {
+                pb::ErrorCode::HostUnavailable
+            }
             Self::Host {
                 source: ClientError::Refused { code, .. },
                 ..

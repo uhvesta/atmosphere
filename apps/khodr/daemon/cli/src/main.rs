@@ -184,7 +184,59 @@ enum BoardCommand {
 }
 
 #[derive(Subcommand)]
+enum HostCommand {
+    /// Add a host by what `ssh` connects to; Khodr installs khodrd there
+    /// and keeps it up to date.
+    Add {
+        name: String,
+        /// A Host in your SSH config, or user@machine.
+        destination: String,
+        /// An SSH config file other than ~/.ssh/config.
+        #[arg(long)]
+        ssh_config: Option<PathBuf>,
+        /// The folder on the host for khodrd and its sessions, relative to
+        /// the home folder there unless absolute.
+        #[arg(long, default_value = "")]
+        folder: String,
+    },
+    /// List the hosts.
+    List,
+    /// Remove a host. Its sessions stay on it, but Khodr forgets them.
+    Remove { name: String },
+    /// Say whether a host is reachable, and how it is set up.
+    Check { name: String },
+    /// Copy khodrd to a host: this one, or --binary for another platform.
+    Install {
+        name: String,
+        #[arg(long)]
+        binary: Option<PathBuf>,
+    },
+    /// Set or unset variables for a host's agents. Values are sent to the
+    /// host when it connects and kept only in its memory there.
+    Env {
+        name: String,
+        /// NAME=VALUE. It ends up in your shell's history; prefer --copy for
+        /// secrets.
+        #[arg(long = "set", value_name = "NAME=VALUE")]
+        set: Vec<String>,
+        /// Copies a variable from this shell, such as GH_TOKEN.
+        #[arg(long = "copy", value_name = "NAME")]
+        copy: Vec<String>,
+        #[arg(long = "unset", value_name = "NAME")]
+        unset: Vec<String>,
+    },
+    /// Set the script run on a host when it changes, or until it succeeds:
+    /// a file, or - for stdin. An empty file removes it.
+    Setup { name: String, script: PathBuf },
+    /// List the hosts in ~/.ssh/config, to add.
+    SshHosts,
+}
+
+#[derive(Subcommand)]
 enum Command {
+    /// Add, check, set up or list the machines sessions run on.
+    #[command(subcommand)]
+    Host(HostCommand),
     /// Add or list projects.
     #[command(subcommand)]
     Project(ProjectCommand),
@@ -410,6 +462,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 "BoardChangeReverted",
             )?;
         }
+        Command::Host(command) => host(&client, command).await?,
         Command::Inbox => match client.call(Request::ListInbox(pb::ListInbox {})).await? {
             Response::Inbox(inbox) => {
                 for entry in &inbox.entries {
@@ -717,6 +770,138 @@ async fn items(client: &Client, project: String) -> Result<Vec<pb::Item>, CliErr
 }
 
 /// A spec from `path`, or from stdin for `-`.
+async fn host(client: &Client, command: HostCommand) -> Result<(), CliError> {
+    use pb::request::Kind as Request;
+    use pb::response::Kind as Response;
+    let saved = |response| match response {
+        Response::HostSaved(pb::HostSaved { host: Some(host) }) => {
+            println!("{}", print::host(&host));
+            Ok(())
+        }
+        other => Err(unexpected("the host", &other)),
+    };
+    match command {
+        HostCommand::Add {
+            name,
+            destination,
+            ssh_config,
+            folder,
+        } => {
+            let ssh_config = match ssh_config {
+                Some(path) => std::path::absolute(&path)
+                    .map_err(|source| CliError::Resolve { path, source })?
+                    .display()
+                    .to_string(),
+                None => String::new(),
+            };
+            let request = Request::AddHost(pb::AddHost {
+                name,
+                ssh_destination: destination,
+                ssh_config,
+                folder,
+            });
+            saved(client.call(request).await?)?;
+        }
+        HostCommand::List => match client.call(Request::ListHosts(pb::ListHosts {})).await? {
+            Response::Hosts(hosts) => {
+                for host in &hosts.hosts {
+                    println!("{}", print::host(host));
+                }
+            }
+            other => return Err(unexpected("the hosts", &other)),
+        },
+        HostCommand::Remove { name } => {
+            expect_ok(
+                client
+                    .call(Request::RemoveHost(pb::RemoveHost { name }))
+                    .await?,
+                |response| matches!(response, Response::HostRemoved(_)),
+                "HostRemoved",
+            )?;
+        }
+        HostCommand::Check { name } => {
+            match client
+                .call(Request::CheckHost(pb::CheckHost { name }))
+                .await?
+            {
+                Response::HostHealth(health) => {
+                    println!("{}", print::health(&health));
+                    if !health.reachable {
+                        return Err(CliError::Unreachable { host: health.name });
+                    }
+                }
+                other => return Err(unexpected("the host's health", &other)),
+            }
+        }
+        HostCommand::Install { name, binary } => {
+            let binary = match binary {
+                Some(path) => std::path::absolute(&path)
+                    .map_err(|source| CliError::Resolve { path, source })?
+                    .display()
+                    .to_string(),
+                None => String::new(),
+            };
+            let request = Request::InstallHost(pb::InstallHost { name, binary });
+            match client.call(request).await? {
+                Response::HostInstalled(installed) => println!("{}", installed.program_version),
+                other => return Err(unexpected("the installed version", &other)),
+            }
+        }
+        HostCommand::Env {
+            name,
+            set,
+            copy,
+            unset,
+        } => {
+            let mut set_env = Vec::new();
+            for pair in set {
+                let Some((var, value)) = pair.split_once('=') else {
+                    return Err(CliError::NotAVariable { given: pair });
+                };
+                set_env.push(pb::EnvVar {
+                    name: var.to_owned(),
+                    value: value.to_owned(),
+                });
+            }
+            for var in copy {
+                let value =
+                    std::env::var(&var).map_err(|_| CliError::NoVariable { name: var.clone() })?;
+                set_env.push(pb::EnvVar { name: var, value });
+            }
+            let request = Request::UpdateHost(pb::UpdateHost {
+                name,
+                set_env,
+                unset_env: unset,
+                setup_script: None,
+            });
+            saved(client.call(request).await?)?;
+        }
+        HostCommand::Setup { name, script } => {
+            let script = read_spec(&script)?;
+            let request = Request::UpdateHost(pb::UpdateHost {
+                name,
+                setup_script: Some(script),
+                ..Default::default()
+            });
+            saved(client.call(request).await?)?;
+        }
+        HostCommand::SshHosts => {
+            match client
+                .call(Request::ListSshHosts(pb::ListSshHosts {}))
+                .await?
+            {
+                Response::SshHosts(hosts) => {
+                    for name in &hosts.names {
+                        println!("{name}");
+                    }
+                }
+                other => return Err(unexpected("the SSH hosts", &other)),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn read_spec(path: &std::path::Path) -> Result<String, CliError> {
     let read = if path == std::path::Path::new("-") {
         std::io::read_to_string(std::io::stdin())

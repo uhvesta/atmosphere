@@ -133,6 +133,7 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, history: &[Event]) 
         }
         .into(),
         project_id: String::new(),
+        host_offline: false,
         checkouts: record
             .checkouts
             .iter()

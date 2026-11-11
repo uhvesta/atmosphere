@@ -19,6 +19,7 @@ extension ErrorCode {
             case .archived: .archived
             case .unknownItem: .unknownItem
             case .unknownBoardChange: .unknownBoardChange
+            case .unknownHost: .unknownHost
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -105,7 +106,8 @@ extension Session {
             model: optional(info.model), state: state, parentID: optional(info.parentID),
             forkedBeforeEventID: optional(info.forkedBeforeEventID), host: optional(info.host),
             approvalMode: ApprovalMode(info.approvalMode), projectID: optional(info.projectID),
-            archived: info.archived, keeper: info.keeper, itemID: optional(info.itemID), turns: Int(info.turns))
+            archived: info.archived, keeper: info.keeper, itemID: optional(info.itemID), turns: Int(info.turns),
+            hostOffline: info.hostOffline)
     }
 }
 
@@ -244,5 +246,38 @@ extension SessionEvent {
         case nil: return nil
         }
         self.init(id: event.id, time: Date(timeIntervalSince1970: Double(event.timeUnixMs) / 1000), kind: kind)
+    }
+}
+
+extension RemoteHost {
+    init(_ host: Khodr_V1_HostInfo) {
+        self.init(
+            name: host.name, sshDestination: optional(host.sshDestination), envNames: host.envNames,
+            setupScript: host.setupScript)
+    }
+}
+
+extension SetupResult {
+    /// Nil when there was no script to run.
+    init?(_ setup: Khodr_V1_SetupResult) {
+        guard setup.ran else { return nil }
+        self.init(succeeded: setup.succeeded, output: setup.output, time: date(setup.ranUnixMs))
+    }
+}
+
+extension HostHealth {
+    init(_ health: Khodr_V1_HostHealth) {
+        guard health.reachable else {
+            self = .unreachable(health.problem)
+            return
+        }
+        let status = health.status
+        self = .reachable(
+            HostStatus(
+                programVersion: status.programVersion, platform: status.platform,
+                freeDiskBytes: status.freeDiskBytes,
+                copilot: status.copilotVersion.isEmpty
+                    ? .failure(CopilotProblem(status.copilotProblem)) : .success(status.copilotVersion),
+                githubToken: status.githubToken, setup: status.hasSetup ? SetupResult(status.setup) : nil))
     }
 }

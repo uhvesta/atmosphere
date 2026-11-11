@@ -3,6 +3,8 @@
     [Row/OutlineRow] ""
       [StaticText] "Inbox, 2 sessions waiting" value: "2"
     [Row/OutlineRow] ""
+      [StaticText] "" value: "Hosts"
+    [Row/OutlineRow] ""
       [Heading] "khodr" help: "Start a session in khodr"
     [Row/OutlineRow] ""
       [StaticText] "" value: "Board"

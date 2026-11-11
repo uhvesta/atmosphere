@@ -49,6 +49,9 @@ message Hello {
   Role role = 2;
   // The program's own version, for messages about updating it.
   string program_version = 3;
+  // Whether this side reads envelopes compressed with zstd. A side
+  // compresses only what it sends to a peer that does.
+  bool accepts_zstd = 4;
 }
 
 message Request {
@@ -74,6 +77,18 @@ message Request {
     ReadBoardLog read_board_log = 17;
     RevertBoardChange revert_board_change = 18;
     ListInbox list_inbox = 19;
+    // Hosts are the daemon's; a host refuses these.
+    ListHosts list_hosts = 20;
+    AddHost add_host = 21;
+    UpdateHost update_host = 22;
+    RemoveHost remove_host = 23;
+    CheckHost check_host = 24;
+    InstallHost install_host = 25;
+    ListSshHosts list_ssh_hosts = 26;
+    // The daemon sends a host these itself; the daemon refuses them.
+    ConfigureHost configure_host = 27;
+    ReadHostStatus read_host_status = 28;
+    CloneRepositories clone_repositories = 29;
   }
 }
 
@@ -100,6 +115,15 @@ message Response {
     BoardLog board_log = 18;
     BoardChangeReverted board_change_reverted = 19;
     Inbox inbox = 20;
+    Hosts hosts = 21;
+    HostSaved host_saved = 22;
+    HostRemoved host_removed = 23;
+    HostHealth host_health = 24;
+    HostInstalled host_installed = 25;
+    SshHosts ssh_hosts = 26;
+    HostConfigured host_configured = 27;
+    HostStatus host_status = 28;
+    RepositoriesCloned repositories_cloned = 29;
   }
 }
 
@@ -125,6 +149,7 @@ enum ErrorCode {
   ERROR_CODE_ARCHIVED = 11;
   ERROR_CODE_UNKNOWN_ITEM = 12;
   ERROR_CODE_UNKNOWN_BOARD_CHANGE = 13;
+  ERROR_CODE_UNKNOWN_HOST = 14;
 }
 
 enum Backend {
@@ -386,6 +411,9 @@ message SessionInfo {
   string item_id = 15;
   // How many turns it has finished.
   uint32 turns = 16;
+  // Its host couldn't be reached, so this is the daemon's copy from when it
+  // last could: it may have moved on since.
+  bool host_offline = 17;
 }
 
 // A session's git worktree of one repository.
@@ -658,4 +686,142 @@ message InboxEntry {
 // Approvals first, then failures, then replies.
 message Inbox {
   repeated InboxEntry entries = 1;
+}
+
+// A machine the daemon runs sessions on over SSH.
+message HostInfo {
+  string name = 1;
+  // What `ssh` connects to, such as a Host in ~/.ssh/config; empty for a
+  // host reached by a command of its own, which Khodr can't install on.
+  string ssh_destination = 2;
+  // The names of the variables set for its agents. Their values never leave
+  // the daemon but to the host.
+  repeated string env_names = 3;
+  // Run on the host when it changes, or until it succeeds.
+  string setup_script = 4;
+}
+
+message ListHosts {}
+
+message Hosts {
+  repeated HostInfo hosts = 1;
+}
+
+message AddHost {
+  string name = 1;
+  string ssh_destination = 2;
+  // An ssh_config to use instead of ~/.ssh/config; empty for the default.
+  string ssh_config = 3;
+  // Where Khodr keeps its program and state on the host, relative to the
+  // home folder there; empty for .khodr.
+  string folder = 4;
+}
+
+message EnvVar {
+  string name = 1;
+  string value = 2;
+}
+
+// Changes a host's setup; it takes effect the next time the daemon connects.
+message UpdateHost {
+  string name = 1;
+  repeated EnvVar set_env = 2;
+  repeated string unset_env = 3;
+  optional string setup_script = 4;
+}
+
+message HostSaved {
+  HostInfo host = 1;
+}
+
+message RemoveHost {
+  string name = 1;
+}
+
+message HostRemoved {}
+
+// Connects to a host, installing or updating Khodr's program there first if
+// it can, and reports how it is.
+message CheckHost {
+  string name = 1;
+}
+
+message HostHealth {
+  string name = 1;
+  bool reachable = 2;
+  // Why it couldn't be reached, for the person who has to fix it.
+  string problem = 3;
+  HostStatus status = 4;
+}
+
+// Copies Khodr's program to a host over SSH.
+message InstallHost {
+  string name = 1;
+  // The program to copy, for a host of another platform; empty for this
+  // daemon's own.
+  string binary = 2;
+}
+
+message HostInstalled {
+  string program_version = 1;
+}
+
+// The hosts named in ~/.ssh/config, to add one from.
+message ListSshHosts {}
+
+message SshHosts {
+  repeated string names = 1;
+}
+
+message ConfigureHost {
+  repeated EnvVar env = 1;
+  string setup_script = 2;
+}
+
+message HostConfigured {
+  SetupResult setup = 1;
+}
+
+message SetupResult {
+  // False when there is no setup script.
+  bool ran = 1;
+  bool succeeded = 2;
+  // What it printed, cut to the end if it was long.
+  string output = 3;
+  // Milliseconds since 1970 in UTC.
+  int64 ran_unix_ms = 4;
+}
+
+message ReadHostStatus {}
+
+message HostStatus {
+  string program_version = 1;
+  // Its system and architecture, as `uname -sm` prints them.
+  string platform = 2;
+  uint64 free_disk_bytes = 3;
+  // Empty, with the reason in copilot_problem, if it couldn't be run.
+  string copilot_version = 4;
+  string copilot_problem = 5;
+  // Whether its agents have a GitHub token: GH_TOKEN, GITHUB_TOKEN or
+  // COPILOT_GITHUB_TOKEN. Without one, Copilot needs `copilot login` there.
+  bool github_token = 6;
+  SetupResult setup = 7;
+}
+
+message RemoteRepository {
+  string name = 1;
+  // What `git clone` takes.
+  string url = 2;
+}
+
+// Clones each repository on the host, or fetches it if it is there already.
+message CloneRepositories {
+  // The folder to clone into, under the host's own; one per project.
+  string folder = 1;
+  repeated RemoteRepository repositories = 2;
+}
+
+message RepositoriesCloned {
+  // Each clone's folder on the host.
+  repeated Repository repositories = 1;
 }

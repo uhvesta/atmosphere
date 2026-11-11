@@ -53,6 +53,13 @@ package final class InMemoryDaemon: Sendable {
         var changes: [BoardChange] = []
         /// Removed items, so reverting the removal puts them back.
         var removed: [String: Item] = [:]
+        var hosts: [RemoteHost] = []
+        /// Each host's variables, by host.
+        var env: [String: [String: String]] = [:]
+        /// The hosts Khodr's program was installed on.
+        var installed: Set<String> = []
+        /// The hosts that can't be reached.
+        var offline: Set<String> = []
         var nextProject = 1
         var nextItem = 1
         var nextChange: UInt64 = 1
@@ -64,13 +71,30 @@ package final class InMemoryDaemon: Sendable {
     private let state = LockIsolated(State())
     private let script: @Sendable (String) -> [Step]
     private let start: Date
+    private let sshConfigHosts: [String]
 
+    /// `sshHosts` are the hosts its ~/.ssh/config names.
     package init(
-        start: Date = Date(timeIntervalSince1970: 1_794_000_000),
+        start: Date = Date(timeIntervalSince1970: 1_794_000_000), sshHosts: [String] = [],
         script: @escaping @Sendable (String) -> [Step] = { [.say("You said: \($0)")] }
     ) {
         self.start = start
+        self.sshConfigHosts = sshHosts
         self.script = script
+    }
+
+    /// Makes `host` unreachable, as a dropped network would, or reachable
+    /// again.
+    package func setOffline(_ host: String, _ offline: Bool) {
+        state.withValue { state in
+            if offline { state.offline.insert(host) } else { state.offline.remove(host) }
+        }
+    }
+
+    /// The variables set for `host`'s agents, values and all, which the
+    /// client never sees.
+    package func env(of host: String) -> [String: String] {
+        state.value.env[host] ?? [:]
     }
 
     /// The sessions as they are now.
@@ -95,7 +119,13 @@ package final class InMemoryDaemon: Sendable {
                 try self.createProject(name: name, repositories: repositories, instructions: instructions)
             },
             sessions: { project in
-                self.state.value.sessions.filter { project == nil || $0.projectID == project }
+                self.state.withValue { state in
+                    state.sessions.filter { project == nil || $0.projectID == project }.map { session in
+                        var session = session
+                        session.hostOffline = session.host.map(state.offline.contains) ?? false
+                        return session
+                    }
+                }
             },
             start: { request in try self.startSession(request) },
             send: { session, text, mode in try self.send(session, text, mode) },
@@ -127,6 +157,13 @@ package final class InMemoryDaemon: Sendable {
                 try self.known(session)
                 return self.history(session)
             },
+            hosts: { self.state.value.hosts },
+            addHost: { name, destination in try self.addHost(name, destination) },
+            updateHost: { host, update in try self.updateHost(host, update) },
+            removeHost: { host in try self.removeHost(host) },
+            checkHost: { host in try self.checkHost(host) },
+            installHost: { host in try self.installHost(host) },
+            sshHosts: { self.sshConfigHosts },
             watch: { session in self.watch(session) }
         )
     }
@@ -172,6 +209,13 @@ package final class InMemoryDaemon: Sendable {
 
     private func startSession(_ request: StartRequest) throws -> Session {
         try state.withValue { state in
+            if let host = request.host {
+                guard state.hosts.contains(where: { $0.name == host }) else { throw Self.unknownHost(host) }
+                guard !state.offline.contains(host), state.installed.contains(host) else {
+                    throw DaemonError.refused(
+                        .hostUnavailable, message: "Couldn't reach \(host). Check it in Hosts, then try again.")
+                }
+            }
             let id = "s\(state.nextSession)"
             var directory = request.workingDirectory
             var projectID = request.projectID
@@ -650,6 +694,86 @@ extension InMemoryDaemon {
         }
         guard let (itemID, projectID) = kept else { return nil }
         return try shown(itemID, in: projectID)
+    }
+
+    private static func unknownHost(_ host: String) -> DaemonError {
+        .refused(.unknownHost, message: "There is no host \(host); add it in Hosts first.")
+    }
+
+    private func addHost(_ name: String, _ destination: String) throws -> RemoteHost {
+        let name = name.trimmingCharacters(in: .whitespaces)
+        let destination = destination.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." })
+        else {
+            throw DaemonError.refused(
+                .invalidRequest, message: "A host's name may hold only letters, digits, '-', '_' and '.'.")
+        }
+        guard !destination.isEmpty else {
+            throw DaemonError.refused(.invalidRequest, message: "Give the host's SSH destination, such as user@box.")
+        }
+        return try state.withValue { state in
+            guard !state.hosts.contains(where: { $0.name == name }) else {
+                throw DaemonError.refused(
+                    .invalidRequest, message: "There is a host \(name) already; pick another name.")
+            }
+            let host = RemoteHost(name: name, sshDestination: destination)
+            state.hosts.append(host)
+            return host
+        }
+    }
+
+    private func updateHost(_ name: String, _ update: HostUpdate) throws -> RemoteHost {
+        try state.withValue { state in
+            guard let index = state.hosts.firstIndex(where: { $0.name == name }) else { throw Self.unknownHost(name) }
+            var env = state.env[name] ?? [:]
+            for unset in update.unsetEnv { env[unset] = nil }
+            env.merge(update.setEnv) { _, new in new }
+            state.env[name] = env
+            state.hosts[index].envNames = env.keys.sorted()
+            if let script = update.setupScript { state.hosts[index].setupScript = script }
+            return state.hosts[index]
+        }
+    }
+
+    private func removeHost(_ name: String) throws {
+        try state.withValue { state in
+            guard state.hosts.contains(where: { $0.name == name }) else { throw Self.unknownHost(name) }
+            state.hosts.removeAll { $0.name == name }
+            state.env[name] = nil
+            state.installed.remove(name)
+            state.sessions.removeAll { $0.host == name }
+        }
+    }
+
+    private func checkHost(_ name: String) throws -> HostHealth {
+        try state.withValue { state in
+            guard let host = state.hosts.first(where: { $0.name == name }) else { throw Self.unknownHost(name) }
+            if state.offline.contains(name) {
+                return .unreachable("ssh couldn't connect to \(host.sshDestination ?? name). Check that it is up.")
+            }
+            guard state.installed.contains(name) else {
+                return .unreachable("Khodr's program isn't on \(name) yet. Install it, then check again.")
+            }
+            let env = state.env[name] ?? [:]
+            return .reachable(
+                HostStatus(
+                    programVersion: "0.0.0", platform: "Linux x86_64", freeDiskBytes: 120_000_000_000,
+                    copilot: .success("1.0.0"),
+                    githubToken: ["GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"].contains { env[$0] != nil },
+                    setup: host.setupScript.isEmpty ? nil : SetupResult(succeeded: true, output: "", time: start)))
+        }
+    }
+
+    private func installHost(_ name: String) throws -> String {
+        try state.withValue { state in
+            guard state.hosts.contains(where: { $0.name == name }) else { throw Self.unknownHost(name) }
+            guard !state.offline.contains(name) else {
+                throw DaemonError.refused(
+                    .hostUnavailable, message: "ssh couldn't connect to \(name). Check that it is up, then retry.")
+            }
+            state.installed.insert(name)
+            return "0.0.0"
+        }
     }
 
     /// Sessions waiting on you: approvals, then failures, then replies.

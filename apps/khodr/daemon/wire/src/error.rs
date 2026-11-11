@@ -35,6 +35,14 @@ pub enum WireError {
     },
 
     #[error(
+        "the other side sent a compressed message that isn't valid zstd; the connection may be corrupted, so reconnect, and update Khodr on both sides if it happens again"
+    )]
+    Decompress {
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
         "the other side didn't start with a hello, so it may not be khodrd; check the command that starts it. On SSH, a login script that prints text breaks the connection: keep it quiet when not interactive"
     )]
     NoHello,

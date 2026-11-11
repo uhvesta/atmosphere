@@ -15,6 +15,7 @@ swift_library(
     deps = [
         "//apps/khodr/clients/daemon",
         "//apps/khodr/features/board",
+        "//apps/khodr/features/hosts",
         "//apps/khodr/features/projects",
         "//apps/khodr/features/session",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
@@ -32,6 +33,7 @@ swift_library(
         ":app",
         "//apps/khodr/clients/daemon",
         "//apps/khodr/features/board",
+        "//apps/khodr/features/hosts",
         "//apps/khodr/features/projects",
         "//apps/khodr/features/session",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
@@ -58,6 +60,7 @@ flow_snapshot_test(
         ":app",
         "//apps/khodr/clients/daemon",
         "//apps/khodr/features/board",
+        "//apps/khodr/features/hosts",
         "//apps/khodr/features/projects",
         "//apps/khodr/features/session",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

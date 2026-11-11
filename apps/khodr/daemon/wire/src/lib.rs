@@ -2,7 +2,8 @@
 //!
 //! Each message is one [`pb::Envelope`], preceded by its length as a 4-byte
 //! big-endian integer. Both sides send a [`pb::Hello`] first and stop if the
-//! other speaks a different protocol version. After that, a [`Client`] sends
+//! other speaks a different protocol version. Envelopes to a peer whose hello
+//! accepts zstd may be compressed; the length's top bit says so. After that, a [`Client`] sends
 //! requests and a [`serve`]d [`Service`] answers each with one response, or
 //! with a response and a stream of items.
 
@@ -45,12 +46,13 @@ where
         protocol_version: pb::ProtocolVersion::Current.into(),
         role: role.into(),
         program_version: program_version.to_owned(),
+        accepts_zstd: true,
     };
     let hello = pb::Envelope {
         id: 0,
         body: Some(pb::envelope::Body::Hello(ours)),
     };
-    write(writer, &hello).await?;
+    write(writer, &hello, false).await?;
     let theirs = match read(reader).await? {
         Some(pb::Envelope {
             body: Some(pb::envelope::Body::Hello(hello)),

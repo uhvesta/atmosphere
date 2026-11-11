@@ -66,6 +66,8 @@ package struct ProjectsView: View {
                 .accessibilityLabel(
                     store.inbox.count == 1
                         ? Text("Inbox, 1 session waiting") : Text("Inbox, \(store.inbox.count) sessions waiting"))
+            Label("Hosts", systemImage: "server.rack")
+                .tag(SidebarItem.hosts)
             ForEach(store.projects) { project in
                 Section {
                     Label("Board", systemImage: "rectangle.split.3x1")
@@ -168,11 +170,21 @@ struct SessionRow: View {
             }
             Spacer()
             if let host = session.host {
-                Text(host)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .help("Runs on \(host)")
+                HStack(spacing: 2) {
+                    if session.hostOffline {
+                        Image(systemName: "wifi.slash")
+                            .imageScale(.small)
+                    }
+                    Text(host)
+                        .lineLimit(1)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(session.hostOffline ? "On \(host), offline" : "On \(host)")
+                .help(
+                    session.hostOffline
+                        ? "Can't reach \(host); this is the session as it last was" : "Runs on \(host)")
             }
             switch session.state {
             case .working:
@@ -292,6 +304,14 @@ package struct NewSessionView: View {
                     Text("Scripted").tag(Backend.scripted)
                 }
                 TextField("Model", text: $store.model, prompt: Text("The agent's default"))
+                if !store.hosts.isEmpty {
+                    Picker("Runs On", selection: $store.host) {
+                        Text("This Mac").tag(RemoteHost.ID?.none)
+                        ForEach(store.hosts) { host in
+                            Text(host.name).tag(RemoteHost.ID?.some(host.id))
+                        }
+                    }
+                }
                 Picker("Approvals", selection: $store.approvalMode) {
                     Text("Ask Every Time").tag(ApprovalMode.askEveryTime)
                     Text("Allow Edits").tag(ApprovalMode.allowEdits)
@@ -310,7 +330,7 @@ package struct NewSessionView: View {
                     Text("New Session in \(store.project.name)")
                 }
             } footer: {
-                Text("It works in its own copy of \(Self.list(store.project.repositories.map(\.name))).")
+                Text(footer)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -327,6 +347,14 @@ package struct NewSessionView: View {
             }
         }
         .alert($store.scope(state: \.alert, action: \.alert))
+        .task { await store.send(.task).finish() }
+    }
+
+    private var footer: String {
+        let names = Self.list(store.project.repositories.map(\.name))
+        guard let host = store.host else { return "It works in its own copy of \(names)." }
+        return "It works in its own copy of \(names) on \(host), cloned there from each repository's origin, "
+            + "so commits not pushed yet aren't in it."
     }
 }
 

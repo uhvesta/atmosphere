@@ -52,4 +52,13 @@ pub enum CliError {
         "khodrd stopped sending the session's events before it was idle; the message was sent, so read its history to see how far it got"
     )]
     WatchEnded,
+
+    #[error("{given:?} isn't NAME=VALUE; give the variable's name, =, then its value")]
+    NotAVariable { given: String },
+
+    #[error("{name} isn't set in this shell; set it, or pass --set {name}=VALUE")]
+    NoVariable { name: String },
+
+    #[error("host {host:?} can't be reached; see the problem above")]
+    Unreachable { host: String },
 }

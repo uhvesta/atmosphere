@@ -106,6 +106,7 @@ final class ProjectsFeatureTests: XCTestCase {
         } withDependencies: {
             $0.daemon = daemon.client
             $0.continuousClock = clock
+            $0.notifications = .previewValue
         }
         store.exhaustivity = .off
 
@@ -137,6 +138,7 @@ final class ProjectsFeatureTests: XCTestCase {
         await store.send(.refresh)
         await store.receive(\.loaded) {
             $0.failure = nil
+            $0.loadedOnce = true
         }
     }
 
@@ -274,5 +276,100 @@ final class ProjectsFeatureTests: XCTestCase {
             $0.selection = .session("s1")
         }
         await store.receive(\.delegate.openSession, session)
+    }
+
+    func testASessionThatComesToWaitIsNotifiedAndClickingItOpensIt() async throws {
+        let daemon = InMemoryDaemon()
+        let clock = TestClock()
+        let posted = LockIsolated<[Notice]>([])
+        let notified = expectation(description: "a notification posted")
+        let (clicks, click) = AsyncStream.makeStream(of: Session.ID.self)
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.continuousClock = clock
+            $0.notifications = NotificationClient(
+                authorize: { true },
+                post: { notice in
+                    posted.withValue { $0.append(notice) }
+                    notified.fulfill()
+                },
+                clicks: { clicks })
+        }
+        store.exhaustivity = .off
+
+        // Waiting already when the app opens: in the inbox, not news.
+        let old = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/old"))
+        try await daemon.client.send(old.id, "hi", .enqueue)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertEqual(posted.value, [])
+
+        let open = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/open"))
+        let other = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/other", name: "Fix the login"))
+        await clock.advance(by: .seconds(2))
+        await store.receive(\.loaded)
+        await store.send(.selected(.session(open.id)))
+        try await daemon.client.send(open.id, "hi", .enqueue)
+        try await daemon.client.send(other.id, "hi", .enqueue)
+        await clock.advance(by: .seconds(2))
+        await store.receive(\.loaded)
+        await fulfillment(of: [notified], timeout: 5)
+        XCTAssertEqual(posted.value.map(\.sessionID), [other.id])
+        XCTAssertEqual(posted.value.first?.title, "Fix the login")
+
+        // The same wait isn't news again.
+        await clock.advance(by: .seconds(2))
+        await store.receive(\.loaded)
+        XCTAssertEqual(posted.value.count, 1)
+
+        click.yield(other.id)
+        await store.receive(\.notificationClicked)
+        await store.receive(\.delegate.openSession)
+        XCTAssertEqual(store.state.selection, .session(other.id))
+        click.finish()
+        await task.cancel()
+    }
+
+    func testANewSessionCanRunOnAHost() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        _ = try await daemon.client.installHost("far")
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        let store = TestStore(initialState: NewSessionFeature.State(project: project)) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.hostsLoaded)
+        XCTAssertEqual(store.state.hosts.map(\.name), ["far"])
+        await store.send(\.binding.host, "far")
+        await store.send(.startTapped)
+        await store.receive(\.delegate.started)
+        XCTAssertEqual(daemon.sessions.first?.host, "far")
+    }
+
+    func testASessionOnAnUnreachableHostShowsOffline() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        _ = try await daemon.client.installHost("far")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/code", host: "far"))
+        daemon.setOffline("far", true)
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.sessions[id: session.id]?.hostOffline, true)
     }
 }

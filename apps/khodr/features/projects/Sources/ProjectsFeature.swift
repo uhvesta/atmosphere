@@ -14,6 +14,9 @@ package struct ProjectsFeature {
         package var sessions: IdentifiedArrayOf<Session> = []
         /// Every session waiting on you.
         package var inbox: [InboxEntry] = []
+        /// Whether the list was read yet: until then nothing is new, so
+        /// nothing is notified.
+        package var loadedOnce = false
         /// What's open beside the sidebar.
         package var selection: SidebarItem?
         /// Why the list couldn't be read, and what to do about it; nil once
@@ -87,6 +90,8 @@ package struct ProjectsFeature {
         case compareTapped(Session.ID, with: Session.ID)
         case updated(Session)
         case updateFailed(String)
+        /// The person clicked the notification for a session.
+        case notificationClicked(Session.ID)
         case destination(PresentationAction<Destination.Action>)
         case delegate(Delegate)
 
@@ -95,6 +100,7 @@ package struct ProjectsFeature {
             case openSession(Session)
             case openBoard(Project)
             case openInbox
+            case openHosts
         }
     }
 
@@ -103,8 +109,9 @@ package struct ProjectsFeature {
 
     @Dependency(\.daemon) var daemon
     @Dependency(\.continuousClock) var clock
+    @Dependency(\.notifications) var notifications
 
-    private enum CancelID { case refresh }
+    private enum CancelID { case refresh, clicks }
 
     package init() {}
 
@@ -112,23 +119,40 @@ package struct ProjectsFeature {
         Reduce { state, action in
             switch action {
             case .task:
-                return .run { send in
-                    while !Task.isCancelled {
-                        await send(await load())
-                        try await clock.sleep(for: Self.refreshInterval)
+                return .merge(
+                    .run { send in
+                        while !Task.isCancelled {
+                            await send(await load())
+                            try await clock.sleep(for: Self.refreshInterval)
+                        }
                     }
-                }
-                .cancellable(id: CancelID.refresh, cancelInFlight: true)
+                    .cancellable(id: CancelID.refresh, cancelInFlight: true),
+                    .run { send in
+                        for await session in await notifications.clicks() {
+                            await send(.notificationClicked(session))
+                        }
+                    }
+                    .cancellable(id: CancelID.clicks, cancelInFlight: true),
+                    .run { _ in _ = await notifications.authorize() }
+                )
 
             case .refresh:
                 return .run { send in await send(await load()) }
 
             case .loaded(let projects, let sessions, let inbox):
                 state.failure = nil
+                let notices = state.loadedOnce ? Self.notices(new: inbox, old: state.inbox, open: state.selection) : []
+                state.loadedOnce = true
                 state.inbox = inbox
                 state.projects = IdentifiedArray(uniqueElements: projects)
                 state.sessions = IdentifiedArray(sessions, uniquingIDsWith: { _, last in last })
-                return .none
+                guard !notices.isEmpty else { return .none }
+                return .run { _ in
+                    for notice in notices { await notifications.post(notice) }
+                }
+
+            case .notificationClicked(let id):
+                return .send(.selected(.session(id)))
 
             case .loadFailed(let message):
                 state.failure = message
@@ -148,6 +172,8 @@ package struct ProjectsFeature {
                 switch item {
                 case .inbox:
                     return .send(.delegate(.openInbox))
+                case .hosts:
+                    return .send(.delegate(.openHosts))
                 case .board(let id):
                     guard let project = state.projects[id: id] else { return .none }
                     return .send(.delegate(.openBoard(project)))
@@ -216,6 +242,13 @@ package struct ProjectsFeature {
         }
     }
 
+    /// What to tell the person about the sessions that came into the inbox,
+    /// or are there for another reason now, but the one they have open.
+    static func notices(new: [InboxEntry], old: [InboxEntry], open: SidebarItem?) -> [Notice] {
+        let before = Dictionary(old.map { ($0.id, $0.reason) }, uniquingKeysWith: { first, _ in first })
+        return new.filter { before[$0.id] != $0.reason && open != .session($0.id) }.map(Notice.init)
+    }
+
     private func load() async -> Action {
         do {
             async let projects = daemon.projects()
@@ -233,6 +266,7 @@ extension ProjectsFeature.Destination.State: Equatable {}
 /// A row of the sidebar to open.
 package enum SidebarItem: Hashable, Sendable {
     case inbox
+    case hosts
     case board(Project.ID)
     case session(Session.ID)
 }
@@ -386,6 +420,10 @@ package struct NewSessionFeature {
         /// Empty for the backend's default.
         package var model = ""
         package var approvalMode = ApprovalMode.askEveryTime
+        /// The hosts it could run on besides this Mac.
+        package var hosts: [RemoteHost] = []
+        /// Where it runs; nil for this Mac.
+        package var host: RemoteHost.ID?
         package var starting = false
         @Presents package var alert: AlertState<Never>?
 
@@ -398,6 +436,9 @@ package struct NewSessionFeature {
 
     package enum Action: BindableAction {
         case binding(BindingAction<State>)
+        /// The sheet appeared: reads the hosts to pick from.
+        case task
+        case hostsLoaded([RemoteHost])
         case startTapped
         case failed(String)
         case alert(PresentationAction<Never>)
@@ -420,12 +461,24 @@ package struct NewSessionFeature {
             case .binding, .alert, .delegate:
                 return .none
 
+            case .task:
+                return .run { send in
+                    // Without them, the session runs on this Mac.
+                    await send(.hostsLoaded((try? await daemon.hosts()) ?? []))
+                }
+
+            case .hostsLoaded(let hosts):
+                state.hosts = hosts
+                if let host = state.host, !hosts.contains(where: { $0.id == host }) { state.host = nil }
+                return .none
+
             case .startTapped:
                 guard !state.starting else { return .none }
                 state.starting = true
                 let model = state.model.trimmed
                 let request = StartRequest(
-                    backend: state.backend, name: state.name.trimmed, model: model.isEmpty ? nil : model,
+                    backend: state.backend, name: state.name.trimmed, host: state.host,
+                    model: model.isEmpty ? nil : model,
                     approvalMode: state.approvalMode, projectID: state.project.id, itemID: state.item?.id,
                     specs: state.item?.parentID == nil ? .item : state.specs)
                 return .run { send in

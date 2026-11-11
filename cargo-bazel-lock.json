@@ -1,5 +1,5 @@
 {
-  "checksum": "ec1268aeb8b106efb7153f262b1624e58fcdd7bfc226f1e7021dfdbb50d924f9",
+  "checksum": "7d808aa3c619b5a04ea0de86fb2761cd6d8cd311216ab97e7258195764c045dd",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -5281,6 +5281,10 @@
             "target": "prost"
           },
           {
+            "id": "ruzstd 0.9.1",
+            "target": "ruzstd"
+          },
+          {
             "id": "thiserror 2.0.21",
             "target": "thiserror"
           },
@@ -8989,6 +8993,45 @@
       ],
       "version": "1.0.23"
     },
+    "ruzstd 0.9.1": {
+      "common_attrs": {
+        "crate_features": [
+          "default",
+          "hash",
+          "std"
+        ],
+        "deps": [
+          {
+            "id": "twox-hash 2.1.5",
+            "target": "twox_hash"
+          }
+        ],
+        "edition": "2018"
+      },
+      "library_target_name": "ruzstd",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "ruzstd",
+      "package_url": "https://github.com/KillingSpark/zstd-rs",
+      "repository": {
+        "Http": {
+          "sha256": "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5",
+          "url": "https://static.crates.io/crates/ruzstd/0.9.1/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "ruzstd",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.9.1"
+    },
     "salsa20 0.11.0": {
       "common_attrs": {
         "deps": [
@@ -11164,6 +11207,37 @@
       ],
       "version": "1.1.3+spec-1.1.0"
     },
+    "twox-hash 2.1.5": {
+      "common_attrs": {
+        "crate_features": [
+          "xxhash64"
+        ],
+        "edition": "2021"
+      },
+      "library_target_name": "twox_hash",
+      "license": "MIT",
+      "license_file": "LICENSE.txt",
+      "license_ids": [
+        "MIT"
+      ],
+      "name": "twox-hash",
+      "package_url": "https://github.com/shepmaster/twox-hash",
+      "repository": {
+        "Http": {
+          "sha256": "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2",
+          "url": "https://static.crates.io/crates/twox-hash/2.1.5/download"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "twox_hash",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "2.1.5"
+    },
     "typed-path 0.13.0": {
       "common_attrs": {
         "edition": "2021"
@@ -13170,6 +13244,7 @@
     "regex 1.13.1",
     "rusqlite 0.42.0",
     "russh 0.65.1",
+    "ruzstd 0.9.1",
     "serde 1.0.229",
     "serde_json 1.0.154",
     "sha2 0.11.1",

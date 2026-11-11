@@ -43,10 +43,14 @@ impl Client {
         W: AsyncWrite + Unpin + Send + 'static,
     {
         let peer = handshake(&mut reader, &mut writer, role, program_version).await?;
+        let compress = peer.accepts_zstd;
         let (outgoing, mut queue) = mpsc::channel::<pb::Envelope>(STREAM_BUFFER);
         let writing = tokio::spawn(async move {
             while let Some(envelope) = queue.recv().await {
-                if frame::write(&mut writer, &envelope).await.is_err() {
+                if frame::write(&mut writer, &envelope, compress)
+                    .await
+                    .is_err()
+                {
                     return;
                 }
             }

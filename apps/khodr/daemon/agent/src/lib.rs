@@ -10,6 +10,7 @@
 //! queues and steers turns, holds approvals and forks.
 
 mod copilot;
+mod env;
 mod error;
 mod event;
 mod local_model;
@@ -23,6 +24,7 @@ use std::future::Future;
 use tokio::sync::broadcast;
 
 pub use copilot::{COPILOT_VERSION, CopilotError, CopilotOptions, CopilotProvider, CopilotRunner};
+pub use env::Env;
 pub use error::AgentError;
 pub use event::{
     ApprovalMode, Event, EventId, EventKind, ForkOptions, Parent, PermissionKind, SendMode,

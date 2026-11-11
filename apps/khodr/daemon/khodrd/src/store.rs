@@ -7,6 +7,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use khodr_agent::Repository;
+use khodr_wire::pb;
+use prost::Message as _;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::board::{Change, Item, ItemFields, ItemPatch, Priority, Status};
@@ -73,6 +75,17 @@ const MIGRATIONS: &[&str] = &["
         reverts INTEGER REFERENCES board_changes (id)
     );
     CREATE INDEX board_changes_by_project ON board_changes (project_id, id);
+", "
+    -- What the daemon last heard of each session on another machine, to
+    -- show while that machine can't be reached: its info, and its history
+    -- as last read, compressed. Both are protobuf.
+    CREATE TABLE remote_sessions (
+        id TEXT PRIMARY KEY,
+        host TEXT NOT NULL,
+        info BLOB NOT NULL,
+        history BLOB
+    );
+    CREATE INDEX remote_sessions_by_host ON remote_sessions (host);
 "];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -277,6 +290,105 @@ impl Store {
                 },
             )
             .optional()
+            .map_err(self.failed())
+    }
+
+    /// Keeps `sessions` as what `host` has now, forgetting any it no longer
+    /// lists.
+    pub fn cache_sessions(
+        &self,
+        host: &str,
+        sessions: &[pb::SessionInfo],
+    ) -> Result<(), StoreError> {
+        let mut connection = self.lock();
+        let transaction = connection.transaction().map_err(self.failed())?;
+        let kept = (|| {
+            transaction.execute(
+                "CREATE TEMP TABLE IF NOT EXISTS listed (id TEXT PRIMARY KEY)",
+                [],
+            )?;
+            transaction.execute("DELETE FROM temp.listed", [])?;
+            for session in sessions {
+                transaction.execute(
+                    "INSERT INTO remote_sessions (id, host, info) VALUES (?1, ?2, ?3)
+                     ON CONFLICT (id) DO UPDATE SET host = excluded.host, info = excluded.info",
+                    params![session.id, host, session.encode_to_vec()],
+                )?;
+                transaction.execute(
+                    "INSERT OR IGNORE INTO temp.listed (id) VALUES (?1)",
+                    [&session.id],
+                )?;
+            }
+            transaction.execute(
+                "DELETE FROM remote_sessions WHERE host = ?1 AND id NOT IN (SELECT id FROM temp.listed)",
+                [host],
+            )?;
+            Ok(())
+        })();
+        kept.and_then(|()| transaction.commit())
+            .map_err(self.failed())
+    }
+
+    /// What `host` last listed.
+    pub fn cached_sessions(&self, host: &str) -> Result<Vec<pb::SessionInfo>, StoreError> {
+        let connection = self.lock();
+        let mut statement = connection
+            .prepare("SELECT info FROM remote_sessions WHERE host = ?1 ORDER BY id")
+            .map_err(self.failed())?;
+        let rows = statement
+            .query_map([host], |row| row.get::<_, Vec<u8>>(0))
+            .map_err(self.failed())?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            // A row this build can't read is left out, as if never cached.
+            if let Ok(session) = pb::SessionInfo::decode(row.map_err(self.failed())?.as_slice()) {
+                sessions.push(session);
+            }
+        }
+        Ok(sessions)
+    }
+
+    /// Keeps `history` as `session`'s, if the session is cached.
+    pub fn cache_history(&self, session: &str, history: &pb::History) -> Result<(), StoreError> {
+        let compressed = ruzstd::encoding::compress_to_vec(
+            history.encode_to_vec().as_slice(),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        self.lock()
+            .execute(
+                "UPDATE remote_sessions SET history = ?2 WHERE id = ?1",
+                params![session, compressed],
+            )
+            .map(drop)
+            .map_err(self.failed())
+    }
+
+    /// `session`'s history as last read, if it was.
+    pub fn cached_history(&self, session: &str) -> Result<Option<pb::History>, StoreError> {
+        let compressed: Option<Vec<u8>> = self
+            .lock()
+            .query_row(
+                "SELECT history FROM remote_sessions WHERE id = ?1",
+                [session],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(self.failed())?
+            .flatten();
+        Ok(compressed.and_then(|compressed| {
+            let mut bytes = Vec::new();
+            let mut decoder =
+                ruzstd::decoding::StreamingDecoder::new(compressed.as_slice()).ok()?;
+            std::io::Read::read_to_end(&mut decoder, &mut bytes).ok()?;
+            pb::History::decode(bytes.as_slice()).ok()
+        }))
+    }
+
+    /// Forgets what was cached of `host`'s sessions.
+    pub fn forget_host(&self, host: &str) -> Result<(), StoreError> {
+        self.lock()
+            .execute("DELETE FROM remote_sessions WHERE host = ?1", [host])
+            .map(drop)
             .map_err(self.failed())
     }
 
@@ -886,6 +998,52 @@ mod tests {
                 path: "/code/app".into(),
             }]
         );
+    }
+
+    #[test]
+    fn a_hosts_sessions_are_kept_with_their_history_until_it_stops_listing_them() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let store = store(dir.path());
+        let session = |id: &str| pb::SessionInfo {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            ..pb::SessionInfo::default()
+        };
+        let history = pb::History {
+            events: vec![pb::SessionEvent {
+                id: "e1".to_owned(),
+                ..pb::SessionEvent::default()
+            }],
+        };
+        let cached = |store: &Store| -> Vec<String> {
+            store
+                .cached_sessions("build")
+                .unwrap_or_else(|error| panic!("{error}"))
+                .into_iter()
+                .map(|session| session.id)
+                .collect()
+        };
+
+        store
+            .cache_sessions("build", &[session("a"), session("b")])
+            .unwrap_or_else(|error| panic!("{error}"));
+        store
+            .cache_history("a", &history)
+            .unwrap_or_else(|error| panic!("{error}"));
+        let reopened = Store::open(&dir.path().join("khodr.sqlite3"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(cached(&reopened), ["a", "b"]);
+        assert_eq!(
+            reopened.cached_history("a").ok().flatten(),
+            Some(history.clone())
+        );
+
+        reopened
+            .cache_sessions("build", &[session("a")])
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(cached(&reopened), ["a"]);
+        assert_eq!(reopened.cached_history("a").ok().flatten(), Some(history));
+        assert_eq!(reopened.cached_history("b").ok().flatten(), None);
     }
 
     #[test]

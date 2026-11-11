@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
+use crate::env::Env;
 use crate::error::AgentError;
 use crate::event::{Event, EventKind, PermissionKind};
 use crate::paths::inside;
@@ -101,6 +102,7 @@ pub enum LocalModelError {
 pub struct LocalModelRunner {
     defaults: LocalModelConfig,
     http: ureq::Agent,
+    env: Env,
 }
 
 impl LocalModelRunner {
@@ -111,7 +113,18 @@ impl LocalModelRunner {
             .timeout_connect(Some(Duration::from_secs(10)))
             .build()
             .into();
-        Self { defaults, http }
+        Self {
+            defaults,
+            http,
+            env: Env::default(),
+        }
+    }
+
+    /// Sets `env` for the commands its sessions run.
+    #[must_use]
+    pub fn with_env(mut self, env: Env) -> Self {
+        self.env = env;
+        self
     }
 }
 
@@ -153,7 +166,8 @@ impl Runner for LocalModelRunner {
                     tool: call.name.clone(),
                     arguments_json: call.arguments.clone(),
                 })?;
-                let (success, output) = run_tool(&turn, &call.name, &call.arguments).await?;
+                let (success, output) =
+                    run_tool(&turn, &self.env, &call.name, &call.arguments).await?;
                 turn.emit(EventKind::ToolCompleted {
                     call_id,
                     success,
@@ -510,7 +524,12 @@ struct WriteArguments {
 
 /// Runs a tool the model called. What goes wrong is told to the model, as
 /// the tool's failed output, so it can try another way.
-async fn run_tool(turn: &Turn, name: &str, arguments: &str) -> Result<(bool, String), AgentError> {
+async fn run_tool(
+    turn: &Turn,
+    env: &Env,
+    name: &str,
+    arguments: &str,
+) -> Result<(bool, String), AgentError> {
     let root = turn.record().working_directory.clone();
     let bad = |error: serde_json::Error| (false, format!("Bad arguments for {name}: {error}"));
     Ok(match name {
@@ -521,7 +540,7 @@ async fn run_tool(turn: &Turn, name: &str, arguments: &str) -> Result<(bool, Str
                     .ask(PermissionKind::Shell, format!("Run `{command}`"))
                     .await?
                 {
-                    shell(&root, &command).await
+                    shell(&root, env, &command).await
                 } else {
                     denied()
                 }
@@ -557,10 +576,11 @@ async fn run_tool(turn: &Turn, name: &str, arguments: &str) -> Result<(bool, Str
     })
 }
 
-async fn shell(root: &Path, command: &str) -> (bool, String) {
+async fn shell(root: &Path, env: &Env, command: &str) -> (bool, String) {
     let child = tokio::process::Command::new("/bin/sh")
         .arg("-c")
         .arg(command)
+        .envs(env.vars())
         .current_dir(root)
         .stdin(Stdio::null())
         .kill_on_drop(true)

@@ -24,6 +24,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 
+use crate::env::Env;
 use crate::error::AgentError;
 use crate::event::{EventKind, PermissionKind};
 use crate::runtime::{Runner, Turn};
@@ -45,8 +46,8 @@ pub struct CopilotOptions {
     pub program: PathBuf,
     /// Where to keep which of our sessions is which of Copilot's.
     pub state: PathBuf,
-    /// Set for the program, such as `COPILOT_HOME`.
-    pub env: Vec<(String, String)>,
+    /// Set for the program, such as `COPILOT_HOME`, when it starts.
+    pub env: Env,
     /// For sessions that name none: a model server to use instead of GitHub's.
     pub provider: Option<CopilotProvider>,
 }
@@ -159,7 +160,7 @@ impl CopilotRunner {
         if let Some(running) = cli.as_ref().filter(|cli| cli.is_running()) {
             return Ok(running.clone());
         }
-        let started = Cli::start(&self.options.program, &self.options.env).await?;
+        let started = Cli::start(&self.options.program, &self.options.env.vars()).await?;
         *cli = Some(started.clone());
         Ok(started)
     }
@@ -210,14 +211,19 @@ impl CopilotRunner {
     }
 
     /// Waits for the abort of the session's last turn, if it was stopped.
-    async fn settle(&self, session: &str) {
+    /// True if it was.
+    async fn settle(&self, session: &str) -> bool {
         let aborting = self
             .aborting
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(session);
-        if let Some(aborting) = aborting {
-            let _ = aborting.await;
+        match aborting {
+            Some(aborting) => {
+                let _ = aborting.await;
+                true
+            }
+            None => false,
         }
     }
 }
@@ -314,7 +320,7 @@ impl Runner for CopilotRunner {
         let session = self
             .open(&cli, &turn, provider.as_ref(), &mut links, &path)
             .await?;
-        self.settle(&session).await;
+        let after_abort = self.settle(&session).await;
 
         let mut events = cli.subscribe(&session);
         let mut stop = StopOnDrop {
@@ -334,6 +340,8 @@ impl Runner for CopilotRunner {
             links,
             path,
             failure: None,
+            // The aborted turn's end can come after the abort answered.
+            started: !after_abort,
         };
         let mut steer = tokio::time::interval(STEER_EVERY);
         loop {
@@ -410,6 +418,9 @@ struct Playing<'a> {
     path: PathBuf,
     /// What Copilot reported going wrong; the turn fails with it at its end.
     failure: Option<CopilotError>,
+    /// Whether Copilot has taken this turn's prompt; until then, an idle is
+    /// another turn's.
+    started: bool,
 }
 
 impl Playing<'_> {
@@ -418,8 +429,9 @@ impl Playing<'_> {
         let data = &event["data"];
         let text = |field: &str| data[field].as_str().unwrap_or_default().to_owned();
         let kind = match event["type"].as_str().unwrap_or_default() {
-            "session.idle" => return Ok(true),
+            "session.idle" => return Ok(self.started),
             "user.message" => {
+                self.started = true;
                 self.link_user_message(event, &text("content"))?;
                 return Ok(false);
             }

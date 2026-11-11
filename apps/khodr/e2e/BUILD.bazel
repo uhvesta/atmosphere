@@ -51,6 +51,28 @@ rust_test(
     ],
 )
 
+# A host Khodr manages over SSH: installed, set up, a project cloned there,
+# a dropped connection, and the host going away.
+rust_test(
+    name = "host_over_ssh_test",
+    srcs = [
+        "common.rs",
+        "host_over_ssh_test.rs",
+    ],
+    crate_root = "host_over_ssh_test.rs",
+    data = [
+        "//apps/khodr/daemon/cli:khodr",
+        "//apps/khodr/daemon/khodrd",
+        "//apps/khodr/e2e/sshd:test_sshd",
+    ],
+    env = {
+        "KHODR": "$(rootpath //apps/khodr/daemon/cli:khodr)",
+        "KHODRD": "$(rootpath //apps/khodr/daemon/khodrd)",
+        "TEST_SSHD": "$(rootpath //apps/khodr/e2e/sshd:test_sshd)",
+    },
+    deps = ["@crates//:tempfile"],
+)
+
 # A scripted agent edits a file in a project through an approval.
 rust_test(
     name = "edit_through_approval_test",
