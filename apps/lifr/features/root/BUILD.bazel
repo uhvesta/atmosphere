@@ -12,6 +12,7 @@ _DEPS = [
     "//apps/lifr/clients/pasteboard",
     "//apps/lifr/clients/reminders",
     "//apps/lifr/clients/session",
+    "//apps/lifr/clients/spotlight",
     "//apps/lifr/clients/store",
     "//apps/lifr/clients/sync",
     "//apps/lifr/core",

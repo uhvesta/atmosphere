@@ -9,6 +9,7 @@ import LifrRemindersClient
 import LifrRoot
 import LifrSessionClient
 import LifrShortcuts
+import LifrSpotlightClient
 import LifrStoreClient
 import LifrSyncClient
 import LifrSyncReview
@@ -26,7 +27,8 @@ final class RootFlowTests: XCTestCase {
 
     private func app(
         _ platform: RootFeature.Platform, _ client: StoreClient, session: InMemorySession = InMemorySession(),
-        sync: SyncClient = .off, glance: GlanceClient = .testValue, lock: LockClient = .testValue
+        sync: SyncClient = .off, glance: GlanceClient = .testValue, lock: LockClient = .testValue,
+        spotlight: SpotlightClient = .testValue
     ) async -> (TestStoreOf<RootFeature>, TestStoreTask) {
         let store = TestStore(initialState: RootFeature.State(platform: platform)) {
             RootFeature()
@@ -38,6 +40,7 @@ final class RootFlowTests: XCTestCase {
             $0.reminders = RemindersClient.inMemory().client
             $0.sync = sync
             $0.glance = glance
+            $0.spotlight = spotlight
             $0.lock = lock
             $0.continuousClock = TestClock()
             $0.date = DateGenerator {
@@ -339,6 +342,33 @@ final class RootFlowTests: XCTestCase {
         await phone.receive(\.settings.lockConfirmed)
         XCTAssertEqual(written.value?.isLocked, false)
         XCTAssertEqual(written.value?.rows.map(\.title), ["Stretch"])
+        await task.cancel()
+    }
+
+    /// Search lists every task but those in the Trash, and none while the
+    /// lock is on.
+    func testSearchListsTasksOutOfTheTrashAndNoneWhileLocked() async throws {
+        let run = records.task("Long run", in: health, due: 0)
+        _ = records.task("Stretch", in: health, status: .done)
+        let old = records.task("Old plan", in: health)
+        records.trash(old)
+        let client = StoreClient.inMemory(records.workspace)
+        let (spotlight, indexed) = SpotlightClient.inMemory()
+        let (phone, task) = await app(.phone, client, lock: .always(), spotlight: spotlight)
+        await phone.receive(\.remindersScheduled)
+
+        XCTAssertEqual(Set(indexed.value?.map(\.title) ?? []), ["Long run", "Stretch"])
+        XCTAssertEqual(indexed.value?.first { $0.id == run.id }?.detail.hasSuffix("Health"), true)
+
+        await phone.send(.settings(.lockToggled(true)))
+        await phone.receive(\.settings.lockConfirmed)
+        await phone.receive(\.remindersScheduled)
+        XCTAssertEqual(indexed.value, [])
+
+        await phone.send(.settings(.lockToggled(false)))
+        await phone.receive(\.settings.lockConfirmed)
+        await phone.receive(\.remindersScheduled)
+        XCTAssertEqual(indexed.value?.count, 2)
         await task.cancel()
     }
 

@@ -37,6 +37,7 @@ swift_library(
         "//apps/lifr/clients/search_live",
         "//apps/lifr/clients/session",
         "//apps/lifr/clients/session_live",
+        "//apps/lifr/clients/spotlight",
         "//apps/lifr/clients/store",
         "//apps/lifr/clients/store_live",
         "//apps/lifr/clients/sync",

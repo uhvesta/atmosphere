@@ -11,6 +11,7 @@ import LifrProcrastinated
 import LifrQuickAdd
 import LifrSearch
 import LifrSettings
+import LifrSpotlightClient
 import LifrSyncReview
 import LifrTaskList
 import LifrToday
@@ -130,6 +131,9 @@ package struct RootView: View {
         .modifier(RegistersUndo(store: store))
         .alert($store.scope(state: \.notice, action: \.notice))
         .onOpenURL { store.send(.urlOpened($0)) }
+        .onContinueUserActivity(SpotlightClient.activityType) { activity in
+            if let id = SpotlightClient.task(in: activity) { store.send(.linkOpened(.task(id, picksStatus: false))) }
+        }
         .sheet(item: $store.scope(state: \.quickAdd, action: \.quickAdd)) { store in
             NavigationStack { QuickAddView(store: store) }
                 .sheetLayout()

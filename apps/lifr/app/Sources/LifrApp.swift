@@ -21,6 +21,7 @@ import LifrSearchClient
 import LifrSearchLive
 import LifrSessionClient
 import LifrShortcuts
+import LifrSpotlightClient
 import LifrStoreClient
 import LifrStoreLive
 import LifrSyncClient
@@ -150,6 +151,8 @@ private enum Storage {
         $0.sync = sync
         $0.lock = .live()
         $0.glance = .live(file: GlanceFile.shared)
+        // Sample records stay out of the device's search.
+        if !ProcessInfo.processInfo.arguments.contains(sampleDataArgument) { $0.spotlight = .live() }
     }
 
     /// Syncs the records with the person's other devices through iCloud,

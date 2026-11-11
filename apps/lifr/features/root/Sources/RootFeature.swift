@@ -18,6 +18,7 @@ import LifrRemindersClient
 import LifrSearch
 import LifrSessionClient
 import LifrSettings
+import LifrSpotlightClient
 import LifrStoreClient
 import LifrSyncClient
 import LifrSyncReview
@@ -416,7 +417,7 @@ package struct RootFeature {
         case approval(PresentationAction<ApprovalFeature.Action>)
     }
 
-    private enum CancelID { case reminders, glance, syncTimer }
+    private enum CancelID { case reminders, glance, spotlight, syncTimer }
 
     /// How often sync runs while the app is open, for what other devices
     /// sent.
@@ -434,6 +435,7 @@ package struct RootFeature {
     @Dependency(\.timeZone) private var timeZone
     @Dependency(\.lock) private var lock
     @Dependency(\.glance) private var glance
+    @Dependency(\.spotlight) private var spotlight
     @Dependency(\.bugRecorder) private var bugRecorder
     @Dependency(\.uuid) private var uuid
 
@@ -457,9 +459,10 @@ package struct RootFeature {
                     return .send(list(slot, .detail(.presented(.statusPickerRequested))))
                 }
             }
-            // The widgets show only counts while the lock is on.
+            // The widgets show only counts while the lock is on, and search
+            // lists no task.
             .onChange(of: \.locksApp) { _, _ in
-                Reduce { state, _ in .merge(writeGlance(state), scheduleReminders(state)) }
+                Reduce { state, _ in .merge(writeGlance(state), indexSpotlight(state), scheduleReminders(state)) }
             }
             // The timer restarts at the new pace.
             .onChange(of: \.syncsContinuously) { _, _ in
@@ -1132,7 +1135,8 @@ package struct RootFeature {
         state.board?.list.show(snapshot, now: now, timeZone: timeZone)
         state.settings.show(snapshot)
         state.conversations.show(snapshot)
-        return .merge(effects + [savedFilterShown, writeGlance(state), scheduleReminders(state)])
+        return .merge(
+            effects + [savedFilterShown, writeGlance(state), indexSpotlight(state), scheduleReminders(state)])
     }
 
     /// Schedules this device's notifications for the reminders in `state`,
@@ -1174,6 +1178,24 @@ package struct RootFeature {
             asOf: now, from: start, until: tomorrow, rows: rows(at: now), locked: state.locksApp, later: [next])
         return .run { [glance] _ in await glance.write(today) }
             .cancellable(id: CancelID.glance)
+    }
+
+    /// Lists every task not in the Trash in the system's search, or none
+    /// while the lock is on.
+    private func indexSpotlight(_ state: State) -> Effect<Action> {
+        guard let workspace = state.workspace else { return .none }
+        let items: [SpotlightItem] =
+            state.locksApp
+            ? []
+            : workspace.tasks.values.filter { $0.deletedAt == nil }.sorted { $0.createdAt < $1.createdAt }.map {
+                let avenue = workspace.avenues[$0.avenueID]?.name
+                let code = workspace.displayCode(of: $0)
+                return SpotlightItem(
+                    id: $0.id, title: $0.title, detail: avenue.map { "\(code) · \($0)" } ?? code,
+                    details: $0.details)
+            }
+        return .run { [spotlight] _ in await spotlight.index(items) }
+            .cancellable(id: CancelID.spotlight, cancelInFlight: true)
     }
 
     /// Follows a link: a task from wherever the person is, Today, a day in
