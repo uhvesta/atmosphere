@@ -53,7 +53,7 @@ final class AppFeatureTests: XCTestCase {
         }
         store.exhaustivity = .off
 
-        await store.send(\.session.forkTapped, nil)
+        await store.send(\.session.forkTapped, (before: nil, chatOnly: false))
         await store.receive(\.session.delegate.openSession)
         await store.receive(\.sidebar.loaded)
         let fork = try XCTUnwrap(store.state.session?.session)

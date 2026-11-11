@@ -5,6 +5,7 @@
     [Row/OutlineRow, selected] ""
       [StaticText] "" value: "Release notes"
   [StaticText] "" value: "Release notes"
+  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is"
   [StaticText] "" value: "Approvals"
   [PopUpButton] "" value: "Allow Everything" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"

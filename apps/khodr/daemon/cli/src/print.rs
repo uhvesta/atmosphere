@@ -67,6 +67,15 @@ pub fn event(event: &pb::SessionEvent) -> String {
                 usage.model, usage.input_tokens, usage.output_tokens, usage.premium_requests
             ),
         ),
+        Some(Kind::Checkpoint(checkpoint)) => (
+            "checkpoint",
+            checkpoint
+                .snapshots
+                .iter()
+                .map(|snapshot| format!("{}={}", snapshot.name, snapshot.commit))
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
         None => ("unknown", String::new()),
     };
     format!("{}\t{kind}\t{}", event.id, detail.replace('\n', "\\n"))
@@ -80,11 +89,16 @@ fn or_dash(text: &str) -> String {
     }
 }
 
-/// `<id>\t<host>\t<state>\t<parent>\t<project>\t<approval mode>\t<backend>\t<model>\t<name>`,
-/// with `-` for this Mac, no parent, no project or the default model.
+/// `<id>\t<host>\t<state>\t<parent>\t<project>\t<approval mode>\t<backend>\t<model>\t<marks>\t<working directory>\t<name>`,
+/// with `-` for this Mac, no parent, no project, the default model or no
+/// marks. The marks are `archived` and `keeper`, joined by commas.
 pub fn session(session: &pb::SessionInfo) -> String {
+    let marks: Vec<&str> = [(session.archived, "archived"), (session.keeper, "keeper")]
+        .into_iter()
+        .filter_map(|(set, mark)| set.then_some(mark))
+        .collect();
     format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         session.id,
         or_dash(&session.host),
         session.state().as_str_name(),
@@ -93,11 +107,35 @@ pub fn session(session: &pb::SessionInfo) -> String {
         session.approval_mode().as_str_name(),
         session.backend().as_str_name(),
         or_dash(&session.model),
+        or_dash(&marks.join(",")),
+        or_dash(&session.working_directory),
         session.name
     )
 }
 
-/// `<id>\t<repository>\t<name>`.
+/// `<id>\t<repositories>\t<name>`, each repository as `NAME=PATH`, joined
+/// by commas.
 pub fn project(project: &pb::Project) -> String {
-    format!("{}\t{}\t{}", project.id, project.repository, project.name)
+    let repositories: Vec<String> = project
+        .repositories
+        .iter()
+        .map(|repository| format!("{}={}", repository.name, repository.path))
+        .collect();
+    format!(
+        "{}\t{}\t{}",
+        project.id,
+        repositories.join(","),
+        project.name
+    )
+}
+
+/// Each repository's diff; with several, each after a `# <name>` line.
+pub fn changes(changes: &pb::Changes) -> String {
+    match changes.repositories.as_slice() {
+        [only] => only.patch.clone(),
+        all => all
+            .iter()
+            .map(|repository| format!("# {}\n{}", repository.name, repository.patch))
+            .collect(),
+    }
 }

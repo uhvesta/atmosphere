@@ -44,7 +44,7 @@ final class ForkFromSwiftTests: XCTestCase {
             [.user("hello"), .assistant("hi there"), .user("what now"), .assistant("something else")])
         let second = try XCTUnwrap(history.first { $0.kind == .userMessage("what now") })
 
-        let fork = try await client.fork(session.id, second.id, "fork")
+        let fork = try await client.fork(session.id, second.id, "fork", false)
         XCTAssertEqual(fork.parentID, session.id)
         XCTAssertEqual(fork.forkedBeforeEventID, second.id)
         XCTAssertEqual(fork.host, "remote")

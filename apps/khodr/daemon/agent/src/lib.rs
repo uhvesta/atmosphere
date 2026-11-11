@@ -3,7 +3,7 @@
 //! Every backend (Copilot, a local model, the scripted one tests use)
 //! implements [`Agent`], so nothing above it knows which one runs. The
 //! interface is deliberately narrow: start, send, approve, abort, fork, read
-//! and watch history.
+//! and watch history, update a session, and read what it changed.
 //!
 //! [`LocalAgent`] implements it in process for any [`Runner`], which only has
 //! to play one turn. It keeps each session's history as JSON lines on disk,
@@ -26,8 +26,9 @@ pub use copilot::{COPILOT_VERSION, CopilotError, CopilotOptions, CopilotProvider
 pub use error::AgentError;
 pub use event::{
     ApprovalMode, Event, EventId, EventKind, ForkOptions, Parent, PermissionKind, SendMode,
-    SessionId, SessionRecord, SessionState, StartOptions,
+    SessionId, SessionRecord, SessionState, SessionUpdate, StartOptions,
 };
+pub use khodr_workspace::{Changes, Checkout, Repository, Snapshot, Workspaces};
 pub use local_model::{DEFAULT_BASE_URL, LocalModelConfig, LocalModelError, LocalModelRunner};
 pub use runtime::{LocalAgent, Runner, Turn};
 pub use scripted::{Rule, Script, ScriptedError, ScriptedRunner, Step};
@@ -95,4 +96,19 @@ pub trait Agent: Send + Sync {
     -> impl Future<Output = Result<Watch, Self::Error>> + Send;
 
     fn sessions(&self) -> impl Future<Output = Result<Vec<SessionRecord>, Self::Error>> + Send;
+
+    /// Renames, archives or unarchives the session, or marks it as the
+    /// keeper, and returns its record after.
+    fn update(
+        &self,
+        session: &SessionId,
+        update: SessionUpdate,
+    ) -> impl Future<Output = Result<SessionRecord, Self::Error>> + Send;
+
+    /// What the session changed in each of its repositories since its copy
+    /// was made; none for a session without repositories.
+    fn changes(
+        &self,
+        session: &SessionId,
+    ) -> impl Future<Output = Result<Vec<Changes>, Self::Error>> + Send;
 }

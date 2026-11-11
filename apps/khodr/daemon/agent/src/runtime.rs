@@ -16,9 +16,11 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use crate::error::AgentError;
+use khodr_workspace::{Changes, Snapshot, WorkspaceError, Workspaces};
+
 use crate::event::{
     ApprovalMode, Event, EventKind, ForkOptions, Parent, PermissionKind, SendMode, SessionId,
-    SessionRecord, SessionState, StartOptions,
+    SessionRecord, SessionState, SessionUpdate, StartOptions,
 };
 use crate::log::EventLog;
 use crate::{Agent, Watch};
@@ -121,6 +123,8 @@ pub struct LocalAgent<R> {
     root: PathBuf,
     runner: Arc<R>,
     sessions: Mutex<HashMap<SessionId, Arc<Session>>>,
+    /// Where sessions that work in repositories get their copies of them.
+    workspaces: Option<Arc<Workspaces>>,
 }
 
 struct Session {
@@ -225,7 +229,56 @@ impl<R: Runner> LocalAgent<R> {
             root,
             runner: Arc::new(runner),
             sessions: Mutex::new(sessions),
+            workspaces: None,
         })
+    }
+
+    /// Lets sessions work in repositories, each in its own copy of them
+    /// made by `workspaces`.
+    #[must_use]
+    pub fn with_workspaces(mut self, workspaces: Workspaces) -> Self {
+        self.workspaces = Some(Arc::new(workspaces));
+        self
+    }
+
+    fn workspaces(&self, session: &SessionId) -> Result<&Workspaces, AgentError> {
+        self.workspaces
+            .as_deref()
+            .ok_or_else(|| AgentError::NoWorkspaces {
+                session: session.clone(),
+            })
+    }
+
+    /// Snapshots and removes the session's own worktrees; a fork of the chat
+    /// only leaves its parent's alone.
+    async fn put_away(&self, session: &Session) -> Result<(), AgentError> {
+        let record = session.lock().record.clone();
+        let owned: Vec<_> = record
+            .checkouts
+            .iter()
+            .filter(|checkout| checkout.owner == session.id.as_str())
+            .cloned()
+            .collect();
+        if !owned.is_empty() {
+            let workspaces = self.workspaces(&session.id)?;
+            if let Some(snapshots) = checkpoint(session, Some(workspaces)).await? {
+                session
+                    .log
+                    .append(Event::now(EventKind::Checkpoint { snapshots }))?;
+            }
+            workspaces
+                .remove(&owned)
+                .await
+                .map_err(workspace_failed(&session.id))?;
+        }
+        let mut control = session.lock();
+        let record = SessionRecord {
+            checkouts: Vec::new(),
+            ..control.record.clone()
+        };
+        save(&session.dir, &record)?;
+        control.record = record;
+        Ok(())
     }
 
     fn session(&self, id: &SessionId) -> Result<Arc<Session>, AgentError> {
@@ -271,6 +324,7 @@ impl<R: Runner> LocalAgent<R> {
         let handle = tokio::spawn(drive(
             session.clone(),
             self.runner.clone(),
+            self.workspaces.clone(),
             generation,
             text,
         ));
@@ -283,9 +337,16 @@ impl<R: Runner> LocalAgent<R> {
 
 /// Plays `text`, then each queued message, until the queue is empty or the
 /// driver is stopped.
-async fn drive<R: Runner>(session: Arc<Session>, runner: Arc<R>, generation: u64, text: String) {
+async fn drive<R: Runner>(
+    session: Arc<Session>,
+    runner: Arc<R>,
+    workspaces: Option<Arc<Workspaces>>,
+    generation: u64,
+    text: String,
+) {
     let mut text = text;
     loop {
+        let prepared = prepare(&session, workspaces.as_deref()).await;
         {
             let mut control = session.lock();
             if !control.is_current(generation) {
@@ -295,22 +356,26 @@ async fn drive<R: Runner>(session: Arc<Session>, runner: Arc<R>, generation: u64
             session.note(EventKind::UserMessage { text: text.clone() });
             session.note(EventKind::TurnStarted);
         }
-        let result = runner
-            .clone()
-            .run_turn(Turn {
-                session: session.clone(),
-                text,
-            })
-            .await;
+        let result = match prepared {
+            Ok(()) => runner
+                .clone()
+                .run_turn(Turn {
+                    session: session.clone(),
+                    text,
+                })
+                .await
+                .map_err(|error| describe(&error)),
+            Err(error) => Err(describe(&error)),
+        };
+        let checkpoint = checkpoint(&session, workspaces.as_deref()).await;
         let mut control = session.lock();
         if !control.is_current(generation) {
             return;
         }
-        if let Err(error) = result {
-            session.note(EventKind::Failed {
-                message: describe(&error),
-            });
+        if let Err(message) = result {
+            session.note(EventKind::Failed { message });
         }
+        note_checkpoint(&session, checkpoint);
         session.note(EventKind::TurnEnded { aborted: false });
         control.turn_open = false;
         control.steering.clear();
@@ -330,15 +395,26 @@ impl<R: Runner> Agent for LocalAgent<R> {
     type Error = AgentError;
 
     async fn start(&self, options: StartOptions) -> Result<SessionRecord, AgentError> {
+        let id = SessionId::random();
+        let working_directory = if options.repositories.is_empty() {
+            options.working_directory
+        } else {
+            self.workspaces(&id)?
+                .working_directory(id.as_str(), &options.repositories)
+        };
         let record = SessionRecord {
-            id: SessionId::random(),
+            id,
             name: options.name,
-            working_directory: options.working_directory,
+            working_directory,
             model: options.model,
             instructions: options.instructions,
             backend_config: options.backend_config,
             parent: None,
             approval: options.approval,
+            repositories: options.repositories,
+            checkouts: Vec::new(),
+            archived: false,
+            keeper: false,
         };
         self.create(record.clone(), Vec::new())?;
         Ok(record)
@@ -347,6 +423,11 @@ impl<R: Runner> Agent for LocalAgent<R> {
     async fn send(&self, id: &SessionId, text: String, mode: SendMode) -> Result<(), AgentError> {
         let session = self.session(id)?;
         let mut control = session.lock();
+        if control.record.archived {
+            return Err(AgentError::Archived {
+                session: id.clone(),
+            });
+        }
         if control.running.is_none() {
             self.start_driver(&session, &mut control, text);
             return Ok(());
@@ -457,8 +538,15 @@ impl<R: Runner> Agent for LocalAgent<R> {
         };
         // Cancelled, or it finished first: either way it has stopped.
         let _ = handle.await;
+        let open = session.lock().turn_open;
+        let checkpoint = if open {
+            checkpoint(&session, self.workspaces.as_deref()).await
+        } else {
+            Ok(None)
+        };
         let mut control = session.lock();
         if control.turn_open {
+            note_checkpoint(&session, checkpoint);
             session.note(EventKind::TurnEnded { aborted: true });
             control.turn_open = false;
         }
@@ -495,14 +583,40 @@ impl<R: Runner> Agent for LocalAgent<R> {
         }
         events.extend(closing(&events).into_iter().map(Event::now));
         let from = parent.lock().record.clone();
+        let fork = SessionId::random();
+        let (working_directory, checkouts) = if from.repositories.is_empty() {
+            (from.working_directory.clone(), Vec::new())
+        } else if options.chat_only {
+            (from.working_directory.clone(), from.checkouts.clone())
+        } else {
+            // The code as it was where the fork starts; without a snapshot
+            // there, its copy is made before its first turn.
+            let workspaces = self.workspaces(id)?;
+            let snapshots = last_checkpoint(&events);
+            let checkouts = if snapshots.is_empty() {
+                Vec::new()
+            } else {
+                workspaces
+                    .create(fork.as_str(), &from.repositories, &snapshots)
+                    .await
+                    .map_err(workspace_failed(&fork))?
+            };
+            (
+                workspaces.working_directory(fork.as_str(), &from.repositories),
+                checkouts,
+            )
+        };
         let record = SessionRecord {
-            id: SessionId::random(),
+            id: fork,
             name: options.name.unwrap_or(from.name),
-            working_directory: options.working_directory.unwrap_or(from.working_directory),
+            working_directory,
             parent: Some(Parent {
                 session: id.clone(),
                 before: options.before,
             }),
+            checkouts,
+            archived: false,
+            keeper: false,
             ..from
         };
         self.runner.forked(id, &record, &events)?;
@@ -527,6 +641,163 @@ impl<R: Runner> Agent for LocalAgent<R> {
             .collect();
         records.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(records)
+    }
+
+    async fn update(
+        &self,
+        id: &SessionId,
+        update: SessionUpdate,
+    ) -> Result<SessionRecord, AgentError> {
+        let session = self.session(id)?;
+        let archiving = {
+            let mut control = session.lock();
+            let archiving = update.archived == Some(true) && !control.record.archived;
+            if archiving && control.running.is_some() {
+                return Err(AgentError::ArchiveWhileWorking {
+                    session: id.clone(),
+                });
+            }
+            let from = control.record.clone();
+            let record = SessionRecord {
+                name: update.name.unwrap_or(from.name.clone()),
+                archived: update.archived.unwrap_or(from.archived),
+                keeper: update.keeper.unwrap_or(from.keeper),
+                ..from
+            };
+            save(&session.dir, &record)?;
+            control.record = record;
+            archiving
+        };
+        if archiving {
+            self.put_away(&session).await?;
+        }
+        Ok(session.lock().record.clone())
+    }
+
+    async fn changes(&self, id: &SessionId) -> Result<Vec<Changes>, AgentError> {
+        let session = self.session(id)?;
+        let record = session.lock().record.clone();
+        if record.repositories.is_empty() {
+            return Ok(Vec::new());
+        }
+        let history = session.log.events();
+        let base = history
+            .iter()
+            .find_map(|event| event.kind.snapshots())
+            .map(<[Snapshot]>::to_vec)
+            .unwrap_or_default();
+        self.workspaces(id)?
+            .changes(
+                id.as_str(),
+                &record.repositories,
+                &base,
+                &last_checkpoint(&history),
+                &record.checkouts,
+            )
+            .await
+            .map_err(workspace_failed(id))
+    }
+}
+
+fn workspace_failed(session: &SessionId) -> impl FnOnce(WorkspaceError) -> AgentError + '_ {
+    move |source| AgentError::Workspace {
+        session: session.clone(),
+        source,
+    }
+}
+
+/// The snapshots of the last checkpoint in `events`; none if there is none.
+fn last_checkpoint(events: &[Event]) -> Vec<Snapshot> {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| event.kind.snapshots())
+        .map(<[Snapshot]>::to_vec)
+        .unwrap_or_default()
+}
+
+/// Makes the session's copy of its repositories, if it works in some and
+/// has none: from its last checkpoint, for a fork or a session unarchived,
+/// or else from each repository's HEAD, recorded as its first checkpoint.
+async fn prepare(session: &Session, workspaces: Option<&Workspaces>) -> Result<(), AgentError> {
+    let record = session.lock().record.clone();
+    let ready = !record.checkouts.is_empty()
+        && record
+            .checkouts
+            .iter()
+            .all(|checkout| checkout.path.is_dir());
+    if record.repositories.is_empty() || ready {
+        return Ok(());
+    }
+    let workspaces = workspaces.ok_or_else(|| AgentError::NoWorkspaces {
+        session: session.id.clone(),
+    })?;
+    let failed = workspace_failed(&session.id);
+    let history = session.log.events();
+    let from = last_checkpoint(&history);
+    let made = workspaces
+        .create(session.id.as_str(), &record.repositories, &from)
+        .await;
+    let checkouts = made.map_err(failed)?;
+    {
+        let mut control = session.lock();
+        let record = SessionRecord {
+            working_directory: workspaces
+                .working_directory(session.id.as_str(), &record.repositories),
+            checkouts: checkouts.clone(),
+            ..control.record.clone()
+        };
+        save(&session.dir, &record)?;
+        control.record = record;
+    }
+    if from.is_empty() {
+        let turn = checkpoints(&history);
+        let snapshots = workspaces
+            .snapshot(session.id.as_str(), turn, &checkouts)
+            .await
+            .map_err(workspace_failed(&session.id))?;
+        session
+            .log
+            .append(Event::now(EventKind::Checkpoint { snapshots }))?;
+    }
+    Ok(())
+}
+
+fn checkpoints(events: &[Event]) -> usize {
+    events
+        .iter()
+        .filter(|event| event.kind.snapshots().is_some())
+        .count()
+}
+
+/// Snapshots the session's copy of its code; None if it has none.
+async fn checkpoint(
+    session: &Session,
+    workspaces: Option<&Workspaces>,
+) -> Result<Option<Vec<Snapshot>>, AgentError> {
+    let checkouts = session.lock().record.checkouts.clone();
+    if checkouts.is_empty() {
+        return Ok(None);
+    }
+    let workspaces = workspaces.ok_or_else(|| AgentError::NoWorkspaces {
+        session: session.id.clone(),
+    })?;
+    let turn = checkpoints(&session.log.events());
+    workspaces
+        .snapshot(session.id.as_str(), turn, &checkouts)
+        .await
+        .map(Some)
+        .map_err(workspace_failed(&session.id))
+}
+
+/// Records a turn's checkpoint, or why it couldn't be taken.
+fn note_checkpoint(session: &Session, checkpoint: Result<Option<Vec<Snapshot>>, AgentError>) {
+    match checkpoint {
+        Ok(Some(snapshots)) => session.note(EventKind::Checkpoint { snapshots }),
+        Ok(None) => {}
+        Err(error) => session.note(EventKind::Failed {
+            message: describe(&error),
+        }),
     }
 }
 

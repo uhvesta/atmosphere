@@ -140,7 +140,7 @@ extension ChatItem {
                 items.append(.stopped(id: event.id))
             case .failed(let message):
                 items.append(.failure(id: event.id, message: message))
-            case .turnStarted, .assistantDelta, .turnEnded, .idle, .usage:
+            case .turnStarted, .assistantDelta, .turnEnded, .idle, .usage, .checkpoint:
                 continue
             }
         }

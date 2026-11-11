@@ -67,6 +67,59 @@ pub fn wait_for(path: &Path) {
     }
 }
 
+/// Makes `path` a git repository with `files` in its first commit.
+#[allow(dead_code, reason = "not every test works in a repository")]
+pub fn git_repository(path: &Path, files: &[(&str, &str)]) {
+    std::fs::create_dir_all(path).unwrap_or_else(|error| panic!("{error}"));
+    for (name, contents) in files {
+        std::fs::write(path.join(name), contents).unwrap_or_else(|error| panic!("{error}"));
+    }
+    for arguments in [
+        &["init", "--quiet", "--initial-branch=main"][..],
+        &["add", "--all"],
+        &["commit", "--quiet", "-m", "first"],
+    ] {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(arguments)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@localhost")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@localhost")
+            .status()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(status.success(), "git {arguments:?}");
+    }
+}
+
+/// Whether the repository at `path` has nothing uncommitted.
+#[allow(dead_code, reason = "not every test works in a repository")]
+pub fn clean(path: &Path) -> bool {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(output.status.success());
+    output.stdout.is_empty()
+}
+
+impl Khodr {
+    /// The folder `session` works in, as `khodr sessions` prints it.
+    #[allow(dead_code, reason = "not every test works in a repository")]
+    pub fn working_directory(&self, session: &str) -> PathBuf {
+        let sessions = self.run(&["sessions"]);
+        let line = sessions
+            .lines()
+            .find(|line| line.starts_with(session))
+            .unwrap_or_else(|| panic!("{session} isn't in {sessions}"));
+        let directory = line.split('\t').nth(9).unwrap_or_else(|| panic!("{line}"));
+        PathBuf::from(directory)
+    }
+}
+
 pub fn pairs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs
         .iter()
@@ -90,6 +143,8 @@ pub fn start(root: &Path, arguments: &[&std::ffi::OsStr]) -> (Running, Khodr) {
     let daemon = Command::new(binary("KHODRD"))
         .args(["daemon", "--state"])
         .arg(root.join("daemon"))
+        .arg("--cache")
+        .arg(root.join("cache"))
         .arg("--socket")
         .arg(&socket)
         .args(arguments)

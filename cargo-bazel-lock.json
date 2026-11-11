@@ -1,5 +1,5 @@
 {
-  "checksum": "73e4f44bbd2deff821628c4076a9948375ca451915d4084c9ceb68dd2bc92aed",
+  "checksum": "ec1268aeb8b106efb7153f262b1624e58fcdd7bfc226f1e7021dfdbb50d924f9",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -5304,6 +5304,43 @@
       ],
       "version": "0.0.0"
     },
+    "khodr-workspace 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "serde 1.0.229",
+            "target": "serde"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "deps_dev": [
+          {
+            "id": "tempfile 3.27.0",
+            "target": "tempfile"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "khodr_workspace",
+      "name": "khodr-workspace",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "khodr_workspace",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
+      "version": "0.0.0"
+    },
     "khodrd 0.0.0": {
       "common_attrs": {
         "deps": [
@@ -5322,6 +5359,10 @@
           {
             "id": "serde_json 1.0.154",
             "target": "serde_json"
+          },
+          {
+            "id": "sha2 0.11.1",
+            "target": "sha2"
           },
           {
             "id": "thiserror 2.0.21",
@@ -13153,6 +13194,7 @@
     "khodr-protoc-gen-prost 0.0.0": "apps/khodr/proto/plugin",
     "khodr-test-sshd 0.0.0": "apps/khodr/e2e/sshd",
     "khodr-wire 0.0.0": "apps/khodr/daemon/wire",
+    "khodr-workspace 0.0.0": "apps/khodr/daemon/workspace",
     "khodrd 0.0.0": "apps/khodr/daemon/khodrd",
     "swift-catalog 0.0.0": "tools/swift_catalog"
   }

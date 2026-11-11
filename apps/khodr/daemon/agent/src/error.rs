@@ -77,6 +77,28 @@ pub enum AgentError {
         source: serde_json::Error,
     },
 
+    #[error("couldn't make or update session {session}'s copy of its code")]
+    Workspace {
+        session: SessionId,
+        #[source]
+        source: khodr_workspace::WorkspaceError,
+    },
+
+    #[error(
+        "session {session} works in repositories, but this host has no folder for sessions' copies of them; start khodrd as the daemon or host role, which sets one"
+    )]
+    NoWorkspaces { session: SessionId },
+
+    #[error(
+        "session {session} is archived, so it takes no messages; unarchive it to work in it again, and its code comes back as it was"
+    )]
+    Archived { session: SessionId },
+
+    #[error(
+        "session {session} is working, so it can't be archived now; stop its turn or wait for it to finish, then archive it"
+    )]
+    ArchiveWhileWorking { session: SessionId },
+
     #[error("couldn't encode a session event as JSON")]
     Encode {
         #[source]

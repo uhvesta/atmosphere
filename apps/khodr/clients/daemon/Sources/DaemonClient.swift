@@ -5,9 +5,9 @@ import Foundation
 @DependencyClient
 package struct DaemonClient: Sendable {
     package var projects: @Sendable () async throws -> [Project]
-    /// Adds a project whose repository is the folder `repository` on this Mac.
+    /// Adds a project that works in `repositories`, folders on this Mac.
     package var createProject:
-        @Sendable (_ name: String, _ repository: String, _ instructions: String) async throws -> Project
+        @Sendable (_ name: String, _ repositories: [Repository], _ instructions: String) async throws -> Project
     /// Every host's sessions, or only the project's.
     package var sessions: @Sendable (_ project: String?) async throws -> [Session]
     /// Starts a session, idle until the first message.
@@ -21,7 +21,14 @@ package struct DaemonClient: Sendable {
     /// Stops the running turn.
     package var abort: @Sendable (_ session: String) async throws -> Void
     /// A new session with the history before `before`, or all of it if nil.
-    package var fork: @Sendable (_ session: String, _ before: String?, _ name: String?) async throws -> Session
+    /// It gets its own copy of the code as it was there, unless `chatOnly`,
+    /// when it works in the same copy as the session.
+    package var fork:
+        @Sendable (_ session: String, _ before: String?, _ name: String?, _ chatOnly: Bool) async throws -> Session
+    /// Renames, archives or unarchives, or marks the session as the keeper.
+    package var update: @Sendable (_ session: String, _ update: SessionUpdate) async throws -> Session
+    /// What the session changed in each repository since it began.
+    package var changes: @Sendable (_ session: String) async throws -> [RepositoryChanges]
     package var history: @Sendable (_ session: String) async throws -> [SessionEvent]
     /// The session's history, then each new event. Ends when the calling task
     /// is cancelled; throws if the connection drops.

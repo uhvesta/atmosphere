@@ -6,6 +6,7 @@
       [StaticText] "" value: "Release notes"
       [Image] "Waiting for you" help: "Waiting for you to answer a request" id: hand.raised.fill
   [StaticText] "" value: "Release notes"
+  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is"
   [StaticText] "" value: "Approvals"
   [PopUpButton] "" value: "Ask Every Time" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"

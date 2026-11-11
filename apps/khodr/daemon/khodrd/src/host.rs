@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use khodr_agent::{
     Agent, AgentError, ApprovalMode, CopilotOptions, CopilotProvider, CopilotRunner, Event,
     EventId, ForkOptions, LocalAgent, LocalModelConfig, LocalModelRunner, Script, ScriptedRunner,
-    SendMode, SessionId, SessionRecord, StartOptions, Watch,
+    SendMode, SessionId, SessionRecord, SessionUpdate, StartOptions, Watch, Workspaces,
 };
 use khodr_wire::{Reply, Service, ServiceFuture, describe, error, pb};
 use tokio::sync::{broadcast, mpsc};
@@ -48,6 +48,12 @@ trait Backend: Send + Sync {
     fn history<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Vec<Event>>;
     fn watch<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Watch>;
     fn sessions(&self) -> BoxFuture<'_, Vec<SessionRecord>>;
+    fn update<'a>(
+        &'a self,
+        session: &'a SessionId,
+        update: SessionUpdate,
+    ) -> BoxFuture<'a, SessionRecord>;
+    fn changes<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Vec<khodr_agent::Changes>>;
 }
 
 impl<A> Backend for A
@@ -116,6 +122,20 @@ where
     fn sessions(&self) -> BoxFuture<'_, Vec<SessionRecord>> {
         Box::pin(async move { Agent::sessions(self).await.map_err(Into::into) })
     }
+    fn update<'a>(
+        &'a self,
+        session: &'a SessionId,
+        update: SessionUpdate,
+    ) -> BoxFuture<'a, SessionRecord> {
+        Box::pin(async move {
+            Agent::update(self, session, update)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn changes<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Vec<khodr_agent::Changes>> {
+        Box::pin(async move { Agent::changes(self, session).await.map_err(Into::into) })
+    }
 }
 
 /// Runs sessions here and answers requests about them.
@@ -126,18 +146,22 @@ pub struct Host {
 }
 
 impl Host {
-    /// Opens the sessions kept under `state`, one folder per backend.
-    pub async fn open(state: &Path) -> Result<Self, HostError> {
+    /// Opens the sessions kept under `state`, one folder per backend. Their
+    /// copies of the code they work in go under `worktrees`.
+    pub async fn open(state: &Path, worktrees: &Path) -> Result<Self, HostError> {
+        let workspaces = || Workspaces::new(worktrees);
         let scripted = LocalAgent::open(
             state.join("scripted"),
             ScriptedRunner::new(Script::default()),
-        )?;
+        )?
+        .with_workspaces(workspaces());
         // A session's own backend config can name another server.
         let local_model = LocalModelRunner::new(LocalModelConfig {
             base_url: std::env::var("KHODR_LOCAL_URL").ok(),
             api_key: std::env::var("KHODR_LOCAL_API_KEY").ok(),
         });
-        let local = LocalAgent::open(state.join("local"), local_model)?;
+        let local =
+            LocalAgent::open(state.join("local"), local_model)?.with_workspaces(workspaces());
         // Signed in with `copilot login`, it uses GitHub's models; given a
         // provider, by the session or here, a model server of its own.
         let copilot_state = state.join("copilot");
@@ -154,7 +178,8 @@ impl Host {
                     api_key: std::env::var("KHODR_COPILOT_PROVIDER_API_KEY").ok(),
                 }),
         });
-        let copilot = LocalAgent::open(copilot_state.join("sessions"), copilot_runner)?;
+        let copilot = LocalAgent::open(copilot_state.join("sessions"), copilot_runner)?
+            .with_workspaces(workspaces());
         let mut backends: HashMap<pb::Backend, Arc<dyn Backend>> = HashMap::new();
         backends.insert(pb::Backend::Scripted, Arc::new(scripted));
         backends.insert(pb::Backend::Local, Arc::new(local));
@@ -209,7 +234,7 @@ impl Host {
             Request::StartSession(start) => {
                 let backend = start.backend();
                 let approval = convert::approval_mode(start.approval_mode());
-                if start.working_directory.is_empty() {
+                if start.working_directory.is_empty() && start.repositories.is_empty() {
                     return Err(HostError::NoWorkingDirectory);
                 }
                 let agent = self.backend(backend)?;
@@ -221,6 +246,11 @@ impl Host {
                         instructions: convert::optional(start.instructions),
                         backend_config: convert::optional(start.backend_config),
                         approval,
+                        repositories: start
+                            .repositories
+                            .into_iter()
+                            .map(convert::repository)
+                            .collect(),
                     })
                     .await?;
                 self.owners
@@ -271,7 +301,7 @@ impl Host {
                 let options = ForkOptions {
                     before: convert::optional(fork.before_event_id).map(EventId::new),
                     name: convert::optional(fork.name),
-                    working_directory: None,
+                    chat_only: fork.chat_only,
                 };
                 let record = agent.fork(&session, options).await?;
                 self.owners
@@ -280,6 +310,32 @@ impl Host {
                     .insert(record.id.clone(), backend);
                 Response::SessionForked(pb::SessionForked {
                     session: Some(self.info(backend, agent.as_ref(), &record).await?),
+                })
+            }
+            Request::UpdateSession(update) => {
+                let session = SessionId::new(update.session_id);
+                let (backend, agent) = self.owner(&session)?;
+                let changes = SessionUpdate {
+                    name: update.name,
+                    archived: update.archived,
+                    keeper: update.keeper,
+                };
+                let record = agent.update(&session, changes).await?;
+                Response::SessionUpdated(pb::SessionUpdated {
+                    session: Some(self.info(backend, agent.as_ref(), &record).await?),
+                })
+            }
+            Request::ReadChanges(read) => {
+                let session = SessionId::new(read.session_id);
+                let changes = self.owner(&session)?.1.changes(&session).await?;
+                Response::Changes(pb::Changes {
+                    repositories: changes
+                        .into_iter()
+                        .map(|changes| pb::RepositoryChanges {
+                            name: changes.name,
+                            patch: changes.patch,
+                        })
+                        .collect(),
                 })
             }
             Request::ReadHistory(read) => {

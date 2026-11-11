@@ -24,19 +24,34 @@ package enum ApprovalMode: String, CaseIterable, Hashable, Sendable {
     }
 }
 
-/// A name, a repository on this Mac, and instructions for its sessions.
+/// A git repository a project works in.
+package struct Repository: Hashable, Sendable {
+    /// Its folder's name in a session's copy of the project; empty when
+    /// adding one, for the daemon to name it after its folder.
+    package var name: String
+    /// Its folder on this Mac.
+    package var path: String
+
+    package init(name: String = "", path: String) {
+        self.name = name
+        self.path = path
+    }
+}
+
+/// A name, the repositories on this Mac it works in, and instructions for
+/// its sessions.
 package struct Project: Identifiable, Hashable, Sendable {
     package var id: String
     package var name: String
-    /// The repository's folder on this Mac.
-    package var repository: String
+    /// Each session works in its own copy of these.
+    package var repositories: [Repository]
     package var instructions: String
     package var created: Date
 
-    package init(id: String, name: String, repository: String, instructions: String = "", created: Date) {
+    package init(id: String, name: String, repositories: [Repository], instructions: String = "", created: Date) {
         self.id = id
         self.name = name
-        self.repository = repository
+        self.repositories = repositories
         self.instructions = instructions
         self.created = created
     }
@@ -67,11 +82,17 @@ package struct Session: Identifiable, Hashable, Sendable {
     package var approvalMode: ApprovalMode
     /// Nil for a session in no project.
     package var projectID: String?
+    /// Put away: its copy of the code is saved and removed, and it takes no
+    /// messages until unarchived.
+    package var archived: Bool
+    /// Marked as the session whose changes are the ones to keep.
+    package var keeper: Bool
 
     package init(
         id: String, name: String, backend: Backend, workingDirectory: String, model: String? = nil,
         state: SessionState = .idle, parentID: String? = nil, forkedBeforeEventID: String? = nil, host: String? = nil,
-        approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil
+        approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil, archived: Bool = false,
+        keeper: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -84,6 +105,33 @@ package struct Session: Identifiable, Hashable, Sendable {
         self.host = host
         self.approvalMode = approvalMode
         self.projectID = projectID
+        self.archived = archived
+        self.keeper = keeper
+    }
+}
+
+/// What to change about a session; nil leaves it as it is.
+package struct SessionUpdate: Hashable, Sendable {
+    package var name: String?
+    package var archived: Bool?
+    package var keeper: Bool?
+
+    package init(name: String? = nil, archived: Bool? = nil, keeper: Bool? = nil) {
+        self.name = name
+        self.archived = archived
+        self.keeper = keeper
+    }
+}
+
+/// What a session changed in one of its repositories.
+package struct RepositoryChanges: Hashable, Sendable {
+    package var name: String
+    /// A unified diff; empty if nothing changed.
+    package var patch: String
+
+    package init(name: String, patch: String) {
+        self.name = name
+        self.patch = patch
     }
 }
 
@@ -115,6 +163,9 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
         case idle
         case failed(String)
         case usage(model: String, inputTokens: UInt64, outputTokens: UInt64, premiumRequests: Double)
+        /// The session's code was saved after a turn; a fork with code made
+        /// after this starts from it.
+        case checkpoint
     }
 
     package var id: String
@@ -130,7 +181,7 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
 
 package struct StartRequest: Hashable, Sendable {
     package var backend: Backend
-    /// Nil for the project's repository.
+    /// Nil for the session's own copy of the project's repositories.
     package var workingDirectory: String?
     package var name: String
     /// Nil for this Mac.
@@ -140,8 +191,8 @@ package struct StartRequest: Hashable, Sendable {
     /// Settings only the backend reads, as JSON; the scripted backend's script.
     package var backendConfig: String?
     package var approvalMode: ApprovalMode
-    /// The project it belongs to. Its repository and instructions are the
-    /// defaults for the working directory and instructions.
+    /// The project it belongs to. The session works in its own copy of the
+    /// project's repositories, and its instructions are the default.
     package var projectID: String?
 
     package init(
@@ -180,6 +231,7 @@ package enum ErrorCode: Hashable, Sendable {
     case storageFailed
     case hostUnavailable
     case unknownProject
+    case archived
     case unknown
 }
 

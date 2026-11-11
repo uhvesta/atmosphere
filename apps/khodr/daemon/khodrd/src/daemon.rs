@@ -19,6 +19,7 @@ use crate::error::{DaemonError, StartError};
 use crate::host::Host;
 use crate::store::Store;
 use crate::{VERSION, convert};
+use khodr_agent::Repository;
 
 /// The hosts file: each host by name, and the command that reaches its
 /// `khodrd host --stdio`.
@@ -274,22 +275,39 @@ impl Daemon {
     }
 
     fn create_project(&self, create: pb::CreateProject) -> Result<pb::Project, DaemonError> {
-        let repository = PathBuf::from(create.repository);
-        let not_a_folder = |source| DaemonError::NotAFolder {
-            repository: repository.clone(),
-            source,
-        };
-        if !repository.is_absolute() {
-            return Err(not_a_folder(None));
+        if create.repositories.is_empty() {
+            return Err(DaemonError::NoRepositories);
         }
-        let metadata =
-            std::fs::metadata(&repository).map_err(|source| not_a_folder(Some(source)))?;
-        if !metadata.is_dir() {
-            return Err(not_a_folder(None));
+        let mut repositories: Vec<Repository> = Vec::new();
+        for repository in create.repositories {
+            let path = PathBuf::from(repository.path);
+            let not_a_folder = |source| DaemonError::NotAFolder {
+                repository: path.clone(),
+                source,
+            };
+            if !path.is_absolute() {
+                return Err(not_a_folder(None));
+            }
+            let metadata = std::fs::metadata(&path).map_err(|source| not_a_folder(Some(source)))?;
+            if !metadata.is_dir() {
+                return Err(not_a_folder(None));
+            }
+            let wanted = Some(repository.name)
+                .filter(|name| !name.is_empty())
+                .or_else(|| {
+                    path.file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                });
+            let taken: Vec<&str> = repositories
+                .iter()
+                .map(|known| known.name.as_str())
+                .collect();
+            let name = folder_name(wanted.as_deref(), &taken);
+            repositories.push(Repository { name, path });
         }
         let project = self
             .store
-            .add_project(create.name, repository, create.instructions)?;
+            .add_project(create.name, repositories, create.instructions)?;
         Ok(convert::project(project))
     }
 
@@ -300,14 +318,18 @@ impl Daemon {
             return Ok(None);
         }
         let project = self.store.project(&project_id)?;
-        if start.working_directory.is_empty() {
+        if start.working_directory.is_empty() && start.repositories.is_empty() {
             if !start.host.is_empty() {
                 return Err(DaemonError::NoRemoteDirectory {
                     project: project.name,
                     host: start.host.clone(),
                 });
             }
-            start.working_directory = project.repository.display().to_string();
+            start.repositories = project
+                .repositories
+                .iter()
+                .map(convert::wire_repository)
+                .collect();
         }
         if start.instructions.is_empty() {
             start.instructions = project.instructions;
@@ -365,6 +387,8 @@ impl Daemon {
             Request::WatchSession(watch) => self.host_of(&watch.session_id).await?,
             Request::AbortTurn(abort) => self.host_of(&abort.session_id).await?,
             Request::SetApprovalMode(set) => self.host_of(&set.session_id).await?,
+            Request::UpdateSession(update) => self.host_of(&update.session_id).await?,
+            Request::ReadChanges(read) => self.host_of(&read.session_id).await?,
         };
         let mut reply = self.forward(&host, request).await?;
         if let Reply::Response(
@@ -373,6 +397,9 @@ impl Daemon {
             })
             | Response::SessionForked(pb::SessionForked {
                 session: Some(session),
+            })
+            | Response::SessionUpdated(pb::SessionUpdated {
+                session: Some(session),
             }),
         ) = &mut reply
         {
@@ -380,6 +407,33 @@ impl Daemon {
         }
         Ok(reply)
     }
+}
+
+/// A name for a repository's folder in a session's copy: `wanted` if it is
+/// one folder's name and not `taken`, else made so.
+fn folder_name(wanted: Option<&str>, taken: &[&str]) -> String {
+    let base: String = wanted
+        .unwrap_or_default()
+        .chars()
+        .map(|c| {
+            if c == '/' || c == '\\' || c.is_control() {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let base = match base.trim() {
+        "" | "." | ".." => "repository".to_owned(),
+        trimmed => trimmed.to_owned(),
+    };
+    let mut name = base.clone();
+    let mut count = 1;
+    while taken.contains(&name.as_str()) {
+        count += 1;
+        name = format!("{base}-{count}");
+    }
+    name
 }
 
 impl Service for Daemon {

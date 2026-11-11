@@ -2,8 +2,9 @@ import ComposableArchitecture
 import Foundation
 import KhodrDaemonClient
 
-/// The sidebar: every project with its sessions, kept up to date, and the
-/// sheets to add a project and to start a session in one.
+/// The sidebar: every project with its sessions as a tree of forks, kept up
+/// to date; the sheets to add a project and to start a session in one; and
+/// renaming, archiving, comparing and marking the keeper.
 @Reducer
 package struct ProjectsFeature {
     @ObservableState
@@ -27,12 +28,43 @@ package struct ProjectsFeature {
         package var unfiled: [Session] {
             sessions.filter { $0.projectID == nil }
         }
+
+        /// The project's sessions that aren't archived, each under the one
+        /// it was forked from; nil for sessions in no project. A fork whose
+        /// parent is archived or elsewhere is at the top.
+        package func tree(in project: Project.ID?) -> [SessionNode] {
+            let shown = sessions.filter { $0.projectID == project && !$0.archived }
+            let ids = Set(shown.map(\.id))
+            let children = Dictionary(grouping: shown.filter { $0.parentID.map(ids.contains) == true }) {
+                $0.parentID ?? ""
+            }
+            func node(_ session: Session) -> SessionNode {
+                let under = (children[session.id] ?? []).map(node)
+                return SessionNode(session: session, children: under.isEmpty ? nil : under)
+            }
+            return shown.filter { $0.parentID.map(ids.contains) != true }.map(node)
+        }
+
+        /// Archived sessions in every project.
+        package var archived: [Session] {
+            sessions.filter(\.archived)
+        }
+
+        /// The sessions `session` can be compared with: the others in its
+        /// project.
+        package func comparable(to session: Session) -> [Session] {
+            guard let project = session.projectID else { return [] }
+            return sessions.filter { $0.projectID == project && $0.id != session.id }
+        }
     }
 
     @Reducer
     package enum Destination {
         case newProject(NewProjectFeature)
         case newSession(NewSessionFeature)
+        case rename(RenameSessionFeature)
+        case compare(CompareFeature)
+        case alert(AlertState<Never>)
     }
 
     package enum Action {
@@ -46,6 +78,12 @@ package struct ProjectsFeature {
         case addProjectTapped
         case newSessionTapped(projectID: Project.ID)
         case sessionSelected(Session.ID?)
+        case renameTapped(Session.ID)
+        case archiveTapped(Session.ID, archived: Bool)
+        case keeperTapped(Session.ID, keeper: Bool)
+        case compareTapped(Session.ID, with: Session.ID)
+        case updated(Session)
+        case updateFailed(String)
         case destination(PresentationAction<Destination.Action>)
         case delegate(Delegate)
 
@@ -104,6 +142,38 @@ package struct ProjectsFeature {
                 guard let id, let session = state.sessions[id: id] else { return .none }
                 return .send(.delegate(.openSession(session)))
 
+            case .renameTapped(let id):
+                guard let session = state.sessions[id: id] else { return .none }
+                state.destination = .rename(RenameSessionFeature.State(session: session))
+                return .none
+
+            case .archiveTapped(let id, let archived):
+                return update(id, SessionUpdate(archived: archived))
+
+            case .keeperTapped(let id, let keeper):
+                return update(id, SessionUpdate(keeper: keeper))
+
+            case .compareTapped(let id, let other):
+                guard let left = state.sessions[id: id], let right = state.sessions[id: other] else { return .none }
+                state.destination = .compare(CompareFeature.State(left: left, right: right))
+                return .none
+
+            case .updated(let session),
+                .destination(.presented(.rename(.delegate(.renamed(let session))))),
+                .destination(.presented(.compare(.delegate(.updated(let session))))):
+                state.sessions[id: session.id] = session
+                if case .rename = state.destination { state.destination = nil }
+                return .none
+
+            case .updateFailed(let message):
+                state.destination = .alert(
+                    AlertState {
+                        TextState("Couldn't change the session")
+                    } message: {
+                        TextState(message)
+                    })
+                return .none
+
             case .destination(.presented(.newProject(.delegate(.created(let project))))):
                 state.projects.append(project)
                 state.destination = .newSession(NewSessionFeature.State(project: project))
@@ -122,6 +192,14 @@ package struct ProjectsFeature {
         .ifLet(\.$destination, action: \.destination)
     }
 
+    private func update(_ id: Session.ID, _ update: SessionUpdate) -> Effect<Action> {
+        .run { send in
+            await send(.updated(try await daemon.update(id, update)))
+        } catch: { error, send in
+            await send(.updateFailed(error.localizedDescription))
+        }
+    }
+
     private func load() async -> Action {
         do {
             async let projects = daemon.projects()
@@ -135,30 +213,49 @@ package struct ProjectsFeature {
 
 extension ProjectsFeature.Destination.State: Equatable {}
 
-/// A new project: its name, its repository's folder on this Mac and
+/// A session in the sidebar's tree, with the forks made from it.
+package struct SessionNode: Identifiable, Hashable, Sendable {
+    package var session: Session
+    /// Nil when nothing was forked from it, so it shows no disclosure.
+    package var children: [SessionNode]?
+
+    package var id: Session.ID { session.id }
+}
+
+/// A new project: its name, its repositories' folders on this Mac and
 /// instructions for its sessions.
 @Reducer
 package struct NewProjectFeature {
     @ObservableState
     package struct State: Equatable {
         package var name = ""
-        /// The repository's folder, as an absolute path.
-        package var repository = ""
+        /// The repositories' folders, as absolute paths. Each session works
+        /// across all of them.
+        package var repositories: IdentifiedArrayOf<RepositoryRow> = [RepositoryRow(id: 0)]
+        var nextRow = 1
         package var instructions = ""
         package var creating = false
         @Presents package var alert: AlertState<Never>?
 
         package init() {}
 
+        /// The folders filled in so far.
+        var paths: [String] {
+            repositories.map(\.path.trimmed).filter { !$0.isEmpty }
+        }
+
         package var canCreate: Bool {
-            !creating && !name.trimmed.isEmpty && repository.trimmed.hasPrefix("/")
+            !creating && !name.trimmed.isEmpty && !paths.isEmpty && paths.allSatisfy { $0.hasPrefix("/") }
         }
     }
 
     package enum Action: BindableAction {
         case binding(BindingAction<State>)
-        /// A folder was picked; it names the project if it has no name yet.
+        /// A folder was picked: it fills the first empty row, or adds one,
+        /// and names the project if it has no name yet.
         case folderPicked(URL)
+        case addRepositoryTapped
+        case removeRepositoryTapped(RepositoryRow.ID)
         case createTapped
         case failed(String)
         case alert(PresentationAction<Never>)
@@ -184,18 +281,32 @@ package struct NewProjectFeature {
             case .folderPicked(let url):
                 var path = url.standardizedFileURL.path(percentEncoded: false)
                 while path.count > 1, path.hasSuffix("/") { path.removeLast() }
-                state.repository = path
+                guard !state.paths.contains(path) else { return .none }
+                if let empty = state.repositories.first(where: { $0.path.trimmed.isEmpty }) {
+                    state.repositories[id: empty.id]?.path = path
+                } else {
+                    state.addRow(path)
+                }
                 if state.name.trimmed.isEmpty { state.name = url.lastPathComponent }
+                return .none
+
+            case .addRepositoryTapped:
+                state.addRow("")
+                return .none
+
+            case .removeRepositoryTapped(let id):
+                state.repositories.remove(id: id)
+                if state.repositories.isEmpty { state.addRow("") }
                 return .none
 
             case .createTapped:
                 guard state.canCreate else { return .none }
                 state.creating = true
-                let (name, repository, instructions) = (
-                    state.name.trimmed, state.repository.trimmed, state.instructions
+                let (name, repositories, instructions) = (
+                    state.name.trimmed, state.paths.map { Repository(path: $0) }, state.instructions
                 )
                 return .run { send in
-                    let project = try await daemon.createProject(name, repository, instructions)
+                    let project = try await daemon.createProject(name, repositories, instructions)
                     await send(.delegate(.created(project)))
                 } catch: { error, send in
                     await send(.failed(error.localizedDescription))
@@ -212,6 +323,25 @@ package struct NewProjectFeature {
             }
         }
         .ifLet(\.$alert, action: \.alert)
+    }
+}
+
+/// A row of the new project's repositories.
+package struct RepositoryRow: Identifiable, Hashable, Sendable {
+    package var id: Int
+    /// The folder as typed or picked.
+    package var path = ""
+
+    package init(id: Int, path: String = "") {
+        self.id = id
+        self.path = path
+    }
+}
+
+extension NewProjectFeature.State {
+    fileprivate mutating func addRow(_ path: String) {
+        repositories.append(RepositoryRow(id: nextRow, path: path))
+        nextRow += 1
     }
 }
 

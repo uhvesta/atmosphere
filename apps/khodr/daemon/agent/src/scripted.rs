@@ -764,4 +764,251 @@ mod tests {
             }
         );
     }
+
+    /// Sessions that work in a repository, each in its own copy.
+    mod code {
+        use std::path::Path;
+
+        use super::*;
+        use crate::{Repository, SessionUpdate, Workspaces};
+
+        struct Fixture {
+            agent: LocalAgent<ScriptedRunner>,
+            repository: Repository,
+            _dir: tempfile::TempDir,
+        }
+
+        /// One turn per rule; turn `n` writes `a.txt` with `n`.
+        fn fixture() -> Fixture {
+            let dir = tempfile::tempdir().expect("a temporary folder");
+            let path = dir.path().join("app");
+            std::fs::create_dir_all(&path).expect("made the folder");
+            std::fs::write(path.join("README.md"), "hello\n").expect("wrote");
+            for arguments in [
+                &["init", "--quiet", "--initial-branch=main"][..],
+                &["add", "README.md"],
+                &["commit", "--quiet", "-m", "first"],
+            ] {
+                let status = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&path)
+                    .args(arguments)
+                    .env("GIT_AUTHOR_NAME", "Test")
+                    .env("GIT_AUTHOR_EMAIL", "test@localhost")
+                    .env("GIT_COMMITTER_NAME", "Test")
+                    .env("GIT_COMMITTER_EMAIL", "test@localhost")
+                    .status()
+                    .expect("git runs");
+                assert!(status.success(), "git {arguments:?}");
+            }
+            let rules = ["one", "two", "three"]
+                .into_iter()
+                .map(|turn| rule(turn, vec![write_file("a.txt", turn)]))
+                .collect();
+            let agent = LocalAgent::open(
+                dir.path().join("state"),
+                ScriptedRunner::new(Script { rules }),
+            )
+            .expect("the agent opens")
+            .with_workspaces(Workspaces::new(dir.path().join("worktrees")));
+            Fixture {
+                agent,
+                repository: Repository {
+                    name: "app".into(),
+                    path,
+                },
+                _dir: dir,
+            }
+        }
+
+        impl Fixture {
+            async fn start(&self) -> SessionId {
+                let options = StartOptions {
+                    name: "test".into(),
+                    approval: ApprovalMode::AllowEverything,
+                    repositories: vec![self.repository.clone()],
+                    ..StartOptions::default()
+                };
+                self.agent.start(options).await.expect("starts").id
+            }
+
+            async fn turn(&self, id: &SessionId, text: &str, count: usize) -> Vec<Event> {
+                self.agent
+                    .send(id, text.into(), SendMode::Enqueue)
+                    .await
+                    .expect("sent");
+                wait_for(&self.agent, id, idle_turns(count)).await
+            }
+
+            async fn file(&self, id: &SessionId) -> Option<String> {
+                let record = record(&self.agent, id).await;
+                read(&record.working_directory.join("a.txt"))
+            }
+        }
+
+        async fn record(
+            agent: &LocalAgent<ScriptedRunner>,
+            id: &SessionId,
+        ) -> crate::SessionRecord {
+            let sessions = agent.sessions().await.expect("listed");
+            sessions
+                .into_iter()
+                .find(|record| &record.id == id)
+                .expect("the session exists")
+        }
+
+        fn read(path: &Path) -> Option<String> {
+            std::fs::read_to_string(path).ok()
+        }
+
+        fn failed(events: &[Event]) -> Vec<String> {
+            events
+                .iter()
+                .filter_map(|event| match &event.kind {
+                    EventKind::Failed { message } => Some(message.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn a_session_works_in_its_own_copy_of_the_repository() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            let events = fixture.turn(&id, "one", 1).await;
+            assert_eq!(failed(&events), Vec::<String>::new());
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("one"));
+            assert_eq!(read(&fixture.repository.path.join("a.txt")), None);
+        }
+
+        #[tokio::test]
+        async fn a_fork_has_the_code_and_history_as_they_were_where_it_starts() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let original = fixture.turn(&id, "two", 2).await;
+            let second = user_message(&original, "two");
+
+            let options = ForkOptions {
+                before: Some(second.id.clone()),
+                ..ForkOptions::default()
+            };
+            let fork = fixture.agent.fork(&id, options).await.expect("forked");
+            assert_ne!(
+                fork.working_directory,
+                record(&fixture.agent, &id).await.working_directory
+            );
+            assert_eq!(fixture.file(&fork.id).await.as_deref(), Some("one"));
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("two"));
+            let history = fixture.agent.history(&fork.id).await.expect("history");
+            assert!(!history.iter().any(|event| event.id == second.id));
+
+            fixture.turn(&fork.id, "three", 2).await;
+            assert_eq!(fixture.file(&fork.id).await.as_deref(), Some("three"));
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("two"));
+        }
+
+        #[tokio::test]
+        async fn a_fork_before_the_first_message_starts_from_the_repository() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            let events = fixture.turn(&id, "one", 1).await;
+            let first = user_message(&events, "one");
+            let options = ForkOptions {
+                before: Some(first.id),
+                ..ForkOptions::default()
+            };
+            let fork = fixture.agent.fork(&id, options).await.expect("forked");
+            assert_eq!(fixture.file(&fork.id).await, None);
+            assert!(fork.working_directory.join("README.md").is_file());
+        }
+
+        #[tokio::test]
+        async fn a_fork_of_the_chat_only_works_in_its_parents_copy() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let options = ForkOptions {
+                chat_only: true,
+                ..ForkOptions::default()
+            };
+            let fork = fixture.agent.fork(&id, options).await.expect("forked");
+            fixture.turn(&fork.id, "two", 2).await;
+            assert_eq!(fixture.file(&id).await.as_deref(), Some("two"));
+        }
+
+        #[tokio::test]
+        async fn an_archived_session_takes_no_messages_and_gets_its_code_back_when_unarchived() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let folder = record(&fixture.agent, &id).await.working_directory;
+
+            let archive = SessionUpdate {
+                archived: Some(true),
+                ..SessionUpdate::default()
+            };
+            let record = fixture.agent.update(&id, archive).await.expect("archived");
+            assert!(record.archived);
+            assert!(!folder.exists());
+            let refused = fixture
+                .agent
+                .send(&id, "two".into(), SendMode::Enqueue)
+                .await;
+            assert!(
+                matches!(refused, Err(AgentError::Archived { .. })),
+                "{refused:?}"
+            );
+            let changes = fixture.agent.changes(&id).await.expect("compared");
+            assert!(changes[0].patch.contains("+one"), "{changes:?}");
+
+            let unarchive = SessionUpdate {
+                archived: Some(false),
+                ..SessionUpdate::default()
+            };
+            fixture
+                .agent
+                .update(&id, unarchive)
+                .await
+                .expect("unarchived");
+            let events = fixture.turn(&id, "two", 2).await;
+            assert_eq!(failed(&events), Vec::<String>::new());
+            let changes = fixture.agent.changes(&id).await.expect("compared");
+            assert!(changes[0].patch.contains("+two"), "{changes:?}");
+        }
+
+        #[tokio::test]
+        async fn renaming_and_marking_the_keeper_are_kept() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            let update = SessionUpdate {
+                name: Some("better".into()),
+                keeper: Some(true),
+                ..SessionUpdate::default()
+            };
+            fixture.agent.update(&id, update).await.expect("updated");
+            let record = record(&fixture.agent, &id).await;
+            assert_eq!(record.name, "better");
+            assert!(record.keeper);
+        }
+
+        #[tokio::test]
+        async fn a_session_in_a_repository_needs_somewhere_for_its_copy() {
+            let dir = tempfile::tempdir().expect("a temporary folder");
+            let agent = LocalAgent::open(dir.path(), ScriptedRunner::new(Script::default()))
+                .expect("the agent opens");
+            let options = StartOptions {
+                repositories: vec![Repository {
+                    name: "app".into(),
+                    path: dir.path().join("app"),
+                }],
+                ..StartOptions::default()
+            };
+            let result = agent.start(options).await;
+            assert!(
+                matches!(result, Err(AgentError::NoWorkspaces { .. })),
+                "{result:?}"
+            );
+        }
+    }
 }

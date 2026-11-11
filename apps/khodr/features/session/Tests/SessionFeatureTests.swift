@@ -71,13 +71,50 @@ final class SessionFeatureTests: XCTestCase {
             $0.daemon = daemon.client
         }
 
-        await store.send(.forkTapped(before: two.id))
+        await store.send(.forkTapped(before: two.id, chatOnly: false))
         let fork = try XCTUnwrap(daemon.sessions.last)
         XCTAssertEqual(fork.parentID, session.id)
         XCTAssertEqual(fork.forkedBeforeEventID, two.id)
         await store.receive(\.forked, fork)
         await store.receive(\.delegate.openSession, fork)
         XCTAssertEqual(daemon.history(fork.id), Array(daemon.history(session.id).prefix { $0.id != two.id }))
+    }
+
+    func testEditingAnEarlierMessageSendsItToAForkAndLeavesTheSessionAsItWas() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        try await daemon.client.send(session.id, "one", .enqueue)
+        try await daemon.client.send(session.id, "two", .enqueue)
+        let before = daemon.history(session.id)
+        let two = try XCTUnwrap(before.first { $0.kind == .userMessage("two") })
+        var state = SessionFeature.State(session: session)
+        state.events = IdentifiedArray(uniqueElements: before)
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+
+        await store.send(.editTapped(two.id)) {
+            $0.editing = two.id
+            $0.edited = "two"
+        }
+        await store.send(.binding(.set(\.edited, "three"))) {
+            $0.edited = "three"
+        }
+        await store.send(.editSent) {
+            $0.editing = nil
+            $0.edited = ""
+        }
+        let fork = try XCTUnwrap(daemon.sessions.last)
+        await store.receive(\.forked, fork)
+        await store.receive(\.delegate.openSession, fork)
+        XCTAssertEqual(fork.forkedBeforeEventID, two.id)
+        let said = daemon.history(fork.id).compactMap { event -> String? in
+            if case .userMessage(let text) = event.kind { text } else { nil }
+        }
+        XCTAssertEqual(said, ["one", "three"])
+        XCTAssertEqual(daemon.history(session.id), before)
     }
 
     func testARefusedRequestShowsWhatToDo() async throws {
@@ -187,7 +224,7 @@ final class SessionFeatureTests: XCTestCase {
         await store.send(\.binding.draft, "write the notes")
         await store.send(.sendTapped(.enqueue))
         await until(store) { $0.isWaiting }
-        XCTAssertEqual(daemon.files, [:])
+        XCTAssertEqual(daemon.files(of: session.id), [:])
         guard case .tool(let write)? = store.state.items.last else { return XCTFail("no tool call") }
         XCTAssertEqual(write.subject, "/work/NOTES.md")
         XCTAssertNil(write.permission?.answer)
@@ -197,7 +234,7 @@ final class SessionFeatureTests: XCTestCase {
         await until(store) { state in
             state.isWaiting && state.items.filter { if case .tool = $0 { true } else { false } }.count == 2
         }
-        XCTAssertEqual(daemon.files, ["/work/NOTES.md": "Ship M1."])
+        XCTAssertEqual(daemon.files(of: session.id), ["/work/NOTES.md": "Ship M1."])
         let calls = store.state.items.compactMap { item -> ToolCall? in
             if case .tool(let call) = item { call } else { nil }
         }
@@ -237,7 +274,7 @@ final class SessionFeatureTests: XCTestCase {
                 if case .tool(let call) = item { call.permission?.answer == .allowedByMode } else { false }
             }
         }
-        XCTAssertEqual(daemon.files, ["/work/NOTES.md": "Ship M1."])
+        XCTAssertEqual(daemon.files(of: session.id), ["/work/NOTES.md": "Ship M1."])
         XCTAssertEqual(daemon.sessions.first?.approvalMode, .allowEdits)
         // The command still asks.
         XCTAssertTrue(store.state.isWaiting)

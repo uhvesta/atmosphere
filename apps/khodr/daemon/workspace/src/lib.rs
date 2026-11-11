@@ -1,0 +1,386 @@
+//! A session's own copy of its code.
+//!
+//! Each session that works in repositories gets a git worktree of each, on a
+//! branch of its own, under one folder per session. After every turn each
+//! worktree is saved as a hidden snapshot: a commit object that no branch
+//! points to, kept alive by a ref under `refs/khodr/<session>/<turn>/`. The
+//! session's branch, its index and its history are never touched, so what to
+//! commit stays the person's call. A fork starts a new worktree at the
+//! snapshot's HEAD and puts the snapshot's files in it.
+
+mod error;
+
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use serde::{Deserialize, Serialize};
+use tokio::process::Command;
+
+pub use error::WorkspaceError;
+
+/// A repository a session works in, as the project names it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Repository {
+    /// Its folder's name in the session's copy; unique within a session.
+    pub name: String,
+    /// The repository's own folder on the host.
+    pub path: PathBuf,
+}
+
+/// A session's worktree of one repository.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Checkout {
+    pub name: String,
+    /// The repository it is a worktree of.
+    pub repository: PathBuf,
+    pub path: PathBuf,
+    pub branch: String,
+    /// The session that made it. A fork of the chat only works in its
+    /// parent's checkouts, which are the parent's to remove.
+    pub owner: String,
+}
+
+/// One repository's code at a point in a session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub name: String,
+    /// The commit the worktree was on.
+    pub head: String,
+    /// A commit, on no branch, of every file in the worktree that git
+    /// doesn't ignore, with `head` as its parent.
+    pub commit: String,
+}
+
+/// What a session changed in one repository, since its copy was made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Changes {
+    pub name: String,
+    /// A unified diff; empty if nothing changed.
+    pub patch: String,
+}
+
+/// The sessions' copies of their repositories, under one folder.
+#[derive(Debug)]
+pub struct Workspaces {
+    root: PathBuf,
+}
+
+/// Names the temporary index of each snapshot, so two at once don't share
+/// one.
+static INDEXES: AtomicU64 = AtomicU64::new(0);
+
+impl Workspaces {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    /// The folder a session works in: its one repository's worktree, or the
+    /// folder holding a worktree of each.
+    pub fn working_directory(&self, session: &str, repositories: &[Repository]) -> PathBuf {
+        let folder = self.root.join(session);
+        match repositories {
+            [only] => folder.join(&only.name),
+            _ => folder,
+        }
+    }
+
+    /// Makes `session`'s worktree of each repository. One with a snapshot in
+    /// `from` starts at its HEAD with its files; the others start at the
+    /// repository's HEAD. A worktree left by an attempt that stopped part way
+    /// is used again.
+    pub async fn create(
+        &self,
+        session: &str,
+        repositories: &[Repository],
+        from: &[Snapshot],
+    ) -> Result<Vec<Checkout>, WorkspaceError> {
+        let folder = self.root.join(session);
+        tokio::fs::create_dir_all(&folder).await.map_err(|source| {
+            WorkspaceError::CreateDirectory {
+                path: folder.clone(),
+                source,
+            }
+        })?;
+        let mut checkouts = Vec::with_capacity(repositories.len());
+        for repository in repositories {
+            let snapshot = from
+                .iter()
+                .find(|snapshot| snapshot.name == repository.name);
+            checkouts.push(check_out(session, &folder, repository, snapshot).await?);
+        }
+        Ok(checkouts)
+    }
+
+    /// Saves each checkout as it is now, as the snapshot `turn` of
+    /// `session`.
+    pub async fn snapshot(
+        &self,
+        session: &str,
+        turn: usize,
+        checkouts: &[Checkout],
+    ) -> Result<Vec<Snapshot>, WorkspaceError> {
+        let mut snapshots = Vec::with_capacity(checkouts.len());
+        for (position, checkout) in checkouts.iter().enumerate() {
+            let (head, commit) = self.capture(session, &checkout.path).await?;
+            // By position: a folder's name needn't be a valid ref's.
+            let name = format!("refs/khodr/{session}/{turn}/{position}");
+            git(&checkout.path, &["update-ref", &name, &commit]).await?;
+            snapshots.push(Snapshot {
+                name: checkout.name.clone(),
+                head,
+                commit,
+            });
+        }
+        Ok(snapshots)
+    }
+
+    /// What changed in each repository since `base`: up to the files in its
+    /// checkout now, or, without one, up to its snapshot in `latest`.
+    pub async fn changes(
+        &self,
+        session: &str,
+        repositories: &[Repository],
+        base: &[Snapshot],
+        latest: &[Snapshot],
+        checkouts: &[Checkout],
+    ) -> Result<Vec<Changes>, WorkspaceError> {
+        let mut all = Vec::with_capacity(repositories.len());
+        for repository in repositories {
+            let named = |snapshots: &[Snapshot]| {
+                snapshots
+                    .iter()
+                    .find(|snapshot| snapshot.name == repository.name)
+                    .cloned()
+            };
+            let Some(from) = named(base) else {
+                all.push(Changes {
+                    name: repository.name.clone(),
+                    patch: String::new(),
+                });
+                continue;
+            };
+            let checkout = checkouts
+                .iter()
+                .find(|checkout| checkout.name == repository.name && checkout.path.is_dir());
+            let to = match (checkout, named(latest)) {
+                (Some(checkout), _) => self.capture(session, &checkout.path).await?.1,
+                (None, Some(latest)) => latest.commit,
+                (None, None) => from.commit.clone(),
+            };
+            let patch = git(
+                &repository.path,
+                &["diff", "--no-color", "--no-ext-diff", &from.head, &to],
+            )
+            .await?;
+            all.push(Changes {
+                name: repository.name.clone(),
+                patch,
+            });
+        }
+        Ok(all)
+    }
+
+    /// Removes the worktrees, with whatever is in them that wasn't
+    /// snapshotted. Their branches and snapshots stay.
+    pub async fn remove(&self, checkouts: &[Checkout]) -> Result<(), WorkspaceError> {
+        for checkout in checkouts {
+            if checkout.path.exists() {
+                let path = checkout.path.to_string_lossy();
+                git(
+                    &checkout.repository,
+                    &["worktree", "remove", "--force", &path],
+                )
+                .await?;
+            } else {
+                git(&checkout.repository, &["worktree", "prune"]).await?;
+            }
+            // The session's folder goes with its last worktree.
+            if let Some(folder) = checkout.path.parent()
+                && folder.starts_with(&self.root)
+                && folder != self.root
+            {
+                let _ = tokio::fs::remove_dir(folder).await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Commits every file in the worktree at `path` that git doesn't ignore,
+    /// through an index of its own; returns the HEAD and the commit.
+    async fn capture(
+        &self,
+        session: &str,
+        path: &Path,
+    ) -> Result<(String, String), WorkspaceError> {
+        let head = git(path, &["rev-parse", "--verify", "HEAD"]).await?;
+        let head = head.trim().to_owned();
+        let index = self.root.join(format!(
+            ".index-{}-{}",
+            std::process::id(),
+            INDEXES.fetch_add(1, Ordering::Relaxed)
+        ));
+        let captured = async {
+            // Starting from the worktree's own index lets git skip the files
+            // it already knows haven't changed.
+            let own = git(path, &["rev-parse", "--git-path", "index"]).await?;
+            let own = path.join(own.trim());
+            if tokio::fs::copy(&own, &index).await.is_err() {
+                git_with_index(path, &index, &["read-tree", "HEAD"]).await?;
+            }
+            git_with_index(path, &index, &["add", "--all"]).await?;
+            let tree = git_with_index(path, &index, &["write-tree"]).await?;
+            let message = format!("Khodr snapshot of session {session}");
+            let commit = git(
+                path,
+                &["commit-tree", tree.trim(), "-p", &head, "-m", &message],
+            )
+            .await?;
+            Ok((head, commit.trim().to_owned()))
+        }
+        .await;
+        let _ = tokio::fs::remove_file(&index).await;
+        captured
+    }
+}
+
+/// The branch a session's worktrees are on.
+fn branch(session: &str) -> String {
+    let short: String = session.chars().take(8).collect();
+    format!("khodr/{short}")
+}
+
+async fn check_out(
+    session: &str,
+    folder: &Path,
+    repository: &Repository,
+    snapshot: Option<&Snapshot>,
+) -> Result<Checkout, WorkspaceError> {
+    let path = folder.join(&repository.name);
+    let branch = branch(session);
+    if let Err(error) = git(&repository.path, &["rev-parse", "--git-dir"]).await {
+        return Err(match error {
+            WorkspaceError::Git { .. } => WorkspaceError::NotARepository {
+                path: repository.path.clone(),
+            },
+            error => error,
+        });
+    }
+    let start = match snapshot {
+        Some(snapshot) => snapshot.head.clone(),
+        None => match git(&repository.path, &["rev-parse", "--verify", "HEAD"]).await {
+            Ok(head) => head.trim().to_owned(),
+            Err(WorkspaceError::Git { .. }) => {
+                return Err(WorkspaceError::NoCommits {
+                    path: repository.path.clone(),
+                });
+            }
+            Err(error) => return Err(error),
+        },
+    };
+    let target = path.to_string_lossy();
+    if path.exists() {
+        if !is_worktree_at(&path).await {
+            return Err(WorkspaceError::InTheWay {
+                path: path.clone(),
+                repository: repository.name.clone(),
+            });
+        }
+    } else if git(
+        &repository.path,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .await
+    .is_ok()
+    {
+        git(&repository.path, &["worktree", "add", &target, &branch]).await?;
+    } else {
+        git(
+            &repository.path,
+            &["worktree", "add", "-b", &branch, &target, &start],
+        )
+        .await?;
+    }
+    if let Some(snapshot) = snapshot {
+        // The snapshot's files, with the index left at HEAD, so what the
+        // session had changed is still unstaged.
+        git(&path, &["read-tree", "-u", "--reset", &snapshot.commit]).await?;
+        git(&path, &["reset", "--quiet"]).await?;
+    }
+    Ok(Checkout {
+        name: repository.name.clone(),
+        repository: repository.path.clone(),
+        path,
+        branch,
+        owner: session.to_owned(),
+    })
+}
+
+/// Whether `path` is the top of a git worktree.
+async fn is_worktree_at(path: &Path) -> bool {
+    let Ok(top) = git(path, &["rev-parse", "--show-toplevel"]).await else {
+        return false;
+    };
+    let top = PathBuf::from(top.trim());
+    match (top.canonicalize(), path.canonicalize()) {
+        (Ok(top), Ok(path)) => top == path,
+        _ => false,
+    }
+}
+
+async fn git(directory: &Path, arguments: &[&str]) -> Result<String, WorkspaceError> {
+    run(directory, None, arguments).await
+}
+
+async fn git_with_index(
+    directory: &Path,
+    index: &Path,
+    arguments: &[&str],
+) -> Result<String, WorkspaceError> {
+    run(directory, Some(index), arguments).await
+}
+
+async fn run(
+    directory: &Path,
+    index: Option<&Path>,
+    arguments: &[&str],
+) -> Result<String, WorkspaceError> {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(directory)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        // Snapshots are on no branch; they needn't be the person's.
+        .env("GIT_AUTHOR_NAME", "Khodr")
+        .env("GIT_AUTHOR_EMAIL", "khodr@localhost")
+        .env("GIT_COMMITTER_NAME", "Khodr")
+        .env("GIT_COMMITTER_EMAIL", "khodr@localhost");
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
+    let output = command
+        .output()
+        .await
+        .map_err(|source| WorkspaceError::GitMissing { source })?;
+    if !output.status.success() {
+        return Err(WorkspaceError::Git {
+            directory: directory.to_owned(),
+            command: arguments.join(" "),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests;

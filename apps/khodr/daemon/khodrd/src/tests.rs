@@ -31,7 +31,7 @@ async fn client_of<S: Service>(service: Arc<S>) -> Client {
 }
 
 async fn host(state: &Path) -> Client {
-    match Host::open(state).await {
+    match Host::open(state, &state.join("worktrees")).await {
         Ok(host) => client_of(Arc::new(host)).await,
         Err(error) => panic!("couldn't open the host: {error}"),
     }
@@ -150,6 +150,7 @@ async fn a_fork_keeps_the_history_before_its_event_and_goes_its_own_way() {
         session_id: session.id.clone(),
         before_event_id: second.clone(),
         name: "fork".to_owned(),
+        ..Default::default()
     });
     let fork = match client.call(fork).await {
         Ok(pb::response::Kind::SessionForked(pb::SessionForked {
@@ -271,7 +272,7 @@ async fn daemon(state: &Path, hosts: Hosts) -> Client {
         Ok(store) => store,
         Err(error) => panic!("couldn't open the store: {error}"),
     };
-    match Host::open(&state.join("host")).await {
+    match Host::open(&state.join("host"), &state.join("worktrees")).await {
         Ok(local) => {
             client_of(Arc::new(Daemon::new(
                 local,
@@ -370,9 +371,37 @@ async fn a_host_whose_command_fails_is_unavailable_and_the_rest_still_list() {
 fn create_project(repository: &Path) -> pb::request::Kind {
     pb::request::Kind::CreateProject(pb::CreateProject {
         name: "khodr".to_owned(),
-        repository: repository.display().to_string(),
+        repositories: vec![pb::Repository {
+            name: String::new(),
+            path: repository.display().to_string(),
+        }],
         instructions: "be brief".to_owned(),
     })
+}
+
+/// A git repository with one commit, in a new temporary folder.
+fn git_repository() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    std::fs::write(dir.path().join("README.md"), "hello\n")
+        .unwrap_or_else(|error| panic!("{error}"));
+    for arguments in [
+        &["init", "--quiet", "--initial-branch=main"][..],
+        &["add", "README.md"],
+        &["commit", "--quiet", "-m", "first"],
+    ] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(arguments)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@localhost")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@localhost")
+            .status()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(status.success(), "git {arguments:?}");
+    }
+    dir
 }
 
 async fn project(client: &Client, repository: &Path) -> pb::Project {
@@ -412,18 +441,22 @@ async fn sessions_in(client: &Client, project: &str) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_session_in_a_project_works_in_its_repository_and_lists_under_it() {
+async fn a_session_in_a_project_works_in_its_own_copy_and_lists_under_it() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
-    let repository = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
     let client = daemon(state.path(), Hosts::default()).await;
     let project = project(&client, repository.path()).await;
     let inside = started(&client, start_in(&project.id)).await;
     let outside = started(&client, start(state.path(), "")).await;
     assert_eq!(inside.project_id, project.id);
-    assert_eq!(
+    assert_ne!(
         inside.working_directory,
         repository.path().display().to_string()
     );
+    send(&client, &inside.id, "hello").await;
+    after_turns(&client, &inside.id, 1).await;
+    let copy = PathBuf::from(&inside.working_directory);
+    assert!(copy.join("README.md").is_file(), "{copy:?}");
     assert_eq!(outside.project_id, "");
     let fork = client
         .call(pb::request::Kind::ForkSession(pb::ForkSession {
@@ -447,7 +480,7 @@ async fn a_session_in_a_project_works_in_its_repository_and_lists_under_it() {
 #[tokio::test]
 async fn projects_and_their_sessions_survive_a_restart() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
-    let repository = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
     let (project, session) = {
         let client = daemon(state.path(), Hosts::default()).await;
         let project = project(&client, repository.path()).await;
@@ -488,6 +521,136 @@ async fn a_project_needs_a_folder_on_this_mac() {
             "{repository:?}: {created:?}"
         );
     }
+}
+
+async fn update(
+    client: &Client,
+    update: pb::UpdateSession,
+) -> Result<pb::SessionInfo, ClientError> {
+    match client
+        .call(pb::request::Kind::UpdateSession(update))
+        .await?
+    {
+        pb::response::Kind::SessionUpdated(pb::SessionUpdated {
+            session: Some(session),
+        }) => Ok(session),
+        other => panic!("not updated: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_archived_session_is_put_away_and_refuses_messages() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let session = started(&client, start_in(&project.id)).await;
+    send(&client, &session.id, "hello").await;
+    after_turns(&client, &session.id, 1).await;
+
+    let archived = update(
+        &client,
+        pb::UpdateSession {
+            session_id: session.id.clone(),
+            name: Some("put away".to_owned()),
+            archived: Some(true),
+            keeper: None,
+        },
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert!(archived.archived);
+    assert_eq!(archived.name, "put away");
+    assert_eq!(archived.project_id, project.id);
+    assert!(archived.checkouts.is_empty());
+    assert!(!PathBuf::from(&session.working_directory).exists());
+    let sent = client
+        .call(pb::request::Kind::SendMessage(pb::SendMessage {
+            session_id: session.id.clone(),
+            text: "hello".to_owned(),
+            ..Default::default()
+        }))
+        .await;
+    assert!(
+        matches!(
+            sent,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::Archived,
+                ..
+            })
+        ),
+        "{sent:?}"
+    );
+    let changes = client
+        .call(pb::request::Kind::ReadChanges(pb::ReadChanges {
+            session_id: session.id.clone(),
+        }))
+        .await;
+    let Ok(pb::response::Kind::Changes(changes)) = changes else {
+        panic!("{changes:?}")
+    };
+    assert_eq!(changes.repositories.len(), 1);
+}
+
+#[tokio::test]
+async fn a_project_of_several_repositories_names_each_folder_apart() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let (one, two) = (git_repository(), git_repository());
+    let client = daemon(state.path(), Hosts::default()).await;
+    let repository = |name: &str, path: &Path| pb::Repository {
+        name: name.to_owned(),
+        path: path.display().to_string(),
+    };
+    let created = client
+        .call(pb::request::Kind::CreateProject(pb::CreateProject {
+            name: "both".to_owned(),
+            repositories: vec![repository("app", one.path()), repository("app", two.path())],
+            ..Default::default()
+        }))
+        .await;
+    let Ok(pb::response::Kind::ProjectCreated(pb::ProjectCreated {
+        project: Some(project),
+    })) = created
+    else {
+        panic!("{created:?}")
+    };
+    let names: Vec<_> = project
+        .repositories
+        .iter()
+        .map(|repository| repository.name.as_str())
+        .collect();
+    assert_eq!(names.len(), 2);
+    assert_ne!(names[0], names[1]);
+
+    let session = started(&client, start_in(&project.id)).await;
+    send(&client, &session.id, "hello").await;
+    after_turns(&client, &session.id, 1).await;
+    let folder = PathBuf::from(&session.working_directory);
+    for name in names {
+        assert!(folder.join(name).join("README.md").is_file(), "{name}");
+    }
+}
+
+#[tokio::test]
+async fn a_project_needs_a_repository() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = daemon(state.path(), Hosts::default()).await;
+    let created = client
+        .call(pb::request::Kind::CreateProject(pb::CreateProject {
+            name: "empty".to_owned(),
+            ..Default::default()
+        }))
+        .await;
+    assert!(
+        matches!(
+            created,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::InvalidRequest,
+                ..
+            })
+        ),
+        "{created:?}"
+    );
 }
 
 #[tokio::test]

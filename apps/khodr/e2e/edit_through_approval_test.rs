@@ -1,6 +1,7 @@
-//! A scripted agent edits a file in a project's repository: it waits for a
-//! person to approve the write, then, once the session allows edits, writes
-//! without asking but still asks to run a command.
+//! A scripted agent edits a file in its copy of a project's repository: it
+//! waits for a person to approve the write, then, once the session allows
+//! edits, writes without asking but still asks to run a command. The
+//! repository itself is left as it was.
 
 use std::path::Path;
 
@@ -50,7 +51,7 @@ fn an_agent_edits_a_file_through_an_approval() {
     let scratch = common::scratch();
     let root = scratch.path();
     let repository = root.join("repository");
-    std::fs::create_dir_all(&repository).unwrap_or_else(|error| panic!("{error}"));
+    common::git_repository(&repository, &[("README.md", "hello\n")]);
     let script = root.join("script.json");
     std::fs::write(&script, SCRIPT).unwrap_or_else(|error| panic!("{error}"));
     let (_daemon, khodr) = common::start(root, &[]);
@@ -74,19 +75,18 @@ fn an_agent_edits_a_file_through_an_approval() {
         &script.display().to_string(),
     ]);
     let session = session.trim();
+    let copy = khodr.working_directory(session);
+    assert_ne!(copy, repository);
 
     // Asked every time: the write waits for a person.
     let asked = events(&khodr.run(&["send", session, "write the notes", "--wait"]));
     let (request, permission) = waiting_on(&asked);
     assert_eq!(permission, "PERMISSION_KIND_WRITE");
     assert!(asked.iter().any(|(kind, _)| kind == "reasoning"));
-    assert_eq!(read(&repository.join("NOTES.md")), None);
+    assert_eq!(read(&copy.join("NOTES.md")), None);
 
     let approved = khodr.run(&["approve", session, &request, "--wait"]);
-    assert_eq!(
-        read(&repository.join("NOTES.md")).as_deref(),
-        Some("Ship M1.\n")
-    );
+    assert_eq!(read(&copy.join("NOTES.md")).as_deref(), Some("Ship M1.\n"));
     assert!(events(&approved).contains(&("assistant".to_owned(), "Wrote the notes.".to_owned())));
     assert_eq!(
         events(&approved).last().map(|(kind, _)| kind.as_str()),
@@ -96,10 +96,7 @@ fn an_agent_edits_a_file_through_an_approval() {
     // Allowing edits: the write goes ahead, the command still asks.
     khodr.run(&["mode", session, "edits"]);
     let asked = events(&khodr.run(&["send", session, "and the todo", "--wait"]));
-    assert_eq!(
-        read(&repository.join("TODO.md")).as_deref(),
-        Some("Test it.\n")
-    );
+    assert_eq!(read(&copy.join("TODO.md")).as_deref(), Some("Test it.\n"));
     assert!(
         asked
             .iter()
@@ -123,6 +120,11 @@ fn an_agent_edits_a_file_through_an_approval() {
         .flat_map(|line| line.split('\t').take(1))
         .collect();
     assert_eq!(fields, vec![session]);
+    let changes = khodr.run(&["changes", session]);
+    assert!(changes.contains("+Ship M1."), "{changes}");
+    assert!(changes.contains("+Test it."), "{changes}");
+    assert!(common::clean(&repository));
+    assert_eq!(read(&repository.join("NOTES.md")), None);
     assert_eq!(
         khodr.said(&["history", session]),
         common::pairs(&[

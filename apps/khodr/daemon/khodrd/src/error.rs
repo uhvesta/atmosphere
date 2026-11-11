@@ -36,6 +36,10 @@ impl HostError {
             Self::Agent(AgentError::UnknownPermissionRequest { .. }) => {
                 pb::ErrorCode::UnknownPermissionRequest
             }
+            Self::Agent(AgentError::Archived { .. }) => pb::ErrorCode::Archived,
+            Self::Agent(AgentError::ArchiveWhileWorking { .. }) => pb::ErrorCode::Busy,
+            Self::Agent(AgentError::NoWorkspaces { .. }) => pb::ErrorCode::InvalidRequest,
+            Self::Agent(AgentError::Workspace { .. }) => pb::ErrorCode::BackendFailed,
             Self::Agent(_) => pb::ErrorCode::StorageFailed,
             Self::UnknownBackend { .. } => pb::ErrorCode::UnknownBackend,
             Self::NoWorkingDirectory | Self::NotForHosts => pb::ErrorCode::InvalidRequest,
@@ -97,6 +101,11 @@ pub enum StoreError {
 pub enum DaemonError {
     #[error(transparent)]
     Store(#[from] StoreError),
+
+    #[error(
+        "a project needs at least one repository; give the folder of each its sessions work in"
+    )]
+    NoRepositories,
 
     #[error(
         "the repository {repository} must be an absolute path to a folder on this Mac; check that it exists"
@@ -163,6 +172,7 @@ impl DaemonError {
             Self::UnknownHost { .. }
             | Self::NoCommand { .. }
             | Self::NotAFolder { .. }
+            | Self::NoRepositories
             | Self::NoRemoteDirectory { .. } => pb::ErrorCode::InvalidRequest,
             Self::Spawn { .. } | Self::Connect { .. } => pb::ErrorCode::HostUnavailable,
             Self::Host {
@@ -183,7 +193,9 @@ pub enum StartError {
     #[error(transparent)]
     Store(#[from] StoreError),
 
-    #[error("there is no home folder for khodrd's files; set HOME, or pass --state and --socket")]
+    #[error(
+        "there is no home folder for khodrd's files; set HOME, or pass --state, --cache and --socket"
+    )]
     NoHome,
 
     #[error("couldn't read the hosts file {path}; check that it is readable")]

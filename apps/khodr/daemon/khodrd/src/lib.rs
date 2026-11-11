@@ -54,9 +54,32 @@ pub fn default_state() -> Result<PathBuf, StartError> {
     })
 }
 
+/// Where khodrd keeps what it can make again, such as sessions' copies of
+/// their code, unless told otherwise: `$KHODR_CACHE`, or the system's cache
+/// folder.
+pub fn default_cache() -> Result<PathBuf, StartError> {
+    if let Some(cache) = std::env::var_os("KHODR_CACHE").filter(|cache| !cache.is_empty()) {
+        return Ok(PathBuf::from(cache));
+    }
+    let home = || {
+        std::env::var_os("HOME")
+            .filter(|home| !home.is_empty())
+            .map(PathBuf::from)
+            .ok_or(StartError::NoHome)
+    };
+    if cfg!(target_os = "macos") {
+        return Ok(home()?.join("Library/Caches/Khodr"));
+    }
+    match std::env::var_os("XDG_CACHE_HOME").filter(|cache| !cache.is_empty()) {
+        Some(cache) => Ok(PathBuf::from(cache).join("khodr")),
+        None => Ok(home()?.join(".cache/khodr")),
+    }
+}
+
 /// Serves the host role on stdin and stdout until the daemon hangs up.
-pub async fn host_stdio(state: &Path) -> Result<(), StartError> {
-    let host = Arc::new(Host::open(state).await?);
+/// Sessions' copies of their code go under `<cache>/worktrees`.
+pub async fn host_stdio(state: &Path, cache: &Path) -> Result<(), StartError> {
+    let host = Arc::new(Host::open(state, &cache.join("worktrees")).await?);
     khodr_wire::serve(
         tokio::io::stdin(),
         tokio::io::stdout(),
@@ -70,11 +93,17 @@ pub async fn host_stdio(state: &Path) -> Result<(), StartError> {
 }
 
 /// Serves the daemon on `socket` until stopped. Projects are kept in
-/// `<state>/khodr.sqlite3` and sessions on this Mac under `<state>/host`;
-/// other hosts are read from `hosts`.
-pub async fn daemon(state: &Path, socket: &Path, hosts: &Path) -> Result<(), StartError> {
+/// `<state>/khodr.sqlite3` and sessions on this Mac under `<state>/host`,
+/// their copies of the code under `<cache>/worktrees`; other hosts are read
+/// from `hosts`.
+pub async fn daemon(
+    state: &Path,
+    cache: &Path,
+    socket: &Path,
+    hosts: &Path,
+) -> Result<(), StartError> {
     let store = Store::open(&state.join("khodr.sqlite3"))?;
-    let local = Host::open(&state.join("host")).await?;
+    let local = Host::open(&state.join("host"), &cache.join("worktrees")).await?;
     let daemon = Arc::new(Daemon::new(
         local,
         store,

@@ -4,6 +4,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use khodr_workspace::{Checkout, Repository, Snapshot};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -130,6 +131,22 @@ pub enum EventKind {
         output_tokens: u64,
         premium_requests: f64,
     },
+    /// The session's code at this point: each repository's snapshot, taken
+    /// when its copy is made and at the end of every turn. A fork with the
+    /// code starts from the last one before where it forks.
+    Checkpoint {
+        snapshots: Vec<Snapshot>,
+    },
+}
+
+impl EventKind {
+    /// The snapshots of a checkpoint; None for any other event.
+    pub fn snapshots(&self) -> Option<&[Snapshot]> {
+        match self {
+            Self::Checkpoint { snapshots } => Some(snapshots),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +239,9 @@ pub struct StartOptions {
     /// Settings only the backend reads, as JSON: the scripted backend's script.
     pub backend_config: Option<String>,
     pub approval: ApprovalMode,
+    /// Repositories the session gets its own copy of, before its first turn;
+    /// it then works in that copy, not in `working_directory`.
+    pub repositories: Vec<Repository>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -230,8 +250,20 @@ pub struct ForkOptions {
     pub before: Option<EventId>,
     /// None takes the parent's name.
     pub name: Option<String>,
-    /// None works in the parent's folder: a fork of the chat only.
-    pub working_directory: Option<PathBuf>,
+    /// Keep working in the parent's copy of the code, not a copy of the code
+    /// as it was at `before`.
+    pub chat_only: bool,
+}
+
+/// Changes to a session's record; None leaves a field as it is.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct SessionUpdate {
+    pub name: Option<String>,
+    /// An archived session's copy of the code is removed, after a snapshot,
+    /// and it takes no messages; unarchived, its copy comes back as it was.
+    pub archived: Option<bool>,
+    /// Marks the session whose changes are the ones to keep.
+    pub keeper: Option<bool>,
 }
 
 /// Where a fork came from.
@@ -254,4 +286,14 @@ pub struct SessionRecord {
     pub parent: Option<Parent>,
     #[serde(default)]
     pub approval: ApprovalMode,
+    #[serde(default)]
+    pub repositories: Vec<Repository>,
+    /// Its worktrees, once made; a fork of the chat only shares its
+    /// parent's.
+    #[serde(default)]
+    pub checkouts: Vec<Checkout>,
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default)]
+    pub keeper: bool,
 }

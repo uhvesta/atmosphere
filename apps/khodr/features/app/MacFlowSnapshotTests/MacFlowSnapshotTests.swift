@@ -24,7 +24,7 @@ final class MacFlowSnapshotTests: XCTestCase {
                 .say("Wrote the notes and checked the tree is clean."),
             ]
         }
-        let project = try await daemon.client.createProject("khodr", "/code/khodr", "")
+        let project = try await daemon.client.createProject("khodr", [Repository(path: "/code/khodr")], "")
         let session = try await daemon.client.start(
             StartRequest(backend: .scripted, name: "Release notes", projectID: project.id))
         // The sidebar is read again only when the flow asks, so a refresh
@@ -53,7 +53,7 @@ final class MacFlowSnapshotTests: XCTestCase {
             return XCTFail("the write isn't waiting")
         }
         store.send(.session(.presented(.answerPermission(requestID: request, approved: true))))
-        try await until { store.session?.isWaiting == true && daemon.files.isEmpty == false }
+        try await until { store.session?.isWaiting == true && daemon.files(of: session.id).isEmpty == false }
         try await sidebarShows(.waitingForApproval, store, session)
         await flow.step("approved")
 
@@ -61,6 +61,49 @@ final class MacFlowSnapshotTests: XCTestCase {
         try await until { store.session?.isWorking == false }
         try await sidebarShows(.idle, store, session)
         await flow.step("done")
+        flow.finish()
+    }
+
+    /// A session is forked before its second turn: the fork shows under it
+    /// in the sidebar with the chat up to there, and goes its own way.
+    func testAForkBeforeATurn() async throws {
+        let daemon = InMemoryDaemon { text in
+            [.write(path: "/\(text).md", contents: text), .say("Wrote \(text).md.")]
+        }
+        let project = try await daemon.client.createProject("khodr", [Repository(path: "/code/khodr")], "")
+        let session = try await daemon.client.start(
+            StartRequest(
+                backend: .scripted, name: "Release notes", approvalMode: .allowEverything, projectID: project.id))
+        try await daemon.client.send(session.id, "notes", .enqueue)
+        try await daemon.client.send(session.id, "changelog", .enqueue)
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("fork", AppView(store: store))
+
+        try await until { store.sidebar.sessions.count == 1 && store.daemon == .running }
+        store.send(.sidebar(.sessionSelected(session.id)))
+        try await until { store.session?.items.count == 6 }
+        await flow.step("session")
+
+        let second = try XCTUnwrap(daemon.history(session.id).first { $0.kind == .userMessage("changelog") })
+        store.send(.session(.presented(.forkTapped(before: second.id, chatOnly: false))))
+        try await until { store.sidebar.sessions.count == 2 && store.session?.session.id != session.id }
+        let fork = try XCTUnwrap(store.session?.session)
+        try await until { store.session?.items.count == 3 }
+        XCTAssertEqual(daemon.files(of: fork.id), ["/notes.md": "notes"])
+        await flow.step("forked")
+
+        store.send(.session(.presented(.binding(.set(\.draft, "readme")))))
+        store.send(.session(.presented(.sendTapped(.enqueue))))
+        try await until { store.session?.items.count == 6 }
+        XCTAssertEqual(daemon.files(of: fork.id), ["/notes.md": "notes", "/readme.md": "readme"])
+        XCTAssertEqual(daemon.files(of: session.id), ["/notes.md": "notes", "/changelog.md": "changelog"])
+        await flow.step("went its own way")
         flow.finish()
     }
 

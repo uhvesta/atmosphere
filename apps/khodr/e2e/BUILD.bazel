@@ -70,6 +70,26 @@ rust_test(
     deps = ["@crates//:tempfile"],
 )
 
+# Session trees: a fork before a turn has the files and history as they were
+# there, without a commit.
+rust_test(
+    name = "fork_with_code_test",
+    srcs = [
+        "common.rs",
+        "fork_with_code_test.rs",
+    ],
+    crate_root = "fork_with_code_test.rs",
+    data = [
+        "//apps/khodr/daemon/cli:khodr",
+        "//apps/khodr/daemon/khodrd",
+    ],
+    env = {
+        "KHODR": "$(rootpath //apps/khodr/daemon/cli:khodr)",
+        "KHODRD": "$(rootpath //apps/khodr/daemon/khodrd)",
+    },
+    deps = ["@crates//:tempfile"],
+)
+
 # Where khodrd is in the runfiles, for the Swift test to start it.
 genrule(
     name = "binaries_swift",

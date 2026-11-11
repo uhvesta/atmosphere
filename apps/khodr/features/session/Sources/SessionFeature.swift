@@ -3,7 +3,8 @@ import Foundation
 import KhodrDaemonClient
 
 /// One session: its events as they happen, a message to send, permissions
-/// to answer and what the session may do without asking, and forks.
+/// to answer and what the session may do without asking, and forks, with
+/// the code or chat only, including editing an earlier message.
 @Reducer
 package struct SessionFeature {
     @ObservableState
@@ -18,6 +19,10 @@ package struct SessionFeature {
         package var expandedThinking: Set<String> = []
         /// Whether the daemon stopped sending events; watching again resumes.
         package var disconnected = false
+        /// The person's message being edited, by event id; nil when none is.
+        package var editing: String?
+        /// The edited message's text.
+        package var edited = ""
         @Presents package var alert: AlertState<Never>?
 
         package init(session: Session) {
@@ -83,8 +88,15 @@ package struct SessionFeature {
         /// The daemon refused the new mode, so the session keeps `previous`.
         case approvalModeRefused(previous: ApprovalMode, message: String)
         case thinkingToggled(id: String)
-        /// Forks the session before `event`, or with all of it if nil.
-        case forkTapped(before: String?)
+        /// Forks the session before `event`, or with all of it if nil. A
+        /// chat-only fork keeps working in this session's copy of the code.
+        case forkTapped(before: String?, chatOnly: Bool)
+        /// Starts editing the person's message `event`.
+        case editTapped(String)
+        case editCancelled
+        /// Forks before the edited message, with the code as it was, and
+        /// sends the fork the edited text.
+        case editSent
         case forked(Session)
         case failed(String)
         case alert(PresentationAction<Never>)
@@ -182,10 +194,35 @@ package struct SessionFeature {
                 state.expandedThinking.formSymmetricDifference([id])
                 return .none
 
-            case .forkTapped(let before):
+            case .forkTapped(let before, let chatOnly):
                 let session = state.session
                 return .run { send in
-                    await send(.forked(try await daemon.fork(session.id, before, "\(session.name) fork")))
+                    await send(.forked(try await daemon.fork(session.id, before, "\(session.name) fork", chatOnly)))
+                } catch: { error, send in
+                    await send(.failed(error.localizedDescription))
+                }
+
+            case .editTapped(let id):
+                guard case .userMessage(let text)? = state.events[id: id]?.kind else { return .none }
+                state.editing = id
+                state.edited = text
+                return .none
+
+            case .editCancelled:
+                state.editing = nil
+                state.edited = ""
+                return .none
+
+            case .editSent:
+                let text = state.edited.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let before = state.editing, !text.isEmpty else { return .none }
+                state.editing = nil
+                state.edited = ""
+                let session = state.session
+                return .run { send in
+                    let fork = try await daemon.fork(session.id, before, "\(session.name) edit", false)
+                    try await daemon.send(fork.id, text, .enqueue)
+                    await send(.forked(fork))
                 } catch: { error, send in
                     await send(.failed(error.localizedDescription))
                 }

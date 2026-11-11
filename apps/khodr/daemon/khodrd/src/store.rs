@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use khodr_agent::Repository;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::StoreError;
@@ -26,14 +27,31 @@ const MIGRATIONS: &[&str] = &["
         host TEXT NOT NULL
     );
     CREATE INDEX sessions_by_project ON sessions (project_id);
+", "
+    CREATE TABLE project_repositories (
+        project_id TEXT NOT NULL REFERENCES projects (id),
+        position INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        path TEXT NOT NULL,
+        PRIMARY KEY (project_id, position)
+    );
+    -- Each project had one repository, named after its folder.
+    INSERT INTO project_repositories (project_id, position, name, path)
+        SELECT id, 0,
+            coalesce(
+                nullif(replace(repository, rtrim(repository, replace(repository, '/', '')), ''), ''),
+                'repository'
+            ),
+            repository
+        FROM projects;
 "];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Project {
     pub id: String,
     pub name: String,
-    /// Its folder on this Mac.
-    pub repository: PathBuf,
+    /// The repositories on this Mac its sessions work in; at least one.
+    pub repositories: Vec<Repository>,
     pub instructions: String,
     pub created_unix_ms: i64,
 }
@@ -92,58 +110,90 @@ impl Store {
     pub fn add_project(
         &self,
         name: String,
-        repository: PathBuf,
+        repositories: Vec<Repository>,
         instructions: String,
     ) -> Result<Project, StoreError> {
         let project = Project {
             id: uuid::Uuid::new_v4().to_string(),
             name,
-            repository,
+            repositories,
             instructions,
             created_unix_ms: now_unix_ms(),
         };
-        self.lock()
-            .execute(
+        let mut connection = self.lock();
+        let added = (|| {
+            let transaction = connection.transaction()?;
+            // The first repository also goes in the column the first schema
+            // had, which is still there.
+            let first = project
+                .repositories
+                .first()
+                .map(|repository| repository.path.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            transaction.execute(
                 "INSERT INTO projects (id, name, repository, instructions, created_unix_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     project.id,
                     project.name,
-                    project.repository.to_string_lossy(),
+                    first,
                     project.instructions,
                     project.created_unix_ms,
                 ],
-            )
-            .map_err(self.failed())?;
+            )?;
+            for (position, repository) in project.repositories.iter().enumerate() {
+                transaction.execute(
+                    "INSERT INTO project_repositories (project_id, position, name, path)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        project.id,
+                        i64::try_from(position).unwrap_or(i64::MAX),
+                        repository.name,
+                        repository.path.to_string_lossy(),
+                    ],
+                )?;
+            }
+            transaction.commit()
+        })();
+        added.map_err(self.failed())?;
         Ok(project)
     }
 
     /// Every project, oldest first.
     pub fn projects(&self) -> Result<Vec<Project>, StoreError> {
         let connection = self.lock();
-        let mut statement = connection
-            .prepare(
-                "SELECT id, name, repository, instructions, created_unix_ms FROM projects
+        let listed = (|| -> rusqlite::Result<Vec<Project>> {
+            let mut statement = connection.prepare(
+                "SELECT id, name, instructions, created_unix_ms FROM projects
                  ORDER BY created_unix_ms, id",
-            )
-            .map_err(self.failed())?;
-        statement
-            .query_map([], project)
-            .and_then(Iterator::collect)
-            .map_err(self.failed())
+            )?;
+            let projects: Vec<Project> = statement
+                .query_map([], project)?
+                .collect::<Result<_, _>>()?;
+            projects
+                .into_iter()
+                .map(|project| with_repositories(&connection, project))
+                .collect()
+        })();
+        listed.map_err(self.failed())
     }
 
     pub fn project(&self, id: &str) -> Result<Project, StoreError> {
-        self.lock()
+        let connection = self.lock();
+        let found = connection
             .query_row(
-                "SELECT id, name, repository, instructions, created_unix_ms FROM projects
-                 WHERE id = ?1",
+                "SELECT id, name, instructions, created_unix_ms FROM projects WHERE id = ?1",
                 [id],
                 project,
             )
             .optional()
-            .map_err(self.failed())?
-            .ok_or_else(|| StoreError::UnknownProject { id: id.to_owned() })
+            .and_then(|found| {
+                found
+                    .map(|project| with_repositories(&connection, project))
+                    .transpose()
+            })
+            .map_err(self.failed())?;
+        found.ok_or_else(|| StoreError::UnknownProject { id: id.to_owned() })
     }
 
     /// Records that `session` runs on `host`, and, if given, belongs to
@@ -195,13 +245,32 @@ impl Store {
     }
 }
 
+/// A project's row, without its repositories.
 fn project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     Ok(Project {
         id: row.get(0)?,
         name: row.get(1)?,
-        repository: PathBuf::from(row.get::<_, String>(2)?),
-        instructions: row.get(3)?,
-        created_unix_ms: row.get(4)?,
+        repositories: Vec::new(),
+        instructions: row.get(2)?,
+        created_unix_ms: row.get(3)?,
+    })
+}
+
+fn with_repositories(connection: &Connection, project: Project) -> rusqlite::Result<Project> {
+    let mut statement = connection.prepare_cached(
+        "SELECT name, path FROM project_repositories WHERE project_id = ?1 ORDER BY position",
+    )?;
+    let repositories = statement
+        .query_map([&project.id], |row| {
+            Ok(Repository {
+                name: row.get(0)?,
+                path: PathBuf::from(row.get::<_, String>(1)?),
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(Project {
+        repositories,
+        ..project
     })
 }
 
@@ -248,6 +317,13 @@ fn now_unix_ms() -> i64 {
 mod tests {
     use super::*;
 
+    fn repositories(path: &str) -> Vec<Repository> {
+        vec![Repository {
+            name: "code".into(),
+            path: path.into(),
+        }]
+    }
+
     fn store(dir: &Path) -> Store {
         Store::open(&dir.join("khodr.sqlite3")).expect("the store opens")
     }
@@ -256,10 +332,10 @@ mod tests {
     fn projects_survive_reopening_in_the_order_they_were_added() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let first = store(dir.path())
-            .add_project("one".into(), "/code/one".into(), "be brief".into())
+            .add_project("one".into(), repositories("/code/one"), "be brief".into())
             .expect("added");
         let second = store(dir.path())
-            .add_project("two".into(), "/code/two".into(), String::new())
+            .add_project("two".into(), repositories("/code/two"), String::new())
             .expect("added");
         let reopened = store(dir.path());
         assert_eq!(
@@ -288,7 +364,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let store = store(dir.path());
         let project = store
-            .add_project("one".into(), "/code/one".into(), String::new())
+            .add_project("one".into(), repositories("/code/one"), String::new())
             .expect("added");
         assert_eq!(store.placement("s").expect("read"), None);
         store.place("s", "", Some(&project.id)).expect("placed");
@@ -299,6 +375,37 @@ mod tests {
                 host: "build".into(),
                 project: Some(project.id),
             })
+        );
+    }
+
+    #[test]
+    fn a_project_from_the_first_schema_keeps_its_repository() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("khodr.sqlite3");
+        let connection = Connection::open(&path).expect("opens");
+        connection
+            .execute_batch(MIGRATIONS[0])
+            .expect("the first schema");
+        connection
+            .pragma_update(None, "user_version", 1)
+            .expect("set");
+        connection
+            .execute(
+                "INSERT INTO projects VALUES ('p', 'one', '/code/app', '', 0)",
+                [],
+            )
+            .expect("inserted");
+        drop(connection);
+        let project = Store::open(&path)
+            .expect("opens")
+            .project("p")
+            .expect("found");
+        assert_eq!(
+            project.repositories,
+            vec![Repository {
+                name: "app".into(),
+                path: "/code/app".into(),
+            }]
         );
     }
 

@@ -28,7 +28,7 @@ final class InMemoryDaemonTests: XCTestCase {
         let history = try await daemon.client.history(session.id)
         let two = try XCTUnwrap(history.first { $0.kind == .userMessage("two") })
 
-        let fork = try await daemon.client.fork(session.id, two.id, "fork")
+        let fork = try await daemon.client.fork(session.id, two.id, "fork", false)
 
         XCTAssertEqual(fork.parentID, session.id)
         XCTAssertEqual(fork.forkedBeforeEventID, two.id)
@@ -72,12 +72,12 @@ final class InMemoryDaemonTests: XCTestCase {
         let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
         try await daemon.client.send(session.id, "write it", .enqueue)
         XCTAssertEqual(daemon.sessions.first?.state, .waitingForApproval)
-        XCTAssertEqual(daemon.files, [:])
+        XCTAssertEqual(daemon.files(of: session.id), [:])
 
         let request = try XCTUnwrap(waiting(daemon.history(session.id)))
         try await daemon.client.approve(session.id, request, true)
 
-        XCTAssertEqual(daemon.files, ["/work/a.txt": "a"])
+        XCTAssertEqual(daemon.files(of: session.id), ["/work/a.txt": "a"])
         XCTAssertEqual(daemon.sessions.first?.state, .idle)
         XCTAssertEqual(said(daemon.history(session.id)), ["user: write it", "agent: Done."])
     }
@@ -88,7 +88,7 @@ final class InMemoryDaemonTests: XCTestCase {
         try await daemon.client.send(session.id, "write it", .enqueue)
         let request = try XCTUnwrap(waiting(daemon.history(session.id)))
         try await daemon.client.approve(session.id, request, false)
-        XCTAssertEqual(daemon.files, [:])
+        XCTAssertEqual(daemon.files(of: session.id), [:])
         XCTAssertEqual(daemon.sessions.first?.state, .idle)
     }
 
@@ -97,7 +97,7 @@ final class InMemoryDaemonTests: XCTestCase {
         let session = try await daemon.client.start(
             StartRequest(backend: .scripted, workingDirectory: "/work", approvalMode: .allowEdits))
         try await daemon.client.send(session.id, "write it", .enqueue)
-        XCTAssertEqual(daemon.files, ["/work/a.txt": "a"])
+        XCTAssertEqual(daemon.files(of: session.id), ["/work/a.txt": "a"])
         XCTAssertNil(waiting(daemon.history(session.id)))
     }
 
@@ -106,7 +106,7 @@ final class InMemoryDaemonTests: XCTestCase {
         let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
         try await daemon.client.send(session.id, "write it", .enqueue)
         try await daemon.client.setApprovalMode(session.id, .allowEdits)
-        XCTAssertEqual(daemon.files, ["/work/a.txt": "a"])
+        XCTAssertEqual(daemon.files(of: session.id), ["/work/a.txt": "a"])
         XCTAssertEqual(daemon.sessions.first?.approvalMode, .allowEdits)
     }
 
@@ -125,15 +125,70 @@ final class InMemoryDaemonTests: XCTestCase {
         XCTAssertNotNil(waiting(history))
     }
 
-    func testASessionInAProjectWorksInItsRepository() async throws {
+    func testASessionInAProjectWorksInItsOwnCopy() async throws {
         let daemon = InMemoryDaemon()
-        let project = try await daemon.client.createProject("Khodr", "/code/khodr", "")
+        let project = try await daemon.client.createProject("Khodr", [Repository(path: "/code/khodr")], "")
+        XCTAssertEqual(project.repositories, [Repository(name: "khodr", path: "/code/khodr")])
         let session = try await daemon.client.start(StartRequest(backend: .scripted, projectID: project.id))
-        XCTAssertEqual(session.workingDirectory, "/code/khodr")
+        let other = try await daemon.client.start(StartRequest(backend: .scripted, projectID: project.id))
+        XCTAssertNotEqual(session.workingDirectory, "/code/khodr")
+        XCTAssertNotEqual(session.workingDirectory, other.workingDirectory)
         let listed = try await daemon.client.sessions(project.id)
-        XCTAssertEqual(listed.map(\.id), [session.id])
-        let other = try await daemon.client.sessions("elsewhere")
-        XCTAssertEqual(other, [])
+        XCTAssertEqual(listed.map(\.id), [session.id, other.id])
+        let elsewhere = try await daemon.client.sessions("elsewhere")
+        XCTAssertEqual(elsewhere, [])
+    }
+
+    func testAForkWithCodeHasTheFilesAsTheyWereAndAChatOnlyForkSharesThem() async throws {
+        let daemon = InMemoryDaemon { text in [.write(path: "/\(text).md", contents: text), .say("Wrote \(text).")] }
+        let project = try await daemon.client.createProject("Khodr", [Repository(path: "/code/khodr")], "")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, approvalMode: .allowEverything, projectID: project.id))
+        try await daemon.client.send(session.id, "one", .enqueue)
+        try await daemon.client.send(session.id, "two", .enqueue)
+        let two = try XCTUnwrap(daemon.history(session.id).first { $0.kind == .userMessage("two") })
+
+        let fork = try await daemon.client.fork(session.id, two.id, nil, false)
+        XCTAssertNotEqual(fork.workingDirectory, session.workingDirectory)
+        XCTAssertEqual(daemon.files(of: fork.id), ["/one.md": "one"])
+        try await daemon.client.send(fork.id, "three", .enqueue)
+        XCTAssertEqual(daemon.files(of: fork.id), ["/one.md": "one", "/three.md": "three"])
+        XCTAssertEqual(daemon.files(of: session.id), ["/one.md": "one", "/two.md": "two"])
+
+        let chat = try await daemon.client.fork(session.id, two.id, nil, true)
+        XCTAssertEqual(chat.workingDirectory, session.workingDirectory)
+        XCTAssertEqual(daemon.files(of: chat.id), daemon.files(of: session.id))
+        let changes = try await daemon.client.changes(fork.id)
+        XCTAssertTrue(changes.contains { $0.patch.contains("+three") })
+        XCTAssertFalse(changes.contains { $0.patch.contains("+two") })
+    }
+
+    func testAnArchivedSessionTakesNoMessagesUntilUnarchived() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        let archived = try await daemon.client.update(session.id, SessionUpdate(archived: true))
+        XCTAssertTrue(archived.archived)
+        do {
+            try await daemon.client.send(session.id, "hello", .enqueue)
+            XCTFail("Sent to an archived session")
+        } catch {
+            XCTAssertEqual((error as? DaemonError).flatMap(code), .archived)
+        }
+        _ = try await daemon.client.update(session.id, SessionUpdate(archived: false))
+        try await daemon.client.send(session.id, "hello", .enqueue)
+        XCTAssertEqual(said(daemon.history(session.id)), ["user: hello", "agent: You said: hello"])
+    }
+
+    func testASessionIsNotArchivedWhileItWaits() async throws {
+        let daemon = InMemoryDaemon(script: edit)
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        try await daemon.client.send(session.id, "write it", .enqueue)
+        do {
+            _ = try await daemon.client.update(session.id, SessionUpdate(archived: true))
+            XCTFail("Archived a waiting session")
+        } catch {
+            XCTAssertEqual((error as? DaemonError).flatMap(code), .busy)
+        }
     }
 
     func testAnUnknownSessionIsRefused() async {

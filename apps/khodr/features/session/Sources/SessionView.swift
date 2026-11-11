@@ -27,8 +27,18 @@ package struct SessionView: View {
                     action: "Reconnect"
                 ) { store.send(.task) }
             }
-            composer
-                .padding([.horizontal, .bottom])
+            if store.session.archived {
+                Label(
+                    "This session is archived. Unarchive it from the sidebar to work in it again; its code comes "
+                        + "back as it was.", systemImage: "archivebox"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding()
+            } else {
+                composer
+                    .padding([.horizontal, .bottom])
+            }
         }
         .task { await store.send(.task).finish() }
         .alert($store.scope(state: \.alert, action: \.alert))
@@ -51,6 +61,14 @@ package struct SessionView: View {
                     .foregroundStyle(.secondary)
                     .help("What this session has used")
             }
+            Menu {
+                Button("Fork With the Code") { store.send(.forkTapped(before: nil, chatOnly: false)) }
+                Button("Fork the Chat Only") { store.send(.forkTapped(before: nil, chatOnly: true)) }
+            } label: {
+                Label("Fork", systemImage: "arrow.triangle.branch")
+            }
+            .fixedSize()
+            .help("Try something else from here, while this session stays as it is")
             Picker("Approvals", selection: approvalMode) {
                 ForEach(ApprovalMode.allCases, id: \.self) { mode in
                     Text(Self.name(mode)).tag(mode)
@@ -99,8 +117,22 @@ package struct SessionView: View {
     @ViewBuilder
     private func row(_ item: ChatItem) -> some View {
         switch item {
-        case .person(_, let text):
-            MessageView(role: .person, text: text, select: { selecting = TextToSelect(text: $0) })
+        case .person(let id, let text):
+            if store.editing == id {
+                editor
+            } else {
+                MessageView(role: .person, text: text, select: { selecting = TextToSelect(text: $0) })
+                    .contextMenu {
+                        Button("Edit Message…") { store.send(.editTapped(id)) }
+                        Divider()
+                        Button("Fork Before This With the Code") {
+                            store.send(.forkTapped(before: id, chatOnly: false))
+                        }
+                        Button("Fork Before This, Chat Only") {
+                            store.send(.forkTapped(before: id, chatOnly: true))
+                        }
+                    }
+            }
         case .reply(_, let text):
             MessageView(role: .assistant, text: text, select: { selecting = TextToSelect(text: $0) })
         case .thinking(let id, let text):
@@ -124,6 +156,30 @@ package struct SessionView: View {
             Label(message, systemImage: "exclamationmark.triangle")
                 .font(.footnote)
                 .foregroundStyle(.red)
+        }
+    }
+
+    /// The person's earlier message, open to change. Sending it forks, so
+    /// this session stays as it was.
+    private var editor: some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            TextEditor(text: $store.edited)
+                .font(.body)
+                .frame(minHeight: 60)
+                .scrollContentBackground(.hidden)
+                .padding(6)
+                .background(.fill.quaternary, in: .rect(cornerRadius: 10))
+                .accessibilityLabel("Edited message")
+            HStack {
+                Text("Sending starts a fork from before this message; this session stays as it is.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel") { store.send(.editCancelled) }
+                Button("Send to a Fork") { store.send(.editSent) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.edited.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
         }
     }
 

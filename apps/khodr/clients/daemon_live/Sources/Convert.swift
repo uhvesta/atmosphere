@@ -16,6 +16,7 @@ extension ErrorCode {
             case .storageFailed: .storageFailed
             case .hostUnavailable: .hostUnavailable
             case .unknownProject: .unknownProject
+            case .archived: .archived
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -59,10 +60,24 @@ extension ApprovalMode {
     }
 }
 
+extension Repository {
+    init(_ repository: Khodr_V1_Repository) {
+        self.init(name: repository.name, path: repository.path)
+    }
+
+    var proto: Khodr_V1_Repository {
+        var repository = Khodr_V1_Repository()
+        repository.name = name
+        repository.path = path
+        return repository
+    }
+}
+
 extension Project {
     init(_ project: Khodr_V1_Project) {
         self.init(
-            id: project.id, name: project.name, repository: project.repository, instructions: project.instructions,
+            id: project.id, name: project.name, repositories: project.repositories.map(Repository.init),
+            instructions: project.instructions,
             created: Date(timeIntervalSince1970: Double(project.createdUnixMs) / 1000))
     }
 }
@@ -87,7 +102,8 @@ extension Session {
             id: info.id, name: info.name, backend: backend, workingDirectory: info.workingDirectory,
             model: optional(info.model), state: state, parentID: optional(info.parentID),
             forkedBeforeEventID: optional(info.forkedBeforeEventID), host: optional(info.host),
-            approvalMode: ApprovalMode(info.approvalMode), projectID: optional(info.projectID))
+            approvalMode: ApprovalMode(info.approvalMode), projectID: optional(info.projectID),
+            archived: info.archived, keeper: info.keeper)
     }
 }
 
@@ -124,6 +140,7 @@ extension SessionEvent {
             kind = .usage(
                 model: usage.model, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
                 premiumRequests: usage.premiumRequests)
+        case .checkpoint: kind = .checkpoint
         case nil: return nil
         }
         self.init(id: event.id, time: Date(timeIntervalSince1970: Double(event.timeUnixMs) / 1000), kind: kind)

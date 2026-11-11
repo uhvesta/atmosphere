@@ -1,0 +1,28 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# A session's own copy of its code: a git worktree and branch per repository,
+# and a hidden snapshot of each after every turn, so a fork can start from the
+# code as it was. Runs the `git` on the host's PATH.
+rust_library(
+    name = "workspace",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "khodr_workspace",
+    visibility = ["//apps/khodr/daemon:__subpackages__"],
+    deps = [
+        "@crates//:serde",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
+    name = "workspace_test",
+    crate = ":workspace",
+    deps = ["@crates//:tempfile"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

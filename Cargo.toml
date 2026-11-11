@@ -6,6 +6,7 @@ members = [
     "tools/bootstrap/revup",
     "apps/khodr/proto/plugin",
     "apps/khodr/daemon/agent",
+    "apps/khodr/daemon/workspace",
     "apps/khodr/daemon/wire",
     "apps/khodr/daemon/khodrd",
     "apps/khodr/daemon/cli",

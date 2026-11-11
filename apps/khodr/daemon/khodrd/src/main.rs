@@ -18,6 +18,10 @@ enum Role {
         /// Where to keep sessions and settings.
         #[arg(long)]
         state: Option<PathBuf>,
+        /// Where to keep sessions' copies of their code; defaults to
+        /// $KHODR_CACHE, then the system's cache folder.
+        #[arg(long)]
+        cache: Option<PathBuf>,
         /// The socket to listen on; defaults to $KHODR_SOCKET, then a path in
         /// your home folder.
         #[arg(long)]
@@ -34,6 +38,10 @@ enum Role {
         /// Where to keep sessions.
         #[arg(long)]
         state: Option<PathBuf>,
+        /// Where to keep sessions' copies of their code; defaults to
+        /// $KHODR_CACHE, then the system's cache folder.
+        #[arg(long)]
+        cache: Option<PathBuf>,
     },
 }
 
@@ -59,6 +67,7 @@ async fn run(role: Role) -> Result<(), khodrd::StartError> {
     match role {
         Role::Daemon {
             state,
+            cache,
             socket,
             hosts,
         } => {
@@ -70,14 +79,26 @@ async fn run(role: Role) -> Result<(), khodrd::StartError> {
                 .or_else(khodr_wire::default_socket)
                 .ok_or(khodrd::StartError::NoHome)?;
             let hosts = hosts.unwrap_or_else(|| state.join("hosts.json"));
-            khodrd::daemon(&state, &socket, &hosts).await
+            let cache = match cache {
+                Some(cache) => cache,
+                None => khodrd::default_cache()?,
+            };
+            khodrd::daemon(&state, &cache, &socket, &hosts).await
         }
-        Role::Host { stdio: _, state } => {
+        Role::Host {
+            stdio: _,
+            state,
+            cache,
+        } => {
             let state = match state {
                 Some(state) => state,
                 None => khodrd::default_state()?.join("host"),
             };
-            khodrd::host_stdio(&state).await
+            let cache = match cache {
+                Some(cache) => cache,
+                None => khodrd::default_cache()?,
+            };
+            khodrd::host_stdio(&state, &cache).await
         }
     }
 }

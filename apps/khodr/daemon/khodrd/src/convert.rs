@@ -1,7 +1,10 @@
 //! The agent's types as the protocol's messages.
 
+use std::path::PathBuf;
+
 use khodr_agent::{
-    ApprovalMode, Event, EventKind, PermissionKind, SendMode, SessionRecord, SessionState,
+    ApprovalMode, Event, EventKind, PermissionKind, Repository, SendMode, SessionRecord,
+    SessionState,
 };
 use khodr_wire::pb;
 
@@ -73,6 +76,16 @@ pub fn event(event: &Event) -> pb::SessionEvent {
             output_tokens: *output_tokens,
             premium_requests: *premium_requests,
         }),
+        EventKind::Checkpoint { snapshots } => Kind::Checkpoint(pb::Checkpoint {
+            snapshots: snapshots
+                .iter()
+                .map(|snapshot| pb::Snapshot {
+                    name: snapshot.name.clone(),
+                    head: snapshot.head.clone(),
+                    commit: snapshot.commit.clone(),
+                })
+                .collect(),
+        }),
     };
     pb::SessionEvent {
         id: event.id.to_string(),
@@ -120,6 +133,17 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, history: &[Event]) 
         }
         .into(),
         project_id: String::new(),
+        checkouts: record
+            .checkouts
+            .iter()
+            .map(|checkout| pb::Checkout {
+                name: checkout.name.clone(),
+                path: checkout.path.display().to_string(),
+                branch: checkout.branch.clone(),
+            })
+            .collect(),
+        archived: record.archived,
+        keeper: record.keeper,
     }
 }
 
@@ -145,11 +169,25 @@ pub fn optional(text: String) -> Option<String> {
     Some(text).filter(|text| !text.is_empty())
 }
 
+pub fn repository(repository: pb::Repository) -> Repository {
+    Repository {
+        name: repository.name,
+        path: PathBuf::from(repository.path),
+    }
+}
+
+pub fn wire_repository(repository: &Repository) -> pb::Repository {
+    pb::Repository {
+        name: repository.name.clone(),
+        path: repository.path.display().to_string(),
+    }
+}
+
 pub fn project(project: Project) -> pb::Project {
     pb::Project {
         id: project.id,
         name: project.name,
-        repository: project.repository.display().to_string(),
+        repositories: project.repositories.iter().map(wire_repository).collect(),
         instructions: project.instructions,
         created_unix_ms: project.created_unix_ms,
     }

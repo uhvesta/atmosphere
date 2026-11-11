@@ -95,6 +95,12 @@ package struct AppFeature {
                 guard state.daemon == .updatePending, !Self.anyBusy(sessions) else { return .none }
                 return restart(&state)
 
+            case .sidebar(.updated(let session)),
+                .sidebar(.destination(.presented(.rename(.delegate(.renamed(let session)))))),
+                .sidebar(.destination(.presented(.compare(.delegate(.updated(let session)))))):
+                if state.session?.session.id == session.id { state.session?.session = session }
+                return .none
+
             case .sidebar(.delegate(.openSession(let session))):
                 guard state.session?.session.id != session.id else { return .none }
                 state.session = SessionFeature.State(session: session)

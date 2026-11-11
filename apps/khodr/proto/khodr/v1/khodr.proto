@@ -65,6 +65,8 @@ message Request {
     // Projects live in the daemon; a host refuses these.
     CreateProject create_project = 10;
     ListProjects list_projects = 11;
+    UpdateSession update_session = 12;
+    ReadChanges read_changes = 13;
   }
 }
 
@@ -83,6 +85,8 @@ message Response {
     ApprovalModeSet approval_mode_set = 10;
     ProjectCreated project_created = 11;
     Projects projects = 12;
+    SessionUpdated session_updated = 13;
+    Changes changes = 14;
   }
 }
 
@@ -104,6 +108,8 @@ enum ErrorCode {
   ERROR_CODE_STORAGE_FAILED = 8;
   ERROR_CODE_HOST_UNAVAILABLE = 9;
   ERROR_CODE_UNKNOWN_PROJECT = 10;
+  // The session is archived; unarchive it first.
+  ERROR_CODE_ARCHIVED = 11;
 }
 
 enum Backend {
@@ -115,7 +121,8 @@ enum Backend {
 
 message StartSession {
   Backend backend = 1;
-  // The folder the agent works in, on the host.
+  // The folder the agent works in, on the host. Ignored when it works in
+  // repositories: then it works in its own copy of them.
   string working_directory = 2;
   // The model to use; empty for the backend's default.
   string model = 3;
@@ -128,9 +135,21 @@ message StartSession {
   // script. A fork keeps them.
   string backend_config = 7;
   ApprovalMode approval_mode = 8;
-  // The project it belongs to. Its working directory and instructions, if
-  // empty, are the project's repository and instructions.
+  // The project it belongs to. Its repositories and instructions, if empty,
+  // are the project's.
   string project_id = 9;
+  // The repositories, on the host, it works in. Each gets a git worktree of
+  // its own, made before its first turn and saved after each one, without a
+  // commit.
+  repeated Repository repositories = 10;
+}
+
+// A git repository a session works in.
+message Repository {
+  // Its folder's name in the session's copy; unique within a session.
+  string name = 1;
+  // The repository's folder.
+  string path = 2;
 }
 
 // What a session may do without asking. A fork keeps its parent's.
@@ -155,8 +174,10 @@ message ApprovalModeSet {}
 message Project {
   string id = 1;
   string name = 2;
-  // The repository's folder on this Mac.
-  string repository = 3;
+  reserved 3;
+  reserved "repository";
+  // The repositories on this Mac its sessions work in.
+  repeated Repository repositories = 6;
   // Instructions for every session in it.
   string instructions = 4;
   // Milliseconds since 1970 in UTC.
@@ -165,8 +186,11 @@ message Project {
 
 message CreateProject {
   string name = 1;
-  string repository = 2;
+  reserved 2;
+  reserved "repository";
   string instructions = 3;
+  // At least one. A repository without a name is named after its folder.
+  repeated Repository repositories = 4;
 }
 
 message ProjectCreated {
@@ -213,6 +237,39 @@ message ForkSession {
   // them all.
   string before_event_id = 2;
   string name = 3;
+  // The fork shares its parent's copy of the code instead of getting its
+  // own as it was at the fork.
+  bool chat_only = 4;
+}
+
+// Changes a session's record. Unset fields are left as they are.
+message UpdateSession {
+  string session_id = 1;
+  optional string name = 2;
+  // An archived session's copy of the code is saved and removed, and it
+  // takes no messages. Unarchived, its code comes back as it was.
+  optional bool archived = 3;
+  // Marks the session whose changes are the ones to keep.
+  optional bool keeper = 4;
+}
+
+message SessionUpdated {
+  SessionInfo session = 1;
+}
+
+// What a session changed in each repository since its copy was made.
+message ReadChanges {
+  string session_id = 1;
+}
+
+message Changes {
+  repeated RepositoryChanges repositories = 1;
+}
+
+message RepositoryChanges {
+  string name = 1;
+  // A unified diff; empty if nothing changed.
+  string patch = 2;
 }
 
 message SessionForked {
@@ -287,6 +344,19 @@ message SessionInfo {
   ApprovalMode approval_mode = 10;
   // The project it belongs to, as the daemon records it; empty for none.
   string project_id = 11;
+  // Its copy of each repository; empty before its first turn, while
+  // archived, or if it works in none.
+  repeated Checkout checkouts = 12;
+  bool archived = 13;
+  bool keeper = 14;
+}
+
+// A session's git worktree of one repository.
+message Checkout {
+  string name = 1;
+  // The worktree's folder, on the session's host.
+  string path = 2;
+  string branch = 3;
 }
 
 // One thing that happened in a session. Its id is stable for the life of the
@@ -310,7 +380,23 @@ message SessionEvent {
     SessionIdle idle = 13;
     SessionFailed failed = 14;
     Usage usage = 15;
+    Checkpoint checkpoint = 16;
   }
+}
+
+// The code was saved: before the first turn and after each one. A fork
+// before an event starts from the last checkpoint ahead of it.
+message Checkpoint {
+  repeated Snapshot snapshots = 1;
+}
+
+message Snapshot {
+  // The repository's name in the session.
+  string name = 1;
+  // The commit its worktree was on.
+  string head = 2;
+  // A commit, on no branch, of the worktree's files.
+  string commit = 3;
 }
 
 message UserMessage {

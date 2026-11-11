@@ -36,10 +36,10 @@ extension DaemonClient {
                 }
                 return projects.projects.map(Project.init)
             },
-            createProject: { name, repository, instructions in
+            createProject: { name, repositories, instructions in
                 var create = Khodr_V1_CreateProject()
                 create.name = name
-                create.repository = repository
+                create.repositories = repositories.map(\.proto)
                 create.instructions = instructions
                 guard case .projectCreated(let created) = try await daemon.call(.createProject(create)) else {
                     throw DaemonError.unexpected("something other than the created project")
@@ -95,15 +95,35 @@ extension DaemonClient {
                 abort.sessionID = session
                 _ = try await daemon.call(.abortTurn(abort))
             },
-            fork: { session, before, name in
+            fork: { session, before, name, chatOnly in
                 var fork = Khodr_V1_ForkSession()
                 fork.sessionID = session
                 fork.beforeEventID = before ?? ""
                 fork.name = name ?? ""
+                fork.chatOnly = chatOnly
                 guard case .sessionForked(let forked) = try await daemon.call(.forkSession(fork)) else {
                     throw DaemonError.unexpected("something other than the forked session")
                 }
                 return try Session(forked.session)
+            },
+            update: { session, update in
+                var request = Khodr_V1_UpdateSession()
+                request.sessionID = session
+                if let name = update.name { request.name = name }
+                if let archived = update.archived { request.archived = archived }
+                if let keeper = update.keeper { request.keeper = keeper }
+                guard case .sessionUpdated(let updated) = try await daemon.call(.updateSession(request)) else {
+                    throw DaemonError.unexpected("something other than the updated session")
+                }
+                return try Session(updated.session)
+            },
+            changes: { session in
+                var read = Khodr_V1_ReadChanges()
+                read.sessionID = session
+                guard case .changes(let changes) = try await daemon.call(.readChanges(read)) else {
+                    throw DaemonError.unexpected("something other than the session's changes")
+                }
+                return changes.repositories.map { RepositoryChanges(name: $0.name, patch: $0.patch) }
             },
             history: { session in
                 var read = Khodr_V1_ReadHistory()

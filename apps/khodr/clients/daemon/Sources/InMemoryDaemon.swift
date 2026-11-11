@@ -3,7 +3,9 @@ import Foundation
 
 /// A daemon kept in memory, for tests and previews. Each message plays the
 /// steps `script(text)` gives, at once; a step that needs permission waits
-/// for an answer unless the session's approval mode allows it. Ids count up
+/// for an answer unless the session's approval mode allows it. A session in
+/// a project writes to its own copy of the code, which a fork with code
+/// copies as it was at the fork and a chat-only fork shares. Ids count up
 /// (`p1`, `s1`, `e1`, `r1`, ...) and times from `start`, so tests see the
 /// same values every run.
 package final class InMemoryDaemon: Sendable {
@@ -13,8 +15,8 @@ package final class InMemoryDaemon: Sendable {
         case think(String)
         /// Asks to run `command`; if allowed, reports `output`.
         case run(command: String, output: String)
-        /// Asks to write `contents` to `path`; if allowed, writes it to
-        /// ``files``.
+        /// Asks to write `contents` to `path`; if allowed, writes it to the
+        /// session's ``files(of:)``.
         case write(path: String, contents: String)
     }
 
@@ -26,13 +28,24 @@ package final class InMemoryDaemon: Sendable {
         var rest: [Step]
     }
 
+    /// A file the agent wrote, and the event that says it did.
+    private struct Write: Hashable {
+        var event: String
+        var path: String
+        var contents: String
+    }
+
     private struct State {
         var projects: [Project] = []
         var sessions: [Session] = []
         var histories: [String: [SessionEvent]] = [:]
         var paused: [String: Paused] = [:]
         var queues: [String: [String]] = [:]
-        var files: [String: String] = [:]
+        /// Each copy of the code's writes, oldest first, by the id of the
+        /// session that made the copy.
+        var copies: [String: [Write]] = [:]
+        /// The copy each session works in, by session id.
+        var copyOf: [String: String] = [:]
         var watchers: [String: [UUID: AsyncThrowingStream<SessionEvent, any Error>.Continuation]] = [:]
         var nextProject = 1
         var nextSession = 1
@@ -55,8 +68,13 @@ package final class InMemoryDaemon: Sendable {
     /// The sessions as they are now.
     package var sessions: [Session] { state.value.sessions }
 
-    /// What the agent has written, by path.
-    package var files: [String: String] { state.value.files }
+    /// What the agent has written in the session's copy of the code, by path.
+    package func files(of session: String) -> [String: String] {
+        state.withValue { state in
+            let writes = state.copyOf[session].flatMap { state.copies[$0] } ?? []
+            return Dictionary(writes.map { ($0.path, $0.contents) }, uniquingKeysWith: { _, last in last })
+        }
+    }
 
     package func history(_ session: String) -> [SessionEvent] {
         state.value.histories[session] ?? []
@@ -65,8 +83,8 @@ package final class InMemoryDaemon: Sendable {
     package var client: DaemonClient {
         DaemonClient(
             projects: { self.state.value.projects },
-            createProject: { name, repository, instructions in
-                try self.createProject(name: name, repository: repository, instructions: instructions)
+            createProject: { name, repositories, instructions in
+                try self.createProject(name: name, repositories: repositories, instructions: instructions)
             },
             sessions: { project in
                 self.state.value.sessions.filter { project == nil || $0.projectID == project }
@@ -76,7 +94,14 @@ package final class InMemoryDaemon: Sendable {
             approve: { session, request, approved in try self.answer(session, request, approved: approved) },
             setApprovalMode: { session, mode in try self.setApprovalMode(session, mode) },
             abort: { session in try self.abort(session) },
-            fork: { session, before, name in try self.fork(session, before: before, name: name) },
+            fork: { session, before, name, chatOnly in
+                try self.fork(session, before: before, name: name, chatOnly: chatOnly)
+            },
+            update: { session, update in try self.update(session, update) },
+            changes: { session in
+                try self.known(session)
+                return self.changes(session)
+            },
             history: { session in
                 try self.known(session)
                 return self.history(session)
@@ -93,15 +118,30 @@ package final class InMemoryDaemon: Sendable {
         guard state.value.histories[session] != nil else { throw Self.unknown(session) }
     }
 
-    private func createProject(name: String, repository: String, instructions: String) throws -> Project {
-        guard repository.hasPrefix("/") else {
-            throw DaemonError.refused(
-                .invalidRequest,
-                message: "The repository \(repository) must be an absolute path to a folder on this Mac.")
+    private func createProject(name: String, repositories: [Repository], instructions: String) throws -> Project {
+        guard !repositories.isEmpty else {
+            throw DaemonError.refused(.invalidRequest, message: "A project needs a repository to work in.")
         }
+        var named: [Repository] = []
+        for repository in repositories {
+            guard repository.path.hasPrefix("/") else {
+                throw DaemonError.refused(
+                    .invalidRequest,
+                    message: "The repository \(repository.path) must be an absolute path to a folder on this Mac.")
+            }
+            var name = repository.name.isEmpty ? (repository.path as NSString).lastPathComponent : repository.name
+            let base = name
+            var suffix = 2
+            while named.contains(where: { $0.name == name }) {
+                name = "\(base)-\(suffix)"
+                suffix += 1
+            }
+            named.append(Repository(name: name, path: repository.path))
+        }
+        let repositories = named
         return state.withValue { state in
             let project = Project(
-                id: "p\(state.nextProject)", name: name, repository: repository, instructions: instructions,
+                id: "p\(state.nextProject)", name: name, repositories: repositories, instructions: instructions,
                 created: start + Double(state.nextProject))
             state.nextProject += 1
             state.projects.append(project)
@@ -111,29 +151,44 @@ package final class InMemoryDaemon: Sendable {
 
     private func startSession(_ request: StartRequest) throws -> Session {
         try state.withValue { state in
+            let id = "s\(state.nextSession)"
             var directory = request.workingDirectory
             if let projectID = request.projectID {
                 guard let project = state.projects.first(where: { $0.id == projectID }) else {
                     throw DaemonError.refused(.unknownProject, message: "There is no project \(projectID).")
                 }
-                directory = directory ?? project.repository
+                directory = directory ?? Self.copy(of: project, for: id)
             }
             guard let directory else {
                 throw DaemonError.refused(.invalidRequest, message: "A session needs a working directory.")
             }
             let session = Session(
-                id: "s\(state.nextSession)", name: request.name, backend: request.backend,
+                id: id, name: request.name, backend: request.backend,
                 workingDirectory: directory, model: request.model, host: request.host,
                 approvalMode: request.approvalMode, projectID: request.projectID)
             state.nextSession += 1
             state.sessions.append(session)
             state.histories[session.id] = []
+            state.copies[session.id] = []
+            state.copyOf[session.id] = session.id
             return session
         }
     }
 
+    /// Where a session's copy of the project is: the repository's folder in
+    /// it if there is one, otherwise the folder holding each.
+    private static func copy(of project: Project, for session: String) -> String {
+        let folder = "/copies/\(session)"
+        guard project.repositories.count == 1, let repository = project.repositories.first else { return folder }
+        return "\(folder)/\(repository.name)"
+    }
+
     private func send(_ session: String, _ text: String, _ mode: SendMode) throws {
         try known(session)
+        if state.value.sessions.first(where: { $0.id == session })?.archived == true {
+            throw DaemonError.refused(
+                .archived, message: "Session \(session) is archived; unarchive it to work in it again.")
+        }
         let busy = state.withValue { state -> Bool in
             guard state.paused[session] != nil else { return false }
             if mode == .enqueue { state.queues[session, default: []].append(text) }
@@ -204,12 +259,17 @@ package final class InMemoryDaemon: Sendable {
         let output: String
         switch step {
         case .run(_, let ran): output = approved ? ran : "The person denied this."
-        case .write(let path, let contents):
-            if approved { state.withValue { $0.files[path] = contents } }
+        case .write(let path, _):
             output = approved ? "Wrote \(path)" : "The person denied this."
         case .say, .think: return
         }
-        append(.toolCompleted(callID: callID, success: approved, output: output), to: session)
+        let event = append(.toolCompleted(callID: callID, success: approved, output: output), to: session)
+        if approved, case .write(let path, let contents) = step {
+            state.withValue { state in
+                guard let copy = state.copyOf[session] else { return }
+                state.copies[copy, default: []].append(Write(event: event, path: path, contents: contents))
+            }
+        }
     }
 
     private func answer(_ session: String, _ request: String, approved: Bool, automatic: Bool = false) throws {
@@ -264,7 +324,10 @@ package final class InMemoryDaemon: Sendable {
         }
     }
 
-    private func append(_ kind: SessionEvent.Kind, to session: String) {
+    /// Adds an event to the session's history and tells its watchers.
+    /// Returns its id.
+    @discardableResult
+    private func append(_ kind: SessionEvent.Kind, to session: String) -> String {
         let (event, watchers) = state.withValue { state in
             let event = SessionEvent(id: "e\(state.nextEvent)", time: start + Double(state.nextEvent), kind: kind)
             state.nextEvent += 1
@@ -277,6 +340,7 @@ package final class InMemoryDaemon: Sendable {
         for watcher in watchers {
             watcher.yield(event)
         }
+        return event.id
     }
 
     private static func state(after kind: SessionEvent.Kind, waiting: Bool) -> SessionState {
@@ -287,7 +351,7 @@ package final class InMemoryDaemon: Sendable {
         }
     }
 
-    private func fork(_ session: String, before: String?, name: String?) throws -> Session {
+    private func fork(_ session: String, before: String?, name: String?, chatOnly: Bool) throws -> Session {
         try known(session)
         return try state.withValue { state in
             guard let parent = state.sessions.first(where: { $0.id == session }) else {
@@ -306,11 +370,52 @@ package final class InMemoryDaemon: Sendable {
             fork.state = .idle
             fork.parentID = parent.id
             fork.forkedBeforeEventID = before
+            fork.archived = false
+            fork.keeper = false
             state.nextSession += 1
+            if chatOnly {
+                state.copyOf[fork.id] = state.copyOf[parent.id]
+            } else {
+                let kept = Set(history.map(\.id))
+                let writes = state.copyOf[parent.id].flatMap { state.copies[$0] } ?? []
+                state.copies[fork.id] = writes.filter { kept.contains($0.event) }
+                state.copyOf[fork.id] = fork.id
+                let parentCopy = "/copies/\(parent.id)"
+                if fork.workingDirectory.hasPrefix(parentCopy) {
+                    fork.workingDirectory = "/copies/\(fork.id)" + fork.workingDirectory.dropFirst(parentCopy.count)
+                }
+            }
             state.sessions.append(fork)
             state.histories[fork.id] = history
             return fork
         }
+    }
+
+    private func update(_ session: String, _ update: SessionUpdate) throws -> Session {
+        try known(session)
+        return try state.withValue { state in
+            guard let index = state.sessions.firstIndex(where: { $0.id == session }) else {
+                throw Self.unknown(session)
+            }
+            if update.archived == true, state.paused[session] != nil {
+                throw DaemonError.refused(
+                    .busy, message: "Session \(session) is working; stop its turn, then archive it.")
+            }
+            if let name = update.name { state.sessions[index].name = name }
+            if let archived = update.archived { state.sessions[index].archived = archived }
+            if let keeper = update.keeper { state.sessions[index].keeper = keeper }
+            return state.sessions[index]
+        }
+    }
+
+    /// The session's files as one patch, each new since it began.
+    private func changes(_ session: String) -> [RepositoryChanges] {
+        let patch = files(of: session).sorted { $0.key < $1.key }.map { path, contents in
+            let lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map { "+\($0)" }
+            return (["--- /dev/null", "+++ b\(path)", "@@ -0,0 +1,\(lines.count) @@"] + lines)
+                .joined(separator: "\n")
+        }
+        return [RepositoryChanges(name: "code", patch: patch.joined(separator: "\n"))]
     }
 
     private func watch(_ session: String) -> AsyncThrowingStream<SessionEvent, any Error> {

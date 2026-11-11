@@ -59,13 +59,15 @@ impl From<Approval> for pb::ApprovalMode {
 
 #[derive(Subcommand)]
 enum ProjectCommand {
-    /// Add a project with one repository on this Mac, and print its id.
+    /// Add a project of repositories on this Mac, and print its id.
     Add {
         #[arg(long)]
         name: String,
-        /// The repository's folder on this Mac.
-        #[arg(long)]
-        repository: PathBuf,
+        /// A repository's folder on this Mac, as `PATH` or `NAME=PATH`; give
+        /// it once for each. NAME is its folder in each session's copy, the
+        /// folder's own name if not given.
+        #[arg(long = "repository", required = true)]
+        repositories: Vec<String>,
         /// Instructions for every session in it.
         #[arg(long, default_value = "")]
         instructions: String,
@@ -83,12 +85,13 @@ enum Command {
     Start {
         #[arg(long, value_enum)]
         backend: Backend,
-        /// The project it belongs to. Its repository is the default
-        /// directory and its instructions the default instructions.
+        /// The project it belongs to. It works in its own copy of the
+        /// project's repositories, with the project's instructions unless
+        /// given others.
         #[arg(long, default_value = "")]
         project: String,
-        /// The folder the agent works in, on its host; required without
-        /// --project.
+        /// The folder the agent works in, on its host, as it is; required
+        /// without --project.
         #[arg(long, required_unless_present = "project")]
         directory: Option<PathBuf>,
         /// What it may do without asking.
@@ -149,7 +152,30 @@ enum Command {
         before: String,
         #[arg(long, default_value = "")]
         name: String,
+        /// Share the session's copy of the code instead of getting one of
+        /// the code as it was there.
+        #[arg(long)]
+        chat_only: bool,
     },
+    /// Rename a session.
+    Rename { session: String, name: String },
+    /// Archive a session: its copy of the code is saved and removed, and it
+    /// takes no messages until unarchived.
+    Archive {
+        session: String,
+        /// Unarchive it instead; its code comes back before its next turn.
+        #[arg(long)]
+        undo: bool,
+    },
+    /// Mark the session whose changes are the ones to keep.
+    Keeper {
+        session: String,
+        /// Unmark it instead.
+        #[arg(long)]
+        undo: bool,
+    },
+    /// Print what a session changed in each repository, as a diff.
+    Changes { session: String },
     /// Print a session's events.
     History { session: String },
     /// Print a session's events, then each new one, until interrupted.
@@ -201,17 +227,16 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
     match arguments.command {
         Command::Project(ProjectCommand::Add {
             name,
-            repository,
+            repositories,
             instructions,
         }) => {
-            let repository =
-                std::path::absolute(&repository).map_err(|source| CliError::Resolve {
-                    path: repository,
-                    source,
-                })?;
+            let repositories = repositories
+                .iter()
+                .map(|given| repository(given))
+                .collect::<Result<_, _>>()?;
             let request = Request::CreateProject(pb::CreateProject {
                 name,
-                repository: repository.display().to_string(),
+                repositories,
                 instructions,
             });
             match client.call(request).await? {
@@ -267,6 +292,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 backend_config,
                 approval_mode: pb::ApprovalMode::from(approval).into(),
                 project_id: project,
+                repositories: Vec::new(),
             });
             match client.call(request).await? {
                 Response::SessionStarted(pb::SessionStarted {
@@ -341,17 +367,61 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             session,
             before,
             name,
+            chat_only,
         } => {
             let request = Request::ForkSession(pb::ForkSession {
                 session_id: session,
                 before_event_id: before,
                 name,
+                chat_only,
             });
             match client.call(request).await? {
                 Response::SessionForked(pb::SessionForked {
                     session: Some(session),
                 }) => println!("{}", session.id),
                 other => return Err(unexpected("the forked session", &other)),
+            }
+        }
+        Command::Rename { session, name } => {
+            update(
+                &client,
+                pb::UpdateSession {
+                    session_id: session,
+                    name: Some(name),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        }
+        Command::Archive { session, undo } => {
+            update(
+                &client,
+                pb::UpdateSession {
+                    session_id: session,
+                    archived: Some(!undo),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        }
+        Command::Keeper { session, undo } => {
+            update(
+                &client,
+                pb::UpdateSession {
+                    session_id: session,
+                    keeper: Some(!undo),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        }
+        Command::Changes { session } => {
+            let request = Request::ReadChanges(pb::ReadChanges {
+                session_id: session,
+            });
+            match client.call(request).await? {
+                Response::Changes(changes) => print!("{}", print::changes(&changes)),
+                other => return Err(unexpected("the changes", &other)),
             }
         }
         Command::History { session } => {
@@ -383,6 +453,30 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
         },
     }
     Ok(())
+}
+
+/// A `--repository` value: `PATH` or `NAME=PATH`, made absolute.
+fn repository(given: &str) -> Result<pb::Repository, CliError> {
+    let (name, path) = match given.split_once('=') {
+        Some((name, path)) if !name.contains('/') => (name, path),
+        _ => ("", given),
+    };
+    let path = PathBuf::from(path);
+    let path = std::path::absolute(&path).map_err(|source| CliError::Resolve { path, source })?;
+    Ok(pb::Repository {
+        name: name.to_owned(),
+        path: path.display().to_string(),
+    })
+}
+
+async fn update(client: &Client, update: pb::UpdateSession) -> Result<(), CliError> {
+    match client
+        .call(pb::request::Kind::UpdateSession(update))
+        .await?
+    {
+        pb::response::Kind::SessionUpdated(_) => Ok(()),
+        other => Err(unexpected("the updated session", &other)),
+    }
 }
 
 async fn history(client: &Client, session: &str) -> Result<Vec<pb::SessionEvent>, CliError> {

@@ -9,6 +9,7 @@ rust_library(
     crate_name = "khodr_agent",
     visibility = ["//apps/khodr/daemon:__subpackages__"],
     deps = [
+        "//apps/khodr/daemon/workspace",
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:thiserror",
