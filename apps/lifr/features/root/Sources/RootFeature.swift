@@ -1248,8 +1248,8 @@ package struct RootFeature {
 
     /// Gives the widgets Today as `state` has it, and as it will be on each
     /// of the next two weeks, for Upcoming and for after midnight, and each
-    /// Avenue's open tasks: the titles, or only how many while the lock is
-    /// on.
+    /// Avenue's open tasks and how many are due each day for the calendar:
+    /// the titles, or only how many while the lock is on.
     private func writeGlance(_ state: State) -> Effect<Action> {
         guard let workspace = state.workspace else { return .none }
         var calendar = Calendar(identifier: .gregorian)
@@ -1274,6 +1274,13 @@ package struct RootFeature {
                 id: avenue.id, name: avenue.name, symbol: avenue.symbol, color: avenue.color, count: rows.count,
                 overdue: rows.count(where: \.isOverdue), rows: Array(rows.prefix(8)))
         }
+        let thisMonth = CalendarDate(now, in: timeZone).firstOfMonth
+        let months = thisMonth..<thisMonth.firstOfMonth(adding: 2)
+        var dueCounts: [String: Int] = [:]
+        for task in open {
+            guard let due = task.dueDate, months.contains(due) else { continue }
+            dueCounts[due.description, default: 0] += 1
+        }
         let later = (1..<15).map { day in
             TodayGlance(
                 asOf: now, from: starts[day], until: starts[day + 1], rows: rows(at: starts[day]),
@@ -1281,7 +1288,7 @@ package struct RootFeature {
         }
         let today = TodayGlance(
             asOf: now, from: start, until: starts[1], rows: rows(at: now), locked: state.locksApp, later: later,
-            avenues: avenues)
+            avenues: avenues, dueCounts: dueCounts)
         return .run { [glance] _ in await glance.write(today) }
             .cancellable(id: CancelID.glance)
     }

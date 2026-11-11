@@ -1,0 +1,2 @@
+[text] "November 2026"
+[text] "Open Lifr to see your due dates here."

@@ -13,6 +13,7 @@ struct LifrWidgets: WidgetBundle {
         TodayWidget()
         UpcomingWidget()
         AvenuesWidget()
+        CalendarWidget()
         #if os(iOS)
             NewTaskControl()
         #endif
@@ -64,6 +65,19 @@ struct AvenuesWidget: Widget {
         .configurationDisplayName("Avenues")
         .description("How many tasks are open in each Avenue.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+    }
+}
+
+/// This month, with the days that have tasks due marked.
+struct CalendarWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "Calendar", provider: TodayProvider()) { entry in
+            CalendarEntryView(entry: entry)
+                .containerBackground(.fill.tertiary, for: .widget)
+        }
+        .configurationDisplayName("Calendar")
+        .description("This month, with the days that have tasks due.")
+        .supportedFamilies([.systemSmall, .systemLarge])
     }
 }
 
@@ -145,6 +159,17 @@ struct AvenuesEntryView: View {
         case .systemLarge, .systemExtraLarge: AvenuesWidgetView(avenues: entry.glance?.avenues, size: .large)
         default: AvenuesWidgetView(avenues: entry.glance?.avenues, size: .small)
         }
+    }
+}
+
+struct CalendarEntryView: View {
+    @Environment(\.widgetFamily) private var family
+    var entry: TodayEntry
+
+    var body: some View {
+        CalendarWidgetView(
+            today: CalendarDate(entry.date, in: .current), dueCounts: entry.glance?.dueCounts,
+            size: family == .systemSmall ? .small : .large)
     }
 }
 

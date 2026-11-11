@@ -40,12 +40,15 @@ package struct TodayGlance: Codable, Hashable, Sendable {
     /// Each open Avenue in the sidebar's order, or nil from a Lifr that
     /// didn't write them yet.
     package var avenues: [AvenueGlance]?
+    /// How many open tasks are due on each day of this month and the
+    /// next, by YYYY-MM-DD, or nil from a Lifr that didn't write them yet.
+    package var dueCounts: [String: Int]?
 
     /// Today's tasks for the day from `from` until `until`, or only how
     /// many while `locked`.
     package init(
         asOf: Date, from: Date, until: Date, rows: [Row], locked: Bool, later: [TodayGlance] = [],
-        avenues: [AvenueGlance]? = nil
+        avenues: [AvenueGlance]? = nil, dueCounts: [String: Int]? = nil
     ) {
         self.asOf = asOf
         self.from = from
@@ -56,10 +59,11 @@ package struct TodayGlance: Codable, Hashable, Sendable {
         isLocked = locked
         self.later = later
         self.avenues = avenues.map { $0.map { locked ? $0.locked : $0 } }
+        self.dueCounts = dueCounts
     }
 
-    /// Each day it has, in order, each with the Avenues as they were
-    /// written.
+    /// Each day it has, in order, each with the Avenues and due counts as
+    /// they were written.
     package var days: [TodayGlance] {
         var today = self
         today.later = []
@@ -67,6 +71,7 @@ package struct TodayGlance: Codable, Hashable, Sendable {
             + later.flatMap(\.days).map { day in
                 var day = day
                 day.avenues = day.avenues ?? avenues
+                day.dueCounts = day.dueCounts ?? dueCounts
                 return day
             }
     }

@@ -176,6 +176,7 @@ lifr_snapshot_test(
     deps = [
         ":glance",
         ":views",
+        "//apps/lifr/core",
         "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
     ],
 )

@@ -1,5 +1,6 @@
 import FlowKit
 import Foundation
+import LifrCore
 import LifrGlance
 import LifrWidgetViews
 import SnapshotTesting
@@ -135,6 +136,24 @@ final class WidgetSnapshotTests: XCTestCase {
         assertAvenues(avenues(locked: true), .large, named: "locked")
         assertAvenues([], .small, named: "none")
         assertAvenues(nil, .medium, named: "before-lifr-wrote")
+    }
+
+    private func assertCalendar(_ counts: [String: Int]?, _ size: TodayWidgetView.Size, named name: String) throws {
+        let view = CalendarWidgetView(today: try CalendarDate("2026-11-11"), dueCounts: counts, size: size)
+            .padding(16)
+            .frame(width: self.size(size).width, height: self.size(size).height)
+            .background(Color(white: 0.95))
+        assertSnapshot(
+            of: view, as: .image(layout: .fixed(width: self.size(size).width, height: self.size(size).height)),
+            named: name, testName: "testCalendar")
+        assertSnapshot(of: view, as: .accessibilityTree(size: self.size(size)), named: name, testName: "testCalendar")
+    }
+
+    func testCalendar() throws {
+        let counts = ["2026-11-03": 1, "2026-11-11": 4, "2026-11-12": 2, "2026-11-20": 1, "2026-11-30": 3]
+        try assertCalendar(counts, .small, named: "small")
+        try assertCalendar(counts, .large, named: "large")
+        try assertCalendar(nil, .small, named: "before-lifr-wrote")
     }
 
     func testBeforeLifrWroteToday() {
