@@ -15,7 +15,7 @@
     - openCount: 4
     ▿ projects: 1 element
       ▿ ProjectRow
-        - id: 00000000-0000-0000-0000-000000001501
+        - id: 00000000-0000-0000-0000-000000001601
         - name: "Half marathon"
         - openCount: 1
     - symbol: "heart"
@@ -32,6 +32,6 @@
     - id: 00000000-0000-0000-0000-000000000301
     - key: "HOME"
     - name: "Home"
-    - openCount: 4
+    - openCount: 5
     - projects: 0 elements
     - symbol: "house"

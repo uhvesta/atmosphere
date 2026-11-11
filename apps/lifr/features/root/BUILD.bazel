@@ -19,6 +19,7 @@ _DEPS = [
     "//apps/lifr/features/trash",
     "//apps/lifr/features/bug_report",
     "//apps/lifr/features/conversations",
+    "//apps/lifr/features/lists",
     "//apps/lifr/features/procrastinated",
     "//apps/lifr/features/quick_add",
     "//apps/lifr/features/search",

@@ -92,6 +92,16 @@ final class AvenueFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.avenues[0].projects.map(\.name), ["Stretching", "Half marathon"])
     }
 
+    func testATaskThatStartsLaterIsInItsOwnSectionUntilThatDay() async {
+        records.task("Paint the fence", in: home, starts: 2)
+        records.task("Sort the garage", in: home)
+        let store = avenue(.avenue(home.id))
+
+        let sections = store.state.list.sections.map { ($0.id, $0.rows.map(\.title)) }
+        XCTAssertEqual(sections.first { $0.0 == "later" }?.1, ["Paint the fence"])
+        XCTAssertEqual(sections.first { $0.0 == "todo" }?.1, ["Sort the garage"])
+    }
+
     func testGroupsAnAvenueByStatusThenByProject() async {
         let marathon = records.project("Half marathon", in: health)
         records.task("Buy running shoes", in: health, project: marathon)

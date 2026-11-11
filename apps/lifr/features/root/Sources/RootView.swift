@@ -12,6 +12,7 @@ import LifrQuickAdd
 import LifrSearch
 import LifrSettings
 import LifrSyncReview
+import LifrTaskList
 import LifrToday
 import LifrTrash
 import LifrUI
@@ -199,6 +200,21 @@ private struct PhoneRootView: View {
                 NavigationStack {
                     AvenuesView(store: store.scope(state: \.avenues, action: \.avenues)) {
                         Section {
+                            ForEach(RootFeature.Shelf.allCases, id: \.self) { shelf in
+                                Button {
+                                    store.shownShelf = shelf
+                                } label: {
+                                    LabeledContent {
+                                        if shelf != .logbook {
+                                            Text("\(store.state[list: shelf.slot]?.rows.count ?? 0)")
+                                        }
+                                    } label: {
+                                        Label(shelf.title, systemImage: shelf.systemImage)
+                                    }
+                                }
+                            }
+                        }
+                        Section {
                             Button {
                                 store.isTrashShown = true
                             } label: {
@@ -214,6 +230,9 @@ private struct PhoneRootView: View {
                     .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
                     .navigationDestination(isPresented: $store.isTrashShown) {
                         TrashView(store: store.scope(state: \.trash, action: \.trash))
+                    }
+                    .navigationDestination(item: $store.shownShelf) { shelf in
+                        ShelfView(store: store, shelf: shelf)
                     }
                 }
             }
@@ -316,6 +335,12 @@ private struct MacRootView: View {
             SearchView(store: store.scope(state: \.search, action: \.search))
         case .trash:
             TrashView(store: store.scope(state: \.trash, action: \.trash))
+        case .anytime:
+            ShelfView(store: store, shelf: .anytime)
+        case .later:
+            ShelfView(store: store, shelf: .later)
+        case .logbook:
+            ShelfView(store: store, shelf: .logbook)
         case .conversations:
             // No stack of its own, so a chat opens in the detail column, as
             // a task does.
@@ -399,15 +424,42 @@ private struct Sidebar: View {
             .tag(RootFeature.SidebarItem.upcoming)
         Label("Calendar", systemImage: "square.grid.3x3")
             .tag(RootFeature.SidebarItem.calendar)
+        shelf(.anytime)
+        shelf(.later)
         Label("Procrastinated", systemImage: "tortoise")
             .badge(store.procrastinated.list.rows.count)
             .tag(RootFeature.SidebarItem.procrastinated)
+        shelf(.logbook)
         Label("Search", systemImage: "magnifyingglass")
             .tag(RootFeature.SidebarItem.search)
         Label("Assistant", systemImage: "bubble.left.and.text.bubble.right")
             .tag(RootFeature.SidebarItem.conversations)
         Label("Trash", systemImage: "trash")
             .tag(RootFeature.SidebarItem.trash)
+    }
+
+    private func shelf(_ shelf: RootFeature.Shelf) -> some View {
+        Label(shelf.title, systemImage: shelf.systemImage)
+            .badge(shelf == .logbook ? 0 : store.state[list: shelf.slot]?.rows.count ?? 0)
+            .tag(shelf.sidebarItem)
+    }
+}
+
+/// Anytime, Later or the Logbook, as a list titled with its name.
+private struct ShelfView: View {
+    let store: StoreOf<RootFeature>
+    let shelf: RootFeature.Shelf
+
+    var body: some View {
+        list.navigationTitle(shelf.title)
+    }
+
+    @ViewBuilder private var list: some View {
+        switch shelf {
+        case .anytime: TaskListView(store: store.scope(state: \.anytime, action: \.anytime))
+        case .later: TaskListView(store: store.scope(state: \.later, action: \.later))
+        case .logbook: TaskListView(store: store.scope(state: \.logbook, action: \.logbook))
+        }
     }
 }
 

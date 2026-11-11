@@ -9,6 +9,7 @@ import LifrConversations
 import LifrCore
 import LifrGlance
 import LifrGlanceClient
+import LifrLists
 import LifrLockClient
 import LifrProcrastinated
 import LifrQuickAdd
@@ -46,7 +47,46 @@ package struct RootFeature {
     /// What the Mac's sidebar can show.
     package enum SidebarItem: Hashable, Codable, Sendable {
         case today, upcoming, calendar, procrastinated, conversations, search, trash
+        case anytime, later, logbook
         case scope(AvenueScope)
+    }
+
+    /// A list across every Avenue that isn't a screen of its own: tasks to
+    /// do anytime, ones waiting to start, and closed ones.
+    package enum Shelf: String, CaseIterable, Hashable, Codable, Sendable {
+        case anytime, later, logbook
+
+        package var title: String {
+            switch self {
+            case .anytime: String(localized: "Anytime")
+            case .later: String(localized: "Later")
+            case .logbook: String(localized: "Logbook")
+            }
+        }
+
+        package var systemImage: String {
+            switch self {
+            case .anytime: "square.stack"
+            case .later: "clock"
+            case .logbook: "book.closed"
+            }
+        }
+
+        package var sidebarItem: SidebarItem {
+            switch self {
+            case .anytime: .anytime
+            case .later: .later
+            case .logbook: .logbook
+            }
+        }
+
+        package var slot: ListSlot {
+            switch self {
+            case .anytime: .anytime
+            case .later: .later
+            case .logbook: .logbook
+            }
+        }
     }
 
     /// How the Mac shows an Avenue or Project.
@@ -78,6 +118,11 @@ package struct RootFeature {
         package var trash = TrashFeature.State()
         /// Whether the iPhone's Avenues tab shows the trash.
         package var isTrashShown = false
+        /// The list across Avenues the iPhone's Avenues tab shows.
+        package var shownShelf: Shelf?
+        package var anytime = TaskListFeature.State(query: .anytime)
+        package var later = TaskListFeature.State(query: .later)
+        package var logbook = TaskListFeature.State(query: .logbook)
         /// Whether the iPhone's Upcoming tab shows the calendar rather than
         /// the list.
         @Shared(.upcomingShowsCalendar) package var upcomingShowsCalendar
@@ -168,7 +213,7 @@ package struct RootFeature {
                 switch tab {
                 case .today: .today
                 case .upcoming: upcomingShowsCalendar ? .calendar : .upcoming
-                case .avenues: avenues.avenue == nil ? nil : .openAvenue
+                case .avenues: shownShelf?.slot ?? (avenues.avenue == nil ? nil : .openAvenue)
                 case .search: .search
                 case .conversations: nil
                 }
@@ -179,6 +224,9 @@ package struct RootFeature {
                 case .calendar: .calendar
                 case .procrastinated: .procrastinated
                 case .search: .search
+                case .anytime: .anytime
+                case .later: .later
+                case .logbook: .logbook
                 case .conversations, .trash: nil
                 case .scope: content == .board ? .board : .avenue
                 case nil: nil
@@ -192,6 +240,9 @@ package struct RootFeature {
             case .upcoming: upcoming.list
             case .calendar: calendar.list
             case .procrastinated: procrastinated.list
+            case .anytime: anytime
+            case .later: later
+            case .logbook: logbook
             case .search: search.list
             case .avenue: avenue?.list
             case .board: board?.list
@@ -214,6 +265,7 @@ package struct RootFeature {
     /// Where a task list lives in `State`.
     package enum ListSlot: Hashable, Sendable {
         case today, upcoming, calendar, procrastinated, search, avenue, board
+        case anytime, later, logbook
         /// The Avenue opened from the iPhone's Avenues tab.
         case openAvenue
     }
@@ -299,6 +351,9 @@ package struct RootFeature {
         /// calendar.
         case upcomingCalendarShown(Bool)
         case procrastinated(ProcrastinatedFeature.Action)
+        case anytime(TaskListFeature.Action)
+        case later(TaskListFeature.Action)
+        case logbook(TaskListFeature.Action)
         case avenues(AvenuesFeature.Action)
         case search(SearchFeature.Action)
         case conversations(ConversationsFeature.Action)
@@ -362,6 +417,9 @@ package struct RootFeature {
         Scope(state: \.calendar, action: \.calendar) { CalendarFeature() }
         Scope(state: \.trash, action: \.trash) { TrashFeature() }
         Scope(state: \.procrastinated, action: \.procrastinated) { ProcrastinatedFeature() }
+        Scope(state: \.anytime, action: \.anytime) { TaskListFeature() }
+        Scope(state: \.later, action: \.later) { TaskListFeature() }
+        Scope(state: \.logbook, action: \.logbook) { TaskListFeature() }
         Scope(state: \.avenues, action: \.avenues) { AvenuesFeature() }
         Scope(state: \.search, action: \.search) { SearchFeature() }
         Scope(state: \.conversations, action: \.conversations) { ConversationsFeature() }
@@ -530,6 +588,9 @@ package struct RootFeature {
                     state.calendar.list.detail = nil
                     state.procrastinated.list.detail = nil
                     state.search.list.detail = nil
+                    state.anytime.detail = nil
+                    state.later.detail = nil
+                    state.logbook.detail = nil
                 }
                 let closesChat: Effect<Action> =
                     left == .conversations && item != .conversations ? .send(.conversations(.closed)) : .none
@@ -677,6 +738,9 @@ package struct RootFeature {
                 .calendar(.list(.delegate(.saved(let snapshot)))),
                 .trash(.delegate(.saved(let snapshot))),
                 .procrastinated(.list(.delegate(.saved(let snapshot)))),
+                .anytime(.delegate(.saved(let snapshot))),
+                .later(.delegate(.saved(let snapshot))),
+                .logbook(.delegate(.saved(let snapshot))),
                 .avenues(.delegate(.saved(let snapshot))),
                 .search(.delegate(.saved(let snapshot))),
                 .avenue(.delegate(.saved(let snapshot))),
@@ -698,7 +762,7 @@ package struct RootFeature {
                 return .none
 
             case .binding, .remindersScheduled, .today, .upcoming, .calendar, .trash, .procrastinated, .avenues,
-                .search,
+                .search, .anytime, .later, .logbook,
                 .avenue, .board, .conversations, .settings, .quickAdd, .approval, .undoAlert, .syncReview,
                 .lockAlert:
                 return .none
@@ -826,6 +890,9 @@ package struct RootFeature {
             TrashFeature().reduce(into: &state.trash, action: .show(snapshot)).map(Action.trash),
             ProcrastinatedFeature().reduce(into: &state.procrastinated, action: .list(.show(snapshot)))
                 .map(Action.procrastinated),
+            TaskListFeature().reduce(into: &state.anytime, action: .show(snapshot)).map(Action.anytime),
+            TaskListFeature().reduce(into: &state.later, action: .show(snapshot)).map(Action.later),
+            TaskListFeature().reduce(into: &state.logbook, action: .show(snapshot)).map(Action.logbook),
             AvenuesFeature().reduce(into: &state.avenues, action: .show(snapshot)).map(Action.avenues),
             SearchFeature().reduce(into: &state.search, action: .list(.show(snapshot))).map(Action.search),
         ]
@@ -919,6 +986,9 @@ package struct RootFeature {
         case .upcoming: .upcoming(.list(action))
         case .calendar: .calendar(.list(action))
         case .procrastinated: .procrastinated(.list(action))
+        case .anytime: .anytime(action)
+        case .later: .later(action)
+        case .logbook: .logbook(action)
         case .search: .search(.list(action))
         case .avenue: .avenue(.list(action))
         case .board: .board(.list(action))

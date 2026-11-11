@@ -42,7 +42,7 @@ extension TaskQuery {
                 description: String(localized: "Tasks you add here, or move here, show up in this list.")),
             adds: NewTaskDefaults(scope: scope.newTaskScope), reorders: true
         ) { workspace, now, timeZone in
-            let tasks = workspace.listedTasks.filter { task in
+            let all = workspace.listedTasks.filter { task in
                 guard !task.isSubtask else { return false }
                 switch scope {
                 case .avenue(let id): return task.avenueID == id
@@ -56,6 +56,11 @@ extension TaskQuery {
                     return row
                 }
             }
+            // Open tasks that can't start yet go in a section of their own.
+            let today = CalendarDate(now, in: timeZone)
+            let waiting = all.filter { task in task.isOpen && task.startDate.map { $0 > today } ?? false }
+            let later = TaskSection(id: "later", title: String(localized: "Later"), rows: rows(waiting))
+            let tasks = all.filter { !waiting.contains($0) }
             switch grouping {
             case .status:
                 let order: [TaskStatus] = [.inProgress, .procrastinated, .todo, .done, .wontDo]
@@ -64,7 +69,7 @@ extension TaskQuery {
                         id: status.rawValue, title: status.title,
                         rows: rows(
                             tasks.filter { $0.effectiveStatus(now: now, settings: workspace.settings) == status }))
-                }
+                } + [later]
             case .project:
                 let open = tasks.filter(\.isOpen)
                 let projects = workspace.projects.values
@@ -77,7 +82,8 @@ extension TaskQuery {
                 } + [
                     TaskSection(
                         id: "none", title: String(localized: "No Project"),
-                        rows: rows(open.filter { $0.projectID == nil }))
+                        rows: rows(open.filter { $0.projectID == nil })),
+                    later,
                 ]
             }
         }

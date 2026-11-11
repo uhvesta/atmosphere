@@ -93,6 +93,24 @@ final class PhoneTasksFlowTests: PhoneFlowTestCase {
         flow.finish()
     }
 
+    /// Anytime, Later and the Logbook from the Avenues tab: a task closed
+    /// from Anytime moves to the Logbook.
+    func testShelves() async throws {
+        let (store, flow) = app("shelves")
+        store.tab = .avenues
+        await flow.step("avenues")
+        store.shownShelf = .anytime
+        await flow.step("anytime")
+        let card = try task("Pick up a birthday card", in: store)
+        store.send(.anytime(.rowAction(card, .status(.done))))
+        await flow.step("closed", image: false)
+        store.shownShelf = .later
+        await flow.step("later")
+        store.shownShelf = .logbook
+        await flow.step("logbook")
+        flow.finish()
+    }
+
     /// A Project: rename it, give it a due date, archive it with its open
     /// task moved out and Undo that, archive it again, find it under
     /// Archived, then restore it. And edit its Avenue.

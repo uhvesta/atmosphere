@@ -1,0 +1,12 @@
+[button] "Avenues" id: BackButton
+[button] "More"
+[header] "Anytime"
+[header, text] "Health"
+[button] "Plan long runs" value: "Procrastinated, HEALTH-0013"
+[text] "“Pick up a birthday card” is Done"
+[button] "Undo"
+[button] "Search"
+[button] "Today"
+[button] "Upcoming"
+[button, selected] "Avenues"
+[button] "Assistant"

@@ -24,6 +24,7 @@ extension Workspace {
         records.task("Renew passport", in: home, priority: .medium, due: 6)
         records.task("Plan long runs", in: health, status: .inProgress, idle: 12)
         records.task("Call the plumber", in: home, due: 2)
+        records.task("Plant the spring bulbs", in: home, starts: 4)
         let marathon = records.project("Half marathon", in: health)
         records.task("Buy running shoes", in: health, project: marathon, priority: .high, due: 1)
         records.reminder(.at(now + 2 * 60 * 60), on: review)

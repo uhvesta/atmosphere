@@ -595,6 +595,9 @@
     "Anything" : {
 
     },
+    "Anytime" : {
+
+    },
     "Apple Intelligence" : {
 
     },
@@ -1022,6 +1025,9 @@
     "Currently %@." : {
 
     },
+    "Date Added" : {
+
+    },
     "Dates" : {
 
     },
@@ -1148,10 +1154,16 @@
     "Due" : {
 
     },
+    "Due Date" : {
+
+    },
     "Duplicate" : {
 
     },
     "Each piece of text from your tasks and chats becomes a placeholder, and screenshots are left out. What you write above is kept." : {
+
+    },
+    "Earlier" : {
 
     },
     "Edit" : {
@@ -1287,6 +1299,9 @@
 
     },
     "GPU time per token" : {
+
+    },
+    "Give a task a start date after today to put it away until then." : {
 
     },
     "Give the skill a name with letters or digits." : {
@@ -1570,6 +1585,9 @@
     "Lock with passcode" : {
 
     },
+    "Logbook" : {
+
+    },
     "Long" : {
 
     },
@@ -1598,6 +1616,9 @@
 
     },
     "Manage Skills…" : {
+
+    },
+    "Manual" : {
 
     },
     "Mark All Won't Do" : {
@@ -2417,7 +2438,13 @@
     "Skills" : {
 
     },
+    "Smart" : {
+
+    },
     "Some fields were kept" : {
+
+    },
+    "Sort" : {
 
     },
     "Speak" : {
@@ -2436,6 +2463,9 @@
 
     },
     "Start a new conversation." : {
+
+    },
+    "Starts %@" : {
 
     },
     "Status" : {
@@ -2591,10 +2621,16 @@
     "Tasks set to Procrastinated, or In Progress with no activity for a while, show up here." : {
 
     },
+    "Tasks with no due date show up here, once they can be started." : {
+
+    },
     "Tasks you add here, or move here, show up in their status's column." : {
 
     },
     "Tasks you add here, or move here, show up in this list." : {
+
+    },
+    "Tasks you mark Done or Won’t Do show up here." : {
 
     },
     "Tasks you move to the trash stay here for 30 days, then they're deleted." : {
@@ -2728,6 +2764,9 @@
       }
     },
     "This Mac has no login password, so Lifr can't lock. Set one in System Settings › Users & Groups, then turn the lock on." : {
+
+    },
+    "This Week" : {
 
     },
     "This can't be undone. Tasks the assistant added or changed stay." : {
@@ -2968,6 +3007,9 @@
 
     },
     "Yes" : {
+
+    },
+    "Yesterday" : {
 
     },
     "You already have a skill called %@. Pick another name." : {

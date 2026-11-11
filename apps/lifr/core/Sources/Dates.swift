@@ -166,3 +166,32 @@ package struct TimeOfDay: Hashable, Comparable, Codable, Sendable, CustomStringC
         try container.encode(description)
     }
 }
+
+extension CalendarDate {
+    /// The first of this day's month.
+    package var firstOfMonth: CalendarDate { adding(days: 1 - day) }
+
+    /// The first of the month `months` after this day's, or before it when
+    /// negative.
+    package func firstOfMonth(adding months: Int) -> CalendarDate {
+        var first = firstOfMonth
+        for _ in 0..<abs(months) {
+            first = months > 0 ? first.adding(days: 32).firstOfMonth : first.adding(days: -1).firstOfMonth
+        }
+        return first
+    }
+
+    /// 1 for Sunday through 7 for Saturday, as `Calendar` numbers them.
+    package var weekday: Int { CalendarDate.utcCalendar.component(.weekday, from: noonUTC) }
+
+    /// How many days `other` is after this one, or before it when negative.
+    package func days(until other: CalendarDate) -> Int {
+        Int((other.noonUTC.timeIntervalSince(noonUTC) / 86_400).rounded())
+    }
+
+    /// Such as "November 2026", in `locale`.
+    package func monthTitle(_ locale: Locale = .current) -> String {
+        noonUTC.formatted(
+            Date.FormatStyle(locale: locale, calendar: Self.utcCalendar, timeZone: .gmt).month(.wide).year())
+    }
+}

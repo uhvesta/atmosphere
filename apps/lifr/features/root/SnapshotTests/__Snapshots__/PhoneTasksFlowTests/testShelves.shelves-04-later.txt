@@ -1,0 +1,12 @@
+[button] "Avenues" id: BackButton
+[button] "More"
+[header] "Later"
+[header, text] "Starts Sat, Nov 7"
+[button] "Plant the spring bulbs" value: "To Do, HOME-0015"
+[text] "“Pick up a birthday card” is Done"
+[button] "Undo"
+[button] "Search"
+[button] "Today"
+[button] "Upcoming"
+[button, selected] "Avenues"
+[button] "Assistant"

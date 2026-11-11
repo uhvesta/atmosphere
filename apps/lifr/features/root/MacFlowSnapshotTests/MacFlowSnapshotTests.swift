@@ -156,7 +156,8 @@ final class MacFlowSnapshotTests: XCTestCase {
         try XCTUnwrap(store.workspace?.avenues.values.first { $0.key.rawValue == key }?.id, "No Avenue \(key)")
     }
 
-    /// Each list in the sidebar, then an Avenue as a list and a board.
+    /// Each list in the sidebar, an Avenue as a list and a board, then
+    /// Anytime, Later and the Logbook.
     func testSidebar() async throws {
         let (store, flow) = app("sidebar")
         await flow.step("today")
@@ -177,6 +178,12 @@ final class MacFlowSnapshotTests: XCTestCase {
         await flow.step("avenue")
         store.content = .board
         await flow.step("board")
+        store.send(.selected(.anytime))
+        await flow.step("anytime")
+        store.send(.selected(.later))
+        await flow.step("later")
+        store.send(.selected(.logbook))
+        await flow.step("logbook")
         flow.finish()
     }
 
