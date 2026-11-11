@@ -1,4 +1,6 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
 load("@rules_rust//rust:defs.bzl", "rust_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
 # End-to-end tests: the real khodrd and khodr binaries, as a person runs them.
 rust_test(
@@ -16,6 +18,40 @@ rust_test(
         "@crates//:serde_json",
         "@crates//:tempfile",
     ],
+)
+
+# Where khodrd is in the runfiles, for the Swift test to start it.
+genrule(
+    name = "binaries_swift",
+    testonly = True,
+    srcs = ["//apps/khodr/daemon/khodrd"],
+    outs = ["Binaries.swift"],
+    cmd = """cat > $@ <<'EOF'
+enum Binaries {
+    static let khodrd = "$(rlocationpath //apps/khodr/daemon/khodrd)"
+}
+EOF""",
+)
+
+swift_library(
+    name = "fork_from_swift_lib",
+    package_name = "khodr",
+    testonly = True,
+    srcs = glob(["ForkFromSwift/*.swift"]) + [":binaries_swift"],
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        "//apps/khodr/clients/daemon",
+        "//apps/khodr/clients/daemon_live",
+    ],
+)
+
+# The same through the Swift client the app uses, on the real khodrd.
+macos_unit_test(
+    name = "fork_from_swift_test",
+    data = ["//apps/khodr/daemon/khodrd"],
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":fork_from_swift_lib"],
 )
 
 filegroup(
