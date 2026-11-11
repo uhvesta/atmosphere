@@ -121,3 +121,11 @@ extension Workspace {
         tasks.map { TaskRowData($0, in: self, now: now, timeZone: timeZone) }
     }
 }
+
+extension TaskRowData {
+    /// The task as a line of a Markdown checklist, ticked once closed, with
+    /// its code to find it again: `- [ ] Renew passport (HOME-0012)`.
+    package var markdown: String {
+        "- [\(status.isClosed ? "x" : " ")] \(title) (\(fullCode))"
+    }
+}

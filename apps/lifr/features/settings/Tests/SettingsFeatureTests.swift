@@ -84,6 +84,22 @@ final class SettingsFeatureTests: XCTestCase {
         await store.skipInFlightEffects()
     }
 
+    func testOpeningAScreenPicksTheTabItIsOn() async {
+        let store = await settings(InMemorySession())
+        XCTAssertEqual(store.state.page, .general)
+
+        await store.send(.pagePicked(.agents))
+        XCTAssertEqual(store.state.page, .agents)
+
+        await store.send(.modelsTapped)
+        XCTAssertEqual(store.state.page, .assistant)
+        XCTAssertNotNil(store.state.models)
+
+        await store.send(.activityTapped)
+        XCTAssertEqual(store.state.page, .general)
+        await store.skipInFlightEffects()
+    }
+
     func testChangesWhenTasksCountAsProcrastinated() async {
         let store = await settings(InMemorySession())
 

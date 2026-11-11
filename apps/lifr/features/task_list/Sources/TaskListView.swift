@@ -264,6 +264,7 @@ package struct TaskListRow: View {
             }
             Divider()
             Button("Reschedule…") { store.send(.rowAction(row.id, .reschedule)) }
+            Button("Copy as Markdown") { store.send(.copyTapped(row.id)) }
         }
     }
 

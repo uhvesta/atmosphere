@@ -2,6 +2,7 @@ import ComposableArchitecture
 import Foundation
 import LifrCore
 import LifrFeedbackClient
+import LifrPasteboardClient
 import LifrStoreClient
 import LifrSyncClient
 import LifrTaskDetail
@@ -67,6 +68,20 @@ final class TaskListFeatureTests: XCTestCase {
         let store = await load()
 
         XCTAssertEqual(store.state.sections.map(\.id), ["todo", "inProgress"])
+    }
+
+    func testCopyAsMarkdownPutsTheTaskOnTheClipboardWithItsCode() async throws {
+        records.task("Stretch", in: health)
+        let store = await load()
+        let copied = LockIsolated<[String]>([])
+        store.dependencies.pasteboard = PasteboardClient { text in copied.withValue { $0.append(text) } }
+        let row = try XCTUnwrap(store.state.rows.first)
+
+        await store.send(.copyTapped(row.id))
+        await store.finish()
+
+        XCTAssertEqual(copied.value, ["- [ ] Stretch (\(row.fullCode))"])
+        XCTAssertTrue(row.fullCode.hasPrefix("HEALTH-"))
     }
 
     func testSearchingKeepsRowsWhoseTitleOrCodeMatchesAndDropsEmptySections() async {

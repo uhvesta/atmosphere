@@ -12,6 +12,7 @@ import LifrGlance
 import LifrGlanceClient
 import LifrLockClient
 import LifrModelsClient
+import LifrPasteboardClient
 import LifrRemindersClient
 import LifrRoot
 import LifrSessionClient
@@ -839,12 +840,18 @@ final class MacFlowSnapshotTests: XCTestCase {
         list.finish()
     }
 
-    /// The Settings window, from ⌘,: Settings, then Activity.
+    /// The Settings window, from ⌘,: each tab, then Activity, Models and
+    /// Instructions, each of which picks its tab.
     func testSettings() async {
         let (store, flow) = app("settings", settings: true)
         await flow.step("settings")
+        store.send(.settings(.pagePicked(.sync)))
         store.send(.syncChanged(SyncState(status: .failed(.noAccount))))
         await flow.step("sync-failed")
+        store.send(.settings(.pagePicked(.assistant)))
+        await flow.step("assistant")
+        store.send(.settings(.pagePicked(.agents)))
+        await flow.step("agents")
         store.send(.settings(.activityTapped))
         await flow.step("activity")
         store.send(.settings(.activity(.presented(.olderTapped))))

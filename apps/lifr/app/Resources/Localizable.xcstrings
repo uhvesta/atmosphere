@@ -491,6 +491,9 @@
     "A larger window remembers more of the chat and takes more memory." : {
 
     },
+    "A list" : {
+
+    },
     "A new task with a due date gets the reminder, and the badge counts open tasks. This device only." : {
 
     },
@@ -631,6 +634,9 @@
     "Agent access" : {
 
     },
+    "Agents" : {
+
+    },
     "Agents never see a Hidden Avenue, whatever their grant says." : {
 
     },
@@ -677,6 +683,9 @@
 
     },
     "Anytime" : {
+
+    },
+    "Anywhere" : {
 
     },
     "App icon badge" : {
@@ -874,6 +883,9 @@
     "Change Status…" : {
 
     },
+    "Change its status" : {
+
+    },
     "Change tasks" : {
 
     },
@@ -1024,6 +1036,9 @@
     "Copy Code" : {
 
     },
+    "Copy as Markdown" : {
+
+    },
     "Copy as TOML" : {
 
     },
@@ -1122,6 +1137,9 @@
 
     },
     "Couldn't read that photo. Pick another, or take a screenshot of it and add that." : {
+
+    },
+    "Couldn't redo" : {
 
     },
     "Couldn't remove the model" : {
@@ -1502,6 +1520,9 @@
     "GPU time per token" : {
 
     },
+    "General" : {
+
+    },
     "Give a task a start date after today to put it away until then." : {
 
     },
@@ -1526,10 +1547,22 @@
     "Go through what's overdue and suggest new dates." : {
 
     },
+    "Go to Calendar" : {
+
+    },
     "Go to Latest" : {
 
     },
+    "Go to Task" : {
+
+    },
     "Go to Task…" : {
+
+    },
+    "Go to Today" : {
+
+    },
+    "Go to Upcoming" : {
 
     },
     "Go to the latest message" : {
@@ -1608,6 +1641,9 @@
 
     },
     "It can always read. Agents can never empty the trash, change Avenues or Settings, or approve apps." : {
+
+    },
+    "It changed again since, here or on another device, and redoing would lose that change. Open it to make the change again by hand." : {
 
     },
     "It changed again since, here or on another device, and undoing would lose that change. Open it to change it back by hand." : {
@@ -1976,6 +2012,9 @@
     "Move Up" : {
 
     },
+    "Move between tasks" : {
+
+    },
     "Move to" : {
 
     },
@@ -1983,6 +2022,9 @@
 
     },
     "Move to Trash" : {
+
+    },
+    "Move to the Trash" : {
 
     },
     "Moved %@ to %@" : {
@@ -2180,6 +2222,9 @@
     "No priority" : {
 
     },
+    "No priority, Low, Medium, High, Urgent" : {
+
+    },
     "No related conversations" : {
 
     },
@@ -2190,6 +2235,9 @@
 
     },
     "No task has it. To bring it back, revert this from Activity in Settings." : {
+
+    },
+    "No task matches" : {
 
     },
     "No task selected" : {
@@ -2288,6 +2336,9 @@
     "Open the Calendar" : {
 
     },
+    "Open the task" : {
+
+    },
     "Opens it" : {
 
     },
@@ -2347,6 +2398,9 @@
 
     },
     "Pick a skill for a message to tell the assistant what to do and which tools it may use." : {
+
+    },
+    "Pick several tasks" : {
 
     },
     "Pick the model, thinking and context window." : {
@@ -2462,6 +2516,9 @@
 
     },
     "Recording…" : {
+
+    },
+    "Redo" : {
 
     },
     "Redraft" : {
@@ -2953,6 +3010,9 @@
     "Sync" : {
 
     },
+    "Sync & Privacy" : {
+
+    },
     "Sync Now" : {
 
     },
@@ -2984,6 +3044,9 @@
 
     },
     "Task" : {
+
+    },
+    "Task code or title" : {
 
     },
     "Tasks" : {
@@ -3060,6 +3123,9 @@
 
     },
     "The newest messages that fit the model's window, with the files sent with the last." : {
+
+    },
+    "The open task" : {
 
     },
     "The recording stopped (%@). Record again; if another app is using the microphone, close it first." : {
@@ -3191,6 +3257,9 @@
     "To Do" : {
 
     },
+    "To Do, In Progress, Procrastinated, Done, Won't Do" : {
+
+    },
     "Today" : {
 
     },
@@ -3243,6 +3312,9 @@
 
     },
     "Turn skills on or off, or write your own." : {
+
+    },
+    "Type a code, such as 7K2Q, or words from a title" : {
 
     },
     "Unarchive" : {

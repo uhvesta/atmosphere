@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import Foundation
+import LifrPasteboardClient
 
 /// Settings › Bug Reports: the reports saved on this device, to view,
 /// copy, share or delete.

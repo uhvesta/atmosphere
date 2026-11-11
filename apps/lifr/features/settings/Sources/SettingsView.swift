@@ -11,112 +11,145 @@ import LifrSkills
 import LifrSyncClient
 import SwiftUI
 
+/// Settings, or one page of them. Only `.all` starts the settings' work and
+/// shows their alerts; with pages, whatever holds them does that once.
 package struct SettingsView: View {
     @Bindable package var store: StoreOf<SettingsFeature>
+    private let page: SettingsPage
     @Shared(.namesConversations) private var namesConversations
     @Shared(.picksSkills) private var picksSkills
     @Shared(.defaultReminder) private var defaultReminder
     @Shared(.badgeCount) private var badgeCount
     @Shared(.compactsConversations) private var compactsConversations
 
-    package init(store: StoreOf<SettingsFeature>) {
+    package init(store: StoreOf<SettingsFeature>, page: SettingsPage = .all) {
         self.store = store
+        self.page = page
     }
+
+    private func shows(_ part: SettingsPage) -> Bool { page == .all || page == part }
 
     package var body: some View {
         Form {
-            Section {
-                Stepper(
-                    "In Progress for \(store.procrastinatedAfterDays) days",
-                    value: Binding(
-                        get: { store.procrastinatedAfterDays }, set: { store.send(.procrastinatedDaysChanged($0)) }),
-                    in: 1...90)
-            } header: {
-                Text("Procrastinated")
-            } footer: {
-                Text("An In Progress task with no activity for longer than this counts as Procrastinated.")
+            if shows(.general) { general }
+            if shows(.sync) {
+                SyncSection(store: store)
+                LockSection(store: store)
             }
-            Section {
-                Picker("Remind me", selection: Binding($defaultReminder)) {
-                    ForEach(DefaultReminder.allCases, id: \.self) { Text($0.title).tag($0) }
+            if shows(.assistant) { assistant }
+            if shows(.general) {
+                Section {
+                    PushButton("Bug Reports") { store.send(.bugReportsTapped) }
+                } footer: {
+                    Text(bugReportsFooter)
                 }
-                Picker("App icon badge", selection: Binding($badgeCount)) {
-                    ForEach(BadgeCount.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-            } header: {
-                Text("Reminders")
-            } footer: {
-                Text(
-                    "A new task with a due date gets the reminder, and the badge counts open tasks. This device only."
-                )
             }
-            Section {
-                PushButton("Labels") { store.send(.labelsTapped) }
-            } footer: {
-                Text("Rename, merge or delete the labels on your tasks.")
-            }
-            SyncSection(store: store)
-            LockSection(store: store)
-            Section {
-                PushButton("Activity") { store.send(.activityTapped) }
-            } footer: {
-                Text("Every change, who made it, and from where. Any of them can be reverted.")
-            }
-            Section {
-                Toggle("Pick a skill automatically", isOn: Binding($picksSkills))
-                Toggle("Name conversations", isOn: Binding($namesConversations))
-                Toggle("Compact long conversations", isOn: Binding($compactsConversations))
-                PushButton("Instructions") { store.send(.instructionsTapped) }
-                PushButton("Models") { store.send(.modelsTapped) }
-                PushButton("Skills") { store.send(.skillsTapped) }
-            } header: {
-                Text("Assistant")
-            } footer: {
-                Text(
-                    "Picking a skill asks the model which skill fits each message you send without one, among "
-                        + "those marked Use Automatically in Skills; with none, the assistant just talks. Names each "
-                        + "new conversation after its first reply, on this device, with the model picked "
-                        + "in Models. Names you give are kept. Compacting summarizes older messages once they no "
-                        + "longer fit what the model reads; without it, a chat offers Compact then. Conversations "
-                        + "stay on this device unless you choose Sync on one in Conversations. "
-                        + "Instructions stay on this device. Skills sync through iCloud, encrypted end to end.")
-            }
-            ChatExperimentsSection(
-                showsSpeed: Binding(store.$showsSpeed), showsPrompt: Binding(store.$showsPrompt),
-                compares: Binding(store.$compares))
-            Section {
-                PushButton("Bug Reports") { store.send(.bugReportsTapped) }
-            } footer: {
-                Text(bugReportsFooter)
-            }
-            if store.showsAgents {
+            if shows(.agents) && store.showsAgents {
                 avenueAccess
                 connectedApps
                 commandLine
             }
         }
         .navigationTitle("Settings")
-        .navigationDestination(item: $store.scope(state: \.activity, action: \.activity)) { store in
+        .navigationDestination(
+            item: shows(.general) ? $store.scope(state: \.activity, action: \.activity) : .constant(nil)
+        ) { store in
             ActivityView(store: store)
         }
-        .navigationDestination(item: $store.scope(state: \.labels, action: \.labels)) { store in
+        .navigationDestination(
+            item: shows(.general) ? $store.scope(state: \.labels, action: \.labels) : .constant(nil)
+        ) { store in
             LabelsView(store: store)
         }
-        .navigationDestination(item: $store.scope(state: \.skills, action: \.skills)) { store in
+        .navigationDestination(
+            item: shows(.assistant) ? $store.scope(state: \.skills, action: \.skills) : .constant(nil)
+        ) { store in
             SkillsView(store: store)
         }
-        .navigationDestination(item: $store.scope(state: \.instructions, action: \.instructions)) { store in
+        .navigationDestination(
+            item: shows(.assistant) ? $store.scope(state: \.instructions, action: \.instructions) : .constant(nil)
+        ) { store in
             InstructionsView(store: store)
         }
-        .navigationDestination(item: $store.scope(state: \.models, action: \.models)) { store in
+        .navigationDestination(
+            item: shows(.assistant) ? $store.scope(state: \.models, action: \.models) : .constant(nil)
+        ) { store in
             ModelsView(store: store)
         }
-        .navigationDestination(item: $store.scope(state: \.bugReports, action: \.bugReports)) { store in
+        .navigationDestination(
+            item: shows(.general) ? $store.scope(state: \.bugReports, action: \.bugReports) : .constant(nil)
+        ) { store in
             BugReportsView(store: store)
         }
-        .task { await store.send(.task).finish() }
-        .confirmationDialog($store.scope(state: \.revoke, action: \.revoke))
-        .alert($store.scope(state: \.alert, action: \.alert))
+        .task {
+            guard page == .all else { return }
+            await store.send(.task).finish()
+        }
+        .confirmationDialog(page == .all ? $store.scope(state: \.revoke, action: \.revoke) : .constant(nil))
+        .alert(page == .all ? $store.scope(state: \.alert, action: \.alert) : .constant(nil))
+    }
+
+    @ViewBuilder private var general: some View {
+        Section {
+            Stepper(
+                "In Progress for \(store.procrastinatedAfterDays) days",
+                value: Binding(
+                    get: { store.procrastinatedAfterDays }, set: { store.send(.procrastinatedDaysChanged($0)) }),
+                in: 1...90)
+        } header: {
+            Text("Procrastinated")
+        } footer: {
+            Text("An In Progress task with no activity for longer than this counts as Procrastinated.")
+        }
+        Section {
+            Picker("Remind me", selection: Binding($defaultReminder)) {
+                ForEach(DefaultReminder.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            Picker("App icon badge", selection: Binding($badgeCount)) {
+                ForEach(BadgeCount.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+        } header: {
+            Text("Reminders")
+        } footer: {
+            Text(
+                "A new task with a due date gets the reminder, and the badge counts open tasks. This device only."
+            )
+        }
+        Section {
+            PushButton("Labels") { store.send(.labelsTapped) }
+        } footer: {
+            Text("Rename, merge or delete the labels on your tasks.")
+        }
+        Section {
+            PushButton("Activity") { store.send(.activityTapped) }
+        } footer: {
+            Text("Every change, who made it, and from where. Any of them can be reverted.")
+        }
+    }
+
+    @ViewBuilder private var assistant: some View {
+        Section {
+            Toggle("Pick a skill automatically", isOn: Binding($picksSkills))
+            Toggle("Name conversations", isOn: Binding($namesConversations))
+            Toggle("Compact long conversations", isOn: Binding($compactsConversations))
+            PushButton("Instructions") { store.send(.instructionsTapped) }
+            PushButton("Models") { store.send(.modelsTapped) }
+            PushButton("Skills") { store.send(.skillsTapped) }
+        } header: {
+            Text("Assistant")
+        } footer: {
+            Text(
+                "Picking a skill asks the model which skill fits each message you send without one, among "
+                    + "those marked Use Automatically in Skills; with none, the assistant just talks. Names each "
+                    + "new conversation after its first reply, on this device, with the model picked "
+                    + "in Models. Names you give are kept. Compacting summarizes older messages once they no "
+                    + "longer fit what the model reads; without it, a chat offers Compact then. Conversations "
+                    + "stay on this device unless you choose Sync on one in Conversations. "
+                    + "Instructions stay on this device. Skills sync through iCloud, encrypted end to end.")
+        }
+        ChatExperimentsSection(
+            showsSpeed: Binding(store.$showsSpeed), showsPrompt: Binding(store.$showsPrompt),
+            compares: Binding(store.$compares))
     }
 
     private var bugReportsFooter: String {

@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrModelsClient
+import LifrPasteboardClient
 
 /// Describing a problem: what happened and what was expected, whether the
 /// app's text and screenshots go with it, then Save, Copy or Share.

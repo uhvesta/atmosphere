@@ -2,6 +2,7 @@ import ComposableArchitecture
 import Foundation
 import LifrCore
 import LifrFeedbackClient
+import LifrPasteboardClient
 import LifrStoreClient
 import LifrSyncClient
 import LifrTaskDetail
@@ -208,6 +209,8 @@ package struct TaskListFeature {
         /// Rows dragged within a section, as `onMove` reports them.
         case moved(section: String, from: IndexSet, to: Int)
         case bannerDismissed
+        /// Copy as Markdown: the task as a line of a checklist, with its code.
+        case copyTapped(UUID)
         case detail(PresentationAction<TaskDetailFeature.Action>)
         case reschedule(PresentationAction<RescheduleFeature.Action>)
         case prompt(PresentationAction<StatusPrompt>)
@@ -224,6 +227,7 @@ package struct TaskListFeature {
 
     @Dependency(\.store) private var store
     @Dependency(\.feedback) private var feedback
+    @Dependency(\.pasteboard) private var pasteboard
     @Dependency(\.sync) private var sync
     @Dependency(\.continuousClock) private var clock
     @Dependency(\.closedRowPause) private var closedRowPause
@@ -365,6 +369,10 @@ package struct TaskListFeature {
             case .bannerDismissed:
                 state.banner = nil
                 return .none
+
+            case .copyTapped(let id):
+                guard let row = state.rows.first(where: { $0.id == id }) else { return .none }
+                return .run { [pasteboard, line = row.markdown] _ in await pasteboard.copy(line) }
 
             case .saved(.success(let saved)):
                 let isLatest = saved.number >= state.saves.latest

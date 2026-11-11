@@ -25,6 +25,12 @@ extension ConnectedApp {
     package var canWrite: Bool { grant.scopes.contains(.write) }
 }
 
+/// A part of Settings, for the Mac's tabs. The iPhone shows them all on one
+/// screen, `.all`.
+package enum SettingsPage: Hashable, Sendable {
+    case all, general, sync, assistant, agents
+}
+
 /// Settings. On the Mac it also covers agents: per-Avenue access, the apps
 /// you approved, and the CLI.
 @Reducer
@@ -36,6 +42,8 @@ package struct SettingsFeature {
         /// Whether to show agent access, connected apps and the CLI. Only
         /// the Mac runs the CLI.
         package var showsAgents: Bool
+        /// The Mac's tab. Opening a screen picks the tab it's on.
+        package var page = SettingsPage.general
         package var procrastinatedAfterDays = Settings().procrastinatedAfterDays
         package var avenues: [AvenueAccess] = []
         package var apps: [ConnectedApp] = []
@@ -108,6 +116,7 @@ package struct SettingsFeature {
         case renewTapped(String)
         case revokeTapped(String)
         case installCLITapped
+        case pagePicked(SettingsPage)
         case activityTapped
         case syncNowTapped
         case syncContinuouslyToggled(Bool)
@@ -265,11 +274,17 @@ package struct SettingsFeature {
                     }
                 }
 
+            case .pagePicked(let page):
+                state.page = page
+                return .none
+
             case .activityTapped:
+                state.page = .general
                 state.activity = ActivityFeature.State(workspace: state.workspace)
                 return .none
 
             case .labelsTapped:
+                state.page = .general
                 state.labels = LabelsFeature.State(workspace: state.workspace)
                 return .none
 
@@ -286,18 +301,22 @@ package struct SettingsFeature {
                 return .none
 
             case .modelsTapped:
+                state.page = .assistant
                 state.models = ModelsFeature.State()
                 return .none
 
             case .bugReportsTapped:
+                state.page = .general
                 state.bugReports = BugReportsFeature.State()
                 return .none
 
             case .skillsTapped:
+                state.page = .assistant
                 state.skills = SkillsFeature.State()
                 return .none
 
             case .instructionsTapped:
+                state.page = .assistant
                 state.instructions = InstructionsFeature.State()
                 return .none
 

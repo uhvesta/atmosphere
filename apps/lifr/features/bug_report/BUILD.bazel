@@ -15,6 +15,7 @@ swift_library(
     ],
     deps = [
         "//apps/lifr/clients/models",
+        "//apps/lifr/clients/pasteboard",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )
@@ -30,6 +31,7 @@ swift_library(
     deps = [
         ":bug_report",
         "//apps/lifr/clients/models",
+        "//apps/lifr/clients/pasteboard",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

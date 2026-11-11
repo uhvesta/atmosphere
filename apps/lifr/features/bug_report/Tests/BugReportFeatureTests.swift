@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrModelsClient
+import LifrPasteboardClient
 import XCTest
 
 @testable import LifrBugReport

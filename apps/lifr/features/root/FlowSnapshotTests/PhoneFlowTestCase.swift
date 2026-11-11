@@ -12,6 +12,7 @@ import LifrGlance
 import LifrGlanceClient
 import LifrLockClient
 import LifrModelsClient
+import LifrPasteboardClient
 import LifrRemindersClient
 import LifrRoot
 import LifrSearchClient
