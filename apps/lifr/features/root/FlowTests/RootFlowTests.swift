@@ -314,7 +314,10 @@ final class RootFlowTests: XCTestCase {
         let tomorrow = try XCTUnwrap(written.value?.at(midnight))
         XCTAssertEqual(tomorrow.count, 2)
         XCTAssertEqual(tomorrow.overdue, 2)
-        XCTAssertNil(written.value?.at(midnight.addingTimeInterval(2 * 86_400)))
+        // Two weeks on, for Upcoming, then nothing until the app writes again.
+        XCTAssertNotNil(written.value?.at(midnight.addingTimeInterval(2 * 86_400)))
+        let end = try XCTUnwrap(written.value?.later.last?.until)
+        XCTAssertNil(written.value?.at(end))
 
         let now = now
         let shortcuts = Shortcuts(

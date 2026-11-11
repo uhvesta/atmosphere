@@ -27,6 +27,7 @@ package struct TaskRow: View {
                 StatusGlyph(row.status)
             }
             .buttonStyle(.plain)
+            .modifier(StatusHover())
             VStack(alignment: .leading, spacing: 4) {
                 Text(row.title)
                     .lineLimit(2)
@@ -84,5 +85,29 @@ package struct TaskRow: View {
         }
         PriorityBadge(row.priority)
             .fixedSize()
+    }
+}
+
+/// Shows that the status circle is its own button when a pointer is over
+/// it: a soft circle behind it and a tooltip on the Mac, the pointer's lift
+/// on iPad.
+private struct StatusHover: ViewModifier {
+    @State private var isHovered = false
+
+    func body(content: Content) -> some View {
+        #if os(macOS)
+            content
+                .background {
+                    Circle()
+                        .fill(Color.primary.opacity(isHovered ? 0.1 : 0))
+                        .padding(-4)
+                }
+                .onHover { isHovered = $0 }
+                .help(Text("Change Status"))
+        #else
+            content
+                .contentShape(.hoverEffect, Circle().inset(by: -6))
+                .hoverEffect(.highlight)
+        #endif
     }
 }
