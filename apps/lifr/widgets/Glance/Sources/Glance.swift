@@ -1,7 +1,7 @@
 import Foundation
 
 /// What the widgets show: Today's open tasks as Lifr last saw them, and
-/// what Today will be from midnight. The app writes it after each change;
+/// what Today will be on each of the next two weeks. The app writes it after each change;
 /// the widgets only read it.
 package struct TodayGlance: Codable, Hashable, Sendable {
     /// One of Today's tasks.
@@ -58,6 +58,22 @@ package struct TodayGlance: Codable, Hashable, Sendable {
         var today = self
         today.later = []
         return [today] + later.flatMap(\.days)
+    }
+
+    /// The tasks due on its day itself, without those overdue from before.
+    package var dueRows: [Row] {
+        rows.filter { !$0.isOverdue }
+    }
+
+    /// How many tasks are due on its day itself, kept while the lock is on.
+    package var dueCount: Int {
+        count - overdue
+    }
+
+    /// The day `date` falls in and those after it, or none once `date` is
+    /// past every day it has.
+    package func days(from date: Date) -> [TodayGlance] {
+        days.filter { $0.until > date }
     }
 
     /// Today as it is at `date`, or nil once `date` is past every day it

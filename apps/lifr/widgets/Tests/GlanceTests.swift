@@ -51,6 +51,26 @@ final class GlanceTests: XCTestCase {
         XCTAssertEqual(glance.days.map(\.from), [now, midnight])
     }
 
+    func testADaysOwnTasksLeaveOutThoseOverdueFromBefore() {
+        let glance = TodayGlance(asOf: now, from: now, until: now + 86_400, rows: rows, locked: false)
+        XCTAssertEqual(glance.dueRows, [rows[1]])
+        XCTAssertEqual(glance.dueCount, 1)
+
+        let locked = TodayGlance(asOf: now, from: now, until: now + 86_400, rows: rows, locked: true)
+        XCTAssertEqual(locked.dueRows, [])
+        XCTAssertEqual(locked.dueCount, 1, "the lock keeps how many")
+    }
+
+    func testTheDaysFromAMomentStartWithTheOneItFallsIn() {
+        let midnight = now + 86_400
+        let tomorrow = TodayGlance(asOf: now, from: midnight, until: midnight + 86_400, rows: [], locked: false)
+        let glance = TodayGlance(asOf: now, from: now, until: midnight, rows: rows, locked: false, later: [tomorrow])
+
+        XCTAssertEqual(glance.days(from: now).map(\.from), [now, midnight])
+        XCTAssertEqual(glance.days(from: midnight + 1).map(\.from), [midnight])
+        XCTAssertEqual(glance.days(from: midnight + 86_400), [])
+    }
+
     func testTheFileReadsBackWhatWasWritten() throws {
         let file = GlanceFile(url: try folder().appendingPathComponent("Widgets/Today.json"))
         let tomorrow = TodayGlance(asOf: now, from: now + 86_400, until: now + 172_800, rows: [], locked: false)

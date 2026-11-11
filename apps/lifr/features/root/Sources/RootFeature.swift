@@ -1232,26 +1232,29 @@ package struct RootFeature {
         .cancellable(id: CancelID.reminders, cancelInFlight: true)
     }
 
-    /// Gives the widgets Today as `state` has it, and tomorrow's for after
-    /// midnight: the titles, or only how many while the lock is on.
+    /// Gives the widgets Today as `state` has it, and as it will be on each
+    /// of the next two weeks, for Upcoming and for after midnight: the
+    /// titles, or only how many while the lock is on.
     private func writeGlance(_ state: State) -> Effect<Action> {
         guard let workspace = state.workspace else { return .none }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
         let start = calendar.startOfDay(for: now)
-        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: start),
-            let after = calendar.date(byAdding: .day, value: 2, to: start)
-        else { return .none }
+        let starts = (0...15).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
+        guard starts.count == 16 else { return .none }
         func rows(at date: Date) -> [TodayGlance.Row] {
             TaskQuery.today.sections(workspace, date, timeZone).flatMap(\.rows).map { row in
                 let isOverdue = if case .overdue = row.due { true } else { false }
                 return TodayGlance.Row(id: row.id, title: row.title, code: row.code, isOverdue: isOverdue)
             }
         }
-        let next = TodayGlance(
-            asOf: now, from: tomorrow, until: after, rows: rows(at: tomorrow), locked: state.locksApp)
+        let later = (1..<15).map { day in
+            TodayGlance(
+                asOf: now, from: starts[day], until: starts[day + 1], rows: rows(at: starts[day]),
+                locked: state.locksApp)
+        }
         let today = TodayGlance(
-            asOf: now, from: start, until: tomorrow, rows: rows(at: now), locked: state.locksApp, later: [next])
+            asOf: now, from: start, until: starts[1], rows: rows(at: now), locked: state.locksApp, later: later)
         return .run { [glance] _ in await glance.write(today) }
             .cancellable(id: CancelID.glance)
     }

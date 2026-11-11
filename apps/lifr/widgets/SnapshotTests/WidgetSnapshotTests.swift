@@ -66,6 +66,46 @@ final class WidgetSnapshotTests: XCTestCase {
             TodayGlance(asOf: now, from: now, until: now + 86_400, rows: [], locked: false), .medium, named: "medium")
     }
 
+    /// A week from `now`: overdue work on today, nothing on Saturday's
+    /// stand-in, and a few things on the rest.
+    private func week(locked: Bool) -> [TodayGlance] {
+        (0..<7).map { day in
+            let start = now + TimeInterval(day) * 86_400
+            let due: [TodayGlance.Row] =
+                day == 3
+                ? []
+                : rows.dropFirst(day % 3 + 1).map { row in
+                    var row = row
+                    row.isOverdue = false
+                    return row
+                }
+            let overdue: [TodayGlance.Row] = day == 0 ? [rows[0]] : []
+            return TodayGlance(asOf: now, from: start, until: start + 86_400, rows: overdue + due, locked: locked)
+        }
+    }
+
+    private func assertUpcoming(_ days: [TodayGlance]?, _ size: TodayWidgetView.Size, named name: String) {
+        let view = UpcomingWidgetView(days: days, size: size)
+            .padding(16)
+            .frame(width: self.size(size).width, height: self.size(size).height)
+            .background(Color(white: 0.95))
+        assertSnapshot(
+            of: view, as: .image(layout: .fixed(width: self.size(size).width, height: self.size(size).height)),
+            named: name, testName: "testUpcoming")
+        assertSnapshot(of: view, as: .accessibilityTree(size: self.size(size)), named: name, testName: "testUpcoming")
+    }
+
+    func testUpcoming() {
+        assertUpcoming(week(locked: false), .small, named: "small")
+        assertUpcoming(week(locked: false), .medium, named: "medium")
+        assertUpcoming(week(locked: false), .large, named: "large")
+        assertUpcoming(week(locked: true), .large, named: "locked")
+        assertUpcoming(
+            week(locked: false).map { TodayGlance(asOf: now, from: $0.from, until: $0.until, rows: [], locked: false) },
+            .medium, named: "nothing-due")
+        assertUpcoming(nil, .small, named: "before-lifr-wrote")
+    }
+
     func testBeforeLifrWroteToday() {
         assertWidget(nil, .small, named: "small")
         assertLockScreen(nil, named: "lock-screen")

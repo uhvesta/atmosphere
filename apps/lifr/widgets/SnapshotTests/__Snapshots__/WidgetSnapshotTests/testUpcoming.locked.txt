@@ -1,0 +1,8 @@
+[text] "Upcoming, 18 tasks"
+[button, link] "Today, 4 tasks"
+[button, link] "Tomorrow, 3 tasks"
+[button, link] "Thursday, 2 tasks"
+[button, link] "Saturday, 3 tasks"
+[button, link] "Sunday, 2 tasks"
+[button, link] "Monday, 4 tasks"
+[text] "Unlock Lifr to see them"

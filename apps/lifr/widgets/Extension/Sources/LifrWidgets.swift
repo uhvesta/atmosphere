@@ -11,6 +11,7 @@ import WidgetKit
 struct LifrWidgets: WidgetBundle {
     var body: some Widget {
         TodayWidget()
+        UpcomingWidget()
         #if os(iOS)
             NewTaskControl()
         #endif
@@ -35,6 +36,20 @@ struct TodayWidget: Widget {
         #else
             [.systemSmall, .systemMedium, .systemLarge]
         #endif
+    }
+}
+
+/// How many tasks are due on each of the next seven days, and their
+/// titles where there's room.
+struct UpcomingWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "Upcoming", provider: UpcomingProvider()) { entry in
+            UpcomingEntryView(entry: entry)
+                .containerBackground(.fill.tertiary, for: .widget)
+        }
+        .configurationDisplayName("Upcoming")
+        .description("What's due on each of the next seven days.")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
 
@@ -92,11 +107,68 @@ struct TodayProvider: TimelineProvider {
     }
 
     private func glance() -> TodayGlance? {
-        do throws(GlanceError) {
-            return try GlanceFile.shared?.read()
-        } catch {
-            Logger(subsystem: "lifr", category: "widgets").error("\(error.description, privacy: .public)")
-            return nil
+        readGlance()
+    }
+}
+
+/// What the app last wrote, or nil when it hasn't or the file can't be read.
+private func readGlance() -> TodayGlance? {
+    do throws(GlanceError) {
+        return try GlanceFile.shared?.read()
+    } catch {
+        Logger(subsystem: "lifr", category: "widgets").error("\(error.description, privacy: .public)")
+        return nil
+    }
+}
+
+struct UpcomingEntry: TimelineEntry {
+    var date: Date
+    /// The days from `date` on, or nil when the app hasn't written them or
+    /// they ran out.
+    var days: [TodayGlance]?
+}
+
+/// Reads the two weeks the app last wrote and moves on a day at each
+/// midnight, showing fewer days once fewer than seven are left.
+struct UpcomingProvider: TimelineProvider {
+    func placeholder(in context: TimelineProviderContext) -> UpcomingEntry {
+        UpcomingEntry(
+            date: Date(),
+            days: [TodayGlance(asOf: Date(), from: Date(), until: .distantFuture, rows: [], locked: true)])
+    }
+
+    func getSnapshot(in context: TimelineProviderContext, completion: @escaping @Sendable (UpcomingEntry) -> Void) {
+        let now = Date()
+        completion(entry(at: now, readGlance()))
+    }
+
+    func getTimeline(
+        in context: TimelineProviderContext, completion: @escaping @Sendable (Timeline<UpcomingEntry>) -> Void
+    ) {
+        let now = Date()
+        let glance = readGlance()
+        let days = glance?.days(from: now) ?? []
+        let entries = days.map { entry(at: max($0.from, now), glance) }
+        // Past the last day only the app knows: say to open it.
+        let end = days.last?.until ?? Calendar.current.startOfDay(for: now).addingTimeInterval(24 * 60 * 60)
+        completion(Timeline(entries: entries + [entry(at: max(end, now), glance)], policy: .after(end)))
+    }
+
+    private func entry(at date: Date, _ glance: TodayGlance?) -> UpcomingEntry {
+        let days = glance?.days(from: date) ?? []
+        return UpcomingEntry(date: date, days: days.isEmpty ? nil : days)
+    }
+}
+
+struct UpcomingEntryView: View {
+    @Environment(\.widgetFamily) private var family
+    var entry: UpcomingEntry
+
+    var body: some View {
+        switch family {
+        case .systemMedium: UpcomingWidgetView(days: entry.days, size: .medium)
+        case .systemLarge, .systemExtraLarge: UpcomingWidgetView(days: entry.days, size: .large)
+        default: UpcomingWidgetView(days: entry.days, size: .small)
         }
     }
 }
