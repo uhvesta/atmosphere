@@ -3,7 +3,8 @@ import SwiftUI
 
 /// How much of the model's window the conversation took on its last turn,
 /// as a circle that fills like a pie in the accent color, or an empty one
-/// before the first reply. A pie, not an arc, so it doesn't read as a
+/// until a reply measures it: before the first one, and after the app
+/// reopens a conversation, since the use isn't kept. A pie, not an arc, so it doesn't read as a
 /// spinner.
 public struct ContextRing: View {
     let use: ContextUse?
@@ -28,7 +29,7 @@ public struct ContextRing: View {
 
     /// What the ring shows, in words: how many tokens of how many.
     public static func description(of use: ContextUse?) -> String {
-        guard let use else { return String(localized: "Nothing used yet") }
+        guard let use else { return String(localized: "Shows after the next reply") }
         let percent = use.fraction.formatted(.percent.precision(.fractionLength(0)))
         return String(
             localized: "\(percent) used, \(use.used.formatted()) of \(use.window.formatted()) tokens")
@@ -54,9 +55,12 @@ public struct ContextButton: View {
         }
         .help(ContextRing.description(of: use))
         .popover(isPresented: $showing) {
-            Text(ContextRing.description(of: use))
-                .padding()
-                .presentationCompactAdaptation(.popover)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Context Window").font(.headline)
+                Text(ContextRing.description(of: use)).foregroundStyle(.secondary)
+            }
+            .padding()
+            .presentationCompactAdaptation(.popover)
         }
     }
 }

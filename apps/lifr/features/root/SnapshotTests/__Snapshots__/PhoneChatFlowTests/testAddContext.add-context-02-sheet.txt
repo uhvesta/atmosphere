@@ -1,6 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "New conversation, Actions Menu"
-[button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
+[button] "Context Window" value: "Shows after the next reply" hint: "Shows after the next reply"
 [text] "On this device"
 [button] "Close"
 [header, text] "Add context"

@@ -63,7 +63,7 @@ extension ChatKit.Conversation where Message == ChatMessage, Context == Assistan
     /// changed belong to this one. It runs on the same model, and picks
     /// skills the same way.
     package func fork(at id: UUID, as forkID: UUID, now: Date) -> Conversation? {
-        var fork = fork(at: id, as: forkID, now: now, name: String(localized: "\(title) (fork)"))
+        var fork = fork(at: id, as: forkID, now: now, name: String(localized: "Fork of \(title)"))
         fork?.context.model = context.model
         fork?.context.picksSkills = context.picksSkills
         return fork

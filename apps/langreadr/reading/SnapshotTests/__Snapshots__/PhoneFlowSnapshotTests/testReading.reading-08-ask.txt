@@ -24,7 +24,7 @@
 [button] "Sheet Grabber" value: "Half screen" hint: "Double tap to expand the sheet."
 [button] "Done"
 [header] "Ask"
-[button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
+[button] "Context Window" value: "Shows after the next reply" hint: "Shows after the next reply"
 [button] "Open in chat"
 [text] "El mercado"
 [text] "“Hola amigo. ¿Vamos al mercado”"

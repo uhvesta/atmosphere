@@ -104,6 +104,50 @@ final class ActivityFeatureTests: XCTestCase {
             rows.first?.changes.map { [$0.field, $0.before, $0.after] }, [["In Trash", "No", "Yes"]])
     }
 
+    func testAddingATaskListsWhatItWasSetToButNotItsNameOrCode() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let health = records.avenue("HEALTH", "Health")
+        let client = StoreClient.inMemory(records.workspace, actor: .user(device: "Mac", surface: .mac))
+        let workspace = try await withDependencies { [now] in
+            $0.date.now = now
+            $0.uuid = .incrementing
+            $0.withRandomNumberGenerator = WithRandomNumberGenerator(SystemRandomNumberGenerator())
+        } operation: {
+            try await client.createTask(.init(title: "Run", avenueID: health.id)).snapshot.workspace
+        }
+        let rows = ActivityFeature.State(workspace: workspace).rows(now: now, calendar: .current)
+        let fields = rows.first?.changes.map(\.field) ?? []
+
+        XCTAssertEqual(rows.first?.summary, "Added task “Run”")
+        XCTAssertTrue(fields.contains("Avenue"))
+        XCTAssertFalse(fields.contains("Title"))
+        XCTAssertFalse(fields.contains("Code"))
+    }
+
+    func testRevertingAProjectWithItsTaskStillNamesTheProject() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let health = records.avenue("HEALTH", "Health")
+        let client = StoreClient.inMemory(records.workspace, actor: .user(device: "Mac", surface: .mac))
+        let workspace = try await withDependencies { [now] in
+            $0.date.now = now
+            $0.uuid = .incrementing
+            $0.withRandomNumberGenerator = WithRandomNumberGenerator(SystemRandomNumberGenerator())
+        } operation: {
+            let created = try await client.createProject("Trip", in: health.id).snapshot.workspace
+            let project = try XCTUnwrap(created.projects.values.first)
+            _ = try await client.createTask(.init(title: "Pack", avenueID: health.id, projectID: project.id))
+            let entries = try await client.load().journal.map(\.id)
+            return try await client.revert(entries: entries).snapshot.workspace
+        }
+        let rows = ActivityFeature.State(workspace: workspace).rows(now: now, calendar: .current)
+        let reverted = try XCTUnwrap(rows.first)
+        let values = reverted.changes.flatMap { [$0.before, $0.after] }.compactMap { $0 }
+
+        XCTAssertEqual(reverted.summary, "Reverted 2 changes")
+        XCTAssertTrue(values.contains("Trip"))
+        XCTAssertFalse(values.contains("something removed"))
+    }
+
     func testRevertingAChangePutsItBackAndMarksIt() async throws {
         let (store, task) = try await activity()
         let newest = try XCTUnwrap(store.state.workspace.journal.last)

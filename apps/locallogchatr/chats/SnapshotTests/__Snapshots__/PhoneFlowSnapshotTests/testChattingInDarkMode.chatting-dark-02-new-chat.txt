@@ -1,5 +1,5 @@
 [button] "Chats" id: BackButton
-[button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
+[button] "Context Window" value: "Shows after the next reply" hint: "Shows after the next reply"
 [header] "New conversation"
 [image] "Sparkle"
 [text] "Ask anything"

@@ -26,7 +26,7 @@
   [Button] "New conversation"
   [Outline] ""
   [Heading] "New conversation"
-  [Button] "Context Window" value: "Nothing used yet" help: "Nothing used yet"
+  [Button] "Context Window" value: "Shows after the next reply" help: "Shows after the next reply"
   [Button] "/query, Answer questions about your tasks."
   [Button] "/add, Plan new tasks, Projects and Avenues."
   [Button] "/change, Rename, move, reschedule or finish tasks and Projects."

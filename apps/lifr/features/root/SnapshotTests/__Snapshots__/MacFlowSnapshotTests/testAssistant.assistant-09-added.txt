@@ -27,7 +27,7 @@
     [Row/OutlineRow] ""
       [Button] "Tidy my weekend, Nov 3 at 10:00 AM, Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
   [Heading] "Tidy my weekend"
-  [Button] "Context Window" value: "Nothing used yet" help: "Nothing used yet"
+  [Button] "Context Window" value: "Shows after the next reply" help: "Shows after the next reply"
   [Heading] "Tuesday, November 3 at 10:00 AM"
   [StaticText] "" value: "Tidy my weekend"
   [StaticText] "" value: "Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."

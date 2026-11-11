@@ -4,7 +4,7 @@
 [button] "More"
 [button] "Done"
 [header] "Chat"
-[button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
+[button] "Context Window" value: "Shows after the next reply" hint: "Shows after the next reply"
 [text] "El mercado"
 [header] "El mercado"
 [text] "“Hola amigo. ¿Vamos al mercado”"

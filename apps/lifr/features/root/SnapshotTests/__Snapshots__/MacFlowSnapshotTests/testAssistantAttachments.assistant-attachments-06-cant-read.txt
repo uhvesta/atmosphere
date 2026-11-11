@@ -25,7 +25,7 @@
     [Row/OutlineRow] ""
       [Button] "What plant is this?, Nov 3 at 10:00 AM, And this one?"
   [Heading] "What plant is this?"
-  [Button] "Context Window" value: "Nothing used yet" help: "Nothing used yet"
+  [Button] "Context Window" value: "Shows after the next reply" help: "Shows after the next reply"
   [Heading] "Tuesday, November 3 at 10:00 AM"
   [StaticText] "" value: "Photo"
   [Button] "Recording, 6 s" help: "Opens it"

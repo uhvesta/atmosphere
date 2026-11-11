@@ -1,6 +1,6 @@
 [button] "Conversations" id: BackButton
 [button] "Add a Fitness Avenue, Actions Menu"
-[button] "Context Window" value: "Nothing used yet" hint: "Nothing used yet"
+[button] "Context Window" value: "Shows after the next reply" hint: "Shows after the next reply"
 [text] "On this device"
 [header, text] "Tuesday, November 3 at 10:00 AM"
 [text] "Added “Fitness”"

@@ -46,6 +46,6 @@
     [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
     [Button] "Dictate" help: "Dictate, on this device" id: mic
     [Button, disabled] "Send" id: arrow.up
-    [Button] "Context Window" value: "Nothing used yet" help: "Nothing used yet"
+    [Button] "Context Window" value: "Shows after the next reply" help: "Shows after the next reply"
     [Button] "Done"
     [Button] "Open in chat"

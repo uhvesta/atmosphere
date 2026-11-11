@@ -842,6 +842,9 @@
     "Context window" : {
 
     },
+    "Control-click a conversation and choose Archive." : {
+
+    },
     "Conversations" : {
 
     },
@@ -1195,6 +1198,9 @@
 
     },
     "Fork From Here" : {
+
+    },
+    "Fork of %@" : {
 
     },
     "Forward" : {
@@ -2286,6 +2292,9 @@
 
     },
     "Shown" : {
+
+    },
+    "Shows after the next reply" : {
 
     },
     "Shows the thinking" : {

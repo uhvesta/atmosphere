@@ -26,7 +26,7 @@
   [Button] "New conversation"
   [Outline] ""
   [Heading] "New conversation"
-  [Button] "Context Window" value: "Nothing used yet" help: "Nothing used yet"
+  [Button] "Context Window" value: "Shows after the next reply" help: "Shows after the next reply"
   [StaticText] "" value: "Ask about your tasks, change them, or plan what to add."
   [Button] "Plan my week"
   [Button] "What's overdue?"

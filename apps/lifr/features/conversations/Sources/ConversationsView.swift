@@ -205,6 +205,15 @@ package struct ConversationsView: View {
 struct ArchivedConversationsView: View {
     @Bindable var store: StoreOf<ConversationsFeature>
 
+    /// How to archive one, in the gesture the platform uses for it.
+    private var archiveHint: LocalizedStringKey {
+        #if os(macOS)
+            "Control-click a conversation and choose Archive."
+        #else
+            "Swipe left on a conversation to archive it."
+        #endif
+    }
+
     var body: some View {
         List {
             ForEach(store.state.archived) { conversation in
@@ -225,7 +234,7 @@ struct ArchivedConversationsView: View {
             if store.state.archived.isEmpty {
                 ContentUnavailableView(
                     "No archived conversations", systemImage: "archivebox",
-                    description: Text("Swipe left on a conversation to archive it."))
+                    description: Text(archiveHint))
             }
         }
         .navigationTitle("Archived")

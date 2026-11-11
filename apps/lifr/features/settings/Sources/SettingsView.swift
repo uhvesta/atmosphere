@@ -56,7 +56,7 @@ package struct SettingsView: View {
                         + "new conversation after its first reply, on this device, with the model picked "
                         + "in Models. Names you give are kept. Compacting summarizes older messages once they no "
                         + "longer fit what the model reads; without it, a chat offers Compact then. Conversations "
-                        + "stay on this device unless you sync them: swipe right on one in Conversations. "
+                        + "stay on this device unless you choose Sync on one in Conversations. "
                         + "Instructions stay on this device. Skills sync through iCloud, encrypted end to end.")
             }
             ChatExperimentsSection(

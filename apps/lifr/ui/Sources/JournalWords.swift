@@ -23,8 +23,12 @@ package struct JournalWords {
     /// record's name already says.
     package func fields(of steps: [JournalStep], hiding: Set<Field> = []) -> [FieldWords] {
         let hidden = Self.hidden.union(hiding)
+        // Records the steps removed are gone from the workspace, so their
+        // names come from the steps.
+        let known = Dictionary(steps.map { ($0.record.id, name($0)) }, uniquingKeysWith: { first, _ in first })
         return steps.flatMap { step in
             let record = name(step)
+            let hidden = step.before == nil || step.after == nil ? hidden.union(Self.naming) : hidden
             return step.fields.filter { !hidden.contains($0.field) }.map { change in
                 // When a record was trashed reads as whether it's in the
                 // Trash; a deleted comment is gone, not in the Trash.
@@ -38,13 +42,17 @@ package struct JournalWords {
                         after: change.after == nil ? no : yes)
                 }
                 return FieldWords(
-                    record: record, field: change.field.title, before: change.before.map(text),
-                    after: change.after.map(text))
+                    record: record, field: change.field.title, before: change.before.map { text($0, known) },
+                    after: change.after.map { text($0, known) })
             }
         }
     }
 
     private static let hidden: Set<Field> = [.sortOrder, .task]
+
+    /// What a record added or removed leaves out: its name, which its
+    /// rows already start with, and the code the app made up for it.
+    private static let naming: Set<Field> = [.name, .title, .code]
 
     /// What the steps did in a line, such as "Changed task “Run” and 2
     /// more", or that they revert `reverts` changes.
@@ -94,12 +102,14 @@ package struct JournalWords {
     /// `fields(of:hiding:)` for an archived entry's steps.
     package func fields(of steps: [ArchivedStep], hiding: Set<Field> = []) -> [FieldWords] {
         let hidden = Self.hidden.union(hiding)
+        let known = Dictionary(steps.map { ($0.record.id, name($0)) }, uniquingKeysWith: { first, _ in first })
         return steps.flatMap { step in
             let record = name(step)
+            let hidden = step.change == .changed ? hidden : hidden.union(Self.naming)
             return step.fields.filter { !hidden.contains($0.field) }.map { change in
                 FieldWords(
-                    record: record, field: change.field.title, before: change.before.map(text),
-                    after: change.after.map(text))
+                    record: record, field: change.field.title, before: change.before.map { text($0, known) },
+                    after: change.after.map { text($0, known) })
             }
         }
     }
@@ -153,8 +163,9 @@ package struct JournalWords {
         }
     }
 
-    /// A value as people read it: records by name, times as dates.
-    private func text(_ value: FieldValue) -> String {
+    /// A value as people read it: records by name, times as dates. Records
+    /// no longer in the workspace take their name from `known`.
+    private func text(_ value: FieldValue, _ known: [UUID: String] = [:]) -> String {
         switch value {
         case .text(let text): text
         case .number(let number): String(number)
@@ -165,8 +176,8 @@ package struct JournalWords {
         case .projectStatus(let status): status.rawValue.capitalized
         case .priority(let priority): priority.title ?? String(localized: "None")
         case .access(let access): access.title
-        case .record(let kind, let id): name(of: kind, id)
-        case .records(let kind, let ids): ids.map { name(of: kind, $0) }.sorted().joined(separator: ", ")
+        case .record(let kind, let id): name(of: kind, id, known)
+        case .records(let kind, let ids): ids.map { name(of: kind, $0, known) }.sorted().joined(separator: ", ")
         case .actor(let actor): author(actor)
         case .trigger(.at(let date)): date.formatted(date: .abbreviated, time: .shortened)
         case .trigger(.beforeDue(let seconds)):
@@ -175,7 +186,7 @@ package struct JournalWords {
         }
     }
 
-    private func name(of kind: RecordKind, _ id: UUID) -> String {
+    private func name(of kind: RecordKind, _ id: UUID, _ known: [UUID: String] = [:]) -> String {
         let name: String? =
             switch kind {
             case .avenue: workspace.avenues[id]?.name
@@ -184,7 +195,7 @@ package struct JournalWords {
             case .label: workspace.labels[id]?.name
             case .comment, .reminder, .settings: nil
             }
-        return name ?? "something removed"
+        return name ?? known[id] ?? "something removed"
     }
 }
 

@@ -27,7 +27,7 @@
     [Row/OutlineRow] ""
       [Button] "Show me some code, Nov 3 at 10:00 AM, Start with Buy soil. let due = "Satur"
   [Heading] "How do I plant the seedlings?"
-  [Button] "Context Window" value: "Nothing used yet" help: "Nothing used yet"
+  [Button] "Context Window" value: "Shows after the next reply" help: "Shows after the next reply"
   [Heading] "Tuesday, November 3 at 10:00 AM"
   [StaticText] "" value: "How do I plant the seedlings?"
   [Heading] "Planting the seedlings"
