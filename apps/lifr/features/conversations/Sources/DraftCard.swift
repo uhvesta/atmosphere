@@ -41,7 +41,7 @@ struct DraftCard: View {
                 }
                 ForEach(Array(plan.projects.enumerated()), id: \.offset) { _, project in
                     Line(
-                        symbol: "flag", title: Text("New Project \(project.name)"),
+                        symbol: "folder", title: Text("New Project \(project.name)"),
                         detail: meanings.details(due: project.due, place: project.avenue))
                     TaskLines(tasks: project.tasks, showsPlace: false, meanings: meanings)
                         .padding(.leading, 28)
@@ -196,7 +196,7 @@ struct DraftEditor: View {
                 }
                 ForEach(plan.projects.indices, id: \.self) { index in
                     let project = $plan.projects.element(index, or: .init(name: "", avenue: ""))
-                    Row(symbol: "flag", name: project.wrappedValue.name) {
+                    Row(symbol: "folder", name: project.wrappedValue.name) {
                         TextField("Project name", text: project.name).accessibilityLabel("Project name")
                     } remove: {
                         plan.projects.remove(at: index)
