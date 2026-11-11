@@ -1,0 +1,2 @@
+[element] "Home, 4 open tasks, 1 overdue"
+[text] "Unlock Lifr to see them"

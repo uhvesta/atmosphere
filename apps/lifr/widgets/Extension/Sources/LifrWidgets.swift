@@ -55,18 +55,107 @@ struct UpcomingWidget: Widget {
     }
 }
 
-/// Each Avenue's open count, and its first titles where there's room.
+/// Each Avenue's open count, and its first titles where there's room. On
+/// iPhone it can show one Avenue instead; the Mac's widget extensions
+/// can't be built with the App Intents a choice needs.
 struct AvenuesWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "Avenues", provider: TodayProvider()) { entry in
-            AvenuesEntryView(entry: entry)
-                .containerBackground(.fill.tertiary, for: .widget)
-        }
-        .configurationDisplayName("Avenues")
-        .description("How many tasks are open in each Avenue.")
-        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        #if os(iOS)
+            AppIntentConfiguration(
+                kind: "Avenues", intent: PickAvenueIntent.self, provider: AvenueProvider()
+            ) { entry in
+                AvenuesEntryView(entry: entry.today, picked: entry.picked)
+                    .containerBackground(.fill.tertiary, for: .widget)
+            }
+            .configurationDisplayName("Avenues")
+            .description("How many tasks are open in each Avenue, or in the one you pick.")
+            .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        #else
+            StaticConfiguration(kind: "Avenues", provider: TodayProvider()) { entry in
+                AvenuesEntryView(entry: entry, picked: nil)
+                    .containerBackground(.fill.tertiary, for: .widget)
+            }
+            .configurationDisplayName("Avenues")
+            .description("How many tasks are open in each Avenue.")
+            .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        #endif
     }
 }
+
+#if os(iOS)
+    /// An Avenue the Avenues widget can show, from what Lifr last wrote.
+    struct AvenueOption: AppEntity {
+        static let typeDisplayRepresentation: TypeDisplayRepresentation = "Avenue"
+        static let defaultQuery = Query()
+
+        var id: UUID
+        var name: String
+
+        var displayRepresentation: DisplayRepresentation {
+            DisplayRepresentation(title: "\(name)")
+        }
+
+        struct Query: EntityQuery {
+            func entities(for identifiers: [UUID]) async throws -> [AvenueOption] {
+                options().filter { identifiers.contains($0.id) }
+            }
+
+            func suggestedEntities() async throws -> [AvenueOption] {
+                options()
+            }
+
+            private func options() -> [AvenueOption] {
+                (readGlance()?.avenues ?? []).map { AvenueOption(id: $0.id, name: $0.name) }
+            }
+        }
+    }
+
+    /// Which Avenue the Avenues widget shows: all of them when none is
+    /// picked.
+    struct PickAvenueIntent: WidgetConfigurationIntent {
+        static let title: LocalizedStringResource = "Pick an Avenue"
+        static let description = IntentDescription("Shows one Avenue's tasks, or every Avenue when none is picked.")
+
+        @Parameter(title: "Avenue")
+        var avenue: AvenueOption?
+
+        init() {}
+    }
+
+    struct AvenueEntry: TimelineEntry {
+        var today: TodayEntry
+        /// The picked Avenue, or nil for all of them.
+        var picked: UUID?
+
+        var date: Date { today.date }
+    }
+
+    /// Today's timeline, with the Avenue the widget was set to show.
+    struct AvenueProvider: AppIntentTimelineProvider {
+        func placeholder(in context: TimelineProviderContext) -> AvenueEntry {
+            AvenueEntry(
+                today: TodayEntry(
+                    date: Date(),
+                    glance: TodayGlance(
+                        asOf: Date(), from: .distantPast, until: .distantFuture, rows: [], locked: true)),
+                picked: nil)
+        }
+
+        func snapshot(for configuration: PickAvenueIntent, in context: TimelineProviderContext) async -> AvenueEntry {
+            let now = Date()
+            let today = TodayEntry(date: now, glance: readGlance()?.at(now))
+            return AvenueEntry(today: today, picked: configuration.avenue?.id)
+        }
+
+        func timeline(
+            for configuration: PickAvenueIntent, in context: TimelineProviderContext
+        ) async -> Timeline<AvenueEntry> {
+            let today = todayTimeline(at: Date())
+            let entries = today.entries.map { AvenueEntry(today: $0, picked: configuration.avenue?.id) }
+            return Timeline(entries: entries, policy: today.policy)
+        }
+    }
+#endif
 
 /// This month, with the days that have tasks due marked.
 struct CalendarWidget: Widget {
@@ -120,23 +209,23 @@ struct TodayProvider: TimelineProvider {
 
     func getSnapshot(in context: TimelineProviderContext, completion: @escaping @Sendable (TodayEntry) -> Void) {
         let now = Date()
-        completion(TodayEntry(date: now, glance: glance()?.at(now)))
+        completion(TodayEntry(date: now, glance: readGlance()?.at(now)))
     }
 
     func getTimeline(
         in context: TimelineProviderContext, completion: @escaping @Sendable (Timeline<TodayEntry>) -> Void
     ) {
-        let now = Date()
-        let days = glance()?.days.filter { $0.until > now } ?? []
-        let entries = days.map { TodayEntry(date: max($0.from, now), glance: $0) }
-        // Past the last day only the app knows Today: say to open it.
-        let end = days.last?.until ?? Calendar.current.startOfDay(for: now).addingTimeInterval(24 * 60 * 60)
-        completion(Timeline(entries: entries + [TodayEntry(date: max(end, now), glance: nil)], policy: .after(end)))
+        completion(todayTimeline(at: Date()))
     }
+}
 
-    private func glance() -> TodayGlance? {
-        readGlance()
-    }
+/// Each day the app last wrote from `now` on, then one saying to open Lifr.
+private func todayTimeline(at now: Date) -> Timeline<TodayEntry> {
+    let days = readGlance()?.days.filter { $0.until > now } ?? []
+    let entries = days.map { TodayEntry(date: max($0.from, now), glance: $0) }
+    // Past the last day only the app knows Today: say to open it.
+    let end = days.last?.until ?? Calendar.current.startOfDay(for: now).addingTimeInterval(24 * 60 * 60)
+    return Timeline(entries: entries + [TodayEntry(date: max(end, now), glance: nil)], policy: .after(end))
 }
 
 /// What the app last wrote, or nil when it hasn't or the file can't be read.
@@ -152,13 +241,28 @@ private func readGlance() -> TodayGlance? {
 struct AvenuesEntryView: View {
     @Environment(\.widgetFamily) private var family
     var entry: TodayEntry
+    /// The one Avenue to show, or nil for all of them.
+    var picked: UUID?
 
     var body: some View {
-        switch family {
-        case .systemMedium: AvenuesWidgetView(avenues: entry.glance?.avenues, size: .medium)
-        case .systemLarge, .systemExtraLarge: AvenuesWidgetView(avenues: entry.glance?.avenues, size: .large)
-        default: AvenuesWidgetView(avenues: entry.glance?.avenues, size: .small)
+        if let picked {
+            AvenueWidgetView(content: content(picked), size: size)
+        } else {
+            AvenuesWidgetView(avenues: entry.glance?.avenues, size: size)
         }
+    }
+
+    private var size: TodayWidgetView.Size {
+        switch family {
+        case .systemMedium: .medium
+        case .systemLarge, .systemExtraLarge: .large
+        default: .small
+        }
+    }
+
+    private func content(_ id: UUID) -> AvenueWidgetView.Content {
+        guard let avenues = entry.glance?.avenues else { return .notWritten }
+        return avenues.first { $0.id == id }.map { .avenue($0) } ?? .gone
     }
 }
 

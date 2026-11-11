@@ -76,6 +76,8 @@ swift_library(
     name = "extension_lib",
     package_name = "lifr",
     srcs = glob(["Extension/Sources/*.swift"]),
+    # Named, so the iPhone extension's App Intents step sees the framework.
+    linkopts = ["-Wl,-framework,AppIntents"],
     module_name = "LifrWidgets",
     target_compatible_with = ["//bazel/xcode"],
     deps = [
@@ -87,6 +89,8 @@ swift_library(
 
 ios_extension(
     name = "ios",
+    # The Avenues widget's choice of Avenue.
+    app_intents = [":extension_lib"],
     bundle_id = WIDGETS_BUNDLE_ID,
     bundle_name = "LifrWidgets",
     # The iPhone App Group, when user.bazelrc sets one.

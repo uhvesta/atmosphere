@@ -138,6 +138,30 @@ final class WidgetSnapshotTests: XCTestCase {
         assertAvenues(nil, .medium, named: "before-lifr-wrote")
     }
 
+    private func assertAvenue(
+        _ content: AvenueWidgetView.Content, _ size: TodayWidgetView.Size, named name: String
+    ) {
+        let view = AvenueWidgetView(content: content, size: size)
+            .padding(16)
+            .frame(width: self.size(size).width, height: self.size(size).height)
+            .background(Color(white: 0.95))
+        assertSnapshot(
+            of: view, as: .image(layout: .fixed(width: self.size(size).width, height: self.size(size).height)),
+            named: name, testName: "testOneAvenue")
+        assertSnapshot(of: view, as: .accessibilityTree(size: self.size(size)), named: name, testName: "testOneAvenue")
+    }
+
+    func testOneAvenue() {
+        let home = avenues(locked: false)[0]
+        assertAvenue(.avenue(home), .small, named: "small")
+        assertAvenue(.avenue(home), .medium, named: "medium")
+        assertAvenue(.avenue(home), .large, named: "large")
+        assertAvenue(.avenue(avenues(locked: true)[0]), .medium, named: "locked")
+        assertAvenue(.avenue(avenues(locked: false)[2]), .small, named: "nothing-open")
+        assertAvenue(.gone, .small, named: "gone")
+        assertAvenue(.notWritten, .small, named: "before-lifr-wrote")
+    }
+
     private func assertCalendar(_ counts: [String: Int]?, _ size: TodayWidgetView.Size, named name: String) throws {
         let view = CalendarWidgetView(today: try CalendarDate("2026-11-11"), dueCounts: counts, size: size)
             .padding(16)
