@@ -278,6 +278,27 @@ final class InMemoryDaemonTests: XCTestCase {
         }
     }
 
+    func testAChatInNoFolderGetsItsOwnAndItsFilesCanBeRead() async throws {
+        let daemon = InMemoryDaemon(script: { _ in
+            [.write(path: "/chats/s1/plan.md", contents: "# Plan"), .write(path: "/elsewhere.md", contents: "x")]
+        })
+        let chat = try await daemon.client.start(
+            StartRequest(backend: .scripted, approvalMode: .allowEdits))
+        let other = try await daemon.client.start(StartRequest(backend: .scripted))
+        XCTAssertNotEqual(chat.workingDirectory, other.workingDirectory)
+        try await daemon.client.send(chat.id, "write the plan", .enqueue)
+        let files = try await daemon.client.files(chat.id)
+        XCTAssertEqual(files.files.map(\.path), ["plan.md"])
+        let plan = try await daemon.client.readFile(chat.id, "plan.md")
+        XCTAssertEqual(plan.text, "# Plan")
+        do {
+            _ = try await daemon.client.readFile(chat.id, "elsewhere.md")
+            XCTFail("Read a file outside the chat's folder")
+        } catch {
+            XCTAssertEqual((error as? DaemonError).flatMap(code), .invalidRequest)
+        }
+    }
+
     private func code(_ error: DaemonError) -> ErrorCode? {
         if case .refused(let code, _) = error { code } else { nil }
     }

@@ -185,6 +185,92 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// A chat in no project gets a folder of its own; the agent writes a
+    /// plan there, read rendered in Files, commented on and sent back.
+    func testAChatAndItsFiles() async throws {
+        let plan = """
+            # Reader plan
+
+            Import a book or an article, then read it a page at a time.
+
+            ## Steps
+
+            Tap a word to hear it and see what it means. Translate a sentence by holding it.
+
+            ```
+            import → read → tap → chat
+            ```
+            """
+        let daemon = InMemoryDaemon { text in
+            if text.contains("Comments on the files") {
+                return [
+                    .write(path: "plan.md", contents: plan + "\nWords tapped are kept, to review later.\n"),
+                    .write(path: "notes/ideas.txt", contents: "Offline first.\nSign in with iCloud, at most.\n"),
+                    .say("Kept the tapped words in the plan, and the notes now say iCloud at most."),
+                ]
+            }
+            return [
+                .write(path: "plan.md", contents: plan),
+                .write(path: "notes/ideas.txt", contents: "Offline first.\nNo accounts.\n"),
+                .say("Wrote the plan in plan.md, with some notes."),
+            ]
+        }
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+            $0.uuid = .incrementing
+        }
+        let flow = FlowRecorder("chat", AppView(store: store))
+
+        try await until { store.daemon == .running }
+        store.send(.sidebar(.newChatTapped))
+        store.send(.sidebar(.destination(.presented(.newSession(.binding(.set(\.name, "Reader plan")))))))
+        store.send(.sidebar(.destination(.presented(.newSession(.binding(.set(\.backend, .scripted)))))))
+        store.send(
+            .sidebar(.destination(.presented(.newSession(.binding(.set(\.approvalMode, .allowEverything)))))))
+        await flow.step("new chat")
+
+        store.send(.sidebar(.destination(.presented(.newSession(.startTapped)))))
+        try await until { store.session != nil }
+        store.send(.session(.presented(.binding(.set(\.draft, "Write a plan for the reader app")))))
+        store.send(.session(.presented(.sendTapped(.enqueue))))
+        try await until { store.session?.isWorking == false && store.session?.items.count ?? 0 >= 2 }
+        await flow.step("chat")
+
+        store.send(.session(.presented(.tabPicked(.files))))
+        try await until { store.session?.docs.lines != nil }
+        await flow.step("files")
+
+        store.send(
+            .session(
+                .presented(
+                    .docs(
+                        .blockTapped(
+                            startLine: 7, endLine: 7,
+                            quote: "Tap a word to hear it and see what it means.")))))
+        store.send(.session(.presented(.docs(.binding(.set(\.comment, "Keep the words tapped, to review later."))))))
+        await flow.step("commenting")
+
+        store.send(.session(.presented(.docs(.commentSaved))))
+        store.send(.session(.presented(.docs(.fileSelected("notes/ideas.txt")))))
+        try await until { store.session?.docs.lines?.first == "Offline first." }
+        store.send(.session(.presented(.docs(.lineTapped(2, extending: false)))))
+        store.send(.session(.presented(.docs(.binding(.set(\.comment, "Sign in with iCloud, at most."))))))
+        store.send(.session(.presented(.docs(.commentSaved))))
+        await flow.step("drafts")
+
+        store.send(.session(.presented(.docs(.sendTapped))))
+        try await until { store.session?.docs.drafts.isEmpty == true }
+        store.send(.session(.presented(.tabPicked(.chat))))
+        try await until { store.session?.isWorking == false && store.session?.items.count ?? 0 >= 4 }
+        await flow.step("sent")
+        flow.finish()
+    }
+
     /// A session on a subtask moves it and its task across the board, to
     /// Waiting on you when it asks for an approval, and shows in the inbox.
     func testTheBoard() async throws {

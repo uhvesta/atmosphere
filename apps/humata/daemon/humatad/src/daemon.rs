@@ -706,6 +706,8 @@ impl Daemon {
                 return self.read_changes(&host, std::mem::take(read)).await;
             }
             Request::EditChanges(edit) => self.host_of(&edit.session_id).await?,
+            Request::ListFiles(list) => self.host_of(&list.session_id).await?,
+            Request::ReadFile(read) => self.host_of(&read.session_id).await?,
             Request::MarkViewed(mark) => {
                 self.mark_viewed(mark)?;
                 return Ok(Reply::Response(Response::FileViewed(pb::FileViewed {})));

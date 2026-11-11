@@ -30,7 +30,7 @@ package struct ProjectsFeature {
             sessions.filter { $0.projectID == project }
         }
 
-        /// Sessions started outside any project, such as from the CLI.
+        /// Chats: sessions in no project, started here or from the CLI.
         package var unfiled: [Session] {
             sessions.filter { $0.projectID == nil }
         }
@@ -83,6 +83,8 @@ package struct ProjectsFeature {
         case loadFailed(String)
         case addProjectTapped
         case newSessionTapped(projectID: Project.ID)
+        /// A session in no project: a chat, in a folder or its own.
+        case newChatTapped
         case selected(SidebarItem?)
         case renameTapped(Session.ID)
         case archiveTapped(Session.ID, archived: Bool)
@@ -165,6 +167,10 @@ package struct ProjectsFeature {
             case .newSessionTapped(let id):
                 guard let project = state.projects[id: id] else { return .none }
                 state.destination = .newSession(NewSessionFeature.State(project: project))
+                return .none
+
+            case .newChatTapped:
+                state.destination = .newSession(NewSessionFeature.State(project: nil))
                 return .none
 
             case .selected(let item):
@@ -403,14 +409,17 @@ extension NewProjectFeature.State {
     }
 }
 
-/// A new session in a project, or on one of its tasks or subtasks: its
-/// backend and model, what it may do without asking, and which specs it
-/// reads.
+/// A new session in a project, or on one of its tasks or subtasks, or a
+/// chat in no project, in a folder picked or one of its own: its backend
+/// and model, what it may do without asking, and which specs it reads.
 @Reducer
 package struct NewSessionFeature {
     @ObservableState
     package struct State: Equatable {
-        package var project: Project
+        /// Nil for a chat.
+        package var project: Project?
+        /// The folder a chat works in; nil for one of its own.
+        package var folder: String?
         /// The task or subtask it works on; nil for the project itself.
         package var item: Item?
         /// Whether a session on a subtask also reads its task's spec.
@@ -427,7 +436,7 @@ package struct NewSessionFeature {
         package var starting = false
         @Presents package var alert: AlertState<Never>?
 
-        package init(project: Project, item: Item? = nil) {
+        package init(project: Project?, item: Item? = nil) {
             self.project = project
             self.item = item
             self.name = item?.title ?? ""
@@ -477,9 +486,10 @@ package struct NewSessionFeature {
                 state.starting = true
                 let model = state.model.trimmed
                 let request = StartRequest(
-                    backend: state.backend, name: state.name.trimmed, host: state.host,
+                    backend: state.backend, workingDirectory: state.project == nil ? state.folder : nil,
+                    name: state.name.trimmed, host: state.host,
                     model: model.isEmpty ? nil : model,
-                    approvalMode: state.approvalMode, projectID: state.project.id, itemID: state.item?.id,
+                    approvalMode: state.approvalMode, projectID: state.project?.id, itemID: state.item?.id,
                     specs: state.item?.parentID == nil ? .item : state.specs)
                 return .run { send in
                     await send(.delegate(.started(try await daemon.start(request))))

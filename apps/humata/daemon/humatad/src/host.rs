@@ -166,6 +166,8 @@ pub struct Host {
     /// Which backend runs each session.
     owners: Mutex<HashMap<SessionId, pb::Backend>>,
     machine: Machine,
+    /// Where chats that work in no folder of the person's get one.
+    chats: PathBuf,
     /// What this humatad is, read when it started, since an install may
     /// replace the executable while it runs.
     program_version: String,
@@ -224,8 +226,35 @@ impl Host {
             backends,
             owners: Mutex::new(owners),
             machine: Machine::new(state.to_owned(), env, copilot_program),
+            chats: state.join("chats"),
             program_version: crate::build(),
         })
+    }
+
+    /// A new empty folder for a chat that works in none of the person's.
+    fn chat_folder(&self) -> Result<PathBuf, HostError> {
+        let path = self.chats.join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&path).map_err(|source| HostError::CreateChatFolder {
+            path: path.clone(),
+            source,
+        })?;
+        Ok(path)
+    }
+
+    /// The folder `session` works in.
+    async fn folder(&self, session: &SessionId) -> Result<PathBuf, HostError> {
+        let agent = self.owner(session)?.1;
+        agent
+            .sessions()
+            .await?
+            .into_iter()
+            .find(|record| &record.id == session)
+            .map(|record| record.working_directory)
+            .ok_or_else(|| {
+                HostError::Agent(AgentError::UnknownSession {
+                    session: session.clone(),
+                })
+            })
     }
 
     fn backend(&self, backend: pb::Backend) -> Result<&Arc<dyn Backend>, HostError> {
@@ -266,8 +295,9 @@ impl Host {
             Request::StartSession(start) => {
                 let backend = start.backend();
                 let approval = convert::approval_mode(start.approval_mode());
+                let mut start = start;
                 if start.working_directory.is_empty() && start.repositories.is_empty() {
-                    return Err(HostError::NoWorkingDirectory);
+                    start.working_directory = self.chat_folder()?.display().to_string();
                 }
                 let agent = self.backend(backend)?;
                 let record = agent
@@ -405,6 +435,14 @@ impl Host {
                     .edit_changes(&session, &edit)
                     .await?;
                 Response::ChangesEdited(pb::ChangesEdited {})
+            }
+            Request::ListFiles(list) => {
+                let folder = self.folder(&SessionId::new(list.session_id)).await?;
+                Response::Files(crate::files::list(&folder)?)
+            }
+            Request::ReadFile(read) => {
+                let folder = self.folder(&SessionId::new(read.session_id)).await?;
+                Response::FileContents(crate::files::read(&folder, &read.path)?)
             }
             Request::ReadHistory(read) => {
                 let session = SessionId::new(read.session_id);

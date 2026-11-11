@@ -15,9 +15,35 @@ pub enum HostError {
     UnknownBackend { backend: &'static str },
 
     #[error(
-        "a session needs a working directory; give the folder on the host the agent should work in"
+        "couldn't create {path}, the folder for a chat that works in no folder of yours; check that humatad's state folder is writable and the disk isn't full, or give the chat a folder"
     )]
-    NoWorkingDirectory,
+    CreateChatFolder {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("couldn't list the files in {path}; check that the folder is still there and readable")]
+    ReadFolder {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("couldn't read {path}; check that the file is still there and readable")]
+    ReadFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("{path:?} isn't a file in the session's folder; give a path from its list of files")]
+    NotInFolder { path: String },
+
+    #[error(
+        "{path} is {size} bytes, too large to show here; open it in an editor on the host instead"
+    )]
+    FileTooLarge { path: PathBuf, size: u64 },
 
     #[error(
         "the watcher fell {missed} events behind and stopped; watch the session again to catch up from its history"
@@ -105,8 +131,9 @@ impl HostError {
             Self::Agent(AgentError::Workspace { .. }) => pb::ErrorCode::BackendFailed,
             Self::Agent(_) => pb::ErrorCode::StorageFailed,
             Self::UnknownBackend { .. } => pb::ErrorCode::UnknownBackend,
-            Self::NoWorkingDirectory
-            | Self::NotForHosts
+            Self::NotForHosts
+            | Self::NotInFolder { .. }
+            | Self::FileTooLarge { .. }
             | Self::NotAName { .. }
             | Self::NoFile
             | Self::NoAction
@@ -115,7 +142,11 @@ impl HostError {
             Self::FellBehind { .. } | Self::RunGit { .. } | Self::Clone { .. } => {
                 pb::ErrorCode::BackendFailed
             }
-            Self::SaveSetup { .. } | Self::CreateFolder { .. } => pb::ErrorCode::StorageFailed,
+            Self::SaveSetup { .. }
+            | Self::CreateFolder { .. }
+            | Self::CreateChatFolder { .. }
+            | Self::ReadFolder { .. }
+            | Self::ReadFile { .. } => pb::ErrorCode::StorageFailed,
         }
     }
 }

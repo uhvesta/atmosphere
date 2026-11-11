@@ -11,6 +11,8 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Login form"
       [Image] "Waiting for you" help: "Waiting for you to answer a request" id: hand.raised.fill
+    [Row/OutlineRow] ""
+      [Heading] "Chats" help: "Start a chat in no project, in a folder you pick or one of its own"
   [Outline] ""
     [Row/OutlineRow] ""
       [Button] "Login form, humata › Login form, Waiting for approval"

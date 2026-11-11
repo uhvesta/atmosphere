@@ -8,6 +8,8 @@
       [Heading] "humata" help: "Start a session in humata"
     [Row/OutlineRow, selected] ""
       [StaticText] "" value: "Board"
+    [Row/OutlineRow] ""
+      [Heading] "Chats" help: "Start a chat in no project, in a folder you pick or one of its own"
   [Heading] "To Do, 4 items"
   [Button] "Sign in, High priority"
   [Button] "Subtask of Sign in, Login form"

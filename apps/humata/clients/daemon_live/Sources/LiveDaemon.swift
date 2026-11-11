@@ -193,6 +193,23 @@ extension DaemonClient {
                 }
                 return Int(sent.comments)
             },
+            files: { session in
+                var list = Humata_V1_ListFiles()
+                list.sessionID = session
+                guard case .files(let files) = try await daemon.call(.listFiles(list)) else {
+                    throw DaemonError.unexpected("something other than the session's files")
+                }
+                return ChatFiles(files: files.files.map(ChatFile.init), truncated: files.truncated)
+            },
+            readFile: { session, path in
+                var read = Humata_V1_ReadFile()
+                read.sessionID = session
+                read.path = path
+                guard case .fileContents(let contents) = try await daemon.call(.readFile(read)) else {
+                    throw DaemonError.unexpected("something other than the file's contents")
+                }
+                return FileContents(path: contents.path, text: contents.binary ? nil : contents.text)
+            },
             items: { project in
                 var list = Humata_V1_ListItems()
                 list.projectID = project

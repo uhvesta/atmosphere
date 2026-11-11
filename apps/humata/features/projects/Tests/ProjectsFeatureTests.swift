@@ -38,6 +38,35 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(session.backend, .scripted)
     }
 
+    func testANewChatWorksInTheFolderPickedOrOneOfItsOwn() async throws {
+        let daemon = InMemoryDaemon()
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.newChatTapped)
+        await store.send(\.destination.newSession.binding.backend, .scripted)
+        await store.send(\.destination.newSession.binding.folder, "/notes")
+        await store.send(\.destination.newSession.startTapped)
+        await store.receive(\.destination.newSession.delegate.started)
+        let inFolder = try XCTUnwrap(daemon.sessions.last)
+        XCTAssertEqual(inFolder.workingDirectory, "/notes")
+        XCTAssertNil(inFolder.projectID)
+        XCTAssertEqual(store.state.unfiled, [inFolder])
+
+        await store.send(.newChatTapped)
+        await store.send(\.destination.newSession.binding.backend, .scripted)
+        await store.send(\.destination.newSession.startTapped)
+        await store.receive(\.destination.newSession.delegate.started)
+        let own = try XCTUnwrap(daemon.sessions.last)
+        XCTAssertNotEqual(own.id, inFolder.id)
+        XCTAssertNotEqual(own.workingDirectory, inFolder.workingDirectory)
+        XCTAssertNil(own.projectID)
+    }
+
     func testAProjectNeedsANameAndAbsoluteFolders() {
         var state = NewProjectFeature.State()
         state.name = "humata"

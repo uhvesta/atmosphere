@@ -11,6 +11,8 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Profile the build"
       [StaticText] "" value: "On build-box" help: "Runs on build-box"
+    [Row/OutlineRow] ""
+      [Heading] "Chats" help: "Start a chat in no project, in a folder you pick or one of its own"
   [Outline] ""
     [Row/OutlineRow, selected] ""
       [StaticText] "" value: "build-box"

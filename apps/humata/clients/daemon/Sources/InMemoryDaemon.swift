@@ -117,6 +117,23 @@ package final class InMemoryDaemon: Sendable {
         }
     }
 
+    /// What the agent has written in the session's folder, by path from it.
+    private func folder(of session: String) throws -> [String: String] {
+        try known(session)
+        guard let directory = state.value.sessions.first(where: { $0.id == session })?.workingDirectory else {
+            return [:]
+        }
+        let prefix = directory.hasSuffix("/") ? directory : directory + "/"
+        return files(of: session).reduce(into: [:]) { folder, file in
+            // A path not from the root is from the session's folder.
+            if !file.key.hasPrefix("/") {
+                folder[file.key] = file.value
+            } else if file.key.hasPrefix(prefix) {
+                folder[String(file.key.dropFirst(prefix.count))] = file.value
+            }
+        }
+    }
+
     package func history(_ session: String) -> [SessionEvent] {
         state.value.histories[session] ?? []
     }
@@ -154,6 +171,20 @@ package final class InMemoryDaemon: Sendable {
             deleteComment: { comment in try self.deleteComment(comment) },
             threads: { session in try self.threads(session) },
             sendReview: { session in try self.sendReview(session) },
+            files: { session in
+                let contents = try self.folder(of: session)
+                return ChatFiles(
+                    files: contents.keys.sorted().map { path in
+                        ChatFile(path: path, size: UInt64(contents[path]?.utf8.count ?? 0))
+                    })
+            },
+            readFile: { session, path in
+                guard let text = try self.folder(of: session)[path] else {
+                    throw DaemonError.refused(
+                        .invalidRequest, message: "\(path) isn't a file in the session's folder.")
+                }
+                return FileContents(path: path, text: text)
+            },
             items: { project in try self.items(project) },
             createItem: { project, fields in try self.createItem(project, fields) },
             updateItem: { item, update in try self.updateItem(item, update) },
@@ -247,12 +278,11 @@ package final class InMemoryDaemon: Sendable {
                 }
                 directory = directory ?? Self.copy(of: project, for: id)
             }
-            guard let directory else {
-                throw DaemonError.refused(.invalidRequest, message: "A session needs a working directory.")
-            }
+            // A chat in no folder gets one of its own.
+            let folder = directory ?? "/chats/\(id)"
             let session = Session(
                 id: id, name: request.name, backend: request.backend,
-                workingDirectory: directory, model: request.model, host: request.host,
+                workingDirectory: folder, model: request.model, host: request.host,
                 approvalMode: request.approvalMode, projectID: projectID, itemID: request.itemID)
             state.nextSession += 1
             state.sessions.append(session)

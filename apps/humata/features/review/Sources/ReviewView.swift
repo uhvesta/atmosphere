@@ -390,9 +390,15 @@ private struct LineRow: View {
     }
 
     private var highlighted: AttributedString {
-        guard let highlighter else { return AttributedString(line.text) }
+        highlighter?.attributed(line.text) ?? AttributedString(line.text)
+    }
+}
+
+extension Highlighter {
+    /// `line` coloured by its tokens.
+    package func attributed(_ line: String) -> AttributedString {
         var text = AttributedString()
-        for token in highlighter.tokens(line.text) {
+        for token in tokens(line) {
             var part = AttributedString(token.text)
             if let color = Self.color(token.kind) { part.foregroundColor = color }
             text += part
@@ -400,7 +406,7 @@ private struct LineRow: View {
         return text
     }
 
-    private static func color(_ kind: Highlighter.Kind) -> Color? {
+    private static func color(_ kind: Kind) -> Color? {
         switch kind {
         case .plain: nil
         case .keyword: Color(nsColor: .systemPurple)
@@ -427,7 +433,7 @@ private struct RenderedMarkdown: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(blocks) { block in
-                    BlockView(block: block)
+                    MarkdownBlockView(block: block)
                         .padding(.leading, 10)
                         .overlay(alignment: .leading) {
                             if (block.startLine...block.endLine).contains(where: added.contains) {
@@ -462,10 +468,15 @@ private struct RenderedMarkdown: View {
     }
 }
 
-private struct BlockView: View {
+/// A Markdown block as it reads.
+package struct MarkdownBlockView: View {
     let block: MarkdownBlock
 
-    var body: some View {
+    package init(block: MarkdownBlock) {
+        self.block = block
+    }
+
+    package var body: some View {
         switch block.kind {
         case .heading(let level):
             Text(Self.inline(block.text))

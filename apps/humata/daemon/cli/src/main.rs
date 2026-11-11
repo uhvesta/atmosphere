@@ -346,9 +346,10 @@ enum Command {
         /// Also read the spec of the task above its subtask.
         #[arg(long, requires = "item")]
         with_parents: bool,
-        /// The folder the agent works in, on its host, as it is; required
-        /// without --project or --item.
-        #[arg(long, required_unless_present_any = ["project", "item"])]
+        /// The folder the agent works in, on its host, as it is. Without
+        /// it, --project or --item, it's a chat in an empty folder of its
+        /// own on the host.
+        #[arg(long)]
         directory: Option<PathBuf>,
         /// What it may do without asking.
         #[arg(long, value_enum, default_value_t = Approval::Ask)]
@@ -454,6 +455,10 @@ enum Command {
         #[arg(long)]
         file: Option<String>,
     },
+    /// List the files in a session's folder, hidden ones left out.
+    Files { session: String },
+    /// Print a file in a session's folder, by its path from `files`.
+    Cat { session: String, path: String },
     /// Stage a file's changes in the session's copy, or one hunk's.
     Stage(EditArgs),
     /// Unstage a file's staged changes, or one hunk's.
@@ -795,6 +800,28 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             match client.call(request).await? {
                 Response::Changes(changes) => print!("{}", print::changes(&changes)),
                 other => return Err(unexpected("the changes", &other)),
+            }
+        }
+        Command::Files { session } => {
+            let request = Request::ListFiles(pb::ListFiles {
+                session_id: session,
+            });
+            match client.call(request).await? {
+                Response::Files(files) => print!("{}", print::files(&files)),
+                other => return Err(unexpected("the files", &other)),
+            }
+        }
+        Command::Cat { session, path } => {
+            let request = Request::ReadFile(pb::ReadFile {
+                session_id: session,
+                path,
+            });
+            match client.call(request).await? {
+                Response::FileContents(contents) if contents.binary => {
+                    println!("{} isn't text", contents.path);
+                }
+                Response::FileContents(contents) => print!("{}", contents.text),
+                other => return Err(unexpected("the file", &other)),
             }
         }
         Command::History { session } => {

@@ -88,10 +88,20 @@ package struct ProjectsView: View {
                     }
                 }
             }
-            let unfiled = store.state.tree(in: nil)
-            if !unfiled.isEmpty {
-                Section("Other Sessions") {
-                    tree(unfiled)
+            Section {
+                tree(store.state.tree(in: nil))
+            } header: {
+                HStack {
+                    Text("Chats")
+                    Spacer()
+                    Button {
+                        store.send(.newChatTapped)
+                    } label: {
+                        Label("New Chat", systemImage: "plus")
+                            .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Start a chat in no project, in a folder you pick or one of its own")
                 }
             }
             if !store.state.archived.isEmpty {
@@ -285,7 +295,8 @@ extension NewProjectView {
     }
 }
 
-/// The sheet to start a session in a project or on one of its items.
+/// The sheet to start a session in a project or on one of its items, or a
+/// chat.
 package struct NewSessionView: View {
     @Bindable var store: StoreOf<NewSessionFeature>
     @Environment(\.dismiss) private var dismiss
@@ -312,6 +323,28 @@ package struct NewSessionView: View {
                         }
                     }
                 }
+                if store.project == nil {
+                    LabeledContent("Folder") {
+                        HStack {
+                            Text(store.folder.map { ($0 as NSString).abbreviatingWithTildeInPath } ?? "Its Own")
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .foregroundStyle(store.folder == nil ? .secondary : .primary)
+                            if store.folder != nil {
+                                Button("Use Its Own") { store.folder = nil }
+                            }
+                            if store.host == nil {
+                                Button("Choose…") { chooseFolder() }
+                            }
+                        }
+                    }
+                    if store.host != nil {
+                        TextField(
+                            "Folder on the Host",
+                            text: Binding(get: { store.folder ?? "" }, set: { store.folder = $0.isEmpty ? nil : $0 }),
+                            prompt: Text("Its own"))
+                    }
+                }
                 Picker("Approvals", selection: $store.approvalMode) {
                     Text("Ask Every Time").tag(ApprovalMode.askEveryTime)
                     Text("Allow Edits").tag(ApprovalMode.allowEdits)
@@ -326,8 +359,10 @@ package struct NewSessionView: View {
             } header: {
                 if let item = store.item {
                     Text("New Session on \(item.title)")
+                } else if let project = store.project {
+                    Text("New Session in \(project.name)")
                 } else {
-                    Text("New Session in \(store.project.name)")
+                    Text("New Chat")
                 }
             } footer: {
                 Text(footer)
@@ -350,8 +385,29 @@ package struct NewSessionView: View {
         .task { await store.send(.task).finish() }
     }
 
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Choose"
+        panel.message = "The folder the chat works in. The agent can read and change its files."
+        if panel.runModal() == .OK, let url = panel.url {
+            store.folder = url.path
+        }
+    }
+
     private var footer: String {
-        let names = Self.list(store.project.repositories.map(\.name))
+        guard let project = store.project else {
+            let place = store.host.map { " on \($0)" } ?? ""
+            guard store.folder != nil else {
+                return "It's a chat in no project. It gets an empty folder of its own\(place) for the files it "
+                    + "writes, which you can read and comment on in Files."
+            }
+            return "It's a chat in no project. It works in the folder itself\(place), not a copy, so its changes "
+                + "are made there as it makes them."
+        }
+        let names = Self.list(project.repositories.map(\.name))
         guard let host = store.host else { return "It works in its own copy of \(names)." }
         return "It works in its own copy of \(names) on \(host), cloned there from each repository's origin, "
             + "so commits not pushed yet aren't in it."

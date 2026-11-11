@@ -598,7 +598,8 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
 
 package struct StartRequest: Hashable, Sendable {
     package var backend: Backend
-    /// Nil for the session's own copy of the project's repositories.
+    /// Nil for the session's own copy of the project's repositories, or,
+    /// with no project, an empty folder of its own: a chat in no folder.
     package var workingDirectory: String?
     package var name: String
     /// Nil for this Mac.
@@ -786,5 +787,50 @@ package enum DaemonError: LocalizedError, Hashable, CustomStringConvertible {
         case .unexpected(let what):
             "Humata's daemon sent \(what), which this app doesn't expect. Update Humata so both are the same version."
         }
+    }
+}
+
+/// A file in a session's folder.
+package struct ChatFile: Hashable, Sendable, Identifiable {
+    /// From the session's folder, with "/" between folders.
+    package var path: String
+    package var size: UInt64
+    package var modified: Date
+
+    package var id: String { path }
+
+    package init(path: String, size: UInt64 = 0, modified: Date = Date(timeIntervalSince1970: 0)) {
+        self.path = path
+        self.size = size
+        self.modified = modified
+    }
+
+    /// Whether it's Markdown, shown rendered.
+    package var isMarkdown: Bool {
+        ["md", "markdown"].contains((path as NSString).pathExtension.lowercased())
+    }
+}
+
+/// The files in a session's folder, hidden ones left out.
+package struct ChatFiles: Hashable, Sendable {
+    /// By path.
+    package var files: [ChatFile]
+    /// There were more than are listed.
+    package var truncated: Bool
+
+    package init(files: [ChatFile] = [], truncated: Bool = false) {
+        self.files = files
+        self.truncated = truncated
+    }
+}
+
+/// A file's contents; nil when it isn't text.
+package struct FileContents: Hashable, Sendable {
+    package var path: String
+    package var text: String?
+
+    package init(path: String, text: String?) {
+        self.path = path
+        self.text = text
     }
 }

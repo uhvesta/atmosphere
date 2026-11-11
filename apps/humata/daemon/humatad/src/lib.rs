@@ -6,6 +6,7 @@ mod board;
 mod convert;
 mod daemon;
 mod error;
+mod files;
 mod host;
 mod hosts;
 mod machine;

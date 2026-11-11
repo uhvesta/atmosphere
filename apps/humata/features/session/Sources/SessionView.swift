@@ -2,6 +2,7 @@ import ChatKit
 import ChatUI
 import ComposableArchitecture
 import HumataDaemonClient
+import HumataDocs
 import HumataReview
 import InferenceKit
 import SwiftUI
@@ -23,6 +24,8 @@ package struct SessionView: View {
             Divider()
             if store.tab == .review {
                 ReviewView(store: store.scope(state: \.review, action: \.review))
+            } else if store.tab == .files {
+                DocsView(store: store.scope(state: \.docs, action: \.docs))
             } else {
                 chat
             }
@@ -57,6 +60,14 @@ package struct SessionView: View {
         .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
     }
 
+    private func title(_ tab: SessionFeature.Tab) -> String {
+        switch tab {
+        case .chat: "Chat"
+        case .review: store.review.pending > 0 ? "Review (\(store.review.pending))" : "Review"
+        case .files: store.docs.drafts.isEmpty ? "Files" : "Files (\(store.docs.drafts.count))"
+        }
+    }
+
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
@@ -68,14 +79,14 @@ package struct SessionView: View {
             }
             Spacer()
             Picker("View", selection: Binding(get: { store.tab }, set: { store.send(.tabPicked($0)) })) {
-                Text("Chat").tag(SessionFeature.Tab.chat)
-                Text(store.review.pending > 0 ? "Review (\(store.review.pending))" : "Review")
-                    .tag(SessionFeature.Tab.review)
+                ForEach(store.tabs, id: \.self) { tab in
+                    Text(title(tab)).tag(tab)
+                }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
-            .help("The chat, or the session's changes to review")
+            .help("The chat, the session's changes to review, or the files in its folder")
             Spacer()
             if let usage = store.usage {
                 Text(Self.describe(usage))

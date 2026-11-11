@@ -250,21 +250,64 @@ async fn the_host_refuses_what_it_does_not_have() {
         ),
         "{unset:?}"
     );
+}
 
-    let mut nowhere = start(state.path(), "");
-    if let pb::request::Kind::StartSession(start) = &mut nowhere {
-        start.working_directory.clear();
-    }
-    let nowhere = client.call(nowhere).await;
+#[tokio::test]
+async fn a_chat_in_no_folder_gets_its_own_and_its_files_can_be_read() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = host(state.path()).await;
+    let script = r##"{"rules": [{"when": "", "steps": [
+        {"step": "write_file", "path": "docs/plan.md", "contents": "# Plan\n"},
+        {"step": "say", "text": "Wrote the plan."}
+    ]}]}"##;
+    let chat = |name: &str| {
+        pb::request::Kind::StartSession(pb::StartSession {
+            backend: pb::Backend::Scripted.into(),
+            name: name.to_owned(),
+            backend_config: script.to_owned(),
+            approval_mode: pb::ApprovalMode::AllowEverything.into(),
+            ..Default::default()
+        })
+    };
+    let first = started(&client, chat("first")).await;
+    let second = started(&client, chat("second")).await;
+    assert_ne!(first.working_directory, second.working_directory);
+    assert!(Path::new(&first.working_directory).is_dir());
+
+    send(&client, &first.id, "write a plan").await;
+    after_turns(&client, &first.id, 1).await;
+    let files = client
+        .call(pb::request::Kind::ListFiles(pb::ListFiles {
+            session_id: first.id.clone(),
+        }))
+        .await;
+    let Ok(pb::response::Kind::Files(files)) = files else {
+        panic!("not listed: {files:?}")
+    };
+    let paths: Vec<_> = files.files.iter().map(|file| file.path.as_str()).collect();
+    assert_eq!(paths, ["docs/plan.md"]);
+
+    let read = |path: &str| {
+        client.call(pb::request::Kind::ReadFile(pb::ReadFile {
+            session_id: first.id.clone(),
+            path: path.to_owned(),
+        }))
+    };
+    let contents = read("docs/plan.md").await;
+    assert!(
+        matches!(&contents, Ok(pb::response::Kind::FileContents(contents)) if contents.text == "# Plan\n"),
+        "{contents:?}"
+    );
+    let outside = read("../humata.sqlite3").await;
     assert!(
         matches!(
-            nowhere,
+            outside,
             Err(ClientError::Refused {
                 code: pb::ErrorCode::InvalidRequest,
                 ..
             })
         ),
-        "{nowhere:?}"
+        "{outside:?}"
     );
 }
 

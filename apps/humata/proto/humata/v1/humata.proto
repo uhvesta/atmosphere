@@ -98,6 +98,9 @@ message Request {
     DeleteComment delete_comment = 35;
     ListThreads list_threads = 36;
     SendReview send_review = 37;
+    // A session's folder, to browse.
+    ListFiles list_files = 38;
+    ReadFile read_file = 39;
   }
 }
 
@@ -139,6 +142,8 @@ message Response {
     CommentDeleted comment_deleted = 33;
     Threads threads = 34;
     ReviewSent review_sent = 35;
+    Files files = 36;
+    FileContents file_contents = 37;
   }
 }
 
@@ -180,7 +185,10 @@ enum Backend {
 message StartSession {
   Backend backend = 1;
   // The folder the agent works in, on the host. Ignored when it works in
-  // repositories: then it works in its own copy of them.
+  // repositories: then it works in its own copy of them. With neither, nor
+  // a project to take repositories from, it gets an empty folder of its own
+  // on the host, kept with the host's state: a chat that works in no folder
+  // of yours.
   string working_directory = 2;
   // The model to use; empty for the backend's default.
   string model = 3;
@@ -501,6 +509,39 @@ message DeleteComment {
 }
 
 message CommentDeleted {}
+
+// The files in a session's folder, hidden ones and their contents left out.
+message ListFiles {
+  string session_id = 1;
+}
+
+message ChatFile {
+  // Relative to the session's folder, with "/" between folders.
+  string path = 1;
+  uint64 size = 2;
+  // Milliseconds since 1970 in UTC.
+  int64 modified_unix_ms = 3;
+}
+
+message Files {
+  // By path.
+  repeated ChatFile files = 1;
+  // There were more than are listed.
+  bool truncated = 2;
+}
+
+// One file in a session's folder, by its path from ListFiles.
+message ReadFile {
+  string session_id = 1;
+  string path = 2;
+}
+
+message FileContents {
+  string path = 1;
+  string text = 2;
+  // It isn't UTF-8 text, so text is empty.
+  bool binary = 3;
+}
 
 message ListThreads {
   string session_id = 1;

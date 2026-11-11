@@ -1,17 +1,19 @@
 import ComposableArchitecture
 import Foundation
 import HumataDaemonClient
+import HumataDocs
 import HumataReview
 
 /// One session: its events as they happen, a message to send, permissions
 /// to answer and what the session may do without asking, and forks, with
-/// the code or chat only, including editing an earlier message; and its
-/// changes, to review.
+/// the code or chat only, including editing an earlier message; its
+/// changes, to review; and the files in its folder, to read and comment on.
 @Reducer
 package struct SessionFeature {
     package enum Tab: Hashable, Sendable {
         case chat
         case review
+        case files
     }
 
     @ObservableState
@@ -19,6 +21,7 @@ package struct SessionFeature {
         package var session: Session
         package var tab = Tab.chat
         package var review: ReviewFeature.State
+        package var docs: DocsFeature.State
         /// Every event but the reply's parts as it streams, oldest first.
         package var events: IdentifiedArrayOf<SessionEvent> = []
         /// The reply so far, until its whole message arrives.
@@ -37,6 +40,12 @@ package struct SessionFeature {
         package init(session: Session) {
             self.session = session
             review = ReviewFeature.State(sessionID: session.id, turns: session.turns)
+            docs = DocsFeature.State(sessionID: session.id)
+        }
+
+        /// The views it has: a review only for a project's code.
+        package var tabs: [Tab] {
+            session.projectID == nil ? [.chat, .files] : [.chat, .review, .files]
         }
 
         /// Whether a turn has started and not yet ended.
@@ -119,6 +128,7 @@ package struct SessionFeature {
         case delegate(Delegate)
         case tabPicked(Tab)
         case review(ReviewFeature.Action)
+        case docs(DocsFeature.Action)
 
         @CasePathable
         package enum Delegate: Equatable {
@@ -138,14 +148,21 @@ package struct SessionFeature {
         Scope(state: \.review, action: \.review) {
             ReviewFeature()
         }
+        Scope(state: \.docs, action: \.docs) {
+            DocsFeature()
+        }
         Reduce { state, action in
             switch action {
-            case .binding, .delegate, .alert, .review:
+            case .binding, .delegate, .alert, .review, .docs:
                 return .none
 
             case .tabPicked(let tab):
                 state.tab = tab
-                return tab == .review ? .send(.review(.refresh)) : .none
+                switch tab {
+                case .chat: return .none
+                case .review: return .send(.review(.refresh))
+                case .files: return .send(.docs(.refresh))
+                }
 
             case .task:
                 state.disconnected = false
@@ -165,9 +182,14 @@ package struct SessionFeature {
 
             case .received(let event):
                 state.receive(event)
-                // The agent may have answered the review, or changed the code.
-                guard case .turnEnded = event.kind, state.tab == .review else { return .none }
-                return .send(.review(.refresh))
+                // The agent may have answered the review, or changed the code
+                // or the files.
+                guard case .turnEnded = event.kind else { return .none }
+                switch state.tab {
+                case .chat: return .none
+                case .review: return .send(.review(.refresh))
+                case .files: return .send(.docs(.refresh))
+                }
 
             case .watchEnded(let failure):
                 state.disconnected = true

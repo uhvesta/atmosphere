@@ -147,6 +147,18 @@ pub fn changes(changes: &pb::Changes) -> String {
 
 /// `<thread id>\t<repository>/<path>:<start>-<end>\t<state>`, then a line
 /// `\t<comment id>\t<you|agent>\t<turn>\t<text>` for each comment.
+pub fn files(files: &pb::Files) -> String {
+    let mut out: String = files
+        .files
+        .iter()
+        .map(|file| format!("{:>10}  {}\n", file.size, file.path))
+        .collect();
+    if files.truncated {
+        out.push_str("(more files not listed)\n");
+    }
+    out
+}
+
 pub fn thread(thread: &pb::ReviewThread) -> String {
     let file = thread
         .file

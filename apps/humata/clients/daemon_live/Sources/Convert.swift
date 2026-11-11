@@ -427,3 +427,11 @@ extension ReviewComment {
         )
     }
 }
+
+extension ChatFile {
+    init(_ file: Humata_V1_ChatFile) {
+        self.init(
+            path: file.path, size: file.size,
+            modified: Date(timeIntervalSince1970: TimeInterval(file.modifiedUnixMs) / 1000))
+    }
+}

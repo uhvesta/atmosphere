@@ -10,6 +10,8 @@
       [StaticText] "" value: "Board"
     [Row/OutlineRow] ""
       [StaticText] "" value: "Release notes"
+    [Row/OutlineRow] ""
+      [Heading] "Chats" help: "Start a chat in no project, in a folder you pick or one of its own"
   [StaticText] "" value: "No Session Open"
   [StaticText] "" value: "Pick a session in the sidebar, or start one in a project."
   [Toolbar] ""

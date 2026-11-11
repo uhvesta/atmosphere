@@ -44,6 +44,10 @@ package struct DaemonClient: Sendable {
     package var threads: @Sendable (_ session: String) async throws -> [ReviewThread]
     /// Sends every comment not sent yet as one message; returns how many.
     package var sendReview: @Sendable (_ session: String) async throws -> Int
+    /// The files in the session's folder.
+    package var files: @Sendable (_ session: String) async throws -> ChatFiles
+    /// A file in the session's folder, by its path from `files`.
+    package var readFile: @Sendable (_ session: String, _ path: String) async throws -> FileContents
     /// The project's board, its items' statuses as shown: tasks by
     /// priority, then by when they were added, each followed by its subtasks.
     package var items: @Sendable (_ project: String) async throws -> [Item]
