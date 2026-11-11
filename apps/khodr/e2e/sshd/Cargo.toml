@@ -1,0 +1,17 @@
+[package]
+name = "khodr-test-sshd"
+description = "An SSH server on loopback for Khodr's end-to-end tests, with keys it makes itself."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "test_sshd"
+path = "src/main.rs"
+
+[dependencies]
+rand.workspace = true
+russh.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

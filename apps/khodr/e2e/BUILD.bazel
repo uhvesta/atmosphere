@@ -5,7 +5,11 @@ load("@rules_swift//swift:swift_library.bzl", "swift_library")
 # End-to-end tests: the real khodrd and khodr binaries, as a person runs them.
 rust_test(
     name = "fork_from_cli_test",
-    srcs = ["fork_from_cli_test.rs"],
+    srcs = [
+        "common.rs",
+        "fork_from_cli_test.rs",
+    ],
+    crate_root = "fork_from_cli_test.rs",
     data = [
         "//apps/khodr/daemon/cli:khodr",
         "//apps/khodr/daemon/khodrd",
@@ -13,6 +17,31 @@ rust_test(
     env = {
         "KHODR": "$(rootpath //apps/khodr/daemon/cli:khodr)",
         "KHODRD": "$(rootpath //apps/khodr/daemon/khodrd)",
+    },
+    deps = [
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+    ],
+)
+
+# The same over SSH: OpenSSH's ssh client to //apps/khodr/e2e/sshd on
+# loopback, which makes its own keys.
+rust_test(
+    name = "fork_over_ssh_test",
+    srcs = [
+        "common.rs",
+        "fork_over_ssh_test.rs",
+    ],
+    crate_root = "fork_over_ssh_test.rs",
+    data = [
+        "//apps/khodr/daemon/cli:khodr",
+        "//apps/khodr/daemon/khodrd",
+        "//apps/khodr/e2e/sshd:test_sshd",
+    ],
+    env = {
+        "KHODR": "$(rootpath //apps/khodr/daemon/cli:khodr)",
+        "KHODRD": "$(rootpath //apps/khodr/daemon/khodrd)",
+        "TEST_SSHD": "$(rootpath //apps/khodr/e2e/sshd:test_sshd)",
     },
     deps = [
         "@crates//:serde_json",
