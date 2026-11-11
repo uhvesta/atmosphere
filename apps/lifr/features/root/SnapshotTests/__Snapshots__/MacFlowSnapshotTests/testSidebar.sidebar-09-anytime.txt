@@ -47,6 +47,7 @@
   [Toolbar] ""
     [Button] "Hide Sidebar"
     [MenuButton] "Sort" id: arrow.up.arrow.down
+    [Button] "Select Tasks"
     [MenuButton] "Add" help: "Add a task or Project" id: add
   [Button/CloseButton] ""
   [Button/ZoomButton] ""

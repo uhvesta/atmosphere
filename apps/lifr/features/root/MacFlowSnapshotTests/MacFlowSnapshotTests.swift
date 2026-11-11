@@ -222,6 +222,29 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Picking tasks on the Mac: ⌘-click with a task open picks both; then,
+    /// from the open task again, ⇧-click picks the rows between, and they're
+    /// all set In Progress.
+    func testBulkEdit() async throws {
+        let (store, flow) = app("bulk-edit")
+        await flow.step("launch", image: false)
+        let rows = store.today.list.rows.map(\.id)
+        let first = try XCTUnwrap(rows.first)
+        let last = try XCTUnwrap(rows.last)
+        store.send(.today(.list(.rowTapped(first))))
+        store.send(.today(.list(.selectionToggled(last))))
+        await flow.step("command-click")
+        store.send(.today(.list(.selectTapped)))
+        store.send(.today(.list(.rowTapped(first))))
+        store.send(.today(.list(.selectionExtended(to: last))))
+        await flow.step("shift-click")
+        XCTAssertEqual(store.today.list.selectedIDs, rows)
+        store.send(.today(.list(.bulk(.status(.inProgress)))))
+        await flow.step("in-progress")
+        XCTAssertEqual(rows.map { store.workspace?.tasks[$0]?.status }, rows.map { _ in .inProgress })
+        flow.finish()
+    }
+
     /// Quick add from ⌘N, and a new Avenue and Project from the sidebar.
     func testAdding() async throws {
         let (store, flow) = app("adding")

@@ -41,6 +41,7 @@
   [Toolbar] ""
     [Button] "Hide Sidebar"
     [MenuButton] "Sort" id: arrow.up.arrow.down
+    [Button, disabled] "Select Tasks"
     [MenuButton] "Add" help: "Add a task or Project" id: add
     [TextField/SearchField] ""
       [Button] "Search"

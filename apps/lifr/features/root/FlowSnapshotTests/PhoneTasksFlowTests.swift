@@ -39,6 +39,36 @@ final class PhoneTasksFlowTests: PhoneFlowTestCase {
         flow.finish()
     }
 
+    /// Picking several tasks in Today: pick two, give them a priority, then
+    /// pick all, trash them and Undo that.
+    func testBulkEdit() async throws {
+        let (store, flow) = app("bulk-edit")
+        await flow.step("launch", image: false)
+        store.send(.today(.list(.selectTapped)))
+        await flow.step("picking")
+        let rows = store.today.list.rows.map(\.id)
+        let first = try XCTUnwrap(rows.first)
+        let last = try XCTUnwrap(rows.last)
+        store.send(.today(.list(.rowTapped(first))))
+        store.send(.today(.list(.toggled(last))))
+        await flow.step("two-picked")
+        store.send(.today(.list(.bulk(.priority(.high)))))
+        await flow.step("prioritized")
+        XCTAssertEqual(store.workspace?.tasks[first]?.priority, .high)
+        XCTAssertEqual(store.workspace?.tasks[last]?.priority, .high)
+        XCTAssertFalse(store.today.list.isSelecting)
+        store.send(.today(.list(.selectTapped)))
+        store.send(.today(.list(.selectAllTapped)))
+        await flow.step("all-picked")
+        store.send(.today(.list(.bulk(.trash))))
+        await flow.step("trashed")
+        let trashed = try XCTUnwrap(store.toast?.id)
+        store.send(.undoTapped(trashed))
+        await flow.step("restored")
+        XCTAssertEqual(store.today.list.rows.map(\.id), rows)
+        flow.finish()
+    }
+
     /// Quick add: a task with an Avenue, a date and a priority.
     func testQuickAdd() async throws {
         let (store, flow) = app("quick-add")

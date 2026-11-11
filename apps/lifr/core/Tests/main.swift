@@ -17,4 +17,5 @@ await runSuites([
     ("Saved formats", savedFormatTests()),
     ("Merging synced records", mergeTests()),
     ("Saved filters", savedFilterTests()),
+    ("Bulk edits", bulkEditTests()),
 ])

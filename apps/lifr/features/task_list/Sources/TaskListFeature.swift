@@ -30,6 +30,14 @@ package struct TaskListFeature {
         @Shared package var sort: TaskSort
         /// What the search field filters rows by, in a list that searches.
         package var searchText = ""
+        /// Picking tasks to change at once: tapping a row picks it.
+        package var isSelecting = false
+        /// The tasks picked, of those shown.
+        package var selection: Set<UUID> = []
+        /// The row a ⇧-click picks from.
+        package var selectionAnchor: UUID?
+        /// Asks before closing picked tasks' open Sub tasks.
+        @Presents package var bulkPrompt: AlertState<BulkAnswer>?
 
         package init(query: TaskQuery) {
             self.query = query
@@ -57,6 +65,9 @@ package struct TaskListFeature {
         private var searchTerm: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
 
         package var rows: [TaskRowData] { sections.flatMap(\.rows) }
+
+        /// The picked tasks, in the order shown.
+        package var selectedIDs: [UUID] { rows.map(\.id).filter(selection.contains) }
 
         /// The records shown, with their place in the store's order.
         package var snapshot: Snapshot? { workspace.map { Snapshot($0, number: saves.latest) } }
@@ -86,6 +97,8 @@ package struct TaskListFeature {
                     }
                 }
             }
+            // Picked tasks no longer shown aren't picked.
+            selection.formIntersection(rows.map(\.id))
             // A task trashed, here or elsewhere, closes.
             if var detail {
                 self.detail = detail.refresh(from: snapshot, now: now, timeZone: timeZone) ? detail : nil
@@ -100,6 +113,20 @@ package struct TaskListFeature {
         /// The records changed elsewhere, such as in another tab or a sync.
         case show(Snapshot)
         case rowTapped(UUID)
+        /// Select Tasks, or Done to stop picking.
+        case selectTapped
+        /// A row tapped while picking, or ⌘-clicked on the Mac.
+        case selectionToggled(UUID)
+        /// A row ⇧-clicked on the Mac: picks the rows from the last one picked.
+        case selectionExtended(to: UUID)
+        case selectAllTapped
+        /// A change to every picked task.
+        case bulk(BulkEdit)
+        /// Due in this many days from today, or no due date, for every
+        /// picked task.
+        case bulkDue(days: Int?)
+        case bulkSaved(BulkEdit, Result<Saved, any Error>)
+        case bulkPrompt(PresentationAction<BulkAnswer>)
         case toggled(UUID)
         case rowAction(UUID, RowAction)
         case saved(Result<Saved, any Error>)
@@ -129,7 +156,7 @@ package struct TaskListFeature {
 
     package init() {}
 
-    package var body: some ReducerOf<Self> {
+    private var core: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
             case .task:
@@ -151,11 +178,17 @@ package struct TaskListFeature {
                 return .none
 
             case .rowTapped(let id):
+                if state.isSelecting { return .send(.selectionToggled(id)) }
                 guard let workspace = state.workspace else { return .none }
                 state.detail = TaskDetailFeature.State(id: id, workspace: workspace, now: now, timeZone: timeZone)
                 return .none
 
+            case .selectTapped, .selectionToggled, .selectionExtended, .selectAllTapped, .bulk, .bulkDue, .bulkSaved,
+                .bulkPrompt(.presented):
+                return picking(&state, action)
+
             case .toggled(let id):
+                if state.isSelecting { return .send(.selectionToggled(id)) }
                 // Closing a task is a choice, so the checkbox asks which
                 // status rather than finishing it outright.
                 guard let row = state.rows.first(where: { $0.id == id }) else { return .none }
@@ -247,15 +280,99 @@ package struct TaskListFeature {
                 state.show(snapshot, now: now, timeZone: timeZone)
                 return .send(.delegate(.saved(snapshot)))
 
-            case .detail, .reschedule, .prompt, .statusPicker, .alert, .delegate:
+            case .detail, .reschedule, .prompt, .statusPicker, .alert, .bulkPrompt, .delegate:
                 return .none
             }
         }
-        .ifLet(\.$detail, action: \.detail) { TaskDetailFeature() }
-        .ifLet(\.$reschedule, action: \.reschedule) { RescheduleFeature() }
-        .ifLet(\.$prompt, action: \.prompt)
-        .ifLet(\.$statusPicker, action: \.statusPicker)
-        .ifLet(\.$alert, action: \.alert)
+    }
+
+    package var body: some ReducerOf<Self> {
+        core
+            .ifLet(\.$detail, action: \.detail) { TaskDetailFeature() }
+            .ifLet(\.$reschedule, action: \.reschedule) { RescheduleFeature() }
+            .ifLet(\.$prompt, action: \.prompt)
+            .ifLet(\.$statusPicker, action: \.statusPicker)
+            .ifLet(\.$alert, action: \.alert)
+            .ifLet(\.$bulkPrompt, action: \.bulkPrompt)
+    }
+
+    /// Picking tasks and changing the picked ones at once.
+    private func picking(_ state: inout State, _ action: Action) -> Effect<Action> {
+        switch action {
+        case .selectTapped:
+            state.isSelecting.toggle()
+            state.selection = []
+            state.selectionAnchor = nil
+            return .none
+
+        case .selectionToggled(let id):
+            if !state.isSelecting {
+                // ⌘-click with a task open picks that one too.
+                state.isSelecting = true
+                state.selection = state.detail.map { [$0.id] } ?? []
+            }
+            if state.selection.remove(id) == nil { state.selection.insert(id) }
+            state.selectionAnchor = id
+            return .none
+
+        case .selectionExtended(let id):
+            let ids = state.rows.map(\.id)
+            let anchor = state.selectionAnchor ?? state.detail?.id ?? ids.first
+            guard let to = ids.firstIndex(of: id), let from = anchor.flatMap(ids.firstIndex(of:)) else {
+                return .none
+            }
+            state.isSelecting = true
+            state.selection.formUnion(ids[min(from, to)...max(from, to)])
+            return .none
+
+        case .selectAllTapped:
+            let ids = Set(state.rows.map(\.id))
+            state.selection = state.selection == ids ? [] : ids
+            return .none
+
+        case .bulk(let edit):
+            return bulk(edit, state.selectedIDs)
+
+        case .bulkDue(let days):
+            let today = CalendarDate(now, in: timeZone)
+            return bulk(.dueDate(days.map { today.adding(days: $0) }), state.selectedIDs)
+
+        case .bulkSaved(_, .success(let saved)):
+            state.isSelecting = false
+            state.selection = []
+            state.selectionAnchor = nil
+            return .send(.saved(.success(saved)))
+
+        case .bulkSaved(.status(let status), .failure(let error))
+        where (error as? LifrError)?.needsCascade == true:
+            let ids = state.selectedIDs
+            var titles: [String] = []
+            if let workspace = state.workspace {
+                for id in ids {
+                    let open = workspace.openSubtasks(of: id).contains { !ids.contains($0.id) }
+                    if open, let title = workspace.tasks[id]?.title { titles.append(title) }
+                }
+            }
+            state.bulkPrompt = .closingSubtasks(of: titles, status: status)
+            return .none
+
+        case .bulkSaved(_, .failure(let error)):
+            state.alert = .failed("Couldn't change the tasks", error)
+            return .none
+
+        case .bulkPrompt(.presented(.closeSubtasks(let status))):
+            return bulk(.status(status), state.selectedIDs, cascade: true)
+
+        default:
+            return .none
+        }
+    }
+
+    private func bulk(_ edit: BulkEdit, _ ids: [UUID], cascade: Bool = false) -> Effect<Action> {
+        guard !ids.isEmpty else { return .none }
+        return .run { [store] send in
+            await send(.bulkSaved(edit, Result { try await store.apply(edit, to: ids, cascade: cascade) }))
+        }
     }
 
     private func setStatus(_ status: TaskStatus, _ id: UUID, cascade: Bool = false) -> Effect<Action> {
@@ -265,6 +382,47 @@ package struct TaskListFeature {
     private func save(_ operation: @escaping @Sendable (StoreClient) async throws -> Saved) -> Effect<Action> {
         .run { [store] send in
             await send(.saved(Result { try await operation(store) }))
+        }
+    }
+}
+
+/// The answer to closing picked tasks that have open Sub tasks.
+package enum BulkAnswer: Equatable, Sendable {
+    /// Close the open Sub tasks as Won't Do, then set the picked tasks to this.
+    case closeSubtasks(TaskStatus)
+}
+
+extension LifrError {
+    /// Whether Core refused only until the person agrees to close open Sub
+    /// tasks.
+    fileprivate var needsCascade: Bool {
+        switch self {
+        case .openSubtasks, .wontDoNeedsCascade: true
+        default: false
+        }
+    }
+}
+
+extension AlertState where Action == BulkAnswer {
+    /// Asks before closing the open Sub tasks of `titles` as Won't Do.
+    fileprivate static func closingSubtasks(of titles: [String], status: TaskStatus) -> Self {
+        let title: TextState =
+            titles.count == 1
+            ? TextState("“\(titles.joined())” has open Sub tasks")
+            : TextState("\(titles.count) tasks have open Sub tasks")
+        let names: String = titles.map { name in "“\(name)”" }.joined(separator: ", ")
+        let message = TextState(
+            "\(names). A closed task can't keep open Sub tasks, so they'll be marked Won't Do first. "
+                + "Nothing changes if you cancel.")
+        return AlertState {
+            title
+        } actions: {
+            ButtonState(role: .destructive, action: .closeSubtasks(status)) {
+                TextState("Won't Do + \(status.title)")
+            }
+            ButtonState(role: .cancel) { TextState("Cancel") }
+        } message: {
+            message
         }
     }
 }

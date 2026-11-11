@@ -5,6 +5,10 @@ import LifrTaskDetail
 import LifrUI
 import SwiftUI
 
+#if os(macOS)
+    import AppKit
+#endif
+
 /// A task list in sections, after an optional header such as Today's way
 /// into Procrastinated. Swipe right to start a task; swipe left for the
 /// query's other actions.
@@ -65,6 +69,11 @@ package struct TaskListView<Header: View>: View {
                 BannerView(banner, undo: { store.send(.bannerUndoTapped) }, dismiss: { store.send(.bannerDismissed) })
             }
         }
+        .safeAreaInset(edge: .bottom) {
+            if store.isSelecting {
+                BulkBar(store: store)
+            }
+        }
         .task { await store.send(.task).finish() }
         .toolbar {
             ToolbarItem(placement: .secondaryAction) {
@@ -75,6 +84,15 @@ package struct TaskListView<Header: View>: View {
                 } label: {
                     Label("Sort", systemImage: "arrow.up.arrow.down")
                 }
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                Button(
+                    store.isSelecting ? "Done Selecting" : "Select Tasks",
+                    systemImage: store.isSelecting ? "checkmark.circle.fill" : "checkmark.circle"
+                ) {
+                    store.send(.selectTapped)
+                }
+                .disabled(!store.isSelecting && store.isEmpty)
             }
         }
         .modifier(SearchField(store: store))
@@ -136,6 +154,7 @@ package struct TaskListPresentations: ViewModifier {
             .alert($store.scope(state: \.prompt, action: \.prompt))
             .confirmationDialog($store.scope(state: \.statusPicker, action: \.statusPicker))
             .alert($store.scope(state: \.alert, action: \.alert))
+            .alert($store.scope(state: \.bulkPrompt, action: \.bulkPrompt))
     }
 }
 
@@ -151,18 +170,29 @@ package struct TaskListRow: View {
         self.store = store
     }
 
+    private var isPicked: Bool { store.selection.contains(row.id) }
+
     package var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            TaskRow(row) { store.send(.toggled(row.id)) }
-            if let note {
-                Text(note)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        HStack(spacing: 10) {
+            if store.isSelecting {
+                Image(systemName: isPicked ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isPicked ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                     .accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                TaskRow(row) { store.send(.toggled(row.id)) }
+                if let note {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                }
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture { store.send(.rowTapped(row.id)) }
+        .onTapGesture { tapped() }
+        .accessibilityAddTraits(store.isSelecting && isPicked ? .isSelected : [])
         // Onto a day in the calendar, to move it there. A list in manual
         // order drags rows to reorder them instead.
         .modifier(DraggableTask(id: row.id, isOn: !store.canReorder))
@@ -170,7 +200,7 @@ package struct TaskListRow: View {
         .accessibilityHint(note ?? "")
         .accessibilityAction { store.send(.rowTapped(row.id)) }
         .swipeActions(edge: .leading, allowsFullSwipe: false) {
-            if row.status != .inProgress {
+            if !store.isSelecting, row.status != .inProgress {
                 Button(row.status == .procrastinated ? "Restart" : "Start") {
                     store.send(.rowAction(row.id, .status(.inProgress)))
                 }
@@ -178,7 +208,7 @@ package struct TaskListRow: View {
             }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            ForEach(store.query.trailingActions.filter { $0 != .status(row.status) }, id: \.self) { action in
+            ForEach(trailingActions, id: \.self) { action in
                 Button(action.title) { store.send(.rowAction(row.id, action)) }
                     .tint(action.tint)
             }
@@ -190,6 +220,119 @@ package struct TaskListRow: View {
             Divider()
             Button("Reschedule…") { store.send(.rowAction(row.id, .reschedule)) }
         }
+    }
+
+    private var trailingActions: [RowAction] {
+        store.isSelecting ? [] : store.query.trailingActions.filter { $0 != .status(row.status) }
+    }
+
+    /// Opens the task, or picks it while picking. On the Mac, ⌘-click picks
+    /// it too, and ⇧-click picks the rows from the last one picked.
+    private func tapped() {
+        #if os(macOS)
+            let flags = NSEvent.modifierFlags
+            if flags.contains(.shift) {
+                store.send(.selectionExtended(to: row.id))
+                return
+            }
+            if flags.contains(.command) {
+                store.send(.selectionToggled(row.id))
+                return
+            }
+        #endif
+        store.send(.rowTapped(row.id))
+    }
+}
+
+/// What can be done to the picked tasks: shown under the list while
+/// picking.
+private struct BulkBar: View {
+    let store: StoreOf<TaskListFeature>
+
+    var body: some View {
+        let picked = store.selection.count
+        let none = picked == 0
+        VStack(spacing: 8) {
+            HStack {
+                Text(picked == 1 ? "1 task" : "\(picked) tasks")
+                    .font(.subheadline.weight(.semibold))
+                    .accessibilityLabel(picked == 1 ? "1 task picked" : "\(picked) tasks picked")
+                Spacer()
+                Button(store.selection.count == store.rows.count ? "Deselect All" : "Select All") {
+                    store.send(.selectAllTapped)
+                }
+                Button("Done") { store.send(.selectTapped) }
+                    .bold()
+            }
+            HStack {
+                Menu("Status", systemImage: "circle.dashed") {
+                    ForEach(TaskStatus.allCases, id: \.self) { status in
+                        Button(status.title) { store.send(.bulk(.status(status))) }
+                    }
+                }
+                Spacer()
+                Menu("Due", systemImage: "calendar") {
+                    Button("Today") { store.send(.bulkDue(days: 0)) }
+                    Button("Tomorrow") { store.send(.bulkDue(days: 1)) }
+                    Button("In a Week") { store.send(.bulkDue(days: 7)) }
+                    Divider()
+                    Button("No Due Date") { store.send(.bulkDue(days: nil)) }
+                }
+                Spacer()
+                Menu("Priority", systemImage: "flag") {
+                    ForEach(Priority.allCases, id: \.self) { priority in
+                        Button(priority.title ?? String(localized: "None")) { store.send(.bulk(.priority(priority))) }
+                    }
+                }
+                Spacer()
+                Menu("Label", systemImage: "tag") {
+                    ForEach(labels) { label in
+                        Button("#\(label.name)") { store.send(.bulk(.addLabel(label.id))) }
+                    }
+                }
+                .disabled(labels.isEmpty)
+                Spacer()
+                Menu("Move", systemImage: "folder") {
+                    ForEach(places, id: \.avenue.id) { place in
+                        Button(place.avenue.name) {
+                            store.send(.bulk(.move(avenue: place.avenue.id, project: nil)))
+                        }
+                        ForEach(place.projects) { project in
+                            Button("\(place.avenue.name) › \(project.name)") {
+                                store.send(.bulk(.move(avenue: place.avenue.id, project: project.id)))
+                            }
+                        }
+                    }
+                }
+                Spacer()
+                Button("Move to Trash", systemImage: "trash", role: .destructive) { store.send(.bulk(.trash)) }
+            }
+            .labelStyle(.iconOnly)
+            .disabled(none)
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal)
+        .padding(.vertical, 10)
+        .background(.bar)
+    }
+
+    private var labels: [LifrCore.Label] {
+        (store.workspace.map { Array($0.labels.values) } ?? [])
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    /// Each open Avenue with its active Projects, in order.
+    private var places: [(avenue: Avenue, projects: [Project])] {
+        guard let workspace = store.workspace else { return [] }
+        return workspace.avenues.values
+            .filter { $0.archivedAt == nil }
+            .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
+            .map { avenue in
+                let projects = workspace.projects.values
+                    .filter { $0.avenueID == avenue.id && $0.status == .active }
+                    .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
+                return (avenue, projects)
+            }
     }
 }
 

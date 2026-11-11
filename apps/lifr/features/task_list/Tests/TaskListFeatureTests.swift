@@ -26,6 +26,17 @@ final class TaskListFeatureTests: XCTestCase {
         }
     }
 
+    /// Runs a change to the store the way the feature would, at `now`.
+    private func changing<T: Sendable>(_ change: () async throws -> T) async rethrows -> T {
+        try await withDependencies { [now] in
+            $0.date.now = now
+            $0.timeZone = .gmt
+            $0.uuid = .incrementing
+        } operation: {
+            try await change()
+        }
+    }
+
     private func load(
         reordering: Bool = false, searching: Bool = false, client: StoreClient? = nil
     ) async -> TestStoreOf<TaskListFeature> {
@@ -294,5 +305,144 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertNil(store.state.banner)
         XCTAssertNotEqual(
             store.state.workspace?.tasks[review.id]?.status, .done, "Dismissing the banner undid the change")
+    }
+
+    // MARK: - Picking several tasks
+
+    func testWhilePickingATapPicksTheRowInsteadOfOpeningIt() async {
+        let run = records.task("Run", in: health)
+        let store = await load()
+
+        await store.send(.selectTapped)
+        await store.send(.rowTapped(run.id))
+        await store.receive(\.selectionToggled)
+
+        XCTAssertEqual(store.state.selection, [run.id])
+        XCTAssertNil(store.state.detail)
+
+        await store.send(.toggled(run.id))
+        await store.receive(\.selectionToggled)
+        XCTAssertEqual(store.state.selection, [])
+        XCTAssertNil(store.state.statusPicker)
+    }
+
+    func testPickedTasksChangeTogetherAndPickingEnds() async throws {
+        let run = records.task("Run", in: health)
+        let swim = records.task("Swim", in: health)
+        let ride = records.task("Ride", in: health)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = await load(client: client)
+
+        await store.send(.selectTapped)
+        await store.send(.selectionToggled(run.id))
+        await store.send(.selectionToggled(ride.id))
+        await store.send(.bulk(.priority(.high)))
+        await store.receive(\.bulkSaved)
+        await store.receive(\.delegate.saved)
+
+        let tasks = try await client.load().tasks
+        XCTAssertEqual(tasks[run.id]?.priority, .high)
+        XCTAssertEqual(tasks[ride.id]?.priority, .high)
+        XCTAssertEqual(tasks[swim.id]?.priority, swim.priority)
+        XCTAssertFalse(store.state.isSelecting)
+        XCTAssertEqual(store.state.selection, [])
+    }
+
+    func testOneUndoRevertsTheWholeChange() async throws {
+        let run = records.task("Run", in: health)
+        let swim = records.task("Swim", in: health)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = await load(client: client)
+
+        await store.send(.selectTapped)
+        await store.send(.selectAllTapped)
+        await store.send(.bulk(.trash))
+        await store.receive(\.bulkSaved)
+        await store.receive(\.delegate.saved)
+        XCTAssertTrue(store.state.isEmpty)
+
+        let journal = try await client.load().journal
+        let entry = try XCTUnwrap(journal.last?.id)
+        _ = try await changing { try await client.revert(entries: [entry]) }
+        let tasks = try await client.load().tasks
+        XCTAssertNil(tasks[run.id]?.deletedAt)
+        XCTAssertNil(tasks[swim.id]?.deletedAt)
+    }
+
+    func testDueDaysCountFromToday() async throws {
+        let run = records.task("Run", in: health)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = await load(client: client)
+
+        await store.send(.selectionToggled(run.id))
+        await store.send(.bulkDue(days: 1))
+        await store.receive(\.bulkSaved)
+
+        let due = try await client.load().tasks[run.id]?.dueDate
+        XCTAssertEqual(due, try CalendarDate("2026-11-04"))
+    }
+
+    func testClosingTasksWithOpenSubtasksAsksFirstAndChangesNothingUntilAnswered() async throws {
+        let race = records.task("Race", in: health)
+        records.task("Pin the bib", in: health, parent: race)
+        let run = records.task("Run", in: health)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = await load(client: client)
+
+        await store.send(.selectTapped)
+        await store.send(.selectionToggled(race.id))
+        await store.send(.selectionToggled(run.id))
+        await store.send(.bulk(.status(.done)))
+        await store.receive(\.bulkSaved)
+
+        XCTAssertNotNil(store.state.bulkPrompt)
+        XCTAssertTrue(store.state.isSelecting)
+        let before = try await client.load().tasks
+        XCTAssertEqual(before[run.id]?.status, .todo)
+
+        await store.send(.bulkPrompt(.presented(.closeSubtasks(.done))))
+        await store.receive(\.bulkSaved)
+        let after = try await client.load().tasks
+        XCTAssertEqual(after[run.id]?.status, .done)
+        XCTAssertEqual(after[race.id]?.status, .done)
+    }
+
+    func testShiftClickPicksTheRowsBetween() async {
+        let first = records.task("A", in: health)
+        records.task("B", in: health)
+        let third = records.task("C", in: health)
+        let store = await load()
+        let ids = store.state.rows.map(\.id)
+
+        await store.send(.selectionToggled(first.id))
+        await store.send(.selectionExtended(to: third.id))
+
+        XCTAssertTrue(store.state.isSelecting)
+        XCTAssertEqual(store.state.selectedIDs, ids)
+    }
+
+    func testCommandClickWithATaskOpenPicksThatOneToo() async {
+        let run = records.task("Run", in: health)
+        let swim = records.task("Swim", in: health)
+        let store = await load()
+
+        await store.send(.rowTapped(run.id))
+        await store.send(.selectionToggled(swim.id))
+
+        XCTAssertEqual(store.state.selection, [run.id, swim.id])
+    }
+
+    func testAPickedTaskThatLeavesTheListIsNoLongerPicked() async throws {
+        let run = records.task("Run", in: health)
+        let swim = records.task("Swim", in: health)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = await load(client: client)
+        await store.send(.selectTapped)
+        await store.send(.selectAllTapped)
+
+        let saved = try await changing { try await client.setStatus(.done, run.id) }
+        await store.send(.show(saved.snapshot))
+
+        XCTAssertEqual(store.state.selection, [swim.id])
     }
 }

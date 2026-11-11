@@ -52,6 +52,7 @@
   [Toolbar] ""
     [Button] "Hide Sidebar"
     [MenuButton] "Sort" id: arrow.up.arrow.down
+    [Button] "Select Tasks"
     [MenuButton] "Add" help: "Add a task or Project" id: add
     [MenuButton] "Filter" id: line.3.horizontal.decrease.circle.fill
     [Button] "Save Filter…"

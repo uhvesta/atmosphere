@@ -65,6 +65,7 @@
   [Toolbar] ""
     [Button] "Hide Sidebar"
     [MenuButton] "Sort" id: arrow.up.arrow.down
+    [Button] "Select Tasks"
     [RadioGroup] "Show as"
       [RadioButton/Segment] "List" value: "1"
       [RadioButton/Segment] "Board" value: "0"

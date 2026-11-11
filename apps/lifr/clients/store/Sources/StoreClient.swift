@@ -224,6 +224,14 @@ extension StoreClient {
         }
     }
 
+    /// `Workspace.apply`: one change to several tasks, as one save that one
+    /// Undo reverts.
+    package func apply(_ edit: BulkEdit, to ids: [UUID], cascade: Bool = false) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            try workspace.apply(edit, to: ids, cascade: cascade, in: context)
+        }
+    }
+
     package func addComment(_ body: String, to id: UUID) async throws -> Saved {
         try await save { (workspace, context) throws(LifrError) in
             _ = try workspace.addComment(body, to: id, in: context)

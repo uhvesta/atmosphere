@@ -186,6 +186,16 @@
         }
       }
     },
+    "%@ › %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ › %2$@"
+          }
+        }
+      }
+    },
     "%@%@ read" : {
       "localizations" : {
         "en" : {
@@ -361,10 +371,26 @@
     "%lld tasks" : {
 
     },
+    "%lld tasks are %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld tasks are %2$@"
+          }
+        }
+      }
+    },
     "%lld tasks are due today." : {
 
     },
+    "%lld tasks have open Sub tasks" : {
+
+    },
     "%lld tasks lose it. To put it back, revert this from Activity in Settings." : {
+
+    },
+    "%lld tasks picked" : {
 
     },
     "%lld threads" : {
@@ -405,6 +431,9 @@
 
     },
     "1 task loses it. To put it back, revert this from Activity in Settings." : {
+
+    },
+    "1 task picked" : {
 
     },
     "16 bits" : {
@@ -781,6 +810,9 @@
     "Changed %@" : {
 
     },
+    "Changed %lld tasks" : {
+
+    },
     "Changes older than 90 days can be looked at but not reverted." : {
 
     },
@@ -952,6 +984,9 @@
     "Couldn't change the task" : {
 
     },
+    "Couldn't change the tasks" : {
+
+    },
     "Couldn't change the trash" : {
 
     },
@@ -1109,6 +1144,9 @@
     "Description" : {
 
     },
+    "Deselect All" : {
+
+    },
     "Details" : {
 
     },
@@ -1137,6 +1175,9 @@
 
     },
     "Done" : {
+
+    },
+    "Done Selecting" : {
 
     },
     "Download" : {
@@ -1197,6 +1238,9 @@
 
     },
     "Edit Draft" : {
+
+    },
+    "Edit Filter…" : {
 
     },
     "Edit Skill" : {
@@ -1398,6 +1442,9 @@
 
     },
     "In Trash" : {
+
+    },
+    "In a Week" : {
 
     },
     "In use" : {
@@ -1744,6 +1791,9 @@
     "More" : {
 
     },
+    "Move" : {
+
+    },
     "Move %lld Open Tasks to %@" : {
       "localizations" : {
         "en" : {
@@ -1783,6 +1833,12 @@
       }
     },
     "Moved %@ to the Trash" : {
+
+    },
+    "Moved %lld tasks" : {
+
+    },
+    "Moved %lld tasks to the Trash" : {
 
     },
     "Moved to the trash" : {
@@ -2416,6 +2472,18 @@
     "Save" : {
 
     },
+    "Save Filter…" : {
+
+    },
+    "Save as New Filter…" : {
+
+    },
+    "Saved Filter" : {
+
+    },
+    "Saved Filters" : {
+
+    },
     "Says how many tasks are due today or overdue, and names them unless Lifr's lock is on." : {
 
     },
@@ -2446,7 +2514,13 @@
     "See what's due" : {
 
     },
+    "Select All" : {
+
+    },
     "Select Model" : {
+
+    },
+    "Select Tasks" : {
 
     },
     "Select Text" : {
@@ -2978,6 +3052,9 @@
     "Upcoming" : {
 
     },
+    "Update “%@”" : {
+
+    },
     "Urgent" : {
 
     },
@@ -3057,6 +3134,9 @@
 
     },
     "Won't Do" : {
+
+    },
+    "Won't Do + %@" : {
 
     },
     "Won't Do + Finish" : {
@@ -3144,6 +3224,9 @@
 
     },
     "·" : {
+
+    },
+    "“%@” has open Sub tasks" : {
 
     }
   },

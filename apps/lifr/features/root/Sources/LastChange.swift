@@ -107,6 +107,16 @@ package struct LastChange: Equatable, Sendable {
         let taskID = event?.taskID ?? change.previous.keys.sorted { $0.uuidString < $1.uuidString }[0]
         let task = workspace.tasks[taskID] ?? change.previous[taskID] ?? nil
         let title = task.map { "“\($0.title)”" } ?? "A task"
+        // Several picked tasks changed at once.
+        // Sub tasks that went with their parent don't count.
+        let changed = Set(change.events.filter { $0.reason == nil }.map(\.taskID))
+        let picked = changed.filter { id in
+            let task = workspace.tasks[id] ?? change.previous[id] ?? nil
+            return task?.parentID.map { !changed.contains($0) } ?? true
+        }
+        if picked.count > 1, !change.events.contains(where: { $0.kind == .created }) {
+            return message(forTasks: picked.count, event: event)
+        }
         switch (event?.kind, event?.field) {
         case (.created?, _):
             // A plan adds several tasks at once; its Sub tasks go with them.
@@ -141,6 +151,22 @@ package struct LastChange: Equatable, Sendable {
             return String(localized: "Moved \(title) to the Trash")
         default:
             return String(localized: "Changed \(title)")
+        }
+    }
+
+    /// What one change to `count` tasks did, in words.
+    private static func message(forTasks count: Int, event: HistoryEvent?) -> String {
+        switch (event?.kind, event?.field) {
+        case (.fieldChanged?, .status?):
+            let status = event?.newValue.flatMap(TaskStatus.init(rawValue:))
+            return status.map { String(localized: "\(count) tasks are \($0.title)") }
+                ?? String(localized: "Changed \(count) tasks")
+        case (.fieldChanged?, .avenue?), (.fieldChanged?, .project?):
+            return String(localized: "Moved \(count) tasks")
+        case (.movedToTrash?, _):
+            return String(localized: "Moved \(count) tasks to the Trash")
+        default:
+            return String(localized: "Changed \(count) tasks")
         }
     }
 }
