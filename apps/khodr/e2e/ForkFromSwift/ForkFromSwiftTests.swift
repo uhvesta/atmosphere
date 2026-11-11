@@ -61,14 +61,14 @@ final class ForkFromSwiftTests: XCTestCase {
         let original = try await client.history(session.id)
         XCTAssertEqual(original, history)
 
-        let sessions = try await client.sessions()
+        let sessions = try await client.sessions(nil)
         XCTAssertEqual(Set(sessions.map(\.id)), [session.id, fork.id])
     }
 
     func testANotRunningDaemonSaysSo() async throws {
         let client = DaemonClient.live(socket: "/tmp/khodr-no-such-daemon.sock")
         do {
-            _ = try await client.sessions()
+            _ = try await client.sessions(nil)
             XCTFail("listed sessions with no daemon")
         } catch let error as DaemonError {
             guard case .notRunning = error else { return XCTFail("\(error)") }

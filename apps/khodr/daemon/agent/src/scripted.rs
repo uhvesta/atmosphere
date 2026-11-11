@@ -229,7 +229,9 @@ async fn write(target: &Path, contents: &str) -> Result<(), ScriptedError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{Event, ForkOptions, SendMode, SessionId, SessionState, StartOptions};
+    use crate::event::{
+        ApprovalMode, Event, ForkOptions, SendMode, SessionId, SessionState, StartOptions,
+    };
     use crate::runtime::tests::{idle_turns, permission_request, wait_for, waiting};
     use crate::{Agent, LocalAgent};
 
@@ -249,9 +251,14 @@ mod tests {
 
     impl Fixture {
         async fn start(&self) -> SessionId {
+            self.start_with(ApprovalMode::AskEveryTime).await
+        }
+
+        async fn start_with(&self, approval: ApprovalMode) -> SessionId {
             let options = StartOptions {
                 name: "test".into(),
                 working_directory: self.work.path().to_owned(),
+                approval,
                 ..StartOptions::default()
             };
             self.agent
@@ -346,6 +353,134 @@ mod tests {
         let written =
             std::fs::read_to_string(fixture.work.path().join("src/a.txt")).expect("written");
         assert_eq!(written, "one");
+    }
+
+    fn shell(command: &str) -> Step {
+        Step::Shell {
+            command: command.into(),
+            output: "ran".into(),
+            success: true,
+        }
+    }
+
+    /// Whether each permission request was answered automatically, in order.
+    fn answers(events: &[Event]) -> Vec<(bool, bool)> {
+        events
+            .iter()
+            .filter_map(|event| match event.kind {
+                EventKind::PermissionCompleted {
+                    approved,
+                    automatic,
+                    ..
+                } => Some((approved, automatic)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn allowing_edits_writes_without_asking_but_asks_for_commands() {
+        let fixture = fixture(vec![rule(
+            "",
+            vec![write_file("a.txt", "one"), shell("make")],
+        )]);
+        let id = fixture.start_with(ApprovalMode::AllowEdits).await;
+        fixture
+            .agent
+            .send(&id, "go".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        let asks_to_run = |events: &[Event]| {
+            events.iter().any(|event| {
+                matches!(
+                    event.kind,
+                    EventKind::PermissionRequested {
+                        kind: PermissionKind::Shell,
+                        ..
+                    }
+                )
+            })
+        };
+        let events = wait_for(&fixture.agent, &id, asks_to_run).await;
+        let written = std::fs::read_to_string(fixture.work.path().join("a.txt")).expect("written");
+        assert_eq!(written, "one");
+        assert_eq!(answers(&events), vec![(true, true)]);
+        let request = permission_request(&events).expect("the command asks");
+        fixture
+            .agent
+            .approve(&id, &request, true)
+            .await
+            .expect("approved");
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+        assert_eq!(answers(&events), vec![(true, true), (true, false)]);
+    }
+
+    #[tokio::test]
+    async fn allowing_everything_never_waits() {
+        let fixture = fixture(vec![rule(
+            "",
+            vec![shell("make"), write_file("a.txt", "one")],
+        )]);
+        let id = fixture.start_with(ApprovalMode::AllowEverything).await;
+        fixture
+            .agent
+            .send(&id, "go".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+        assert_eq!(answers(&events), vec![(true, true), (true, true)]);
+        assert!(fixture.work.path().join("a.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn changing_the_mode_answers_requests_it_allows() {
+        let fixture = fixture(vec![rule("", vec![write_file("a.txt", "one")])]);
+        let id = fixture.start().await;
+        fixture
+            .agent
+            .send(&id, "go".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&fixture.agent, &id, waiting).await;
+        fixture
+            .agent
+            .set_approval_mode(&id, ApprovalMode::AllowEdits)
+            .await
+            .expect("set");
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+        assert_eq!(answers(&events), vec![(true, true)]);
+        assert!(fixture.work.path().join("a.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn the_mode_survives_reopening_and_forks_keep_it() {
+        let fixture = fixture(vec![rule("", vec![say("hi")])]);
+        let id = fixture.start().await;
+        fixture
+            .agent
+            .set_approval_mode(&id, ApprovalMode::AllowEverything)
+            .await
+            .expect("set");
+        let fork = fixture
+            .agent
+            .fork(&id, ForkOptions::default())
+            .await
+            .expect("forked");
+        assert_eq!(fork.approval, ApprovalMode::AllowEverything);
+        let reopened =
+            LocalAgent::open(fixture.state.path(), ScriptedRunner::new(Script::default()))
+                .expect("reopens");
+        let modes: Vec<_> = reopened
+            .sessions()
+            .await
+            .expect("sessions")
+            .into_iter()
+            .map(|record| record.approval)
+            .collect();
+        assert_eq!(
+            modes,
+            vec![ApprovalMode::AllowEverything, ApprovalMode::AllowEverything]
+        );
     }
 
     #[tokio::test]

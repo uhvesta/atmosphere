@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,6 +6,7 @@ use khodr_wire::{Client, ClientError, Service, pb};
 
 use crate::daemon::{Daemon, HostConfig, Hosts};
 use crate::host::Host;
+use crate::store::Store;
 
 const SCRIPT: &str = r#"{"rules": [
     {"when": "hello", "steps": [{"step": "say", "text": "hi there"}]},
@@ -195,7 +196,7 @@ async fn sessions_survive_the_host_restarting() {
     };
     let client = host(state.path()).await;
     let listed = client
-        .call(pb::request::Kind::ListSessions(pb::ListSessions {}))
+        .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
         .await;
     let Ok(pb::response::Kind::Sessions(sessions)) = listed else {
         panic!("{listed:?}")
@@ -266,10 +267,15 @@ async fn the_host_refuses_what_it_does_not_have() {
 }
 
 async fn daemon(state: &Path, hosts: Hosts) -> Client {
+    let store = match Store::open(&state.join("khodr.sqlite3")) {
+        Ok(store) => store,
+        Err(error) => panic!("couldn't open the store: {error}"),
+    };
     match Host::open(&state.join("host")).await {
         Ok(local) => {
             client_of(Arc::new(Daemon::new(
                 local,
+                store,
                 hosts,
                 state.join("hosts.json"),
             )))
@@ -346,7 +352,7 @@ async fn a_host_whose_command_fails_is_unavailable_and_the_rest_still_list() {
     }
     let local = started(&client, start(state.path(), "")).await;
     let listed = client
-        .call(pb::request::Kind::ListSessions(pb::ListSessions {}))
+        .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
         .await;
     let Ok(pb::response::Kind::Sessions(sessions)) = listed else {
         panic!("{listed:?}")
@@ -358,5 +364,162 @@ async fn a_host_whose_command_fails_is_unavailable_and_the_rest_still_list() {
             .map(|session| session.id.as_str())
             .collect::<Vec<_>>(),
         [local.id.as_str()]
+    );
+}
+
+fn create_project(repository: &Path) -> pb::request::Kind {
+    pb::request::Kind::CreateProject(pb::CreateProject {
+        name: "khodr".to_owned(),
+        repository: repository.display().to_string(),
+        instructions: "be brief".to_owned(),
+    })
+}
+
+async fn project(client: &Client, repository: &Path) -> pb::Project {
+    match client.call(create_project(repository)).await {
+        Ok(pb::response::Kind::ProjectCreated(pb::ProjectCreated {
+            project: Some(project),
+        })) => project,
+        other => panic!("not created: {other:?}"),
+    }
+}
+
+fn start_in(project: &str) -> pb::request::Kind {
+    pb::request::Kind::StartSession(pb::StartSession {
+        backend: pb::Backend::Scripted.into(),
+        project_id: project.to_owned(),
+        backend_config: SCRIPT.to_owned(),
+        ..Default::default()
+    })
+}
+
+async fn sessions_in(client: &Client, project: &str) -> Vec<String> {
+    let listed = client
+        .call(pb::request::Kind::ListSessions(pb::ListSessions {
+            project_id: project.to_owned(),
+        }))
+        .await;
+    let Ok(pb::response::Kind::Sessions(sessions)) = listed else {
+        panic!("{listed:?}")
+    };
+    let mut ids: Vec<_> = sessions
+        .sessions
+        .into_iter()
+        .map(|session| session.id)
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[tokio::test]
+async fn a_session_in_a_project_works_in_its_repository_and_lists_under_it() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let inside = started(&client, start_in(&project.id)).await;
+    let outside = started(&client, start(state.path(), "")).await;
+    assert_eq!(inside.project_id, project.id);
+    assert_eq!(
+        inside.working_directory,
+        repository.path().display().to_string()
+    );
+    assert_eq!(outside.project_id, "");
+    let fork = client
+        .call(pb::request::Kind::ForkSession(pb::ForkSession {
+            session_id: inside.id.clone(),
+            ..Default::default()
+        }))
+        .await;
+    let Ok(pb::response::Kind::SessionForked(pb::SessionForked {
+        session: Some(fork),
+    })) = fork
+    else {
+        panic!("not forked: {fork:?}")
+    };
+    assert_eq!(fork.project_id, project.id);
+    let mut expected = vec![inside.id.clone(), fork.id.clone()];
+    expected.sort();
+    assert_eq!(sessions_in(&client, &project.id).await, expected);
+    assert_eq!(sessions_in(&client, "").await.len(), 3);
+}
+
+#[tokio::test]
+async fn projects_and_their_sessions_survive_a_restart() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let (project, session) = {
+        let client = daemon(state.path(), Hosts::default()).await;
+        let project = project(&client, repository.path()).await;
+        let session = started(&client, start_in(&project.id)).await;
+        (project, session)
+    };
+    let client = daemon(state.path(), Hosts::default()).await;
+    let listed = client
+        .call(pb::request::Kind::ListProjects(pb::ListProjects {}))
+        .await;
+    let Ok(pb::response::Kind::Projects(projects)) = listed else {
+        panic!("{listed:?}")
+    };
+    assert_eq!(projects.projects, vec![project.clone()]);
+    assert_eq!(sessions_in(&client, &project.id).await, vec![session.id]);
+}
+
+#[tokio::test]
+async fn a_project_needs_a_folder_on_this_mac() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = daemon(state.path(), Hosts::default()).await;
+    let file = state.path().join("file");
+    std::fs::write(&file, "").unwrap_or_else(|error| panic!("{error}"));
+    for repository in [
+        state.path().join("missing"),
+        file,
+        PathBuf::from("relative"),
+    ] {
+        let created = client.call(create_project(&repository)).await;
+        assert!(
+            matches!(
+                created,
+                Err(ClientError::Refused {
+                    code: pb::ErrorCode::InvalidRequest,
+                    ..
+                })
+            ),
+            "{repository:?}: {created:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn starting_in_an_unknown_project_is_refused() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = daemon(state.path(), Hosts::default()).await;
+    let started = client.call(start_in("nope")).await;
+    assert!(
+        matches!(
+            started,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::UnknownProject,
+                ..
+            })
+        ),
+        "{started:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_host_refuses_project_requests() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = host(state.path()).await;
+    let created = client.call(create_project(state.path())).await;
+    assert!(
+        matches!(
+            created,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::InvalidRequest,
+                ..
+            })
+        ),
+        "{created:?}"
     );
 }

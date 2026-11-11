@@ -77,7 +77,7 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertEqual(fork.forkedBeforeEventID, two.id)
         await store.receive(\.forked, fork)
         await store.receive(\.delegate.openSession, fork)
-        XCTAssertEqual(daemon.history(fork.id).count, 5)
+        XCTAssertEqual(daemon.history(fork.id), Array(daemon.history(session.id).prefix { $0.id != two.id }))
     }
 
     func testARefusedRequestShowsWhatToDo() async throws {
@@ -144,7 +144,8 @@ final class SessionFeatureTests: XCTestCase {
         let store = store()
         await store.send(.received(event("e1", .permissionRequested(requestID: "p1", kind: .shell, summary: "ls"))))
         await store.send(.received(event("e2", .permissionRequested(requestID: "p2", kind: .write, summary: "a"))))
-        await store.send(.received(event("e3", .permissionCompleted(requestID: "p1", approved: true))))
+        await store.send(
+            .received(event("e3", .permissionCompleted(requestID: "p1", approved: true, automatic: false))))
         XCTAssertEqual(store.state.pendingPermissions.map(\.id), ["e2"])
     }
 }

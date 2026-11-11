@@ -113,6 +113,9 @@ pub enum EventKind {
     PermissionCompleted {
         request_id: String,
         approved: bool,
+        /// Answered by the session's [`ApprovalMode`], not by a person.
+        #[serde(default)]
+        automatic: bool,
     },
     TurnEnded {
         aborted: bool,
@@ -136,6 +139,28 @@ pub enum PermissionKind {
     Write,
     Read,
     Other,
+}
+
+/// What a session may do without asking.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalMode {
+    #[default]
+    AskEveryTime,
+    /// Reads and file writes go ahead; commands and anything else still ask.
+    AllowEdits,
+    AllowEverything,
+}
+
+impl ApprovalMode {
+    /// Whether a request of `kind` goes ahead without asking.
+    pub fn allows(self, kind: PermissionKind) -> bool {
+        match self {
+            Self::AskEveryTime => false,
+            Self::AllowEdits => matches!(kind, PermissionKind::Read | PermissionKind::Write),
+            Self::AllowEverything => true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,6 +221,7 @@ pub struct StartOptions {
     pub instructions: Option<String>,
     /// Settings only the backend reads, as JSON: the scripted backend's script.
     pub backend_config: Option<String>,
+    pub approval: ApprovalMode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -226,4 +252,6 @@ pub struct SessionRecord {
     pub backend_config: Option<String>,
     /// None for a root session.
     pub parent: Option<Parent>,
+    #[serde(default)]
+    pub approval: ApprovalMode,
 }

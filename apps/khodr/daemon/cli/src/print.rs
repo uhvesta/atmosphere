@@ -36,12 +36,17 @@ pub fn event(event: &pb::SessionEvent) -> String {
         Some(Kind::PermissionCompleted(completed)) => (
             "permission_completed",
             format!(
-                "{} {}",
+                "{} {}{}",
                 completed.request_id,
                 if completed.approved {
                     "approved"
                 } else {
                     "denied"
+                },
+                if completed.automatic {
+                    " automatic"
+                } else {
+                    ""
                 }
             ),
         ),
@@ -67,21 +72,32 @@ pub fn event(event: &pb::SessionEvent) -> String {
     format!("{}\t{kind}\t{}", event.id, detail.replace('\n', "\\n"))
 }
 
-/// `<id>\t<host>\t<state>\t<parent>\t<name>`, with `-` for this Mac or no parent.
+fn or_dash(text: &str) -> String {
+    if text.is_empty() {
+        "-".to_owned()
+    } else {
+        text.to_owned()
+    }
+}
+
+/// `<id>\t<host>\t<state>\t<parent>\t<project>\t<approval mode>\t<backend>\t<model>\t<name>`,
+/// with `-` for this Mac, no parent, no project or the default model.
 pub fn session(session: &pb::SessionInfo) -> String {
-    let or_dash = |text: &str| {
-        if text.is_empty() {
-            "-".to_owned()
-        } else {
-            text.to_owned()
-        }
-    };
     format!(
-        "{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         session.id,
         or_dash(&session.host),
         session.state().as_str_name(),
         or_dash(&session.parent_id),
+        or_dash(&session.project_id),
+        session.approval_mode().as_str_name(),
+        session.backend().as_str_name(),
+        or_dash(&session.model),
         session.name
     )
+}
+
+/// `<id>\t<repository>\t<name>`.
+pub fn project(project: &pb::Project) -> String {
+    format!("{}\t{}\t{}", project.id, project.repository, project.name)
 }

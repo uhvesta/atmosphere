@@ -1,7 +1,11 @@
 //! The agent's types as the protocol's messages.
 
-use khodr_agent::{Event, EventKind, PermissionKind, SendMode, SessionRecord, SessionState};
+use khodr_agent::{
+    ApprovalMode, Event, EventKind, PermissionKind, SendMode, SessionRecord, SessionState,
+};
 use khodr_wire::pb;
+
+use crate::store::Project;
 
 pub fn event(event: &Event) -> pb::SessionEvent {
     use pb::session_event::Kind;
@@ -47,9 +51,11 @@ pub fn event(event: &Event) -> pb::SessionEvent {
         EventKind::PermissionCompleted {
             request_id,
             approved,
+            automatic,
         } => Kind::PermissionCompleted(pb::PermissionCompleted {
             request_id: request_id.clone(),
             approved: *approved,
+            automatic: *automatic,
         }),
         EventKind::TurnEnded { aborted } => Kind::TurnEnded(pb::TurnEnded { aborted: *aborted }),
         EventKind::Idle => Kind::Idle(pb::SessionIdle {}),
@@ -107,6 +113,23 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, history: &[Event]) 
             .map(ToString::to_string)
             .unwrap_or_default(),
         host: String::new(),
+        approval_mode: match record.approval {
+            ApprovalMode::AskEveryTime => pb::ApprovalMode::AskEveryTime,
+            ApprovalMode::AllowEdits => pb::ApprovalMode::AllowEdits,
+            ApprovalMode::AllowEverything => pb::ApprovalMode::AllowEverything,
+        }
+        .into(),
+        project_id: String::new(),
+    }
+}
+
+pub fn approval_mode(mode: pb::ApprovalMode) -> ApprovalMode {
+    match mode {
+        pb::ApprovalMode::AskEveryTime | pb::ApprovalMode::Unspecified => {
+            ApprovalMode::AskEveryTime
+        }
+        pb::ApprovalMode::AllowEdits => ApprovalMode::AllowEdits,
+        pb::ApprovalMode::AllowEverything => ApprovalMode::AllowEverything,
     }
 }
 
@@ -120,4 +143,14 @@ pub fn send_mode(mode: pb::SendMode) -> SendMode {
 /// None for an empty string, which proto3 sends for an unset one.
 pub fn optional(text: String) -> Option<String> {
     Some(text).filter(|text| !text.is_empty())
+}
+
+pub fn project(project: Project) -> pb::Project {
+    pb::Project {
+        id: project.id,
+        name: project.name,
+        repository: project.repository.display().to_string(),
+        instructions: project.instructions,
+        created_unix_ms: project.created_unix_ms,
+    }
 }

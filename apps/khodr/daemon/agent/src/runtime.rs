@@ -17,8 +17,8 @@ use tokio::task::JoinHandle;
 
 use crate::error::AgentError;
 use crate::event::{
-    Event, EventKind, ForkOptions, Parent, PermissionKind, SendMode, SessionId, SessionRecord,
-    SessionState, StartOptions,
+    ApprovalMode, Event, EventKind, ForkOptions, Parent, PermissionKind, SendMode, SessionId,
+    SessionRecord, SessionState, StartOptions,
 };
 use crate::log::EventLog;
 use crate::{Agent, Watch};
@@ -64,8 +64,8 @@ impl Turn {
         &self.text
     }
 
-    pub fn record(&self) -> &SessionRecord {
-        &self.session.record
+    pub fn record(&self) -> SessionRecord {
+        self.session.lock().record.clone()
     }
 
     /// Every event so far, this turn's included.
@@ -77,7 +77,8 @@ impl Turn {
         self.session.log.append(Event::now(kind))
     }
 
-    /// Asks the person, and waits. False if they deny it or the turn stops.
+    /// Asks the person, and waits, unless the session's approval mode allows
+    /// it. False if they deny it or the turn stops.
     pub async fn ask(
         &self,
         kind: PermissionKind,
@@ -94,7 +95,17 @@ impl Turn {
                     kind,
                     summary: summary.into(),
                 }))?;
-            control.pending.insert(request_id, answer);
+            if control.record.approval.allows(kind) {
+                self.session
+                    .log
+                    .append(Event::now(EventKind::PermissionCompleted {
+                        request_id,
+                        approved: true,
+                        automatic: true,
+                    }))?;
+                return Ok(true);
+            }
+            control.pending.insert(request_id, Pending { kind, answer });
         }
         Ok(answered.await.unwrap_or(false))
     }
@@ -113,13 +124,14 @@ pub struct LocalAgent<R> {
 }
 
 struct Session {
-    record: SessionRecord,
+    id: SessionId,
+    dir: PathBuf,
     log: EventLog,
     control: Mutex<Control>,
 }
 
-#[derive(Default)]
 struct Control {
+    record: SessionRecord,
     running: Option<Running>,
     /// Bumped for every driver, and on abort, so a stopped driver can tell.
     generation: u64,
@@ -127,7 +139,13 @@ struct Control {
     turn_open: bool,
     queue: VecDeque<String>,
     steering: VecDeque<String>,
-    pending: HashMap<String, oneshot::Sender<bool>>,
+    pending: HashMap<String, Pending>,
+}
+
+/// A permission request waiting for its answer.
+struct Pending {
+    kind: PermissionKind,
+    answer: oneshot::Sender<bool>,
 }
 
 /// The task that plays turns until the queue is empty.
@@ -138,6 +156,18 @@ struct Running {
 }
 
 impl Control {
+    fn new(record: SessionRecord) -> Self {
+        Self {
+            record,
+            running: None,
+            generation: 0,
+            turn_open: false,
+            queue: VecDeque::new(),
+            steering: VecDeque::new(),
+            pending: HashMap::new(),
+        }
+    }
+
     fn is_current(&self, generation: u64) -> bool {
         self.running
             .as_ref()
@@ -189,7 +219,7 @@ impl<R: Runner> LocalAgent<R> {
             for kind in closing(&session.log.events()) {
                 session.log.append(Event::now(kind))?;
             }
-            sessions.insert(session.record.id.clone(), Arc::new(session));
+            sessions.insert(session.id.clone(), Arc::new(session));
         }
         Ok(Self {
             root,
@@ -221,21 +251,15 @@ impl<R: Runner> LocalAgent<R> {
             path: dir.clone(),
             source,
         })?;
-        let record_path = dir.join(RECORD_FILE);
-        let json =
-            serde_json::to_vec_pretty(&record).map_err(|source| AgentError::Encode { source })?;
-        std::fs::write(&record_path, json).map_err(|source| AgentError::Write {
-            path: record_path,
-            source,
-        })?;
+        save(&dir, &record)?;
         let log = EventLog::create(dir.join(EVENTS_FILE), events)?;
         let session = Arc::new(Session {
-            record,
+            id: record.id.clone(),
+            dir,
             log,
-            control: Mutex::new(Control::default()),
+            control: Mutex::new(Control::new(record)),
         });
-        self.lock()
-            .insert(session.record.id.clone(), session.clone());
+        self.lock().insert(session.id.clone(), session.clone());
         Ok(session)
     }
 
@@ -314,8 +338,10 @@ impl<R: Runner> Agent for LocalAgent<R> {
             instructions: options.instructions,
             backend_config: options.backend_config,
             parent: None,
+            approval: options.approval,
         };
-        Ok(self.create(record, Vec::new())?.record.clone())
+        self.create(record.clone(), Vec::new())?;
+        Ok(record)
     }
 
     async fn send(&self, id: &SessionId, text: String, mode: SendMode) -> Result<(), AgentError> {
@@ -348,7 +374,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
         let session = self.session(id)?;
         let answer = {
             let mut control = session.lock();
-            let answer = control.pending.remove(request_id).ok_or_else(|| {
+            let Pending { answer, .. } = control.pending.remove(request_id).ok_or_else(|| {
                 AgentError::UnknownPermissionRequest {
                     session: id.clone(),
                     request: request_id.to_owned(),
@@ -359,6 +385,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 .append(Event::now(EventKind::PermissionCompleted {
                     request_id: request_id.to_owned(),
                     approved,
+                    automatic: false,
                 }));
             if let Err(error) = recorded {
                 // Unrecorded, it must not go ahead.
@@ -369,6 +396,44 @@ impl<R: Runner> Agent for LocalAgent<R> {
         };
         // The turn may have stopped meanwhile; then nobody is waiting.
         let _ = answer.send(approved);
+        Ok(())
+    }
+
+    async fn set_approval_mode(
+        &self,
+        id: &SessionId,
+        mode: ApprovalMode,
+    ) -> Result<(), AgentError> {
+        let session = self.session(id)?;
+        let mut control = session.lock();
+        let record = SessionRecord {
+            approval: mode,
+            ..control.record.clone()
+        };
+        save(&session.dir, &record)?;
+        control.record = record;
+        let allowed: Vec<String> = control
+            .pending
+            .iter()
+            .filter(|(_, pending)| mode.allows(pending.kind))
+            .map(|(request, _)| request.clone())
+            .collect();
+        for request_id in allowed {
+            let Some(Pending { answer, .. }) = control.pending.remove(&request_id) else {
+                continue;
+            };
+            let recorded = session
+                .log
+                .append(Event::now(EventKind::PermissionCompleted {
+                    request_id,
+                    approved: true,
+                    automatic: true,
+                }));
+            // Unrecorded, it must not go ahead; the turn sees a refusal.
+            let approved = recorded.is_ok();
+            let _ = answer.send(approved);
+            recorded?;
+        }
         Ok(())
     }
 
@@ -429,22 +494,20 @@ impl<R: Runner> Agent for LocalAgent<R> {
             events.truncate(index);
         }
         events.extend(closing(&events).into_iter().map(Event::now));
+        let from = parent.lock().record.clone();
         let record = SessionRecord {
             id: SessionId::random(),
-            name: options.name.unwrap_or_else(|| parent.record.name.clone()),
-            working_directory: options
-                .working_directory
-                .unwrap_or_else(|| parent.record.working_directory.clone()),
-            model: parent.record.model.clone(),
-            instructions: parent.record.instructions.clone(),
-            backend_config: parent.record.backend_config.clone(),
+            name: options.name.unwrap_or(from.name),
+            working_directory: options.working_directory.unwrap_or(from.working_directory),
             parent: Some(Parent {
                 session: id.clone(),
                 before: options.before,
             }),
+            ..from
         };
         self.runner.forked(id, &record, &events)?;
-        Ok(self.create(record, events)?.record.clone())
+        self.create(record.clone(), events)?;
+        Ok(record)
     }
 
     async fn history(&self, id: &SessionId) -> Result<Vec<Event>, AgentError> {
@@ -460,7 +523,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
         let mut records: Vec<_> = self
             .lock()
             .values()
-            .map(|session| session.record.clone())
+            .map(|session| session.lock().record.clone())
             .collect();
         records.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(records)
@@ -496,16 +559,30 @@ fn load(dir: &Path) -> Result<Session, AgentError> {
         path: record_path.clone(),
         source,
     })?;
-    let record = serde_json::from_slice(&json).map_err(|source| AgentError::CorruptRecord {
-        path: record_path,
-        source,
-    })?;
+    let record: SessionRecord =
+        serde_json::from_slice(&json).map_err(|source| AgentError::CorruptRecord {
+            path: record_path,
+            source,
+        })?;
     let log = EventLog::open(dir.join(EVENTS_FILE))?;
     Ok(Session {
-        record,
+        id: record.id.clone(),
+        dir: dir.to_owned(),
         log,
-        control: Mutex::new(Control::default()),
+        control: Mutex::new(Control::new(record)),
     })
+}
+
+/// Writes the session's record in `dir`, all or nothing.
+fn save(dir: &Path, record: &SessionRecord) -> Result<(), AgentError> {
+    let path = dir.join(RECORD_FILE);
+    let partial = dir.join(format!("{RECORD_FILE}.partial"));
+    let json = serde_json::to_vec_pretty(record).map_err(|source| AgentError::Encode { source })?;
+    std::fs::write(&partial, json).map_err(|source| AgentError::Write {
+        path: partial.clone(),
+        source,
+    })?;
+    std::fs::rename(&partial, &path).map_err(|source| AgentError::Write { path, source })
 }
 
 /// The error and its causes, on one line.

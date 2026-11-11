@@ -4,13 +4,20 @@ import Foundation
 /// Khodr's daemon: sessions on this Mac and on the hosts it reaches.
 @DependencyClient
 package struct DaemonClient: Sendable {
-    /// Every host's sessions.
-    package var sessions: @Sendable () async throws -> [Session]
+    package var projects: @Sendable () async throws -> [Project]
+    /// Adds a project whose repository is the folder `repository` on this Mac.
+    package var createProject:
+        @Sendable (_ name: String, _ repository: String, _ instructions: String) async throws -> Project
+    /// Every host's sessions, or only the project's.
+    package var sessions: @Sendable (_ project: String?) async throws -> [Session]
     /// Starts a session, idle until the first message.
     package var start: @Sendable (_ request: StartRequest) async throws -> Session
     package var send: @Sendable (_ session: String, _ text: String, _ mode: SendMode) async throws -> Void
     /// Answers a permission request.
     package var approve: @Sendable (_ session: String, _ request: String, _ approved: Bool) async throws -> Void
+    /// Sets what the session may do without asking; waiting requests the
+    /// new mode allows go ahead.
+    package var setApprovalMode: @Sendable (_ session: String, _ mode: ApprovalMode) async throws -> Void
     /// Stops the running turn.
     package var abort: @Sendable (_ session: String) async throws -> Void
     /// A new session with the history before `before`, or all of it if nil.

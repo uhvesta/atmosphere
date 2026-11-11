@@ -37,7 +37,7 @@ package struct SessionFeature {
         package var pendingPermissions: [SessionEvent] {
             let answered = Set(
                 events.compactMap { event -> String? in
-                    guard case .permissionCompleted(let request, _) = event.kind else { return nil }
+                    guard case .permissionCompleted(let request, _, _) = event.kind else { return nil }
                     return request
                 })
             return events.filter { event in

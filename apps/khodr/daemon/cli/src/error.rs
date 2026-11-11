@@ -31,6 +31,13 @@ pub enum CliError {
         source: std::io::Error,
     },
 
+    #[error("couldn't resolve {path} from the current folder; give an absolute path")]
+    Resolve {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error(
         "khodrd stopped sending the session's events before it was idle; the message was sent, so read its history to see how far it got"
     )]

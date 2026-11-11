@@ -61,6 +61,10 @@ message Request {
     WatchSession watch_session = 6;
     ListSessions list_sessions = 7;
     AbortTurn abort_turn = 8;
+    SetApprovalMode set_approval_mode = 9;
+    // Projects live in the daemon; a host refuses these.
+    CreateProject create_project = 10;
+    ListProjects list_projects = 11;
   }
 }
 
@@ -76,6 +80,9 @@ message Response {
     TurnAborted turn_aborted = 8;
     // A stream request was accepted; its items follow as StreamItem.
     Watching watching = 9;
+    ApprovalModeSet approval_mode_set = 10;
+    ProjectCreated project_created = 11;
+    Projects projects = 12;
   }
 }
 
@@ -96,6 +103,7 @@ enum ErrorCode {
   ERROR_CODE_BACKEND_FAILED = 7;
   ERROR_CODE_STORAGE_FAILED = 8;
   ERROR_CODE_HOST_UNAVAILABLE = 9;
+  ERROR_CODE_UNKNOWN_PROJECT = 10;
 }
 
 enum Backend {
@@ -119,6 +127,56 @@ message StartSession {
   // Settings only the backend reads, as JSON; for the scripted backend, its
   // script. A fork keeps them.
   string backend_config = 7;
+  ApprovalMode approval_mode = 8;
+  // The project it belongs to. Its working directory and instructions, if
+  // empty, are the project's repository and instructions.
+  string project_id = 9;
+}
+
+// What a session may do without asking. A fork keeps its parent's.
+enum ApprovalMode {
+  // The same as ASK_EVERY_TIME.
+  APPROVAL_MODE_UNSPECIFIED = 0;
+  APPROVAL_MODE_ASK_EVERY_TIME = 1;
+  // Reads and file writes go ahead; commands and anything else still ask.
+  APPROVAL_MODE_ALLOW_EDITS = 2;
+  APPROVAL_MODE_ALLOW_EVERYTHING = 3;
+}
+
+// Sets a session's approval mode from now on. Requests waiting for an
+// answer that the new mode allows go ahead.
+message SetApprovalMode {
+  string session_id = 1;
+  ApprovalMode mode = 2;
+}
+
+message ApprovalModeSet {}
+
+message Project {
+  string id = 1;
+  string name = 2;
+  // The repository's folder on this Mac.
+  string repository = 3;
+  // Instructions for every session in it.
+  string instructions = 4;
+  // Milliseconds since 1970 in UTC.
+  int64 created_unix_ms = 5;
+}
+
+message CreateProject {
+  string name = 1;
+  string repository = 2;
+  string instructions = 3;
+}
+
+message ProjectCreated {
+  Project project = 1;
+}
+
+message ListProjects {}
+
+message Projects {
+  repeated Project projects = 1;
 }
 
 message SessionStarted {
@@ -177,7 +235,10 @@ message WatchSession {
 
 message Watching {}
 
-message ListSessions {}
+message ListSessions {
+  // Only this project's sessions; empty for every session.
+  string project_id = 1;
+}
 
 message Sessions {
   repeated SessionInfo sessions = 1;
@@ -223,6 +284,9 @@ message SessionInfo {
   string forked_before_event_id = 8;
   // The host it runs on, as the daemon names it; empty for this machine.
   string host = 9;
+  ApprovalMode approval_mode = 10;
+  // The project it belongs to, as the daemon records it; empty for none.
+  string project_id = 11;
 }
 
 // One thing that happened in a session. Its id is stable for the life of the
@@ -300,6 +364,8 @@ message PermissionRequested {
 message PermissionCompleted {
   string request_id = 1;
   bool approved = 2;
+  // Answered by the session's approval mode, not by a person.
+  bool automatic = 3;
 }
 
 message TurnEnded {

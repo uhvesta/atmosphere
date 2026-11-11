@@ -147,7 +147,7 @@ async fn answers_find_their_calls_whatever_order_they_come_in() {
     });
     tokio::time::sleep(Duration::from_millis(20)).await;
     let fast = client
-        .call(pb::request::Kind::ListSessions(pb::ListSessions {}))
+        .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
         .await;
     assert!(
         matches!(fast, Ok(pb::response::Kind::Sessions(_))),

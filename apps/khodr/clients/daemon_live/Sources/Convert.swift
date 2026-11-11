@@ -15,6 +15,7 @@ extension ErrorCode {
             case .backendFailed: .backendFailed
             case .storageFailed: .storageFailed
             case .hostUnavailable: .hostUnavailable
+            case .unknownProject: .unknownProject
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -39,6 +40,33 @@ extension Backend {
     }
 }
 
+extension ApprovalMode {
+    init(_ mode: Khodr_V1_ApprovalMode) {
+        self =
+            switch mode {
+            case .allowEdits: .allowEdits
+            case .allowEverything: .allowEverything
+            case .askEveryTime, .unspecified, .UNRECOGNIZED: .askEveryTime
+            }
+    }
+
+    var proto: Khodr_V1_ApprovalMode {
+        switch self {
+        case .askEveryTime: .askEveryTime
+        case .allowEdits: .allowEdits
+        case .allowEverything: .allowEverything
+        }
+    }
+}
+
+extension Project {
+    init(_ project: Khodr_V1_Project) {
+        self.init(
+            id: project.id, name: project.name, repository: project.repository, instructions: project.instructions,
+            created: Date(timeIntervalSince1970: Double(project.createdUnixMs) / 1000))
+    }
+}
+
 private func optional(_ text: String) -> String? {
     text.isEmpty ? nil : text
 }
@@ -58,7 +86,8 @@ extension Session {
         self.init(
             id: info.id, name: info.name, backend: backend, workingDirectory: info.workingDirectory,
             model: optional(info.model), state: state, parentID: optional(info.parentID),
-            forkedBeforeEventID: optional(info.forkedBeforeEventID), host: optional(info.host))
+            forkedBeforeEventID: optional(info.forkedBeforeEventID), host: optional(info.host),
+            approvalMode: ApprovalMode(info.approvalMode), projectID: optional(info.projectID))
     }
 }
 
@@ -86,7 +115,8 @@ extension SessionEvent {
                 }
             kind = .permissionRequested(requestID: request.requestID, kind: permission, summary: request.summary)
         case .permissionCompleted(let completed):
-            kind = .permissionCompleted(requestID: completed.requestID, approved: completed.approved)
+            kind = .permissionCompleted(
+                requestID: completed.requestID, approved: completed.approved, automatic: completed.automatic)
         case .turnEnded(let ended): kind = .turnEnded(aborted: ended.aborted)
         case .idle: kind = .idle
         case .failed(let failed): kind = .failed(failed.message)

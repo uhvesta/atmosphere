@@ -17,9 +17,27 @@ extension DaemonClient {
     package static func live(socket: String = defaultSocket, programVersion: String = "0.0.0") -> DaemonClient {
         let daemon = LiveDaemon(socket: socket, programVersion: programVersion)
         return DaemonClient(
-            sessions: {
-                guard case .sessions(let sessions) = try await daemon.call(.listSessions(Khodr_V1_ListSessions()))
+            projects: {
+                guard case .projects(let projects) = try await daemon.call(.listProjects(Khodr_V1_ListProjects()))
                 else {
+                    throw DaemonError.unexpected("something other than the projects")
+                }
+                return projects.projects.map(Project.init)
+            },
+            createProject: { name, repository, instructions in
+                var create = Khodr_V1_CreateProject()
+                create.name = name
+                create.repository = repository
+                create.instructions = instructions
+                guard case .projectCreated(let created) = try await daemon.call(.createProject(create)) else {
+                    throw DaemonError.unexpected("something other than the created project")
+                }
+                return Project(created.project)
+            },
+            sessions: { project in
+                var list = Khodr_V1_ListSessions()
+                list.projectID = project ?? ""
+                guard case .sessions(let sessions) = try await daemon.call(.listSessions(list)) else {
                     throw DaemonError.unexpected("something other than the sessions")
                 }
                 return try sessions.sessions.map(Session.init)
@@ -27,7 +45,9 @@ extension DaemonClient {
             start: { request in
                 var start = Khodr_V1_StartSession()
                 start.backend = request.backend.proto
-                start.workingDirectory = request.workingDirectory
+                start.workingDirectory = request.workingDirectory ?? ""
+                start.approvalMode = request.approvalMode.proto
+                start.projectID = request.projectID ?? ""
                 start.name = request.name
                 start.host = request.host ?? ""
                 start.model = request.model ?? ""
@@ -51,6 +71,12 @@ extension DaemonClient {
                 approve.permissionRequestID = request
                 approve.approved = approved
                 _ = try await daemon.call(.approve(approve))
+            },
+            setApprovalMode: { session, mode in
+                var set = Khodr_V1_SetApprovalMode()
+                set.sessionID = session
+                set.mode = mode.proto
+                _ = try await daemon.call(.setApprovalMode(set))
             },
             abort: { session in
                 var abort = Khodr_V1_AbortTurn()

@@ -7,6 +7,41 @@ package enum Backend: String, CaseIterable, Hashable, Sendable {
     case copilot
 }
 
+/// What a session may do without asking.
+package enum ApprovalMode: String, CaseIterable, Hashable, Sendable {
+    case askEveryTime
+    /// Reads and file writes go ahead; commands and anything else still ask.
+    case allowEdits
+    case allowEverything
+
+    /// Whether a request of `kind` goes ahead without asking.
+    package func allows(_ kind: PermissionKind) -> Bool {
+        switch self {
+        case .askEveryTime: false
+        case .allowEdits: kind == .read || kind == .write
+        case .allowEverything: true
+        }
+    }
+}
+
+/// A name, a repository on this Mac, and instructions for its sessions.
+package struct Project: Identifiable, Hashable, Sendable {
+    package var id: String
+    package var name: String
+    /// The repository's folder on this Mac.
+    package var repository: String
+    package var instructions: String
+    package var created: Date
+
+    package init(id: String, name: String, repository: String, instructions: String = "", created: Date) {
+        self.id = id
+        self.name = name
+        self.repository = repository
+        self.instructions = instructions
+        self.created = created
+    }
+}
+
 package enum SessionState: Hashable, Sendable {
     case idle
     case working
@@ -29,10 +64,14 @@ package struct Session: Identifiable, Hashable, Sendable {
     package var forkedBeforeEventID: String?
     /// The host it runs on, as the daemon names it; nil for this Mac.
     package var host: String?
+    package var approvalMode: ApprovalMode
+    /// Nil for a session in no project.
+    package var projectID: String?
 
     package init(
         id: String, name: String, backend: Backend, workingDirectory: String, model: String? = nil,
-        state: SessionState = .idle, parentID: String? = nil, forkedBeforeEventID: String? = nil, host: String? = nil
+        state: SessionState = .idle, parentID: String? = nil, forkedBeforeEventID: String? = nil, host: String? = nil,
+        approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -43,6 +82,8 @@ package struct Session: Identifiable, Hashable, Sendable {
         self.parentID = parentID
         self.forkedBeforeEventID = forkedBeforeEventID
         self.host = host
+        self.approvalMode = approvalMode
+        self.projectID = projectID
     }
 }
 
@@ -67,7 +108,9 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
         case toolStarted(callID: String, tool: String, argumentsJSON: String)
         case toolCompleted(callID: String, success: Bool, output: String)
         case permissionRequested(requestID: String, kind: PermissionKind, summary: String)
-        case permissionCompleted(requestID: String, approved: Bool)
+        /// `automatic` when the session's approval mode answered it, not a
+        /// person.
+        case permissionCompleted(requestID: String, approved: Bool, automatic: Bool)
         case turnEnded(aborted: Bool)
         case idle
         case failed(String)
@@ -87,7 +130,8 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
 
 package struct StartRequest: Hashable, Sendable {
     package var backend: Backend
-    package var workingDirectory: String
+    /// Nil for the project's repository.
+    package var workingDirectory: String?
     package var name: String
     /// Nil for this Mac.
     package var host: String?
@@ -95,10 +139,15 @@ package struct StartRequest: Hashable, Sendable {
     package var instructions: String?
     /// Settings only the backend reads, as JSON; the scripted backend's script.
     package var backendConfig: String?
+    package var approvalMode: ApprovalMode
+    /// The project it belongs to. Its repository and instructions are the
+    /// defaults for the working directory and instructions.
+    package var projectID: String?
 
     package init(
-        backend: Backend, workingDirectory: String, name: String = "", host: String? = nil, model: String? = nil,
-        instructions: String? = nil, backendConfig: String? = nil
+        backend: Backend, workingDirectory: String? = nil, name: String = "", host: String? = nil,
+        model: String? = nil, instructions: String? = nil, backendConfig: String? = nil,
+        approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil
     ) {
         self.backend = backend
         self.workingDirectory = workingDirectory
@@ -107,6 +156,8 @@ package struct StartRequest: Hashable, Sendable {
         self.model = model
         self.instructions = instructions
         self.backendConfig = backendConfig
+        self.approvalMode = approvalMode
+        self.projectID = projectID
     }
 }
 
@@ -128,6 +179,7 @@ package enum ErrorCode: Hashable, Sendable {
     case backendFailed
     case storageFailed
     case hostUnavailable
+    case unknownProject
     case unknown
 }
 

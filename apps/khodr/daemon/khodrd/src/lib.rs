@@ -7,6 +7,7 @@ mod daemon;
 mod error;
 mod host;
 mod socket;
+mod store;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,6 +17,7 @@ pub use error::StartError;
 use daemon::{Daemon, Hosts};
 use host::Host;
 use khodr_wire::pb;
+use store::Store;
 
 /// Sent in the hello, for messages about updating.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -48,11 +50,18 @@ pub async fn host_stdio(state: &Path) -> Result<(), StartError> {
     .map_err(|source| StartError::Stdio { source })
 }
 
-/// Serves the daemon on `socket` until stopped. Sessions on this Mac are kept
-/// under `<state>/host`; other hosts are read from `hosts`.
+/// Serves the daemon on `socket` until stopped. Projects are kept in
+/// `<state>/khodr.sqlite3` and sessions on this Mac under `<state>/host`;
+/// other hosts are read from `hosts`.
 pub async fn daemon(state: &Path, socket: &Path, hosts: &Path) -> Result<(), StartError> {
+    let store = Store::open(&state.join("khodr.sqlite3"))?;
     let local = Host::open(&state.join("host")).await?;
-    let daemon = Arc::new(Daemon::new(local, Hosts::load(hosts)?, hosts.to_owned()));
+    let daemon = Arc::new(Daemon::new(
+        local,
+        store,
+        Hosts::load(hosts)?,
+        hosts.to_owned(),
+    ));
     let listener = socket::listen(socket).await?;
     let serving = async {
         loop {

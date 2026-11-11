@@ -25,8 +25,8 @@ use tokio::sync::broadcast;
 pub use copilot::{COPILOT_VERSION, CopilotError, CopilotOptions, CopilotProvider, CopilotRunner};
 pub use error::AgentError;
 pub use event::{
-    Event, EventId, EventKind, ForkOptions, Parent, PermissionKind, SendMode, SessionId,
-    SessionRecord, SessionState, StartOptions,
+    ApprovalMode, Event, EventId, EventKind, ForkOptions, Parent, PermissionKind, SendMode,
+    SessionId, SessionRecord, SessionState, StartOptions,
 };
 pub use local_model::{DEFAULT_BASE_URL, LocalModelConfig, LocalModelError, LocalModelRunner};
 pub use runtime::{LocalAgent, Runner, Turn};
@@ -66,6 +66,14 @@ pub trait Agent: Send + Sync {
         session: &SessionId,
         request_id: &str,
         approved: bool,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Sets what the session may do without asking, from now on. Requests
+    /// waiting for an answer that the new mode allows go ahead.
+    fn set_approval_mode(
+        &self,
+        session: &SessionId,
+        mode: ApprovalMode,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Stops the running turn, if any. Queued messages still run.

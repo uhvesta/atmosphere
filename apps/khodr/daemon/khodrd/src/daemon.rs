@@ -15,9 +15,10 @@ use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
-use crate::VERSION;
 use crate::error::{DaemonError, StartError};
 use crate::host::Host;
+use crate::store::Store;
+use crate::{VERSION, convert};
 
 /// The hosts file: each host by name, and the command that reaches its
 /// `khodrd host --stdio`.
@@ -137,17 +138,16 @@ impl Remote {
 }
 
 /// Answers clients: sessions on this Mac go to the local host, others to the
-/// host they run on.
+/// host they run on. Projects, and where each session is, are the daemon's.
 pub struct Daemon {
     local: Arc<Host>,
     remotes: HashMap<String, Remote>,
     hosts_file: PathBuf,
-    /// The host each session runs on, by session id; absent for this Mac.
-    owners: Mutex<HashMap<String, String>>,
+    store: Store,
 }
 
 impl Daemon {
-    pub fn new(local: Host, hosts: Hosts, hosts_file: PathBuf) -> Self {
+    pub fn new(local: Host, store: Store, hosts: Hosts, hosts_file: PathBuf) -> Self {
         let remotes = hosts
             .hosts
             .into_iter()
@@ -164,7 +164,7 @@ impl Daemon {
             local: Arc::new(local),
             remotes,
             hosts_file,
-            owners: Mutex::default(),
+            store,
         }
     }
 
@@ -221,73 +221,151 @@ impl Daemon {
     }
 
     /// The host `session` runs on, asking every host if it isn't known yet.
-    async fn host_of(&self, session: &str) -> String {
-        if let Some(host) = self
-            .owners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(session)
-        {
-            return host.clone();
+    async fn host_of(&self, session: &str) -> Result<String, DaemonError> {
+        if let Some(placement) = self.store.placement(session)? {
+            return Ok(placement.host);
         }
-        let _ = self.list().await;
-        self.owners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(session)
-            .cloned()
-            .unwrap_or_default()
+        self.list("").await?;
+        Ok(self
+            .store
+            .placement(session)?
+            .map(|placement| placement.host)
+            .unwrap_or_default())
     }
 
-    fn own(&self, session: &mut pb::SessionInfo, host: &str) {
+    /// Records that `session` runs on `host`, in `project` if given, and
+    /// fills in what the daemon knows of it.
+    fn own(
+        &self,
+        session: &mut pb::SessionInfo,
+        host: &str,
+        project: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        self.store.place(&session.id, host, project)?;
         session.host = host.to_owned();
-        let mut owners = self.owners.lock().unwrap_or_else(PoisonError::into_inner);
-        if host.is_empty() {
-            owners.remove(&session.id);
-        } else {
-            owners.insert(session.id.clone(), host.to_owned());
-        }
+        session.project_id = self
+            .store
+            .placement(&session.id)?
+            .and_then(|placement| placement.project)
+            .unwrap_or_default();
+        Ok(())
     }
 
-    /// Every host's sessions. A host that can't be reached is left out, so
-    /// one machine being off doesn't hide the rest.
-    async fn list(&self) -> pb::Sessions {
+    /// Every host's sessions, or only `project`'s if it isn't empty. A host
+    /// that can't be reached is left out, so one machine being off doesn't
+    /// hide the rest.
+    async fn list(&self, project: &str) -> Result<pb::Sessions, DaemonError> {
         let mut all = Vec::new();
         let hosts = std::iter::once("").chain(self.remotes.keys().map(String::as_str));
         for host in hosts {
-            let request = pb::request::Kind::ListSessions(pb::ListSessions {});
+            let request = pb::request::Kind::ListSessions(pb::ListSessions::default());
             if let Ok(Reply::Response(pb::response::Kind::Sessions(sessions))) =
                 self.forward(host, request).await
             {
                 for mut session in sessions.sessions {
-                    self.own(&mut session, host);
-                    all.push(session);
+                    self.own(&mut session, host, None)?;
+                    if project.is_empty() || session.project_id == project {
+                        all.push(session);
+                    }
                 }
             }
         }
-        pb::Sessions { sessions: all }
+        Ok(pb::Sessions { sessions: all })
+    }
+
+    fn create_project(&self, create: pb::CreateProject) -> Result<pb::Project, DaemonError> {
+        let repository = PathBuf::from(create.repository);
+        let not_a_folder = |source| DaemonError::NotAFolder {
+            repository: repository.clone(),
+            source,
+        };
+        if !repository.is_absolute() {
+            return Err(not_a_folder(None));
+        }
+        let metadata =
+            std::fs::metadata(&repository).map_err(|source| not_a_folder(Some(source)))?;
+        if !metadata.is_dir() {
+            return Err(not_a_folder(None));
+        }
+        let project = self
+            .store
+            .add_project(create.name, repository, create.instructions)?;
+        Ok(convert::project(project))
+    }
+
+    /// Fills in what `start` leaves to its project, and returns the project.
+    fn from_project(&self, start: &mut pb::StartSession) -> Result<Option<String>, DaemonError> {
+        let project_id = std::mem::take(&mut start.project_id);
+        if project_id.is_empty() {
+            return Ok(None);
+        }
+        let project = self.store.project(&project_id)?;
+        if start.working_directory.is_empty() {
+            if !start.host.is_empty() {
+                return Err(DaemonError::NoRemoteDirectory {
+                    project: project.name,
+                    host: start.host.clone(),
+                });
+            }
+            start.working_directory = project.repository.display().to_string();
+        }
+        if start.instructions.is_empty() {
+            start.instructions = project.instructions;
+        }
+        Ok(Some(project_id))
     }
 
     async fn answer(&self, request: pb::request::Kind) -> Result<Reply, DaemonError> {
         use pb::request::Kind as Request;
         use pb::response::Kind as Response;
-        let host = match &request {
-            Request::ListSessions(_) => {
-                return Ok(Reply::Response(Response::Sessions(self.list().await)));
-            }
-            Request::StartSession(start) => start.host.clone(),
-            Request::SendMessage(message) => self.host_of(&message.session_id).await,
-            Request::Approve(approve) => self.host_of(&approve.session_id).await,
-            Request::ForkSession(fork) => self.host_of(&fork.session_id).await,
-            Request::ReadHistory(read) => self.host_of(&read.session_id).await,
-            Request::WatchSession(watch) => self.host_of(&watch.session_id).await,
-            Request::AbortTurn(abort) => self.host_of(&abort.session_id).await,
-        };
         let mut request = request;
-        if let Request::StartSession(start) = &mut request {
-            // The host runs it on itself; only the daemon knows hosts by name.
-            start.host.clear();
-        }
+        let mut project = None;
+        let host = match &mut request {
+            Request::ListSessions(list) => {
+                let sessions = self.list(&list.project_id).await?;
+                return Ok(Reply::Response(Response::Sessions(sessions)));
+            }
+            Request::CreateProject(create) => {
+                let project = self.create_project(std::mem::take(create))?;
+                return Ok(Reply::Response(Response::ProjectCreated(
+                    pb::ProjectCreated {
+                        project: Some(project),
+                    },
+                )));
+            }
+            Request::ListProjects(_) => {
+                let projects = self
+                    .store
+                    .projects()?
+                    .into_iter()
+                    .map(convert::project)
+                    .collect();
+                return Ok(Reply::Response(Response::Projects(pb::Projects {
+                    projects,
+                })));
+            }
+            Request::StartSession(start) => {
+                project = self.from_project(start)?;
+                // The host runs it on itself; only the daemon knows hosts by
+                // name.
+                std::mem::take(&mut start.host)
+            }
+            Request::ForkSession(fork) => {
+                // A fork stays in its parent's project.
+                let host = self.host_of(&fork.session_id).await?;
+                project = self
+                    .store
+                    .placement(&fork.session_id)?
+                    .and_then(|placement| placement.project);
+                host
+            }
+            Request::SendMessage(message) => self.host_of(&message.session_id).await?,
+            Request::Approve(approve) => self.host_of(&approve.session_id).await?,
+            Request::ReadHistory(read) => self.host_of(&read.session_id).await?,
+            Request::WatchSession(watch) => self.host_of(&watch.session_id).await?,
+            Request::AbortTurn(abort) => self.host_of(&abort.session_id).await?,
+            Request::SetApprovalMode(set) => self.host_of(&set.session_id).await?,
+        };
         let mut reply = self.forward(&host, request).await?;
         if let Reply::Response(
             Response::SessionStarted(pb::SessionStarted {
@@ -298,7 +376,7 @@ impl Daemon {
             }),
         ) = &mut reply
         {
-            self.own(session, &host);
+            self.own(session, &host, project.as_deref())?;
         }
         Ok(reply)
     }

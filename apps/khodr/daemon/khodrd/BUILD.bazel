@@ -13,10 +13,12 @@ rust_library(
     deps = [
         "//apps/khodr/daemon/agent",
         "//apps/khodr/daemon/wire",
+        "@crates//:rusqlite",
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:thiserror",
         "@crates//:tokio",
+        "@crates//:uuid",
     ],
 )
 

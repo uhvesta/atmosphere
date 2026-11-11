@@ -23,6 +23,9 @@ pub enum HostError {
         "the watcher fell {missed} events behind and stopped; watch the session again to catch up from its history"
     )]
     FellBehind { missed: u64 },
+
+    #[error("only the daemon keeps projects; send this to khodrd's daemon on your Mac, not a host")]
+    NotForHosts,
 }
 
 impl HostError {
@@ -35,15 +38,80 @@ impl HostError {
             }
             Self::Agent(_) => pb::ErrorCode::StorageFailed,
             Self::UnknownBackend { .. } => pb::ErrorCode::UnknownBackend,
-            Self::NoWorkingDirectory => pb::ErrorCode::InvalidRequest,
+            Self::NoWorkingDirectory | Self::NotForHosts => pb::ErrorCode::InvalidRequest,
             Self::FellBehind { .. } => pb::ErrorCode::BackendFailed,
         }
     }
 }
 
+/// What the daemon's own store can fail at.
+#[derive(Debug, thiserror::Error)]
+pub enum StoreError {
+    #[error("couldn't create the folder {path} for khodrd's store; check that it is writable")]
+    CreateDirectory {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "couldn't open khodrd's store {path}; check that it is readable and writable and the disk isn't full"
+    )]
+    Open {
+        path: PathBuf,
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    #[error(
+        "couldn't update khodrd's store {path} to this version; it is unchanged, so an older khodrd still reads it. Free some disk space and start khodrd again"
+    )]
+    Migrate {
+        path: PathBuf,
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    #[error(
+        "khodrd's store {path} was written by a newer khodrd (schema {found}, this one knows up to {known}); update Khodr. Deleting the store loses your projects"
+    )]
+    NewerSchema {
+        path: PathBuf,
+        found: i64,
+        known: i64,
+    },
+
+    #[error("khodrd's store {path} failed; if the disk is full, free some space and try again")]
+    Query {
+        path: PathBuf,
+        #[source]
+        source: rusqlite::Error,
+    },
+
+    #[error("there is no project {id:?}; list projects to find its id")]
+    UnknownProject { id: String },
+}
+
 /// What the daemon can fail at while reaching a host.
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
+    #[error(transparent)]
+    Store(#[from] StoreError),
+
+    #[error(
+        "the repository {repository} must be an absolute path to a folder on this Mac; check that it exists"
+    )]
+    NotAFolder {
+        repository: PathBuf,
+        #[source]
+        source: Option<std::io::Error>,
+    },
+
+    #[error(
+        "project {project:?} has its repository on this Mac, so a session on host {host:?} needs the folder to work in there; give it one"
+    )]
+    NoRemoteDirectory { project: String, host: String },
+
     #[error(
         "there is no host named {host:?}; add it to {hosts}, or leave the host empty for this Mac"
     )]
@@ -90,7 +158,12 @@ fn said(stderr: &str) -> String {
 impl DaemonError {
     pub fn code(&self) -> pb::ErrorCode {
         match self {
-            Self::UnknownHost { .. } | Self::NoCommand { .. } => pb::ErrorCode::InvalidRequest,
+            Self::Store(StoreError::UnknownProject { .. }) => pb::ErrorCode::UnknownProject,
+            Self::Store(_) => pb::ErrorCode::StorageFailed,
+            Self::UnknownHost { .. }
+            | Self::NoCommand { .. }
+            | Self::NotAFolder { .. }
+            | Self::NoRemoteDirectory { .. } => pb::ErrorCode::InvalidRequest,
             Self::Spawn { .. } | Self::Connect { .. } => pb::ErrorCode::HostUnavailable,
             Self::Host {
                 source: ClientError::Refused { code, .. },
@@ -106,6 +179,9 @@ impl DaemonError {
 pub enum StartError {
     #[error(transparent)]
     Host(#[from] HostError),
+
+    #[error(transparent)]
+    Store(#[from] StoreError),
 
     #[error("there is no home folder for khodrd's files; set HOME, or pass --state and --socket")]
     NoHome,

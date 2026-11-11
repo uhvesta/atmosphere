@@ -7,9 +7,9 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use khodr_agent::{
-    Agent, AgentError, CopilotOptions, CopilotProvider, CopilotRunner, Event, EventId, ForkOptions,
-    LocalAgent, LocalModelConfig, LocalModelRunner, Script, ScriptedRunner, SendMode, SessionId,
-    SessionRecord, StartOptions, Watch,
+    Agent, AgentError, ApprovalMode, CopilotOptions, CopilotProvider, CopilotRunner, Event,
+    EventId, ForkOptions, LocalAgent, LocalModelConfig, LocalModelRunner, Script, ScriptedRunner,
+    SendMode, SessionId, SessionRecord, StartOptions, Watch,
 };
 use khodr_wire::{Reply, Service, ServiceFuture, describe, error, pb};
 use tokio::sync::{broadcast, mpsc};
@@ -33,6 +33,11 @@ trait Backend: Send + Sync {
         session: &'a SessionId,
         request: &'a str,
         approved: bool,
+    ) -> BoxFuture<'a, ()>;
+    fn set_approval_mode<'a>(
+        &'a self,
+        session: &'a SessionId,
+        mode: ApprovalMode,
     ) -> BoxFuture<'a, ()>;
     fn abort<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()>;
     fn fork<'a>(
@@ -73,6 +78,17 @@ where
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             Agent::approve(self, session, request, approved)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn set_approval_mode<'a>(
+        &'a self,
+        session: &'a SessionId,
+        mode: ApprovalMode,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            Agent::set_approval_mode(self, session, mode)
                 .await
                 .map_err(Into::into)
         })
@@ -192,6 +208,7 @@ impl Host {
         Ok(Reply::Response(match request {
             Request::StartSession(start) => {
                 let backend = start.backend();
+                let approval = convert::approval_mode(start.approval_mode());
                 if start.working_directory.is_empty() {
                     return Err(HostError::NoWorkingDirectory);
                 }
@@ -203,6 +220,7 @@ impl Host {
                         model: convert::optional(start.model),
                         instructions: convert::optional(start.instructions),
                         backend_config: convert::optional(start.backend_config),
+                        approval,
                     })
                     .await?;
                 self.owners
@@ -229,6 +247,18 @@ impl Host {
                     .approve(&session, &approve.permission_request_id, approve.approved)
                     .await?;
                 Response::Approved(pb::Approved {})
+            }
+            Request::SetApprovalMode(set) => {
+                let mode = convert::approval_mode(set.mode());
+                let session = SessionId::new(set.session_id);
+                self.owner(&session)?
+                    .1
+                    .set_approval_mode(&session, mode)
+                    .await?;
+                Response::ApprovalModeSet(pb::ApprovalModeSet {})
+            }
+            Request::CreateProject(_) | Request::ListProjects(_) => {
+                return Err(HostError::NotForHosts);
             }
             Request::AbortTurn(abort) => {
                 let session = SessionId::new(abort.session_id);

@@ -36,15 +36,64 @@ enum Backend {
     Copilot,
 }
 
+/// What a session may do without asking.
+#[derive(Clone, Copy, ValueEnum)]
+enum Approval {
+    /// Ask before every command, write and read.
+    Ask,
+    /// Reads and file writes go ahead; commands still ask.
+    Edits,
+    /// Everything goes ahead.
+    Everything,
+}
+
+impl From<Approval> for pb::ApprovalMode {
+    fn from(approval: Approval) -> Self {
+        match approval {
+            Approval::Ask => Self::AskEveryTime,
+            Approval::Edits => Self::AllowEdits,
+            Approval::Everything => Self::AllowEverything,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum ProjectCommand {
+    /// Add a project with one repository on this Mac, and print its id.
+    Add {
+        #[arg(long)]
+        name: String,
+        /// The repository's folder on this Mac.
+        #[arg(long)]
+        repository: PathBuf,
+        /// Instructions for every session in it.
+        #[arg(long, default_value = "")]
+        instructions: String,
+    },
+    /// List the projects.
+    List,
+}
+
 #[derive(Subcommand)]
 enum Command {
+    /// Add or list projects.
+    #[command(subcommand)]
+    Project(ProjectCommand),
     /// Start a session and print its id.
     Start {
         #[arg(long, value_enum)]
         backend: Backend,
-        /// The folder the agent works in, on its host.
-        #[arg(long)]
-        directory: PathBuf,
+        /// The project it belongs to. Its repository is the default
+        /// directory and its instructions the default instructions.
+        #[arg(long, default_value = "")]
+        project: String,
+        /// The folder the agent works in, on its host; required without
+        /// --project.
+        #[arg(long, required_unless_present = "project")]
+        directory: Option<PathBuf>,
+        /// What it may do without asking.
+        #[arg(long, value_enum, default_value_t = Approval::Ask)]
+        approval: Approval,
         #[arg(long, default_value = "")]
         name: String,
         /// The host to run on, as named in the hosts file; this Mac if unset.
@@ -78,6 +127,13 @@ enum Command {
         #[arg(long)]
         deny: bool,
     },
+    /// Set what a session may do without asking. Waiting requests the new
+    /// mode allows go ahead.
+    Mode {
+        session: String,
+        #[arg(value_enum)]
+        approval: Approval,
+    },
     /// Stop a session's running turn.
     Abort { session: String },
     /// Fork a session and print the fork's id.
@@ -94,7 +150,11 @@ enum Command {
     /// Print a session's events, then each new one, until interrupted.
     Watch { session: String },
     /// List every host's sessions.
-    Sessions,
+    Sessions {
+        /// Only this project's.
+        #[arg(long, default_value = "")]
+        project: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -134,9 +194,46 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
     use pb::response::Kind as Response;
     let client = connect(arguments.socket).await?;
     match arguments.command {
+        Command::Project(ProjectCommand::Add {
+            name,
+            repository,
+            instructions,
+        }) => {
+            let repository =
+                std::path::absolute(&repository).map_err(|source| CliError::Resolve {
+                    path: repository,
+                    source,
+                })?;
+            let request = Request::CreateProject(pb::CreateProject {
+                name,
+                repository: repository.display().to_string(),
+                instructions,
+            });
+            match client.call(request).await? {
+                Response::ProjectCreated(pb::ProjectCreated {
+                    project: Some(project),
+                }) => println!("{}", project.id),
+                other => return Err(unexpected("the created project", &other)),
+            }
+        }
+        Command::Project(ProjectCommand::List) => {
+            match client
+                .call(Request::ListProjects(pb::ListProjects {}))
+                .await?
+            {
+                Response::Projects(projects) => {
+                    for project in &projects.projects {
+                        println!("{}", print::project(project));
+                    }
+                }
+                other => return Err(unexpected("the projects", &other)),
+            }
+        }
         Command::Start {
             backend,
+            project,
             directory,
+            approval,
             name,
             host,
             model,
@@ -155,12 +252,16 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             };
             let request = Request::StartSession(pb::StartSession {
                 backend: backend.into(),
-                working_directory: directory.display().to_string(),
+                working_directory: directory
+                    .map(|directory| directory.display().to_string())
+                    .unwrap_or_default(),
                 model,
                 instructions,
                 name,
                 host,
                 backend_config,
+                approval_mode: pb::ApprovalMode::from(approval).into(),
+                project_id: project,
             });
             match client.call(request).await? {
                 Response::SessionStarted(pb::SessionStarted {
@@ -211,6 +312,17 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 "Approved",
             )?;
         }
+        Command::Mode { session, approval } => {
+            let request = Request::SetApprovalMode(pb::SetApprovalMode {
+                session_id: session,
+                mode: pb::ApprovalMode::from(approval).into(),
+            });
+            expect_ok(
+                client.call(request).await?,
+                |response| matches!(response, Response::ApprovalModeSet(_)),
+                "ApprovalModeSet",
+            )?;
+        }
         Command::Abort { session } => {
             let request = Request::AbortTurn(pb::AbortTurn {
                 session_id: session,
@@ -252,8 +364,10 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 println!("{}", print::event(&session_event(item)?));
             }
         }
-        Command::Sessions => match client
-            .call(Request::ListSessions(pb::ListSessions {}))
+        Command::Sessions { project } => match client
+            .call(Request::ListSessions(pb::ListSessions {
+                project_id: project,
+            }))
             .await?
         {
             Response::Sessions(sessions) => {
