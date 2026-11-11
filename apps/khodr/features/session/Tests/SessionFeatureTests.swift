@@ -148,4 +148,158 @@ final class SessionFeatureTests: XCTestCase {
             .received(event("e3", .permissionCompleted(requestID: "p1", approved: true, automatic: false))))
         XCTAssertEqual(store.state.pendingPermissions.map(\.id), ["e2"])
     }
+
+    private let edit: @Sendable (String) -> [InMemoryDaemon.Step] = { _ in
+        [
+            .think("The notes go in the repository."), .write(path: "/work/NOTES.md", contents: "Ship M1."),
+            .run(command: "git status", output: "clean"), .say("Done."),
+        ]
+    }
+
+    /// A store watching a session of `daemon`, after `.task` has replayed
+    /// what is already there.
+    private func watching(_ daemon: InMemoryDaemon, _ session: Session) async -> (
+        TestStoreOf<SessionFeature>, TestStoreTask
+    ) {
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+        let task = await store.send(.task)
+        return (store, task)
+    }
+
+    private func until(_ store: TestStoreOf<SessionFeature>, _ done: (SessionFeature.State) -> Bool) async {
+        for _ in 0..<100 where !done(store.state) {
+            await store.skipReceivedActions(strict: false)
+            await Task.yield()
+        }
+        XCTAssertTrue(done(store.state), "never reached")
+    }
+
+    func testAnEditWaitsForApprovalThenShowsWhatItDid() async throws {
+        let daemon = InMemoryDaemon(script: edit)
+        let session = try await started(daemon)
+        let (store, task) = await watching(daemon, session)
+
+        await store.send(\.binding.draft, "write the notes")
+        await store.send(.sendTapped(.enqueue))
+        await until(store) { $0.isWaiting }
+        XCTAssertEqual(daemon.files, [:])
+        guard case .tool(let write)? = store.state.items.last else { return XCTFail("no tool call") }
+        XCTAssertEqual(write.subject, "/work/NOTES.md")
+        XCTAssertNil(write.permission?.answer)
+        let request = try XCTUnwrap(write.permission?.requestID)
+
+        await store.send(.answerPermission(requestID: request, approved: true))
+        await until(store) { state in
+            state.isWaiting && state.items.filter { if case .tool = $0 { true } else { false } }.count == 2
+        }
+        XCTAssertEqual(daemon.files, ["/work/NOTES.md": "Ship M1."])
+        let calls = store.state.items.compactMap { item -> ToolCall? in
+            if case .tool(let call) = item { call } else { nil }
+        }
+        XCTAssertEqual(calls.map(\.subject), ["/work/NOTES.md", "git status"])
+        XCTAssertEqual(calls.first?.succeeded, true)
+        XCTAssertEqual(calls.first?.permission?.answer, .approved)
+        XCTAssertTrue(
+            store.state.items.contains(
+                .thinking(
+                    id: try XCTUnwrap(store.state.items.dropFirst().first?.id),
+                    text: "The notes go in the repository.")))
+
+        let command = try XCTUnwrap(calls.last?.permission?.requestID)
+        await store.send(.answerPermission(requestID: command, approved: false))
+        await until(store) { !$0.isWorking }
+        guard case .reply(_, "Done.")? = store.state.items.last else { return XCTFail("no reply") }
+        let denied = store.state.items.compactMap { item -> ToolCall? in
+            if case .tool(let call) = item { call } else { nil }
+        }.last
+        XCTAssertEqual(denied?.succeeded, false)
+        XCTAssertEqual(denied?.permission?.answer, .denied)
+        await task.cancel()
+    }
+
+    func testAllowingEditsLetsTheWaitingWriteGoAhead() async throws {
+        let daemon = InMemoryDaemon(script: edit)
+        let session = try await started(daemon)
+        let (store, task) = await watching(daemon, session)
+        try await daemon.client.send(session.id, "write the notes", .enqueue)
+        await until(store) { $0.isWaiting }
+
+        await store.send(.approvalModePicked(.allowEdits)) {
+            $0.session.approvalMode = .allowEdits
+        }
+        await until(store) { state in
+            state.items.contains { item in
+                if case .tool(let call) = item { call.permission?.answer == .allowedByMode } else { false }
+            }
+        }
+        XCTAssertEqual(daemon.files, ["/work/NOTES.md": "Ship M1."])
+        XCTAssertEqual(daemon.sessions.first?.approvalMode, .allowEdits)
+        // The command still asks.
+        XCTAssertTrue(store.state.isWaiting)
+        await task.cancel()
+    }
+
+    func testARefusedModeKeepsTheOldOne() async {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.setApprovalMode = { _, _ in throw DaemonError.disconnected }
+        }
+        await store.send(.approvalModePicked(.allowEverything)) {
+            $0.session.approvalMode = .allowEverything
+        }
+        await store.receive(\.approvalModeRefused) {
+            $0.session.approvalMode = .askEveryTime
+            $0.alert = AlertState {
+                TextState("Something went wrong")
+            } message: {
+                TextState(DaemonError.disconnected.description)
+            }
+        }
+    }
+
+    func testSteeringWhileItWaitsReachesTheTurn() async throws {
+        let daemon = InMemoryDaemon(script: edit)
+        let session = try await started(daemon)
+        let (store, task) = await watching(daemon, session)
+        try await daemon.client.send(session.id, "write the notes", .enqueue)
+        await until(store) { $0.isWaiting }
+
+        await store.send(\.binding.draft, "use a heading")
+        await store.send(.sendTapped(.steer))
+        await until(store) { $0.items.contains(where: { $0.isPerson("use a heading") }) }
+        XCTAssertTrue(store.state.isWorking)
+        await task.cancel()
+    }
+
+    func testUsageAddsUpEachTurn() async {
+        let store = store()
+        await store.send(
+            .received(event("e1", .usage(model: "a", inputTokens: 10, outputTokens: 2, premiumRequests: 1))))
+        await store.send(
+            .received(event("e2", .usage(model: "b", inputTokens: 5, outputTokens: 3, premiumRequests: 0.5))))
+        XCTAssertEqual(
+            store.state.usage, Usage(model: "b", inputTokens: 15, outputTokens: 5, premiumRequests: 1.5))
+    }
+
+    func testAStoppedTurnSaysSo() async {
+        let store = store()
+        await store.send(.received(event("e1", .userMessage("go"))))
+        await store.send(.received(event("e2", .turnStarted)))
+        await store.send(.received(event("e3", .turnEnded(aborted: true))))
+        XCTAssertEqual(store.state.items, [.person(id: "e1", text: "go"), .stopped(id: "e3")])
+        XCTAssertFalse(store.state.isWorking)
+    }
+}
+
+extension ChatItem {
+    fileprivate func isPerson(_ text: String) -> Bool {
+        if case .person(_, text) = self { true } else { false }
+    }
 }

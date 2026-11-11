@@ -179,7 +179,11 @@ package final class InMemoryDaemon: Sendable {
                     let mode = state.sessions.first { $0.id == session }?.approvalMode ?? .askEveryTime
                     return ("c\(state.nextRequest)", "r\(state.nextRequest)", mode)
                 }
-                append(.toolStarted(callID: callID, tool: tool, argumentsJSON: "{}"), to: session)
+                let key = step.isRun ? "command" : "path"
+                let arguments =
+                    (try? JSONSerialization.data(withJSONObject: [key: command]))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+                append(.toolStarted(callID: callID, tool: tool, argumentsJSON: arguments), to: session)
                 append(.permissionRequested(requestID: request, kind: kind, summary: summary), to: session)
                 if mode.allows(kind) {
                     append(.permissionCompleted(requestID: request, approved: true, automatic: true), to: session)

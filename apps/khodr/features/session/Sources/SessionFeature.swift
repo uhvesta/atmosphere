@@ -2,7 +2,8 @@ import ComposableArchitecture
 import Foundation
 import KhodrDaemonClient
 
-/// One session: its events as they happen, a message to send, and forks.
+/// One session: its events as they happen, a message to send, permissions
+/// to answer and what the session may do without asking, and forks.
 @Reducer
 package struct SessionFeature {
     @ObservableState
@@ -13,6 +14,8 @@ package struct SessionFeature {
         /// The reply so far, until its whole message arrives.
         package var streaming = ""
         package var draft = ""
+        /// The thinking the person opened, by item id.
+        package var expandedThinking: Set<String> = []
         /// Whether the daemon stopped sending events; watching again resumes.
         package var disconnected = false
         @Presents package var alert: AlertState<Never>?
@@ -32,6 +35,14 @@ package struct SessionFeature {
             }
             return false
         }
+
+        /// What the chat shows, oldest first.
+        package var items: [ChatItem] { ChatItem.items(events) }
+
+        package var usage: Usage? { Usage.total(events) }
+
+        /// Whether the agent is waiting on the person to answer a request.
+        package var isWaiting: Bool { !pendingPermissions.isEmpty }
 
         /// Requests for permission the agent is still waiting on.
         package var pendingPermissions: [SessionEvent] {
@@ -68,6 +79,10 @@ package struct SessionFeature {
         case sendTapped(SendMode)
         case abortTapped
         case answerPermission(requestID: String, approved: Bool)
+        case approvalModePicked(ApprovalMode)
+        /// The daemon refused the new mode, so the session keeps `previous`.
+        case approvalModeRefused(previous: ApprovalMode, message: String)
+        case thinkingToggled(id: String)
         /// Forks the session before `event`, or with all of it if nil.
         case forkTapped(before: String?)
         case forked(Session)
@@ -146,6 +161,26 @@ package struct SessionFeature {
                 } catch: { error, send in
                     await send(.failed(error.localizedDescription))
                 }
+
+            case .approvalModePicked(let mode):
+                let previous = state.session.approvalMode
+                guard mode != previous else { return .none }
+                state.session.approvalMode = mode
+                let session = state.session.id
+                return .run { _ in
+                    try await daemon.setApprovalMode(session, mode)
+                } catch: { error, send in
+                    await send(.approvalModeRefused(previous: previous, message: error.localizedDescription))
+                }
+
+            case .approvalModeRefused(let previous, let message):
+                state.session.approvalMode = previous
+                state.alert = Self.alert(message)
+                return .none
+
+            case .thinkingToggled(let id):
+                state.expandedThinking.formSymmetricDifference([id])
+                return .none
 
             case .forkTapped(let before):
                 let session = state.session
