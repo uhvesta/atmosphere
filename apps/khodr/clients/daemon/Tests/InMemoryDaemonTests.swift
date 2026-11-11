@@ -201,6 +201,83 @@ final class InMemoryDaemonTests: XCTestCase {
         }
     }
 
+    private func board(_ daemon: InMemoryDaemon, _ project: String) async throws -> [String] {
+        try await daemon.client.items(project).map { "\($0.title): \($0.status)" }
+    }
+
+    func testASessionOnASubtaskMovesItAndItsTask() async throws {
+        let daemon = InMemoryDaemon(script: edit)
+        let project = try await daemon.client.createProject("demo", [Repository(path: "/code")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        let form = try await daemon.client.createItem(project.id, ItemFields(parentID: task.id, title: "form"))
+        _ = try await daemon.client.createItem(project.id, ItemFields(parentID: task.id, title: "copy"))
+
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, itemID: form.id))
+        XCTAssertEqual(session.projectID, project.id)
+        try await daemon.client.send(session.id, "write it", .enqueue)
+
+        let waiting = try await board(daemon, project.id)
+        XCTAssertEqual(waiting, ["login: waitingOnYou", "form: waitingOnYou", "copy: todo"])
+        let inbox = try await daemon.client.inbox()
+        XCTAssertEqual(inbox.map(\.reason), [.approval])
+    }
+
+    func testDoneStaysDoneAndLeavesTheInbox() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("demo", [Repository(path: "/code")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, itemID: task.id))
+        try await daemon.client.send(session.id, "hello", .enqueue)
+        let reviewed = try await board(daemon, project.id)
+        XCTAssertEqual(reviewed, ["login: inReview"])
+        let replies = try await daemon.client.inbox()
+        XCTAssertEqual(replies.map(\.reason), [.reply])
+
+        _ = try await daemon.client.updateItem(task.id, ItemUpdate(status: .done))
+
+        let done = try await board(daemon, project.id)
+        XCTAssertEqual(done, ["login: done"])
+        let inbox = try await daemon.client.inbox()
+        XCTAssertEqual(inbox, [])
+    }
+
+    func testEveryBoardChangeCanBeReverted() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("demo", [Repository(path: "/code")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        _ = try await daemon.client.updateItem(task.id, ItemUpdate(title: "sign in", priority: .high))
+        let log = try await daemon.client.boardLog(project.id)
+        let (update, add) = (try XCTUnwrap(log.first), try XCTUnwrap(log.last))
+
+        let reverted = try await daemon.client.revert(update.id)
+        XCTAssertEqual(reverted?.title, "login")
+        XCTAssertEqual(reverted?.priority, Priority.none)
+        let removed = try await daemon.client.revert(add.id)
+        XCTAssertNil(removed)
+        let empty = try await board(daemon, project.id)
+        XCTAssertEqual(empty, [])
+
+        let removals = try await daemon.client.boardLog(project.id)
+        let removal = try XCTUnwrap(removals.first)
+        let back = try await daemon.client.revert(removal.id)
+        XCTAssertEqual(back?.title, "login")
+    }
+
+    func testAnItemInUseIsNotRemoved() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("demo", [Repository(path: "/code")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        _ = try await daemon.client.start(StartRequest(backend: .scripted, itemID: task.id))
+        let log = try await daemon.client.boardLog(project.id)
+        let add = try XCTUnwrap(log.last)
+        do {
+            _ = try await daemon.client.revert(add.id)
+            XCTFail("Removed an item with a session")
+        } catch {
+            XCTAssertEqual((error as? DaemonError).flatMap(code), .busy)
+        }
+    }
+
     private func code(_ error: DaemonError) -> ErrorCode? {
         if case .refused(let code, _) = error { code } else { nil }
     }

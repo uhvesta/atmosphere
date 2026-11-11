@@ -87,12 +87,16 @@ package struct Session: Identifiable, Hashable, Sendable {
     package var archived: Bool
     /// Marked as the session whose changes are the ones to keep.
     package var keeper: Bool
+    /// The task or subtask it works on; nil for the project itself.
+    package var itemID: String?
+    /// How many turns it has finished.
+    package var turns: Int
 
     package init(
         id: String, name: String, backend: Backend, workingDirectory: String, model: String? = nil,
         state: SessionState = .idle, parentID: String? = nil, forkedBeforeEventID: String? = nil, host: String? = nil,
         approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil, archived: Bool = false,
-        keeper: Bool = false
+        keeper: Bool = false, itemID: String? = nil, turns: Int = 0
     ) {
         self.id = id
         self.name = name
@@ -107,7 +111,17 @@ package struct Session: Identifiable, Hashable, Sendable {
         self.projectID = projectID
         self.archived = archived
         self.keeper = keeper
+        self.itemID = itemID
+        self.turns = turns
     }
+}
+
+/// Where on its project's board a session is.
+package enum Placement: Hashable, Sendable {
+    /// On a task or subtask in the session's project.
+    case item(String)
+    /// On the project itself, on no item.
+    case project
 }
 
 /// What to change about a session; nil leaves it as it is.
@@ -115,12 +129,166 @@ package struct SessionUpdate: Hashable, Sendable {
     package var name: String?
     package var archived: Bool?
     package var keeper: Bool?
+    /// Moves it to another item in its project.
+    package var placement: Placement?
 
-    package init(name: String? = nil, archived: Bool? = nil, keeper: Bool? = nil) {
+    package init(name: String? = nil, archived: Bool? = nil, keeper: Bool? = nil, placement: Placement? = nil) {
         self.name = name
         self.archived = archived
         self.keeper = keeper
+        self.placement = placement
     }
+}
+
+/// A column of the board.
+package enum ItemStatus: String, CaseIterable, Hashable, Sendable {
+    case todo
+    case inProgress
+    case waitingOnYou
+    case inReview
+    case done
+    case wontDo
+
+    /// Done and Won't do: set by hand, and sessions don't move an item out.
+    package var closed: Bool { self == .done || self == .wontDo }
+}
+
+package enum Priority: Int, CaseIterable, Comparable, Hashable, Sendable {
+    case none
+    case low
+    case medium
+    case high
+    case urgent
+
+    package static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
+/// What the board's changes record of an item.
+package struct ItemFields: Hashable, Sendable {
+    /// The task a subtask is under; nil for a task.
+    package var parentID: String?
+    package var title: String
+    /// Markdown.
+    package var spec: String
+    package var status: ItemStatus
+    package var priority: Priority
+
+    package init(
+        parentID: String? = nil, title: String, spec: String = "", status: ItemStatus = .todo,
+        priority: Priority = .none
+    ) {
+        self.parentID = parentID
+        self.title = title
+        self.spec = spec
+        self.status = status
+        self.priority = priority
+    }
+}
+
+/// A task, or a subtask of one, on a project's board.
+package struct Item: Identifiable, Hashable, Sendable {
+    package var id: String
+    package var projectID: String
+    package var fields: ItemFields
+    /// Where it shows: what its sessions, and a task's subtasks' sessions,
+    /// say while they work, wait or have finished a turn; otherwise, and
+    /// always once closed, its given status.
+    package var status: ItemStatus
+    package var created: Date
+    package var updated: Date
+    /// The sessions on it, archived ones too.
+    package var sessionIDs: [String]
+
+    package init(
+        id: String, projectID: String, fields: ItemFields, status: ItemStatus? = nil, created: Date,
+        updated: Date? = nil, sessionIDs: [String] = []
+    ) {
+        self.id = id
+        self.projectID = projectID
+        self.fields = fields
+        self.status = status ?? fields.status
+        self.created = created
+        self.updated = updated ?? created
+        self.sessionIDs = sessionIDs
+    }
+
+    package var parentID: String? { fields.parentID }
+    package var title: String { fields.title }
+    package var spec: String { fields.spec }
+    package var priority: Priority { fields.priority }
+}
+
+/// What to change in an item; nil leaves a field as it is.
+package struct ItemUpdate: Hashable, Sendable {
+    package var title: String?
+    package var spec: String?
+    package var status: ItemStatus?
+    package var priority: Priority?
+
+    package init(title: String? = nil, spec: String? = nil, status: ItemStatus? = nil, priority: Priority? = nil) {
+        self.title = title
+        self.spec = spec
+        self.status = status
+        self.priority = priority
+    }
+}
+
+/// One change to a project's board.
+package struct BoardChange: Identifiable, Hashable, Sendable {
+    package var id: UInt64
+    package var itemID: String
+    package var time: Date
+    /// Nil when it added the item.
+    package var before: ItemFields?
+    /// Nil when it removed it.
+    package var after: ItemFields?
+    /// The change it reverted, if it did.
+    package var reverts: UInt64?
+
+    package init(
+        id: UInt64, itemID: String, time: Date, before: ItemFields?, after: ItemFields?, reverts: UInt64? = nil
+    ) {
+        self.id = id
+        self.itemID = itemID
+        self.time = time
+        self.before = before
+        self.after = after
+        self.reverts = reverts
+    }
+}
+
+/// Why a session waits on you.
+package enum InboxReason: Hashable, Sendable {
+    /// It asked to run a command, write or read.
+    case approval
+    /// It finished a turn: a question to answer or work to review.
+    case reply
+    /// Its turn failed.
+    case failed
+}
+
+package struct InboxEntry: Identifiable, Hashable, Sendable {
+    package var session: Session
+    package var reason: InboxReason
+    package var projectName: String?
+    package var itemTitle: String?
+
+    package init(session: Session, reason: InboxReason, projectName: String? = nil, itemTitle: String? = nil) {
+        self.session = session
+        self.reason = reason
+        self.projectName = projectName
+        self.itemTitle = itemTitle
+    }
+
+    package var id: String { session.id }
+}
+
+/// Which specs a session on an item reads ahead of its instructions.
+package enum SpecScope: Hashable, Sendable {
+    /// Its item's alone.
+    case item
+    /// Its item's, and the task's above a subtask.
+    case withParents
 }
 
 /// What a session changed in one of its repositories.
@@ -194,11 +362,15 @@ package struct StartRequest: Hashable, Sendable {
     /// The project it belongs to. The session works in its own copy of the
     /// project's repositories, and its instructions are the default.
     package var projectID: String?
+    /// The task or subtask it works on, whose project it is in.
+    package var itemID: String?
+    package var specs: SpecScope
 
     package init(
         backend: Backend, workingDirectory: String? = nil, name: String = "", host: String? = nil,
         model: String? = nil, instructions: String? = nil, backendConfig: String? = nil,
-        approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil
+        approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil, itemID: String? = nil,
+        specs: SpecScope = .item
     ) {
         self.backend = backend
         self.workingDirectory = workingDirectory
@@ -209,6 +381,8 @@ package struct StartRequest: Hashable, Sendable {
         self.backendConfig = backendConfig
         self.approvalMode = approvalMode
         self.projectID = projectID
+        self.itemID = itemID
+        self.specs = specs
     }
 }
 
@@ -232,6 +406,8 @@ package enum ErrorCode: Hashable, Sendable {
     case hostUnavailable
     case unknownProject
     case archived
+    case unknownItem
+    case unknownBoardChange
     case unknown
 }
 

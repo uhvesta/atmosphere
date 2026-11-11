@@ -106,9 +106,10 @@ final class SessionFeatureTests: XCTestCase {
             $0.editing = nil
             $0.edited = ""
         }
+        // The edit runs as the fork's first turn, so it has moved on since.
+        await store.receive(\.forked)
+        await store.receive(\.delegate.openSession)
         let fork = try XCTUnwrap(daemon.sessions.last)
-        await store.receive(\.forked, fork)
-        await store.receive(\.delegate.openSession, fork)
         XCTAssertEqual(fork.forkedBeforeEventID, two.id)
         let said = daemon.history(fork.id).compactMap { event -> String? in
             if case .userMessage(let text) = event.kind { text } else { nil }

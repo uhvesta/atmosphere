@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import KhodrBoard
 import KhodrProjects
 import KhodrSession
 import SwiftUI
@@ -24,7 +25,14 @@ package struct AppView: View {
             }
             .navigationSplitViewColumnWidth(min: 220, ideal: 260)
         } detail: {
-            if let session = store.scope(state: \.session, action: \.session.presented) {
+            if store.sidebar.selection == .inbox {
+                InboxView(entries: store.sidebar.inbox) { store.send(.sidebar(.selected(.session($0)))) }
+            } else if let board = store.scope(state: \.board, action: \.board.presented) {
+                NavigationStack {
+                    BoardView(store: board)
+                }
+                .id(board.project.id)
+            } else if let session = store.scope(state: \.session, action: \.session.presented) {
                 SessionView(store: session)
                     .id(session.session.id)
             } else {

@@ -139,3 +139,93 @@ pub fn changes(changes: &pb::Changes) -> String {
             .collect(),
     }
 }
+
+fn status(status: pb::ItemStatus) -> &'static str {
+    match status {
+        pb::ItemStatus::Unspecified | pb::ItemStatus::Todo => "todo",
+        pb::ItemStatus::InProgress => "in_progress",
+        pb::ItemStatus::WaitingOnYou => "waiting_on_you",
+        pb::ItemStatus::InReview => "in_review",
+        pb::ItemStatus::Done => "done",
+        pb::ItemStatus::WontDo => "wont_do",
+    }
+}
+
+fn priority(priority: pb::Priority) -> &'static str {
+    match priority {
+        pb::Priority::None => "none",
+        pb::Priority::Low => "low",
+        pb::Priority::Medium => "medium",
+        pb::Priority::High => "high",
+        pb::Priority::Urgent => "urgent",
+    }
+}
+
+/// `<id>\t<parent>\t<status>\t<given status>\t<priority>\t<sessions>\t<title>`,
+/// with `-` for a task's parent and no sessions; the sessions joined by
+/// commas.
+pub fn item(item: &pb::Item) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        item.id,
+        or_dash(&item.parent_id),
+        status(item.status()),
+        status(item.given_status()),
+        priority(item.priority()),
+        or_dash(&item.session_ids.join(",")),
+        item.title
+    )
+}
+
+fn fields(fields: Option<&pb::ItemFields>) -> String {
+    fields.map_or_else(
+        || "-".to_owned(),
+        |fields| {
+            format!(
+                "{} {} {:?}",
+                status(fields.status()),
+                priority(fields.priority()),
+                fields.title
+            )
+        },
+    )
+}
+
+/// `<change>\t<item>\t<reverts>\t<before>\t<after>`, `-` for nothing
+/// reverted, before an add and after a removal.
+pub fn change(change: &pb::BoardChange) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}",
+        change.id,
+        change.item_id,
+        if change.reverts == 0 {
+            "-".to_owned()
+        } else {
+            change.reverts.to_string()
+        },
+        fields(change.before.as_ref()),
+        fields(change.after.as_ref())
+    )
+}
+
+/// `<session>\t<reason>\t<project>\t<item>\t<name>`, `-` for none.
+pub fn inbox_entry(entry: &pb::InboxEntry) -> String {
+    let reason = match entry.reason() {
+        pb::InboxReason::Approval => "approval",
+        pb::InboxReason::Reply => "reply",
+        pb::InboxReason::Failed => "failed",
+        pb::InboxReason::Unspecified => "-",
+    };
+    let session = entry.session.as_ref();
+    format!(
+        "{}\t{reason}\t{}\t{}\t{}",
+        session
+            .map(|session| session.id.as_str())
+            .unwrap_or_default(),
+        or_dash(&entry.project_name),
+        or_dash(&entry.item_title),
+        session
+            .map(|session| session.name.as_str())
+            .unwrap_or_default(),
+    )
+}

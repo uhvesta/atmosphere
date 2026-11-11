@@ -1,10 +1,11 @@
 import ComposableArchitecture
+import KhodrBoard
 import KhodrDaemonClient
 import KhodrProjects
 import KhodrSession
 
-/// Khodr's window: the sidebar of projects and sessions, and the open
-/// session's chat beside it. It starts the daemon, and replaces one left
+/// Khodr's window: the sidebar of projects and sessions, and beside it the
+/// inbox, a project's board or the open session's chat. It starts the daemon, and replaces one left
 /// running by an older build once no turn is in progress.
 @Reducer
 package struct AppFeature {
@@ -14,6 +15,8 @@ package struct AppFeature {
         package var sidebar = ProjectsFeature.State()
         /// The open session; nil until one is picked.
         @Presents package var session: SessionFeature.State?
+        /// The open board; nil unless one is picked.
+        @Presents package var board: BoardFeature.State?
 
         package init() {}
     }
@@ -41,6 +44,7 @@ package struct AppFeature {
         case openLoginItemsTapped
         case sidebar(ProjectsFeature.Action)
         case session(PresentationAction<SessionFeature.Action>)
+        case board(PresentationAction<BoardFeature.Action>)
     }
 
     @Dependency(\.daemon) var daemon
@@ -91,7 +95,7 @@ package struct AppFeature {
             case .openLoginItemsTapped:
                 return .run { _ in service.openLoginItems() }
 
-            case .sidebar(.loaded(_, let sessions)):
+            case .sidebar(.loaded(_, let sessions, _)):
                 guard state.daemon == .updatePending, !Self.anyBusy(sessions) else { return .none }
                 return restart(&state)
 
@@ -102,21 +106,36 @@ package struct AppFeature {
                 return .none
 
             case .sidebar(.delegate(.openSession(let session))):
+                state.board = nil
                 guard state.session?.session.id != session.id else { return .none }
                 state.session = SessionFeature.State(session: session)
                 return .none
 
-            case .session(.presented(.delegate(.openSession(let fork)))):
-                state.sidebar.sessions.append(fork)
-                state.sidebar.selection = fork.id
-                state.session = SessionFeature.State(session: fork)
+            case .sidebar(.delegate(.openBoard(let project))):
+                state.session = nil
+                guard state.board?.project.id != project.id else { return .none }
+                state.board = BoardFeature.State(project: project)
+                return .none
+
+            case .sidebar(.delegate(.openInbox)):
+                state.session = nil
+                state.board = nil
+                return .none
+
+            case .session(.presented(.delegate(.openSession(let session)))),
+                .board(.presented(.delegate(.openSession(let session)))):
+                if state.sidebar.sessions[id: session.id] == nil { state.sidebar.sessions.append(session) }
+                state.sidebar.selection = .session(session.id)
+                state.board = nil
+                state.session = SessionFeature.State(session: session)
                 return .send(.sidebar(.refresh))
 
-            case .sidebar, .session:
+            case .sidebar, .session, .board:
                 return .none
             }
         }
         .ifLet(\.$session, action: \.session) { SessionFeature() }
+        .ifLet(\.$board, action: \.board) { BoardFeature() }
     }
 
     private func restart(_ state: inout State) -> Effect<Action> {

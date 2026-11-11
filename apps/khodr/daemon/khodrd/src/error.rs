@@ -24,7 +24,9 @@ pub enum HostError {
     )]
     FellBehind { missed: u64 },
 
-    #[error("only the daemon keeps projects; send this to khodrd's daemon on your Mac, not a host")]
+    #[error(
+        "only the daemon keeps projects and the board; send this to khodrd's daemon on your Mac, not a host"
+    )]
     NotForHosts,
 }
 
@@ -94,6 +96,47 @@ pub enum StoreError {
 
     #[error("there is no project {id:?}; list projects to find its id")]
     UnknownProject { id: String },
+
+    #[error("there is no task or subtask {id:?}; list the project's items to find its id")]
+    UnknownItem { id: String },
+
+    #[error(
+        "khodrd has never seen session {id:?}; list sessions to find its id, or check that its host is reachable"
+    )]
+    UnknownSession { id: String },
+
+    #[error("there is no board change {id}; read the project's board log to find its number")]
+    UnknownChange { id: u64 },
+
+    #[error("a task or subtask needs a title; give it one")]
+    NoTitle,
+
+    #[error(
+        "{title:?} is a subtask, and a subtask can't have its own; add this under its task instead"
+    )]
+    NestedSubtask { title: String },
+
+    #[error("the task {title:?} is in another project; add the subtask in that project")]
+    ParentInAnotherProject { title: String },
+
+    #[error(
+        "{title:?} is in another project than the session; pick an item of the session's own project"
+    )]
+    ItemInAnotherProject { title: String },
+
+    #[error(
+        "can't undo adding {title:?}: {subtasks} subtasks and {sessions} sessions are on it now. Move it to Won't do instead, or remove its subtasks and move its sessions first"
+    )]
+    ItemInUse {
+        title: String,
+        subtasks: i64,
+        sessions: i64,
+    },
+
+    #[error(
+        "can't bring back {title:?}: its task was removed since. Revert the change that removed the task first"
+    )]
+    ParentRemoved { title: String },
 }
 
 /// What the daemon can fail at while reaching a host.
@@ -168,6 +211,17 @@ impl DaemonError {
     pub fn code(&self) -> pb::ErrorCode {
         match self {
             Self::Store(StoreError::UnknownProject { .. }) => pb::ErrorCode::UnknownProject,
+            Self::Store(StoreError::UnknownItem { .. }) => pb::ErrorCode::UnknownItem,
+            Self::Store(StoreError::UnknownSession { .. }) => pb::ErrorCode::UnknownSession,
+            Self::Store(StoreError::UnknownChange { .. }) => pb::ErrorCode::UnknownBoardChange,
+            Self::Store(
+                StoreError::NoTitle
+                | StoreError::NestedSubtask { .. }
+                | StoreError::ParentInAnotherProject { .. }
+                | StoreError::ItemInAnotherProject { .. }
+                | StoreError::ItemInUse { .. }
+                | StoreError::ParentRemoved { .. },
+            ) => pb::ErrorCode::InvalidRequest,
             Self::Store(_) => pb::ErrorCode::StorageFailed,
             Self::UnknownHost { .. }
             | Self::NoCommand { .. }

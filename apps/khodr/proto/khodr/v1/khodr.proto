@@ -67,6 +67,13 @@ message Request {
     ListProjects list_projects = 11;
     UpdateSession update_session = 12;
     ReadChanges read_changes = 13;
+    // The board lives in the daemon; a host refuses these.
+    CreateItem create_item = 14;
+    UpdateItem update_item = 15;
+    ListItems list_items = 16;
+    ReadBoardLog read_board_log = 17;
+    RevertBoardChange revert_board_change = 18;
+    ListInbox list_inbox = 19;
   }
 }
 
@@ -87,6 +94,12 @@ message Response {
     Projects projects = 12;
     SessionUpdated session_updated = 13;
     Changes changes = 14;
+    ItemCreated item_created = 15;
+    ItemUpdated item_updated = 16;
+    Items items = 17;
+    BoardLog board_log = 18;
+    BoardChangeReverted board_change_reverted = 19;
+    Inbox inbox = 20;
   }
 }
 
@@ -110,6 +123,8 @@ enum ErrorCode {
   ERROR_CODE_UNKNOWN_PROJECT = 10;
   // The session is archived; unarchive it first.
   ERROR_CODE_ARCHIVED = 11;
+  ERROR_CODE_UNKNOWN_ITEM = 12;
+  ERROR_CODE_UNKNOWN_BOARD_CHANGE = 13;
 }
 
 enum Backend {
@@ -142,6 +157,20 @@ message StartSession {
   // its own, made before its first turn and saved after each one, without a
   // commit.
   repeated Repository repositories = 10;
+  // The task or subtask it works on, in the project; the project is the
+  // item's if not given. Empty for the project itself.
+  string item_id = 11;
+  // Which specs it reads, ahead of its instructions.
+  SpecScope specs = 12;
+}
+
+enum SpecScope {
+  // The same as ITEM.
+  SPEC_SCOPE_UNSPECIFIED = 0;
+  // Its item's spec alone.
+  SPEC_SCOPE_ITEM = 1;
+  // Its item's, and the task's above a subtask.
+  SPEC_SCOPE_WITH_PARENTS = 2;
 }
 
 // A git repository a session works in.
@@ -251,6 +280,9 @@ message UpdateSession {
   optional bool archived = 3;
   // Marks the session whose changes are the ones to keep.
   optional bool keeper = 4;
+  // Moves the session to this task or subtask of its project; empty moves
+  // it to the project itself. Only the daemon keeps this.
+  optional string item_id = 5;
 }
 
 message SessionUpdated {
@@ -349,6 +381,11 @@ message SessionInfo {
   repeated Checkout checkouts = 12;
   bool archived = 13;
   bool keeper = 14;
+  // The task or subtask it works on, as the daemon records it; empty for
+  // the project itself or none.
+  string item_id = 15;
+  // How many turns it has finished.
+  uint32 turns = 16;
 }
 
 // A session's git worktree of one repository.
@@ -471,4 +508,154 @@ message Usage {
   uint64 output_tokens = 3;
   // Copilot's premium requests; 0 for other backends.
   double premium_requests = 4;
+}
+
+// Where an item is on the board.
+enum ItemStatus {
+  // The same as TODO.
+  ITEM_STATUS_UNSPECIFIED = 0;
+  ITEM_STATUS_TODO = 1;
+  ITEM_STATUS_IN_PROGRESS = 2;
+  ITEM_STATUS_WAITING_ON_YOU = 3;
+  ITEM_STATUS_IN_REVIEW = 4;
+  ITEM_STATUS_DONE = 5;
+  ITEM_STATUS_WONT_DO = 6;
+}
+
+enum Priority {
+  PRIORITY_NONE = 0;
+  PRIORITY_LOW = 1;
+  PRIORITY_MEDIUM = 2;
+  PRIORITY_HIGH = 3;
+  PRIORITY_URGENT = 4;
+}
+
+// A task, or a subtask of one, on a project's board.
+message Item {
+  string id = 1;
+  string project_id = 2;
+  // The task a subtask is under; empty for a task.
+  string parent_id = 3;
+  string title = 4;
+  // Markdown.
+  string spec = 5;
+  // Where it shows on the board. While one of its sessions, or for a task
+  // one of its subtasks' sessions, is working, waiting or has finished a
+  // turn, that decides; otherwise, and always once Done or Won't do, it is
+  // given_status.
+  ItemStatus status = 6;
+  // The status it was given, by hand or when added.
+  ItemStatus given_status = 7;
+  Priority priority = 8;
+  // Milliseconds since 1970 in UTC.
+  int64 created_unix_ms = 9;
+  int64 updated_unix_ms = 10;
+  // The sessions that work on it, archived ones too.
+  repeated string session_ids = 11;
+}
+
+message CreateItem {
+  string project_id = 1;
+  // The task to add a subtask under; empty adds a task.
+  string parent_id = 2;
+  string title = 3;
+  string spec = 4;
+  ItemStatus status = 5;
+  Priority priority = 6;
+}
+
+message ItemCreated {
+  Item item = 1;
+}
+
+// Changes an item. Unset fields are left as they are.
+message UpdateItem {
+  string item_id = 1;
+  optional string title = 2;
+  optional string spec = 3;
+  optional ItemStatus status = 4;
+  optional Priority priority = 5;
+}
+
+message ItemUpdated {
+  Item item = 1;
+}
+
+message ListItems {
+  string project_id = 1;
+}
+
+// Tasks first by priority, then by when they were added; each task's
+// subtasks follow it in the same order.
+message Items {
+  repeated Item items = 1;
+}
+
+// An item's fields that the board's changes record.
+message ItemFields {
+  string parent_id = 1;
+  string title = 2;
+  string spec = 3;
+  ItemStatus status = 4;
+  Priority priority = 5;
+}
+
+// One change to a project's board.
+message BoardChange {
+  uint64 id = 1;
+  string item_id = 2;
+  int64 time_unix_ms = 3;
+  // Unset when the change added the item.
+  ItemFields before = 4;
+  // Unset when the change removed it.
+  ItemFields after = 5;
+  // The change this one reverted; 0 for none.
+  uint64 reverts = 6;
+}
+
+message ReadBoardLog {
+  string project_id = 1;
+}
+
+// Newest first.
+message BoardLog {
+  repeated BoardChange changes = 1;
+}
+
+// Puts an item back as it was before a change. Reverting the change that
+// added an item removes it, which it refuses while the item has subtasks or
+// sessions.
+message RevertBoardChange {
+  uint64 change_id = 1;
+}
+
+message BoardChangeReverted {
+  // The item as it is now; unset if it was removed.
+  Item item = 1;
+}
+
+// Every session, across projects, waiting on you.
+message ListInbox {}
+
+enum InboxReason {
+  INBOX_REASON_UNSPECIFIED = 0;
+  // It asked to run a command, write or read and waits for your answer.
+  INBOX_REASON_APPROVAL = 1;
+  // It finished a turn: a question to answer or work to review.
+  INBOX_REASON_REPLY = 2;
+  // Its turn failed.
+  INBOX_REASON_FAILED = 3;
+}
+
+message InboxEntry {
+  SessionInfo session = 1;
+  InboxReason reason = 2;
+  // Its project's and item's names; empty for none.
+  string project_name = 3;
+  string item_title = 4;
+}
+
+// Approvals first, then failures, then replies.
+message Inbox {
+  repeated InboxEntry entries = 1;
 }

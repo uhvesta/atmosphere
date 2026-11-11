@@ -1,0 +1,49 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# A project's board: its tasks and subtasks by status, each item's page
+# with its spec and sessions, and the board's history to revert from. TCA
+# reducers with SwiftUI views. Needs Xcode: build with `--config=xcode`.
+swift_library(
+    name = "board",
+    package_name = "khodr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "KhodrBoard",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/khodr/features/app:__pkg__"],
+    deps = [
+        "//apps/khodr/clients/daemon",
+        "//apps/khodr/features/projects",
+        "//apps/libs/kits/board",
+        "//apps/libs/kits/chatui",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# TestStore tests over the in-memory daemon, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "khodr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":board",
+        "//apps/khodr/clients/daemon",
+        "//apps/khodr/features/projects",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

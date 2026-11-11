@@ -55,6 +55,7 @@ final class DaemonLifecycleTests: XCTestCase {
             $0.daemonService = service(current: false, restarts: restarts)
             $0.daemon.sessions = { _ in sessions.value }
             $0.daemon.projects = { [] }
+            $0.daemon.inbox = { [] }
         }
         store.exhaustivity = .off
         await store.send(.task)

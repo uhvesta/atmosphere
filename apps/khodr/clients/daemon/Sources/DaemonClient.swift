@@ -29,6 +29,18 @@ package struct DaemonClient: Sendable {
     package var update: @Sendable (_ session: String, _ update: SessionUpdate) async throws -> Session
     /// What the session changed in each repository since it began.
     package var changes: @Sendable (_ session: String) async throws -> [RepositoryChanges]
+    /// The project's board, its items' statuses as shown: tasks by
+    /// priority, then by when they were added, each followed by its subtasks.
+    package var items: @Sendable (_ project: String) async throws -> [Item]
+    /// Adds a task to `project`, or a subtask under `fields.parentID`.
+    package var createItem: @Sendable (_ project: String, _ fields: ItemFields) async throws -> Item
+    package var updateItem: @Sendable (_ item: String, _ update: ItemUpdate) async throws -> Item
+    /// The project's board changes, newest first.
+    package var boardLog: @Sendable (_ project: String) async throws -> [BoardChange]
+    /// Puts an item back as it was before the change; nil when that removed it.
+    package var revert: @Sendable (_ change: UInt64) async throws -> Item?
+    /// Every session waiting on you: approvals, then failures, then replies.
+    package var inbox: @Sendable () async throws -> [InboxEntry]
     package var history: @Sendable (_ session: String) async throws -> [SessionEvent]
     /// The session's history, then each new event. Ends when the calling task
     /// is cancelled; throws if the connection drops.

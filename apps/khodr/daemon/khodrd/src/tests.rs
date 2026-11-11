@@ -555,6 +555,7 @@ async fn an_archived_session_is_put_away_and_refuses_messages() {
             name: Some("put away".to_owned()),
             archived: Some(true),
             keeper: None,
+            item_id: None,
         },
     )
     .await
@@ -684,5 +685,289 @@ async fn a_host_refuses_project_requests() {
             })
         ),
         "{created:?}"
+    );
+}
+
+async fn create_item(
+    client: &Client,
+    project: &str,
+    parent: &str,
+    title: &str,
+) -> Result<pb::Item, ClientError> {
+    let request = pb::request::Kind::CreateItem(pb::CreateItem {
+        project_id: project.to_owned(),
+        parent_id: parent.to_owned(),
+        title: title.to_owned(),
+        spec: format!("All about {title}."),
+        ..Default::default()
+    });
+    match client.call(request).await? {
+        pb::response::Kind::ItemCreated(pb::ItemCreated { item: Some(item) }) => Ok(item),
+        other => panic!("not created: {other:?}"),
+    }
+}
+
+async fn item(client: &Client, project: &str, parent: &str, title: &str) -> pb::Item {
+    create_item(client, project, parent, title)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// Each item's title and shown status, in the board's order.
+async fn board(client: &Client, project: &str) -> Vec<(String, pb::ItemStatus)> {
+    let listed = client
+        .call(pb::request::Kind::ListItems(pb::ListItems {
+            project_id: project.to_owned(),
+        }))
+        .await;
+    let Ok(pb::response::Kind::Items(items)) = listed else {
+        panic!("{listed:?}")
+    };
+    items
+        .items
+        .iter()
+        .map(|item| (item.title.clone(), item.status()))
+        .collect()
+}
+
+async fn board_log(client: &Client, project: &str) -> Vec<pb::BoardChange> {
+    let request = pb::request::Kind::ReadBoardLog(pb::ReadBoardLog {
+        project_id: project.to_owned(),
+    });
+    match client.call(request).await {
+        Ok(pb::response::Kind::BoardLog(log)) => log.changes,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn start_on(item: &str) -> pb::request::Kind {
+    pb::request::Kind::StartSession(pb::StartSession {
+        backend: pb::Backend::Scripted.into(),
+        item_id: item.to_owned(),
+        backend_config: SCRIPT.to_owned(),
+        ..Default::default()
+    })
+}
+
+#[tokio::test]
+async fn a_session_on_a_subtask_moves_it_and_its_task() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let task = item(&client, &project.id, "", "login").await;
+    let subtask = item(&client, &project.id, &task.id, "form").await;
+    item(&client, &project.id, &task.id, "copy").await;
+    use pb::ItemStatus::{InReview, Todo};
+    let titles = |statuses: [pb::ItemStatus; 3]| {
+        ["login", "form", "copy"]
+            .into_iter()
+            .map(str::to_owned)
+            .zip(statuses)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        board(&client, &project.id).await,
+        titles([Todo, Todo, Todo])
+    );
+
+    let session = started(&client, start_on(&subtask.id)).await;
+    assert_eq!(session.project_id, project.id, "the item's project");
+    assert_eq!(session.item_id, subtask.id);
+    send(&client, &session.id, "hello").await;
+    after_turns(&client, &session.id, 1).await;
+    assert_eq!(
+        board(&client, &project.id).await,
+        titles([InReview, InReview, Todo])
+    );
+
+    // A fork stays on its parent's item.
+    let fork = client
+        .call(pb::request::Kind::ForkSession(pb::ForkSession {
+            session_id: session.id.clone(),
+            ..Default::default()
+        }))
+        .await;
+    let Ok(pb::response::Kind::SessionForked(pb::SessionForked {
+        session: Some(fork),
+    })) = fork
+    else {
+        panic!("{fork:?}")
+    };
+    assert_eq!(fork.item_id, subtask.id);
+
+    // Moved to the project itself, and the fork archived, nothing moves
+    // the board.
+    for (session, archived) in [(&session.id, None), (&fork.id, Some(true))] {
+        update(
+            &client,
+            pb::UpdateSession {
+                session_id: session.clone(),
+                item_id: Some(String::new()),
+                archived,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    }
+    assert_eq!(
+        board(&client, &project.id).await,
+        titles([Todo, Todo, Todo])
+    );
+}
+
+#[tokio::test]
+async fn done_stays_done_and_the_inbox_has_only_open_replies() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let open = item(&client, &project.id, "", "open").await;
+    let finished = item(&client, &project.id, "", "finished").await;
+    for item in [&open, &finished] {
+        let session = started(&client, start_on(&item.id)).await;
+        send(&client, &session.id, "hello").await;
+        after_turns(&client, &session.id, 1).await;
+    }
+    let updated = client
+        .call(pb::request::Kind::UpdateItem(pb::UpdateItem {
+            item_id: finished.id.clone(),
+            status: Some(pb::ItemStatus::Done.into()),
+            ..Default::default()
+        }))
+        .await;
+    let Ok(pb::response::Kind::ItemUpdated(pb::ItemUpdated {
+        item: Some(updated),
+    })) = updated
+    else {
+        panic!("{updated:?}")
+    };
+    assert_eq!(updated.status(), pb::ItemStatus::Done);
+
+    let inbox = client
+        .call(pb::request::Kind::ListInbox(pb::ListInbox {}))
+        .await;
+    let Ok(pb::response::Kind::Inbox(inbox)) = inbox else {
+        panic!("{inbox:?}")
+    };
+    let entries: Vec<(&str, &str, pb::InboxReason)> = inbox
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.project_name.as_str(),
+                entry.item_title.as_str(),
+                entry.reason(),
+            )
+        })
+        .collect();
+    assert_eq!(entries, [("khodr", "open", pb::InboxReason::Reply)]);
+}
+
+#[tokio::test]
+async fn every_board_change_can_be_reverted() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let task = item(&client, &project.id, "", "login").await;
+    let renamed = client
+        .call(pb::request::Kind::UpdateItem(pb::UpdateItem {
+            item_id: task.id.clone(),
+            title: Some("sign in".to_owned()),
+            ..Default::default()
+        }))
+        .await;
+    assert!(
+        matches!(renamed, Ok(pb::response::Kind::ItemUpdated(_))),
+        "{renamed:?}"
+    );
+    let revert = |change: u64| {
+        client.call(pb::request::Kind::RevertBoardChange(
+            pb::RevertBoardChange { change_id: change },
+        ))
+    };
+    let changes = board_log(&client, &project.id).await;
+    let [rename, add] = changes.as_slice() else {
+        panic!("{changes:?}")
+    };
+    assert_eq!(
+        rename.after.as_ref().map(|after| after.title.as_str()),
+        Some("sign in")
+    );
+    assert!(add.before.is_none());
+
+    revert(rename.id)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(board(&client, &project.id).await[0].0, "login");
+
+    // Undoing the add removes it, unless something is on it.
+    item(&client, &project.id, &task.id, "form").await;
+    let refused = revert(add.id).await;
+    assert!(
+        matches!(
+            refused,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::InvalidRequest,
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+    let added_subtask = board_log(&client, &project.id).await[0].id;
+    revert(added_subtask)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let removed = revert(add.id).await;
+    assert!(
+        matches!(
+            removed,
+            Ok(pb::response::Kind::BoardChangeReverted(
+                pb::BoardChangeReverted { item: None }
+            ))
+        ),
+        "{removed:?}"
+    );
+    assert!(board(&client, &project.id).await.is_empty());
+
+    // And undoing the removal brings it back.
+    let removal = board_log(&client, &project.id).await[0].id;
+    revert(removal)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(board(&client, &project.id).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_subtask_of_a_subtask_and_an_unknown_item_are_refused() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let task = item(&client, &project.id, "", "login").await;
+    let subtask = item(&client, &project.id, &task.id, "form").await;
+    let nested = create_item(&client, &project.id, &subtask.id, "field").await;
+    assert!(
+        matches!(
+            nested,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::InvalidRequest,
+                ..
+            })
+        ),
+        "{nested:?}"
+    );
+    let unknown = client.call(start_on("nope")).await;
+    assert!(
+        matches!(
+            unknown,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::UnknownItem,
+                ..
+            })
+        ),
+        "{unknown:?}"
     );
 }

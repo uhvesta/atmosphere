@@ -47,7 +47,15 @@ package final class InMemoryDaemon: Sendable {
         /// The copy each session works in, by session id.
         var copyOf: [String: String] = [:]
         var watchers: [String: [UUID: AsyncThrowingStream<SessionEvent, any Error>.Continuation]] = [:]
+        /// Items as given, in the order they were added.
+        var items: [Item] = []
+        /// Board changes, oldest first.
+        var changes: [BoardChange] = []
+        /// Removed items, so reverting the removal puts them back.
+        var removed: [String: Item] = [:]
         var nextProject = 1
+        var nextItem = 1
+        var nextChange: UInt64 = 1
         var nextSession = 1
         var nextEvent = 1
         var nextRequest = 1
@@ -102,6 +110,19 @@ package final class InMemoryDaemon: Sendable {
                 try self.known(session)
                 return self.changes(session)
             },
+            items: { project in try self.items(project) },
+            createItem: { project, fields in try self.createItem(project, fields) },
+            updateItem: { item, update in try self.updateItem(item, update) },
+            boardLog: { project in
+                self.state.withValue { state in
+                    let all = state.items + state.removed.values
+                    return state.changes.reversed().filter { change in
+                        all.first { $0.id == change.itemID }?.projectID == project
+                    }
+                }
+            },
+            revert: { change in try self.revert(change) },
+            inbox: { self.inbox() },
             history: { session in
                 try self.known(session)
                 return self.history(session)
@@ -153,7 +174,16 @@ package final class InMemoryDaemon: Sendable {
         try state.withValue { state in
             let id = "s\(state.nextSession)"
             var directory = request.workingDirectory
-            if let projectID = request.projectID {
+            var projectID = request.projectID
+            if let itemID = request.itemID {
+                guard let item = state.items.first(where: { $0.id == itemID }) else { throw Self.unknownItem(itemID) }
+                guard projectID == nil || projectID == item.projectID else {
+                    throw DaemonError.refused(
+                        .invalidRequest, message: "\(item.title) is in another project; start the session in its own.")
+                }
+                projectID = item.projectID
+            }
+            if let projectID {
                 guard let project = state.projects.first(where: { $0.id == projectID }) else {
                     throw DaemonError.refused(.unknownProject, message: "There is no project \(projectID).")
                 }
@@ -165,7 +195,7 @@ package final class InMemoryDaemon: Sendable {
             let session = Session(
                 id: id, name: request.name, backend: request.backend,
                 workingDirectory: directory, model: request.model, host: request.host,
-                approvalMode: request.approvalMode, projectID: request.projectID)
+                approvalMode: request.approvalMode, projectID: projectID, itemID: request.itemID)
             state.nextSession += 1
             state.sessions.append(session)
             state.histories[session.id] = []
@@ -334,6 +364,7 @@ package final class InMemoryDaemon: Sendable {
             state.histories[session, default: []].append(event)
             if let index = state.sessions.firstIndex(where: { $0.id == session }) {
                 state.sessions[index].state = Self.state(after: kind, waiting: state.paused[session] != nil)
+                if kind.endsTurn { state.sessions[index].turns += 1 }
             }
             return (event, Array((state.watchers[session] ?? [:]).values))
         }
@@ -372,6 +403,7 @@ package final class InMemoryDaemon: Sendable {
             fork.forkedBeforeEventID = before
             fork.archived = false
             fork.keeper = false
+            fork.turns = 0
             state.nextSession += 1
             if chatOnly {
                 state.copyOf[fork.id] = state.copyOf[parent.id]
@@ -387,6 +419,8 @@ package final class InMemoryDaemon: Sendable {
             }
             state.sessions.append(fork)
             state.histories[fork.id] = history
+            fork.turns = history.filter(\.kind.endsTurn).count
+            state.sessions[state.sessions.count - 1] = fork
             return fork
         }
     }
@@ -404,6 +438,17 @@ package final class InMemoryDaemon: Sendable {
             if let name = update.name { state.sessions[index].name = name }
             if let archived = update.archived { state.sessions[index].archived = archived }
             if let keeper = update.keeper { state.sessions[index].keeper = keeper }
+            switch update.placement {
+            case .item(let itemID):
+                guard let item = state.items.first(where: { $0.id == itemID }) else { throw Self.unknownItem(itemID) }
+                guard item.projectID == state.sessions[index].projectID else {
+                    throw DaemonError.refused(
+                        .invalidRequest, message: "\(item.title) is in another project than session \(session).")
+                }
+                state.sessions[index].itemID = itemID
+            case .project: state.sessions[index].itemID = nil
+            case nil: break
+            }
             return state.sessions[index]
         }
     }
@@ -437,6 +482,202 @@ package final class InMemoryDaemon: Sendable {
                 self.state.withValue { $0.watchers[session]?[id] = nil }
             }
         }
+    }
+}
+
+// The board.
+extension InMemoryDaemon {
+    private static func unknownItem(_ item: String) -> DaemonError {
+        .refused(.unknownItem, message: "There is no task or subtask \(item); list the board to find its id.")
+    }
+
+    /// The project's items as shown, ordered as the daemon orders them.
+    private func items(_ project: String) throws -> [Item] {
+        try state.withValue { state in
+            guard state.projects.contains(where: { $0.id == project }) else {
+                throw DaemonError.refused(.unknownProject, message: "There is no project \(project).")
+            }
+            let items = state.items.filter { $0.projectID == project }.map { item in
+                var item = item
+                item.sessionIDs = state.sessions.filter { $0.itemID == item.id }.map(\.id)
+                return item
+            }
+            let ordered = { (items: [Item]) in
+                items.sorted { ($0.priority, $1.created) > ($1.priority, $0.created) }
+            }
+            let shown = Self.show(items, sessions: state.sessions)
+            return ordered(shown.filter { $0.parentID == nil }).flatMap { task in
+                [task] + ordered(shown.filter { $0.parentID == task.id })
+            }
+        }
+    }
+
+    /// What a session says about its item: waiting or failed is Waiting on
+    /// you, working is In progress, a finished turn is In review.
+    private static func said(by session: Session) -> ItemStatus? {
+        guard !session.archived else { return nil }
+        switch session.state {
+        case .waitingForApproval, .failed: return .waitingOnYou
+        case .working: return .inProgress
+        case .idle: return session.turns > 0 ? .inReview : nil
+        }
+    }
+
+    private static func show(_ items: [Item], sessions: [Session]) -> [Item] {
+        let rank: [ItemStatus: Int] = [.waitingOnYou: 3, .inProgress: 2, .inReview: 1]
+        let parents = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0.parentID) })
+        var said: [String: [ItemStatus]] = [:]
+        for session in sessions {
+            guard let item = session.itemID, let status = Self.said(by: session) else { continue }
+            said[item, default: []].append(status)
+            if let parent = parents[item] ?? nil { said[parent, default: []].append(status) }
+        }
+        return items.map { item in
+            var item = item
+            let given = item.fields.status
+            item.status =
+                given.closed ? given : (said[item.id]?.max { rank[$0, default: 0] < rank[$1, default: 0] } ?? given)
+            return item
+        }
+    }
+
+    private func createItem(_ project: String, _ fields: ItemFields) throws -> Item {
+        try state.withValue { state in
+            guard state.projects.contains(where: { $0.id == project }) else {
+                throw DaemonError.refused(.unknownProject, message: "There is no project \(project).")
+            }
+            guard !fields.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw DaemonError.refused(.invalidRequest, message: "An item needs a title.")
+            }
+            if let parentID = fields.parentID {
+                guard let parent = state.items.first(where: { $0.id == parentID }) else {
+                    throw Self.unknownItem(parentID)
+                }
+                guard parent.projectID == project, parent.parentID == nil else {
+                    throw DaemonError.refused(
+                        .invalidRequest, message: "A subtask goes under a task in the same project.")
+                }
+            }
+            let time = start + Double(1000 + state.nextChange)
+            let item = Item(id: "i\(state.nextItem)", projectID: project, fields: fields, created: time)
+            state.nextItem += 1
+            state.items.append(item)
+            Self.log(&state, item: item.id, before: nil, after: fields, time: time)
+            return item
+        }
+    }
+
+    private func updateItem(_ itemID: String, _ update: ItemUpdate) throws -> Item {
+        let projectID = try state.withValue { state in
+            guard let index = state.items.firstIndex(where: { $0.id == itemID }) else {
+                throw Self.unknownItem(itemID)
+            }
+            let before = state.items[index].fields
+            var after = before
+            if let title = update.title { after.title = title }
+            if let spec = update.spec { after.spec = spec }
+            if let status = update.status { after.status = status }
+            if let priority = update.priority { after.priority = priority }
+            if after != before {
+                let time = start + Double(1000 + state.nextChange)
+                state.items[index].fields = after
+                state.items[index].updated = time
+                Self.log(&state, item: itemID, before: before, after: after, time: time)
+            }
+            return state.items[index].projectID
+        }
+        return try shown(itemID, in: projectID)
+    }
+
+    private func shown(_ itemID: String, in project: String) throws -> Item {
+        guard let item = try items(project).first(where: { $0.id == itemID }) else { throw Self.unknownItem(itemID) }
+        return item
+    }
+
+    private static func log(
+        _ state: inout State, item: String, before: ItemFields?, after: ItemFields?, time: Date, reverts: UInt64? = nil
+    ) {
+        state.changes.append(
+            BoardChange(id: state.nextChange, itemID: item, time: time, before: before, after: after, reverts: reverts))
+        state.nextChange += 1
+    }
+
+    /// Puts the item back as it was before the change, removing it if the
+    /// change added it.
+    private func revert(_ changeID: UInt64) throws -> Item? {
+        let kept = try state.withValue { state -> (String, String)? in
+            guard let change = state.changes.first(where: { $0.id == changeID }) else {
+                throw DaemonError.refused(
+                    .unknownBoardChange, message: "There is no board change \(changeID); read the board's log.")
+            }
+            let time = start + Double(1000 + state.nextChange)
+            let index = state.items.firstIndex { $0.id == change.itemID }
+            guard let before = change.before else {
+                guard let index else { return nil }
+                let item = state.items[index]
+                let inUse =
+                    state.items.contains { $0.parentID == item.id } || state.sessions.contains { $0.itemID == item.id }
+                guard !inUse else {
+                    throw DaemonError.refused(
+                        .busy, message: "\(item.title) has subtasks or sessions; move or remove them first.")
+                }
+                state.items.remove(at: index)
+                state.removed[item.id] = item
+                Self.log(&state, item: item.id, before: item.fields, after: nil, time: time, reverts: changeID)
+                return nil
+            }
+            let projectID: String
+            if let index {
+                let current = state.items[index].fields
+                state.items[index].fields = before
+                state.items[index].updated = time
+                projectID = state.items[index].projectID
+                Self.log(&state, item: change.itemID, before: current, after: before, time: time, reverts: changeID)
+            } else {
+                guard var item = state.removed[change.itemID] else { throw Self.unknownItem(change.itemID) }
+                if let parent = before.parentID, !state.items.contains(where: { $0.id == parent }) {
+                    throw DaemonError.refused(
+                        .invalidRequest, message: "Its task was removed; put the task back first.")
+                }
+                item.fields = before
+                item.updated = time
+                projectID = item.projectID
+                state.removed[item.id] = nil
+                state.items.append(item)
+                Self.log(&state, item: change.itemID, before: nil, after: before, time: time, reverts: changeID)
+            }
+            return (change.itemID, projectID)
+        }
+        guard let (itemID, projectID) = kept else { return nil }
+        return try shown(itemID, in: projectID)
+    }
+
+    /// Sessions waiting on you: approvals, then failures, then replies.
+    private func inbox() -> [InboxEntry] {
+        state.withValue { state in
+            let entries = state.sessions.compactMap { session -> InboxEntry? in
+                guard !session.archived else { return nil }
+                let item = state.items.first { $0.id == session.itemID }
+                let reason: InboxReason
+                switch session.state {
+                case .waitingForApproval: reason = .approval
+                case .failed: reason = .failed
+                case .idle where session.turns > 0 && item?.fields.status.closed != true: reason = .reply
+                case .idle, .working: return nil
+                }
+                return InboxEntry(
+                    session: session, reason: reason,
+                    projectName: state.projects.first { $0.id == session.projectID }?.name, itemTitle: item?.title)
+            }
+            let order: [InboxReason] = [.approval, .failed, .reply]
+            return order.flatMap { reason in entries.filter { $0.reason == reason } }
+        }
+    }
+}
+
+extension SessionEvent.Kind {
+    fileprivate var endsTurn: Bool {
+        if case .turnEnded = self { true } else { false }
     }
 }
 

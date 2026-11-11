@@ -59,9 +59,17 @@ package struct ProjectsView: View {
     }
 
     private var list: some View {
-        List(selection: $store.selection.sending(\.sessionSelected)) {
+        List(selection: $store.selection.sending(\.selected)) {
+            Label("Inbox", systemImage: "tray")
+                .badge(store.inbox.count)
+                .tag(SidebarItem.inbox)
+                .accessibilityLabel(
+                    store.inbox.count == 1
+                        ? Text("Inbox, 1 session waiting") : Text("Inbox, \(store.inbox.count) sessions waiting"))
             ForEach(store.projects) { project in
                 Section {
+                    Label("Board", systemImage: "rectangle.split.3x1")
+                        .tag(SidebarItem.board(project.id))
                     tree(store.state.tree(in: project.id))
                 } header: {
                     HStack {
@@ -112,7 +120,7 @@ package struct ProjectsView: View {
 
     private func row(_ session: Session) -> some View {
         SessionRow(session: session)
-            .tag(session.id)
+            .tag(SidebarItem.session(session.id))
             .contextMenu {
                 Button("Rename…") { store.send(.renameTapped(session.id)) }
                 Button(session.keeper ? "Unmark as Keeper" : "Mark as Keeper") {
@@ -265,11 +273,16 @@ extension NewProjectView {
     }
 }
 
-struct NewSessionView: View {
+/// The sheet to start a session in a project or on one of its items.
+package struct NewSessionView: View {
     @Bindable var store: StoreOf<NewSessionFeature>
     @Environment(\.dismiss) private var dismiss
 
-    var body: some View {
+    package init(store: StoreOf<NewSessionFeature>) {
+        self.store = store
+    }
+
+    package var body: some View {
         Form {
             Section {
                 TextField("Name", text: $store.name, prompt: Text("What it's for"))
@@ -284,8 +297,18 @@ struct NewSessionView: View {
                     Text("Allow Edits").tag(ApprovalMode.allowEdits)
                     Text("Allow Everything").tag(ApprovalMode.allowEverything)
                 }
+                if let item = store.item, item.parentID != nil {
+                    Picker("Specs", selection: $store.specs) {
+                        Text("This Subtask's").tag(SpecScope.item)
+                        Text("This Subtask's and Its Task's").tag(SpecScope.withParents)
+                    }
+                }
             } header: {
-                Text("New Session in \(store.project.name)")
+                if let item = store.item {
+                    Text("New Session on \(item.title)")
+                } else {
+                    Text("New Session in \(store.project.name)")
+                }
             } footer: {
                 Text("It works in its own copy of \(Self.list(store.project.repositories.map(\.name))).")
                     .font(.caption)

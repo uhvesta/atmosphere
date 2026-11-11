@@ -17,6 +17,8 @@ extension ErrorCode {
             case .hostUnavailable: .hostUnavailable
             case .unknownProject: .unknownProject
             case .archived: .archived
+            case .unknownItem: .unknownItem
+            case .unknownBoardChange: .unknownBoardChange
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -103,7 +105,105 @@ extension Session {
             model: optional(info.model), state: state, parentID: optional(info.parentID),
             forkedBeforeEventID: optional(info.forkedBeforeEventID), host: optional(info.host),
             approvalMode: ApprovalMode(info.approvalMode), projectID: optional(info.projectID),
-            archived: info.archived, keeper: info.keeper)
+            archived: info.archived, keeper: info.keeper, itemID: optional(info.itemID), turns: Int(info.turns))
+    }
+}
+
+private func date(_ unixMs: Int64) -> Date {
+    Date(timeIntervalSince1970: Double(unixMs) / 1000)
+}
+
+extension ItemStatus {
+    init(_ status: Khodr_V1_ItemStatus) {
+        self =
+            switch status {
+            case .inProgress: .inProgress
+            case .waitingOnYou: .waitingOnYou
+            case .inReview: .inReview
+            case .done: .done
+            case .wontDo: .wontDo
+            case .todo, .unspecified, .UNRECOGNIZED: .todo
+            }
+    }
+
+    var proto: Khodr_V1_ItemStatus {
+        switch self {
+        case .todo: .todo
+        case .inProgress: .inProgress
+        case .waitingOnYou: .waitingOnYou
+        case .inReview: .inReview
+        case .done: .done
+        case .wontDo: .wontDo
+        }
+    }
+}
+
+extension Priority {
+    init(_ priority: Khodr_V1_Priority) {
+        self =
+            switch priority {
+            case .low: .low
+            case .medium: .medium
+            case .high: .high
+            case .urgent: .urgent
+            case .none, .UNRECOGNIZED: .none
+            }
+    }
+
+    var proto: Khodr_V1_Priority {
+        switch self {
+        case .none: .none
+        case .low: .low
+        case .medium: .medium
+        case .high: .high
+        case .urgent: .urgent
+        }
+    }
+}
+
+extension ItemFields {
+    init(_ fields: Khodr_V1_ItemFields) {
+        self.init(
+            parentID: optional(fields.parentID), title: fields.title, spec: fields.spec,
+            status: ItemStatus(fields.status), priority: Priority(fields.priority))
+    }
+}
+
+extension Item {
+    init(_ item: Khodr_V1_Item) {
+        self.init(
+            id: item.id, projectID: item.projectID,
+            fields: ItemFields(
+                parentID: optional(item.parentID), title: item.title, spec: item.spec,
+                status: ItemStatus(item.givenStatus), priority: Priority(item.priority)),
+            status: ItemStatus(item.status), created: date(item.createdUnixMs), updated: date(item.updatedUnixMs),
+            sessionIDs: item.sessionIds)
+    }
+}
+
+extension BoardChange {
+    init(_ change: Khodr_V1_BoardChange) {
+        self.init(
+            id: change.id, itemID: change.itemID, time: date(change.timeUnixMs),
+            before: change.hasBefore ? ItemFields(change.before) : nil,
+            after: change.hasAfter ? ItemFields(change.after) : nil,
+            reverts: change.reverts == 0 ? nil : change.reverts)
+    }
+}
+
+extension InboxEntry {
+    /// Nil for a reason this app doesn't know, from a newer daemon.
+    init?(_ entry: Khodr_V1_InboxEntry) throws {
+        let reason: InboxReason
+        switch entry.reason {
+        case .approval: reason = .approval
+        case .reply: reason = .reply
+        case .failed: reason = .failed
+        case .unspecified, .UNRECOGNIZED: return nil
+        }
+        self.init(
+            session: try Session(entry.session), reason: reason, projectName: optional(entry.projectName),
+            itemTitle: optional(entry.itemTitle))
     }
 }
 

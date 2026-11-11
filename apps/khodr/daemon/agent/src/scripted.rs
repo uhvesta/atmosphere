@@ -53,6 +53,11 @@ pub enum Step {
     Fail {
         message: String,
     },
+    /// Holds the turn, working, until `path` exists inside the working
+    /// directory; for tests that look at a session mid-turn.
+    WaitFor {
+        path: PathBuf,
+    },
 }
 
 fn succeeds() -> bool {
@@ -200,6 +205,12 @@ async fn play(turn: &Turn, index: usize, step: &Step) -> Result<(), ScriptedErro
             return Err(ScriptedError::Scripted {
                 message: message.clone(),
             });
+        }
+        Step::WaitFor { path } => {
+            let target = inside(&turn.record().working_directory, path)?;
+            while !tokio::fs::try_exists(&target).await.unwrap_or(false) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
         }
     }
     Ok(())

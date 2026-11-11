@@ -7,8 +7,9 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use khodr_agent::Repository;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
+use crate::board::{Change, Item, ItemFields, ItemPatch, Priority, Status};
 use crate::error::StoreError;
 
 /// Each step takes the schema from its index to the next version; the
@@ -44,6 +45,34 @@ const MIGRATIONS: &[&str] = &["
             ),
             repository
         FROM projects;
+", "
+    CREATE TABLE items (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects (id),
+        parent_id TEXT REFERENCES items (id),
+        title TEXT NOT NULL,
+        spec TEXT NOT NULL,
+        status TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        created_unix_ms INTEGER NOT NULL,
+        updated_unix_ms INTEGER NOT NULL
+    );
+    CREATE INDEX items_by_project ON items (project_id);
+    CREATE INDEX items_by_parent ON items (parent_id);
+    ALTER TABLE sessions ADD COLUMN item_id TEXT REFERENCES items (id);
+    CREATE INDEX sessions_by_item ON sessions (item_id);
+    -- Each item's fields before and after, as JSON; null before for an
+    -- added item and after for a removed one.
+    CREATE TABLE board_changes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id TEXT NOT NULL REFERENCES projects (id),
+        item_id TEXT NOT NULL,
+        time_unix_ms INTEGER NOT NULL,
+        before TEXT,
+        after TEXT,
+        reverts INTEGER REFERENCES board_changes (id)
+    );
+    CREATE INDEX board_changes_by_project ON board_changes (project_id, id);
 "];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +91,8 @@ pub struct Placement {
     /// Empty for this Mac.
     pub host: String,
     pub project: Option<String>,
+    /// The task or subtask it works on; None for its project itself.
+    pub item: Option<String>,
 }
 
 pub struct Store {
@@ -197,22 +228,26 @@ impl Store {
     }
 
     /// Records that `session` runs on `host`, and, if given, belongs to
-    /// `project`. A session's project, once set, is kept.
+    /// `project` and works on `item`. A session's project and item, once
+    /// set, are kept; [`Store::move_session`] changes its item.
     pub fn place(
         &self,
         session: &str,
         host: &str,
         project: Option<&str>,
+        item: Option<&str>,
     ) -> Result<(), StoreError> {
         self.lock()
             .execute(
-                "INSERT INTO sessions (id, project_id, host) VALUES (?1, ?2, ?3)
+                "INSERT INTO sessions (id, project_id, host, item_id) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT (id) DO UPDATE SET
                      host = excluded.host,
-                     project_id = coalesce(sessions.project_id, excluded.project_id)
+                     project_id = coalesce(sessions.project_id, excluded.project_id),
+                     item_id = coalesce(sessions.item_id, excluded.item_id)
                  WHERE sessions.host IS NOT excluded.host
-                     OR (sessions.project_id IS NULL AND excluded.project_id IS NOT NULL)",
-                params![session, project, host],
+                     OR (sessions.project_id IS NULL AND excluded.project_id IS NOT NULL)
+                     OR (sessions.item_id IS NULL AND excluded.item_id IS NOT NULL)",
+                params![session, project, host, item],
             )
             .map_err(|source| match source {
                 rusqlite::Error::SqliteFailure(failure, _)
@@ -231,18 +266,459 @@ impl Store {
     pub fn placement(&self, session: &str) -> Result<Option<Placement>, StoreError> {
         self.lock()
             .query_row(
-                "SELECT host, project_id FROM sessions WHERE id = ?1",
+                "SELECT host, project_id, item_id FROM sessions WHERE id = ?1",
                 [session],
                 |row| {
                     Ok(Placement {
                         host: row.get(0)?,
                         project: row.get(1)?,
+                        item: row.get(2)?,
                     })
                 },
             )
             .optional()
             .map_err(self.failed())
     }
+
+    /// Moves `session` to `item` of its project, or to the project itself.
+    pub fn move_session(&self, session: &str, item: Option<&str>) -> Result<(), StoreError> {
+        let placement = self
+            .placement(session)?
+            .ok_or_else(|| StoreError::UnknownSession {
+                id: session.to_owned(),
+            })?;
+        if let Some(item) = item {
+            let found = self.item(item)?;
+            if placement.project.as_deref() != Some(found.project_id.as_str()) {
+                return Err(StoreError::ItemInAnotherProject {
+                    title: found.fields.title,
+                });
+            }
+        }
+        self.lock()
+            .execute(
+                "UPDATE sessions SET item_id = ?2 WHERE id = ?1",
+                params![session, item],
+            )
+            .map_err(self.failed())?;
+        Ok(())
+    }
+
+    /// Adds a task, or a subtask under `fields.parent_id`, to `project`.
+    pub fn add_item(&self, project: &str, fields: ItemFields) -> Result<Item, StoreError> {
+        if fields.title.trim().is_empty() {
+            return Err(StoreError::NoTitle);
+        }
+        self.project(project)?;
+        if let Some(parent) = &fields.parent_id {
+            let parent = self.item(parent)?;
+            if parent.project_id != project {
+                return Err(StoreError::ParentInAnotherProject {
+                    title: parent.fields.title,
+                });
+            }
+            if parent.fields.parent_id.is_some() {
+                return Err(StoreError::NestedSubtask {
+                    title: parent.fields.title,
+                });
+            }
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = now_unix_ms();
+        let mut connection = self.lock();
+        let added = (|| {
+            let transaction = connection.transaction()?;
+            insert_item(&transaction, &id, project, &fields, now)?;
+            log(&transaction, project, &id, None, Some(&fields), None)?;
+            transaction.commit()
+        })();
+        added.map_err(self.failed())?;
+        drop(connection);
+        self.item(&id)
+    }
+
+    /// Changes the fields `patch` sets, recording the change if there is
+    /// one.
+    pub fn update_item(&self, id: &str, patch: ItemPatch) -> Result<Item, StoreError> {
+        let item = self.item(id)?;
+        let mut fields = item.fields.clone();
+        if let Some(title) = patch.title {
+            if title.trim().is_empty() {
+                return Err(StoreError::NoTitle);
+            }
+            fields.title = title;
+        }
+        if let Some(spec) = patch.spec {
+            fields.spec = spec;
+        }
+        if let Some(status) = patch.status {
+            fields.status = status;
+        }
+        if let Some(priority) = patch.priority {
+            fields.priority = priority;
+        }
+        if fields == item.fields {
+            return Ok(item);
+        }
+        let mut connection = self.lock();
+        let updated = (|| {
+            let transaction = connection.transaction()?;
+            update_fields(&transaction, id, &fields)?;
+            log(
+                &transaction,
+                &item.project_id,
+                id,
+                Some(&item.fields),
+                Some(&fields),
+                None,
+            )?;
+            transaction.commit()
+        })();
+        updated.map_err(self.failed())?;
+        drop(connection);
+        self.item(id)
+    }
+
+    pub fn item(&self, id: &str) -> Result<Item, StoreError> {
+        let connection = self.lock();
+        let found = connection
+            .query_row(&format!("{ITEM_COLUMNS} WHERE id = ?1"), [id], item_row)
+            .optional()
+            .and_then(|found| {
+                found
+                    .map(|item| with_sessions(&connection, item))
+                    .transpose()
+            })
+            .map_err(self.failed())?;
+        found.ok_or_else(|| StoreError::UnknownItem { id: id.to_owned() })
+    }
+
+    /// `project`'s items: tasks by priority, most urgent first, then by when
+    /// they were added, each followed by its subtasks in the same order.
+    pub fn items(&self, project: &str) -> Result<Vec<Item>, StoreError> {
+        self.project(project)?;
+        let connection = self.lock();
+        let listed = (|| -> rusqlite::Result<Vec<Item>> {
+            let mut statement = connection.prepare(&format!(
+                "{ITEM_COLUMNS} WHERE project_id = ?1 ORDER BY created_unix_ms, rowid"
+            ))?;
+            let items: Vec<Item> = statement
+                .query_map([project], item_row)?
+                .collect::<Result<_, _>>()?;
+            items
+                .into_iter()
+                .map(|item| with_sessions(&connection, item))
+                .collect()
+        })();
+        let mut items = listed.map_err(self.failed())?;
+        // Stable, so equal priorities keep the order they were added in.
+        items.sort_by(|a, b| b.fields.priority.cmp(&a.fields.priority));
+        let (tasks, subtasks): (Vec<Item>, Vec<Item>) = items
+            .into_iter()
+            .partition(|item| item.fields.parent_id.is_none());
+        let mut ordered = Vec::with_capacity(tasks.len() + subtasks.len());
+        for task in tasks {
+            let id = task.id.clone();
+            ordered.push(task);
+            ordered.extend(
+                subtasks
+                    .iter()
+                    .filter(|subtask| subtask.fields.parent_id.as_deref() == Some(id.as_str()))
+                    .cloned(),
+            );
+        }
+        Ok(ordered)
+    }
+
+    /// `project`'s board changes, newest first.
+    pub fn board_log(&self, project: &str) -> Result<Vec<Change>, StoreError> {
+        self.project(project)?;
+        let connection = self.lock();
+        let listed = (|| -> rusqlite::Result<Vec<Change>> {
+            let mut statement = connection.prepare(
+                "SELECT id, item_id, time_unix_ms, before, after, reverts FROM board_changes
+                 WHERE project_id = ?1 ORDER BY id DESC",
+            )?;
+            statement
+                .query_map([project], change_row)?
+                .collect::<Result<_, _>>()
+        })();
+        listed.map_err(self.failed())
+    }
+
+    /// Puts an item back as it was before change `id`, and records that as
+    /// a change of its own. Returns the item, or None if it was removed.
+    pub fn revert(&self, id: u64) -> Result<Option<Item>, StoreError> {
+        let mut connection = self.lock();
+        let change = connection
+            .query_row(
+                "SELECT id, item_id, time_unix_ms, before, after, reverts FROM board_changes
+                 WHERE id = ?1",
+                [i64::try_from(id).unwrap_or(i64::MAX)],
+                change_row,
+            )
+            .optional()
+            .map_err(self.failed())?
+            .ok_or(StoreError::UnknownChange { id })?;
+        let project: String = connection
+            .query_row(
+                "SELECT project_id FROM board_changes WHERE id = ?1",
+                [i64::try_from(id).unwrap_or(i64::MAX)],
+                |row| row.get(0),
+            )
+            .map_err(self.failed())?;
+        let current = connection
+            .query_row(
+                &format!("{ITEM_COLUMNS} WHERE id = ?1"),
+                [&change.item_id],
+                item_row,
+            )
+            .optional()
+            .map_err(self.failed())?;
+        let now = now_unix_ms();
+        let transaction = connection.transaction().map_err(self.failed())?;
+        match (change.before, current) {
+            // It added the item: remove it, unless something hangs off it.
+            (None, Some(item)) => {
+                let (subtasks, sessions): (i64, i64) = transaction
+                    .query_row(
+                        "SELECT
+                            (SELECT count(*) FROM items WHERE parent_id = ?1),
+                            (SELECT count(*) FROM sessions WHERE item_id = ?1)",
+                        [&item.id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(self.failed())?;
+                if subtasks > 0 || sessions > 0 {
+                    return Err(StoreError::ItemInUse {
+                        title: item.fields.title,
+                        subtasks,
+                        sessions,
+                    });
+                }
+                transaction
+                    .execute("DELETE FROM items WHERE id = ?1", [&item.id])
+                    .map_err(self.failed())?;
+                log(
+                    &transaction,
+                    &project,
+                    &item.id,
+                    Some(&item.fields),
+                    None,
+                    Some(id),
+                )
+                .map_err(self.failed())?;
+            }
+            // Already gone; nothing to undo.
+            (None, None) => {}
+            (Some(before), Some(item)) => {
+                if before != item.fields {
+                    update_fields(&transaction, &item.id, &before).map_err(self.failed())?;
+                    log(
+                        &transaction,
+                        &project,
+                        &item.id,
+                        Some(&item.fields),
+                        Some(&before),
+                        Some(id),
+                    )
+                    .map_err(self.failed())?;
+                }
+            }
+            // It removed the item: add it back, under its task if that is
+            // still there.
+            (Some(before), None) => {
+                if let Some(parent) = &before.parent_id {
+                    let there: bool = transaction
+                        .query_row(
+                            "SELECT EXISTS (SELECT 1 FROM items WHERE id = ?1)",
+                            [parent],
+                            |row| row.get(0),
+                        )
+                        .map_err(self.failed())?;
+                    if !there {
+                        return Err(StoreError::ParentRemoved {
+                            title: before.title,
+                        });
+                    }
+                }
+                insert_item(&transaction, &change.item_id, &project, &before, now)
+                    .map_err(self.failed())?;
+                log(
+                    &transaction,
+                    &project,
+                    &change.item_id,
+                    None,
+                    Some(&before),
+                    Some(id),
+                )
+                .map_err(self.failed())?;
+            }
+        }
+        transaction.commit().map_err(self.failed())?;
+        drop(connection);
+        match self.item(&change.item_id) {
+            Ok(item) => Ok(Some(item)),
+            Err(StoreError::UnknownItem { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+const ITEM_COLUMNS: &str = "SELECT id, project_id, parent_id, title, spec, status, priority,
+    created_unix_ms, updated_unix_ms FROM items";
+
+/// An item's row, without its sessions.
+fn item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Item> {
+    Ok(Item {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        fields: ItemFields {
+            parent_id: row.get(2)?,
+            title: row.get(3)?,
+            spec: row.get(4)?,
+            status: from_text(row, 5)?,
+            priority: from_text(row, 6)?,
+        },
+        created_unix_ms: row.get(7)?,
+        updated_unix_ms: row.get(8)?,
+        session_ids: Vec::new(),
+    })
+}
+
+fn with_sessions(connection: &Connection, item: Item) -> rusqlite::Result<Item> {
+    let mut statement =
+        connection.prepare_cached("SELECT id FROM sessions WHERE item_id = ?1 ORDER BY rowid")?;
+    let session_ids = statement
+        .query_map([&item.id], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    Ok(Item {
+        session_ids,
+        ..item
+    })
+}
+
+fn change_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Change> {
+    let fields = |index: usize| -> rusqlite::Result<Option<ItemFields>> {
+        let text: Option<String> = row.get(index)?;
+        text.map(|text| {
+            serde_json::from_str(&text).map_err(|source| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    index,
+                    rusqlite::types::Type::Text,
+                    Box::new(source),
+                )
+            })
+        })
+        .transpose()
+    };
+    let id: i64 = row.get(0)?;
+    let reverts: Option<i64> = row.get(5)?;
+    Ok(Change {
+        id: u64::try_from(id).unwrap_or_default(),
+        item_id: row.get(1)?,
+        time_unix_ms: row.get(2)?,
+        before: fields(3)?,
+        after: fields(4)?,
+        reverts: reverts.and_then(|reverts| u64::try_from(reverts).ok()),
+    })
+}
+
+/// A status or priority, kept as its name.
+fn from_text<T: serde::de::DeserializeOwned>(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> rusqlite::Result<T> {
+    let text: String = row.get(index)?;
+    serde_json::from_value(serde_json::Value::String(text)).map_err(|source| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(source),
+        )
+    })
+}
+
+fn text<T: serde::Serialize>(value: T) -> String {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::String(text)) => text,
+        _ => String::new(),
+    }
+}
+
+fn insert_item(
+    transaction: &Transaction<'_>,
+    id: &str,
+    project: &str,
+    fields: &ItemFields,
+    now: i64,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        "INSERT INTO items (id, project_id, parent_id, title, spec, status, priority,
+             created_unix_ms, updated_unix_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+        params![
+            id,
+            project,
+            fields.parent_id,
+            fields.title,
+            fields.spec,
+            text::<Status>(fields.status),
+            text::<Priority>(fields.priority),
+            now,
+        ],
+    )?;
+    Ok(())
+}
+
+fn update_fields(
+    transaction: &Transaction<'_>,
+    id: &str,
+    fields: &ItemFields,
+) -> rusqlite::Result<()> {
+    transaction.execute(
+        "UPDATE items SET title = ?2, spec = ?3, status = ?4, priority = ?5,
+             updated_unix_ms = ?6
+         WHERE id = ?1",
+        params![
+            id,
+            fields.title,
+            fields.spec,
+            text::<Status>(fields.status),
+            text::<Priority>(fields.priority),
+            now_unix_ms(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn log(
+    transaction: &Transaction<'_>,
+    project: &str,
+    item: &str,
+    before: Option<&ItemFields>,
+    after: Option<&ItemFields>,
+    reverts: Option<u64>,
+) -> rusqlite::Result<()> {
+    let json = |fields: Option<&ItemFields>| {
+        fields
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|source| rusqlite::Error::ToSqlConversionFailure(Box::new(source)))
+    };
+    transaction.execute(
+        "INSERT INTO board_changes (project_id, item_id, time_unix_ms, before, after, reverts)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            project,
+            item,
+            now_unix_ms(),
+            json(before)?,
+            json(after)?,
+            reverts.and_then(|reverts| i64::try_from(reverts).ok()),
+        ],
+    )?;
+    Ok(())
 }
 
 /// A project's row, without its repositories.
@@ -354,7 +830,7 @@ mod tests {
             Err(StoreError::UnknownProject { .. })
         ));
         assert!(matches!(
-            store.place("s", "", Some("nope")),
+            store.place("s", "", Some("nope"), None),
             Err(StoreError::UnknownProject { .. })
         ));
     }
@@ -367,13 +843,16 @@ mod tests {
             .add_project("one".into(), repositories("/code/one"), String::new())
             .expect("added");
         assert_eq!(store.placement("s").expect("read"), None);
-        store.place("s", "", Some(&project.id)).expect("placed");
-        store.place("s", "build", None).expect("placed again");
+        store
+            .place("s", "", Some(&project.id), None)
+            .expect("placed");
+        store.place("s", "build", None, None).expect("placed again");
         assert_eq!(
             store.placement("s").expect("read"),
             Some(Placement {
                 host: "build".into(),
                 project: Some(project.id),
+                item: None,
             })
         );
     }

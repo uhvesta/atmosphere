@@ -76,11 +76,133 @@ enum ProjectCommand {
     List,
 }
 
+/// Where an item is on the board.
+#[derive(Clone, Copy, ValueEnum)]
+enum Status {
+    Todo,
+    InProgress,
+    WaitingOnYou,
+    InReview,
+    Done,
+    WontDo,
+}
+
+impl From<Status> for pb::ItemStatus {
+    fn from(status: Status) -> Self {
+        match status {
+            Status::Todo => Self::Todo,
+            Status::InProgress => Self::InProgress,
+            Status::WaitingOnYou => Self::WaitingOnYou,
+            Status::InReview => Self::InReview,
+            Status::Done => Self::Done,
+            Status::WontDo => Self::WontDo,
+        }
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Priority {
+    None,
+    Low,
+    Medium,
+    High,
+    Urgent,
+}
+
+impl From<Priority> for pb::Priority {
+    fn from(priority: Priority) -> Self {
+        match priority {
+            Priority::None => Self::None,
+            Priority::Low => Self::Low,
+            Priority::Medium => Self::Medium,
+            Priority::High => Self::High,
+            Priority::Urgent => Self::Urgent,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum ItemCommand {
+    /// Add a task, or a subtask with --parent, and print its id.
+    Add {
+        #[arg(long)]
+        project: String,
+        /// The task to add a subtask under.
+        #[arg(long, default_value = "")]
+        parent: String,
+        title: String,
+        /// A Markdown file of its spec; `-` reads it from stdin.
+        #[arg(long)]
+        spec: Option<PathBuf>,
+        #[arg(long, value_enum, default_value_t = Status::Todo)]
+        status: Status,
+        #[arg(long, value_enum, default_value_t = Priority::None)]
+        priority: Priority,
+    },
+    /// Change a task or subtask.
+    Edit {
+        item: String,
+        #[arg(long)]
+        title: Option<String>,
+        /// A Markdown file of its spec; `-` reads it from stdin.
+        #[arg(long)]
+        spec: Option<PathBuf>,
+        #[arg(long, value_enum)]
+        status: Option<Status>,
+        #[arg(long, value_enum)]
+        priority: Option<Priority>,
+    },
+    /// Set a task's or subtask's status. While its sessions are busy, the
+    /// board shows theirs instead, unless it is Done or Won't do.
+    Move {
+        item: String,
+        #[arg(value_enum)]
+        status: Status,
+    },
+    /// List a project's tasks, each followed by its subtasks.
+    List {
+        #[arg(long)]
+        project: String,
+    },
+    /// Print an item's spec.
+    Spec {
+        item: String,
+        #[arg(long)]
+        project: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum BoardCommand {
+    /// Print a project's board changes, newest first.
+    Log {
+        #[arg(long)]
+        project: String,
+    },
+    /// Put an item back as it was before a change.
+    Revert { change: u64 },
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Add or list projects.
     #[command(subcommand)]
     Project(ProjectCommand),
+    /// Add, change or list a project's tasks and subtasks.
+    #[command(subcommand)]
+    Item(ItemCommand),
+    /// Read or revert a project's board changes.
+    #[command(subcommand)]
+    Board(BoardCommand),
+    /// List every session waiting on you, across projects.
+    Inbox,
+    /// Move a session to a task or subtask of its project, or with no
+    /// --item to the project itself.
+    MoveSession {
+        session: String,
+        #[arg(long, default_value = "")]
+        item: String,
+    },
     /// Start a session and print its id.
     Start {
         #[arg(long, value_enum)]
@@ -90,9 +212,16 @@ enum Command {
         /// given others.
         #[arg(long, default_value = "")]
         project: String,
+        /// The task or subtask it works on; the project is its. It reads the
+        /// item's spec ahead of its instructions.
+        #[arg(long, default_value = "")]
+        item: String,
+        /// Also read the spec of the task above its subtask.
+        #[arg(long, requires = "item")]
+        with_parents: bool,
         /// The folder the agent works in, on its host, as it is; required
-        /// without --project.
-        #[arg(long, required_unless_present = "project")]
+        /// without --project or --item.
+        #[arg(long, required_unless_present_any = ["project", "item"])]
         directory: Option<PathBuf>,
         /// What it may do without asking.
         #[arg(long, value_enum, default_value_t = Approval::Ask)]
@@ -259,9 +388,52 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 other => return Err(unexpected("the projects", &other)),
             }
         }
+        Command::Item(command) => item(&client, command).await?,
+        Command::Board(BoardCommand::Log { project }) => {
+            let request = Request::ReadBoardLog(pb::ReadBoardLog {
+                project_id: project,
+            });
+            match client.call(request).await? {
+                Response::BoardLog(log) => {
+                    for change in &log.changes {
+                        println!("{}", print::change(change));
+                    }
+                }
+                other => return Err(unexpected("the board log", &other)),
+            }
+        }
+        Command::Board(BoardCommand::Revert { change }) => {
+            let request = Request::RevertBoardChange(pb::RevertBoardChange { change_id: change });
+            expect_ok(
+                client.call(request).await?,
+                |response| matches!(response, Response::BoardChangeReverted(_)),
+                "BoardChangeReverted",
+            )?;
+        }
+        Command::Inbox => match client.call(Request::ListInbox(pb::ListInbox {})).await? {
+            Response::Inbox(inbox) => {
+                for entry in &inbox.entries {
+                    println!("{}", print::inbox_entry(entry));
+                }
+            }
+            other => return Err(unexpected("the inbox", &other)),
+        },
+        Command::MoveSession { session, item } => {
+            update(
+                &client,
+                pb::UpdateSession {
+                    session_id: session,
+                    item_id: Some(item),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        }
         Command::Start {
             backend,
             project,
+            item,
+            with_parents,
             directory,
             approval,
             name,
@@ -293,6 +465,13 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 approval_mode: pb::ApprovalMode::from(approval).into(),
                 project_id: project,
                 repositories: Vec::new(),
+                item_id: item,
+                specs: if with_parents {
+                    pb::SpecScope::WithParents
+                } else {
+                    pb::SpecScope::Item
+                }
+                .into(),
             });
             match client.call(request).await? {
                 Response::SessionStarted(pb::SessionStarted {
@@ -453,6 +632,101 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
         },
     }
     Ok(())
+}
+
+async fn item(client: &Client, command: ItemCommand) -> Result<(), CliError> {
+    use pb::request::Kind as Request;
+    use pb::response::Kind as Response;
+    let updated = |response: &Response| matches!(response, Response::ItemUpdated(_));
+    match command {
+        ItemCommand::Add {
+            project,
+            parent,
+            title,
+            spec,
+            status,
+            priority,
+        } => {
+            let request = Request::CreateItem(pb::CreateItem {
+                project_id: project,
+                parent_id: parent,
+                title,
+                spec: spec
+                    .map(|path| read_spec(&path))
+                    .transpose()?
+                    .unwrap_or_default(),
+                status: pb::ItemStatus::from(status).into(),
+                priority: pb::Priority::from(priority).into(),
+            });
+            match client.call(request).await? {
+                Response::ItemCreated(pb::ItemCreated { item: Some(item) }) => {
+                    println!("{}", item.id);
+                }
+                other => return Err(unexpected("the created item", &other)),
+            }
+        }
+        ItemCommand::Edit {
+            item,
+            title,
+            spec,
+            status,
+            priority,
+        } => {
+            let request = Request::UpdateItem(pb::UpdateItem {
+                item_id: item,
+                title,
+                spec: spec.map(|path| read_spec(&path)).transpose()?,
+                status: status.map(|status| pb::ItemStatus::from(status).into()),
+                priority: priority.map(|priority| pb::Priority::from(priority).into()),
+            });
+            expect_ok(client.call(request).await?, updated, "ItemUpdated")?;
+        }
+        ItemCommand::Move { item, status } => {
+            let request = Request::UpdateItem(pb::UpdateItem {
+                item_id: item,
+                status: Some(pb::ItemStatus::from(status).into()),
+                ..Default::default()
+            });
+            expect_ok(client.call(request).await?, updated, "ItemUpdated")?;
+        }
+        ItemCommand::List { project } => {
+            for item in items(client, project).await? {
+                println!("{}", print::item(&item));
+            }
+        }
+        ItemCommand::Spec { item, project } => {
+            let found = items(client, project)
+                .await?
+                .into_iter()
+                .find(|found| found.id == item)
+                .ok_or(CliError::UnknownItem { item })?;
+            print!("{}", found.spec);
+        }
+    }
+    Ok(())
+}
+
+async fn items(client: &Client, project: String) -> Result<Vec<pb::Item>, CliError> {
+    let request = pb::request::Kind::ListItems(pb::ListItems {
+        project_id: project,
+    });
+    match client.call(request).await? {
+        pb::response::Kind::Items(items) => Ok(items.items),
+        other => Err(unexpected("the items", &other)),
+    }
+}
+
+/// A spec from `path`, or from stdin for `-`.
+fn read_spec(path: &std::path::Path) -> Result<String, CliError> {
+    let read = if path == std::path::Path::new("-") {
+        std::io::read_to_string(std::io::stdin())
+    } else {
+        std::fs::read_to_string(path)
+    };
+    read.map_err(|source| CliError::ReadSpec {
+        path: path.to_owned(),
+        source,
+    })
 }
 
 /// A `--repository` value: `PATH` or `NAME=PATH`, made absolute.

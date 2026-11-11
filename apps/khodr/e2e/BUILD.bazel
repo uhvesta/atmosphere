@@ -90,6 +90,25 @@ rust_test(
     deps = ["@crates//:tempfile"],
 )
 
+# The board: a session on a subtask moves it and its task.
+rust_test(
+    name = "board_test",
+    srcs = [
+        "board_test.rs",
+        "common.rs",
+    ],
+    crate_root = "board_test.rs",
+    data = [
+        "//apps/khodr/daemon/cli:khodr",
+        "//apps/khodr/daemon/khodrd",
+    ],
+    env = {
+        "KHODR": "$(rootpath //apps/khodr/daemon/cli:khodr)",
+        "KHODRD": "$(rootpath //apps/khodr/daemon/khodrd)",
+    },
+    deps = ["@crates//:tempfile"],
+)
+
 # Where khodrd is in the runfiles, for the Swift test to start it.
 genrule(
     name = "binaries_swift",

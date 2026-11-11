@@ -38,6 +38,16 @@ pub enum CliError {
         source: std::io::Error,
     },
 
+    #[error("couldn't read the spec {path}; check the path, or pass - to read it from stdin")]
+    ReadSpec {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("the project has no task or subtask {item:?}; list its items to find the id")]
+    UnknownItem { item: String },
+
     #[error(
         "khodrd stopped sending the session's events before it was idle; the message was sent, so read its history to see how far it got"
     )]

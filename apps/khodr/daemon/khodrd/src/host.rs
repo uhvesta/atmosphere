@@ -287,7 +287,14 @@ impl Host {
                     .await?;
                 Response::ApprovalModeSet(pb::ApprovalModeSet {})
             }
-            Request::CreateProject(_) | Request::ListProjects(_) => {
+            Request::CreateProject(_)
+            | Request::ListProjects(_)
+            | Request::CreateItem(_)
+            | Request::UpdateItem(_)
+            | Request::ListItems(_)
+            | Request::ReadBoardLog(_)
+            | Request::RevertBoardChange(_)
+            | Request::ListInbox(_) => {
                 return Err(HostError::NotForHosts);
             }
             Request::AbortTurn(abort) => {

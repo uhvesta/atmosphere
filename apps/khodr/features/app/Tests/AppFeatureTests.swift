@@ -18,7 +18,7 @@ final class AppFeatureTests: XCTestCase {
         }
         store.exhaustivity = .off
 
-        await store.send(\.sidebar.sessionSelected, session.id)
+        await store.send(\.sidebar.selected, .session(session.id))
         await store.receive(\.sidebar.delegate.openSession)
         XCTAssertEqual(store.state.session?.session, session)
     }
@@ -33,7 +33,7 @@ final class AppFeatureTests: XCTestCase {
         let store = TestStore(initialState: state) { AppFeature() }
         store.exhaustivity = .off
 
-        await store.send(\.sidebar.sessionSelected, session.id)
+        await store.send(\.sidebar.selected, .session(session.id))
         await store.receive(\.sidebar.delegate.openSession)
         XCTAssertEqual(store.state.session?.draft, "half written")
     }
@@ -59,7 +59,7 @@ final class AppFeatureTests: XCTestCase {
         let fork = try XCTUnwrap(store.state.session?.session)
         XCTAssertNotEqual(fork.id, session.id)
         XCTAssertEqual(fork.parentID, session.id)
-        XCTAssertEqual(store.state.sidebar.selection, fork.id)
+        XCTAssertEqual(store.state.sidebar.selection, .session(fork.id))
         XCTAssertEqual(Set(store.state.sidebar.sessions.ids), [session.id, fork.id])
     }
 }

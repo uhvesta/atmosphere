@@ -4,12 +4,22 @@ import SwiftUI
 /// lists, quotes, code with Copy, rules and tables. While the reply is
 /// written, only its last block is read again as words come, and marks
 /// it hasn't closed yet don't show.
-struct MarkdownText: View {
+public struct MarkdownText: View {
     let text: String
     var isWriting = false
     @State private var stream = StreamBox()
 
-    var body: some View {
+    /// A finished piece of Markdown, such as a spec.
+    public init(_ text: String) {
+        self.text = text
+    }
+
+    init(text: String, isWriting: Bool = false) {
+        self.text = text
+        self.isWriting = isWriting
+    }
+
+    public var body: some View {
         let blocks = stream.blocks(of: text, writing: isWriting)
         VStack(alignment: .leading, spacing: 10) {
             ForEach(blocks.indices, id: \.self) { index in

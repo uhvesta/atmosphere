@@ -2,17 +2,20 @@ import ComposableArchitecture
 import Foundation
 import KhodrDaemonClient
 
-/// The sidebar: every project with its sessions as a tree of forks, kept up
-/// to date; the sheets to add a project and to start a session in one; and
-/// renaming, archiving, comparing and marking the keeper.
+/// The sidebar: the inbox, then every project with its board and its
+/// sessions as a tree of forks, kept up to date; the sheets to add a project
+/// and to start a session in one; and renaming, archiving, comparing and
+/// marking the keeper.
 @Reducer
 package struct ProjectsFeature {
     @ObservableState
     package struct State: Equatable {
         package var projects: IdentifiedArrayOf<Project> = []
         package var sessions: IdentifiedArrayOf<Session> = []
-        /// The open session's id.
-        package var selection: String?
+        /// Every session waiting on you.
+        package var inbox: [InboxEntry] = []
+        /// What's open beside the sidebar.
+        package var selection: SidebarItem?
         /// Why the list couldn't be read, and what to do about it; nil once
         /// it was.
         package var failure: String?
@@ -73,11 +76,11 @@ package struct ProjectsFeature {
         case task
         /// Reads the list once.
         case refresh
-        case loaded(projects: [Project], sessions: [Session])
+        case loaded(projects: [Project], sessions: [Session], inbox: [InboxEntry])
         case loadFailed(String)
         case addProjectTapped
         case newSessionTapped(projectID: Project.ID)
-        case sessionSelected(Session.ID?)
+        case selected(SidebarItem?)
         case renameTapped(Session.ID)
         case archiveTapped(Session.ID, archived: Bool)
         case keeperTapped(Session.ID, keeper: Bool)
@@ -90,6 +93,8 @@ package struct ProjectsFeature {
         @CasePathable
         package enum Delegate: Equatable {
             case openSession(Session)
+            case openBoard(Project)
+            case openInbox
         }
     }
 
@@ -118,8 +123,9 @@ package struct ProjectsFeature {
             case .refresh:
                 return .run { send in await send(await load()) }
 
-            case .loaded(let projects, let sessions):
+            case .loaded(let projects, let sessions, let inbox):
                 state.failure = nil
+                state.inbox = inbox
                 state.projects = IdentifiedArray(uniqueElements: projects)
                 state.sessions = IdentifiedArray(sessions, uniquingIDsWith: { _, last in last })
                 return .none
@@ -137,10 +143,20 @@ package struct ProjectsFeature {
                 state.destination = .newSession(NewSessionFeature.State(project: project))
                 return .none
 
-            case .sessionSelected(let id):
-                state.selection = id
-                guard let id, let session = state.sessions[id: id] else { return .none }
-                return .send(.delegate(.openSession(session)))
+            case .selected(let item):
+                state.selection = item
+                switch item {
+                case .inbox:
+                    return .send(.delegate(.openInbox))
+                case .board(let id):
+                    guard let project = state.projects[id: id] else { return .none }
+                    return .send(.delegate(.openBoard(project)))
+                case .session(let id):
+                    guard let session = state.sessions[id: id] else { return .none }
+                    return .send(.delegate(.openSession(session)))
+                case nil:
+                    return .none
+                }
 
             case .renameTapped(let id):
                 guard let session = state.sessions[id: id] else { return .none }
@@ -182,7 +198,7 @@ package struct ProjectsFeature {
             case .destination(.presented(.newSession(.delegate(.started(let session))))):
                 state.sessions.append(session)
                 state.destination = nil
-                state.selection = session.id
+                state.selection = .session(session.id)
                 return .send(.delegate(.openSession(session)))
 
             case .destination, .delegate:
@@ -204,7 +220,8 @@ package struct ProjectsFeature {
         do {
             async let projects = daemon.projects()
             async let sessions = daemon.sessions(nil)
-            return .loaded(projects: try await projects, sessions: try await sessions)
+            async let inbox = daemon.inbox()
+            return .loaded(projects: try await projects, sessions: try await sessions, inbox: try await inbox)
         } catch {
             return .loadFailed(error.localizedDescription)
         }
@@ -212,6 +229,13 @@ package struct ProjectsFeature {
 }
 
 extension ProjectsFeature.Destination.State: Equatable {}
+
+/// A row of the sidebar to open.
+package enum SidebarItem: Hashable, Sendable {
+    case inbox
+    case board(Project.ID)
+    case session(Session.ID)
+}
 
 /// A session in the sidebar's tree, with the forks made from it.
 package struct SessionNode: Identifiable, Hashable, Sendable {
@@ -345,13 +369,18 @@ extension NewProjectFeature.State {
     }
 }
 
-/// A new session in a project: its backend and model, and what it may do
-/// without asking.
+/// A new session in a project, or on one of its tasks or subtasks: its
+/// backend and model, what it may do without asking, and which specs it
+/// reads.
 @Reducer
 package struct NewSessionFeature {
     @ObservableState
     package struct State: Equatable {
         package var project: Project
+        /// The task or subtask it works on; nil for the project itself.
+        package var item: Item?
+        /// Whether a session on a subtask also reads its task's spec.
+        package var specs = SpecScope.withParents
         package var name = ""
         package var backend = Backend.copilot
         /// Empty for the backend's default.
@@ -360,8 +389,10 @@ package struct NewSessionFeature {
         package var starting = false
         @Presents package var alert: AlertState<Never>?
 
-        package init(project: Project) {
+        package init(project: Project, item: Item? = nil) {
             self.project = project
+            self.item = item
+            self.name = item?.title ?? ""
         }
     }
 
@@ -395,7 +426,8 @@ package struct NewSessionFeature {
                 let model = state.model.trimmed
                 let request = StartRequest(
                     backend: state.backend, name: state.name.trimmed, model: model.isEmpty ? nil : model,
-                    approvalMode: state.approvalMode, projectID: state.project.id)
+                    approvalMode: state.approvalMode, projectID: state.project.id, itemID: state.item?.id,
+                    specs: state.item?.parentID == nil ? .item : state.specs)
                 return .run { send in
                     await send(.delegate(.started(try await daemon.start(request))))
                 } catch: { error, send in

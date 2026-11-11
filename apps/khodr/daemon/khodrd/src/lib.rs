@@ -2,6 +2,7 @@
 //! any machine (`khodrd host --stdio`). One binary, so a host is set up by
 //! copying it.
 
+mod board;
 mod convert;
 mod daemon;
 mod error;

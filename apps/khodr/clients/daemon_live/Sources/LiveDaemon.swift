@@ -65,6 +65,8 @@ extension DaemonClient {
                 start.model = request.model ?? ""
                 start.instructions = request.instructions ?? ""
                 start.backendConfig = request.backendConfig ?? ""
+                start.itemID = request.itemID ?? ""
+                start.specs = request.specs == .withParents ? .withParents : .item
                 guard case .sessionStarted(let started) = try await daemon.call(.startSession(start)) else {
                     throw DaemonError.unexpected("something other than the started session")
                 }
@@ -112,6 +114,11 @@ extension DaemonClient {
                 if let name = update.name { request.name = name }
                 if let archived = update.archived { request.archived = archived }
                 if let keeper = update.keeper { request.keeper = keeper }
+                switch update.placement {
+                case .item(let item): request.itemID = item
+                case .project: request.itemID = ""
+                case nil: break
+                }
                 guard case .sessionUpdated(let updated) = try await daemon.call(.updateSession(request)) else {
                     throw DaemonError.unexpected("something other than the updated session")
                 }
@@ -124,6 +131,62 @@ extension DaemonClient {
                     throw DaemonError.unexpected("something other than the session's changes")
                 }
                 return changes.repositories.map { RepositoryChanges(name: $0.name, patch: $0.patch) }
+            },
+            items: { project in
+                var list = Khodr_V1_ListItems()
+                list.projectID = project
+                guard case .items(let items) = try await daemon.call(.listItems(list)) else {
+                    throw DaemonError.unexpected("something other than the board's items")
+                }
+                return items.items.map(Item.init)
+            },
+            createItem: { project, fields in
+                var create = Khodr_V1_CreateItem()
+                create.projectID = project
+                create.parentID = fields.parentID ?? ""
+                create.title = fields.title
+                create.spec = fields.spec
+                create.status = fields.status.proto
+                create.priority = fields.priority.proto
+                guard case .itemCreated(let created) = try await daemon.call(.createItem(create)) else {
+                    throw DaemonError.unexpected("something other than the created item")
+                }
+                return Item(created.item)
+            },
+            updateItem: { item, update in
+                var request = Khodr_V1_UpdateItem()
+                request.itemID = item
+                if let title = update.title { request.title = title }
+                if let spec = update.spec { request.spec = spec }
+                if let status = update.status { request.status = status.proto }
+                if let priority = update.priority { request.priority = priority.proto }
+                guard case .itemUpdated(let updated) = try await daemon.call(.updateItem(request)) else {
+                    throw DaemonError.unexpected("something other than the updated item")
+                }
+                return Item(updated.item)
+            },
+            boardLog: { project in
+                var read = Khodr_V1_ReadBoardLog()
+                read.projectID = project
+                guard case .boardLog(let log) = try await daemon.call(.readBoardLog(read)) else {
+                    throw DaemonError.unexpected("something other than the board's changes")
+                }
+                return log.changes.map(BoardChange.init)
+            },
+            revert: { change in
+                var revert = Khodr_V1_RevertBoardChange()
+                revert.changeID = change
+                guard case .boardChangeReverted(let reverted) = try await daemon.call(.revertBoardChange(revert))
+                else {
+                    throw DaemonError.unexpected("something other than the reverted item")
+                }
+                return reverted.hasItem ? Item(reverted.item) : nil
+            },
+            inbox: {
+                guard case .inbox(let inbox) = try await daemon.call(.listInbox(Khodr_V1_ListInbox())) else {
+                    throw DaemonError.unexpected("something other than the inbox")
+                }
+                return try inbox.entries.compactMap(InboxEntry.init)
             },
             history: { session in
                 var read = Khodr_V1_ReadHistory()

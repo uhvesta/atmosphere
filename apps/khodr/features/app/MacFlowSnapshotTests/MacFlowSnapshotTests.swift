@@ -41,7 +41,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         try await until { store.sidebar.sessions.count == 1 && store.daemon == .running }
         await flow.step("sidebar")
 
-        store.send(.sidebar(.sessionSelected(session.id)))
+        store.send(.sidebar(.selected(.session(session.id))))
         try await until { store.session != nil }
         store.send(.session(.presented(.binding(.set(\.draft, "Write the release notes for M1")))))
         store.send(.session(.presented(.sendTapped(.enqueue))))
@@ -86,7 +86,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         let flow = FlowRecorder("fork", AppView(store: store))
 
         try await until { store.sidebar.sessions.count == 1 && store.daemon == .running }
-        store.send(.sidebar(.sessionSelected(session.id)))
+        store.send(.sidebar(.selected(.session(session.id))))
         try await until { store.session?.items.count == 6 }
         await flow.step("session")
 
@@ -104,6 +104,63 @@ final class MacFlowSnapshotTests: XCTestCase {
         XCTAssertEqual(daemon.files(of: fork.id), ["/notes.md": "notes", "/readme.md": "readme"])
         XCTAssertEqual(daemon.files(of: session.id), ["/notes.md": "notes", "/changelog.md": "changelog"])
         await flow.step("went its own way")
+        flow.finish()
+    }
+
+    /// A session on a subtask moves it and its task across the board, to
+    /// Waiting on you when it asks for an approval, and shows in the inbox.
+    func testTheBoard() async throws {
+        let daemon = InMemoryDaemon { _ in
+            [
+                .write(path: "/code/khodr/LoginForm.swift", contents: "struct LoginForm {}"),
+                .say("Added the form."),
+            ]
+        }
+        let project = try await daemon.client.createProject("khodr", [Repository(path: "/code/khodr")], "")
+        let spec = """
+            People sign in with **email and a password**.
+
+            - Show an error under the field that's wrong
+            - Keep them signed in for 30 days
+            """
+        let task = try await daemon.client.createItem(
+            project.id, ItemFields(title: "Sign in", spec: spec, priority: .high))
+        let form = try await daemon.client.createItem(
+            project.id, ItemFields(parentID: task.id, title: "Login form", spec: "The form itself."))
+        _ = try await daemon.client.createItem(project.id, ItemFields(parentID: task.id, title: "Error copy"))
+        _ = try await daemon.client.createItem(project.id, ItemFields(title: "Dark mode", priority: .low))
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("board", AppView(store: store))
+
+        try await until { store.daemon == .running && store.sidebar.projects.count == 1 }
+        store.send(.sidebar(.selected(.board(project.id))))
+        try await until { store.board?.items.count == 4 }
+        await flow.step("board")
+
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "Login form", itemID: form.id))
+        try await daemon.client.send(session.id, "Build the form", .enqueue)
+        try await until { daemon.sessions.first?.state == .waitingForApproval }
+        store.send(.board(.presented(.refresh)))
+        try await until { store.board?.items[id: task.id]?.status == .waitingOnYou }
+        await flow.step("waiting on you")
+
+        store.send(.board(.presented(.cardTapped(task.id))))
+        try await until { store.board?.destination?.item != nil }
+        await flow.step("task")
+
+        store.send(.board(.presented(.destination(.dismiss))))
+        store.send(.sidebar(.refresh))
+        try await until { store.sidebar.inbox.count == 1 }
+        store.send(.sidebar(.selected(.inbox)))
+        try await until { store.sidebar.selection == .inbox }
+        await flow.step("inbox")
         flow.finish()
     }
 

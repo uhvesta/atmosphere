@@ -15,6 +15,8 @@ use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
+use crate::board::{self, Item, ItemFields, ItemPatch, Priority, Status};
+use crate::error::StoreError;
 use crate::error::{DaemonError, StartError};
 use crate::host::Host;
 use crate::store::Store;
@@ -234,22 +236,105 @@ impl Daemon {
             .unwrap_or_default())
     }
 
-    /// Records that `session` runs on `host`, in `project` if given, and
-    /// fills in what the daemon knows of it.
+    /// Records that `session` runs on `host`, in `project` and on `item` if
+    /// given, and fills in what the daemon knows of it.
     fn own(
         &self,
         session: &mut pb::SessionInfo,
         host: &str,
         project: Option<&str>,
+        item: Option<&str>,
     ) -> Result<(), DaemonError> {
-        self.store.place(&session.id, host, project)?;
+        self.store.place(&session.id, host, project, item)?;
         session.host = host.to_owned();
-        session.project_id = self
-            .store
-            .placement(&session.id)?
-            .and_then(|placement| placement.project)
+        let placement = self.store.placement(&session.id)?;
+        let (project, item) = placement
+            .map(|placement| (placement.project, placement.item))
             .unwrap_or_default();
+        session.project_id = project.unwrap_or_default();
+        session.item_id = item.unwrap_or_default();
         Ok(())
+    }
+
+    /// `project`'s items, each with the status its sessions give it.
+    async fn shown_items(&self, project: &str) -> Result<Vec<pb::Item>, DaemonError> {
+        let mut items: Vec<pb::Item> = self.store.items(project)?.iter().map(Item::wire).collect();
+        let sessions = self.list(project).await?;
+        board::show(&mut items, &sessions.sessions);
+        Ok(items)
+    }
+
+    /// One item, with the status its sessions give it.
+    async fn shown_item(&self, item: &Item) -> Result<pb::Item, DaemonError> {
+        let items = self.shown_items(&item.project_id).await?;
+        Ok(items
+            .into_iter()
+            .find(|shown| shown.id == item.id)
+            .unwrap_or_else(|| item.wire()))
+    }
+
+    /// Every session waiting on you, across projects.
+    async fn inbox(&self) -> Result<pb::Inbox, DaemonError> {
+        let projects = self.store.projects()?;
+        let mut items: HashMap<String, pb::Item> = HashMap::new();
+        for project in &projects {
+            for item in self.shown_items(&project.id).await? {
+                items.insert(item.id.clone(), item);
+            }
+        }
+        let names: HashMap<&str, &str> = projects
+            .iter()
+            .map(|project| (project.id.as_str(), project.name.as_str()))
+            .collect();
+        let mut entries: Vec<pb::InboxEntry> = self
+            .list("")
+            .await?
+            .sessions
+            .into_iter()
+            .filter_map(|session| {
+                let item = items.get(&session.item_id);
+                let reason = board::inbox_reason(&session, item)?;
+                Some(pb::InboxEntry {
+                    project_name: names
+                        .get(session.project_id.as_str())
+                        .map(|name| (*name).to_owned())
+                        .unwrap_or_default(),
+                    item_title: item.map(|item| item.title.clone()).unwrap_or_default(),
+                    reason: reason.into(),
+                    session: Some(session),
+                })
+            })
+            .collect();
+        let rank = |entry: &pb::InboxEntry| match entry.reason() {
+            pb::InboxReason::Approval => 0,
+            pb::InboxReason::Failed => 1,
+            pb::InboxReason::Reply | pb::InboxReason::Unspecified => 2,
+        };
+        entries.sort_by_key(rank);
+        Ok(pb::Inbox { entries })
+    }
+
+    fn create_item(&self, create: pb::CreateItem) -> Result<Item, DaemonError> {
+        let fields = ItemFields {
+            parent_id: convert::optional(create.parent_id.clone()),
+            status: Status::from_wire(create.status()),
+            priority: Priority::from_wire(create.priority()),
+            title: create.title,
+            spec: create.spec,
+        };
+        Ok(self.store.add_item(&create.project_id, fields)?)
+    }
+
+    fn update_item(&self, update: pb::UpdateItem) -> Result<Item, DaemonError> {
+        let patch = ItemPatch {
+            status: update.status.map(|_| Status::from_wire(update.status())),
+            priority: update
+                .priority
+                .map(|_| Priority::from_wire(update.priority())),
+            title: update.title,
+            spec: update.spec,
+        };
+        Ok(self.store.update_item(&update.item_id, patch)?)
     }
 
     /// Every host's sessions, or only `project`'s if it isn't empty. A host
@@ -264,7 +349,7 @@ impl Daemon {
                 self.forward(host, request).await
             {
                 for mut session in sessions.sessions {
-                    self.own(&mut session, host, None)?;
+                    self.own(&mut session, host, None, None)?;
                     if project.is_empty() || session.project_id == project {
                         all.push(session);
                     }
@@ -311,11 +396,29 @@ impl Daemon {
         Ok(convert::project(project))
     }
 
-    /// Fills in what `start` leaves to its project, and returns the project.
-    fn from_project(&self, start: &mut pb::StartSession) -> Result<Option<String>, DaemonError> {
-        let project_id = std::mem::take(&mut start.project_id);
+    /// Fills in what `start` leaves to its project and item, and returns
+    /// them.
+    fn from_project(
+        &self,
+        start: &mut pb::StartSession,
+    ) -> Result<(Option<String>, Option<String>), DaemonError> {
+        let mut project_id = std::mem::take(&mut start.project_id);
+        let item = match convert::optional(std::mem::take(&mut start.item_id)) {
+            Some(id) => Some(self.store.item(&id)?),
+            None => None,
+        };
+        if let Some(item) = &item {
+            if project_id.is_empty() {
+                project_id.clone_from(&item.project_id);
+            } else if project_id != item.project_id {
+                return Err(StoreError::ItemInAnotherProject {
+                    title: item.fields.title.clone(),
+                }
+                .into());
+            }
+        }
         if project_id.is_empty() {
-            return Ok(None);
+            return Ok((None, None));
         }
         let project = self.store.project(&project_id)?;
         if start.working_directory.is_empty() && start.repositories.is_empty() {
@@ -334,7 +437,14 @@ impl Daemon {
         if start.instructions.is_empty() {
             start.instructions = project.instructions;
         }
-        Ok(Some(project_id))
+        if let Some(item) = &item {
+            let parent = match (&item.fields.parent_id, start.specs()) {
+                (Some(parent), pb::SpecScope::WithParents) => Some(self.store.item(parent)?),
+                _ => None,
+            };
+            start.instructions = with_specs(&start.instructions, item, parent.as_ref());
+        }
+        Ok((Some(project_id), item.map(|item| item.id)))
     }
 
     async fn answer(&self, request: pb::request::Kind) -> Result<Reply, DaemonError> {
@@ -342,6 +452,7 @@ impl Daemon {
         use pb::response::Kind as Response;
         let mut request = request;
         let mut project = None;
+        let mut item = None;
         let host = match &mut request {
             Request::ListSessions(list) => {
                 let sessions = self.list(&list.project_id).await?;
@@ -366,19 +477,56 @@ impl Daemon {
                     projects,
                 })));
             }
+            Request::CreateItem(create) => {
+                let created = self.create_item(std::mem::take(create))?;
+                let item = self.shown_item(&created).await?;
+                return Ok(Reply::Response(Response::ItemCreated(pb::ItemCreated {
+                    item: Some(item),
+                })));
+            }
+            Request::UpdateItem(update) => {
+                let updated = self.update_item(std::mem::take(update))?;
+                let item = self.shown_item(&updated).await?;
+                return Ok(Reply::Response(Response::ItemUpdated(pb::ItemUpdated {
+                    item: Some(item),
+                })));
+            }
+            Request::ListItems(list) => {
+                let items = self.shown_items(&list.project_id).await?;
+                return Ok(Reply::Response(Response::Items(pb::Items { items })));
+            }
+            Request::ReadBoardLog(read) => {
+                let changes = self.store.board_log(&read.project_id)?;
+                return Ok(Reply::Response(Response::BoardLog(pb::BoardLog {
+                    changes: changes.iter().map(board::Change::wire).collect(),
+                })));
+            }
+            Request::RevertBoardChange(revert) => {
+                let item = match self.store.revert(revert.change_id)? {
+                    Some(item) => Some(self.shown_item(&item).await?),
+                    None => None,
+                };
+                return Ok(Reply::Response(Response::BoardChangeReverted(
+                    pb::BoardChangeReverted { item },
+                )));
+            }
+            Request::ListInbox(_) => {
+                let inbox = self.inbox().await?;
+                return Ok(Reply::Response(Response::Inbox(inbox)));
+            }
             Request::StartSession(start) => {
-                project = self.from_project(start)?;
+                (project, item) = self.from_project(start)?;
                 // The host runs it on itself; only the daemon knows hosts by
                 // name.
                 std::mem::take(&mut start.host)
             }
             Request::ForkSession(fork) => {
-                // A fork stays in its parent's project.
+                // A fork stays in its parent's project, on its item.
                 let host = self.host_of(&fork.session_id).await?;
-                project = self
-                    .store
-                    .placement(&fork.session_id)?
-                    .and_then(|placement| placement.project);
+                if let Some(placement) = self.store.placement(&fork.session_id)? {
+                    project = placement.project;
+                    item = placement.item;
+                }
                 host
             }
             Request::SendMessage(message) => self.host_of(&message.session_id).await?,
@@ -387,7 +535,15 @@ impl Daemon {
             Request::WatchSession(watch) => self.host_of(&watch.session_id).await?,
             Request::AbortTurn(abort) => self.host_of(&abort.session_id).await?,
             Request::SetApprovalMode(set) => self.host_of(&set.session_id).await?,
-            Request::UpdateSession(update) => self.host_of(&update.session_id).await?,
+            Request::UpdateSession(update) => {
+                let host = self.host_of(&update.session_id).await?;
+                if let Some(moved) = update.item_id.take() {
+                    let moved = convert::optional(moved);
+                    self.store
+                        .move_session(&update.session_id, moved.as_deref())?;
+                }
+                host
+            }
             Request::ReadChanges(read) => self.host_of(&read.session_id).await?,
         };
         let mut reply = self.forward(&host, request).await?;
@@ -403,10 +559,37 @@ impl Daemon {
             }),
         ) = &mut reply
         {
-            self.own(session, &host, project.as_deref())?;
+            self.own(session, &host, project.as_deref(), item.as_deref())?;
         }
         Ok(reply)
     }
+}
+
+/// `instructions`, followed by the specs a session on `item` reads: its
+/// task's first if given, then its own.
+fn with_specs(instructions: &str, item: &Item, parent: Option<&Item>) -> String {
+    let mut text = instructions.trim_end().to_owned();
+    let mut section = |heading: &str, item: &Item| {
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(&format!("# {heading}: {}", item.fields.title));
+        let spec = item.fields.spec.trim();
+        if !spec.is_empty() {
+            text.push_str("\n\n");
+            text.push_str(spec);
+        }
+    };
+    if let Some(parent) = parent {
+        section("The task this is part of", parent);
+    }
+    let heading = if item.fields.parent_id.is_some() {
+        "Your subtask"
+    } else {
+        "Your task"
+    };
+    section(heading, item);
+    text
 }
 
 /// A name for a repository's folder in a session's copy: `wanted` if it is
@@ -444,5 +627,42 @@ impl Service for Daemon {
                 Err(failure) => Reply::Response(error(failure.code(), describe(&failure))),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod specs_tests {
+    use super::*;
+
+    fn item(title: &str, parent: Option<&str>, spec: &str) -> Item {
+        Item {
+            id: title.to_owned(),
+            project_id: "p".to_owned(),
+            fields: ItemFields {
+                parent_id: parent.map(str::to_owned),
+                title: title.to_owned(),
+                spec: spec.to_owned(),
+                status: Status::Todo,
+                priority: Priority::None,
+            },
+            created_unix_ms: 0,
+            updated_unix_ms: 0,
+            session_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_session_reads_its_specs_after_its_instructions_parents_first() {
+        let task = item("login", None, "Let people sign in.");
+        let subtask = item("form", Some("login"), "The form.");
+        let alone = with_specs("be brief", &subtask, None);
+        assert!(alone.starts_with("be brief"), "{alone}");
+        assert!(alone.contains("The form."), "{alone}");
+        assert!(!alone.contains("Let people sign in."), "{alone}");
+
+        let both = with_specs("", &subtask, Some(&task));
+        let parent = both.find("Let people sign in.");
+        let own = both.find("The form.");
+        assert!(parent.is_some() && parent < own, "{both}");
     }
 }

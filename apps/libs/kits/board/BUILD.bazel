@@ -1,0 +1,22 @@
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# Board: SwiftUI columns and cards for a board, built from plain data and
+# closures, with no store. Drag a card onto another column, or use its
+# context menu, to move it. Needs Xcode for SwiftUI: build with
+# `--config=xcode`.
+swift_library(
+    name = "board",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "Board",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/khodr/features:__subpackages__",
+        "//apps/lifr/features:__subpackages__",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

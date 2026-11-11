@@ -13,6 +13,7 @@ swift_library(
     visibility = [
         "//apps/khodr/app:__subpackages__",
         "//apps/khodr/features/app:__pkg__",
+        "//apps/khodr/features/board:__pkg__",
     ],
     deps = [
         "//apps/khodr/clients/daemon",

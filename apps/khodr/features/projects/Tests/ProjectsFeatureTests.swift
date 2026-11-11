@@ -31,7 +31,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let session = try XCTUnwrap(daemon.sessions.first)
         await store.receive(\.delegate.openSession, session)
         XCTAssertNil(store.state.destination)
-        XCTAssertEqual(store.state.selection, session.id)
+        XCTAssertEqual(store.state.selection, .session(session.id))
         XCTAssertEqual(store.state.sessions(in: project.id), [session])
         XCTAssertNotEqual(session.workingDirectory, "/code/khodr")
         XCTAssertEqual(session.approvalMode, .allowEdits)
@@ -126,6 +126,7 @@ final class ProjectsFeatureTests: XCTestCase {
         } withDependencies: {
             $0.daemon.projects = { throw DaemonError.notRunning(socket: "/tmp/k.sock", reason: "refused") }
             $0.daemon.sessions = { _ in [] }
+            $0.daemon.inbox = { [] }
         }
         await store.send(.refresh)
         await store.receive(\.loadFailed) {
@@ -269,8 +270,8 @@ final class ProjectsFeatureTests: XCTestCase {
         var state = ProjectsFeature.State()
         state.sessions = [session]
         let store = TestStore(initialState: state) { ProjectsFeature() }
-        await store.send(.sessionSelected("s1")) {
-            $0.selection = "s1"
+        await store.send(.selected(.session("s1"))) {
+            $0.selection = .session("s1")
         }
         await store.receive(\.delegate.openSession, session)
     }

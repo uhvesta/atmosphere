@@ -144,6 +144,14 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, history: &[Event]) 
             .collect(),
         archived: record.archived,
         keeper: record.keeper,
+        item_id: String::new(),
+        turns: u32::try_from(
+            history
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::TurnEnded { .. }))
+                .count(),
+        )
+        .unwrap_or(u32::MAX),
     }
 }
 
