@@ -7,7 +7,7 @@ import SwiftUI
 /// The month over the selected day's tasks. `add` opens Quick Add for the
 /// selected day.
 package struct CalendarView: View {
-    package var store: StoreOf<CalendarFeature>
+    @Bindable package var store: StoreOf<CalendarFeature>
     private let add: () -> Void
 
     package init(store: StoreOf<CalendarFeature>, add: @escaping () -> Void) {
@@ -29,7 +29,120 @@ package struct CalendarView: View {
                 Button("Today") { store.send(.todayTapped) }
                     .keyboardShortcut("t", modifiers: .command)
             }
+            #if os(iOS)
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("All Months", systemImage: "calendar") { store.send(.monthsTapped) }
+                }
+            #endif
         }
+        #if os(iOS)
+            .navigationDestination(
+                isPresented: Binding(
+                    get: { store.months != nil },
+                    set: { if !$0 { store.send(.monthsDismissed) } })
+            ) {
+                MonthsPage(store: store)
+            }
+        #endif
+    }
+}
+
+/// Every month on one page, scrolled up and down, opened at the month
+/// shown. Picking a day goes back to it with its tasks.
+private struct MonthsPage: View {
+    var store: StoreOf<CalendarFeature>
+    @Environment(\.calendar) private var calendar
+    /// The month at the top, which starts as the one open.
+    @State private var top: CalendarDate?
+
+    init(store: StoreOf<CalendarFeature>) {
+        self.store = store
+        _top = State(initialValue: store.month)
+    }
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 28) {
+                ForEach(store.months ?? []) { month in
+                    MonthBlock(month: month, selected: store.selected, store: store)
+                }
+            }
+            .scrollTargetLayout()
+            .padding(.vertical, 12)
+        }
+        .scrollPosition(id: $top, anchor: .top)
+        // Outside the scroll, so a month scrolled to starts below it.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                WeekdayHeader(calendar: calendar).padding(.vertical, 6)
+                Divider()
+            }
+            .background(.bar)
+        }
+        .onChange(of: store.month) { _, month in
+            withAnimation { top = month }
+        }
+        .navigationTitle("Months")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Today") { store.send(.todayTapped) }
+            }
+        }
+    }
+}
+
+/// A month on the long page: its name, then its weeks with a line over
+/// each. Days of the months either side are left out.
+private struct MonthBlock: View {
+    var month: CalendarMonth
+    var selected: CalendarDate?
+    var store: StoreOf<CalendarFeature>
+    @Environment(\.locale) private var locale
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(month.id.monthTitle(locale))
+                .font(.title2.bold())
+                .padding(.horizontal)
+                .padding(.bottom, 8)
+                .accessibilityAddTraits(.isHeader)
+            ForEach(Array(month.weeks.enumerated()), id: \.offset) { _, week in
+                Divider()
+                HStack(spacing: 0) {
+                    ForEach(week) { day in
+                        if day.isInMonth {
+                            DayCell(day: day, isSelected: day.date == selected, store: store)
+                        } else {
+                            Color.clear.frame(maxWidth: .infinity, minHeight: 46)
+                        }
+                    }
+                }
+                .padding(.vertical, 6)
+            }
+        }
+    }
+}
+
+/// The short weekday names, from the person's first weekday.
+private struct WeekdayHeader: View {
+    var calendar: Calendar
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { _, symbol in
+                Text(symbol)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    private var weekdaySymbols: [String] {
+        let symbols = calendar.veryShortStandaloneWeekdaySymbols
+        let first = calendar.firstWeekday - 1
+        return Array(symbols[first...] + symbols[..<first])
     }
 }
 
@@ -42,9 +155,22 @@ private struct MonthGrid: View {
     var body: some View {
         VStack(spacing: 8) {
             HStack {
-                Text(store.month?.monthTitle(locale) ?? "")
-                    .font(.headline)
+                #if os(iOS)
+                    Button {
+                        store.send(.monthsTapped)
+                    } label: {
+                        Text(store.month?.monthTitle(locale) ?? "")
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Shows every month to scroll through")
                     .accessibilityAddTraits(.isHeader)
+                #else
+                    Text(store.month?.monthTitle(locale) ?? "")
+                        .font(.headline)
+                        .accessibilityAddTraits(.isHeader)
+                #endif
                 Spacer()
                 Button {
                     store.send(.monthStepped(-1))
@@ -61,15 +187,7 @@ private struct MonthGrid: View {
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
-            HStack(spacing: 0) {
-                ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { _, symbol in
-                    Text(symbol)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            .accessibilityHidden(true)
+            WeekdayHeader(calendar: calendar)
             ForEach(Array(store.weeks.enumerated()), id: \.offset) { _, week in
                 HStack(spacing: 0) {
                     ForEach(week) { day in
@@ -80,13 +198,6 @@ private struct MonthGrid: View {
         }
         .padding(.vertical, 4)
         .task(id: calendar.firstWeekday) { store.send(.firstWeekdayChanged(calendar.firstWeekday)) }
-    }
-
-    /// The short weekday names, from the person's first weekday.
-    private var weekdaySymbols: [String] {
-        let symbols = calendar.veryShortStandaloneWeekdaySymbols
-        let first = calendar.firstWeekday - 1
-        return Array(symbols[first...] + symbols[..<first])
     }
 }
 

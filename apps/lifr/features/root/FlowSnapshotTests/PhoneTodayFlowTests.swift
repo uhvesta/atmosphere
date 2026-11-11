@@ -46,7 +46,7 @@ final class PhoneTodayFlowTests: PhoneFlowTestCase {
     }
 
     /// Upcoming as a calendar: the month over today's tasks, another day,
-    /// and the next month.
+    /// the next month, then every month on one page, and a day picked there.
     func testCalendar() async {
         let (store, flow) = app("calendar")
         store.tab = .upcoming
@@ -58,6 +58,15 @@ final class PhoneTodayFlowTests: PhoneFlowTestCase {
         await flow.step("day-selected")
         store.send(.calendar(.monthStepped(1)))
         await flow.step("next-month")
+        store.send(.calendar(.monthStepped(-1)))
+        store.send(.calendar(.monthsTapped))
+        await flow.step("months")
+        if let day = store.calendar.months?.first(where: { $0.id == store.calendar.month })?.weeks.joined()
+            .first(where: { $0.isInMonth && $0.date.day == 9 })
+        {
+            store.send(.calendar(.daySelected(day.date)))
+        }
+        await flow.step("months-day-picked")
         flow.finish()
     }
 

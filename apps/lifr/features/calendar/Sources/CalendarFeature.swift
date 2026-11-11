@@ -20,6 +20,9 @@ package struct CalendarFeature {
         package var firstWeekday = 1
         /// The selected day's tasks, with their detail, prompts and alerts.
         package var list = TaskListFeature.State(query: .calendarDay(nil))
+        /// The months on one long page, to scroll through and pick a day
+        /// from, while it's open.
+        package var months: [CalendarMonth]?
 
         package init() {}
     }
@@ -32,7 +35,13 @@ package struct CalendarFeature {
         case todayTapped
         case firstWeekdayChanged(Int)
         case dropped(UUID, on: CalendarDate)
+        /// Opens the months on one long page.
+        case monthsTapped
+        case monthsDismissed
     }
+
+    /// How many months the long page shows either side of the one open.
+    package static let monthsAround = 24
 
     @Dependency(\.store) private var store
     @Dependency(\.feedback) private var feedback
@@ -57,6 +66,16 @@ package struct CalendarFeature {
 
             case .daySelected(let day):
                 select(day, in: &state)
+                state.months = nil
+                return .none
+
+            case .monthsTapped:
+                guard let month = state.month, let workspace = state.list.workspace else { return .none }
+                state.months = months(around: month, in: workspace, state)
+                return .none
+
+            case .monthsDismissed:
+                state.months = nil
                 return .none
 
             case .monthStepped(let months):
@@ -111,5 +130,19 @@ package struct CalendarFeature {
         guard let month = state.month, let workspace = state.list.workspace else { return }
         state.weeks = workspace.calendarWeeks(
             month: month, firstWeekday: state.firstWeekday, now: now, timeZone: timeZone)
+        if let shown = state.months, let first = shown.first?.id {
+            state.months = months(around: first.firstOfMonth(adding: Self.monthsAround), in: workspace, state)
+        }
+    }
+
+    /// The months either side of `month`, with the tasks due on each day.
+    private func months(around month: CalendarDate, in workspace: Workspace, _ state: State) -> [CalendarMonth] {
+        (-Self.monthsAround...Self.monthsAround).map { offset in
+            let first = month.firstOfMonth(adding: offset)
+            return CalendarMonth(
+                id: first,
+                weeks: workspace.calendarWeeks(
+                    month: first, firstWeekday: state.firstWeekday, now: now, timeZone: timeZone))
+        }
     }
 }

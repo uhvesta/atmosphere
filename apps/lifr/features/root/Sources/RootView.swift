@@ -199,6 +199,11 @@ private struct PhoneRootView: View {
                         }
                     }
                     .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
+                    // The List and Calendar switch is the title: a large
+                    // title under it crowds both.
+                    #if os(iOS)
+                        .navigationBarTitleDisplayMode(.inline)
+                    #endif
                     .toolbar {
                         ToolbarItem(placement: .principal) {
                             Picker(

@@ -17,6 +17,12 @@ package struct CalendarDay: Identifiable, Hashable, Sendable {
     package var id: CalendarDate { date }
 }
 
+/// A month on the long page of months: its first day, and its weeks.
+package struct CalendarMonth: Identifiable, Hashable, Sendable {
+    package var id: CalendarDate
+    package var weeks: [[CalendarDay]]
+}
+
 extension Workspace {
     /// The weeks that show `month`'s days, each starting on `firstWeekday`
     /// (1 for Sunday through 7 for Saturday), with the days of the months

@@ -103,6 +103,28 @@ final class CalendarFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.list.query.adds?.dueDate, try day("2026-11-10"))
     }
 
+    func testAllMonthsCentreOnTheOpenOneAndPickingADayGoesBackToIt() async throws {
+        records.task("Dentist", in: health, due: 40)
+        let store = await load()
+
+        await store.send(.monthsTapped)
+        let months = try XCTUnwrap(store.state.months)
+        XCTAssertEqual(months.count, 49)
+        XCTAssertEqual(months[24].id, try day("2026-11-01"))
+        XCTAssertEqual(months.first?.id, try day("2024-11-01"))
+        let december = months[25].weeks.joined().first { $0.date == (try? day("2026-12-13")) }
+        XCTAssertEqual(december?.colors.count, 1)
+
+        await store.send(.daySelected(try day("2026-12-13")))
+        XCTAssertNil(store.state.months)
+        XCTAssertEqual(store.state.month, try day("2026-12-01"))
+        XCTAssertEqual(store.state.list.rows.map(\.title), ["Dentist"])
+
+        await store.send(.monthsTapped)
+        await store.send(.monthsDismissed)
+        XCTAssertNil(store.state.months)
+    }
+
     func testAnotherMonthSelectsItsFirstDayAndTodayComesBack() async throws {
         let store = await load()
 
