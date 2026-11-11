@@ -51,6 +51,8 @@
   [Button] "/model, Pick the model, thinking and context window."
   [Button] "/skills, Turn skills on or off, or write your own."
   [Button] "/new, Start a new conversation."
+  [Button] "/export, Copy a prompt to plan with another chat assistant."
+  [Button] "/paste, Review the plan in another assistant's reply, copied to the clipboard."
   [StaticText] "" value: "Ask about your tasks, change them, or plan what to add."
   [Button] "Plan my week"
   [Button] "What's overdue?"

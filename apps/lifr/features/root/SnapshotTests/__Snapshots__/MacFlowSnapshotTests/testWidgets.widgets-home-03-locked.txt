@@ -2,6 +2,7 @@
   [StaticText] "" value: "Today, 6, tasks, 4 overdue"
   [StaticText] "" value: "Unlock Lifr to see them"
   [StaticText] "" value: "Today, 6, tasks, 4 overdue"
+  [Link] "Add a Task"
   [StaticText] "" value: "Unlock Lifr to see them"
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
