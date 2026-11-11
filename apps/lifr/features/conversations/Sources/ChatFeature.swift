@@ -752,8 +752,8 @@ package struct ChatFeature {
 
             case .exportPlanScoped(let goal, let scope):
                 let prompt = PlanPrompt.make(
-                    goal: goal, scope: scope, instructions: state.preset?.instructions ?? "", workspace: state.workspace,
-                    today: CalendarDate(now, in: timeZone), timeZone: timeZone)
+                    goal: goal, scope: scope, instructions: state.preset?.instructions ?? "",
+                    workspace: state.workspace, today: CalendarDate(now, in: timeZone), timeZone: timeZone)
                 state.alert = AlertState {
                     TextState("Prompt Copied")
                 } actions: {
