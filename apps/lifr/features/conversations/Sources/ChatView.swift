@@ -282,7 +282,7 @@ private struct LifrParts: ChatThreadParts {
     /// Records for a model that listens; the shared chat dictates for one
     /// that doesn't.
     var mic: MicButton? {
-        guard store.inputs.contains(.audio) else { return nil }
+        guard store.state.records else { return nil }
         return MicButton(isOn: store.recording, mode: .record) { store.send(.core(.micTapped)) }
     }
 

@@ -18,10 +18,15 @@ extension RecorderClient {
 /// One recording at a time.
 private actor LiveRecorder {
     private var recorder: AVAudioRecorder?
+    /// Counts stops and cancels, so a start still asking for the microphone
+    /// when one comes doesn't record after it.
+    private var generation = 0
 
     func start() async throws(AttachmentError) {
-        guard await AVAudioApplication.requestRecordPermission() else { throw .microphoneDenied }
         cancel()
+        let started = generation
+        guard await AVAudioApplication.requestRecordPermission() else { throw .microphoneDenied }
+        guard started == generation, !Task.isCancelled else { throw .nothingRecorded }
         let url = FileManager.default.temporaryDirectory.appending(path: "Recording-\(UUID().uuidString).wav")
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
@@ -34,7 +39,7 @@ private actor LiveRecorder {
         do {
             #if os(iOS)
                 let session = AVAudioSession.sharedInstance()
-                try session.setCategory(.record, mode: .spokenAudio)
+                try session.setCategory(.record, mode: .default)
                 try session.setActive(true)
             #endif
             let recorder = try AVAudioRecorder(url: url, settings: settings)
@@ -50,7 +55,8 @@ private actor LiveRecorder {
     }
 
     func stop() throws(AttachmentError) -> RecorderClient.Recording {
-        guard let recorder else { throw .recordingFailed("nothing was recording") }
+        generation += 1
+        guard let recorder else { throw .nothingRecorded }
         self.recorder = nil
         // Past the limit the recorder has stopped by itself, and its time
         // is back at zero.
@@ -68,6 +74,7 @@ private actor LiveRecorder {
     }
 
     func cancel() {
+        generation += 1
         guard let recorder else { return }
         self.recorder = nil
         recorder.stop()

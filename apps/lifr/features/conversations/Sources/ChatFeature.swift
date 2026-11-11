@@ -68,8 +68,12 @@ package struct ChatFeature {
         /// What the assistant's model reads besides text: the microphone
         /// records for one that listens, and dictates otherwise.
         package var inputs: Set<ModelInput> = []
-        /// Whether the microphone is recording for the next message.
+        /// Whether the microphone is recording for the next message, or
+        /// starting to.
         package var recording = false
+        /// Whether the microphone has started recording, rather than still
+        /// starting, as while the system asks for it.
+        package var recordingLive = false
         /// Recordings of this conversation whose files aren't on this
         /// device, such as those sent from another one.
         package var elsewhere: Set<UUID> = []
@@ -169,7 +173,14 @@ package struct ChatFeature {
         /// being finished, or failed: the chat is kept until it isn't.
         package var isWorking: Bool {
             core.reply != nil || core.rival?.done == false || stopped || reloading || naming || compacting
-                || alert != nil || core.problem != nil
+                || alert != nil || core.problem != nil || recording || core.attaching
+        }
+
+        /// Whether the microphone records a clip rather than dictating: for
+        /// a model that listens, unless it's dictating already, and while
+        /// it records, even once another model is picked, so it can stop.
+        package var records: Bool {
+            recording || (inputs.contains(.audio) && !core.dictating && core.dictatedAfter == nil)
         }
 
         /// Whether older messages can be summarized now: there are some
@@ -281,6 +292,8 @@ package struct ChatFeature {
         case cancelEditDraftTapped
         case cancelRecordingTapped
         case recordingStarted(Result<Void, any Error>)
+        /// The longest recording was reached.
+        case recordingLimitReached
         case recorded(Result<ChatAttachment, any Error>)
         case removeRecordingTapped(UUID)
         /// A sent recording's chip: plays it.
@@ -383,6 +396,7 @@ package struct ChatFeature {
     @Dependency(\.skills) private var skillsClient
     @Dependency(\.attachments) private var attachments
     @Dependency(\.recorder) private var recorder
+    @Dependency(\.continuousClock) private var clock
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
     @Dependency(\.uuid) private var uuid
@@ -563,42 +577,48 @@ package struct ChatFeature {
                 state.draftBeforeEdit = nil
                 return .none
 
-            case .core(.micTapped) where state.inputs.contains(.audio):
+            case .core(.micTapped) where state.records:
                 guard state.recording else {
                     guard !state.core.attaching else { return .none }
                     state.recording = true
-                    return .run { [recorder] send in
-                        await send(.recordingStarted(Result { try await recorder.start() }))
+                    state.recordingLive = false
+                    return .run { [recorder, clock] send in
+                        do {
+                            try await recorder.start()
+                        } catch {
+                            await send(.recordingStarted(.failure(error)))
+                            return
+                        }
+                        await send(.recordingStarted(.success(())))
+                        // The recorder stops by itself at the limit; what it
+                        // heard is attached as if the person had stopped it.
+                        try await clock.sleep(for: .seconds(RecorderClient.limit))
+                        await send(.recordingLimitReached)
                     }
-                    .cancellable(id: CancelID.recording)
+                    .cancellable(id: CancelID.recording, cancelInFlight: true)
                 }
-                state.recording = false
-                state.core.attaching = true
-                let conversation = state.conversation.id
-                return .merge(
-                    .cancel(id: CancelID.recording),
-                    .run { [attachments, recorder] send in
-                        await send(
-                            .recorded(
-                                Result {
-                                    let recording = try await recorder.stop()
-                                    return try await attachments.save(
-                                        recording.data, .audio, recording.seconds, conversation)
-                                }))
-                    })
+                // Stopped while the microphone was still starting, as while
+                // the system asks for it: there's nothing to keep.
+                guard state.recordingLive else { return cancelRecording(&state) }
+                return stopRecording(&state)
+
+            case .recordingLimitReached:
+                guard state.recording, state.recordingLive else { return .none }
+                return stopRecording(&state)
 
             case .recordingStarted(.success):
+                state.recordingLive = state.recording
                 return .none
 
             case .recordingStarted(.failure(let error)):
                 state.recording = false
+                state.recordingLive = false
                 state.alert = Self.attachAlert(error)
                 return .none
 
             case .cancelRecordingTapped:
                 guard state.recording else { return .none }
-                state.recording = false
-                return .merge(.cancel(id: CancelID.recording), .run { [recorder] _ in await recorder.cancel() })
+                return cancelRecording(&state)
 
             case .recorded(.success(let recording)):
                 state.core.attaching = false
@@ -986,6 +1006,31 @@ package struct ChatFeature {
 
     /// Runs `action` in the shared chat, which keeps its photos with the
     /// conversation's other attachments.
+    /// Stops the microphone and attaches what it heard.
+    private func stopRecording(_ state: inout State) -> Effect<Action> {
+        state.recording = false
+        state.recordingLive = false
+        state.core.attaching = true
+        let conversation = state.conversation.id
+        return .merge(
+            .cancel(id: CancelID.recording),
+            .run { [attachments, recorder] send in
+                await send(
+                    .recorded(
+                        Result {
+                            let recording = try await recorder.stop()
+                            return try await attachments.save(recording.data, .audio, recording.seconds, conversation)
+                        }))
+            })
+    }
+
+    /// Stops the microphone, or keeps it from starting, and keeps nothing.
+    private func cancelRecording(_ state: inout State) -> Effect<Action> {
+        state.recording = false
+        state.recordingLive = false
+        return .merge(.cancel(id: CancelID.recording), .run { [recorder] _ in await recorder.cancel() })
+    }
+
     private func core(_ action: Core.Action, _ state: inout State) -> Effect<Action> {
         Scope(state: \.core, action: \.core) {
             Core(replier: LifrReplier()).dependency(\.chatPhotos, .attachments(attachments))

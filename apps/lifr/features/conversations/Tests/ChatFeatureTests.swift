@@ -260,6 +260,60 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(asked.value?.attachments.isEmpty, true)
     }
 
+    func testStoppingTheMicWhileItStartsKeepsNothingAndLetsItGo() async {
+        let (workspace, _) = home()
+        let cancelled = LockIsolated(0)
+        var recorder = RecorderClient.scripted()
+        // As while the system asks for the microphone.
+        recorder.start = { try await Task.never() }
+        recorder.cancel = { cancelled.withValue { $0 += 1 } }
+        let store = chat(workspace, inputs: [.audio], recorder: recorder) { _ in
+            AssistantReply(text: "", isComplete: true)
+        }
+        await store.send(.core(.task))
+
+        await store.send(.core(.micTapped))
+        XCTAssertTrue(store.state.recording)
+        await store.send(.core(.micTapped))
+        await store.finish()
+
+        XCTAssertFalse(store.state.recording)
+        XCTAssertFalse(store.state.core.attaching)
+        XCTAssertEqual(store.state.recordings, [])
+        XCTAssertNil(store.state.alert)
+        XCTAssertEqual(cancelled.value, 1)
+    }
+
+    func testARecordingAtItsLimitIsAttachedAsIfStopped() async {
+        let (workspace, _) = home()
+        let clock = TestClock()
+        let store = chat(workspace, clock: clock, inputs: [.audio]) { _ in
+            AssistantReply(text: "", isComplete: true)
+        }
+        await store.send(.core(.task))
+        await store.send(.core(.micTapped))
+        await store.receive(\.recordingStarted)
+
+        await clock.advance(by: .seconds(RecorderClient.limit))
+        await store.receive(\.recordingLimitReached)
+        await store.receive(\.recorded.success)
+
+        XCTAssertFalse(store.state.recording)
+        XCTAssertEqual(store.state.recordings.count, 1)
+    }
+
+    func testAChatIsKeptWhileItRecords() async {
+        let (workspace, _) = home()
+        let store = chat(workspace, inputs: [.audio]) { _ in AssistantReply(text: "", isComplete: true) }
+        await store.send(.core(.task))
+        XCTAssertFalse(store.state.isWorking)
+
+        await store.send(.core(.micTapped))
+        await store.receive(\.recordingStarted)
+        XCTAssertTrue(store.state.isWorking)
+        await store.send(.cancelRecordingTapped)
+    }
+
     func testARecordingThatCantBeKeptSaysWhyAndAttachesNothing() async {
         let (workspace, _) = home()
         let store = chat(workspace, inputs: [.audio], recorder: .scripted(.init(data: Data(), seconds: 0))) { _ in
@@ -267,6 +321,7 @@ final class ChatFeatureTests: XCTestCase {
         }
         await store.send(.core(.task))
         await store.send(.core(.micTapped))
+        await store.receive(\.recordingStarted)
         await store.send(.core(.micTapped))
         await store.receive(\.recorded.failure)
         XCTAssertFalse(store.state.core.attaching)

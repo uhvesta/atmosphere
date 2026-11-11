@@ -80,6 +80,8 @@ package enum AttachmentError: Error, Hashable, Sendable, CustomStringConvertible
     case microphoneDenied
     /// The recording couldn't start or finish.
     case recordingFailed(String)
+    /// Recording was stopped before the microphone started.
+    case nothingRecorded
     /// Saving or reading the file on this device failed.
     case storageFailed(String)
     /// A file couldn't be attached, with why and what to do, for the person.
@@ -109,6 +111,12 @@ package enum AttachmentError: Error, Hashable, Sendable, CustomStringConvertible
                 localized: """
                     The recording stopped (\(reason)). Record again; if another app is using the microphone, \
                     close it first.
+                    """)
+        case .nothingRecorded:
+            String(
+                localized: """
+                    The recording stopped before the microphone started, so there's nothing to attach. Tap the \
+                    microphone again to record.
                     """)
         case .unreadableFile(let why):
             why
