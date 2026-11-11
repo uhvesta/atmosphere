@@ -1,8 +1,8 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 # The agent interface every backend implements, the runtime the in-process
-# backends share (turns, approvals, forks, history on disk) and the scripted
-# backend that tests run on.
+# backends share (turns, approvals, forks, history on disk), the local-model
+# backend and the scripted backend that tests run on.
 rust_library(
     name = "agent",
     srcs = glob(["src/*.rs"]),
@@ -13,6 +13,7 @@ rust_library(
         "@crates//:serde_json",
         "@crates//:thiserror",
         "@crates//:tokio",
+        "@crates//:ureq",
         "@crates//:uuid",
     ],
 )

@@ -1,7 +1,7 @@
 //! The scripted backend: replies from a [`Script`], so tests are repeatable
 //! and need no model.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -209,17 +209,10 @@ fn denied() -> String {
     "The person denied this.".into()
 }
 
-/// `path` under `root`, if it stays there.
 fn inside(root: &Path, path: &Path) -> Result<PathBuf, ScriptedError> {
-    let stays = path
-        .components()
-        .all(|component| matches!(component, Component::Normal(_)));
-    if !stays || path.as_os_str().is_empty() {
-        return Err(ScriptedError::OutsideWorkingDirectory {
-            path: path.to_owned(),
-        });
-    }
-    Ok(root.join(path))
+    crate::paths::inside(root, path).ok_or_else(|| ScriptedError::OutsideWorkingDirectory {
+        path: path.to_owned(),
+    })
 }
 
 async fn write(target: &Path, contents: &str) -> Result<(), ScriptedError> {

@@ -1,5 +1,5 @@
 {
-  "checksum": "3250a3a15020c0c2766dc609b14b89e2438eb82b8869b87c28982c7a721aca90",
+  "checksum": "3c809bfd74bb6c89cc1ac4c875962d8ab89d297bce975306cc5aeee4b69eebe1",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -5063,6 +5063,10 @@
           {
             "id": "tokio 1.54.1",
             "target": "tokio"
+          },
+          {
+            "id": "ureq 3.5.1",
+            "target": "ureq"
           },
           {
             "id": "uuid 1.29.2",

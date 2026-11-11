@@ -11,7 +11,9 @@
 
 mod error;
 mod event;
+mod local_model;
 mod log;
+mod paths;
 mod runtime;
 mod scripted;
 
@@ -24,6 +26,7 @@ pub use event::{
     Event, EventId, EventKind, ForkOptions, Parent, PermissionKind, SendMode, SessionId,
     SessionRecord, SessionState, StartOptions,
 };
+pub use local_model::{DEFAULT_BASE_URL, LocalModelConfig, LocalModelError, LocalModelRunner};
 pub use runtime::{LocalAgent, Runner, Turn};
 pub use scripted::{Rule, Script, ScriptedError, ScriptedRunner, Step};
 

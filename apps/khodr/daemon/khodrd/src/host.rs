@@ -7,8 +7,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use khodr_agent::{
-    Agent, AgentError, Event, EventId, ForkOptions, LocalAgent, Script, ScriptedRunner, SendMode,
-    SessionId, SessionRecord, StartOptions, Watch,
+    Agent, AgentError, Event, EventId, ForkOptions, LocalAgent, LocalModelConfig, LocalModelRunner,
+    Script, ScriptedRunner, SendMode, SessionId, SessionRecord, StartOptions, Watch,
 };
 use khodr_wire::{Reply, Service, ServiceFuture, describe, error, pb};
 use tokio::sync::{broadcast, mpsc};
@@ -115,8 +115,15 @@ impl Host {
             state.join("scripted"),
             ScriptedRunner::new(Script::default()),
         )?;
+        // A session's own backend config can name another server.
+        let local_model = LocalModelRunner::new(LocalModelConfig {
+            base_url: std::env::var("KHODR_LOCAL_URL").ok(),
+            api_key: std::env::var("KHODR_LOCAL_API_KEY").ok(),
+        });
+        let local = LocalAgent::open(state.join("local"), local_model)?;
         let mut backends: HashMap<pb::Backend, Arc<dyn Backend>> = HashMap::new();
         backends.insert(pb::Backend::Scripted, Arc::new(scripted));
+        backends.insert(pb::Backend::Local, Arc::new(local));
         let mut owners = HashMap::new();
         for (backend, agent) in &backends {
             for record in agent.sessions().await? {
