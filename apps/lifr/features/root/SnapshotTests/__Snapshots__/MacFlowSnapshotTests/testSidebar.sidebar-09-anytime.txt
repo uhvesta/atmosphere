@@ -51,6 +51,7 @@
     [Button] "Copy List"
     [Button] "Share List"
     [MenuButton] "Add" help: "Add a task or Project" id: add
+    [Button] "Search" id: search
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""

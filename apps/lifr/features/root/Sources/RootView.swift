@@ -360,6 +360,15 @@ private struct MacRootView: View {
         }
     }
 
+    /// Whether the page shows its own search field, which a second way to
+    /// search would squeeze into a button.
+    private var hasSearchField: Bool {
+        switch store.selection {
+        case .search, .savedFilter, .conversations: true
+        default: false
+        }
+    }
+
     private var isBoardShown: Bool {
         guard case .scope = store.selection else { return false }
         return store.content == .board
@@ -370,13 +379,20 @@ private struct MacRootView: View {
             .navigationSplitViewColumnWidth(min: 180, ideal: 220)
     }
 
-    private var addMenu: some ToolbarContent {
+    @ToolbarContentBuilder private var addMenu: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
             // Named, as the Mac otherwise names it after its symbol only
             // once the first window has loaded.
             AddMenu(store: store)
                 .help("Add a task or Project")
                 .accessibilityIdentifier("add")
+        }
+        if !hasSearchField {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Search", systemImage: "magnifyingglass") { store.send(.goTo(.search)) }
+                    .help("Search titles, details and comments (⌘F)")
+                    .accessibilityIdentifier("search")
+            }
         }
     }
 

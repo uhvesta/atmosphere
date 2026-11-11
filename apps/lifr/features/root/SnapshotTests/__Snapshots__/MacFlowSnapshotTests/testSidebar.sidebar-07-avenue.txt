@@ -61,6 +61,7 @@
       [RadioButton/Segment] "List" value: "1"
       [RadioButton/Segment] "Board" value: "0"
     [MenuButton] "Add" help: "Add a task or Project" id: add
+    [Button] "Search" id: search
     [Button] "New Project"
     [Button] "Edit Avenue"
   [Button/CloseButton] ""
