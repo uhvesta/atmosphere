@@ -37,11 +37,15 @@ package struct TodayGlance: Codable, Hashable, Sendable {
     /// Today on the days after, as it will be if nothing changes before
     /// then, so the widgets turn over at midnight without the app.
     package var later: [TodayGlance]
+    /// Each open Avenue in the sidebar's order, or nil from a Lifr that
+    /// didn't write them yet.
+    package var avenues: [AvenueGlance]?
 
     /// Today's tasks for the day from `from` until `until`, or only how
     /// many while `locked`.
     package init(
-        asOf: Date, from: Date, until: Date, rows: [Row], locked: Bool, later: [TodayGlance] = []
+        asOf: Date, from: Date, until: Date, rows: [Row], locked: Bool, later: [TodayGlance] = [],
+        avenues: [AvenueGlance]? = nil
     ) {
         self.asOf = asOf
         self.from = from
@@ -51,13 +55,20 @@ package struct TodayGlance: Codable, Hashable, Sendable {
         self.rows = locked ? [] : rows
         isLocked = locked
         self.later = later
+        self.avenues = avenues.map { $0.map { locked ? $0.locked : $0 } }
     }
 
-    /// Each day it has, in order.
+    /// Each day it has, in order, each with the Avenues as they were
+    /// written.
     package var days: [TodayGlance] {
         var today = self
         today.later = []
-        return [today] + later.flatMap(\.days)
+        return [today]
+            + later.flatMap(\.days).map { day in
+                var day = day
+                day.avenues = day.avenues ?? avenues
+                return day
+            }
     }
 
     /// The tasks due on its day itself, without those overdue from before.
@@ -80,5 +91,40 @@ package struct TodayGlance: Codable, Hashable, Sendable {
     /// has, when only the app knows.
     package func at(_ date: Date) -> TodayGlance? {
         days.first { $0.from <= date && date < $0.until }
+    }
+}
+
+/// An Avenue in the widgets: how many open tasks it has and the first few.
+package struct AvenueGlance: Codable, Hashable, Sendable, Identifiable {
+    package var id: UUID
+    package var name: String
+    /// An SF Symbol name.
+    package var symbol: String
+    /// Its color, by name, such as "teal".
+    package var color: String
+    /// How many open tasks it has.
+    package var count: Int
+    /// How many of them are overdue.
+    package var overdue: Int
+    /// Its first open tasks in the list's order. Empty while the lock is on.
+    package var rows: [TodayGlance.Row]
+
+    package init(
+        id: UUID, name: String, symbol: String, color: String, count: Int, overdue: Int, rows: [TodayGlance.Row]
+    ) {
+        self.id = id
+        self.name = name
+        self.symbol = symbol
+        self.color = color
+        self.count = count
+        self.overdue = overdue
+        self.rows = rows
+    }
+
+    /// The same, with only how many.
+    var locked: AvenueGlance {
+        var avenue = self
+        avenue.rows = []
+        return avenue
     }
 }

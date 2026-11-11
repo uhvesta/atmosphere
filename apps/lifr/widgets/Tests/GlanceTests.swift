@@ -71,6 +71,21 @@ final class GlanceTests: XCTestCase {
         XCTAssertEqual(glance.days(from: midnight + 86_400), [])
     }
 
+    func testAvenuesKeepOnlyCountsWhileLockedAndCarryOverMidnight() {
+        let avenue = AvenueGlance(
+            id: UUID(), name: "Home", symbol: "house", color: "teal", count: 2, overdue: 1, rows: rows)
+        let midnight = now + 86_400
+        let tomorrow = TodayGlance(asOf: now, from: midnight, until: midnight + 86_400, rows: [], locked: false)
+
+        let glance = TodayGlance(
+            asOf: now, from: now, until: midnight, rows: rows, locked: false, later: [tomorrow], avenues: [avenue])
+        XCTAssertEqual(glance.at(midnight)?.avenues, [avenue])
+
+        let locked = TodayGlance(asOf: now, from: now, until: midnight, rows: rows, locked: true, avenues: [avenue])
+        XCTAssertEqual(locked.avenues?.map(\.count), [2])
+        XCTAssertEqual(locked.avenues?.map(\.rows), [[]])
+    }
+
     func testTheFileReadsBackWhatWasWritten() throws {
         let file = GlanceFile(url: try folder().appendingPathComponent("Widgets/Today.json"))
         let tomorrow = TodayGlance(asOf: now, from: now + 86_400, until: now + 172_800, rows: [], locked: false)

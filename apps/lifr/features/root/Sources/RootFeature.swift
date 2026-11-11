@@ -27,6 +27,7 @@ import LifrTaskDetail
 import LifrTaskList
 import LifrToday
 import LifrTrash
+import LifrUI
 import LifrUpcoming
 import OSLog
 
@@ -1246,8 +1247,9 @@ package struct RootFeature {
     }
 
     /// Gives the widgets Today as `state` has it, and as it will be on each
-    /// of the next two weeks, for Upcoming and for after midnight: the
-    /// titles, or only how many while the lock is on.
+    /// of the next two weeks, for Upcoming and for after midnight, and each
+    /// Avenue's open tasks: the titles, or only how many while the lock is
+    /// on.
     private func writeGlance(_ state: State) -> Effect<Action> {
         guard let workspace = state.workspace else { return .none }
         var calendar = Calendar(identifier: .gregorian)
@@ -1255,11 +1257,22 @@ package struct RootFeature {
         let start = calendar.startOfDay(for: now)
         let starts = (0...15).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
         guard starts.count == 16 else { return .none }
-        func rows(at date: Date) -> [TodayGlance.Row] {
-            TaskQuery.today.sections(workspace, date, timeZone).flatMap(\.rows).map { row in
+        func glanced(_ rows: [TaskRowData]) -> [TodayGlance.Row] {
+            rows.map { row in
                 let isOverdue = if case .overdue = row.due { true } else { false }
                 return TodayGlance.Row(id: row.id, title: row.title, code: row.code, isOverdue: isOverdue)
             }
+        }
+        func rows(at date: Date) -> [TodayGlance.Row] {
+            glanced(TaskQuery.today.sections(workspace, date, timeZone).flatMap(\.rows))
+        }
+        let open = workspace.listedTasks.filter { $0.isOpen && !$0.isSubtask }
+        let avenues = workspace.avenueRows.map { avenue in
+            let rows = glanced(
+                workspace.rows(open.filter { $0.avenueID == avenue.id }, now: now, timeZone: timeZone))
+            return AvenueGlance(
+                id: avenue.id, name: avenue.name, symbol: avenue.symbol, color: avenue.color, count: rows.count,
+                overdue: rows.count(where: \.isOverdue), rows: Array(rows.prefix(8)))
         }
         let later = (1..<15).map { day in
             TodayGlance(
@@ -1267,7 +1280,8 @@ package struct RootFeature {
                 locked: state.locksApp)
         }
         let today = TodayGlance(
-            asOf: now, from: start, until: starts[1], rows: rows(at: now), locked: state.locksApp, later: later)
+            asOf: now, from: start, until: starts[1], rows: rows(at: now), locked: state.locksApp, later: later,
+            avenues: avenues)
         return .run { [glance] _ in await glance.write(today) }
             .cancellable(id: CancelID.glance)
     }
@@ -1320,6 +1334,14 @@ package struct RootFeature {
             return .none
         case .today:
             return .send(.goTo(.today))
+        case .avenue(let id):
+            // An archived or deleted Avenue has no page: Today instead.
+            guard state.workspace?.avenues[id].map({ $0.archivedAt == nil }) == true else {
+                return .send(.goTo(.today))
+            }
+            if state.platform == .mac { return .send(.selected(.scope(.avenue(id)))) }
+            state.tab = .avenues
+            return .send(.avenues(.opened(.avenue(id))))
         case .calendar(let date):
             return .concatenate(.send(.goTo(.calendar)), .send(.calendar(.daySelected(date))))
         case .add(let title):

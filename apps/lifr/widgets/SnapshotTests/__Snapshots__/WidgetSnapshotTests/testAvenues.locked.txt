@@ -1,0 +1,6 @@
+[text] "Avenues"
+[button, link] "Home, 4 open tasks, 1 overdue"
+[button, link] "Health, 2 open tasks"
+[button, link] "Work, 0 open tasks"
+[button, link] "Admin, 7 open tasks"
+[text] "Unlock Lifr to see them"

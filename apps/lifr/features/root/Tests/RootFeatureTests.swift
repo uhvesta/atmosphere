@@ -1298,10 +1298,34 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testAnAvenuesLinkOpensItsPageOnEachPlatform() async {
+        let health = health
+        let mac = makeStore(.mac)
+        var task = await mac.send(.task)
+        await mac.receive(\.loaded)
+        await mac.send(.linkOpened(.avenue(health.id)))
+        await mac.skipReceivedActions(strict: false)
+        XCTAssertEqual(mac.state.selection, .scope(.avenue(health.id)))
+        await task.cancel()
+
+        let phone = makeStore(.phone)
+        task = await phone.send(.task)
+        await phone.receive(\.loaded)
+        await phone.send(.linkOpened(.avenue(health.id)))
+        await phone.skipReceivedActions(strict: false)
+        XCTAssertEqual(phone.state.tab, .avenues)
+        XCTAssertEqual(phone.state.avenues.avenue?.scope, .avenue(health.id))
+
+        await phone.send(.linkOpened(.avenue(UUID())))
+        await phone.skipReceivedActions(strict: false)
+        XCTAssertEqual(phone.state.tab, .today, "an Avenue that's gone opens Today")
+        await task.cancel()
+    }
+
     func testLinksReadBackWhatTheyName() throws {
         let id = UUID()
         let links: [DeepLink] = [
-            .task(id, picksStatus: false), .task(id, picksStatus: true), .today,
+            .task(id, picksStatus: false), .task(id, picksStatus: true), .today, .avenue(id),
             .calendar(try CalendarDate("2026-11-09")), .add(title: nil), .add(title: "Call mum & dad"),
         ]
         for link in links {

@@ -106,6 +106,37 @@ final class WidgetSnapshotTests: XCTestCase {
         assertUpcoming(nil, .small, named: "before-lifr-wrote")
     }
 
+    private func avenues(locked: Bool) -> [AvenueGlance] {
+        [("Home", "house.fill", "teal", 4, 1), ("Health", "heart.fill", "pink", 2, 0),
+         ("Work", "briefcase.fill", "indigo", 0, 0), ("Admin", "doc.text.fill", "orange", 7, 0)]
+            .enumerated().map { index, avenue in
+                AvenueGlance(
+                    id: UUID(uuidString: String(format: "10000000-0000-0000-0000-%012d", index)) ?? UUID(),
+                    name: avenue.0, symbol: avenue.1, color: avenue.2, count: avenue.3, overdue: avenue.4,
+                    rows: locked ? [] : Array(rows.prefix(avenue.3)))
+            }
+    }
+
+    private func assertAvenues(_ avenues: [AvenueGlance]?, _ size: TodayWidgetView.Size, named name: String) {
+        let view = AvenuesWidgetView(avenues: avenues, size: size)
+            .padding(16)
+            .frame(width: self.size(size).width, height: self.size(size).height)
+            .background(Color(white: 0.95))
+        assertSnapshot(
+            of: view, as: .image(layout: .fixed(width: self.size(size).width, height: self.size(size).height)),
+            named: name, testName: "testAvenues")
+        assertSnapshot(of: view, as: .accessibilityTree(size: self.size(size)), named: name, testName: "testAvenues")
+    }
+
+    func testAvenues() {
+        assertAvenues(avenues(locked: false), .small, named: "small")
+        assertAvenues(avenues(locked: false), .medium, named: "medium")
+        assertAvenues(avenues(locked: false), .large, named: "large")
+        assertAvenues(avenues(locked: true), .large, named: "locked")
+        assertAvenues([], .small, named: "none")
+        assertAvenues(nil, .medium, named: "before-lifr-wrote")
+    }
+
     func testBeforeLifrWroteToday() {
         assertWidget(nil, .small, named: "small")
         assertLockScreen(nil, named: "lock-screen")

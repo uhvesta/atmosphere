@@ -12,6 +12,7 @@ struct LifrWidgets: WidgetBundle {
     var body: some Widget {
         TodayWidget()
         UpcomingWidget()
+        AvenuesWidget()
         #if os(iOS)
             NewTaskControl()
         #endif
@@ -49,6 +50,19 @@ struct UpcomingWidget: Widget {
         }
         .configurationDisplayName("Upcoming")
         .description("What's due on each of the next seven days.")
+        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+    }
+}
+
+/// Each Avenue's open count, and its first titles where there's room.
+struct AvenuesWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "Avenues", provider: TodayProvider()) { entry in
+            AvenuesEntryView(entry: entry)
+                .containerBackground(.fill.tertiary, for: .widget)
+        }
+        .configurationDisplayName("Avenues")
+        .description("How many tasks are open in each Avenue.")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
     }
 }
@@ -118,6 +132,19 @@ private func readGlance() -> TodayGlance? {
     } catch {
         Logger(subsystem: "lifr", category: "widgets").error("\(error.description, privacy: .public)")
         return nil
+    }
+}
+
+struct AvenuesEntryView: View {
+    @Environment(\.widgetFamily) private var family
+    var entry: TodayEntry
+
+    var body: some View {
+        switch family {
+        case .systemMedium: AvenuesWidgetView(avenues: entry.glance?.avenues, size: .medium)
+        case .systemLarge, .systemExtraLarge: AvenuesWidgetView(avenues: entry.glance?.avenues, size: .large)
+        default: AvenuesWidgetView(avenues: entry.glance?.avenues, size: .small)
+        }
     }
 }
 
