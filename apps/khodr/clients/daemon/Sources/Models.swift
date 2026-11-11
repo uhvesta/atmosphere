@@ -131,7 +131,7 @@ package enum ErrorCode: Hashable, Sendable {
     case unknown
 }
 
-package enum DaemonError: Error, Hashable, CustomStringConvertible {
+package enum DaemonError: LocalizedError, Hashable, CustomStringConvertible {
     /// The daemon answered with an error; its message says how to fix it.
     case refused(ErrorCode, message: String)
     /// Nothing answered on the socket.
@@ -142,6 +142,8 @@ package enum DaemonError: Error, Hashable, CustomStringConvertible {
     case versionMismatch(daemon: String)
     /// The daemon sent something this app doesn't expect.
     case unexpected(String)
+
+    package var errorDescription: String? { description }
 
     package var description: String {
         switch self {

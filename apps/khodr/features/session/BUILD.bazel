@@ -1,0 +1,46 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# One session: its events as they happen, sending, permissions and forks.
+swift_library(
+    name = "session",
+    package_name = "khodr",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "KhodrSession",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/khodr/app:__subpackages__",
+        "//apps/khodr/features:__subpackages__",
+    ],
+    deps = [
+        "//apps/khodr/clients/daemon",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# TestStore tests, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "khodr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":session",
+        "//apps/khodr/clients/daemon",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
