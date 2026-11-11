@@ -12,6 +12,18 @@ extension DaemonClient {
             .appending(path: "Library/Application Support/Khodr/daemon.sock").path
     }
 
+    /// What the daemon on `socket` says it is in its hello, such as
+    /// `0.0.0+1a2b3c4d5e6f7a8b`: its version and the start of its
+    /// executable's SHA-256. Throws `DaemonError.versionMismatch` if it
+    /// speaks another protocol.
+    package static func daemonBuild(socket: String = defaultSocket, programVersion: String = "0.0.0")
+        async throws -> String
+    {
+        let connection = try await Connection.open(path: socket, programVersion: programVersion)
+        defer { connection.close() }
+        return connection.peer.programVersion
+    }
+
     /// Talks to khodrd on `socket`, connecting on first use and again after
     /// the connection drops.
     package static func live(socket: String = defaultSocket, programVersion: String = "0.0.0") -> DaemonClient {

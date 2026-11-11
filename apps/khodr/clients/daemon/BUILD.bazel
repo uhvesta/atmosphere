@@ -12,6 +12,7 @@ swift_library(
     module_name = "KhodrDaemonClient",
     target_compatible_with = ["//bazel/xcode"],
     visibility = [
+        "//apps/khodr/app:__pkg__",
         "//apps/khodr/clients/daemon_live:__pkg__",
         "//apps/khodr/e2e:__pkg__",
         "//apps/khodr/features:__subpackages__",

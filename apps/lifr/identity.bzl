@@ -12,8 +12,8 @@ The team and bundle ID prefix aren't checked in. Set them in a gitignored
     # Optional: LangReadr's bundle ID, if not <prefix>.langreadr.
     common --repo_env=LANGREADR_BUNDLE_ID=com.yourname.langreadr
 
-`@lifr_identity//:defs.bzl` holds the values, for Lifr's and LangReadr's
-bundle IDs, the App
+`@lifr_identity//:defs.bzl` holds the values, for Lifr's, LangReadr's and
+Khodr's bundle IDs, the App
 Group, the iCloud container, the provisioning profile and the generated
 Swift constants. Without
 them the apps build ad hoc as `com.example.lifr`, and signed configs stop
@@ -82,6 +82,7 @@ def _lifr_identity_impl(repository_ctx):
         "WIDGETS_BUNDLE_ID = {}".format(repr(bundle_id + ".widgets")),
         "# {}, or the prefix and .langreadr.".format(_LANGREADR),
         "LANGREADR_BUNDLE_ID = {}".format(repr(langreadr)),
+        "KHODR_BUNDLE_ID = {}".format(repr(prefix + ".khodr")),
         "",
     ]))
 

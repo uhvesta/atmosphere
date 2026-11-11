@@ -1,5 +1,6 @@
 load("@rules_apple//apple:macos.bzl", "macos_unit_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
+load("//apps/libs/kits/flow:defs.bzl", "flow_snapshot_test")
 
 # Khodr's window: the projects sidebar and the open session's chat. A TCA
 # reducer composing the projects and session features. Needs Xcode: build
@@ -39,6 +40,23 @@ macos_unit_test(
     minimum_os_version = "15.0",
     target_compatible_with = ["//bazel/xcode"],
     deps = [":tests_lib"],
+)
+
+# The window step by step on the Mac, over the in-memory daemon: references
+# in SnapshotTests/__Snapshots__. Manual, since `bazel test` can't read
+# other windows: run it with //apps/libs/kits/flow:run_mac.sh.
+flow_snapshot_test(
+    name = "mac_flow_snapshot_test",
+    package_name = "khodr",
+    srcs = glob(["MacFlowSnapshotTests/*.swift"]),
+    mac = True,
+    tags = ["manual"],
+    deps = [
+        ":app",
+        "//apps/khodr/clients/daemon",
+        "//apps/khodr/features/session",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
 )
 
 filegroup(

@@ -17,10 +17,29 @@ pub use error::StartError;
 use daemon::{Daemon, Hosts};
 use host::Host;
 use khodr_wire::pb;
+use sha2::{Digest, Sha256};
 use store::Store;
 
 /// Sent in the hello, for messages about updating.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// What the daemon's hello says it is: [`VERSION`], `+`, and the start of a
+/// SHA-256 of this executable, so the app can tell a daemon left running by
+/// an older build of itself from its own. Just [`VERSION`] if the executable
+/// can't be read.
+fn build() -> String {
+    let digest = std::env::current_exe()
+        .and_then(std::fs::read)
+        .map(|executable| Sha256::digest(executable));
+    match digest {
+        Ok(digest) => format!("{VERSION}+{}", hex(&digest[..8])),
+        Err(_) => VERSION.to_owned(),
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
 
 /// Where khodrd keeps its files unless told otherwise.
 pub fn default_state() -> Result<PathBuf, StartError> {
@@ -62,6 +81,8 @@ pub async fn daemon(state: &Path, socket: &Path, hosts: &Path) -> Result<(), Sta
         Hosts::load(hosts)?,
         hosts.to_owned(),
     ));
+    // Read before serving: an update may replace the file while it runs.
+    let build: Arc<str> = build().into();
     let listener = socket::listen(socket).await?;
     let serving = async {
         loop {
@@ -69,12 +90,12 @@ pub async fn daemon(state: &Path, socket: &Path, hosts: &Path) -> Result<(), Sta
                 .accept()
                 .await
                 .map_err(|source| StartError::Accept { source })?;
-            let daemon = daemon.clone();
+            let (daemon, build) = (daemon.clone(), build.clone());
             tokio::spawn(async move {
                 let (reader, writer) = stream.into_split();
                 // A client that goes away or speaks another version only
                 // ends its own connection.
-                let _ = khodr_wire::serve(reader, writer, pb::Role::Daemon, VERSION, daemon).await;
+                let _ = khodr_wire::serve(reader, writer, pb::Role::Daemon, &build, daemon).await;
             });
         }
     };
