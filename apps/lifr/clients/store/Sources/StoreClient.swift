@@ -194,6 +194,36 @@ extension StoreClient {
         }
     }
 
+    /// `Workspace.saveFilter`: keeps a search under a name, last in the list.
+    package func saveFilter(_ filter: TaskFilter, name: String, symbol: String) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            _ = try workspace.saveFilter(filter, name: name, symbol: symbol, in: context)
+            return Change()
+        }
+    }
+
+    package func edit(savedFilter id: UUID, name: String, symbol: String, filter: TaskFilter) async throws -> Saved {
+        try await save { (workspace, _) throws(LifrError) in
+            try workspace.edit(savedFilter: id, name: name, symbol: symbol, filter: filter)
+            return Change()
+        }
+    }
+
+    /// Activity can bring a deleted saved filter back.
+    package func delete(savedFilter id: UUID) async throws -> Saved {
+        try await save { (workspace, _) throws(LifrError) in
+            try workspace.delete(savedFilter: id)
+            return Change()
+        }
+    }
+
+    package func reorder(savedFilter id: UUID, after lower: UUID?, before upper: UUID?) async throws -> Saved {
+        try await save { (workspace, _) throws(LifrError) in
+            try workspace.reorder(savedFilter: id, after: lower, before: upper)
+            return Change()
+        }
+    }
+
     package func addComment(_ body: String, to id: UUID) async throws -> Saved {
         try await save { (workspace, context) throws(LifrError) in
             _ = try workspace.addComment(body, to: id, in: context)

@@ -164,6 +164,8 @@ package actor LiveStore: ModelActor {
                 + workspace.comments.values.filter { before.comments[$0.id] == nil },
             reminders: Array(before.reminders.values)
                 + workspace.reminders.values.filter { before.reminders[$0.id] == nil },
+            savedFilters: Array(before.savedFilters.values)
+                + workspace.savedFilters.values.filter { before.savedFilters[$0.id] == nil },
             history: before.history
                 + workspace.history.filter { event in
                     !before.history.contains { $0.id == event.id }
@@ -184,6 +186,7 @@ package actor LiveStore: ModelActor {
             labels: index.labels.values.map(\.record),
             comments: index.comments.values.compactMap(\.record),
             reminders: index.reminders.values.compactMap(\.record),
+            savedFilters: index.savedFilters.values.compactMap(\.record),
             // Each device appends in its own order; sync interleaves them by
             // time.
             history: index.history.values.compactMap(\.record)
@@ -218,6 +221,7 @@ package actor LiveStore: ModelActor {
             }
             sync(before.comments, after.comments, &index.comments) { $0.write($1, in: index) }
             sync(before.reminders, after.reminders, &index.reminders) { $0.write($1, in: index) }
+            sync(before.savedFilters, after.savedFilters, &index.savedFilters) { $0.write($1) }
             let previous = Dictionary(before.history.map { ($0.id, $0) }) { first, _ in first }
             let next = Dictionary(after.history.map { ($0.id, $0) }) { first, _ in first }
             sync(previous, next, &index.history) { $0.write($1, in: index) }
@@ -275,6 +279,7 @@ final class Index {
     var labels: [UUID: StoredLabel]
     var comments: [UUID: StoredComment]
     var reminders: [UUID: StoredReminder]
+    var savedFilters: [UUID: StoredSavedFilter]
     var history: [UUID: StoredHistoryEvent]
     var journal: [UUID: StoredJournalEntry]
 
@@ -285,6 +290,7 @@ final class Index {
         labels = try Self.all(context)
         comments = try Self.all(context)
         reminders = try Self.all(context)
+        savedFilters = try Self.all(context)
         history = try Self.all(context)
         journal = try Self.all(context)
     }
@@ -325,6 +331,7 @@ extension StoredTask: Identified {}
 extension StoredLabel: Identified {}
 extension StoredComment: Identified {}
 extension StoredReminder: Identified {}
+extension StoredSavedFilter: Identified {}
 extension StoredHistoryEvent: Identified {}
 extension StoredJournalEntry: Identified {}
 

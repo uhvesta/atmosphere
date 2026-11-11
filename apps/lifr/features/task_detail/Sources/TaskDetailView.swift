@@ -362,7 +362,7 @@ package struct TaskDetailView: View {
     @ViewBuilder private var commentEditor: some View {
         if store.editingCommentID != nil {
             TextField("Comment", text: $store.editedComment, axis: .vertical)
-            .onSubmit { store.send(.commentEditSaved) }
+                .onSubmit { store.send(.commentEditSaved) }
             HStack {
                 Button("Cancel") { store.send(.commentEditCancelled) }
                 Spacer()

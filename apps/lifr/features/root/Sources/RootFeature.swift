@@ -49,6 +49,7 @@ package struct RootFeature {
         case today, upcoming, calendar, procrastinated, conversations, search, trash
         case anytime, later, logbook
         case scope(AvenueScope)
+        case savedFilter(UUID)
     }
 
     /// A list across every Avenue that isn't a screen of its own: tasks to
@@ -129,6 +130,9 @@ package struct RootFeature {
         package var procrastinated = ProcrastinatedFeature.State()
         package var avenues = AvenuesFeature.State()
         package var search = SearchFeature.State()
+        /// The saved filter open: the Mac's selection, or pushed on the
+        /// iPhone's Avenues tab.
+        @Presents package var savedFilter: SearchFeature.State?
         package var conversations = ConversationsFeature.State()
         /// The Mac's selected Avenue or Project, as a list.
         package var avenue: AvenueFeature.State?
@@ -213,7 +217,8 @@ package struct RootFeature {
                 switch tab {
                 case .today: .today
                 case .upcoming: upcomingShowsCalendar ? .calendar : .upcoming
-                case .avenues: shownShelf?.slot ?? (avenues.avenue == nil ? nil : .openAvenue)
+                case .avenues:
+                    shownShelf?.slot ?? (savedFilter != nil ? .savedFilter : avenues.avenue == nil ? nil : .openAvenue)
                 case .search: .search
                 case .conversations: nil
                 }
@@ -229,6 +234,7 @@ package struct RootFeature {
                 case .logbook: .logbook
                 case .conversations, .trash: nil
                 case .scope: content == .board ? .board : .avenue
+                case .savedFilter: .savedFilter
                 case nil: nil
                 }
             }
@@ -244,6 +250,7 @@ package struct RootFeature {
             case .later: later
             case .logbook: logbook
             case .search: search.list
+            case .savedFilter: savedFilter?.list
             case .avenue: avenue?.list
             case .board: board?.list
             case .openAvenue: avenues.avenue?.list
@@ -266,6 +273,8 @@ package struct RootFeature {
     package enum ListSlot: Hashable, Sendable {
         case today, upcoming, calendar, procrastinated, search, avenue, board
         case anytime, later, logbook
+        /// The saved filter open.
+        case savedFilter
         /// The Avenue opened from the iPhone's Avenues tab.
         case openAvenue
     }
@@ -356,6 +365,11 @@ package struct RootFeature {
         case logbook(TaskListFeature.Action)
         case avenues(AvenuesFeature.Action)
         case search(SearchFeature.Action)
+        /// A saved filter on the iPhone's Avenues tab.
+        case savedFilterTapped(UUID)
+        /// A saved filter's Move Up or Move Down.
+        case savedFilterMoved(UUID, up: Bool)
+        case savedFilter(PresentationAction<SearchFeature.Action>)
         case conversations(ConversationsFeature.Action)
         case avenue(AvenueFeature.Action)
         case board(BoardFeature.Action)
@@ -591,15 +605,42 @@ package struct RootFeature {
                     state.anytime.detail = nil
                     state.later.detail = nil
                     state.logbook.detail = nil
+                    state.savedFilter = nil
                 }
                 let closesChat: Effect<Action> =
                     left == .conversations && item != .conversations ? .send(.conversations(.closed)) : .none
+                if case .savedFilter(let id) = item, let workspace = state.workspace {
+                    state.savedFilter = workspace.savedFilters[id].map {
+                        SearchFeature.State(saved: $0, workspace: workspace, now: now, timeZone: timeZone)
+                    }
+                }
                 guard case .scope(let scope) = item, let workspace = state.workspace else { return closesChat }
                 let avenue = AvenueFeature.State(scope: scope, workspace: workspace, now: now, timeZone: timeZone)
                 state.avenue = avenue
                 state.board = BoardFeature.State(
                     scope: scope, title: avenue.title, workspace: workspace, now: now, timeZone: timeZone)
                 return closesChat
+
+            case .savedFilterTapped(let id):
+                guard let workspace = state.workspace, let saved = workspace.savedFilters[id] else { return .none }
+                state.savedFilter = SearchFeature.State(
+                    saved: saved, workspace: workspace, now: now, timeZone: timeZone)
+                return .none
+
+            case .savedFilterMoved(let id, let up):
+                let ids = state.workspace?.sortedSavedFilters.map(\.id) ?? []
+                guard let index = ids.firstIndex(of: id) else { return .none }
+                // Between the one it passes and the one beyond that.
+                let (after, before): (UUID?, UUID?) =
+                    up
+                    ? (index >= 2 ? ids[index - 2] : nil, index >= 1 ? ids[index - 1] : nil)
+                    : (index + 1 < ids.count ? ids[index + 1] : nil, index + 2 < ids.count ? ids[index + 2] : nil)
+                guard up ? before != nil : after != nil else { return .none }
+                return .run { [store] send in
+                    await send(
+                        .loaded(
+                            Result { try await store.reorder(savedFilter: id, after: after, before: before).snapshot }))
+                }
 
             case .newTaskTapped:
                 showQuickAdd(.task, in: &state)
@@ -743,6 +784,7 @@ package struct RootFeature {
                 .logbook(.delegate(.saved(let snapshot))),
                 .avenues(.delegate(.saved(let snapshot))),
                 .search(.delegate(.saved(let snapshot))),
+                .savedFilter(.presented(.delegate(.saved(let snapshot)))),
                 .avenue(.delegate(.saved(let snapshot))),
                 .board(.list(.delegate(.saved(let snapshot)))),
                 .settings(.delegate(.saved(let snapshot))),
@@ -762,7 +804,7 @@ package struct RootFeature {
                 return .none
 
             case .binding, .remindersScheduled, .today, .upcoming, .calendar, .trash, .procrastinated, .avenues,
-                .search, .anytime, .later, .logbook,
+                .search, .savedFilter, .anytime, .later, .logbook,
                 .avenue, .board, .conversations, .settings, .quickAdd, .approval, .undoAlert, .syncReview,
                 .lockAlert:
                 return .none
@@ -770,6 +812,7 @@ package struct RootFeature {
         }
         .ifLet(\.avenue, action: \.avenue) { AvenueFeature() }
         .ifLet(\.board, action: \.board) { BoardFeature() }
+        .ifLet(\.$savedFilter, action: \.savedFilter) { SearchFeature() }
         .ifLet(\.$quickAdd, action: \.quickAdd) { QuickAddFeature() }
         .ifLet(\.$approval, action: \.approval) { ApprovalFeature() }
         .ifLet(\.$syncReview, action: \.syncReview) { SyncReviewFeature() }
@@ -896,11 +939,21 @@ package struct RootFeature {
             AvenuesFeature().reduce(into: &state.avenues, action: .show(snapshot)).map(Action.avenues),
             SearchFeature().reduce(into: &state.search, action: .list(.show(snapshot))).map(Action.search),
         ]
+        var savedFilterShown = Effect<Action>.none
+        if let id = state.savedFilter?.savedFilterID, workspace.savedFilters[id] == nil {
+            // Deleted here or on another device.
+            state.savedFilter = nil
+            if state.selection == .savedFilter(id) { state.selection = .search }
+        } else if var savedFilter = state.savedFilter {
+            savedFilterShown = SearchFeature().reduce(into: &savedFilter, action: .list(.show(snapshot)))
+                .map { Action.savedFilter(.presented($0)) }
+            state.savedFilter = savedFilter
+        }
         state.avenue?.show(snapshot, now: now, timeZone: timeZone)
         state.board?.list.show(snapshot, now: now, timeZone: timeZone)
         state.settings.show(snapshot)
         state.conversations.show(snapshot)
-        return .merge(effects + [writeGlance(state), scheduleReminders(state)])
+        return .merge(effects + [savedFilterShown, writeGlance(state), scheduleReminders(state)])
     }
 
     /// Schedules this device's notifications for the reminders in `state`,
@@ -990,6 +1043,7 @@ package struct RootFeature {
         case .later: .later(action)
         case .logbook: .logbook(action)
         case .search: .search(.list(action))
+        case .savedFilter: .savedFilter(.presented(.list(action)))
         case .avenue: .avenue(.list(action))
         case .board: .board(.list(action))
         case .openAvenue: .avenues(.avenue(.presented(.list(action))))

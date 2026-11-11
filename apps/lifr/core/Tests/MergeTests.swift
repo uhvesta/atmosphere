@@ -174,7 +174,7 @@ func mergeTests() -> [TestCase] {
     ]
 }
 
-private struct Unexpected: Error, CustomStringConvertible {
+struct Unexpected: Error, CustomStringConvertible {
     let description: String
     init(_ description: String) { self.description = description }
 }

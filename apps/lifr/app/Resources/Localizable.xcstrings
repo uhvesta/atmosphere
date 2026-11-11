@@ -296,6 +296,9 @@
     "%lld fields were changed again since, so they stay as they are now." : {
 
     },
+    "%lld filters" : {
+
+    },
     "%lld of %lld" : {
       "localizations" : {
         "en" : {
@@ -390,6 +393,9 @@
 
     },
     "1 change needs review" : {
+
+    },
+    "1 filter" : {
 
     },
     "1 task" : {

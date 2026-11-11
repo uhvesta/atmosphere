@@ -61,6 +61,7 @@ package struct SyncedRecords: SyncSnapshot {
         records.formUnion(workspace.labels.keys.map { RecordID(.label, $0) })
         records.formUnion(workspace.comments.keys.map { RecordID(.comment, $0) })
         records.formUnion(workspace.reminders.keys.map { RecordID(.reminder, $0) })
+        records.formUnion(workspace.savedFilters.keys.map { RecordID(.savedFilter, $0) })
         return records
     }
 

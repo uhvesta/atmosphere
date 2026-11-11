@@ -3,6 +3,7 @@ import Foundation
 /// The kinds of record a lookup can fail to find.
 package enum Entity: String, Hashable, Codable, Sendable {
     case avenue, project, task, label, comment, reminder
+    case savedFilter = "saved filter"
     /// A journal entry.
     case change
 }
@@ -37,6 +38,8 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
     case inboxCannotBeArchived
     /// Another label has this name, ignoring case.
     case labelNameTaken(String)
+    /// A saved filter with no words and no filters would show nothing.
+    case emptyFilter
     case emptyComment
     case notCommentAuthor(comment: UUID)
     case inTrash(UUID)
@@ -101,6 +104,8 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
                 + "Move them to another Avenue first, or confirm to close them as Won't Do."
         case .labelNameTaken(let name):
             "Another label is already called “\(name)”. Pick another name, or merge this label into that one."
+        case .emptyFilter:
+            "A saved filter needs some words or at least one filter. Set one in Search, then save it."
         case .inboxCannotBeArchived:
             "The Inbox can't be archived, since it's where tasks go when no Avenue is picked. Move its tasks "
                 + "to other Avenues, or close them, to empty it."

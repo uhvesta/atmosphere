@@ -63,6 +63,7 @@ extension RecordKind {
         case .comment: String(localized: "Comments")
         case .reminder: String(localized: "Reminders")
         case .settings: String(localized: "Settings")
+        case .savedFilter: String(localized: "Saved Filters")
         }
     }
 }

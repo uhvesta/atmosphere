@@ -9,7 +9,7 @@ package enum Field: String, Hashable, Codable, Sendable, CaseIterable {
     case status, priority, agentAccess
     case startDate, dueDate, dueTime
     case avenue, project, parent, task, labels
-    case author, trigger, procrastinatedAfterDays
+    case author, trigger, procrastinatedAfterDays, filter
     case sortOrder, archivedAt, completedAt, closedAt, editedAt, deletedAt
 
     /// The field's name for people.
@@ -37,6 +37,7 @@ package enum Field: String, Hashable, Codable, Sendable, CaseIterable {
         case .author: "Author"
         case .trigger: "Reminder"
         case .procrastinatedAfterDays: "Procrastinated after"
+        case .filter: "Filter"
         case .sortOrder: "Order"
         case .archivedAt: "Archived"
         case .completedAt: "Completed"
@@ -67,6 +68,7 @@ package enum FieldValue: Hashable, Codable, Sendable {
     case records(RecordKind, [UUID])
     case actor(Actor)
     case trigger(Reminder.Trigger)
+    case filter(TaskFilter)
 }
 
 /// One field of a record: how to read it as a value and how to copy it
@@ -167,6 +169,15 @@ extension Settings {
     ]
 }
 
+extension SavedFilter {
+    static let fields: [RecordField<SavedFilter>] = [
+        .init(.name, \.name) { .text($0) },
+        .init(.symbol, \.symbol) { .text($0) },
+        .init(.filter, \.filter) { .filter($0) },
+        .init(.sortOrder, \.sortOrder) { .text($0) },
+    ]
+}
+
 extension RecordValue: Journaled {
     /// The record's fields that have a value.
     package var fieldValues: [Field: FieldValue] {
@@ -182,6 +193,7 @@ extension RecordValue: Journaled {
         case .comment(let record): values(Comment.fields, record)
         case .reminder(let record): values(Reminder.fields, record)
         case .settings(let record): values(Settings.fields, record)
+        case .savedFilter(let record): values(SavedFilter.fields, record)
         }
     }
 
@@ -195,6 +207,7 @@ extension RecordValue: Journaled {
         case .comment: Comment.fields.map(\.field)
         case .reminder: Reminder.fields.map(\.field)
         case .settings: Settings.fields.map(\.field)
+        case .savedFilter: SavedFilter.fields.map(\.field)
         }
     }
 
@@ -214,6 +227,7 @@ extension RecordValue: Journaled {
         case (.comment(let to), .comment(let from)): .comment(copy(Comment.fields, from, to))
         case (.reminder(let to), .reminder(let from)): .reminder(copy(Reminder.fields, from, to))
         case (.settings(let to), .settings(let from)): .settings(copy(Settings.fields, from, to))
+        case (.savedFilter(let to), .savedFilter(let from)): .savedFilter(copy(SavedFilter.fields, from, to))
         default: self
         }
     }

@@ -187,6 +187,25 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// A search saved as a filter shows under Filters in the sidebar and
+    /// opens with its tasks.
+    func testSavedFilters() async throws {
+        let (store, flow) = app("saved-filters")
+        store.send(.selected(.search))
+        store.send(.search(.binding(.set(\.filter.priorities, [.high]))))
+        store.send(.search(.saveFilterTapped))
+        store.send(.search(.editor(.presented(.binding(.set(\.name, "Urgent"))))))
+        await flow.step("save")
+        store.send(.search(.editor(.presented(.saveTapped))))
+        await flow.step("saved", image: false)
+        let urgent = try XCTUnwrap(store.workspace?.sortedSavedFilters.first?.id)
+        store.send(.selected(.savedFilter(urgent)))
+        await flow.step("opened")
+        store.send(.savedFilter(.presented(.binding(.set(\.filter.text, "plan")))))
+        await flow.step("changed")
+        flow.finish()
+    }
+
     /// A task in the detail column: adding a Sub task, then finishing it
     /// with open Sub tasks.
     func testTaskDetail() async throws {

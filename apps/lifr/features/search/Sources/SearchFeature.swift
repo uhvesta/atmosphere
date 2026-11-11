@@ -5,81 +5,18 @@ import LifrStoreClient
 import LifrTaskList
 import LifrUI
 
-/// What Search looks for. Every word of `text` must appear in a task's
-/// title, details or one of its comments, and the task must pass every
-/// filter that's set.
-package struct SearchFilter: Hashable, Sendable {
-    /// Which due dates match.
-    package enum Due: String, CaseIterable, Hashable, Sendable {
-        case any, overdue, today, nextSevenDays, none
+/// Search's words and filters.
+package typealias SearchFilter = TaskFilter
 
-        package var title: String {
-            switch self {
-            case .any: String(localized: "Any date")
-            case .overdue: String(localized: "Overdue")
-            case .today: String(localized: "Today")
-            case .nextSevenDays: String(localized: "Next 7 days")
-            case .none: String(localized: "No due date")
-            }
+extension TaskFilter.Due {
+    package var title: String {
+        switch self {
+        case .any: String(localized: "Any date")
+        case .overdue: String(localized: "Overdue")
+        case .today: String(localized: "Today")
+        case .nextSevenDays: String(localized: "Next 7 days")
+        case .none: String(localized: "No due date")
         }
-    }
-
-    package var text = ""
-    /// Empty means every open status.
-    package var statuses: Set<TaskStatus> = []
-    /// Empty means any priority.
-    package var priorities: Set<Priority> = []
-    /// Label names; a task needs at least one of them. Empty means any.
-    package var labels: Set<String> = []
-    /// Avenue IDs; a task must be in one of them. Empty means any.
-    package var avenues: Set<UUID> = []
-    package var due = Due.any
-
-    package init() {}
-
-    /// No text and no filters: Search shows nothing yet.
-    package var isEmpty: Bool { self == SearchFilter() }
-
-    /// How many filters besides the text are set.
-    package var filterCount: Int {
-        [!statuses.isEmpty, !priorities.isEmpty, !labels.isEmpty, !avenues.isEmpty, due != .any].count { $0 }
-    }
-
-    /// The filter as text, the same each run.
-    var key: String {
-        [
-            text, statuses.map(\.rawValue).sorted().joined(separator: ","),
-            priorities.map { "\($0)" }.sorted().joined(separator: ","), labels.sorted().joined(separator: ","),
-            avenues.map(\.uuidString).sorted().joined(separator: ","), due.rawValue,
-        ].joined(separator: "|")
-    }
-
-    package func matches(_ task: LifrTask, in workspace: Workspace, now: Date, timeZone: TimeZone) -> Bool {
-        let status = task.effectiveStatus(now: now, settings: workspace.settings)
-        guard statuses.isEmpty ? !status.isClosed : statuses.contains(status) else { return false }
-        guard priorities.isEmpty || priorities.contains(task.priority) else { return false }
-        guard avenues.isEmpty || avenues.contains(task.avenueID) else { return false }
-        if !labels.isEmpty {
-            guard task.labelIDs.contains(where: { workspace.labels[$0].map { labels.contains($0.name) } == true })
-            else { return false }
-        }
-        let today = CalendarDate(now, in: timeZone)
-        switch due {
-        case .any: break
-        case .overdue: guard task.isOverdue(today: today, time: TimeOfDay(now, in: timeZone)) else { return false }
-        case .today: guard task.dueDate == today else { return false }
-        case .nextSevenDays:
-            let last = today.adding(days: 7)
-            guard let date = task.dueDate, date >= today, date <= last else { return false }
-        case .none: guard task.dueDate == nil else { return false }
-        }
-        let words = text.lowercased().split(whereSeparator: \.isWhitespace)
-        guard !words.isEmpty else { return true }
-        let comments = workspace.comments.values
-            .filter { $0.taskID == task.id && $0.deletedAt == nil }
-            .map(\.body)
-        let haystack = ([task.title, task.details] + comments).joined(separator: "\n").lowercased()
-        return words.allSatisfy { haystack.contains($0) }
     }
 }
 
@@ -117,9 +54,30 @@ package struct SearchFeature {
     package struct State: Equatable {
         package var filter = SearchFilter()
         package var list: TaskListFeature.State
+        /// The saved filter this search was opened from, if any.
+        package var savedFilterID: UUID?
+        @Presents package var editor: SavedFilterEditor.State?
+        /// Why updating the saved filter failed.
+        package var error: String?
 
         package init() {
             list = TaskListFeature.State(query: .search(SearchFilter()))
+        }
+
+        /// The search a saved filter keeps.
+        package init(saved: SavedFilter, workspace: Workspace, now: Date, timeZone: TimeZone) {
+            self.init(filter: saved.filter, workspace: workspace, now: now, timeZone: timeZone)
+            savedFilterID = saved.id
+        }
+
+        /// The saved filter this search was opened from, as it's saved.
+        package var savedFilter: SavedFilter? {
+            savedFilterID.flatMap { list.workspace?.savedFilters[$0] }
+        }
+
+        /// Whether the words or filters differ from the saved filter's.
+        package var differsFromSaved: Bool {
+            savedFilter.map { $0.filter != filter } ?? false
         }
 
         package init(filter: SearchFilter, workspace: Workspace, now: Date, timeZone: TimeZone) {
@@ -182,6 +140,14 @@ package struct SearchFeature {
         case clearFiltersTapped
         /// Clears one filter value.
         case chipRemoved(FilterChip.Kind)
+        /// Keep this search under a name.
+        case saveFilterTapped
+        /// Rename, re-symbol or delete the saved filter shown.
+        case editSavedFilterTapped
+        /// Save the words and filters shown into the saved filter.
+        case updateSavedFilterTapped
+        case updated(Result<Saved, any Error>)
+        case editor(PresentationAction<SavedFilterEditor.Action>)
         case delegate(Delegate)
 
         @CasePathable
@@ -192,6 +158,7 @@ package struct SearchFeature {
 
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
+    @Dependency(\.store) private var store
 
     package init() {}
 
@@ -216,15 +183,43 @@ package struct SearchFeature {
                 }
                 refilter(&state)
                 return .none
-            case .list(.delegate(.saved(let snapshot))):
+            case .saveFilterTapped:
+                guard !state.filter.isEmpty else { return .none }
+                state.editor = SavedFilterEditor.State(saving: state.filter)
+                return .none
+            case .editSavedFilterTapped:
+                guard let saved = state.savedFilter else { return .none }
+                state.editor = SavedFilterEditor.State(editing: saved)
+                return .none
+            case .updateSavedFilterTapped:
+                guard let saved = state.savedFilter else { return .none }
+                return .run { [store, filter = state.filter] send in
+                    await send(
+                        .updated(
+                            Result {
+                                try await store.edit(
+                                    savedFilter: saved.id, name: saved.name, symbol: saved.symbol, filter: filter)
+                            }))
+                }
+            case .updated(.success(let saved)):
+                state.error = nil
+                return .send(.delegate(.saved(saved.snapshot)))
+            case .updated(.failure(let error)):
+                state.error = (error as? LifrError)?.description ?? error.localizedDescription
+                return .none
+            case .list(.delegate(.saved(let snapshot))),
+                .editor(.presented(.delegate(.saved(let snapshot)))),
+                .editor(.presented(.delegate(.deleted(let snapshot)))):
                 return .send(.delegate(.saved(snapshot)))
             case .binding:
+                state.error = nil
                 refilter(&state)
                 return .none
-            case .list, .delegate:
+            case .list, .editor, .delegate:
                 return .none
             }
         }
+        .ifLet(\.$editor, action: \.editor) { SavedFilterEditor() }
     }
 
     /// Runs the list's query again for the current filter.

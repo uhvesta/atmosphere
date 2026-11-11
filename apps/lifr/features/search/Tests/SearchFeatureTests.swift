@@ -12,18 +12,23 @@ final class SearchFeatureTests: XCTestCase {
     private lazy var records = RecordsBuilder(now: now, timeZone: .gmt)
     private lazy var health = records.avenue("HEALTH", "Health")
 
-    private func load() async -> TestStoreOf<SearchFeature> {
-        let store = TestStore(initialState: SearchFeature.State()) {
+    private func load(
+        _ state: SearchFeature.State = SearchFeature.State(), client: StoreClient? = nil
+    ) async -> TestStoreOf<SearchFeature> {
+        let client = client ?? .inMemory(records.workspace)
+        let store = TestStore(initialState: state) {
             SearchFeature()
-        } withDependencies: { [now, records] in
-            $0.store = .inMemory(records.workspace)
+        } withDependencies: { [now] in
+            $0.store = client
             $0.date.now = now
             $0.timeZone = .gmt
             $0.uuid = .incrementing
         }
         store.exhaustivity = .off
         await store.send(.list(.task))
-        await store.receive(\.list.loaded)
+        if state.list.workspace == nil {
+            await store.receive(\.list.loaded)
+        }
         return store
     }
 
@@ -170,5 +175,94 @@ final class SearchFeatureTests: XCTestCase {
 
         await store.send(.binding(.set(\.filter.statuses, [.done])))
         XCTAssertEqual(titles(store), ["Buy shoes"])
+    }
+
+    func testASearchIsSavedUnderAName() async throws {
+        records.task("Buy milk", in: health)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = await load(client: client)
+        await store.send(.binding(.set(\.filter.text, "milk")))
+        await store.send(.binding(.set(\.filter.priorities, [.high])))
+
+        await store.send(.saveFilterTapped)
+        XCTAssertEqual(store.state.editor?.name, "milk")
+        await store.send(.editor(.presented(.binding(.set(\.name, "Dairy")))))
+        await store.send(.editor(.presented(.saveTapped)))
+        await store.receive(\.delegate.saved)
+        await store.receive(\.editor.dismiss)
+
+        XCTAssertNil(store.state.editor)
+        let saved = try await client.load().sortedSavedFilters
+        XCTAssertEqual(saved.map(\.name), ["Dairy"])
+        XCTAssertEqual(saved.first?.filter, TaskFilter(text: "milk", priorities: [.high]))
+    }
+
+    func testANewSearchWithNothingSetCantBeSaved() async {
+        let store = await load()
+
+        await store.send(.saveFilterTapped)
+
+        XCTAssertNil(store.state.editor)
+    }
+
+    func testAFilterNeedsAName() async {
+        let store = await load()
+        await store.send(.binding(.set(\.filter.text, "milk")))
+        await store.send(.saveFilterTapped)
+
+        await store.send(.editor(.presented(.binding(.set(\.name, "   ")))))
+        XCTAssertEqual(store.state.editor?.canSave, false)
+        await store.send(.editor(.presented(.saveTapped)))
+
+        XCTAssertNotNil(store.state.editor)
+    }
+
+    func testASavedFilterShowsItsTasksAndCanBeUpdated() async throws {
+        records.task("Buy milk", in: health, priority: .high)
+        records.task("Stretch", in: health)
+        let saved = records.savedFilter("Urgent", TaskFilter(priorities: [.high]))
+        let client = StoreClient.inMemory(records.workspace)
+        let store = await load(
+            SearchFeature.State(saved: saved, workspace: records.workspace, now: now, timeZone: .gmt), client: client)
+
+        XCTAssertEqual(titles(store), ["Buy milk"])
+        XCTAssertEqual(store.state.savedFilter?.name, "Urgent")
+        XCTAssertFalse(store.state.differsFromSaved)
+
+        await store.send(.binding(.set(\.filter.text, "milk")))
+        XCTAssertTrue(store.state.differsFromSaved)
+        await store.send(.updateSavedFilterTapped)
+        await store.receive(\.delegate.saved)
+
+        let updated = try await client.load().savedFilters[saved.id]
+        XCTAssertEqual(updated?.filter, TaskFilter(text: "milk", priorities: [.high]))
+        XCTAssertEqual(updated?.name, "Urgent")
+    }
+
+    func testASavedFilterIsRenamedAndDeletedOnlyAfterAsking() async throws {
+        let saved = records.savedFilter("Urgent", TaskFilter(priorities: [.high]))
+        let client = StoreClient.inMemory(records.workspace)
+        let store = await load(
+            SearchFeature.State(saved: saved, workspace: records.workspace, now: now, timeZone: .gmt), client: client)
+
+        await store.send(.editSavedFilterTapped)
+        await store.send(.editor(.presented(.binding(.set(\.name, "Today's")))))
+        await store.send(.editor(.presented(.binding(.set(\.symbol, "star")))))
+        await store.send(.editor(.presented(.saveTapped)))
+        await store.receive(\.delegate.saved)
+        await store.receive(\.editor.dismiss)
+        let renamed = try await client.load().savedFilters[saved.id]
+        XCTAssertEqual(renamed?.name, "Today's")
+        XCTAssertEqual(renamed?.symbol, "star")
+
+        await store.send(.editSavedFilterTapped)
+        await store.send(.editor(.presented(.deleteTapped)))
+        let asked = try await client.load().savedFilters[saved.id]
+        XCTAssertNotNil(asked)
+        await store.send(.editor(.presented(.confirm(.presented(.delete)))))
+        await store.receive(\.delegate.saved)
+
+        let deleted = try await client.load().savedFilters[saved.id]
+        XCTAssertNil(deleted)
     }
 }

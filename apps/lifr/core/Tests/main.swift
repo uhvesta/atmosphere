@@ -16,4 +16,5 @@ await runSuites([
     ("Journal", journalTests()),
     ("Saved formats", savedFormatTests()),
     ("Merging synced records", mergeTests()),
+    ("Saved filters", savedFilterTests()),
 ])

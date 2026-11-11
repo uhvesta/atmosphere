@@ -130,6 +130,19 @@ package struct RecordsBuilder {
         workspace.createLabel(name: name, in: context())
     }
 
+    @discardableResult
+    package mutating func savedFilter(_ name: String, _ filter: TaskFilter) -> SavedFilter {
+        let context = context()
+        do {
+            return try workspace.saveFilter(filter, name: name, symbol: SavedFilter.defaultSymbol, in: context)
+        } catch {
+            reportIssue(error)
+            return SavedFilter(
+                id: standInID, name: name, symbol: SavedFilter.defaultSymbol, filter: filter, sortOrder: "",
+                createdAt: now)
+        }
+    }
+
     package mutating func comment(_ body: String, on task: LifrTask) {
         do {
             _ = try workspace.addComment(body, to: task.id, in: context())

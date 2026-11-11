@@ -35,7 +35,7 @@ extension Workspace {
 }
 
 package enum RecordKind: String, Hashable, Codable, Sendable, CaseIterable {
-    case avenue, project, task, label, comment, reminder, settings
+    case avenue, project, task, label, comment, reminder, settings, savedFilter
 }
 
 extension JournalKit.RecordID where Kind == RecordKind {
@@ -52,6 +52,7 @@ package enum RecordValue: Hashable, Codable, Sendable {
     case comment(Comment)
     case reminder(Reminder)
     case settings(Settings)
+    case savedFilter(SavedFilter)
 
     package var id: RecordID {
         switch self {
@@ -62,6 +63,7 @@ package enum RecordValue: Hashable, Codable, Sendable {
         case .comment(let record): RecordID(.comment, record.id)
         case .reminder(let record): RecordID(.reminder, record.id)
         case .settings: .settings
+        case .savedFilter(let record): RecordID(.savedFilter, record.id)
         }
     }
 }
@@ -104,6 +106,7 @@ extension Workspace {
         steps += diff(before.tasks, tasks, RecordValue.task)
         steps += diff(before.comments, comments, RecordValue.comment)
         steps += diff(before.reminders, reminders, RecordValue.reminder)
+        steps += diff(before.savedFilters, savedFilters, RecordValue.savedFilter)
         if before.settings != settings {
             steps.append(JournalStep(before: .settings(before.settings), after: .settings(settings)))
         }
@@ -119,6 +122,7 @@ extension Workspace {
         case .comment: comments[record.id].map(RecordValue.comment)
         case .reminder: reminders[record.id].map(RecordValue.reminder)
         case .settings: .settings(settings)
+        case .savedFilter: savedFilters[record.id].map(RecordValue.savedFilter)
         }
     }
 
@@ -137,6 +141,8 @@ extension Workspace {
         case (.reminder, .reminder(let reminder)?): reminders[record.id] = reminder
         case (.reminder, nil): reminders[record.id] = nil
         case (.settings, .settings(let value)?): settings = value
+        case (.savedFilter, .savedFilter(let saved)?): savedFilters[record.id] = saved
+        case (.savedFilter, nil): savedFilters[record.id] = nil
         default: break
         }
     }
@@ -214,6 +220,8 @@ extension Workspace {
             comments[comment.id] = comment
         case .reminder(let reminder):
             reminders[reminder.id] = nil
+        case .savedFilter(let saved):
+            savedFilters[saved.id] = nil
         case .label(let label):
             if tasks.values.contains(where: { $0.labelIDs.contains(label.id) && $0.deletedAt == nil }) {
                 change.skipped.append(SkippedRevert(record: value.id, field: nil, reason: .inUse))

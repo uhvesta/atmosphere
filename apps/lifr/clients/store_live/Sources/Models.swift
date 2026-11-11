@@ -24,7 +24,7 @@ import SwiftData
 let models: [any PersistentModel.Type] = [
     StoredAvenue.self, StoredProject.self, StoredTask.self, StoredLabel.self, StoredComment.self,
     StoredReminder.self, StoredHistoryEvent.self, StoredSettings.self, StoredJournalEntry.self,
-    StoredConversation.self, StoredSkill.self, StoredJournalArchive.self,
+    StoredConversation.self, StoredSkill.self, StoredJournalArchive.self, StoredSavedFilter.self,
 ]
 
 @Model
@@ -218,4 +218,19 @@ final class StoredSkill {
     @Attribute(.allowsCloudEncryption) var skill: Data?
 
     init(id: String) { self.id = id }
+}
+
+/// A search kept under a name.
+@Model
+final class StoredSavedFilter {
+    var id = UUID()
+    @Attribute(.allowsCloudEncryption) var name = ""
+    var symbol = ""
+    /// `TaskFilter` as JSON. Its words and label names are the person's
+    /// own, so it's encrypted.
+    @Attribute(.allowsCloudEncryption) var filter: Data?
+    var sortOrder = ""
+    var createdAt = Date.distantPast
+
+    init(id: UUID) { self.id = id }
 }

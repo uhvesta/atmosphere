@@ -10,6 +10,7 @@ package struct Workspace: Hashable, Codable, Sendable {
     package internal(set) var labels: [UUID: Label] = [:]
     package internal(set) var comments: [UUID: Comment] = [:]
     package internal(set) var reminders: [UUID: Reminder] = [:]
+    package internal(set) var savedFilters: [UUID: SavedFilter] = [:]
     /// Append-only.
     package internal(set) var history: [HistoryEvent] = []
     /// Every operation's changes to the records, oldest first. Append-only.
@@ -25,8 +26,8 @@ package struct Workspace: Hashable, Codable, Sendable {
     /// sync brought them in from another device; call `reconcile` after.
     package init(
         avenues: [Avenue] = [], projects: [Project] = [], tasks: [LifrTask] = [], labels: [Label] = [],
-        comments: [Comment] = [], reminders: [Reminder] = [], history: [HistoryEvent] = [],
-        journal: [JournalEntry] = [], settings: Settings = Settings()
+        comments: [Comment] = [], reminders: [Reminder] = [], savedFilters: [SavedFilter] = [],
+        history: [HistoryEvent] = [], journal: [JournalEntry] = [], settings: Settings = Settings()
     ) {
         self.avenues = Dictionary(avenues.map { ($0.id, $0) }) { _, last in last }
         self.projects = Dictionary(projects.map { ($0.id, $0) }) { _, last in last }
@@ -34,6 +35,7 @@ package struct Workspace: Hashable, Codable, Sendable {
         self.labels = Dictionary(labels.map { ($0.id, $0) }) { _, last in last }
         self.comments = Dictionary(comments.map { ($0.id, $0) }) { _, last in last }
         self.reminders = Dictionary(reminders.map { ($0.id, $0) }) { _, last in last }
+        self.savedFilters = Dictionary(savedFilters.map { ($0.id, $0) }) { _, last in last }
         self.history = history
         self.journal = journal
         self.settings = settings
@@ -317,6 +319,7 @@ package struct Workspace: Hashable, Codable, Sendable {
         let name = try Self.validName(name)
         let taken = labels.values.contains { $0.id != id && $0.name.caseInsensitiveCompare(name) == .orderedSame }
         guard !taken else { throw .labelNameTaken(name) }
+        renameLabel(inSavedFilters: label.name, to: name)
         label.name = name
         labels[id] = label
     }
@@ -337,6 +340,7 @@ package struct Workspace: Hashable, Codable, Sendable {
                 .fieldChanged, on: task.id, field: .labels, oldValue: Self.describe(task.labelIDs),
                 newValue: Self.describe(labelIDs), by: context.actor, in: context, &change)
         }
+        if let name = labels[id]?.name { renameLabel(inSavedFilters: name, to: other.flatMap { labels[$0]?.name }) }
         labels[id] = nil
         return change
     }
@@ -618,7 +622,7 @@ package struct Workspace: Hashable, Codable, Sendable {
 
     /// A sort key between two neighbours'. Two with the same key, which two
     /// devices can make, leave no room between them, so it goes after both.
-    private static func key(after lower: String?, before upper: String?) -> String {
+    static func key(after lower: String?, before upper: String?) -> String {
         guard let lower, let upper, lower >= upper else { return SortKey.between(lower, upper) }
         return SortKey.between(lower, nil)
     }

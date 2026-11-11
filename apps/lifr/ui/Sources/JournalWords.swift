@@ -99,6 +99,7 @@ package struct JournalWords {
         case .label(let label): label.name
         case .comment(let comment): workspace.tasks[comment.taskID]?.title ?? "a task"
         case .reminder(let reminder): workspace.tasks[reminder.taskID]?.title ?? "a task"
+        case .savedFilter(let saved): saved.name
         case .settings, nil: String(localized: "Settings")
         }
     }
@@ -163,7 +164,7 @@ package struct JournalWords {
                 return "a task"
             }
             return title
-        case .avenue, .project, .task, .label:
+        case .avenue, .project, .task, .label, .savedFilter:
             let named = step.fields.first { $0.field == .title || $0.field == .name }
             guard case .text(let text)? = named.flatMap({ $0.after ?? $0.before }) else {
                 return name(of: step.record.kind, id)
@@ -192,6 +193,7 @@ package struct JournalWords {
         case .trigger(.beforeDue(let seconds)):
             Duration.seconds(seconds).formatted(.units(allowed: [.days, .hours, .minutes], width: .wide))
                 + " before due"
+        case .filter(let filter): filter.summary
         }
     }
 
@@ -202,6 +204,7 @@ package struct JournalWords {
             case .project: workspace.projects[id]?.name
             case .task: workspace.tasks[id]?.title
             case .label: workspace.labels[id]?.name
+            case .savedFilter: workspace.savedFilters[id]?.name
             case .comment, .reminder, .settings: nil
             }
         return name ?? known[id] ?? "something removed"
@@ -219,6 +222,17 @@ extension RecordKind {
         case .comment: "comment"
         case .reminder: "reminder"
         case .settings: "settings"
+        case .savedFilter: "saved filter"
         }
+    }
+}
+
+extension TaskFilter {
+    /// The filter in a few words, such as ““dentist”, 2 filters”.
+    package var summary: String {
+        let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filters = filterCount == 1 ? String(localized: "1 filter") : String(localized: "\(filterCount) filters")
+        if words.isEmpty { return filters }
+        return filterCount == 0 ? "“\(words)”" : "“\(words)”, \(filters)"
     }
 }

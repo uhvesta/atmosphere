@@ -20,6 +20,7 @@ extension SyncConflict where Record == RecordValue {
             case .task(let task): return task.title
             case .label(let label): return label.name
             case .comment(let comment): return comment.body
+            case .savedFilter(let saved): return saved.name
             case .reminder, .settings: continue
             }
         }

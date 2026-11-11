@@ -119,6 +119,39 @@ final class PhoneTasksFlowTests: PhoneFlowTestCase {
         flow.finish()
     }
 
+    /// A search saved as a filter: it's listed on the Avenues tab, opens
+    /// with its tasks, can be updated, and is deleted only after asking.
+    func testSavedFilters() async throws {
+        let (store, flow) = app("saved-filters")
+        store.tab = .search
+        store.send(.search(.binding(.set(\.filter.priorities, [.high]))))
+        await flow.step("search")
+        store.send(.search(.saveFilterTapped))
+        store.send(.search(.editor(.presented(.binding(.set(\.name, "Urgent"))))))
+        store.send(.search(.editor(.presented(.binding(.set(\.symbol, "bolt"))))))
+        await flow.step("save")
+        store.send(.search(.editor(.presented(.saveTapped))))
+        await flow.step("saved", image: false)
+        let urgent = try XCTUnwrap(store.workspace?.sortedSavedFilters.first?.id)
+        store.tab = .avenues
+        await flow.step("avenues")
+        store.send(.savedFilterTapped(urgent))
+        await flow.step("opened")
+        store.send(.savedFilter(.presented(.binding(.set(\.filter.due, .nextSevenDays)))))
+        await flow.step("changed")
+        store.send(.savedFilter(.presented(.updateSavedFilterTapped)))
+        await flow.step("updated", image: false)
+        XCTAssertEqual(store.workspace?.savedFilters[urgent]?.filter.due, .nextSevenDays)
+        store.send(.savedFilter(.presented(.editSavedFilterTapped)))
+        await flow.step("edit")
+        store.send(.savedFilter(.presented(.editor(.presented(.deleteTapped)))))
+        await flow.step("delete-asks")
+        store.send(.savedFilter(.presented(.editor(.presented(.confirm(.presented(.delete)))))))
+        await flow.step("deleted")
+        XCTAssertNil(store.savedFilter)
+        flow.finish()
+    }
+
     /// A Project: rename it, give it a due date, archive it with its open
     /// task moved out and Undo that, archive it again, find it under
     /// Archived, then restore it. And edit its Avenue.

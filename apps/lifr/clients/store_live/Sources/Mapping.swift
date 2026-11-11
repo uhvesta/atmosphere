@@ -125,6 +125,24 @@ extension StoredLabel {
     }
 }
 
+extension StoredSavedFilter {
+    /// `nil` when the filter doesn't decode, such as one a newer version
+    /// wrote with filters this one doesn't know.
+    var record: SavedFilter? {
+        guard let filter, let decoded = try? JSONDecoder().decode(TaskFilter.self, from: filter) else { return nil }
+        return SavedFilter(
+            id: id, name: name, symbol: symbol, filter: decoded, sortOrder: sortOrder, createdAt: createdAt)
+    }
+
+    func write(_ saved: SavedFilter) {
+        name = saved.name
+        symbol = saved.symbol
+        filter = try? JSONEncoder().encode(saved.filter)
+        sortOrder = saved.sortOrder
+        createdAt = saved.createdAt
+    }
+}
+
 extension StoredComment {
     var record: Comment? {
         guard let task,

@@ -49,6 +49,7 @@
     [MenuButton] "Sort" id: arrow.up.arrow.down
     [MenuButton] "Add" help: "Add a task or Project" id: add
     [MenuButton] "Filter" id: line.3.horizontal.decrease.circle
+    [Button] "Save Filter…"
     [TextField/SearchField] "" value: "run"
       [Button] "Search"
       [Button] "cancel"

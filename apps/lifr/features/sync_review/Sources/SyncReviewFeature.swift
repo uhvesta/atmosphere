@@ -180,6 +180,7 @@ package struct SyncReviewRow: Identifiable, Hashable, Sendable {
         case .comment: String(localized: "Comment")
         case .reminder: String(localized: "Reminder")
         case .settings: String(localized: "Settings")
+        case .savedFilter: String(localized: "Saved Filter")
         }
     }
 
@@ -192,6 +193,7 @@ package struct SyncReviewRow: Identifiable, Hashable, Sendable {
                 case .project: workspace.projects[id]?.name
                 case .task: workspace.tasks[id]?.title
                 case .label: workspace.labels[id]?.name
+                case .savedFilter: workspace.savedFilters[id]?.name
                 case .comment, .reminder, .settings: nil
                 }
             return name ?? String(localized: "something removed")
@@ -213,6 +215,7 @@ package struct SyncReviewRow: Identifiable, Hashable, Sendable {
         case .trigger(.beforeDue(let seconds)):
             Duration.seconds(seconds).formatted(.units(allowed: [.days, .hours, .minutes], width: .wide))
                 + String(localized: " before due")
+        case .filter(let filter): filter.summary
         }
     }
 }

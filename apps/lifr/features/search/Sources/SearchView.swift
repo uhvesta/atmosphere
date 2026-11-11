@@ -13,13 +13,18 @@ package struct SearchView: View {
 
     package var body: some View {
         TaskListView(store: store.scope(state: \.list, action: \.list)) {
+            if let error = store.error {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
             if !store.chips.isEmpty {
                 chips
             }
         }
         .emptyAction(store.filter.filterCount == 0 ? nil : "Clear Filters") { store.send(.clearFiltersTapped) }
         .searchable(text: $store.filter.text, prompt: "Titles, details and comments")
-        .navigationTitle("Search")
+        .navigationTitle(store.savedFilter?.name ?? String(localized: "Search"))
         .toolbar {
             Menu {
                 filters
@@ -29,6 +34,25 @@ package struct SearchView: View {
                     systemImage: store.filter.filterCount == 0
                         ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
             }
+            if let saved = store.savedFilter {
+                Menu("More", systemImage: "ellipsis.circle") {
+                    if store.differsFromSaved {
+                        Button("Update “\(saved.name)”", systemImage: "arrow.down.doc") {
+                            store.send(.updateSavedFilterTapped)
+                        }
+                        .disabled(store.filter.isEmpty)
+                        Button("Save as New Filter…", systemImage: "plus") { store.send(.saveFilterTapped) }
+                            .disabled(store.filter.isEmpty)
+                    }
+                    Button("Edit Filter…", systemImage: "pencil") { store.send(.editSavedFilterTapped) }
+                }
+            } else {
+                Button("Save Filter…", systemImage: "square.and.arrow.down") { store.send(.saveFilterTapped) }
+                    .disabled(store.filter.isEmpty)
+            }
+        }
+        .sheet(item: $store.scope(state: \.editor, action: \.editor)) { editor in
+            SavedFilterEditorView(store: editor)
         }
     }
 

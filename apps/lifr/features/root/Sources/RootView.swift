@@ -214,6 +214,23 @@ private struct PhoneRootView: View {
                                 }
                             }
                         }
+                        let savedFilters = store.workspace?.sortedSavedFilters ?? []
+                        if !savedFilters.isEmpty {
+                            Section("Filters") {
+                                ForEach(savedFilters) { saved in
+                                    Button {
+                                        store.send(.savedFilterTapped(saved.id))
+                                    } label: {
+                                        Label(saved.name, systemImage: saved.symbol)
+                                    }
+                                    .contextMenu {
+                                        MoveButtons(
+                                            ids: savedFilters.map(\.id), id: saved.id,
+                                            move: { store.send(.savedFilterMoved(saved.id, up: $0)) })
+                                    }
+                                }
+                            }
+                        }
                         Section {
                             Button {
                                 store.isTrashShown = true
@@ -233,6 +250,9 @@ private struct PhoneRootView: View {
                     }
                     .navigationDestination(item: $store.shownShelf) { shelf in
                         ShelfView(store: store, shelf: shelf)
+                    }
+                    .navigationDestination(item: $store.scope(state: \.savedFilter, action: \.savedFilter)) {
+                        SearchView(store: $0)
                     }
                 }
             }
@@ -333,6 +353,10 @@ private struct MacRootView: View {
             ProcrastinatedView(store: store.scope(state: \.procrastinated, action: \.procrastinated))
         case .search:
             SearchView(store: store.scope(state: \.search, action: \.search))
+        case .savedFilter:
+            if let savedFilter = store.scope(state: \.savedFilter, action: \.savedFilter.presented) {
+                SearchView(store: savedFilter)
+            }
         case .trash:
             TrashView(store: store.scope(state: \.trash, action: \.trash))
         case .anytime:
@@ -373,6 +397,25 @@ private struct Sidebar: View {
     var body: some View {
         List(selection: $store.selection.sending(\.selected)) {
             lists
+            let savedFilters = store.workspace?.sortedSavedFilters ?? []
+            if !savedFilters.isEmpty {
+                Section("Filters") {
+                    ForEach(savedFilters) { saved in
+                        Label(saved.name, systemImage: saved.symbol)
+                            .tag(RootFeature.SidebarItem.savedFilter(saved.id))
+                            .contextMenu {
+                                Button("Edit Filter…", systemImage: "pencil") {
+                                    store.send(.selected(.savedFilter(saved.id)))
+                                    store.send(.savedFilter(.presented(.editSavedFilterTapped)))
+                                }
+                                Divider()
+                                MoveButtons(
+                                    ids: savedFilters.map(\.id), id: saved.id,
+                                    move: { store.send(.savedFilterMoved(saved.id, up: $0)) })
+                            }
+                    }
+                }
+            }
             Section("Avenues") {
                 ForEach(store.avenues.avenues) { avenue in
                     AvenueItems(avenue: avenue, store: store)

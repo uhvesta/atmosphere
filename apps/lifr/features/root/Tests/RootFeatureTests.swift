@@ -373,6 +373,70 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testASavedFilterOpensFromTheSidebarOrTheAvenuesTab() async {
+        records.task("Buy milk", in: health, priority: .high)
+        records.task("Stretch", in: health)
+        let urgent = records.savedFilter("Urgent", TaskFilter(priorities: [.high]))
+
+        let mac = makeStore(.mac)
+        let macTask = await mac.send(.task)
+        await mac.receive(\.loaded)
+        await mac.send(.selected(.savedFilter(urgent.id)))
+        XCTAssertEqual(mac.state.savedFilter?.list.rows.map(\.title), ["Buy milk"])
+        XCTAssertEqual(mac.state.currentList, .savedFilter)
+        await mac.send(.selected(.today))
+        XCTAssertNil(mac.state.savedFilter)
+        await macTask.cancel()
+
+        let phone = makeStore(.phone)
+        let phoneTask = await phone.send(.task)
+        await phone.receive(\.loaded)
+        await phone.send(.binding(.set(\.tab, .avenues)))
+        await phone.send(.savedFilterTapped(urgent.id))
+        XCTAssertEqual(phone.state.savedFilter?.list.rows.map(\.title), ["Buy milk"])
+        XCTAssertEqual(phone.state.currentList, .savedFilter)
+        await phoneTask.cancel()
+    }
+
+    func testASavedFilterDeletedWhileOpenCloses() async {
+        let urgent = records.savedFilter("Urgent", TaskFilter(priorities: [.high]))
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.selected(.savedFilter(urgent.id)))
+
+        await store.send(.savedFilter(.presented(.editSavedFilterTapped)))
+        await store.send(.savedFilter(.presented(.editor(.presented(.deleteTapped)))))
+        await store.send(.savedFilter(.presented(.editor(.presented(.confirm(.presented(.delete)))))))
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertNil(store.state.savedFilter)
+        XCTAssertEqual(store.state.selection, .search)
+        XCTAssertEqual(store.state.workspace?.savedFilters.isEmpty, true)
+        await task.cancel()
+    }
+
+    func testSavedFiltersMoveUpAndDown() async {
+        let first = records.savedFilter("First", TaskFilter(text: "a"))
+        let second = records.savedFilter("Second", TaskFilter(text: "b"))
+        let third = records.savedFilter("Third", TaskFilter(text: "c"))
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.savedFilterMoved(third.id, up: true))
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.workspace?.sortedSavedFilters.map(\.id), [first.id, third.id, second.id])
+
+        await store.send(.savedFilterMoved(first.id, up: false))
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.workspace?.sortedSavedFilters.map(\.id), [third.id, first.id, second.id])
+
+        await store.send(.savedFilterMoved(third.id, up: true))
+        XCTAssertEqual(store.state.workspace?.sortedSavedFilters.map(\.id), [third.id, first.id, second.id])
+        await task.cancel()
+    }
+
     func testLeavingAListClosesItsTaskAndLeavingTheAssistantClosesItsChat() async {
         let run = records.task("Run", in: health, due: 0)
         let store = makeStore(.mac)
