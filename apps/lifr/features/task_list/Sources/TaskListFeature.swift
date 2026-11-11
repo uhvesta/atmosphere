@@ -31,6 +31,15 @@ package struct TaskListFeature {
         /// Whether a pull already said why sync can't run, so the next pull
         /// just ends.
         package var explainedSync = false
+        /// Tasks just closed here, kept where they were for a moment so a
+        /// mis-pick can be undone in place.
+        package var lingering: Set<UUID> = []
+        /// Why the records couldn't load, shown in place of the list with
+        /// a way to try again.
+        package var loadError: String?
+        /// Whether any task was closed today, for a list that says so when
+        /// it empties.
+        package var closedToday = false
         /// The order within sections, remembered per list on this device.
         @Shared package var sort: TaskSort
         /// What the search field filters rows by, in a list that searches.
@@ -64,6 +73,12 @@ package struct TaskListFeature {
 
         package var isEmpty: Bool { sections.allSatisfy(\.rows.isEmpty) }
 
+        /// What the empty list says: that the day's work is done, once
+        /// tasks were closed today, where the list says so.
+        package var emptyMessage: TaskQuery.Empty {
+            closedToday ? query.finished ?? query.empty : query.empty
+        }
+
         /// Whether rows are being filtered by the search field.
         package var isSearching: Bool { query.searches && !searchTerm.isEmpty }
 
@@ -81,8 +96,16 @@ package struct TaskListFeature {
         /// with them, unless later ones are shown already.
         package mutating func show(_ snapshot: Snapshot, now: Date, timeZone: TimeZone) {
             guard saves.isLatest(snapshot) else { return }
+            let previous = sections
             workspace = snapshot.workspace
             sections = query.sections(snapshot.workspace, now, timeZone)
+            keepLingering(from: previous, in: snapshot.workspace)
+            if query.finished != nil {
+                let today = CalendarDate(now, in: timeZone)
+                closedToday = snapshot.workspace.listedTasks.contains {
+                    $0.closedAt.map { CalendarDate($0, in: timeZone) == today } ?? false
+                }
+            }
             if isSearching {
                 let term = searchTerm
                 for index in sections.indices {
@@ -109,11 +132,36 @@ package struct TaskListFeature {
                 self.detail = detail.refresh(from: snapshot, now: now, timeZone: timeZone) ? detail : nil
             }
         }
+
+        /// Puts tasks closed here back where `previous` showed them, with
+        /// their new status, while they linger.
+        private mutating func keepLingering(from previous: [TaskSection], in workspace: Workspace) {
+            lingering = lingering.filter { workspace.tasks[$0].map { $0.deletedAt == nil } ?? false }
+            for id in lingering where !rows.contains(where: { $0.id == id }) {
+                guard let task = workspace.tasks[id],
+                    let before = previous.firstIndex(where: { $0.rows.contains { $0.id == id } }),
+                    var row = previous[before].rows.first(where: { $0.id == id }),
+                    let index = previous[before].rows.firstIndex(where: { $0.id == id })
+                else { continue }
+                row.status = task.status
+                let section = previous[before]
+                if let at = sections.firstIndex(where: { $0.id == section.id }) {
+                    sections[at].rows.insert(row, at: min(index, sections[at].rows.count))
+                } else {
+                    let at = min(before, sections.count)
+                    sections.insert(TaskSection(id: section.id, title: section.title, rows: [row]), at: at)
+                }
+            }
+        }
     }
 
     package enum Action {
         /// The view appeared: load the records if they aren't yet.
         case task
+        /// A task closed here has stayed in place long enough.
+        case lingerEnded(UUID)
+        /// Try loading the records again, after they couldn't load.
+        case retryTapped
         /// Pull to sync; ends when the sync does.
         case pulled
         case pullFailed(String)
@@ -161,6 +209,8 @@ package struct TaskListFeature {
     @Dependency(\.store) private var store
     @Dependency(\.feedback) private var feedback
     @Dependency(\.sync) private var sync
+    @Dependency(\.continuousClock) private var clock
+    @Dependency(\.closedRowPause) private var closedRowPause
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
 
@@ -175,6 +225,18 @@ package struct TaskListFeature {
                     await send(.loaded(Result { try await store.load() }))
                 }
 
+            case .lingerEnded(let id):
+                state.lingering.remove(id)
+                guard let snapshot = state.snapshot else { return .none }
+                state.show(snapshot, now: now, timeZone: timeZone)
+                return .none
+
+            case .retryTapped:
+                state.loadError = nil
+                return .run { [store] send in
+                    await send(.loaded(Result { try await store.load() }))
+                }
+
             case .loaded(.success(let workspace)):
                 state.show(Snapshot(workspace, number: 0), now: now, timeZone: timeZone)
                 return .none
@@ -184,7 +246,7 @@ package struct TaskListFeature {
                 return .none
 
             case .loaded(.failure(let error)):
-                state.alert = .failed("Couldn't load your tasks", error)
+                state.loadError = (error as? any CustomStringConvertible)?.description ?? error.localizedDescription
                 return .none
 
             case .rowTapped(let id):
@@ -206,7 +268,7 @@ package struct TaskListFeature {
                 return .none
 
             case .rowAction(let id, .status(let status)):
-                return setStatus(status, id)
+                return setStatus(status, id, in: &state)
 
             case .rowAction(let id, .reschedule):
                 guard let row = state.rows.first(where: { $0.id == id }) else { return .none }
@@ -220,7 +282,7 @@ package struct TaskListFeature {
                 return .none
 
             case .statusPicker(.presented(let pick)):
-                return setStatus(pick.status, pick.task)
+                return setStatus(pick.status, pick.task, in: &state)
 
             case .reschedule(.presented(.delegate(.picked(let id, let date)))):
                 return save { try await $0.edit(id, Workspace.TaskEdit(dueDate: .some(date))) }
@@ -230,7 +292,7 @@ package struct TaskListFeature {
 
             case .prompt(.presented(let answer)):
                 guard let retry = answer.retry else { return .none }
-                return setStatus(retry.status, retry.task, cascade: true)
+                return setStatus(retry.status, retry.task, cascade: true, in: &state)
 
             case .pulled:
                 return .run { [sync] send in
@@ -406,11 +468,19 @@ package struct TaskListFeature {
         }
     }
 
-    private func setStatus(_ status: TaskStatus, _ id: UUID, cascade: Bool = false) -> Effect<Action> {
-        save { [feedback] in
-            let saved = try await $0.setStatus(status, id, cascade)
-            await feedback(Feedback(status: status))
-            return saved
+    /// Saves `status`; a task closed from a row stays there for a moment.
+    private func setStatus(
+        _ status: TaskStatus, _ id: UUID, cascade: Bool = false, in state: inout State
+    ) -> Effect<Action> {
+        let lingers = status.isClosed && closedRowPause > .zero && state.rows.contains { $0.id == id }
+        if lingers { state.lingering.insert(id) }
+        return .run { [store, feedback, clock, closedRowPause] send in
+            let result = await Result { try await store.setStatus(status, id, cascade) }
+            if case .success = result { await feedback(Feedback(status: status)) }
+            await send(.saved(result))
+            guard lingers else { return }
+            if case .success = result { try await clock.sleep(for: closedRowPause) }
+            await send(.lingerEnded(id))
         }
     }
 
@@ -459,5 +529,20 @@ extension AlertState where Action == BulkAnswer {
         } message: {
             message
         }
+    }
+}
+
+/// How long a task closed from a row stays where it was before it leaves
+/// the list. None in tests, where a closed row leaves at once unless the test
+/// says otherwise.
+private enum ClosedRowPauseKey: DependencyKey {
+    static let liveValue = Duration.milliseconds(1500)
+    static let testValue = Duration.zero
+}
+
+extension DependencyValues {
+    package var closedRowPause: Duration {
+        get { self[ClosedRowPauseKey.self] }
+        set { self[ClosedRowPauseKey.self] = newValue }
     }
 }

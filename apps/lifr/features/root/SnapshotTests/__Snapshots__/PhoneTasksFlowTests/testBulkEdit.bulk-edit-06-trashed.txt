@@ -5,6 +5,7 @@
 [button] "Procrastinated" value: "1 stalled"
 [text] "Nothing due today"
 [text] "Tasks due today, and overdue ones, show up here."
+[button] "Add a Task for Today"
 [text] "Moved 5 tasks to the Trash"
 [button] "Undo"
 [button] "Search"

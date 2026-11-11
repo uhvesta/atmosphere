@@ -209,6 +209,60 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(played.value, [.success, .tap])
     }
 
+    func testAClosedTaskStaysInPlaceForAMomentEvenThroughASync() async {
+        let stretch = records.task("Stretch", in: health)
+        let run = records.task("Run", in: health)
+        let store = await load()
+        let clock = TestClock()
+        store.dependencies.continuousClock = clock
+        store.dependencies.closedRowPause = .seconds(1.5)
+        let before = store.state.rows.map(\.id)
+
+        await store.send(.rowAction(stretch.id, .status(.done)))
+        await store.receive(\.saved)
+        XCTAssertEqual(store.state.rows.map(\.id), before)
+        XCTAssertEqual(store.state.rows.first { $0.id == stretch.id }?.status, .done)
+
+        // A sync's records arrive during the pause.
+        if let snapshot = store.state.snapshot { await store.send(.show(snapshot)) }
+        XCTAssertEqual(store.state.rows.map(\.id), before)
+
+        await clock.advance(by: .seconds(1.5))
+        await store.receive(\.lingerEnded)
+        XCTAssertEqual(store.state.rows.map(\.id), [run.id])
+    }
+
+    func testWithoutAPauseAClosedTaskLeavesAtOnce() async {
+        let stretch = records.task("Stretch", in: health)
+        let run = records.task("Run", in: health)
+        let store = await load()
+
+        await store.send(.rowAction(stretch.id, .status(.done)))
+        await store.receive(\.saved)
+        XCTAssertEqual(store.state.rows.map(\.id), [run.id])
+        XCTAssertEqual(store.state.lingering, [])
+    }
+
+    func testAFailedLoadShowsWhyAndTriesAgain() async {
+        records.task("Stretch", in: health)
+        let attempts = LockIsolated(0)
+        var client = StoreClient.inMemory(records.workspace)
+        let load = client.load
+        client.load = {
+            attempts.withValue { $0 += 1 }
+            if attempts.value == 1 { throw LifrError.notFound(.task, "LIFE-1") }
+            return try await load()
+        }
+        let store = await self.load(client: client)
+        XCTAssertNotNil(store.state.loadError)
+        XCTAssertNil(store.state.workspace)
+
+        await store.send(.retryTapped)
+        await store.receive(\.loaded)
+        XCTAssertNil(store.state.loadError)
+        XCTAssertEqual(store.state.rows.map(\.title), ["Stretch"])
+    }
+
     func testPullingSyncsAndSaysWhySyncCantRunOnlyOnce() async {
         let store = await load()
         let syncs = LockIsolated(0)

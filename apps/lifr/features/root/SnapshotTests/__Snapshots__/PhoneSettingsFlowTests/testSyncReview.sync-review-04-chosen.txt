@@ -15,6 +15,7 @@
 [header, text] "Avenue"
 [text] "Tasks due today, and overdue ones, show up here."
 [button] "This iPhone: Health"
+[button] "Add a Task for Today"
 [button, selected] "Mac: Home"
 [header, text] "Task “Pack the bag”"
 [text] "Mac deleted it, and it was changed here."

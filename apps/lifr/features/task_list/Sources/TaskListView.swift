@@ -14,6 +14,7 @@ import SwiftUI
 /// query's other actions.
 package struct TaskListView<Header: View>: View {
     @Bindable package var store: StoreOf<TaskListFeature>
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let header: Header
     private var emptyAction: (title: LocalizedStringKey, perform: () -> Void)?
     private var emptyBelowHeader = false
@@ -46,6 +47,9 @@ package struct TaskListView<Header: View>: View {
             if emptyBelowHeader, store.workspace != nil, store.isEmpty {
                 empty.listRowBackground(Color.clear)
             }
+            if store.workspace == nil, store.loadError == nil {
+                PlaceholderRows()
+            }
             ForEach(store.sections) { section in
                 Section(section.title) {
                     ForEach(section.rows) { row in
@@ -58,7 +62,15 @@ package struct TaskListView<Header: View>: View {
             }
         }
         .overlay {
-            if store.isSearching, store.isEmpty {
+            if let loadError = store.loadError {
+                ContentUnavailableView {
+                    Label("Couldn't load your tasks", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(loadError)
+                } actions: {
+                    Button("Try Again") { store.send(.retryTapped) }
+                }
+            } else if store.isSearching, store.isEmpty {
                 ContentUnavailableView.search(text: store.searchText)
             } else if !emptyBelowHeader, store.workspace != nil, store.isEmpty {
                 empty
@@ -67,8 +79,12 @@ package struct TaskListView<Header: View>: View {
         .safeAreaInset(edge: .top) {
             if let banner = store.banner {
                 BannerView(banner, undo: { store.send(.bannerUndoTapped) }, dismiss: { store.send(.bannerDismissed) })
+                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
             }
         }
+        // Rows move in, out and between sections, a sync's changes too.
+        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .snappy, value: store.sections)
+        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring, value: store.banner)
         .safeAreaInset(edge: .bottom) {
             if store.isSelecting {
                 BulkBar(store: store)
@@ -119,9 +135,9 @@ private struct SearchField: ViewModifier {
 extension TaskListView {
     private var empty: some View {
         ContentUnavailableView {
-            Label(store.query.empty.title, systemImage: store.query.empty.systemImage)
+            Label(store.emptyMessage.title, systemImage: store.emptyMessage.systemImage)
         } description: {
-            Text(store.query.empty.description)
+            Text(store.emptyMessage.description)
         } actions: {
             if let emptyAction {
                 Button(emptyAction.title, action: emptyAction.perform)
@@ -411,5 +427,25 @@ struct RescheduleView: View {
             }
         }
         .presentationDetents([.medium, .large])
+    }
+}
+
+/// Rows shaped like tasks while the records load, so the list isn't blank.
+private struct PlaceholderRows: View {
+    var body: some View {
+        Section {
+            ForEach(0..<3, id: \.self) { index in
+                HStack(spacing: 12) {
+                    Image(systemName: "circle").font(.title3)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(index == 1 ? "A task with a longer title" : "A task title")
+                        Text("ABC-1").font(.caption)
+                    }
+                }
+                .redacted(reason: .placeholder)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading tasks")
     }
 }

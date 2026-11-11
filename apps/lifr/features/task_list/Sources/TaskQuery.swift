@@ -21,6 +21,9 @@ package struct TaskQuery: Equatable, Sendable {
     /// Identifies the query, so two queries with the same key are equal.
     package var key: String
     package var empty: Empty
+    /// Shown instead of `empty` when the list emptied because tasks were
+    /// closed today, or `nil` to keep `empty`.
+    package var finished: Empty?
     /// The actions a row offers when swiped left.
     package var trailingActions: [RowAction]
     /// What a task added from this list starts with, or `nil` when the list
@@ -37,7 +40,7 @@ package struct TaskQuery: Equatable, Sendable {
     package var sections: @Sendable (_ workspace: Workspace, _ now: Date, _ timeZone: TimeZone) -> [TaskSection]
 
     package init(
-        key: String, listID: String? = nil, empty: Empty,
+        key: String, listID: String? = nil, empty: Empty, finished: Empty? = nil,
         trailingActions: [RowAction] = [.status(.done), .status(.wontDo), .pickStatus],
         adds: NewTaskDefaults? = NewTaskDefaults(), reorders: Bool = false,
         searches: Bool = false,
@@ -46,6 +49,7 @@ package struct TaskQuery: Equatable, Sendable {
         self.key = key
         self.listID = listID ?? key
         self.empty = empty
+        self.finished = finished
         self.trailingActions = trailingActions
         self.adds = adds
         self.reorders = reorders
@@ -54,7 +58,7 @@ package struct TaskQuery: Equatable, Sendable {
     }
 
     package static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.key == rhs.key && lhs.listID == rhs.listID && lhs.empty == rhs.empty
+        lhs.key == rhs.key && lhs.listID == rhs.listID && lhs.empty == rhs.empty && lhs.finished == rhs.finished
             && lhs.trailingActions == rhs.trailingActions && lhs.adds == rhs.adds && lhs.reorders == rhs.reorders
             && lhs.searches == rhs.searches
     }

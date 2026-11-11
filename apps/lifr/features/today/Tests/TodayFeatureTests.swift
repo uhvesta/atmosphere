@@ -2,6 +2,7 @@ import ComposableArchitecture
 import Foundation
 import LifrCore
 import LifrStoreClient
+import LifrTaskList
 import LifrToday
 import XCTest
 
@@ -29,6 +30,18 @@ final class TodayFeatureTests: XCTestCase {
 
     private func titles(_ store: TestStoreOf<TodayFeature>, _ section: String) -> [String] {
         store.state.list.sections.first { $0.id == section }?.rows.map(\.title) ?? []
+    }
+
+    func testAnEmptyTodaySaysTheDayIsDoneOnlyOnceSomethingClosedToday() async {
+        records.task("Closed last week", in: health, status: .done, idle: 7)
+        var store = await load()
+        XCTAssertEqual(store.state.list.emptyMessage, TaskQuery.today.empty)
+
+        records.task("Stretch", in: health, status: .done, due: 0)
+        store = await load()
+        XCTAssertTrue(store.state.list.isEmpty)
+        XCTAssertNotEqual(store.state.list.emptyMessage, TaskQuery.today.empty)
+        XCTAssertEqual(store.state.list.emptyMessage, TaskQuery.today.finished)
     }
 
     func testShowsOverdueAndDueTodayOpenTasksOnly() async {

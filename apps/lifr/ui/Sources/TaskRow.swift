@@ -10,6 +10,7 @@ package struct TaskRow: View {
 
     @Environment(\.locale) private var locale
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     package init(_ row: TaskRowData, toggle: @escaping () -> Void) {
         self.row = row
@@ -30,6 +31,7 @@ package struct TaskRow: View {
                 Text(row.title)
                     .strikethrough(row.status.isClosed)
                     .foregroundStyle(row.status.isClosed ? .secondary : .primary)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: row.status)
                 // One line when it fits, otherwise one item per line.
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 8) { details }
@@ -73,6 +75,7 @@ package struct TaskRow: View {
             HStack(spacing: 2) {
                 Image(systemName: "checklist")
                 Text("\(subtasks.closed)/\(subtasks.total)")
+                    .contentTransition(.numericText(value: Double(subtasks.closed)))
             }
             .font(.caption)
             .foregroundStyle(.secondary)

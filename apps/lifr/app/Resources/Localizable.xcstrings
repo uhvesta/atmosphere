@@ -497,6 +497,15 @@
     "A task" : {
 
     },
+    "A task title" : {
+
+    },
+    "A task with a longer title" : {
+
+    },
+    "ABC-1" : {
+
+    },
     "Access" : {
 
     },
@@ -534,6 +543,9 @@
 
     },
     "Add a Task" : {
+
+    },
+    "Add a Task for Today" : {
 
     },
     "Add a comment" : {
@@ -1382,6 +1394,9 @@
     "Every version you save is kept on this device only. Tap one to use it again." : {
 
     },
+    "Everything due today is closed." : {
+
+    },
     "Experiments" : {
 
     },
@@ -1773,6 +1788,9 @@
 
     },
     "Listening…" : {
+
+    },
+    "Loading tasks" : {
 
     },
     "Local API" : {
@@ -2246,6 +2264,9 @@
     "Open Lifr to see the task." : {
 
     },
+    "Open the Calendar" : {
+
+    },
     "Opens it" : {
 
     },
@@ -2359,6 +2380,9 @@
 
     },
     "Put back recent changes." : {
+
+    },
+    "Quit Lifr and open it again. If this keeps happening, share these details in a bug report." : {
 
     },
     "Read a task" : {
@@ -2708,6 +2732,9 @@
 
     },
     "Share" : {
+
+    },
+    "Share the Details" : {
 
     },
     "Shortcuts" : {

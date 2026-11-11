@@ -23,6 +23,7 @@ import SwiftUI
 package struct RootView: View {
     @Bindable package var store: StoreOf<RootFeature>
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     package init(store: StoreOf<RootFeature>) {
         self.store = store
@@ -67,6 +68,12 @@ package struct RootView: View {
     /// above the tab bar, except while a chat is open; on the Mac, where
     /// at the top they'd cover the first rows, except in the assistant,
     /// whose composer is at the bottom.
+    /// Toasts and banners slide in from their edge, or fade with Reduce
+    /// Motion.
+    private var edgeTransition: AnyTransition {
+        reduceMotion ? .opacity : .move(edge: bannersAtBottom ? .bottom : .top).combined(with: .opacity)
+    }
+
     private var bannersAtBottom: Bool {
         switch store.platform {
         case .phone: !(store.tab == .conversations && store.conversations.openID != nil)
@@ -107,15 +114,18 @@ package struct RootView: View {
                 if let toast = store.toast {
                     UndoToast(message: toast.message) { store.send(.undoTapped(toast.id)) }
                         .task(id: toast.id) { await store.send(.toastShown(toast.id)).finish() }
+                        .transition(edgeTransition)
                 }
                 if let banner = store.syncBanner {
                     SyncBannerView(banner: banner) { store.send(.syncBannerDismissed) }
+                        .transition(edgeTransition)
                 }
             }
             .frame(maxWidth: store.platform == .phone ? .infinity : 440)
             .padding(bannersAtBottom ? .bottom : .top, bannerInset)
             .padding(.trailing, bannerAlignment == .topTrailing ? 24 : 0)
-            .animation(.default, value: store.toast?.id)
+            .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring, value: store.toast?.id)
+            .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring, value: store.syncBanner)
         }
         .modifier(RegistersUndo(store: store))
         .alert($store.scope(state: \.undoAlert, action: \.undoAlert))
@@ -153,18 +163,20 @@ private struct PhoneRootView: View {
         TabView(selection: $store.tab) {
             Tab("Today", systemImage: "sun.max", value: RootFeature.Tab.today) {
                 NavigationStack {
-                    TodayView(store: store.scope(state: \.today, action: \.today))
-                        .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
-                        .toolbar {
-                            ToolbarItem(placement: .navigation) {
-                                Button {
-                                    store.isSettingsShown = true
-                                } label: {
-                                    Label("Settings", systemImage: "gear")
-                                }
+                    TodayView(store: store.scope(state: \.today, action: \.today)) {
+                        store.send(.newTaskTapped)
+                    }
+                    .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
+                    .toolbar {
+                        ToolbarItem(placement: .navigation) {
+                            Button {
+                                store.isSettingsShown = true
+                            } label: {
+                                Label("Settings", systemImage: "gear")
                             }
-                            newTask
                         }
+                        newTask
+                    }
                 }
             }
             Tab("Upcoming", systemImage: "calendar", value: RootFeature.Tab.upcoming) {
@@ -175,7 +187,9 @@ private struct PhoneRootView: View {
                                 store.send(.newTaskTapped)
                             }
                         } else {
-                            UpcomingView(store: store.scope(state: \.upcoming, action: \.upcoming))
+                            UpcomingView(store: store.scope(state: \.upcoming, action: \.upcoming)) {
+                                store.send(.upcomingCalendarShown(true))
+                            }
                         }
                     }
                     .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
@@ -342,9 +356,11 @@ private struct MacRootView: View {
     @ViewBuilder private var content: some View {
         switch store.selection {
         case .today:
-            TodayView(store: store.scope(state: \.today, action: \.today))
+            TodayView(store: store.scope(state: \.today, action: \.today)) { store.send(.newTaskTapped) }
         case .upcoming:
-            UpcomingView(store: store.scope(state: \.upcoming, action: \.upcoming))
+            UpcomingView(store: store.scope(state: \.upcoming, action: \.upcoming)) {
+                store.selection = .calendar
+            }
         case .calendar:
             CalendarView(store: store.scope(state: \.calendar, action: \.calendar)) {
                 store.send(.newTaskTapped)
@@ -616,7 +632,6 @@ private struct UndoToast: View {
         .padding()
         .background(.thinMaterial, in: .rect(cornerRadius: 12))
         .padding(.horizontal)
-        .transition(.opacity)
     }
 }
 

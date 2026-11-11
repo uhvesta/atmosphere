@@ -90,9 +90,14 @@ struct LifrApp: App {
                         }
                     }
             case .failure(let error):
-                ContentUnavailableView(
-                    "Lifr can't open its data", systemImage: "exclamationmark.triangle",
-                    description: Text(error.description))
+                ContentUnavailableView {
+                    Label("Lifr can't open its data", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error.description)
+                    Text("Quit Lifr and open it again. If this keeps happening, share these details in a bug report.")
+                } actions: {
+                    ShareLink("Share the Details", item: error.description)
+                }
             }
         }
     }

@@ -14,6 +14,8 @@ package struct StatusGlyph: View {
         Image(systemName: symbol)
             .font(.title3)
             .foregroundStyle(color)
+            .contentTransition(.symbolEffect(.replace))
+            .animation(.default, value: status)
             .accessibilityHidden(true)
     }
 

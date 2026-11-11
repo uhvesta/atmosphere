@@ -5,9 +5,12 @@ import SwiftUI
 
 package struct TodayView: View {
     @Bindable package var store: StoreOf<TodayFeature>
+    private let add: (() -> Void)?
 
-    package init(store: StoreOf<TodayFeature>) {
+    /// `add` opens Quick Add for a task due today, from the empty list.
+    package init(store: StoreOf<TodayFeature>, add: (() -> Void)? = nil) {
         self.store = store
+        self.add = add
     }
 
     package var body: some View {
@@ -30,6 +33,7 @@ package struct TodayView: View {
                 }
             }
         }
+        .emptyAction(add.map { _ in "Add a Task for Today" }) { add?() }
         .navigationTitle("Today")
         .navigationDestination(item: $store.scope(state: \.procrastinated, action: \.procrastinated)) { store in
             ProcrastinatedView(store: store)
