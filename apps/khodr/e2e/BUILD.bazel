@@ -7,6 +7,7 @@ rust_test(
     name = "fork_from_cli_test",
     srcs = [
         "common.rs",
+        "fork.rs",
         "fork_from_cli_test.rs",
     ],
     crate_root = "fork_from_cli_test.rs",
@@ -30,6 +31,7 @@ rust_test(
     name = "fork_over_ssh_test",
     srcs = [
         "common.rs",
+        "fork.rs",
         "fork_over_ssh_test.rs",
     ],
     crate_root = "fork_over_ssh_test.rs",
@@ -47,6 +49,25 @@ rust_test(
         "@crates//:serde_json",
         "@crates//:tempfile",
     ],
+)
+
+# A scripted agent edits a file in a project through an approval.
+rust_test(
+    name = "edit_through_approval_test",
+    srcs = [
+        "common.rs",
+        "edit_through_approval_test.rs",
+    ],
+    crate_root = "edit_through_approval_test.rs",
+    data = [
+        "//apps/khodr/daemon/cli:khodr",
+        "//apps/khodr/daemon/khodrd",
+    ],
+    env = {
+        "KHODR": "$(rootpath //apps/khodr/daemon/cli:khodr)",
+        "KHODRD": "$(rootpath //apps/khodr/daemon/khodrd)",
+    },
+    deps = ["@crates//:tempfile"],
 )
 
 # Where khodrd is in the runfiles, for the Swift test to start it.

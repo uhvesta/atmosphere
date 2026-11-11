@@ -2,6 +2,7 @@
 //! directly, as SSH would.
 
 mod common;
+mod fork;
 
 #[test]
 fn a_session_on_a_remote_host_forks_at_an_earlier_event() {
@@ -15,5 +16,5 @@ fn a_session_on_a_remote_host_forks_at_an_earlier_event() {
         "--state".to_owned(),
         state.display().to_string(),
     ];
-    common::fork_on_remote(scratch.path(), command);
+    fork::fork_on_remote(scratch.path(), command);
 }

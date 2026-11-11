@@ -115,7 +115,8 @@ enum Command {
         /// Steer the running turn instead of queueing after it.
         #[arg(long)]
         steer: bool,
-        /// Print what happens until the session is idle again.
+        /// Print what happens until the session is idle again or waits for
+        /// a permission answer.
         #[arg(long)]
         wait: bool,
     },
@@ -126,6 +127,10 @@ enum Command {
         /// Refuse it instead.
         #[arg(long)]
         deny: bool,
+        /// Print what happens until the session is idle again or waits for
+        /// another permission answer.
+        #[arg(long)]
+        wait: bool,
     },
     /// Set what a session may do without asking. Waiting requests the new
     /// mode allows go ahead.
@@ -286,31 +291,30 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 text,
                 mode: mode.into(),
             });
+            let sent = |response: &Response| matches!(response, Response::MessageSent(_));
             if wait {
-                send_and_wait(&client, &session, request).await?;
+                call_and_wait(&client, &session, request, sent, "MessageSent").await?;
             } else {
-                expect_ok(
-                    client.call(request).await?,
-                    |response| matches!(response, Response::MessageSent(_)),
-                    "MessageSent",
-                )?;
+                expect_ok(client.call(request).await?, sent, "MessageSent")?;
             }
         }
         Command::Approve {
             session,
             request,
             deny,
+            wait,
         } => {
             let request = Request::Approve(pb::Approve {
-                session_id: session,
+                session_id: session.clone(),
                 permission_request_id: request,
                 approved: !deny,
             });
-            expect_ok(
-                client.call(request).await?,
-                |response| matches!(response, Response::Approved(_)),
-                "Approved",
-            )?;
+            let approved = |response: &Response| matches!(response, Response::Approved(_));
+            if wait {
+                call_and_wait(&client, &session, request, approved, "Approved").await?;
+            } else {
+                expect_ok(client.call(request).await?, approved, "Approved")?;
+            }
         }
         Command::Mode { session, approval } => {
             let request = Request::SetApprovalMode(pb::SetApprovalMode {
@@ -391,11 +395,14 @@ async fn history(client: &Client, session: &str) -> Result<Vec<pb::SessionEvent>
     }
 }
 
-/// Sends, then prints the session's new events until it is idle again.
-async fn send_and_wait(
+/// Makes `request`, then prints the session's new events until it is idle
+/// again or waits for a person to answer a permission request.
+async fn call_and_wait(
     client: &Client,
     session: &str,
     request: pb::request::Kind,
+    answered: impl Fn(&pb::response::Kind) -> bool,
+    expected: &'static str,
 ) -> Result<(), CliError> {
     // The watch replays the history first; what is already there isn't new.
     let seen = history(client, session).await?.len();
@@ -403,11 +410,7 @@ async fn send_and_wait(
         session_id: session.to_owned(),
     });
     let (_, mut stream) = client.stream(watch).await?;
-    expect_ok(
-        client.call(request).await?,
-        |response| matches!(response, pb::response::Kind::MessageSent(_)),
-        "MessageSent",
-    )?;
+    expect_ok(client.call(request).await?, answered, expected)?;
     let mut index = 0;
     while let Some(item) = stream.next().await {
         let event = session_event(item)?;
@@ -416,11 +419,35 @@ async fn send_and_wait(
             continue;
         }
         println!("{}", print::event(&event));
-        if matches!(event.kind, Some(pb::session_event::Kind::Idle(_))) {
-            return Ok(());
+        match &event.kind {
+            Some(pb::session_event::Kind::Idle(_)) => return Ok(()),
+            Some(pb::session_event::Kind::PermissionRequested(asked))
+                if waits_for_a_person(client, session, &asked.request_id).await? =>
+            {
+                return Ok(());
+            }
+            _ => {}
         }
     }
     Err(CliError::WatchEnded)
+}
+
+/// Whether `request` is still unanswered. A request the approval mode
+/// allows is answered in the same write that records it, so the history
+/// already holds its answer.
+async fn waits_for_a_person(
+    client: &Client,
+    session: &str,
+    request: &str,
+) -> Result<bool, CliError> {
+    let answered = history(client, session).await?.iter().any(|event| {
+        matches!(
+            &event.kind,
+            Some(pb::session_event::Kind::PermissionCompleted(completed))
+                if completed.request_id == request
+        )
+    });
+    Ok(!answered)
 }
 
 fn session_event(item: Result<pb::StreamItem, pb::Error>) -> Result<pb::SessionEvent, CliError> {

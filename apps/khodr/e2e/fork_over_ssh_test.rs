@@ -4,6 +4,7 @@
 use std::process::Command;
 
 mod common;
+mod fork;
 
 /// Quotes `text` for the remote shell, which SSH runs the command with.
 fn quoted(text: &str) -> String {
@@ -37,5 +38,5 @@ fn a_session_on_a_host_over_ssh_forks_at_an_earlier_event() {
         "khodr-test".to_owned(),
         remote,
     ];
-    common::fork_on_remote(root, command);
+    fork::fork_on_remote(root, command);
 }
