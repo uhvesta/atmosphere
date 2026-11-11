@@ -30,6 +30,32 @@ final class ShortcutsTests: XCTestCase {
         return (Shortcuts(store: store, locksApp: { locked }, now: { now }, timeZone: .gmt), store)
     }
 
+    func testSnoozeAddsOneReminderAtTheTimeEvenWhileLocked() async throws {
+        let (shortcuts, store) = shortcuts(locked: true)
+        let loaded = try await store.load()
+        let run = try XCTUnwrap(loaded.tasks.values.first { $0.title == "Long run" })
+
+        try await shortcuts.snooze(run.id, until: now + 3600)
+
+        let reminders = try await store.load().reminders.values
+        XCTAssertEqual(reminders.map(\.trigger), [.at(now + 3600)])
+        XCTAssertEqual(reminders.map(\.taskID), [run.id])
+    }
+
+    func testDoneIsRefusedWhileLocked() async throws {
+        let (shortcuts, store) = shortcuts(locked: true)
+        let loaded = try await store.load()
+        let run = try XCTUnwrap(loaded.tasks.values.first { $0.title == "Long run" })
+        do {
+            _ = try await shortcuts.finish(run.id)
+            XCTFail("Finishing while locked should be refused")
+        } catch let error as ShortcutError {
+            XCTAssertEqual(error, .locked)
+        }
+        let after = try await store.load()
+        XCTAssertEqual(after.tasks[run.id]?.status, .todo)
+    }
+
     func testAddsATaskDueToday() async throws {
         let (shortcuts, store) = shortcuts()
 

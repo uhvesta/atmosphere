@@ -22,7 +22,8 @@ extension RemindersClient {
 
     /// Schedules through the system's notification center.
     package static func live(center: UNUserNotificationCenter = .current()) -> Self {
-        RemindersClient(
+        center.setNotificationCategories(categories)
+        return RemindersClient(
             permission: {
                 switch await center.notificationSettings().authorizationStatus {
                 case .notDetermined: .notDetermined
@@ -42,6 +43,8 @@ extension RemindersClient {
                     content.sound = .default
                     content.threadIdentifier = reminder.taskID.uuidString
                     content.userInfo = [taskIDKey: reminder.taskID.uuidString]
+                    content.categoryIdentifier =
+                        reminder.hidesTitle ? ReminderAction.hiddenCategory : ReminderAction.category
                     // With its time zone, so the trigger fires at this
                     // instant even if the device's zone changes first.
                     let components = Calendar.current.dateComponents(
@@ -55,7 +58,28 @@ extension RemindersClient {
                         throw LiveRemindersError.scheduleFailed(title: reminder.title, underlying: error)
                     }
                 }
-            }
+            },
+            setBadge: { count in try? await center.setBadgeCount(count) }
         )
+    }
+
+    /// Done, Snooze and Change Status… for a reminder, and only Snooze for
+    /// one that hides its title.
+    private static var categories: Set<UNNotificationCategory> {
+        let done = UNNotificationAction(
+            identifier: ReminderAction.done.rawValue, title: String(localized: "Done"),
+            options: [.authenticationRequired], icon: UNNotificationActionIcon(systemImageName: "checkmark.circle"))
+        let snooze = UNNotificationAction(
+            identifier: ReminderAction.snooze.rawValue, title: String(localized: "Snooze 1 hour"),
+            options: [], icon: UNNotificationActionIcon(systemImageName: "clock.arrow.circlepath"))
+        let changeStatus = UNNotificationAction(
+            identifier: ReminderAction.changeStatus.rawValue, title: String(localized: "Change Status…"),
+            options: [.foreground], icon: UNNotificationActionIcon(systemImageName: "ellipsis.circle"))
+        return [
+            UNNotificationCategory(
+                identifier: ReminderAction.category, actions: [done, snooze, changeStatus], intentIdentifiers: []),
+            UNNotificationCategory(
+                identifier: ReminderAction.hiddenCategory, actions: [snooze], intentIdentifiers: []),
+        ]
     }
 }

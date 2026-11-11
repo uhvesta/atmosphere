@@ -126,6 +126,16 @@ package struct Shortcuts: Sendable {
         return item(task, in: saved.workspace)
     }
 
+    /// Rings the task's reminder again at `date`, as a new reminder; the due
+    /// date stays. Allowed while locked, since it shows nothing.
+    package func snooze(_ id: UUID, until date: Date) async throws {
+        do {
+            _ = try await store.addReminder(.at(date), to: id)
+        } catch LifrError.notFound {
+            throw ShortcutError.noTask
+        }
+    }
+
     private func item(_ task: LifrTask, in workspace: Workspace) -> Item {
         Item(id: task.id, name: task.title, detail: workspace.displayCode(of: task))
     }

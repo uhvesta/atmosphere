@@ -110,7 +110,10 @@ private enum Storage {
 
     /// Kept for as long as Lifr runs: the notification center holds its
     /// delegate weakly.
-    static let notifications = ReminderNotifications { root.send(.reminderOpened($0)) }
+    static let notifications = ReminderNotifications(
+        open: { root.send(.reminderOpened($0)) },
+        changeStatus: { root.send(.reminderStatusRequested($0)) },
+        shortcuts: { shortcuts })
 
     #if os(macOS)
         /// The root store's long-lived work, kept for as long as Lifr runs.
@@ -267,13 +270,21 @@ private enum Storage {
     }
 }
 
-/// Shows a reminder while Lifr is open, and opens its task when the person
-/// taps the notification.
+/// Shows a reminder while Lifr is open, opens its task when the person
+/// taps the notification, and carries out the button they long-pressed for.
 private final class ReminderNotifications: NSObject, UNUserNotificationCenterDelegate, Sendable {
     private let open: @MainActor @Sendable (UUID) -> Void
+    private let changeStatus: @MainActor @Sendable (UUID) -> Void
+    private let shortcuts: @MainActor @Sendable () -> Shortcuts
 
-    init(open: @escaping @MainActor @Sendable (UUID) -> Void) {
+    init(
+        open: @escaping @MainActor @Sendable (UUID) -> Void,
+        changeStatus: @escaping @MainActor @Sendable (UUID) -> Void,
+        shortcuts: @escaping @MainActor @Sendable () -> Shortcuts
+    ) {
         self.open = open
+        self.changeStatus = changeStatus
+        self.shortcuts = shortcuts
     }
 
     func userNotificationCenter(
@@ -286,6 +297,35 @@ private final class ReminderNotifications: NSObject, UNUserNotificationCenterDel
         guard let raw = response.notification.request.content.userInfo[RemindersClient.taskIDKey] as? String,
             let id = UUID(uuidString: raw)
         else { return }
-        await open(id)
+        // The saved change reaches the open app, which schedules the
+        // reminders and badge again.
+        switch ReminderAction(rawValue: response.actionIdentifier) {
+        case .done:
+            do {
+                _ = try await shortcuts().finish(id)
+            } catch {
+                await tell(String(localized: "Couldn't mark the task done"), error)
+            }
+        case .snooze:
+            do {
+                try await shortcuts().snooze(id, until: Date() + ReminderAction.snoozeInterval)
+            } catch {
+                await tell(String(localized: "Couldn't snooze the reminder"), error)
+            }
+        case .changeStatus:
+            await changeStatus(id)
+        case nil:
+            await open(id)
+        }
+    }
+
+    /// A button that failed in the background says so in a notification,
+    /// since nothing else is showing.
+    private func tell(_ title: String, _ error: any Error) async {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = error.localizedDescription
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        try? await UNUserNotificationCenter.current().add(request)
     }
 }

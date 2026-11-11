@@ -219,6 +219,54 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.reminders, [])
     }
 
+    func testACustomReminderBeforeTheDueTimeIsSaved() async throws {
+        let run = records.task("Long run", in: health, due: 2, at: "07:00")
+        let store = try makeStore(run)
+
+        await store.send(.reminderCustomTapped)
+        XCTAssertEqual(store.state.reminderDraft?.kind, .beforeDue)
+        var draft = try XCTUnwrap(store.state.reminderDraft)
+        draft.amount = 15
+        draft.unit = .minutes
+        await store.send(.binding(.set(\.reminderDraft, draft)))
+        await store.send(.reminderCustomSaved)
+        await store.receive(\.delegate.saved)
+
+        XCTAssertNil(store.state.reminderDraft)
+        XCTAssertEqual(store.state.reminders.map(\.fireAt), [ISO8601DateFormatter().date(from: "2026-11-05T06:45:00Z")])
+        await store.finish()
+    }
+
+    func testACustomReminderInThePastIsNotSaved() async throws {
+        let stretch = records.task("Stretch", in: health)
+        let store = try makeStore(stretch)
+
+        await store.send(.reminderCustomTapped)
+        var draft = try XCTUnwrap(store.state.reminderDraft)
+        XCTAssertEqual(draft.kind, .at)
+        draft.date = now - 60
+        await store.send(.binding(.set(\.reminderDraft, draft)))
+        await store.send(.reminderCustomSaved)
+
+        XCTAssertNotNil(store.state.reminderDraft)
+        XCTAssertEqual(store.state.reminders, [])
+    }
+
+    func testTheDetailSaysWhenNotificationsAreOffWithoutAskingAgain() async throws {
+        let stretch = records.task("Stretch", in: health)
+        let store = try makeStore(stretch, reminders: RemindersClient.inMemory(permission: .denied))
+
+        await store.send(.appeared)
+        await store.receive(\.permissionChecked)
+        XCTAssertTrue(store.state.notificationsDenied)
+
+        await store.send(.reminderPicked(.inOneHour))
+        await store.receive(\.delegate.saved)
+        await store.receive(\.notificationsOff)
+        XCTAssertNil(store.state.alert)
+        XCTAssertEqual(store.state.reminders.count, 1)
+    }
+
     func testRenamingSavesTheNewTitle() async throws {
         let stretch = records.task("Stretch", in: health)
         let store = try makeStore(stretch)

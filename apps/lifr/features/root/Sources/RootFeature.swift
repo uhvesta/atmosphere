@@ -162,6 +162,11 @@ package struct RootFeature {
         package var dismissedToast: UUID?
         /// Whether Lifr asks for Face ID, Touch ID or the passcode.
         @Shared(.locksApp) package var locksApp
+        /// What the number on the app icon counts.
+        @Shared(.badgeCount) package var badgeCount
+        /// A task to show the statuses for once it opens, as Change Status…
+        /// on its reminder asks.
+        package var statusPickPending: UUID?
         /// Whether sync runs often while open, rather than every so often.
         @Shared(.syncsContinuously) package var syncsContinuously
         /// Whether the records are hidden until the person confirms it's
@@ -352,6 +357,10 @@ package struct RootFeature {
         /// The person opened a reminder's notification: show its task, from
         /// Today if no list is showing.
         case reminderOpened(UUID)
+        /// Change Status… on a reminder: its task, with the statuses to pick.
+        case reminderStatusRequested(UUID)
+        /// The badge setting changed.
+        case badgeCountChanged
         case today(TodayFeature.Action)
         case upcoming(UpcomingFeature.Action)
         case calendar(CalendarFeature.Action)
@@ -406,6 +415,15 @@ package struct RootFeature {
                 Reduce { state, _ in
                     if state.restoring == nil { state.$place.withLock { $0 = here } }
                     return .none
+                }
+            }
+            // Change Status… on a reminder picks once its task is open,
+            // which waits for the records at launch.
+            .onChange(of: \.openTaskID) { _, id in
+                Reduce { state, _ in
+                    guard let id, id == state.statusPickPending, let slot = state.currentList else { return .none }
+                    state.statusPickPending = nil
+                    return .send(list(slot, .detail(.presented(.statusPickerRequested))))
                 }
             }
             // The widgets show only counts while the lock is on.
@@ -470,6 +488,9 @@ package struct RootFeature {
                     .run { [sync] send in
                         for await state in await sync.states() { await send(.syncChanged(state)) }
                     },
+                    .run { [badgeCount = state.$badgeCount] send in
+                        for await _ in badgeCount.publisher.dropFirst().values { await send(.badgeCountChanged) }
+                    },
                     .run { [sync] _ in _ = await sync.sync() },
                     syncTimer(state),
                 ]
@@ -509,6 +530,13 @@ package struct RootFeature {
             case .reopen(let id):
                 guard let slot = state.currentList, state.workspace?.tasks[id] != nil else { return .none }
                 return .send(list(slot, .rowTapped(id)))
+
+            case .reminderStatusRequested(let id):
+                state.statusPickPending = id
+                return .send(.reminderOpened(id))
+
+            case .badgeCountChanged:
+                return scheduleReminders(state)
 
             case .reminderOpened(let id):
                 guard state.workspace != nil else {
@@ -961,11 +989,13 @@ package struct RootFeature {
     private func scheduleReminders(_ state: State) -> Effect<Action> {
         guard let workspace = state.workspace else { return .none }
         let scheduled = workspace.scheduledReminders(now: now, timeZone: timeZone, hidingTitles: state.locksApp)
+        let badge = workspace.badgeCount(state.badgeCount, now: now, timeZone: timeZone)
         return .run { [reminders] send in
             // Notifications that are off, or a device that refuses them,
             // leave the reminders saved and ringing elsewhere; the detail
             // screen says so when one is added.
             try? await reminders.schedule(scheduled)
+            await reminders.setBadge(badge)
             await send(.remindersScheduled)
         }
         .cancellable(id: CancelID.reminders, cancelInFlight: true)

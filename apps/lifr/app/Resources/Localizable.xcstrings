@@ -41,6 +41,9 @@
     "%@ Try again in a moment." : {
 
     },
+    "%@ before due" : {
+
+    },
     "%@ code" : {
 
     },
@@ -431,7 +434,13 @@
     "1 change needs review" : {
 
     },
+    "1 day before due" : {
+
+    },
     "1 filter" : {
+
+    },
+    "1 hour before due" : {
 
     },
     "1 task" : {
@@ -480,6 +489,9 @@
 
     },
     "A larger window remembers more of the chat and takes more memory." : {
+
+    },
+    "A new task with a due date gets the reminder, and the badge counts open tasks. This device only." : {
 
     },
     "A task" : {
@@ -655,6 +667,9 @@
     "Anytime" : {
 
     },
+    "App icon badge" : {
+
+    },
     "Apple Intelligence" : {
 
     },
@@ -715,6 +730,21 @@
     "Assistant model" : {
 
     },
+    "At" : {
+
+    },
+    "At 9:00 on the due day" : {
+
+    },
+    "At a time" : {
+
+    },
+    "At the due time" : {
+
+    },
+    "At time of due" : {
+
+    },
     "Attach a Photo" : {
 
     },
@@ -761,6 +791,12 @@
 
     },
     "Battery per token" : {
+
+    },
+    "Before due" : {
+
+    },
+    "Before the due time, or 9:00 on the due day when it has no time." : {
 
     },
     "Board" : {
@@ -821,6 +857,9 @@
 
     },
     "Change Projects" : {
+
+    },
+    "Change Status…" : {
 
     },
     "Change tasks" : {
@@ -1045,6 +1084,9 @@
     "Couldn't load your tasks" : {
 
     },
+    "Couldn't mark the task done" : {
+
+    },
     "Couldn't move it" : {
 
     },
@@ -1088,6 +1130,9 @@
     "Couldn't show older changes" : {
 
     },
+    "Couldn't snooze the reminder" : {
+
+    },
     "Couldn't undo" : {
 
     },
@@ -1098,6 +1143,9 @@
 
     },
     "Currently %@." : {
+
+    },
+    "Custom reminder" : {
 
     },
     "Custom repeat" : {
@@ -1260,6 +1308,9 @@
 
     },
     "Due Date" : {
+
+    },
+    "Due today and overdue" : {
 
     },
     "Duplicate" : {
@@ -1476,6 +1527,9 @@
 
     },
     "History" : {
+
+    },
+    "Hours" : {
 
     },
     "House" : {
@@ -1843,6 +1897,9 @@
     "Micro-batch" : {
 
     },
+    "Minutes" : {
+
+    },
     "Model" : {
 
     },
@@ -2192,6 +2249,9 @@
     "Overdue" : {
 
     },
+    "Overdue only" : {
+
+    },
     "Overdue, %@%@" : {
       "localizations" : {
         "en" : {
@@ -2354,6 +2414,12 @@
 
     },
     "Related" : {
+
+    },
+    "Remind" : {
+
+    },
+    "Remind me" : {
 
     },
     "Reminder" : {
@@ -2678,6 +2744,9 @@
 
     },
     "Smart" : {
+
+    },
+    "Snooze 1 hour" : {
 
     },
     "Some fields were kept" : {

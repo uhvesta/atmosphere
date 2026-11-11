@@ -363,6 +363,9 @@ package struct Workspace: Hashable, Codable, Sendable {
         package var dueDate: CalendarDate?
         package var dueTime: TimeOfDay?
         package var labelIDs: Set<UUID> = []
+        /// Reminders to add with it. One before the due date is left out
+        /// when there's no due date.
+        package var reminders: [Reminder.Trigger] = []
 
         package init(title: String, avenueID: UUID? = nil, projectID: UUID? = nil, parentID: UUID? = nil) {
             self.title = title
@@ -411,6 +414,12 @@ package struct Workspace: Hashable, Codable, Sendable {
             touch(parent.id, in: context, &change)
             record(.subtaskAdded, on: parent.id, newValue: task.code.rawValue, by: context.actor, in: context, &change)
             if task.isOpen { reopenIfClosed(parent.id, in: context, &change) }
+        }
+        for trigger in new.reminders {
+            if case .beforeDue = trigger, task.dueDate == nil { continue }
+            let reminder = Reminder(id: context.newID(), taskID: task.id, trigger: trigger)
+            reminders[reminder.id] = reminder
+            change.added.append(.reminder(reminder.id))
         }
         return change
     }

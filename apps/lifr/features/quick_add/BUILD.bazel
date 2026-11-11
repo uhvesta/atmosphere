@@ -14,6 +14,7 @@ swift_library(
         "//apps/lifr/features:__subpackages__",
     ],
     deps = [
+        "//apps/lifr/clients/reminders",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "//apps/lifr/features/task_detail",
@@ -32,6 +33,7 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     deps = [
         ":quick_add",
+        "//apps/lifr/clients/reminders",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "//apps/lifr/features/task_detail",

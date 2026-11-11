@@ -5,6 +5,7 @@ import LifrAssistantClient
 import LifrBugReport
 import LifrCore
 import LifrLockClient
+import LifrRemindersClient
 import LifrSessionClient
 import LifrSkills
 import LifrSyncClient
@@ -14,6 +15,8 @@ package struct SettingsView: View {
     @Bindable package var store: StoreOf<SettingsFeature>
     @Shared(.namesConversations) private var namesConversations
     @Shared(.picksSkills) private var picksSkills
+    @Shared(.defaultReminder) private var defaultReminder
+    @Shared(.badgeCount) private var badgeCount
     @Shared(.compactsConversations) private var compactsConversations
 
     package init(store: StoreOf<SettingsFeature>) {
@@ -32,6 +35,20 @@ package struct SettingsView: View {
                 Text("Procrastinated")
             } footer: {
                 Text("An In Progress task with no activity for longer than this counts as Procrastinated.")
+            }
+            Section {
+                Picker("Remind me", selection: Binding($defaultReminder)) {
+                    ForEach(DefaultReminder.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                Picker("App icon badge", selection: Binding($badgeCount)) {
+                    ForEach(BadgeCount.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+            } header: {
+                Text("Reminders")
+            } footer: {
+                Text(
+                    "A new task with a due date gets the reminder, and the badge counts open tasks. This device only."
+                )
             }
             Section {
                 PushButton("Labels") { store.send(.labelsTapped) }

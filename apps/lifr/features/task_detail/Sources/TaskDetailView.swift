@@ -3,10 +3,14 @@ import LifrCore
 import LifrStoreClient
 import LifrUI
 import SwiftUI
+#if os(iOS)
+    import UIKit
+#endif
 
 package struct TaskDetailView: View {
     @Bindable package var store: StoreOf<TaskDetailFeature>
     @Environment(\.timeZone) private var timeZone
+    @Environment(\.openURL) private var openURL
     @FocusState private var titleFocused: Bool
 
     package init(store: StoreOf<TaskDetailFeature>) {
@@ -47,6 +51,7 @@ package struct TaskDetailView: View {
         .alert($store.scope(state: \.prompt, action: \.prompt))
         .alert($store.scope(state: \.alert, action: \.alert))
         .confirmationDialog($store.scope(state: \.statusPicker, action: \.statusPicker))
+        .task { store.send(.appeared) }
     }
 
     @ViewBuilder
@@ -316,10 +321,42 @@ package struct TaskDetailView: View {
                 ForEach(store.reminderChoices, id: \.self) { choice in
                     Button(choice.title) { store.send(.reminderPicked(choice)) }
                 }
+                Button("Custom…") { store.send(.reminderCustomTapped) }
             } label: {
                 Label("Add reminder", systemImage: "bell.badge")
             }
+            .sheet(
+                isPresented: Binding(
+                    get: { store.reminderDraft != nil },
+                    set: { if !$0 { store.send(.reminderCustomCancelled) } })
+            ) {
+                ReminderEditor(
+                    draft: Binding(
+                        get: { store.reminderDraft ?? ReminderDraft(now: Date(), hasDueDate: false) },
+                        set: { store.send(.binding(.set(\.reminderDraft, $0))) }),
+                    save: { store.send(.reminderCustomSaved) },
+                    cancel: { store.send(.reminderCustomCancelled) })
+            }
+            if store.notificationsDenied {
+                Button {
+                    if let url = Self.notificationSettings { openURL(url) }
+                } label: {
+                    Label(
+                        "Notifications are off for Lifr, so reminders won't ring here. Turn them on in Settings.",
+                        systemImage: "bell.slash")
+                }
+                .foregroundStyle(.orange)
+            }
         }
+    }
+
+    /// Lifr's notification settings in the system's Settings.
+    private static var notificationSettings: URL? {
+        #if os(iOS)
+            URL(string: UIApplication.openNotificationSettingsURLString)
+        #else
+            URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")
+        #endif
     }
 
     private var activity: some View {

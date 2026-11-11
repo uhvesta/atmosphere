@@ -26,6 +26,26 @@ final class ScheduledRemindersTests: XCTestCase {
         XCTAssertEqual(scheduled.last?.body, "HEALTH-0002 · due 2026-11-04 at 07:00")
     }
 
+    func testTheBadgeCountsOverdueAndDueTodayOrOnlyOverdue() {
+        records.task("Due yesterday", in: health, due: -1)
+        records.task("Due today", in: health, due: 0)
+        records.task("Due tomorrow", in: health, due: 1)
+        let done = records.task("Done yesterday", in: health, due: -1)
+        records.setStatus(.done, of: done)
+
+        XCTAssertEqual(records.workspace.badgeCount(.today, now: now, timeZone: .gmt), 2)
+        XCTAssertEqual(records.workspace.badgeCount(.overdue, now: now, timeZone: .gmt), 1)
+        XCTAssertEqual(records.workspace.badgeCount(.off, now: now, timeZone: .gmt), 0)
+    }
+
+    func testAHiddenTitleIsMarkedSoItOffersOnlySnooze() {
+        let run = records.task("Long run", in: health)
+        records.reminder(.at(now + 60), on: run)
+        let hidden = records.workspace.scheduledReminders(now: now, timeZone: .gmt, hidingTitles: true)
+        XCTAssertEqual(hidden.map(\.hidesTitle), [true])
+        XCTAssertEqual(scheduled.map(\.hidesTitle), [false])
+    }
+
     func testSkipsPastClosedAndTrashedTasks() {
         let past = records.task("Past", in: health)
         records.reminder(.at(now - 60), on: past)

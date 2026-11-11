@@ -899,6 +899,40 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testChangeStatusOnAReminderShowsItsTaskWithTheStatusesToPick() async {
+        let stretch = records.task("Stretch", in: health, due: 3)
+        let store = makeStore(.phone)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.reminderStatusRequested(stretch.id))
+        await store.receive(\.reopen)
+        await store.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(store.state.today.list.detail?.id, stretch.id)
+        XCTAssertNotNil(store.state.today.list.detail?.statusPicker)
+        await task.cancel()
+    }
+
+    func testTheBadgeCountsWhatsDueAndFollowsTheSetting() async {
+        records.task("Run", in: health, due: 0)
+        records.task("Stretch", in: health, due: -1)
+        records.task("Book physio", in: health, due: 3)
+        let reminders = RemindersClient.inMemory()
+        let store = makeStore(.phone, reminders: reminders)
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.receive(\.remindersScheduled)
+        XCTAssertEqual(reminders.badge, 2)
+
+        store.state.$badgeCount.withLock { $0 = .overdue }
+        await store.receive(\.badgeCountChanged)
+        await store.receive(\.remindersScheduled)
+        XCTAssertEqual(reminders.badge, 1)
+        await task.cancel()
+    }
+
     func testAReminderOpenedAtLaunchShowsItsTaskOnceTheRecordsLoad() async {
         let stretch = records.task("Stretch", in: health, due: 3)
         let store = makeStore(.mac)

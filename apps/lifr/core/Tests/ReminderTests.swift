@@ -60,6 +60,26 @@ func reminderTests() -> [TestCase] {
                 try fixture.workspace.removeReminder(sooner.id)
             }
         },
+        TestCase("given a new task with reminders, then they're made with it and undo removes them") {
+            let fixture = try Fixture()
+            var new = Workspace.NewTask(title: "Dentist", avenueID: fixture.health.id)
+            new.dueDate = try CalendarDate("2026-11-05")
+            new.reminders = [.beforeDue(seconds: 0), .at(fixture.now + 60)]
+            let change = try fixture.workspace.createTask(new, in: fixture.context)
+            let id = try change.previous.first { $0.value == nil }.unwrap("no task made").key
+            try expectEqual(
+                Set(fixture.workspace.reminders(of: id, timeZone: .gmt).map(\.trigger)),
+                [.beforeDue(seconds: 0), .at(fixture.now + 60)])
+            _ = fixture.workspace.undo(change, in: fixture.context)
+            try expectEqual(fixture.workspace.reminders.count, 0)
+        },
+        TestCase("given a new task with no due date, then a reminder before it is left out") {
+            let fixture = try Fixture()
+            var new = Workspace.NewTask(title: "Someday", avenueID: fixture.health.id)
+            new.reminders = [.beforeDue(seconds: 0)]
+            _ = try fixture.workspace.createTask(new, in: fixture.context)
+            try expectEqual(fixture.workspace.reminders.count, 0)
+        },
     ]
 }
 

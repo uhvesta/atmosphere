@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrCore
+import LifrRemindersClient
 import LifrStoreClient
 import LifrTaskDetail
 
@@ -75,6 +76,7 @@ package struct QuickAddFeature {
         package var monthFirst: Bool
         /// The Avenue last added to, on this device.
         @Shared(.appStorage("lifrQuickAddLastAvenue")) package var lastAvenue = ""
+        @Shared(.defaultReminder) package var defaultReminder
 
         package init(workspace: Workspace, now: Date, timeZone: TimeZone, locale: Locale = .current) {
             pickedDate = now
@@ -180,6 +182,9 @@ package struct QuickAddFeature {
                     new.dueDate = entry?.dueDate ?? dueDate(state)
                     new.dueTime = entry?.dueTime
                     new.labelIDs = entry?.labelIDs ?? []
+                    if new.dueDate != nil, let trigger = state.defaultReminder.trigger(dueTime: new.dueTime) {
+                        new.reminders = [trigger]
+                    }
                 }
                 return .run { [store, new] send in
                     await send(.added(Result { try await store.createTask(new) }))

@@ -11,13 +11,18 @@ package struct ScheduledReminder: Identifiable, Hashable, Sendable {
     package var title: String
     package var body: String
     package var fireAt: Date
+    /// Said only that a task is due, as while the lock is on. Such a
+    /// notification offers only Snooze, so nobody changes a task they
+    /// can't see.
+    package var hidesTitle: Bool
 
-    package init(id: UUID, taskID: UUID, title: String, body: String, fireAt: Date) {
+    package init(id: UUID, taskID: UUID, title: String, body: String, fireAt: Date, hidesTitle: Bool = false) {
         self.id = id
         self.taskID = taskID
         self.title = title
         self.body = body
         self.fireAt = fireAt
+        self.hidesTitle = hidesTitle
     }
 }
 
@@ -41,7 +46,7 @@ extension Workspace {
             guard !hidingTitles else {
                 return ScheduledReminder(
                     id: reminder.id, taskID: task.id, title: String(localized: "Reminder"),
-                    body: String(localized: "Open Lifr to see the task."), fireAt: fireAt)
+                    body: String(localized: "Open Lifr to see the task."), fireAt: fireAt, hidesTitle: true)
             }
             return ScheduledReminder(
                 id: reminder.id, taskID: task.id, title: task.title,
@@ -79,6 +84,8 @@ package struct RemindersClient: Sendable {
     package var requestPermission: @Sendable () async throws -> Bool
     /// Replaces every scheduled notification with `reminders`.
     package var schedule: @Sendable (_ reminders: [ScheduledReminder]) async throws -> Void
+    /// Shows `count` on the app icon; 0 hides it.
+    package var setBadge: @Sendable (_ count: Int) async -> Void = { _ in }
 }
 
 extension RemindersClient: TestDependencyKey {
@@ -96,14 +103,16 @@ extension RemindersClient {
 /// Reminders kept in memory. `requestPermission` allows them unless
 /// `permission` is `.denied`.
 package final class InMemoryReminders: Sendable {
-    private let state: LockIsolated<(permission: ReminderPermission, scheduled: [ScheduledReminder])>
+    private let state: LockIsolated<(permission: ReminderPermission, scheduled: [ScheduledReminder], badge: Int)>
 
     init(permission: ReminderPermission) {
-        state = LockIsolated((permission, []))
+        state = LockIsolated((permission, [], 0))
     }
 
     /// What's scheduled now.
     package var scheduled: [ScheduledReminder] { state.value.scheduled }
+    /// The number on the app icon.
+    package var badge: Int { state.value.badge }
     package var permission: ReminderPermission { state.value.permission }
 
     package var client: RemindersClient {
@@ -115,7 +124,8 @@ package final class InMemoryReminders: Sendable {
                     return value.permission == .allowed
                 }
             },
-            schedule: { [state] reminders in state.withValue { $0.scheduled = reminders } }
+            schedule: { [state] reminders in state.withValue { $0.scheduled = reminders } },
+            setBadge: { [state] count in state.withValue { $0.badge = count } }
         )
     }
 }

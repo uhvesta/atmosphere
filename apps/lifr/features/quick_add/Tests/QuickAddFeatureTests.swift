@@ -2,6 +2,7 @@ import ComposableArchitecture
 import Foundation
 import LifrCore
 import LifrQuickAdd
+import LifrRemindersClient
 import LifrStoreClient
 import XCTest
 
@@ -69,6 +70,26 @@ final class QuickAddFeatureTests: XCTestCase {
         XCTAssertEqual(task.dueDate?.description, "2026-11-04")
         XCTAssertNil(task.dueTime)
         XCTAssertEqual(task.priority, .high)
+    }
+
+    func testANewTaskWithADueDateGetsTheDefaultReminder() async throws {
+        _ = (health, home)
+        let store = try quickAdd()
+        store.state.$defaultReminder.withLock { $0 = .dueDayMorning }
+        await store.send(.binding(.set(\.title, "Call dentist tomorrow 3pm")))
+        await store.send(.addTapped)
+        let workspace = try await saved(store)
+        XCTAssertEqual(workspace.reminders.values.map(\.trigger), [.beforeDue(seconds: 6 * 3600)])
+    }
+
+    func testANewTaskWithNoDueDateGetsNoReminder() async throws {
+        _ = (health, home)
+        let store = try quickAdd()
+        store.state.$defaultReminder.withLock { $0 = .atDue }
+        await store.send(.binding(.set(\.title, "Someday")))
+        await store.send(.addTapped)
+        let workspace = try await saved(store)
+        XCTAssertEqual(workspace.reminders.count, 0)
     }
 
     func testClearingTheTitleReadsTheNextOneAfresh() async throws {

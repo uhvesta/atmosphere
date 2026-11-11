@@ -53,6 +53,11 @@ package struct TaskDetailFeature {
         package var isSubtask: Bool
         package var subtasks: [TaskRowData]
         package var reminders: [ReminderRow]
+        /// The custom reminder being set up, while its sheet is open.
+        package var reminderDraft: ReminderDraft?
+        /// Notifications are turned off for Lifr on this device, so its
+        /// reminders won't ring here.
+        package var notificationsDenied = false
         package var timeline: [TimelineEntry]
         package var showsCommentsOnly = false
         package var newSubtaskTitle = ""
@@ -166,6 +171,8 @@ package struct TaskDetailFeature {
             refreshed.commentDeletion = commentDeletion
             refreshed.newLabelName = newLabelName
             refreshed.repeatDraft = repeatDraft
+            refreshed.reminderDraft = reminderDraft
+            refreshed.notificationsDenied = notificationsDenied
             refreshed.banner = banner
             refreshed.saves = saves
             // Keep what's being typed over what was saved.
@@ -207,6 +214,9 @@ package struct TaskDetailFeature {
         case subtaskLoaded(UUID, Workspace)
         indirect case subtask(PresentationAction<Action>)
         case subtaskToggled(UUID)
+        /// Shows the statuses for this task, as Change Status… on its
+        /// reminder asks.
+        case statusPickerRequested
         case addSubtaskSubmitted
         case commentSubmitted
         case commentEditTapped(UUID)
@@ -217,7 +227,13 @@ package struct TaskDetailFeature {
         /// Undo on a change in the Activity list.
         case historyUndoTapped(UUID)
         case reminderPicked(ReminderChoice)
+        case reminderCustomTapped
+        case reminderCustomSaved
+        case reminderCustomCancelled
         case reminderRemoved(UUID)
+        /// The detail is showing: checks whether notifications are on.
+        case appeared
+        case permissionChecked(ReminderPermission)
         /// The reminder was saved, but notifications are off on this device.
         case notificationsOff
         case saved(Result<Saved, any Error>)
@@ -354,6 +370,10 @@ package struct TaskDetailFeature {
                 state.statusPicker = .statuses(for: id, title: subtask.title, status: subtask.status)
                 return .none
 
+            case .statusPickerRequested:
+                state.statusPicker = .statuses(for: state.id, title: state.row.title, status: state.row.status)
+                return .none
+
             case .statusPicker(.presented(let pick)):
                 return save { try await $0.setStatus(pick.status, pick.task) }
 
@@ -409,23 +429,35 @@ package struct TaskDetailFeature {
                 return save { try await $0.revert(eventID) }
 
             case .reminderPicked(let choice):
-                let trigger = choice.trigger(now: now, timeZone: timeZone)
-                return .run { [id = state.id, store, reminders] send in
-                    do {
-                        await send(.saved(.success(try await store.addReminder(trigger, to: id))))
-                    } catch {
-                        await send(.saved(.failure(error)))
-                        return
-                    }
-                    if (try? await reminders.requestPermission()) != true {
-                        await send(.notificationsOff)
-                    }
-                }
+                return addReminder(choice.trigger(now: now, timeZone: timeZone), to: state.id)
+
+            case .reminderCustomTapped:
+                state.reminderDraft = ReminderDraft(now: now, hasDueDate: state.dueDate != nil)
+                return .none
+
+            case .reminderCustomSaved:
+                guard let draft = state.reminderDraft, draft.canSave(now: now) else { return .none }
+                state.reminderDraft = nil
+                return addReminder(draft.trigger, to: state.id)
+
+            case .reminderCustomCancelled:
+                state.reminderDraft = nil
+                return .none
+
+            case .appeared:
+                return .run { [reminders] send in await send(.permissionChecked(await reminders.permission())) }
+
+            case .permissionChecked(let permission):
+                state.notificationsDenied = permission == .denied
+                return .none
 
             case .reminderRemoved(let id):
                 return save { try await $0.removeReminder(id) }
 
             case .notificationsOff:
+                // Once the Reminders section says so, it needn't ask again.
+                guard !state.notificationsDenied else { return .none }
+                state.notificationsDenied = true
                 state.alert = AlertState {
                     TextState("Notifications are off")
                 } message: {
@@ -480,6 +512,22 @@ package struct TaskDetailFeature {
         .ifLet(\.$alert, action: \.alert)
         .ifLet(\.$commentDeletion, action: \.commentDeletion)
         .ifLet(\.$statusPicker, action: \.statusPicker)
+    }
+
+    /// Saves the reminder, then asks for notifications if they haven't been
+    /// asked for, and says so when they're off.
+    private func addReminder(_ trigger: Reminder.Trigger, to id: UUID) -> Effect<Action> {
+        .run { [store, reminders] send in
+            do {
+                await send(.saved(.success(try await store.addReminder(trigger, to: id))))
+            } catch {
+                await send(.saved(.failure(error)))
+                return
+            }
+            if (try? await reminders.requestPermission()) != true {
+                await send(.notificationsOff)
+            }
+        }
     }
 
     private func edit(_ state: State, _ edit: Workspace.TaskEdit) -> Effect<Action> {
