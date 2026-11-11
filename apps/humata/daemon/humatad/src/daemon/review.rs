@@ -1,8 +1,8 @@
 //! Code review, as the daemon keeps it: threads on lines of a session's
 //! files, which follow those lines as the file changes; reviews sent to the
 //! agent as one message; and the agent's replies, read back from the
-//! session's history, where it answers each thread under a `[thread N]`
-//! line.
+//! session's history, where it answers each thread with Humata's
+//! `reply_to_thread` tool or under a `[thread N]` line.
 
 use std::collections::HashMap;
 
@@ -319,9 +319,10 @@ fn locate(thread: &Thread, lines: &[String]) -> (u32, u32, bool) {
 fn compose(pending: &[(&Thread, Vec<&Comment>)], at: impl Fn(&Thread) -> (u32, u32)) -> String {
     let mut text = String::from(
         "Here is my review of your changes, as comments on lines of the code. \
-         Make the changes they ask for, and answer each thread on its own: \
-         start the answer with the thread's tag on a line of its own, like this:\n\n\
-         [thread 1]\nWhat you did about it, or why not.\n",
+         Make the changes they ask for, and answer each thread on its own. \
+         If you have Humata's reply_to_thread tool, answer with it; \
+         otherwise start the answer with the thread's tag on a line of its own, \
+         like this:\n\n[thread 1]\nWhat you did about it, or why not.\n",
     );
     for (thread, comments) in pending {
         let (start, end) = at(thread);
@@ -363,25 +364,44 @@ struct AgentReply {
 }
 
 /// The agent's answers to `reviews`, from the session's history: each
-/// review's message as you sent it, then what the agent said in that turn.
+/// review's message as you sent it, then what the agent said in that turn
+/// and its `reply_to_thread` calls that succeeded.
 fn agent_replies(events: &[pb::SessionEvent], reviews: &[Review]) -> Vec<AgentReply> {
     use pb::session_event::Kind;
     struct Answering<'a> {
         review: &'a Review,
         turn: Option<u32>,
         said: String,
+        calls: Vec<Call>,
         time_unix_ms: i64,
+    }
+    /// A reply by tool, which counts once the call succeeds.
+    struct Call {
+        id: String,
+        thread: i64,
+        text: String,
+        time_unix_ms: i64,
+        succeeded: bool,
     }
     let finish = |answering: Answering<'_>, replies: &mut Vec<AgentReply>| {
         let Some(turn) = answering.turn else { return };
-        for (thread, text) in sections(&answering.said) {
+        let said_at = answering.time_unix_ms;
+        let said = sections(&answering.said)
+            .into_iter()
+            .map(|(thread, text)| (thread, text, said_at));
+        let called = answering
+            .calls
+            .into_iter()
+            .filter(|call| call.succeeded)
+            .map(|call| (call.thread, call.text, call.time_unix_ms));
+        for (thread, text, time_unix_ms) in said.chain(called) {
             if answering.review.threads.contains(&thread) {
                 replies.push(AgentReply {
                     review: answering.review.id,
                     thread,
                     text,
                     turn,
-                    time_unix_ms: answering.time_unix_ms,
+                    time_unix_ms,
                 });
             }
         }
@@ -402,6 +422,7 @@ fn agent_replies(events: &[pb::SessionEvent], reviews: &[Review]) -> Vec<AgentRe
                         review,
                         turn: None,
                         said: String::new(),
+                        calls: Vec::new(),
                         time_unix_ms: event.time_unix_ms,
                     });
                 }
@@ -419,6 +440,28 @@ fn agent_replies(events: &[pb::SessionEvent], reviews: &[Review]) -> Vec<AgentRe
                     answering.time_unix_ms = event.time_unix_ms;
                 }
             }
+            Some(Kind::ToolStarted(call)) => {
+                if let Some(answering) = answering.as_mut().filter(|a| a.turn.is_some())
+                    && let Some((thread, text)) = tool_reply(call)
+                {
+                    answering.calls.push(Call {
+                        id: call.call_id.clone(),
+                        thread,
+                        text,
+                        time_unix_ms: event.time_unix_ms,
+                        succeeded: false,
+                    });
+                }
+            }
+            Some(Kind::ToolCompleted(done)) => {
+                if let Some(answering) = answering.as_mut() {
+                    for call in &mut answering.calls {
+                        if call.id == done.call_id {
+                            call.succeeded = done.success;
+                        }
+                    }
+                }
+            }
             Some(Kind::TurnEnded(_)) => {
                 if answering.as_ref().is_some_and(|a| a.turn.is_some())
                     && let Some(done) = answering.take()
@@ -433,6 +476,22 @@ fn agent_replies(events: &[pb::SessionEvent], reviews: &[Review]) -> Vec<AgentRe
         finish(done, &mut replies);
     }
     replies
+}
+
+/// The thread and answer of a call to Humata's `reply_to_thread` tool, by
+/// whatever name the agent's CLI gives it (`mcp__humata__reply_to_thread`
+/// in Claude Code).
+fn tool_reply(call: &pb::ToolStarted) -> Option<(i64, String)> {
+    if !call.tool.ends_with("reply_to_thread") {
+        return None;
+    }
+    let arguments: serde_json::Value = serde_json::from_str(&call.arguments_json).ok()?;
+    let thread = match &arguments["thread_id"] {
+        serde_json::Value::String(id) => id.trim().parse().ok()?,
+        id => id.as_i64()?,
+    };
+    let text = arguments["text"].as_str()?.trim();
+    (!text.is_empty()).then(|| (thread, text.to_owned()))
 }
 
 /// The parts of `text` under each `[thread N]` tag, by thread; the text
@@ -635,6 +694,56 @@ mod tests {
                 text: "fixed".into(),
                 turn: 2,
                 time_unix_ms: 9,
+            }]
+        );
+    }
+
+    #[test]
+    fn replies_by_tool_count_once_the_call_succeeds() {
+        use pb::session_event::Kind;
+        let review = Review {
+            id: 7,
+            message: "review".into(),
+            threads: vec![3, 4],
+        };
+        let call = |id: &str, thread: &str, text: &str| {
+            Kind::ToolStarted(pb::ToolStarted {
+                call_id: id.into(),
+                tool: "mcp__humata__reply_to_thread".into(),
+                arguments_json: serde_json::json!({"thread_id": thread, "text": text}).to_string(),
+            })
+        };
+        let completed = |id: &str, success: bool| {
+            Kind::ToolCompleted(pb::ToolCompleted {
+                call_id: id.into(),
+                success,
+                output: String::new(),
+            })
+        };
+        let events = [
+            event(
+                1,
+                Kind::UserMessage(pb::UserMessage {
+                    text: "review".into(),
+                }),
+            ),
+            event(2, Kind::TurnStarted(pb::TurnStarted {})),
+            event(3, call("a", "3", "Renamed it.")),
+            event(4, completed("a", true)),
+            event(5, call("b", "4", "Never mind.")),
+            event(6, completed("b", false)),
+            event(7, call("c", "9", "Not asked.")),
+            event(8, completed("c", true)),
+            event(9, Kind::TurnEnded(pb::TurnEnded { aborted: false })),
+        ];
+        assert_eq!(
+            agent_replies(&events, &[review]),
+            [AgentReply {
+                review: 7,
+                thread: 3,
+                text: "Renamed it.".into(),
+                turn: 1,
+                time_unix_ms: 3,
             }]
         );
     }

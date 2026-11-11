@@ -5,6 +5,7 @@ package enum Backend: String, CaseIterable, Hashable, Sendable {
     case scripted
     case local
     case copilot
+    case claude
 }
 
 /// What a session may do without asking.

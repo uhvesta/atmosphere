@@ -463,6 +463,9 @@ pub enum StartError {
     Host(#[from] HostError),
 
     #[error(transparent)]
+    Mcp(#[from] crate::mcp::McpError),
+
+    #[error(transparent)]
     Store(#[from] StoreError),
 
     #[error(

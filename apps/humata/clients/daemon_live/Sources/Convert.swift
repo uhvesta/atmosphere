@@ -33,6 +33,7 @@ extension Backend {
         case .scripted: self = .scripted
         case .local: self = .local
         case .copilot: self = .copilot
+        case .claude: self = .claude
         case .unspecified, .UNRECOGNIZED: return nil
         }
     }
@@ -42,6 +43,7 @@ extension Backend {
         case .scripted: .scripted
         case .local: .local
         case .copilot: .copilot
+        case .claude: .claude
         }
     }
 }

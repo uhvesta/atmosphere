@@ -243,6 +243,30 @@ copilot_cli(
     platform = "linux_x64",
 )
 
+# Claude Code, one repository per platform, each fetched only when a build
+# for that platform uses it. See apps/humata/claude/claude.bzl.
+claude_cli = use_repo_rule("//apps/humata/claude:claude.bzl", "claude_cli")
+
+claude_cli(
+    name = "claude_cli_darwin_arm64",
+    platform = "darwin_arm64",
+)
+
+claude_cli(
+    name = "claude_cli_darwin_x64",
+    platform = "darwin_x64",
+)
+
+claude_cli(
+    name = "claude_cli_linux_arm64",
+    platform = "linux_arm64",
+)
+
+claude_cli(
+    name = "claude_cli_linux_x64",
+    platform = "linux_x64",
+)
+
 # MARK: - Lifr signing
 
 # The team and bundle ID prefix that sign Lifr, from LIFR_TEAM_ID and

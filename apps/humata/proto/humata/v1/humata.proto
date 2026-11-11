@@ -180,6 +180,8 @@ enum Backend {
   BACKEND_SCRIPTED = 1;
   BACKEND_LOCAL = 2;
   BACKEND_COPILOT = 3;
+  // Claude Code, on the `claude` CLI signed in on the host.
+  BACKEND_CLAUDE = 4;
 }
 
 message StartSession {

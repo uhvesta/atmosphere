@@ -32,7 +32,7 @@ async fn client_of<S: Service>(service: Arc<S>) -> Client {
 }
 
 async fn host(state: &Path) -> Client {
-    match Host::open(state, &state.join("worktrees")).await {
+    match Host::open(state, &state.join("worktrees"), None).await {
         Ok(host) => client_of(Arc::new(host)).await,
         Err(error) => panic!("couldn't open the host: {error}"),
     }
@@ -49,7 +49,7 @@ fn start(directory: &Path, host: &str) -> pb::request::Kind {
     })
 }
 
-async fn started(client: &Client, request: pb::request::Kind) -> pb::SessionInfo {
+pub(crate) async fn started(client: &Client, request: pb::request::Kind) -> pb::SessionInfo {
     match client.call(request).await {
         Ok(pb::response::Kind::SessionStarted(pb::SessionStarted {
             session: Some(session),
@@ -311,12 +311,12 @@ async fn a_chat_in_no_folder_gets_its_own_and_its_files_can_be_read() {
     );
 }
 
-async fn daemon(state: &Path, hosts: Hosts) -> Client {
+pub(crate) async fn daemon(state: &Path, hosts: Hosts) -> Client {
     let store = match Store::open(&state.join("humata.sqlite3")) {
         Ok(store) => store,
         Err(error) => panic!("couldn't open the store: {error}"),
     };
-    match Host::open(&state.join("host"), &state.join("worktrees")).await {
+    match Host::open(&state.join("host"), &state.join("worktrees"), None).await {
         Ok(local) => {
             client_of(Arc::new(Daemon::new(
                 local,
@@ -427,7 +427,7 @@ fn create_project(repository: &Path) -> pb::request::Kind {
 }
 
 /// A git repository with one commit, in a new temporary folder.
-fn git_repository() -> tempfile::TempDir {
+pub(crate) fn git_repository() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     std::fs::write(dir.path().join("README.md"), "hello\n")
         .unwrap_or_else(|error| panic!("{error}"));
@@ -451,7 +451,7 @@ fn git_repository() -> tempfile::TempDir {
     dir
 }
 
-async fn project(client: &Client, repository: &Path) -> pb::Project {
+pub(crate) async fn project(client: &Client, repository: &Path) -> pb::Project {
     match client.call(create_project(repository)).await {
         Ok(pb::response::Kind::ProjectCreated(pb::ProjectCreated {
             project: Some(project),
@@ -755,14 +755,14 @@ async fn create_item(
     }
 }
 
-async fn item(client: &Client, project: &str, parent: &str, title: &str) -> pb::Item {
+pub(crate) async fn item(client: &Client, project: &str, parent: &str, title: &str) -> pb::Item {
     create_item(client, project, parent, title)
         .await
         .unwrap_or_else(|error| panic!("{error}"))
 }
 
 /// Each item's title and shown status, in the board's order.
-async fn board(client: &Client, project: &str) -> Vec<(String, pb::ItemStatus)> {
+pub(crate) async fn board(client: &Client, project: &str) -> Vec<(String, pb::ItemStatus)> {
     let listed = client
         .call(pb::request::Kind::ListItems(pb::ListItems {
             project_id: project.to_owned(),
@@ -788,7 +788,7 @@ async fn board_log(client: &Client, project: &str) -> Vec<pb::BoardChange> {
     }
 }
 
-fn start_on(item: &str) -> pb::request::Kind {
+pub(crate) fn start_on(item: &str) -> pb::request::Kind {
     pb::request::Kind::StartSession(pb::StartSession {
         backend: pb::Backend::Scripted.into(),
         item_id: item.to_owned(),

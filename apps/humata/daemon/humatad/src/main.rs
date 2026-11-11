@@ -3,7 +3,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
-/// Humata's daemon, and the host role that runs sessions on any machine.
+/// Humata's daemon, the host role that runs sessions on any machine, and the
+/// MCP server agents use.
 #[derive(Parser)]
 #[command(name = "humatad", version)]
 struct Arguments {
@@ -43,6 +44,14 @@ enum Role {
         #[arg(long)]
         cache: Option<PathBuf>,
     },
+    /// Serve the session in $HUMATA_SESSION's agent the board and review
+    /// tools, over MCP on stdin and stdout. Humata starts it for the agent.
+    Mcp {
+        /// The daemon's socket; defaults to $HUMATA_SOCKET, then a path in
+        /// your home folder.
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -65,6 +74,15 @@ fn main() -> ExitCode {
 
 async fn run(role: Role) -> Result<(), humatad::StartError> {
     match role {
+        Role::Mcp { socket } => {
+            let socket = socket
+                .or_else(humata_wire::default_socket)
+                .ok_or(humatad::StartError::NoHome)?;
+            let session = std::env::var("HUMATA_SESSION").ok();
+            humatad::mcp_stdio(&socket, session)
+                .await
+                .map_err(Into::into)
+        }
         Role::Daemon {
             state,
             cache,

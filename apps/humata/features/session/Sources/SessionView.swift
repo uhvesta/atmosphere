@@ -123,6 +123,7 @@ package struct SessionView: View {
         let backend =
             switch store.session.backend {
             case .copilot: "Copilot"
+            case .claude: "Claude Code"
             case .local: "Local model"
             case .scripted: "Scripted"
             }

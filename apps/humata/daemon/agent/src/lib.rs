@@ -9,10 +9,12 @@
 //! to play one turn. It keeps each session's history as JSON lines on disk,
 //! queues and steers turns, holds approvals and forks.
 
+mod claude;
 mod copilot;
 mod env;
 mod error;
 mod event;
+mod links;
 mod local_model;
 mod log;
 mod paths;
@@ -23,6 +25,7 @@ use std::future::Future;
 
 use tokio::sync::broadcast;
 
+pub use claude::{CLAUDE_VERSION, ClaudeError, ClaudeOptions, ClaudeRunner, McpServer};
 pub use copilot::{COPILOT_VERSION, CopilotError, CopilotOptions, CopilotProvider, CopilotRunner};
 pub use env::Env;
 pub use error::AgentError;

@@ -2,7 +2,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 # The agent interface every backend implements, the runtime the in-process
 # backends share (turns, approvals, forks, history on disk), and the backends:
-# Copilot, a local model, and the scripted one tests run on.
+# Claude Code, Copilot, a local model, and the scripted one tests run on.
 rust_library(
     name = "agent",
     srcs = glob(["src/**/*.rs"]),
@@ -32,6 +32,21 @@ rust_test(
     srcs = ["tests/copilot_test.rs"],
     data = ["//apps/humata/copilot"],
     env = {"COPILOT_CLI": "$(rootpath //apps/humata/copilot)"},
+    deps = [
+        ":agent",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
+)
+
+# The Claude Code backend on the pinned Claude Code, offline against a fake
+# Anthropic API.
+rust_test(
+    name = "claude_test",
+    srcs = ["tests/claude_test.rs"],
+    data = ["//apps/humata/claude"],
+    env = {"CLAUDE_CLI": "$(rootpath //apps/humata/claude)"},
     deps = [
         ":agent",
         "@crates//:serde_json",

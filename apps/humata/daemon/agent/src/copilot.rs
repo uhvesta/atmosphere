@@ -12,7 +12,6 @@
 //!
 //! [`LocalAgent`]: crate::LocalAgent
 
-mod links;
 mod rpc;
 
 use std::collections::HashMap;
@@ -27,8 +26,8 @@ use tokio::task::JoinHandle;
 use crate::env::Env;
 use crate::error::AgentError;
 use crate::event::{EventKind, PermissionKind};
+use crate::links::{Cut, Links};
 use crate::runtime::{Runner, Turn};
-use links::{Cut, Links};
 use rpc::{Cli, PROTOCOL_VERSION};
 
 /// The Copilot CLI version this backend is written against, pinned in
@@ -175,7 +174,7 @@ impl CopilotRunner {
         links: &mut Links,
         path: &std::path::Path,
     ) -> Result<String, CopilotError> {
-        if let Some(session) = &links.copilot {
+        if let Some(session) = &links.session {
             if !cli.is_live(session) {
                 let params = session_params(turn, provider, Some(session));
                 cli.call("session.resume", params).await?;
@@ -205,7 +204,7 @@ impl CopilotRunner {
             }
         };
         cli.set_live(&session);
-        links.copilot = Some(session.clone());
+        links.session = Some(session.clone());
         links.save(path)?;
         Ok(session)
     }

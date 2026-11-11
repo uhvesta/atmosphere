@@ -34,6 +34,7 @@ enum Backend {
     Scripted,
     Local,
     Copilot,
+    Claude,
 }
 
 /// What a session may do without asking.
@@ -620,6 +621,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 Backend::Scripted => pb::Backend::Scripted,
                 Backend::Local => pb::Backend::Local,
                 Backend::Copilot => pb::Backend::Copilot,
+                Backend::Claude => pb::Backend::Claude,
             };
             let request = Request::StartSession(pb::StartSession {
                 backend: backend.into(),

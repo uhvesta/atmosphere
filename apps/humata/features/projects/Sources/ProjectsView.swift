@@ -310,6 +310,7 @@ package struct NewSessionView: View {
             Section {
                 TextField("Name", text: $store.name, prompt: Text("What it's for"))
                 Picker("Agent", selection: $store.backend) {
+                    Text("Claude Code").tag(Backend.claude)
                     Text("Copilot").tag(Backend.copilot)
                     Text("Local Model").tag(Backend.local)
                     Text("Scripted").tag(Backend.scripted)

@@ -7,10 +7,10 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use humata_agent::{
-    Agent, AgentError, ApprovalMode, CopilotOptions, CopilotProvider, CopilotRunner, Edit, Env,
-    Event, EventId, ForkOptions, LocalAgent, LocalModelConfig, LocalModelRunner, Query, Script,
-    ScriptedRunner, SendMode, SessionId, SessionRecord, SessionUpdate, StartOptions, Watch,
-    Workspaces,
+    Agent, AgentError, ApprovalMode, ClaudeOptions, ClaudeRunner, CopilotOptions, CopilotProvider,
+    CopilotRunner, Edit, Env, Event, EventId, ForkOptions, LocalAgent, LocalModelConfig,
+    LocalModelRunner, McpServer, Query, Script, ScriptedRunner, SendMode, SessionId, SessionRecord,
+    SessionUpdate, StartOptions, Watch, Workspaces,
 };
 use humata_wire::{Reply, Service, ServiceFuture, describe, error, pb};
 use tokio::sync::{broadcast, mpsc};
@@ -175,8 +175,13 @@ pub struct Host {
 
 impl Host {
     /// Opens the sessions kept under `state`, one folder per backend. Their
-    /// copies of the code they work in go under `worktrees`.
-    pub async fn open(state: &Path, worktrees: &Path) -> Result<Self, HostError> {
+    /// copies of the code they work in go under `worktrees`. Agents that
+    /// take MCP servers are given `mcp`.
+    pub async fn open(
+        state: &Path,
+        worktrees: &Path,
+        mcp: Option<McpServer>,
+    ) -> Result<Self, HostError> {
         let workspaces = || Workspaces::new(worktrees);
         // Empty until the daemon sends the host's variables after connecting.
         let env = Env::default();
@@ -212,10 +217,22 @@ impl Host {
         });
         let copilot = LocalAgent::open(copilot_state.join("sessions"), copilot_runner)?
             .with_workspaces(workspaces());
+        // Signed in with `claude` and `/login`, it runs on the person's
+        // Claude subscription.
+        let claude_state = state.join("claude");
+        let claude_runner = ClaudeRunner::new(ClaudeOptions {
+            program: claude_program(),
+            state: claude_state.join("backend"),
+            env: env.clone(),
+            mcp,
+        });
+        let claude = LocalAgent::open(claude_state.join("sessions"), claude_runner)?
+            .with_workspaces(workspaces());
         let mut backends: HashMap<pb::Backend, Arc<dyn Backend>> = HashMap::new();
         backends.insert(pb::Backend::Scripted, Arc::new(scripted));
         backends.insert(pb::Backend::Local, Arc::new(local));
         backends.insert(pb::Backend::Copilot, Arc::new(copilot));
+        backends.insert(pb::Backend::Claude, Arc::new(claude));
         let mut owners = HashMap::new();
         for (backend, agent) in &backends {
             for record in agent.sessions().await? {
@@ -522,4 +539,25 @@ impl Service for Host {
             }
         })
     }
+}
+
+/// The `claude` program: HUMATA_CLAUDE, else the first on PATH, else where
+/// its installer puts it, as a humatad the app starts gets a bare PATH.
+fn claude_program() -> PathBuf {
+    if let Some(program) = std::env::var_os("HUMATA_CLAUDE") {
+        return PathBuf::from(program);
+    }
+    let on_path = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("claude"))
+            .find(|program| program.is_file())
+    });
+    let installed = || {
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join(".local/bin/claude"))
+            .filter(|program| program.is_file())
+    };
+    on_path
+        .or_else(installed)
+        .unwrap_or_else(|| PathBuf::from("claude"))
 }

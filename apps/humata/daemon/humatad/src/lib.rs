@@ -1,6 +1,6 @@
-//! humatad: the daemon on your Mac (`humatad daemon`), and the host role on
-//! any machine (`humatad host --stdio`). One binary, so a host is set up by
-//! copying it.
+//! humatad: the daemon on your Mac (`humatad daemon`), the host role on any
+//! machine (`humatad host --stdio`), and the MCP server agents on the Mac
+//! use (`humatad mcp`). One binary, so a host is set up by copying it.
 
 mod board;
 mod convert;
@@ -10,6 +10,7 @@ mod files;
 mod host;
 mod hosts;
 mod machine;
+mod mcp;
 mod socket;
 mod store;
 
@@ -17,10 +18,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub use error::StartError;
+pub use mcp::{McpError, mcp_stdio};
 
 use daemon::Daemon;
 use host::Host;
 use hosts::Hosts;
+use humata_agent::McpServer;
 use humata_wire::pb;
 use sha2::{Digest, Sha256};
 use store::Store;
@@ -84,7 +87,8 @@ pub fn default_cache() -> Result<PathBuf, StartError> {
 /// Serves the host role on stdin and stdout until the daemon hangs up.
 /// Sessions' copies of their code go under `<cache>/worktrees`.
 pub async fn host_stdio(state: &Path, cache: &Path) -> Result<(), StartError> {
-    let host = Arc::new(Host::open(state, &cache.join("worktrees")).await?);
+    // The board is the daemon's, out of reach of a host's agents.
+    let host = Arc::new(Host::open(state, &cache.join("worktrees"), None).await?);
     humata_wire::serve(
         tokio::io::stdin(),
         tokio::io::stdout(),
@@ -108,7 +112,17 @@ pub async fn daemon(
     hosts: &Path,
 ) -> Result<(), StartError> {
     let store = Store::open(&state.join("humata.sqlite3"))?;
-    let local = Host::open(&state.join("host"), &cache.join("worktrees")).await?;
+    // Agents here reach the board and review threads through `humatad mcp`.
+    let mcp = std::env::current_exe().ok().map(|program| McpServer {
+        command: program,
+        args: vec![
+            "mcp".into(),
+            "--socket".into(),
+            socket.display().to_string(),
+        ],
+        env: Vec::new(),
+    });
+    let local = Host::open(&state.join("host"), &cache.join("worktrees"), mcp).await?;
     // Read before serving: an update may replace the file while it runs.
     let build: Arc<str> = build().into();
     let daemon = Arc::new(Daemon::new(
