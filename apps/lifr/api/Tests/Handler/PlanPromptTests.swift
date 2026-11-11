@@ -3,10 +3,10 @@ import LifrAPI
 import LifrCore
 import TestingKit
 
-private func prompt(goal: String = "Plan my week") throws -> String {
+private func prompt(goal: String = "Plan my week", scope: PlanPrompt.Scope = .names) throws -> String {
     let fixture = try Fixture()
     return PlanPrompt.make(
-        goal: goal, workspace: fixture.workspace, today: try CalendarDate("2026-11-03"),
+        goal: goal, scope: scope, workspace: fixture.workspace, today: try CalendarDate("2026-11-03"),
         timeZone: TimeZone(identifier: "Europe/London") ?? .gmt)
 }
 
@@ -38,6 +38,31 @@ func planPromptTests() -> [TestCase] {
             let text = try prompt()
             try expect(!text.contains("Training plan"))
             try expect(!text.contains("Book a checkup"))
+        },
+        TestCase("given everything in scope, then the prompt lists the open tasks an assistant may add to") {
+            let text = try prompt(scope: .everything)
+            try expect(text.contains("HEALTH: Training plan"))
+            try expect(text.contains("HEALTH: Book a checkup"))
+            try expect(!text.contains("Quarterly review"))
+            try expect(!text.contains("File taxes"))
+            try expect(!text.contains("Ask about knee pain."))
+        },
+        TestCase("given one Avenue in scope, then the prompt lists its open tasks only") {
+            let fixture = try Fixture()
+            let health = try fixture.workspace.avenues.values.first { $0.key.rawValue == "HEALTH" }.unwrap()
+            let text = PlanPrompt.make(
+                goal: "", scope: .avenue(health.id), workspace: fixture.workspace,
+                today: try CalendarDate("2026-11-03"), timeZone: .gmt)
+            try expect(text.contains("HEALTH: Book a checkup"))
+            try expect(!text.contains("Quarterly review"))
+        },
+        TestCase("given an Avenue hidden from assistants in scope, then the prompt lists none of its tasks") {
+            let fixture = try Fixture()
+            let finance = try fixture.workspace.avenues.values.first { $0.key.rawValue == "FINANCE" }.unwrap()
+            let text = PlanPrompt.make(
+                goal: "", scope: .avenue(finance.id), workspace: fixture.workspace,
+                today: try CalendarDate("2026-11-03"), timeZone: .gmt)
+            try expect(!text.contains("File taxes"))
         },
         TestCase("given a workspace, then the prompt has the date, the time zone and the goal") {
             let text = try prompt(goal: "Get ready for the race")

@@ -4,10 +4,27 @@ import LifrCore
 /// Planning with an assistant outside Lifr: a prompt to paste into any chat,
 /// and the plan read back out of its reply.
 package enum PlanPrompt {
+    /// Which of the person's tasks a prompt lists, so the reply doesn't
+    /// repeat them. Copying titles out of Lifr is the person's choice.
+    package enum Scope: Hashable, Sendable {
+        /// None: Avenue, Project and label names only.
+        case names
+        /// The open tasks in every Avenue the assistant may add to.
+        case everything
+        /// The open tasks in one of them.
+        case avenue(UUID)
+    }
+
+    /// The most tasks a prompt lists, so a big workspace stays pasteable.
+    static let taskLimit = 200
+
     /// A prompt asking for a plan for `goal`, in the TOML `PlanFile` reads.
     /// It names the Avenues an assistant may add to, their active Projects
-    /// and every label, so the reply reuses them. No task is in it.
-    package static func make(goal: String, workspace: Workspace, today: CalendarDate, timeZone: TimeZone) -> String {
+    /// and every label, so the reply reuses them, and the open tasks in
+    /// `scope`.
+    package static func make(
+        goal: String, scope: Scope = .names, workspace: Workspace, today: CalendarDate, timeZone: TimeZone
+    ) -> String {
         let avenues = workspace.avenues.values
             .filter { $0.archivedAt == nil && $0.agentAccess == .full }
             .sorted { $0.key < $1.key }
@@ -23,6 +40,7 @@ package enum PlanPrompt {
         }
         if avenues.isEmpty { context.append("- none yet: add an [[avenue]] for the tasks") }
         context.append("Labels: " + (labels.isEmpty ? "none yet" : labels.joined(separator: ", ")))
+        context += tasks(in: scope, avenues: avenues, workspace: workspace)
         let goal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
         return """
             You're helping plan tasks for Lifr, a to-do app. Reply with one ```toml block and nothing else, \
@@ -45,6 +63,31 @@ package enum PlanPrompt {
 
             What to plan: \(goal.isEmpty ? "Ask me what to plan, and reply with the plan once I answer." : goal)
             """
+    }
+
+    /// The lines listing the open tasks in `scope`, Avenue by Avenue, or
+    /// none for `.names`.
+    private static func tasks(in scope: Scope, avenues: [Avenue], workspace: Workspace) -> [String] {
+        let listed: [Avenue]
+        switch scope {
+        case .names: return []
+        case .everything: listed = avenues
+        case .avenue(let id): listed = avenues.filter { $0.id == id }
+        }
+        let ids = Set(listed.map(\.id))
+        let open = workspace.tasks.values
+            .filter { ids.contains($0.avenueID) && $0.isOpen && $0.deletedAt == nil }
+            .sorted { $0.title < $1.title }
+        var lines = ["", "Open tasks already in Lifr, which the plan shouldn't add again:"]
+        if open.isEmpty { lines.append("- none") }
+        for avenue in listed {
+            let titles = open.filter { $0.avenueID == avenue.id }.map(\.title)
+            lines += titles.map { "- \(avenue.key): \($0)" }
+        }
+        if lines.count > taskLimit + 2 {
+            lines = Array(lines.prefix(taskLimit + 2)) + ["- and \(open.count - taskLimit) more"]
+        }
+        return lines
     }
 
     /// A prompt asking the same chat to write `reply` again, fixed.

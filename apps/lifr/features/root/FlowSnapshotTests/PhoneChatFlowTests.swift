@@ -162,6 +162,8 @@ final class PhoneChatFlowTests: PhoneFlowTestCase {
         chat(.core(.binding(.set(\.input, "/ex"))))
         await flow.step("command")
         chat(.pickCommandTapped(.export))
+        await flow.step("scope")
+        chat(.alert(.presented(.exportPlan(goal: "", scope: .names))))
         await flow.step("copied")
         XCTAssertTrue(copied.value?.contains("HOME: Home") ?? false)
         chat(.alert(.dismiss))

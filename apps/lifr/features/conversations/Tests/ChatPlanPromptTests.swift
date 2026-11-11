@@ -30,10 +30,12 @@ final class ChatPlanPromptTests: XCTestCase {
         """
 
     /// A chat over a HOME Avenue, with `clipboard` as the clipboard.
-    private func chat(_ clipboard: LockIsolated<String?>) -> (TestStoreOf<ChatFeature>, Workspace) {
+    private func chat(
+        _ clipboard: LockIsolated<String?>, _ workspace: Workspace? = nil
+    ) -> (TestStoreOf<ChatFeature>, Workspace) {
         var records = RecordsBuilder(now: now, timeZone: .gmt)
         _ = records.avenue("HOME", "Home")
-        let workspace = records.workspace
+        let workspace = workspace ?? records.workspace
         let store = TestStore(
             initialState: ChatFeature.State(
                 conversation: Conversation(id: UUID(0), createdAt: now), workspace: workspace)
@@ -63,6 +65,9 @@ final class ChatPlanPromptTests: XCTestCase {
 
         await store.send(.core(.binding(.set(\.input, "/export Move flat"))))
         await store.receive(\.exportPlanTapped)
+        XCTAssertNil(clipboard.value, "nothing is copied before the scope is picked")
+        await store.send(.alert(.presented(.exportPlan(goal: "Move flat", scope: .names))))
+        await store.receive(\.exportPlanScoped)
         await store.finish()
 
         let prompt = try XCTUnwrap(clipboard.value)
@@ -80,11 +85,34 @@ final class ChatPlanPromptTests: XCTestCase {
         await store.send(.core(.binding(.set(\.input, "Move flat"))))
         await store.send(.commandChosen(.export))
         await store.receive(\.exportPlanTapped)
+        await store.send(.alert(.presented(.exportPlan(goal: "Move flat", scope: .names))))
+        await store.receive(\.exportPlanScoped)
         await store.finish()
 
         XCTAssertTrue(try XCTUnwrap(clipboard.value).contains("Move flat"))
         XCTAssertEqual(store.state.input, "")
         XCTAssertTrue(store.state.conversation.messages.isEmpty, "nothing was sent")
+    }
+
+    func testExportListsAnAvenuesOpenTasksOnlyWhenThatScopeIsPicked() async throws {
+        let clipboard = LockIsolated<String?>(nil)
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let home = records.avenue("HOME", "Home")
+        _ = records.task("Fix the gate", in: home, due: 0)
+        let (store, _) = chat(clipboard, records.workspace)
+
+        await store.send(.core(.binding(.set(\.input, "/export Move flat"))))
+        await store.receive(\.exportPlanTapped)
+        await store.send(.alert(.presented(.exportPlan(goal: "Move flat", scope: .names))))
+        await store.receive(\.exportPlanScoped)
+        await store.finish()
+        XCTAssertFalse(try XCTUnwrap(clipboard.value).contains("Fix the gate"))
+
+        await store.send(.exportPlanTapped(goal: "Move flat"))
+        await store.send(.alert(.presented(.exportPlan(goal: "Move flat", scope: .avenue(home.id)))))
+        await store.receive(\.exportPlanScoped)
+        await store.finish()
+        XCTAssertTrue(try XCTUnwrap(clipboard.value).contains("HOME: Fix the gate"))
     }
 
     func testPasteFromTheMenuPutsTheReplysPlanOnTheDraftCard() async throws {

@@ -310,8 +310,11 @@ package struct ChatFeature {
         /// place.
         case compactTapped
         case compacted(through: UUID, Result<String, any Error>)
-        /// Copies a prompt for another assistant to plan `goal`.
+        /// Asks which tasks a prompt for another assistant to plan `goal`
+        /// lists.
         case exportPlanTapped(goal: String)
+        /// Copies the prompt for `goal`, listing the tasks in `scope`.
+        case exportPlanScoped(goal: String, scope: PlanPrompt.Scope)
         /// Reads the clipboard for another assistant's reply.
         case pastePlanTapped
         /// A command picked from the Mac's menu: runs as if typed, with
@@ -367,6 +370,8 @@ package struct ChatFeature {
             case retry(UUID, undo: Bool)
             /// Copies a prompt for the other assistant to fix its plan.
             case copyFixUp(String)
+            /// Copies a prompt to plan `goal`, listing the tasks in `scope`.
+            case exportPlan(goal: String, scope: PlanPrompt.Scope)
         }
 
         @CasePathable
@@ -737,8 +742,12 @@ package struct ChatFeature {
                 return .none
 
             case .exportPlanTapped(let goal):
+                state.alert = Self.scopeAlert(goal: goal, workspace: state.workspace)
+                return .none
+
+            case .exportPlanScoped(let goal, let scope):
                 let prompt = PlanPrompt.make(
-                    goal: goal, workspace: state.workspace, today: CalendarDate(now, in: timeZone),
+                    goal: goal, scope: scope, workspace: state.workspace, today: CalendarDate(now, in: timeZone),
                     timeZone: timeZone)
                 state.alert = AlertState {
                     TextState("Prompt Copied")
@@ -746,10 +755,13 @@ package struct ChatFeature {
                     ButtonState(role: .cancel) { TextState("OK") }
                 } message: {
                     TextState(
-                        "Paste it into any chat assistant. It names your Avenues, Projects and labels, but no "
-                            + "tasks. Then copy its whole reply and type /paste here to review the plan.")
+                        "Paste it into any chat assistant. Then copy its whole reply and type /paste here to "
+                            + "review the plan.")
                 }
                 return .run { [pasteboard] _ in await pasteboard.copy(prompt) }
+
+            case .alert(.presented(.exportPlan(let goal, let scope))):
+                return .send(.exportPlanScoped(goal: goal, scope: scope))
 
             case .commandChosen(let command):
                 return run(command, details: state.input, in: &state)
@@ -1191,6 +1203,30 @@ package struct ChatFeature {
         return .run { [assistant] send in
             await send(
                 .compacted(through: through, Result { try await assistant.compact(messages, earlier, choice) }))
+        }
+    }
+
+    /// Asks which open tasks the prompt lists: none, all, or one Avenue's,
+    /// for the first few Avenues an assistant may add to.
+    private static func scopeAlert(goal: String, workspace: Workspace) -> AlertState<Action.Alert> {
+        let avenues = workspace.avenues.values
+            .filter { $0.archivedAt == nil && $0.agentAccess == .full }
+            .sorted { $0.sortOrder < $1.sortOrder }
+        return AlertState {
+            TextState("Copy a Plan Prompt")
+        } actions: {
+            ButtonState(action: .exportPlan(goal: goal, scope: .names)) { TextState("Names Only") }
+            ButtonState(action: .exportPlan(goal: goal, scope: .everything)) { TextState("With All Open Tasks") }
+            for avenue in avenues.prefix(4) {
+                ButtonState(action: .exportPlan(goal: goal, scope: .avenue(avenue.id))) {
+                    TextState("With Tasks in \(avenue.name)")
+                }
+            }
+            ButtonState(role: .cancel) { TextState("Cancel") }
+        } message: {
+            TextState(
+                "The prompt names your Avenues, Projects and labels. Listing your open tasks too keeps the "
+                    + "assistant from planning them again, but copies their titles out of Lifr.")
         }
     }
 
