@@ -61,7 +61,10 @@
             window.isReleasedWhenClosed = false
             window.contentViewController = NSHostingController(rootView: view)
             window.setContentSize(size)
-            window.orderFrontRegardless()
+            // Behind every other window, so a run doesn't cover what the
+            // person is doing. The capture reads the window alone, so what's
+            // in front of it doesn't show.
+            window.orderBack(nil)
             window.makeKey()
             // Draws the first screen now, so a change the test makes next is
             // always a change from it, and not sometimes the screen the app
