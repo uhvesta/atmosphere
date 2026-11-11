@@ -64,6 +64,13 @@ func planPromptTests() -> [TestCase] {
                 today: try CalendarDate("2026-11-03"), timeZone: .gmt)
             try expect(!text.contains("File taxes"))
         },
+        TestCase("given extra instructions, then the prompt carries them") {
+            let fixture = try Fixture()
+            let text = PlanPrompt.make(
+                goal: "Errands", instructions: "Use the Errands label.", workspace: fixture.workspace,
+                today: try CalendarDate("2026-11-03"), timeZone: .gmt)
+            try expect(text.contains("Use the Errands label."))
+        },
         TestCase("given a workspace, then the prompt has the date, the time zone and the goal") {
             let text = try prompt(goal: "Get ready for the race")
             try expect(text.contains("2026-11-03"))

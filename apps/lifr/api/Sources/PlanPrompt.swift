@@ -23,7 +23,8 @@ package enum PlanPrompt {
     /// and every label, so the reply reuses them, and the open tasks in
     /// `scope`.
     package static func make(
-        goal: String, scope: Scope = .names, workspace: Workspace, today: CalendarDate, timeZone: TimeZone
+        goal: String, scope: Scope = .names, instructions: String = "", workspace: Workspace, today: CalendarDate,
+        timeZone: TimeZone
     ) -> String {
         let avenues = workspace.avenues.values
             .filter { $0.archivedAt == nil && $0.agentAccess == .full }
@@ -42,6 +43,8 @@ package enum PlanPrompt {
         context.append("Labels: " + (labels.isEmpty ? "none yet" : labels.joined(separator: ", ")))
         context += tasks(in: scope, avenues: avenues, workspace: workspace)
         let goal = goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        let extra = instructions.isEmpty ? "" : "Also follow these instructions: \(instructions)\n\n"
         return """
             You're helping plan tasks for Lifr, a to-do app. Reply with one ```toml block and nothing else, \
             following the format below. Put tasks in the Avenues and Projects listed further down, using their \
@@ -61,7 +64,7 @@ package enum PlanPrompt {
 
             Today is \(today), in the time zone \(timeZone.identifier).
 
-            What to plan: \(goal.isEmpty ? "Ask me what to plan, and reply with the plan once I answer." : goal)
+            \(extra)What to plan: \(goal.isEmpty ? "Ask me what to plan, and reply with the plan once I answer." : goal)
             """
     }
 

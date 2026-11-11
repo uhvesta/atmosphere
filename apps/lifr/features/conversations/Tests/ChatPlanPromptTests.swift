@@ -94,6 +94,31 @@ final class ChatPlanPromptTests: XCTestCase {
         XCTAssertTrue(store.state.conversation.messages.isEmpty, "nothing was sent")
     }
 
+    func testExportWithOneOfThePersonsSkillsPickedCarriesItsInstructions() async throws {
+        let clipboard = LockIsolated<String?>(nil)
+        let (store, _) = chat(clipboard)
+        let errands = try XCTUnwrap(
+            Skill(
+                userNamed: "errands", summary: "Plan errands.", instructions: "Every task needs a due date.",
+                tools: [], draftsPlans: true))
+        await store.send(.skillsLoaded(Skill.builtIn + [errands]))
+        await store.send(.pickSkillTapped(errands.id))
+
+        await store.send(.exportPlanTapped(goal: "Saturday"))
+        await store.send(.alert(.presented(.exportPlan(goal: "Saturday", scope: .names))))
+        await store.receive(\.exportPlanScoped)
+        await store.finish()
+        XCTAssertTrue(try XCTUnwrap(clipboard.value).contains("Every task needs a due date."))
+
+        let builtIn = try XCTUnwrap(Skill.builtIn.first { $0.isOn })
+        await store.send(.pickSkillTapped(builtIn.id))
+        await store.send(.exportPlanTapped(goal: "Saturday"))
+        await store.send(.alert(.presented(.exportPlan(goal: "Saturday", scope: .names))))
+        await store.receive(\.exportPlanScoped)
+        await store.finish()
+        XCTAssertFalse(try XCTUnwrap(clipboard.value).contains(builtIn.instructions))
+    }
+
     func testExportListsAnAvenuesOpenTasksOnlyWhenThatScopeIsPicked() async throws {
         let clipboard = LockIsolated<String?>(nil)
         var records = RecordsBuilder(now: now, timeZone: .gmt)

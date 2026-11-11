@@ -220,6 +220,11 @@ package struct ChatFeature {
         /// The skill picked for the next message, while it exists and is on.
         package var picked: Skill? { skill.flatMap { id in skills.first { $0.id == id && $0.isOn } } }
 
+        /// The person's own skill that's picked, whose instructions a plan
+        /// prompt carries, so a skill doubles as a preset for planning
+        /// elsewhere. The built-ins are about Lifr's own tools, so they don't.
+        package var preset: Skill? { picked.flatMap { $0.isUser ? $0 : nil } }
+
         /// The skills that are on, then the commands that can run now,
         /// matching what's typed after a / that starts the message, while
         /// no skill is picked. Empty without a /.
@@ -742,13 +747,13 @@ package struct ChatFeature {
                 return .none
 
             case .exportPlanTapped(let goal):
-                state.alert = Self.scopeAlert(goal: goal, workspace: state.workspace)
+                state.alert = Self.scopeAlert(goal: goal, preset: state.preset, workspace: state.workspace)
                 return .none
 
             case .exportPlanScoped(let goal, let scope):
                 let prompt = PlanPrompt.make(
-                    goal: goal, scope: scope, workspace: state.workspace, today: CalendarDate(now, in: timeZone),
-                    timeZone: timeZone)
+                    goal: goal, scope: scope, instructions: state.preset?.instructions ?? "", workspace: state.workspace,
+                    today: CalendarDate(now, in: timeZone), timeZone: timeZone)
                 state.alert = AlertState {
                     TextState("Prompt Copied")
                 } actions: {
@@ -1208,7 +1213,7 @@ package struct ChatFeature {
 
     /// Asks which open tasks the prompt lists: none, all, or one Avenue's,
     /// for the first few Avenues an assistant may add to.
-    private static func scopeAlert(goal: String, workspace: Workspace) -> AlertState<Action.Alert> {
+    private static func scopeAlert(goal: String, preset: Skill?, workspace: Workspace) -> AlertState<Action.Alert> {
         let avenues = workspace.avenues.values
             .filter { $0.archivedAt == nil && $0.agentAccess == .full }
             .sorted { $0.sortOrder < $1.sortOrder }
@@ -1224,9 +1229,13 @@ package struct ChatFeature {
             }
             ButtonState(role: .cancel) { TextState("Cancel") }
         } message: {
-            TextState(
+            let about =
                 "The prompt names your Avenues, Projects and labels. Listing your open tasks too keeps the "
-                    + "assistant from planning them again, but copies their titles out of Lifr.")
+                + "assistant from planning them again, but copies their titles out of Lifr."
+            if let preset {
+                return TextState(about + " It also carries the instructions of your skill \(preset.title).")
+            }
+            return TextState(about)
         }
     }
 
