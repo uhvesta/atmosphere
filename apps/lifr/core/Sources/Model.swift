@@ -171,6 +171,8 @@ package struct LifrTask: Identifiable, Hashable, Codable, Sendable {
     package var closedAt: Date?
     /// Soft delete. Purged after `Workspace.trashRetention`.
     package var deletedAt: Date?
+    /// How the task repeats, if it does.
+    package var recurrence: Recurrence?
 
     package var isSubtask: Bool { parentID != nil }
     package var isOpen: Bool { !status.isClosed }
@@ -179,7 +181,7 @@ package struct LifrTask: Identifiable, Hashable, Codable, Sendable {
         id: UUID, code: TaskCode, title: String, details: String, status: TaskStatus, priority: Priority,
         startDate: CalendarDate?, dueDate: CalendarDate?, dueTime: TimeOfDay?, avenueID: UUID, projectID: UUID?,
         parentID: UUID?, labelIDs: Set<UUID>, sortOrder: String, createdAt: Date, updatedAt: Date,
-        lastActivityAt: Date, closedAt: Date?, deletedAt: Date?
+        lastActivityAt: Date, closedAt: Date?, deletedAt: Date?, recurrence: Recurrence? = nil
     ) {
         self.id = id
         self.code = code
@@ -200,6 +202,7 @@ package struct LifrTask: Identifiable, Hashable, Codable, Sendable {
         self.lastActivityAt = lastActivityAt
         self.closedAt = closedAt
         self.deletedAt = deletedAt
+        self.recurrence = recurrence
     }
 }
 
@@ -303,6 +306,7 @@ package struct HistoryEvent: Identifiable, Hashable, Codable, Sendable {
     package enum Field: String, Hashable, Codable, Sendable {
         case title, details, status, priority, startDate, dueDate, dueTime
         case avenue, project, parent, labels, code
+        case recurrence
     }
 
     /// Why the rules changed something on their own (`actor.kind == .system`)
@@ -319,6 +323,8 @@ package struct HistoryEvent: Identifiable, Hashable, Codable, Sendable {
         case reconciledDuplicateCode
         case reconciledNestedSubtask
         case reconciledParentPlacement
+        /// A repeating task was closed, so its next occurrence was made.
+        case nextOccurrence
     }
 
     package var id: UUID

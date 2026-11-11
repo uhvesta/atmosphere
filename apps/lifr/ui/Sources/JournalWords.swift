@@ -194,6 +194,7 @@ package struct JournalWords {
             Duration.seconds(seconds).formatted(.units(allowed: [.days, .hours, .minutes], width: .wide))
                 + " before due"
         case .filter(let filter): filter.summary
+        case .recurrence(let recurrence): recurrence.description
         }
     }
 

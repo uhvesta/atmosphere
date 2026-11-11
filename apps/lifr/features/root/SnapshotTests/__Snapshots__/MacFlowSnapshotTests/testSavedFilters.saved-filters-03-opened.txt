@@ -45,7 +45,7 @@
     [Row/OutlineRow] ""
       [Heading] "Results"
     [Row/OutlineRow] ""
-      [Button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004" id: HEALTH-0004
+      [Button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004" id: HEALTH-0004
     [Row/OutlineRow] ""
       [Button] "Buy running shoes" value: "To Do, High priority, Nov 4, HEALTH-0017" id: HEALTH-0017
   [StaticText] "" value: "No task selected"

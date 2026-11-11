@@ -114,7 +114,7 @@ package struct LastChange: Equatable, Sendable {
             let task = workspace.tasks[id] ?? change.previous[id] ?? nil
             return task?.parentID.map { !changed.contains($0) } ?? true
         }
-        if picked.count > 1, !change.events.contains(where: { $0.kind == .created }) {
+        if picked.count > 1, !change.events.contains(where: { $0.kind == .created && $0.reason == nil }) {
             return message(forTasks: picked.count, event: event)
         }
         switch (event?.kind, event?.field) {
@@ -140,7 +140,15 @@ package struct LastChange: Equatable, Sendable {
             }
         case (.fieldChanged?, .status?):
             let status = event?.newValue.flatMap(TaskStatus.init(rawValue:))
-            return status.map { String(localized: "\(title) is \($0.title)") } ?? String(localized: "Changed \(title)")
+            guard let status else { return String(localized: "Changed \(title)") }
+            // A repeating task closed: when the next one is.
+            let next = change.events
+                .first { $0.kind == .created && $0.reason == .nextOccurrence }
+                .flatMap { workspace.tasks[$0.taskID] }
+            if let day = next?.dueDate ?? next?.startDate {
+                return String(localized: "\(title) is \(status.title). Next one due \(day.readable())")
+            }
+            return String(localized: "\(title) is \(status.title)")
         case (.fieldChanged?, .avenue?), (.fieldChanged?, .project?):
             // Where it went: its Project, or its Avenue when it left one.
             let place = task.flatMap { task in

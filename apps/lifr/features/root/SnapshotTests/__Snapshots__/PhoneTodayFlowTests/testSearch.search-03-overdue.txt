@@ -5,6 +5,6 @@
 [button] "Overdue" hint: "Opens the filters"
 [button] "Remove Overdue"
 [header, text] "Results"
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [button] "Today" value: "Collapsed" hint: "Activate to Expand the Tab Bar"
 [searchField] "Titles, details and comments" value: "run"

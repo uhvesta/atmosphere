@@ -85,7 +85,8 @@ extension StoredTask {
             dueTime: dueTime.flatMap { try? TimeOfDay($0) }, avenueID: avenue.id, projectID: project?.id,
             parentID: parent?.id, labelIDs: Set((labels ?? []).map(\.id)), sortOrder: sortOrder,
             createdAt: createdAt, updatedAt: updatedAt, lastActivityAt: lastActivityAt, closedAt: closedAt,
-            deletedAt: deletedAt)
+            deletedAt: deletedAt,
+            recurrence: recurrence.flatMap { try? JSONDecoder().decode(Recurrence.self, from: $0) })
     }
 
     /// Everything but `parent`, which may not be written yet: see
@@ -108,6 +109,7 @@ extension StoredTask {
         lastActivityAt = task.lastActivityAt
         closedAt = task.closedAt
         deletedAt = task.deletedAt
+        recurrence = task.recurrence.flatMap { try? JSONEncoder().encode($0) }
     }
 
     func writeParent(_ task: LifrTask, in index: Index) {

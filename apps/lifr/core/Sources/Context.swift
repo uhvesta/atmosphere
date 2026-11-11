@@ -5,12 +5,15 @@ import Foundation
 package struct Context {
     package var actor: Actor
     package var now: Date
+    /// Where "today" is, for the next occurrence of a repeating task.
+    package var timeZone: TimeZone
     var newID: () -> UUID
     var newCode: () -> TaskCode
 
     package init(
         actor: Actor,
         now: Date,
+        timeZone: TimeZone = .current,
         newID: @escaping () -> UUID = UUID.init,
         newCode: @escaping () -> TaskCode = {
             var generator = SystemRandomNumberGenerator()
@@ -19,6 +22,7 @@ package struct Context {
     ) {
         self.actor = actor
         self.now = now
+        self.timeZone = timeZone
         self.newID = newID
         self.newCode = newCode
     }

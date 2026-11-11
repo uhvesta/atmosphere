@@ -15,7 +15,7 @@
 [button] "Cancel"
 [button] "Save"
 [header] "#Errand"
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [element] "" value: "errands"
 [text] "Another label is already called “errands”. Pick another name, or merge this label into that one."
 [header, text] "Today"

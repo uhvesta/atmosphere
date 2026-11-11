@@ -41,7 +41,7 @@
 [text] "0 ms"
 [button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 3 Sub tasks closed, WORK-0006"
 [text] "CPU time is the CPU's seconds, across its cores. Battery is what the CPU drew: the system doesn't tell an app what the GPU drew, so its busy time is shown instead."
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [button] "Measure again"
 [button] "Tune for this device…"
 [button] "Download Gemma 4 E4B"

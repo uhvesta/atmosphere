@@ -25,7 +25,7 @@
 [text] "Qwen3.5 0.8B"
 [button] "Download Qwen3.5 0.8B"
 [text] "Tiny and quick, thinks when asked · 645.2 MB · Apache 2.0"
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [button] "Download Qwen3.5 2B"
 [text] "Qwen3.5 2B"
 [text] "Small, thinks when asked · 1.74 GB · Apache 2.0"

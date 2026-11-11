@@ -6,4 +6,5 @@
 [button] "Remove due date"
 [button] "Add a time"
 [button] "Add a start date"
+[button] "Repeat" value: "Never"
 [text] "Overdue"

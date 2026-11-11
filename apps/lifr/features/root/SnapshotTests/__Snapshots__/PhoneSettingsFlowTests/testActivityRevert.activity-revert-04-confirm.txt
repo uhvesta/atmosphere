@@ -17,7 +17,7 @@
 [header, text] "Swipe left on a change, or touch and hold it, to revert it."
 [text] "Added task “Buy soil”, Nov 3 at 10:00 AM, iPhone, Status: To Do, Priority: None, Due date: Tue, Nov 3, Avenue: Home"
 [button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 3 Sub tasks closed, WORK-0006"
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [button] "Show changes older than 90 days" hint: "Older changes can be looked at but not reverted"
 [header, text] "Today"
 [button] "Water the plants" value: "To Do, Today, HOME-0010"

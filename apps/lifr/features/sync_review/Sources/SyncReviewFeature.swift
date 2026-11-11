@@ -216,6 +216,7 @@ package struct SyncReviewRow: Identifiable, Hashable, Sendable {
             Duration.seconds(seconds).formatted(.units(allowed: [.days, .hours, .minutes], width: .wide))
                 + String(localized: " before due")
         case .filter(let filter): filter.summary
+        case .recurrence(let recurrence): recurrence.description
         }
     }
 }

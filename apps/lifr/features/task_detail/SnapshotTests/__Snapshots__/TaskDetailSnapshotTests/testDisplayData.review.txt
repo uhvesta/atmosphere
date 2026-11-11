@@ -24,6 +24,7 @@
     - fullCode: "WORK-0006"
     - id: 00000000-0000-0000-0000-000000000601
     - priority: Priority.urgent
+    - repeats: false
     - status: TaskStatus.inProgress
     ▿ subtasks: Optional<Progress>
       ▿ some: Progress
@@ -38,6 +39,7 @@
       - fullCode: "WORK-0007"
       - id: 00000000-0000-0000-0000-000000000701
       - priority: Priority.none
+      - repeats: false
       - status: TaskStatus.done
       - subtasks: Optional<Progress>.none
       - title: "Read the draft"
@@ -48,6 +50,7 @@
       - fullCode: "WORK-0008"
       - id: 00000000-0000-0000-0000-000000000801
       - priority: Priority.none
+      - repeats: false
       - status: TaskStatus.todo
       - subtasks: Optional<Progress>.none
       - title: "Leave comments"
@@ -58,6 +61,7 @@
       - fullCode: "WORK-0009"
       - id: 00000000-0000-0000-0000-000000000901
       - priority: Priority.none
+      - repeats: false
       - status: TaskStatus.todo
       - subtasks: Optional<Progress>.none
       - title: "Send summary to the team"

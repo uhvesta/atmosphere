@@ -86,6 +86,45 @@ final class PhoneTasksFlowTests: PhoneFlowTestCase {
         flow.finish()
     }
 
+    /// Quick Add reading a day, a time and a priority from the title, and
+    /// keeping one of them as text.
+    func testTypedQuickAdd() async throws {
+        let (store, flow) = app("typed-quick-add")
+        await flow.step("launch", image: false)
+        store.send(.newTaskTapped)
+        store.send(.quickAdd(.presented(.binding(.set(\.title, "Call dentist tomorrow 3pm !high")))))
+        await flow.step("read")
+        store.send(.quickAdd(.presented(.partIgnored("3pm"))))
+        await flow.step("time-kept")
+        store.send(.quickAdd(.presented(.addTapped)))
+        await flow.step("added")
+        let added = try XCTUnwrap(store.workspace?.tasks.values.first { $0.title == "Call dentist 3pm" })
+        XCTAssertEqual(added.priority, .high)
+        XCTAssertNotNil(added.dueDate)
+        flow.finish()
+    }
+
+    /// A task set to repeat weekly, the custom repeat sheet, then closing it
+    /// brings the next one.
+    func testRepeat() async throws {
+        let (store, flow) = app("repeat")
+        await flow.step("launch", image: false)
+        let row = try XCTUnwrap(store.today.list.rows.first { $0.subtasks == nil && !$0.status.isClosed })
+        store.send(.today(.list(.rowTapped(row.id))))
+        await flow.step("opened", image: false)
+        let weekly = try XCTUnwrap(store.today.list.detail?.repeatPresets.dropFirst(2).first)
+        store.send(.today(.list(.detail(.presented(.repeatPicked(weekly))))))
+        await flow.step("weekly")
+        store.send(.today(.list(.detail(.presented(.repeatCustomTapped)))))
+        await flow.step("custom")
+        store.send(.today(.list(.detail(.presented(.repeatCustomCancelled)))))
+        store.send(.today(.list(.detail(.presented(.statusPicked(.done))))))
+        await flow.step("closed")
+        let series = store.workspace?.tasks.values.filter { $0.recurrence?.seriesID == row.id } ?? []
+        XCTAssertEqual(series.count, 2)
+        flow.finish()
+    }
+
     /// Avenues: the list, one Avenue, a new Project, a new Avenue.
     func testAvenues() async throws {
         let (store, flow) = app("avenues")

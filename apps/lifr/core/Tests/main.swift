@@ -18,4 +18,6 @@ await runSuites([
     ("Merging synced records", mergeTests()),
     ("Saved filters", savedFilterTests()),
     ("Bulk edits", bulkEditTests()),
+    ("Recurrence", recurrenceTests()),
+    ("Quick entry", quickEntryTests()),
 ])

@@ -8,7 +8,8 @@ import SwiftUI
 import XCTest
 
 /// Quick Add over the sample records, as of 2026-11-03 10:00 UTC: a new
-/// task and Project, and Sub task mode after adding its parent.
+/// task and Project, Sub task mode after adding its parent, and a title
+/// with words Quick Add reads.
 @MainActor
 final class QuickAddSnapshotTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_793_700_000)
@@ -17,7 +18,8 @@ final class QuickAddSnapshotTests: XCTestCase {
         withDependencies {
             $0.defaultAppStorage = UserDefaults(suiteName: "QuickAddSnapshotTests-\(UUID())")!
         } operation: {
-            var state = QuickAddFeature.State(workspace: .sample(now: now, timeZone: .gmt), now: now)
+            var state = QuickAddFeature.State(
+                workspace: .sample(now: now, timeZone: .gmt), now: now, timeZone: .gmt, locale: Locale(identifier: "en_US"))
             state.title = "Buy race gels"
             state.due = .tomorrow
             state.priority = .medium
@@ -30,6 +32,13 @@ final class QuickAddSnapshotTests: XCTestCase {
         state.title = ""
         state.parent = .init(id: UUID(0), name: "Race day")
         state.addedSubtasks = ["Pin the bib", "Charge the watch"]
+        return state
+    }
+
+    /// A title with a day, time and priority typed in, shown as chips.
+    private func typed() -> QuickAddFeature.State {
+        var state = state()
+        state.title = "Call dentist tomorrow 3pm !high"
         return state
     }
 
@@ -58,19 +67,21 @@ final class QuickAddSnapshotTests: XCTestCase {
         assertSnapshot(of: screen(state()), as: .accessibilityTree(size: size), named: "new")
         assertSnapshot(of: screen(subtasks()), as: .accessibilityTree(size: size), named: "subtasks")
         assertSnapshot(of: screen(project()), as: .accessibilityTree(size: size), named: "project")
+        assertSnapshot(of: screen(typed()), as: .accessibilityTree(size: size), named: "typed")
     }
 
     func testImages() {
         assertScreenImages(of: screen(state()), named: "new")
         assertScreenImages(of: screen(subtasks()), named: "subtasks")
         assertScreenImages(of: screen(project()), named: "project")
+        assertScreenImages(of: screen(typed()), named: "typed")
     }
 
     func testEmptyImage() {
         let empty = withDependencies {
             $0.defaultAppStorage = UserDefaults(suiteName: "QuickAddSnapshotTests-\(UUID())")!
         } operation: {
-            QuickAddFeature.State(workspace: Workspace(), now: now)
+            QuickAddFeature.State(workspace: Workspace(), now: now, timeZone: .gmt)
         }
         assertSnapshot(of: screen(empty), as: .image(layout: .device(config: .iPhoneSe)), named: "empty")
     }

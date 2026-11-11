@@ -15,7 +15,7 @@
 [button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 3 Sub tasks closed, WORK-0006"
 [button] "Searching conversations, Built-in"
 [text] "Downloaded models run on this device, like Apple's. Nothing you write leaves it."
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [text] "Built-in search adds related words from the system's word lists, with no model."
 [button, toggle] "Answer in the background" value: "0"
 [header, text] "Today"

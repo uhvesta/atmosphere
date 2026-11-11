@@ -46,7 +46,7 @@
 [text] "Reference"
 [text] "96%"
 [text] "100%"
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [text] "Measured"
 [text] "Nov 3 at 10:00 AM"
 [text] "Nov 3 at 10:00 AM"

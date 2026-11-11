@@ -23,7 +23,7 @@
 [button, toggle] "Breakdown, Turn a brain dump into a plan. Automatic." value: "1"
 [element] "" value: "Go through what's overdue and suggest new dates."
 [button, toggle] "Tidy, Clean up titles, priorities, dates and labels." value: "1"
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [button, toggle] "Review, Look back at what's done, overdue and stalled." value: "1"
 [text] "What the assistant does for a message that uses this skill."
 [header, text] "Today"

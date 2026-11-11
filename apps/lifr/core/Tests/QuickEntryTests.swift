@@ -1,0 +1,129 @@
+import Foundation
+import LifrCore
+import TestingKit
+
+/// Wednesday, Nov 11, 2026.
+private func wednesday() throws -> CalendarDate { try CalendarDate("2026-11-11") }
+
+private func read(_ line: String, _ fixture: Fixture, ignoring: Set<String> = [], monthFirst: Bool = true) throws
+    -> QuickEntry
+{
+    QuickEntry(line, today: try wednesday(), in: fixture.workspace, ignoring: ignoring, monthFirst: monthFirst)
+}
+
+func quickEntryTests() -> [TestCase] {
+    [
+        TestCase("given a line with a day, time, priority and label, then each is read and the title is the rest") {
+            let fixture = try Fixture()
+            let errand = fixture.workspace.createLabel(name: "Errand", in: fixture.context)
+            let entry = try read("Call dentist tomorrow 3pm !high #errand", fixture)
+            try expectEqual(entry.title, "Call dentist")
+            try expectEqual(entry.dueDate, try CalendarDate("2026-11-12"))
+            try expectEqual(entry.dueTime, try TimeOfDay("15:00"))
+            try expectEqual(entry.priority, .high)
+            try expectEqual(entry.labelIDs, [errand.id])
+        },
+        TestCase("given nothing recognisable, then the whole line is the title") {
+            let fixture = try Fixture()
+            let entry = try read("Buy 3 apples and a pear", fixture)
+            try expectEqual(entry.title, "Buy 3 apples and a pear")
+            try expectEqual(entry.parts, [])
+            try expectEqual(entry.dueDate, nil)
+        },
+        TestCase("given days in words, then each is the expected day") {
+            let fixture = try Fixture()
+            let cases: [(String, String)] = [
+                ("Run today", "2026-11-11"),
+                ("Run tonight", "2026-11-11"),
+                ("Run friday", "2026-11-13"),
+                ("Run wednesday", "2026-11-18"),
+                ("Run on Monday", "2026-11-16"),
+                ("Run next tue", "2026-11-17"),
+                ("Run next week", "2026-11-16"),
+                ("Run this weekend", "2026-11-14"),
+                ("Run next month", "2026-12-01"),
+                ("Run in 3 days", "2026-11-14"),
+                ("Run in a week", "2026-11-18"),
+                ("Run in 2 weeks", "2026-11-25"),
+                ("Run Nov 20", "2026-11-20"),
+                ("Run 3rd of December", "2026-12-03"),
+                ("Run by 5 jan", "2027-01-05"),
+                ("Run due 2027-02-01", "2027-02-01"),
+                ("Run 12/24", "2026-12-24"),
+                ("Run 11/1", "2027-11-01"),
+                ("Run 1/2/27", "2027-01-02"),
+            ]
+            for (line, day) in cases {
+                let entry = try read(line, fixture)
+                try expectEqual("\(line): \(entry.title)", "\(line): Run")
+                try expectEqual("\(line): \(entry.dueDate.map(\.description) ?? "none")", "\(line): \(day)")
+            }
+        },
+        TestCase("given a day-first locale, then 1/2 is the 1st of February") {
+            let fixture = try Fixture()
+            try expectEqual(try read("Run 1/2", fixture, monthFirst: false).dueDate, try CalendarDate("2027-02-01"))
+        },
+        TestCase("given times, then each is the expected time, due today without a day") {
+            let fixture = try Fixture()
+            let cases: [(String, String)] = [
+                ("Call at 9am", "09:00"),
+                ("Call 12am", "00:00"),
+                ("Call noon", "12:00"),
+                ("Call 3:30 pm", "15:30"),
+                ("Call at 17:45", "17:45"),
+                ("Call 12pm", "12:00"),
+            ]
+            for (line, time) in cases {
+                let entry = try read(line, fixture)
+                try expectEqual("\(line): \(entry.title)", "\(line): Call")
+                try expectEqual("\(line): \(entry.dueTime.map(\.description) ?? "none")", "\(line): \(time)")
+                try expectEqual(entry.dueDate, try wednesday())
+            }
+        },
+        TestCase("given numbers and words that aren't days or times, then they stay in the title") {
+            let fixture = try Fixture()
+            for line in ["Read chapter 3", "Mow the lawn sat", "Plan may party", "Fix 25:00 bug", "Wow !", "Run 13pm"] {
+                try expectEqual(try read(line, fixture).title, line)
+            }
+        },
+        TestCase("given an ignored word, then it stays in the title and the next one is read") {
+            let fixture = try Fixture()
+            let plain = try read("Read Tomorrow and Tomorrow", fixture)
+            try expectEqual(plain.title, "Read and Tomorrow")
+            let ignored = try read("Read Tomorrow and Tomorrow", fixture, ignoring: ["tomorrow"])
+            try expectEqual(ignored.title, "Read Tomorrow and Tomorrow")
+            try expectEqual(ignored.dueDate, nil)
+        },
+        TestCase("given a part, then its range covers its words in the line") {
+            let fixture = try Fixture()
+            let entry = try read("Call mom on friday, then rest", fixture)
+            try expectEqual(entry.parts.map(\.range), [9..<19])
+            try expectEqual(entry.parts.map(\.key), ["on friday"])
+        },
+        TestCase("given an Avenue or a Project by the start of its name, then the task goes there") {
+            let fixture = try Fixture()
+            let avenue = try read("Stretch @heal", fixture)
+            try expectEqual(avenue.avenueID, fixture.health.id)
+            try expectEqual(avenue.projectID, nil)
+            let project = try read("Long run /half", fixture)
+            try expectEqual(project.title, "Long run")
+            try expectEqual(project.avenueID, fixture.health.id)
+            try expectEqual(project.projectID, fixture.marathon.id)
+        },
+        TestCase("given a name that starts two labels, then neither is picked") {
+            let fixture = try Fixture()
+            _ = fixture.workspace.createLabel(name: "Errand", in: fixture.context)
+            _ = fixture.workspace.createLabel(name: "Errands abroad", in: fixture.context)
+            let entry = try read("Post #err", fixture)
+            try expectEqual(entry.title, "Post #err")
+            try expectEqual(entry.labelIDs, [])
+        },
+        TestCase("given the clock, then tomorrow is the day after it in the time zone") {
+            let zone = try TimeZone(identifier: "America/New_York").unwrap()
+            let late = try ISO8601DateFormatter().date(from: "2026-11-12T04:59:00Z").unwrap()
+            let early = late.addingTimeInterval(120)
+            try expectEqual(CalendarDate(late, in: zone).adding(days: 1), try CalendarDate("2026-11-12"))
+            try expectEqual(CalendarDate(early, in: zone).adding(days: 1), try CalendarDate("2026-11-13"))
+        },
+    ]
+}

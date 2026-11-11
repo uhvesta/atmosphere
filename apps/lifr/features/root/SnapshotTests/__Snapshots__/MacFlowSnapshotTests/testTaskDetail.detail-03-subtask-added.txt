@@ -49,7 +49,7 @@
     [Row/OutlineRow] ""
       [Button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 4 Sub tasks closed, WORK-0006" id: WORK-0006
     [Row/OutlineRow] ""
-      [Button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004" id: HEALTH-0004
+      [Button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004" id: HEALTH-0004
     [Row/OutlineRow] ""
       [Heading] "Today"
     [Row/OutlineRow] ""
@@ -73,6 +73,7 @@
   [Button] "Remove due date"
   [Button] "Add a time"
   [Button] "Add a start date"
+  [MenuButton] "Repeat" value: "Never"
   [StaticText] "" value: "Overdue"
   [StaticText] "" value: "Avenue"
   [PopUpButton] "" value: "Work"

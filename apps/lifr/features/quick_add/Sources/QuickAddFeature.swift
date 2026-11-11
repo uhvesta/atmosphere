@@ -6,7 +6,9 @@ import LifrTaskDetail
 
 /// Adds a task or a Project in a few taps. A task needs an Avenue (the
 /// last one used) and optionally a Project, a due day and a priority; a
-/// Project needs its Avenue. Sub tasks are added from their task: opened
+/// Project needs its Avenue. A task's title can say the rest, as in
+/// "Call dentist tomorrow 3pm !high #health": each recognised part shows
+/// under the field and wins over the form. Sub tasks are added from their task: opened
 /// with `parent`, or in Sub task mode after adding the task, Quick Add
 /// stays open and each title becomes a Sub task of it.
 @Reducer
@@ -64,11 +66,23 @@ package struct QuickAddFeature {
         package var error: String?
         package var avenues: [Choice]
         package var projects: [UUID: [Choice]]
+        /// Words in the title the person chose to keep as text.
+        package var ignored: Set<String> = []
+        /// What the title is read against: its labels, Avenues and Projects.
+        package var workspace: Workspace
+        package var today: CalendarDate
+        /// Whether "11/5" is Nov 5 where the person is.
+        package var monthFirst: Bool
         /// The Avenue last added to, on this device.
         @Shared(.appStorage("lifrQuickAddLastAvenue")) package var lastAvenue = ""
 
-        package init(workspace: Workspace, now: Date) {
+        package init(workspace: Workspace, now: Date, timeZone: TimeZone, locale: Locale = .current) {
             pickedDate = now
+            self.workspace = workspace
+            today = CalendarDate(now, in: timeZone)
+            let order = DateFormatter.dateFormat(fromTemplate: "Md", options: 0, locale: locale) ?? "M/d"
+            let month = order.firstIndex(of: "M") ?? order.startIndex
+            monthFirst = month <= (order.firstIndex(of: "d") ?? order.endIndex)
             avenues = workspace.avenues.values
                 .filter { $0.archivedAt == nil }
                 .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
@@ -88,14 +102,27 @@ package struct QuickAddFeature {
             avenueID.flatMap { projects[$0] } ?? []
         }
 
+        /// The title as read, for a new task; nil for a Project or a Sub task.
+        package var entry: QuickEntry? {
+            guard parent == nil, kind == .task else { return nil }
+            return QuickEntry(title, today: today, in: workspace, ignoring: ignored, monthFirst: monthFirst)
+        }
+
+        /// The title the new item gets.
+        package var finalTitle: String {
+            (entry?.title ?? title).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
         package var canAdd: Bool {
-            !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (parent != nil || avenueID != nil)
+            !finalTitle.isEmpty && (parent != nil || avenueID != nil || entry?.avenueID != nil)
         }
     }
 
     package enum Action: BindableAction {
         case binding(BindingAction<State>)
         case addTapped
+        /// A recognised part tapped: read its words as plain text.
+        case partIgnored(String)
         case doneTapped
         case cancelTapped
         case added(Result<Saved, any Error>)
@@ -116,6 +143,13 @@ package struct QuickAddFeature {
 
     package var body: some ReducerOf<Self> {
         BindingReducer()
+            .onChange(of: \.title) { _, title in
+                Reduce { state, _ in
+                    // A cleared field reads its next title afresh.
+                    if title.isEmpty { state.ignored = [] }
+                    return .none
+                }
+            }
             .onChange(of: \.avenueID) { _, _ in
                 Reduce { state, _ in
                     if let project = state.projectID, !state.avenueProjects.contains(where: { $0.id == project }) {
@@ -128,7 +162,7 @@ package struct QuickAddFeature {
             switch action {
             case .addTapped:
                 guard state.canAdd else { return .none }
-                let title = state.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                let title = state.finalTitle
                 state.error = nil
                 if state.parent == nil, state.kind == .project, let avenueID = state.avenueID {
                     return .run { [store] send in
@@ -139,10 +173,13 @@ package struct QuickAddFeature {
                 if let parent = state.parent {
                     new.parentID = parent.id
                 } else {
-                    new.avenueID = state.avenueID
-                    new.projectID = state.projectID
-                    new.priority = state.priority
-                    new.dueDate = dueDate(state)
+                    let entry = state.entry
+                    new.avenueID = entry?.avenueID ?? state.avenueID
+                    new.projectID = entry?.avenueID == nil ? state.projectID : entry?.projectID
+                    new.priority = entry?.priority ?? state.priority
+                    new.dueDate = entry?.dueDate ?? dueDate(state)
+                    new.dueTime = entry?.dueTime
+                    new.labelIDs = entry?.labelIDs ?? []
                 }
                 return .run { [store, new] send in
                     await send(.added(Result { try await store.createTask(new) }))
@@ -151,16 +188,18 @@ package struct QuickAddFeature {
             case .added(.success(let saved)):
                 let created = saved.change.previous.first { $0.value == nil }.flatMap { saved.workspace.tasks[$0.key] }
                 if state.parent != nil {
-                    state.addedSubtasks.append(state.title.trimmingCharacters(in: .whitespacesAndNewlines))
+                    state.addedSubtasks.append(state.finalTitle)
                     state.title = ""
                     return .send(.delegate(.saved(saved.snapshot)))
                 }
-                if let avenueID = state.avenueID {
+                state.workspace = saved.workspace
+                if let avenueID = created?.avenueID ?? state.avenueID {
                     state.$lastAvenue.withLock { $0 = avenueID.uuidString }
                 }
                 if state.kind == .task, state.subtaskMode, let created {
                     state.parent = Choice(id: created.id, name: created.title)
                     state.title = ""
+                    state.ignored = []
                     return .send(.delegate(.saved(saved.snapshot)))
                 }
                 return .run { [dismiss] send in
@@ -170,6 +209,10 @@ package struct QuickAddFeature {
 
             case .added(.failure(let error)):
                 state.error = (error as? LifrError)?.description ?? error.localizedDescription
+                return .none
+
+            case .partIgnored(let key):
+                state.ignored.insert(key)
                 return .none
 
             case .doneTapped, .cancelTapped:

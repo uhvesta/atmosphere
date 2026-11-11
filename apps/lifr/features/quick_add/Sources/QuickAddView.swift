@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import LifrCore
+import LifrUI
 import SwiftUI
 
 package struct QuickAddView: View {
@@ -27,8 +28,15 @@ package struct QuickAddView: View {
                     .onSubmit { store.send(.addTapped) }
                     .submitLabel(.done)
             } footer: {
-                if let error = store.error {
-                    Text(error).foregroundStyle(.red)
+                if store.entry?.parts.isEmpty == false || store.error != nil {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let entry = store.entry, !entry.parts.isEmpty {
+                            PartChips(entry: entry, workspace: store.workspace) { store.send(.partIgnored($0)) }
+                        }
+                        if let error = store.error {
+                            Text(error).foregroundStyle(.red)
+                        }
+                    }
                 }
             }
             if let parent = store.parent {
@@ -93,33 +101,45 @@ package struct QuickAddView: View {
         }
     }
 
+    /// A field the title sets shows as a chip instead of its picker, so the
+    /// two never disagree; removing the chip brings the picker back.
     @ViewBuilder
     private var fields: some View {
-        Section {
-            Picker("Avenue", selection: $store.avenueID) {
-                ForEach(store.avenues) { Text($0.name).tag(Optional($0.id)) }
-            }
-            if !store.avenueProjects.isEmpty {
-                Picker("Project", selection: $store.projectID) {
-                    Text("None").tag(UUID?.none)
-                    ForEach(store.avenueProjects) { Text($0.name).tag(Optional($0.id)) }
+        if store.entry?.avenueID == nil {
+            Section {
+                Picker("Avenue", selection: $store.avenueID) {
+                    ForEach(store.avenues) { Text($0.name).tag(Optional($0.id)) }
+                }
+                if !store.avenueProjects.isEmpty {
+                    Picker("Project", selection: $store.projectID) {
+                        Text("None").tag(UUID?.none)
+                        ForEach(store.avenueProjects) { Text($0.name).tag(Optional($0.id)) }
+                    }
+                }
+            } footer: {
+                if store.avenues.isEmpty {
+                    Text("Add an Avenue first, on the Avenues tab.")
                 }
             }
-        } footer: {
-            if store.avenues.isEmpty {
-                Text("Add an Avenue first, on the Avenues tab.")
-            }
         }
-        Section {
-            Picker("Due", selection: $store.due) {
-                ForEach(QuickAddFeature.Due.allCases, id: \.self) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            if store.due == .pick {
-                DatePicker("Due", selection: $store.pickedDate, displayedComponents: .date)
-            }
-            Picker("Priority", selection: $store.priority) {
-                ForEach(Priority.allCases, id: \.self) { Text($0.title ?? String(localized: "None")).tag($0) }
+        if store.entry?.dueDate == nil || store.entry?.priority == nil {
+            Section {
+                if store.entry?.dueDate == nil {
+                    Picker("Due", selection: $store.due) {
+                        ForEach(QuickAddFeature.Due.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    if store.due == .pick {
+                        DatePicker("Due", selection: $store.pickedDate, displayedComponents: .date)
+                    }
+                }
+                if store.entry?.priority == nil {
+                    Picker("Priority", selection: $store.priority) {
+                        ForEach(Priority.allCases, id: \.self) {
+                            Text($0.title ?? String(localized: "None")).tag($0)
+                        }
+                    }
+                }
             }
         }
         Section {
@@ -130,11 +150,70 @@ package struct QuickAddView: View {
     }
 }
 
+/// The parts of the title Quick Add recognised, each tapped to keep its
+/// words as text instead.
+private struct PartChips: View {
+    let entry: QuickEntry
+    let workspace: Workspace
+    let ignore: (String) -> Void
+    @Environment(\.locale) private var locale
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(Array(entry.parts.enumerated()), id: \.offset) { _, part in
+                    Button {
+                        ignore(part.key)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: symbol(part.kind))
+                            Text(title(part.kind))
+                            Image(systemName: "xmark")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.tint.opacity(0.15), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(title(part.kind))
+                    .accessibilityHint("Keeps “\(part.text)” in the title instead")
+                }
+            }
+        }
+    }
+
+    private func symbol(_ kind: QuickEntry.Part.Kind) -> String {
+        switch kind {
+        case .due: "calendar"
+        case .time: "clock"
+        case .priority: "flag"
+        case .label: "tag"
+        case .avenue, .project: "folder"
+        }
+    }
+
+    private func title(_ kind: QuickEntry.Part.Kind) -> String {
+        switch kind {
+        case .due(let date): date.readable(locale)
+        case .time(let time): time.formatted(locale)
+        case .priority(let priority): priority.title ?? String(localized: "No priority")
+        case .label(let id): "#" + (workspace.labels[id]?.name ?? "")
+        case .avenue(let id): workspace.avenues[id]?.name ?? ""
+        case .project(let avenue, let project):
+            "\(workspace.avenues[avenue]?.name ?? "") › \(workspace.projects[project]?.name ?? "")"
+        }
+    }
+}
+
 #Preview {
     NavigationStack {
         QuickAddView(
             store: Store(
-                initialState: QuickAddFeature.State(workspace: .sample(now: Date(), timeZone: .current), now: Date())
+                initialState: QuickAddFeature.State(
+                    workspace: .sample(now: Date(), timeZone: .current), now: Date(), timeZone: .current)
             ) {
                 QuickAddFeature()
             })

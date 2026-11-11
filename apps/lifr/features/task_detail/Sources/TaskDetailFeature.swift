@@ -27,6 +27,10 @@ package struct TaskDetailFeature {
         package var startDate: CalendarDate?
         package var dueDate: CalendarDate?
         package var dueTime: TimeOfDay?
+        package var recurrence: Recurrence?
+        /// The custom repeat being set up, while its sheet is open.
+        package var repeatDraft: RepeatDraft?
+        package var today: CalendarDate
         package var avenueID: UUID
         package var projectID: UUID?
         package var labelIDs: Set<UUID>
@@ -77,6 +81,8 @@ package struct TaskDetailFeature {
             startDate = task.startDate
             dueDate = task.dueDate
             dueTime = task.dueTime
+            recurrence = task.recurrence
+            today = CalendarDate(now, in: timeZone)
             avenueID = task.avenueID
             projectID = task.projectID
             labelIDs = task.labelIDs
@@ -125,6 +131,11 @@ package struct TaskDetailFeature {
             timeline = workspace.timeline(of: id)
         }
 
+        /// The day a repeat is read from: the due day, the start day, or today.
+        package var repeatAnchor: CalendarDate { dueDate ?? startDate ?? today }
+
+        package var repeatPresets: [RepeatPreset] { RepeatPreset.presets(for: repeatAnchor) }
+
         /// The reminders the person can add: before the due date only when
         /// there is one.
         package var reminderChoices: [ReminderChoice] {
@@ -154,6 +165,7 @@ package struct TaskDetailFeature {
             }
             refreshed.commentDeletion = commentDeletion
             refreshed.newLabelName = newLabelName
+            refreshed.repeatDraft = repeatDraft
             refreshed.banner = banner
             refreshed.saves = saves
             // Keep what's being typed over what was saved.
@@ -178,6 +190,11 @@ package struct TaskDetailFeature {
         case startDatePicked(CalendarDate?)
         case dueDatePicked(CalendarDate?)
         case dueTimePicked(TimeOfDay?)
+        /// A preset, or `nil` for Never.
+        case repeatPicked(RepeatPreset?)
+        case repeatCustomTapped
+        case repeatCustomSaved
+        case repeatCustomCancelled
         case avenuePicked(UUID)
         case projectPicked(UUID?)
         case labelToggled(UUID)
@@ -268,6 +285,24 @@ package struct TaskDetailFeature {
 
             case .dueTimePicked(let time):
                 return edit(state, Workspace.TaskEdit(dueTime: .some(time)))
+
+            case .repeatPicked(let preset):
+                return save { [id = state.id] in
+                    try await $0.setRecurrence(preset?.rule, every: preset?.interval ?? 1, of: id)
+                }
+
+            case .repeatCustomTapped:
+                state.repeatDraft = RepeatDraft(anchor: state.repeatAnchor, from: state.recurrence)
+                return .none
+
+            case .repeatCustomSaved:
+                guard let draft = state.repeatDraft, draft.canSave else { return .none }
+                state.repeatDraft = nil
+                return save { [id = state.id] in try await $0.setRecurrence(draft.rule, every: draft.interval, of: id) }
+
+            case .repeatCustomCancelled:
+                state.repeatDraft = nil
+                return .none
 
             case .avenuePicked(let avenueID):
                 guard avenueID != state.avenueID else { return .none }

@@ -17,6 +17,7 @@
         - fullCode: "HEALTH-0005"
         - id: 00000000-0000-0000-0000-000000000501
         - priority: Priority.medium
+        - repeats: false
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Book physio appointment"
@@ -42,6 +43,7 @@
         - fullCode: "HEALTH-0004"
         - id: 00000000-0000-0000-0000-000000000401
         - priority: Priority.high
+        - repeats: false
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Long run, 10 km"
@@ -64,6 +66,7 @@
         - fullCode: "HEALTH-0017"
         - id: 00000000-0000-0000-0000-000000001701
         - priority: Priority.high
+        - repeats: false
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Buy running shoes"
@@ -79,6 +82,7 @@
         - fullCode: "HEALTH-0013"
         - id: 00000000-0000-0000-0000-000000001301
         - priority: Priority.none
+        - repeats: false
         - status: TaskStatus.procrastinated
         - subtasks: Optional<Progress>.none
         - title: "Plan long runs"

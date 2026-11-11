@@ -14,7 +14,7 @@
 [button, toggle] "Change, Rename, move, reschedule or finish tasks and Projects. Automatic." value: "1"
 [button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 3 Sub tasks closed, WORK-0006"
 [button, toggle] "Breakdown, Turn a brain dump into a plan. Automatic." value: "1"
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [button, toggle] "Tidy, Clean up titles, priorities, dates and labels." value: "1"
 [header, text] "Today"
 [button, toggle] "Review, Look back at what's done, overdue and stalled." value: "1"

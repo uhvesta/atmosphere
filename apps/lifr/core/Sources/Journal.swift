@@ -273,6 +273,7 @@ extension Workspace {
             (.startDate, old.startDate?.description, new.startDate?.description),
             (.dueDate, old.dueDate?.description, new.dueDate?.description),
             (.dueTime, old.dueTime?.description, new.dueTime?.description),
+            (.recurrence, old.recurrence?.description, new.recurrence?.description),
             (.labels, Self.describe(old.labelIDs), Self.describe(new.labelIDs)),
             (.avenue, avenues[old.avenueID]?.key.rawValue, avenues[new.avenueID]?.key.rawValue),
             (.project, old.projectID.flatMap { projects[$0]?.name }, new.projectID.flatMap { projects[$0]?.name }),

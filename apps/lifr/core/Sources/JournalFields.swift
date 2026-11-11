@@ -11,6 +11,7 @@ package enum Field: String, Hashable, Codable, Sendable, CaseIterable {
     case avenue, project, parent, task, labels
     case author, trigger, procrastinatedAfterDays, filter
     case sortOrder, archivedAt, completedAt, closedAt, editedAt, deletedAt
+    case recurrence
 
     /// The field's name for people.
     package var title: String {
@@ -44,6 +45,7 @@ package enum Field: String, Hashable, Codable, Sendable, CaseIterable {
         case .closedAt: "Closed"
         case .editedAt: "Edited"
         case .deletedAt: "Deleted"
+        case .recurrence: "Repeat"
         }
     }
 
@@ -69,6 +71,7 @@ package enum FieldValue: Hashable, Codable, Sendable {
     case actor(Actor)
     case trigger(Reminder.Trigger)
     case filter(TaskFilter)
+    case recurrence(Recurrence)
 }
 
 /// One field of a record: how to read it as a value and how to copy it
@@ -136,6 +139,7 @@ extension LifrTask {
         .init(.sortOrder, \.sortOrder) { .text($0) },
         .init(.closedAt, \.closedAt) { .moment($0) },
         .init(.deletedAt, \.deletedAt) { .moment($0) },
+        .init(.recurrence, \.recurrence) { .recurrence($0) },
     ]
 }
 

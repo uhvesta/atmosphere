@@ -9,7 +9,7 @@
 [button] "Remove High"
 [button] "Remove Next 7 days"
 [header, text] "Results"
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [button] "Buy running shoes" value: "To Do, High priority, Nov 4, HEALTH-0017"
 [button] "Search"
 [button] "Today"

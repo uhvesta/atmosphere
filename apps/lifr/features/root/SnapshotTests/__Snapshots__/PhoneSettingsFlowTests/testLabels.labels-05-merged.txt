@@ -10,7 +10,7 @@
 [button] "Fix the bike's back brake" value: "Procrastinated, Low priority, Overdue, Oct 29, HOME-0011"
 [button] "Book physio appointment" value: "To Do, Medium priority, Overdue, Nov 1, HEALTH-0005"
 [button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 3 Sub tasks closed, WORK-0006"
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [header, text] "Today"
 [button] "Water the plants" value: "To Do, Today, HOME-0010"
 [button] "Search"

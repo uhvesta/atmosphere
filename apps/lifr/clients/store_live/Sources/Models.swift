@@ -82,6 +82,8 @@ final class StoredTask {
     var lastActivityAt = Date.distantPast
     var closedAt: Date?
     var deletedAt: Date?
+    /// `Recurrence` as JSON.
+    var recurrence: Data?
 
     @Relationship(deleteRule: .nullify, inverse: \StoredTask.parent) var subtasks: [StoredTask]?
     @Relationship(deleteRule: .nullify, inverse: \StoredLabel.tasks) var labels: [StoredLabel]?

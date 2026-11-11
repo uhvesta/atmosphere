@@ -135,6 +135,13 @@ extension StoreClient {
         }
     }
 
+    /// `Workspace.setRecurrence`; `nil` stops the task repeating.
+    package func setRecurrence(_ rule: Recurrence.Rule?, every interval: Int, of id: UUID) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            try workspace.setRecurrence(rule, every: interval, of: id, in: context)
+        }
+    }
+
     /// Reverts a change made earlier, such as a parent reopened by its Sub task.
     package func undo(_ change: Change) async throws -> Saved {
         try await save { workspace, context in workspace.undo(change, in: context) }

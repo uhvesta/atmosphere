@@ -14,7 +14,7 @@
 [header, text] "What did you expect"
 [element] "What did you expect"
 [button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 3 Sub tasks closed, WORK-0006"
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [button, toggle] "Include my text and screenshots" value: "0"
 [text] "Each piece of text from your tasks and chats becomes a placeholder, and screenshots are left out. What you write above is kept."
 [header, text] "Recorded"

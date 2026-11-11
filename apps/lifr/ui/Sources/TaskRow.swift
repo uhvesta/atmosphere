@@ -45,7 +45,7 @@ package struct TaskRow: View {
         .accessibilityAction(named: row.status.isClosed ? Text("Mark To Do") : Text("Mark Done"), toggle)
     }
 
-    /// The code, due date, Sub task progress and priority. Each stays on one
+    /// The code, due date, repeat, Sub task progress and priority. Each stays on one
     /// line.
     @ViewBuilder
     private var details: some View {
@@ -56,6 +56,11 @@ package struct TaskRow: View {
                 .font(.caption)
                 .foregroundStyle(due.isOverdue ? .red : .secondary)
                 .fixedSize()
+        }
+        if row.repeats {
+            Image(systemName: "repeat")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         if let subtasks = row.subtasks {
             // Not a Label: in a stacked layout it shows the icon alone.

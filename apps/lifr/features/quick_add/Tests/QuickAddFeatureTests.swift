@@ -18,7 +18,10 @@ final class QuickAddFeatureTests: XCTestCase {
         let store = withDependencies {
             $0.defaultAppStorage = defaults
         } operation: {
-            TestStore(initialState: QuickAddFeature.State(workspace: records.workspace, now: now)) {
+            // Inside, so the remembered Avenue is read from `defaults`.
+            let initial = QuickAddFeature.State(
+                workspace: records.workspace, now: now, timeZone: .gmt, locale: Locale(identifier: "en_US"))
+            return TestStore(initialState: initial) {
                 QuickAddFeature()
             } withDependencies: { [now, records] in
                 $0.store = .inMemory(records.workspace)
@@ -51,6 +54,33 @@ final class QuickAddFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.lastAvenue, home.id.uuidString)
     }
 
+    func testTheTitleSetsTheDueDayTimeAndPriorityUnlessAPartIsKeptAsText() async throws {
+        _ = (health, home)
+        let store = try quickAdd()
+        await store.send(.binding(.set(\.title, "Call dentist tomorrow 3pm !high")))
+        XCTAssertEqual(store.state.finalTitle, "Call dentist")
+        await store.send(.partIgnored("3pm"))
+        XCTAssertEqual(store.state.finalTitle, "Call dentist 3pm")
+        await store.send(.addTapped)
+        let workspace = try await saved(store)
+
+        let task = try XCTUnwrap(workspace.tasks.values.first)
+        XCTAssertEqual(task.title, "Call dentist 3pm")
+        XCTAssertEqual(task.dueDate?.description, "2026-11-04")
+        XCTAssertNil(task.dueTime)
+        XCTAssertEqual(task.priority, .high)
+    }
+
+    func testClearingTheTitleReadsTheNextOneAfresh() async throws {
+        _ = (health, home)
+        let store = try quickAdd()
+        await store.send(.binding(.set(\.title, "Run tomorrow")))
+        await store.send(.partIgnored("tomorrow"))
+        await store.send(.binding(.set(\.title, "")))
+        await store.send(.binding(.set(\.title, "Swim tomorrow")))
+        XCTAssertEqual(store.state.finalTitle, "Swim")
+    }
+
     func testDefaultsToTheLastAvenueUsed() async throws {
         _ = (health, home)
         let first = try quickAdd()
@@ -64,7 +94,8 @@ final class QuickAddFeatureTests: XCTestCase {
         let next = withDependencies {
             $0.defaultAppStorage = first.dependencies.defaultAppStorage
         } operation: {
-            QuickAddFeature.State(workspace: records.workspace, now: now)
+            QuickAddFeature.State(
+                workspace: records.workspace, now: now, timeZone: .gmt, locale: Locale(identifier: "en_US"))
         }
         XCTAssertEqual(next.avenueID, home.id)
     }

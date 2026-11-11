@@ -17,7 +17,7 @@
 [button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 3 Sub tasks closed, WORK-0006"
 [header, text] "Sync"
 [text] "Status, Not signed in"
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [button, notEnabled, toggle] "Sync continuously" value: "1"
 [button] "Sync Now"
 [header, text] "Today"

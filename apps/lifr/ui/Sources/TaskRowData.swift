@@ -29,6 +29,8 @@ package struct TaskRowData: Identifiable, Hashable, Sendable {
     package var due: Due?
     package var avenue: String
     package var subtasks: Progress?
+    /// Whether closing it brings the next one.
+    package var repeats = false
 
     package init(_ task: LifrTask, in workspace: Workspace, now: Date, timeZone: TimeZone) {
         let today = CalendarDate(now, in: timeZone)
@@ -39,6 +41,7 @@ package struct TaskRowData: Identifiable, Hashable, Sendable {
         status = task.effectiveStatus(now: now, settings: workspace.settings)
         priority = task.priority
         avenue = workspace.avenues[task.avenueID]?.name ?? ""
+        repeats = task.recurrence != nil
         if let dueDate = task.dueDate {
             if task.isOverdue(today: today, time: TimeOfDay(now, in: timeZone)) {
                 due = .overdue(dueDate, task.dueTime)

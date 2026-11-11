@@ -89,6 +89,7 @@ extension HistoryEvent.Reason {
         case .reconciledNestedSubtask: "moved after sync: Sub tasks can't nest"
         case .reconciledDuplicateCode: "new code after sync: another task had it"
         case .reconciledParentPlacement: "moved after sync to its parent's Avenue"
+        case .nextOccurrence: "the next one of a repeating task"
         }
     }
 }

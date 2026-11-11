@@ -14,7 +14,7 @@
 [text] "112 of 600 characters"
 [button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 3 Sub tasks closed, WORK-0006"
 [text] "Lifr also tells the assistant about your records, the tools it can use and today's date, so drafts and changes keep working whatever you write."
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [header, text] "History"
 [button, selected] "Lifr's default, In use"
 [header, text] "Today"

@@ -42,7 +42,7 @@
 [button] "Fri, Dec 4, nothing due"
 [button] "Sat, Dec 5, nothing due"
 [header, text] "Tue, Nov 3"
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [button] "Water the plants" value: "To Do, Today, HOME-0010"
 [button] "Search"
 [button] "Today"

@@ -14,7 +14,7 @@
 [header, text] "Swipe left on a change, or touch and hold it, to revert it."
 [text] "Changed task “Water the plants”, Nov 3 at 10:00 AM, Shortcuts, Status: To Do → Done, Closed: — → Nov 3, 2026 at 2:00 AM"
 [button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 3 Sub tasks closed, WORK-0006"
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [text] "Added task “Buy oat milk”, Nov 3 at 10:00 AM, Shortcuts, Status: To Do, Priority: None, Due date: Tue, Nov 3, Avenue: Inbox"
 [header, text] "Today"
 [button] "Buy oat milk" value: "To Do, Today, INBOX-WD0Z"

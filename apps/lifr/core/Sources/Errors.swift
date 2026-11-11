@@ -20,6 +20,10 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
     case invalidDate(String)
     case invalidTime(String)
     case dueTimeWithoutDueDate
+    /// Only top-level tasks repeat; a Sub task comes back with its parent.
+    case subtaskCannotRepeat(UUID)
+    /// The rule never falls on a day, such as weekly on no weekdays.
+    case invalidRecurrence
     case notFound(Entity, String)
     case projectInDifferentAvenue(project: UUID, avenue: UUID)
     /// The would-be parent is itself a Sub task, and only one level is allowed.
@@ -73,6 +77,11 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
             "\"\(time)\" isn't a time of day. Use 24-hour HH:MM, such as 09:30."
         case .dueTimeWithoutDueDate:
             "A due time needs a due date. Set the due date too, or clear the time."
+        case .subtaskCannotRepeat:
+            "A Sub task can't repeat on its own. Make its parent repeat: each new occurrence brings its Sub tasks back."
+        case .invalidRecurrence:
+            "That repeat never falls on a day. Pick at least one weekday, a day of the month from 1 to 31, and an "
+                + "interval of 1 or more."
         case .notFound(.change, let id):
             "No change that can still be reverted matches \(id). Changes older than 90 days stay in Activity but "
                 + "can't be reverted; a newer one may not have synced to this device yet."

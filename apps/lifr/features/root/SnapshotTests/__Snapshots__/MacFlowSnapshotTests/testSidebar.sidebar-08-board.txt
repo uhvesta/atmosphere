@@ -35,7 +35,7 @@
   [Button] "New Avenue"
   [StaticText] "" value: "Sync: Not synced yet"
   [Heading] "To Do, 3 tasks"
-  [Button] "0004, High, Long run, 10 km, Overdue, Nov 3 07:00"
+  [Button] "0004, High, Long run, 10 km, Overdue, Nov 3 7:00 AM"
   [Button] "0017, High, Buy running shoes, Nov 4"
   [Button] "0005, Medium, Book physio appointment, Overdue, Nov 1"
   [Button] "Add Task"

@@ -17,6 +17,7 @@
         - fullCode: "WORK-0006"
         - id: 00000000-0000-0000-0000-000000000601
         - priority: Priority.urgent
+        - repeats: false
         - status: TaskStatus.inProgress
         ▿ subtasks: Optional<Progress>
           ▿ some: Progress
@@ -48,6 +49,7 @@
         - fullCode: "HOME-0011"
         - id: 00000000-0000-0000-0000-000000001101
         - priority: Priority.low
+        - repeats: false
         - status: TaskStatus.procrastinated
         - subtasks: Optional<Progress>.none
         - title: "Fix the bike\'s back brake"
@@ -58,6 +60,7 @@
         - fullCode: "HEALTH-0013"
         - id: 00000000-0000-0000-0000-000000001301
         - priority: Priority.none
+        - repeats: false
         - status: TaskStatus.procrastinated
         - subtasks: Optional<Progress>.none
         - title: "Plan long runs"
@@ -83,6 +86,7 @@
         - fullCode: "HEALTH-0004"
         - id: 00000000-0000-0000-0000-000000000401
         - priority: Priority.high
+        - repeats: false
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Long run, 10 km"
@@ -100,6 +104,7 @@
         - fullCode: "HEALTH-0017"
         - id: 00000000-0000-0000-0000-000000001701
         - priority: Priority.high
+        - repeats: false
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Buy running shoes"
@@ -117,6 +122,7 @@
         - fullCode: "HEALTH-0005"
         - id: 00000000-0000-0000-0000-000000000501
         - priority: Priority.medium
+        - repeats: false
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Book physio appointment"
@@ -134,6 +140,7 @@
         - fullCode: "HOME-0012"
         - id: 00000000-0000-0000-0000-000000001201
         - priority: Priority.medium
+        - repeats: false
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Renew passport"
@@ -146,6 +153,7 @@
         - fullCode: "HOME-0010"
         - id: 00000000-0000-0000-0000-000000001001
         - priority: Priority.none
+        - repeats: false
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Water the plants"
@@ -163,6 +171,7 @@
         - fullCode: "HOME-0014"
         - id: 00000000-0000-0000-0000-000000001401
         - priority: Priority.none
+        - repeats: false
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Call the plumber"
@@ -173,6 +182,7 @@
         - fullCode: "INBOX-0019"
         - id: 00000000-0000-0000-0000-000000001901
         - priority: Priority.none
+        - repeats: false
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Pick up a birthday card"
@@ -183,6 +193,7 @@
         - fullCode: "HOME-0015"
         - id: 00000000-0000-0000-0000-000000001501
         - priority: Priority.none
+        - repeats: false
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Plant the spring bulbs"

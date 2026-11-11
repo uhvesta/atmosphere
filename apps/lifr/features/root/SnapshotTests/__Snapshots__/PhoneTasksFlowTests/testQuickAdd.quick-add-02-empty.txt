@@ -19,7 +19,7 @@
 [button] "Tomorrow"
 [button] "Pick"
 [button] "Priority, None"
-[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 07:00, HEALTH-0004"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [button, toggle] "Add Sub tasks next" value: "0"
 [header, text] "Today"
 [text] "Adds this task, then keeps Quick Add open for its Sub tasks."

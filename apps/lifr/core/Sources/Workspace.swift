@@ -240,7 +240,7 @@ package struct Workspace: Hashable, Codable, Sendable {
             case .moveToAvenue:
                 relocate(task.id, avenue: project.avenueID, project: nil, by: context.actor, in: context, &change)
             case .closeAsWontDo:
-                change.merge(try setStatus(.wontDo, of: task.id, cascade: true, in: context))
+                change.merge(try setStatus(.wontDo, of: task.id, cascade: true, repeats: false, in: context))
             }
         }
         try setStatus(.archived, ofProject: id, in: context)
@@ -281,7 +281,9 @@ package struct Workspace: Hashable, Codable, Sendable {
         var change = Change()
         if !open.isEmpty {
             guard openTasks == .closeAsWontDo else { throw .avenueHasOpenTasks(avenue: id, open: open.map(\.id)) }
-            for task in open { change.merge(try setStatus(.wontDo, of: task.id, cascade: true, in: context)) }
+            for task in open {
+                change.merge(try setStatus(.wontDo, of: task.id, cascade: true, repeats: false, in: context))
+            }
         }
         avenue.archivedAt = context.now
         avenues[id] = avenue
@@ -487,8 +489,19 @@ package struct Workspace: Hashable, Codable, Sendable {
     /// Setting In Progress again ("Restart") records activity, which clears
     /// automatic Procrastinated. Setting any other status again changes
     /// nothing.
+    ///
+    /// Closing a repeating task creates its next occurrence in the same
+    /// change, so undo removes it too.
     package mutating func setStatus(
         _ status: TaskStatus, of id: UUID, cascade: Bool = false, in context: Context
+    ) throws(LifrError) -> Change {
+        try setStatus(status, of: id, cascade: cascade, repeats: true, in: context)
+    }
+
+    /// `repeats: false` closes a repeating task without a next one, as
+    /// archiving its Project or Avenue does.
+    mutating func setStatus(
+        _ status: TaskStatus, of id: UUID, cascade: Bool, repeats: Bool, in context: Context
     ) throws(LifrError) -> Change {
         let task = try liveTask(id)
         var change = Change()
@@ -510,6 +523,7 @@ package struct Workspace: Hashable, Codable, Sendable {
             touch(parentID, in: context, &change)
             if !status.isClosed { reopenIfClosed(parentID, in: context, &change) }
         }
+        if repeats, status.isClosed, task.isOpen { createNextOccurrence(after: task, in: context, &change) }
         return change
     }
 
@@ -718,7 +732,7 @@ package struct Workspace: Hashable, Codable, Sendable {
             change = try edit(id, TaskEdit(labelIDs: Set(ids)), in: context)
         case .status:
             change = try setStatus(old.flatMap(TaskStatus.init(rawValue:)) ?? .todo, of: id, in: context)
-        case .avenue, .project, .parent, .code:
+        case .avenue, .project, .parent, .code, .recurrence:
             throw .cannotRevert(event: eventID)
         }
         // The new events say they undo something, like ⌘Z's.
@@ -744,7 +758,7 @@ package struct Workspace: Hashable, Codable, Sendable {
         case .dueTime: .some(task.dueTime?.description)
         case .labels: .some(describe(task.labelIDs))
         case .status: .some(task.status.rawValue)
-        case .avenue, .project, .parent, .code: nil
+        case .avenue, .project, .parent, .code, .recurrence: nil
         }
     }
 

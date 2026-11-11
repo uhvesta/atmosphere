@@ -73,6 +73,16 @@
         }
       }
     },
+    "%@ is %@. Next one due %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ is %2$@. Next one due %3$@"
+          }
+        }
+      }
+    },
     "%@ is In Progress again: a Sub task was added on one device while it was closed on another." : {
 
     },
@@ -591,6 +601,9 @@
     "Adds this task, then keeps Quick Add open for its Sub tasks." : {
 
     },
+    "After closing" : {
+
+    },
     "Agent access" : {
 
     },
@@ -753,6 +766,15 @@
     "Board" : {
 
     },
+    "Bolt" : {
+
+    },
+    "Book" : {
+
+    },
+    "Briefcase" : {
+
+    },
     "Bug Reports" : {
 
     },
@@ -790,6 +812,9 @@
 
     },
     "Cancel" : {
+
+    },
+    "Cart" : {
 
     },
     "Change %@" : {
@@ -1075,10 +1100,25 @@
     "Currently %@." : {
 
     },
+    "Custom repeat" : {
+
+    },
+    "Custom…" : {
+
+    },
     "Date Added" : {
 
     },
     "Dates" : {
+
+    },
+    "Day" : {
+
+    },
+    "Day %lld" : {
+
+    },
+    "Days" : {
 
     },
     "Decline" : {
@@ -1106,6 +1146,9 @@
 
     },
     "Delete All" : {
+
+    },
+    "Delete Filter" : {
 
     },
     "Delete Label" : {
@@ -1240,6 +1283,9 @@
     "Edit Draft" : {
 
     },
+    "Edit Filter" : {
+
+    },
     "Edit Filter…" : {
 
     },
@@ -1262,6 +1308,9 @@
 
     },
     "Engine's own" : {
+
+    },
+    "Every %lld" : {
 
     },
     "Every Friday, show what I finished and what's overdue" : {
@@ -1289,6 +1338,9 @@
 
     },
     "Failed" : {
+
+    },
+    "Filter" : {
 
     },
     "Filters" : {
@@ -1325,6 +1377,9 @@
 
     },
     "First word" : {
+
+    },
+    "Flag" : {
 
     },
     "Flash attention" : {
@@ -1405,6 +1460,9 @@
     "Group by" : {
 
     },
+    "Heart" : {
+
+    },
     "Hidden" : {
 
     },
@@ -1418,6 +1476,9 @@
 
     },
     "History" : {
+
+    },
+    "House" : {
 
     },
     "How the assistant should behave" : {
@@ -1536,6 +1597,9 @@
 
     },
     "Keep the answer to go on from." : {
+
+    },
+    "Keeps “%@” in the title instead" : {
 
     },
     "Key" : {
@@ -1788,6 +1852,12 @@
     "Models" : {
 
     },
+    "Month" : {
+
+    },
+    "Months" : {
+
+    },
     "More" : {
 
     },
@@ -1860,6 +1930,9 @@
 
     },
     "Needs a due date" : {
+
+    },
+    "Never" : {
 
     },
     "New Avenue" : {
@@ -2080,6 +2153,9 @@
     "On" : {
 
     },
+    "On a schedule" : {
+
+    },
     "On this device" : {
 
     },
@@ -2139,6 +2215,9 @@
 
     },
     "Peak memory" : {
+
+    },
+    "Phone" : {
 
     },
     "Photo" : {
@@ -2331,6 +2410,12 @@
     "Reopened %@" : {
 
     },
+    "Repeat" : {
+
+    },
+    "Repeats" : {
+
+    },
     "Replying…" : {
 
     },
@@ -2472,6 +2557,9 @@
     "Save" : {
 
     },
+    "Save Filter" : {
+
+    },
     "Save Filter…" : {
 
     },
@@ -2608,6 +2696,9 @@
 
     },
     "Stalled" : {
+
+    },
+    "Star" : {
 
     },
     "Start" : {
@@ -2749,6 +2840,9 @@
 
     },
     "System voice" : {
+
+    },
+    "Tag" : {
 
     },
     "Task" : {
@@ -3031,6 +3125,9 @@
     "Undo changes" : {
 
     },
+    "Unit" : {
+
+    },
     "Unlock" : {
 
     },
@@ -3091,7 +3188,13 @@
     "Voices" : {
 
     },
+    "Week" : {
+
+    },
     "Weekly review" : {
+
+    },
+    "Weeks" : {
 
     },
     "What did I finish this week?" : {
@@ -3163,6 +3266,12 @@
     "Written %@" : {
 
     },
+    "Year" : {
+
+    },
+    "Years" : {
+
+    },
     "Yes" : {
 
     },
@@ -3179,6 +3288,9 @@
 
     },
     "Your skills sync with conversations when Sync conversations is on." : {
+
+    },
+    "Your tasks stay as they are. Activity in Settings can bring the filter back." : {
 
     },
     "Yours" : {

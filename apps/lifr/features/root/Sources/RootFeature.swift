@@ -663,7 +663,7 @@ package struct RootFeature {
                 else { return .none }
                 // A Sub task can't have Sub tasks: add to its parent.
                 let parent = task.parentID.flatMap { workspace.tasks[$0] } ?? task
-                var quickAdd = QuickAddFeature.State(workspace: workspace, now: now)
+                var quickAdd = QuickAddFeature.State(workspace: workspace, now: now, timeZone: timeZone)
                 quickAdd.parent = QuickAddFeature.Choice(id: parent.id, name: parent.title)
                 state.quickAdd = quickAdd
                 return .none
@@ -1000,7 +1000,7 @@ package struct RootFeature {
     private func showQuickAdd(_ kind: QuickAddFeature.Kind, _ adds: NewTaskDefaults? = nil, in state: inout State) {
         guard let workspace = state.workspace else { return }
         let adds = adds ?? state.currentList.flatMap { state[list: $0]?.query.adds } ?? NewTaskDefaults()
-        var quickAdd = QuickAddFeature.State(workspace: workspace, now: now)
+        var quickAdd = QuickAddFeature.State(workspace: workspace, now: now, timeZone: timeZone)
         quickAdd.kind = kind
         switch adds.scope {
         case .avenue(let id):

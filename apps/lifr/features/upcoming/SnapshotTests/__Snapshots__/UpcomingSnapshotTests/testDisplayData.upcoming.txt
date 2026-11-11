@@ -17,6 +17,7 @@
         - fullCode: "HEALTH-0017"
         - id: 00000000-0000-0000-0000-000000001701
         - priority: Priority.high
+        - repeats: false
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Buy running shoes"
@@ -39,6 +40,7 @@
         - fullCode: "HOME-0014"
         - id: 00000000-0000-0000-0000-000000001401
         - priority: Priority.none
+        - repeats: false
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Call the plumber"
@@ -61,6 +63,7 @@
         - fullCode: "HOME-0012"
         - id: 00000000-0000-0000-0000-000000001201
         - priority: Priority.medium
+        - repeats: false
         - status: TaskStatus.todo
         - subtasks: Optional<Progress>.none
         - title: "Renew passport"

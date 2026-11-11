@@ -123,12 +123,48 @@ package struct TaskDetailView: View {
                 }
             }
             dateRow("Start", store.startDate) { store.send(.startDatePicked($0)) }
+            if !store.isSubtask {
+                repeatRow
+            }
         } header: {
             Text("Dates")
         } footer: {
             if store.row.due?.isOverdue == true {
                 Label("Overdue", systemImage: "exclamationmark.circle").foregroundStyle(.red)
             }
+        }
+    }
+
+    /// What the task repeats on, with the usual choices and a custom one.
+    private var repeatRow: some View {
+        Menu {
+            ForEach(store.repeatPresets, id: \.self) { preset in
+                Button(preset.title) { store.send(.repeatPicked(preset)) }
+            }
+            Button("Custom…") { store.send(.repeatCustomTapped) }
+            if store.recurrence != nil {
+                Divider()
+                Button("Never", role: .destructive) { store.send(.repeatPicked(nil)) }
+            }
+        } label: {
+            LabeledContent("Repeat") {
+                Text(store.recurrence?.description ?? String(localized: "Never"))
+            }
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Repeat")
+        .accessibilityValue(store.recurrence?.description ?? String(localized: "Never"))
+        .sheet(
+            isPresented: Binding(
+                get: { store.repeatDraft != nil },
+                set: { if !$0 { store.send(.repeatCustomCancelled) } })
+        ) {
+            RepeatEditor(
+                draft: Binding(
+                    get: { store.repeatDraft ?? RepeatDraft(anchor: store.repeatAnchor, from: nil) },
+                    set: { store.send(.binding(.set(\.repeatDraft, $0))) }),
+                save: { store.send(.repeatCustomSaved) },
+                cancel: { store.send(.repeatCustomCancelled) })
         }
     }
 
