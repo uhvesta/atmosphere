@@ -839,6 +839,22 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testStartingTwiceRunsOneTimer() async {
+        let syncs = LockIsolated(0)
+        let store = makeStore(.mac, sync: counting(syncs))
+        let clock = TestClock()
+        store.dependencies.continuousClock = clock
+        let first = await store.send(.task)
+        await store.receive(\.loaded)
+        let second = await store.send(.task)
+        XCTAssertEqual(syncs.value, 1)
+
+        await clock.advance(by: .seconds(2 * 60))
+        XCTAssertEqual(syncs.value, 2)
+        await first.cancel()
+        await second.cancel()
+    }
+
     func testWithContinuousSyncOffItChecksEveryFifteenMinutes() async {
         let syncs = LockIsolated(0)
         let store = makeStore(.phone, sync: counting(syncs))

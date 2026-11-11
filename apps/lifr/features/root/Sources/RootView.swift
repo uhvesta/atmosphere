@@ -142,7 +142,8 @@ package struct RootView: View {
     }
 }
 
-/// Today, Upcoming, Avenues and Search, with quick add over each.
+/// Today, Upcoming, Avenues and Search, with quick add over each, and a
+/// banner over every tab when a synced change needs review.
 private struct PhoneRootView: View {
     @Bindable var store: StoreOf<RootFeature>
 
@@ -175,6 +176,7 @@ private struct PhoneRootView: View {
                             UpcomingView(store: store.scope(state: \.upcoming, action: \.upcoming))
                         }
                     }
+                    .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
                     .toolbar {
                         ToolbarItem(placement: .principal) {
                             Picker(
@@ -195,16 +197,19 @@ private struct PhoneRootView: View {
             Tab("Avenues", systemImage: "square.stack.3d.up", value: RootFeature.Tab.avenues) {
                 NavigationStack {
                     AvenuesView(store: store.scope(state: \.avenues, action: \.avenues))
+                        .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
                 }
             }
             Tab("Assistant", systemImage: "bubble.left.and.text.bubble.right", value: RootFeature.Tab.conversations) {
                 NavigationStack {
                     ConversationsView(store: store.scope(state: \.conversations, action: \.conversations))
+                        .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
                 }
             }
             Tab("Search", systemImage: "magnifyingglass", value: RootFeature.Tab.search, role: .search) {
                 NavigationStack {
                     SearchView(store: store.scope(state: \.search, action: \.search))
+                        .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
                 }
             }
         }

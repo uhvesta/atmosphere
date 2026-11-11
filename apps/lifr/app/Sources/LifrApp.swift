@@ -48,6 +48,11 @@ struct LifrApp: App {
         let shortcuts = Storage.shortcuts
         AppDependencyManager.shared.add { shortcuts }
         UNUserNotificationCenter.current().delegate = Storage.notifications
+        #if os(macOS)
+            // The Mac keeps syncing and scheduling reminders from the menu
+            // bar with every window closed, so the work outlives windows.
+            if case .success = Storage.opened { Storage.start() }
+        #endif
     }
 
     var body: some Scene {
@@ -106,6 +111,16 @@ private enum Storage {
     /// Kept for as long as Lifr runs: the notification center holds its
     /// delegate weakly.
     static let notifications = ReminderNotifications { root.send(.reminderOpened($0)) }
+
+    #if os(macOS)
+        /// The root store's long-lived work, kept for as long as Lifr runs.
+        private static var running: Task<Void, Never>?
+
+        static func start() {
+            guard running == nil else { return }
+            running = Task { await root.send(.task).finish() }
+        }
+    #endif
 
     /// One store for every screen, so each change shows everywhere.
     static let root = Store(initialState: RootFeature.State(platform: platform)) {

@@ -368,6 +368,10 @@ package struct RootFeature {
             if state.isLocked, action.isCommand { return .none }
             switch action {
             case .task:
+                // Started once for the whole process: on the Mac, Lifr keeps
+                // syncing with no window open, and a second window must not
+                // start a second timer.
+                guard !state.isRunning else { return .none }
                 var effects: [Effect<Action>] = [
                     // Changes too old to undo are packed first, so loading
                     // leaves them out.

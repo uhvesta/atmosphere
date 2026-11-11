@@ -164,7 +164,7 @@ final class PhoneSettingsFlowTests: PhoneFlowTestCase {
     }
 
     /// Two records changed on this device and the Mac in ways that couldn't
-    /// merge: the banner on Today, the review, a choice, then Later.
+    /// merge: the banner on Today and on Avenues, the review, a choice, then Later.
     func testSyncReview() async throws {
         let sample = Review.sample(now: now, timeZone: .gmt)
         let state = SyncState(lastSynced: now, review: sample.items)
@@ -173,6 +173,9 @@ final class PhoneSettingsFlowTests: PhoneFlowTestCase {
         let (store, flow) = app("sync-review", workspace: sample.workspace, sync: sync)
         store.send(.syncChanged(state))
         await flow.step("banner")
+        store.tab = .avenues
+        await flow.step("banner-on-avenues")
+        store.tab = .today
         store.send(.syncReviewTapped)
         await flow.step("review")
         store.send(.syncReview(.presented(.chose(sample.items[0].id, .avenue, .theirs))))
