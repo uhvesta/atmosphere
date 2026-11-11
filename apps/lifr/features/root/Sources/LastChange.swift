@@ -29,8 +29,18 @@ package struct LastChange: Equatable, Sendable {
     /// Inbox, and for
     /// Undo itself, which isn't a change to undo in turn.
     package init?(_ saved: Saved, id: UUID) {
+        guard saved.change.reverts.isEmpty else { return nil }
+        self.init(saved, id: id, message: nil)
+    }
+
+    /// What taking back `saved`, an Undo or a Redo, would put back again,
+    /// in the words of the change it took back.
+    package init?(reversing saved: Saved, id: UUID, message: String) {
+        self.init(saved, id: id, message: message)
+    }
+
+    private init?(_ saved: Saved, id: UUID, message: String?) {
         let change = saved.change
-        guard change.reverts.isEmpty else { return nil }
         let workspace = saved.workspace
         let steps = change.entry.flatMap { entry in workspace.journal.first { $0.id == entry } }?.steps ?? []
         let place =
@@ -46,9 +56,10 @@ package struct LastChange: Equatable, Sendable {
             after = Dictionary(steps.map { ($0.record, workspace.value(of: $0.record)) }) { first, _ in first }
             // A plan adding a Project with its tasks reads as the tasks it
             // added; Undo takes the Project too.
-            message =
+            let words =
                 place.before == nil && !change.previous.isEmpty
                 ? Self.message(for: change, in: workspace) : Self.message(for: place, in: workspace)
+            self.message = message ?? words
             return
         }
         entry = nil
@@ -56,7 +67,7 @@ package struct LastChange: Equatable, Sendable {
             uniqueKeysWithValues: change.previous.keys.map {
                 (RecordID(.task, $0), workspace.tasks[$0].map(RecordValue.task))
             })
-        message = Self.message(for: change, in: workspace)
+        self.message = message ?? Self.message(for: change, in: workspace)
     }
 
     /// Whether every record is still as this change left it in `workspace`.
@@ -205,5 +216,28 @@ extension StoreClient {
             return saved
         }
         return client
+    }
+}
+
+extension Change.Added {
+    /// Whether it's a task, which `previous` brings back, rather than a
+    /// record only Undo takes away.
+    var isTask: Bool {
+        if case .task = self { true } else { false }
+    }
+}
+
+/// Where a due date shortcut puts the open task.
+package enum DueShortcut: Hashable, Sendable {
+    case today, tomorrow, none
+
+    func date(now: Date, in timeZone: TimeZone) -> CalendarDate? {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        switch self {
+        case .today: return CalendarDate(now, in: timeZone)
+        case .tomorrow: return calendar.date(byAdding: .day, value: 1, to: now).map { CalendarDate($0, in: timeZone) }
+        case .none: return nil
+        }
     }
 }

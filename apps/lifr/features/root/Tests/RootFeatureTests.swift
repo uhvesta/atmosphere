@@ -687,7 +687,7 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
-    func testAProjectChangeOffersUndoAndUndoPutsItAndItsTasksBack() async throws {
+    func testAProjectChangeOffersUndoAndRedoAndEachPutsItAndItsTasksBack() async throws {
         let marathon = records.project("Half marathon", in: health)
         let shoes = records.task("Buy running shoes", in: health, project: marathon)
         let store = makeStore(.phone)
@@ -708,6 +708,15 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.workspace?.tasks[shoes.id]?.projectID, marathon.id)
         XCTAssertEqual(store.state.avenues.avenue?.project?.status, .active, "the open Project shows it")
         XCTAssertNil(store.state.lastChange)
+
+        await store.send(.redoTapped(try XCTUnwrap(store.state.redo).id))
+        await store.receive(\.redone)
+        XCTAssertEqual(store.state.workspace?.projects[marathon.id]?.status, .archived)
+        XCTAssertNil(store.state.workspace?.tasks[shoes.id]?.projectID)
+        await store.send(.undoTapped(try XCTUnwrap(store.state.lastChange).id))
+        await store.receive(\.undone)
+        XCTAssertEqual(store.state.workspace?.projects[marathon.id]?.status, .active)
+        XCTAssertEqual(store.state.workspace?.tasks[shoes.id]?.projectID, marathon.id)
         await task.cancel()
     }
 
@@ -836,6 +845,128 @@ final class RootFeatureTests: XCTestCase {
         await store.send(.statusShortcut(.inProgress))
         await store.receive(\.today.delegate.saved)
         XCTAssertEqual(store.state.workspace?.tasks[run.id]?.status, .inProgress)
+        await task.cancel()
+    }
+
+    func testRedoPutsBackWhatUndoTookAndUndoTakesItAgain() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.today(.list(.rowAction(run.id, .status(.done)))))
+        await store.receive(\.today.delegate.saved)
+        let done = try XCTUnwrap(store.state.lastChange)
+
+        await store.send(.undoTapped(done.id))
+        await store.receive(\.undone)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.status, .todo)
+        let redo = try XCTUnwrap(store.state.redo)
+
+        await store.send(.redoTapped(redo.id))
+        await store.receive(\.redone)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.status, .done)
+        XCTAssertNil(store.state.redo)
+        let again = try XCTUnwrap(store.state.lastChange)
+        XCTAssertEqual(again.message, done.message)
+
+        await store.send(.undoTapped(again.id))
+        await store.receive(\.undone)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.status, .todo)
+        await task.cancel()
+    }
+
+    func testRedoRefusesOnceTheTaskChangedAgainElsewhere() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = makeStore(.mac, store: client)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.today(.list(.rowAction(run.id, .status(.done)))))
+        await store.receive(\.today.delegate.saved)
+        await store.send(.undoTapped(try XCTUnwrap(store.state.lastChange).id))
+        await store.receive(\.undone)
+        let redo = try XCTUnwrap(store.state.redo)
+
+        let synced = try await withDependencies {
+            $0.uuid = UUIDGenerator { UUID() }
+            $0.date.now = now
+        } operation: {
+            try await client.edit(run.id, Workspace.TaskEdit(title: "Run 5 km"))
+        }
+        await store.send(.updated(Update(workspace: synced.workspace, number: synced.number)))
+
+        await store.send(.redoTapped(redo.id))
+        XCTAssertNotNil(store.state.undoAlert)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.status, .todo)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.title, "Run 5 km")
+        await task.cancel()
+    }
+
+    func testPriorityAndDueShortcutsChangeTheOpenTask() async throws {
+        let run = records.task("Run", in: health)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.goTo(.anytime))
+        await store.skipReceivedActions(strict: false)
+
+        // Nothing open, nothing changes.
+        await store.send(.priorityShortcut(.high))
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.priority, Priority.none)
+
+        await store.send(.anytime(.rowTapped(run.id)))
+        await store.skipReceivedActions(strict: false)
+        await store.send(.priorityShortcut(.high))
+        await store.receive(\.anytime.delegate.saved)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.priority, .high)
+
+        await store.send(.dueShortcut(.tomorrow))
+        await store.receive(\.anytime.delegate.saved)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.dueDate, CalendarDate(now + 86_400, in: .gmt))
+
+        await store.send(.dueShortcut(.none))
+        await store.receive(\.anytime.delegate.saved)
+        XCTAssertNil(store.state.workspace?.tasks[run.id]?.dueDate)
+        await task.cancel()
+    }
+
+    func testGoToShowsTheListOnEitherPlatform() async {
+        let mac = makeStore(.mac)
+        await mac.send(.goTo(.calendar))
+        await mac.skipReceivedActions(strict: false)
+        XCTAssertEqual(mac.state.selection, .calendar)
+
+        let phone = makeStore(.phone)
+        await phone.send(.goTo(.calendar))
+        await phone.skipReceivedActions(strict: false)
+        XCTAssertEqual(phone.state.tab, .upcoming)
+        XCTAssertTrue(phone.state.upcomingShowsCalendar)
+        await phone.send(.goTo(.search))
+        XCTAssertEqual(phone.state.tab, .search)
+    }
+
+    func testGoToTaskFindsByCodeOrWordsAndOpensThePick() async throws {
+        let run = records.task("Run 5 km", in: health, due: 0)
+        let swim = records.task("Swim", in: health)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        let workspace = try XCTUnwrap(store.state.workspace)
+
+        await store.send(.goToTaskTapped)
+        let code = workspace.displayCode(of: try workspace.task(swim.id))
+        await store.send(.goToTask(.presented(.binding(.set(\.query, code.lowercased())))))
+        XCTAssertEqual(store.state.goToTask?.matches.map(\.id), [swim.id])
+        await store.send(.goToTask(.presented(.binding(.set(\.query, "health run")))))
+        XCTAssertEqual(store.state.goToTask?.matches.map(\.id), [run.id])
+        await store.send(.goToTask(.presented(.binding(.set(\.query, "nothing like it")))))
+        XCTAssertEqual(store.state.goToTask?.matches, [])
+
+        await store.send(.goToTask(.presented(.binding(.set(\.query, "run")))))
+        await store.send(.goToTask(.presented(.submitted)))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertNil(store.state.goToTask)
+        XCTAssertEqual(store.state.openTaskID, run.id)
         await task.cancel()
     }
 

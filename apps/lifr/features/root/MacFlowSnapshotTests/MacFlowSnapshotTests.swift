@@ -280,6 +280,31 @@ final class MacFlowSnapshotTests: XCTestCase {
         XCTAssertEqual(
             store.workspace?.tasks.values.filter { $0.projectID == marathon && $0.isOpen }.map(\.title),
             ["Buy running shoes"])
+        store.send(.redoTapped(try XCTUnwrap(store.redo?.id)))
+        await flow.step("redone")
+        XCTAssertEqual(store.workspace?.projects[marathon]?.status, .archived)
+        flow.finish()
+    }
+
+    /// The menus' shortcuts: ⌘K finds a task by words and opens it, ⌃3 and
+    /// ⌘T change it, ⌘3 goes to the Calendar, and Help lists them all.
+    func testMenuShortcuts() async throws {
+        let (store, flow) = app("menu-shortcuts")
+        await flow.step("launch", image: false)
+        store.send(.goToTaskTapped)
+        store.send(.goToTask(.presented(.binding(.set(\.query, "roadmap")))))
+        await flow.step("go-to-task")
+        store.send(.goToTask(.presented(.submitted)))
+        await flow.step("opened")
+        store.send(.priorityShortcut(.high))
+        store.send(.dueShortcut(.tomorrow))
+        await flow.step("changed")
+        let review = try task("Review Q4 roadmap", in: store)
+        XCTAssertEqual(store.workspace?.tasks[review]?.priority, .high)
+        store.send(.goTo(.calendar))
+        await flow.step("calendar")
+        store.send(.shortcutsTapped)
+        await flow.step("shortcuts")
         flow.finish()
     }
 

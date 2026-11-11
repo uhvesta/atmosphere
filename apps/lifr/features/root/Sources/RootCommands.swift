@@ -5,8 +5,9 @@ import LifrSettings
 import LifrUI
 import SwiftUI
 
-/// The File menu's new items and Sync Now, the Status menu: a shortcut
-/// for each status of the open task, and Help's bug reports.
+/// The File menu's new items, Find, the View menu's Go to items, the Task
+/// menu for the open task, the Sync menu, and Help's shortcuts and bug
+/// reports. Items that don't apply are disabled, not hidden.
 package struct RootCommands: Commands {
     package var store: StoreOf<RootFeature>
 
@@ -23,11 +24,62 @@ package struct RootCommands: Commands {
             Button("New Project") { store.send(.newProjectTapped(nil)) }
                 .keyboardShortcut("n", modifiers: [.command, .option])
         }
-        CommandGroup(after: .saveItem) {
-            Button("Sync Now") { store.send(.syncNowTapped) }
-                .disabled(store.sync.status == .syncing)
+        CommandGroup(after: .textEditing) {
+            Divider()
+            Button("Find") { store.send(.goTo(.search)) }
+                .keyboardShortcut("f")
+            Button("Go to Task…") { store.send(.goToTaskTapped) }
+                .keyboardShortcut("k")
+                .disabled(store.workspace == nil)
         }
-        CommandGroup(after: .help) {
+        CommandGroup(before: .sidebar) {
+            Button("Today") { store.send(.goTo(.today)) }
+                .keyboardShortcut("1")
+            Button("Upcoming") { store.send(.goTo(.upcoming)) }
+                .keyboardShortcut("2")
+            Button("Calendar") { store.send(.goTo(.calendar)) }
+                .keyboardShortcut("3")
+            ForEach(RootFeature.Shelf.allCases, id: \.self) { shelf in
+                Button(shelf.title) { store.send(.goTo(shelf.sidebarItem)) }
+            }
+            Button("Trash") { store.send(.goTo(.trash)) }
+            Divider()
+        }
+        CommandMenu("Task") {
+            Menu("Status") {
+                ForEach(Array(TaskStatus.shortcuts.enumerated()), id: \.offset) { index, status in
+                    Button(status.title) { store.send(.statusShortcut(status)) }
+                        .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.command, .option])
+                }
+            }
+            .disabled(store.openTaskID == nil)
+            Menu("Priority") {
+                ForEach(Array(Priority.shortcuts.enumerated()), id: \.offset) { index, priority in
+                    Button(priority.title ?? String(localized: "None")) { store.send(.priorityShortcut(priority)) }
+                        .keyboardShortcut(KeyEquivalent(Character("\(index)")), modifiers: .control)
+                }
+            }
+            .disabled(store.openTaskID == nil)
+            Divider()
+            Button("Due Today") { store.send(.dueShortcut(.today)) }
+                .keyboardShortcut("t")
+                .disabled(store.openTaskID == nil)
+            Button("Due Tomorrow") { store.send(.dueShortcut(.tomorrow)) }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+                .disabled(store.openTaskID == nil)
+            Button("No Due Date") { store.send(.dueShortcut(.none)) }
+                .disabled(store.openTaskID == nil)
+        }
+        CommandMenu("Sync") {
+            Button("Sync Now") { store.send(.syncNowTapped) }
+                .keyboardShortcut("r")
+                .disabled(store.sync.status == .syncing || store.sync.status == .failed(.notSetUp))
+            Button("Review Changes…") { store.send(.syncReviewTapped) }
+                .disabled(store.sync.review.isEmpty)
+        }
+        CommandGroup(replacing: .help) {
+            Button("Keyboard Shortcuts") { store.send(.shortcutsTapped) }
+                .keyboardShortcut("/", modifiers: [.command, .shift])
             Divider()
             Button("Report a Bug…") { store.send(.reportBugTapped) }
             if store.isRecordingSteps {
@@ -36,19 +88,17 @@ package struct RootCommands: Commands {
                 Button("Record Steps") { store.send(.recordStepsTapped) }
             }
         }
-        CommandMenu("Status") {
-            ForEach(Array(TaskStatus.shortcuts.enumerated()), id: \.offset) { index, status in
-                Button(status.title) { store.send(.statusShortcut(status)) }
-                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.command, .option])
-                    .disabled(store.openTaskID == nil)
-            }
-        }
     }
 }
 
 extension TaskStatus {
     /// The statuses in the order of their shortcuts, ⌥⌘1 to ⌥⌘5.
     package static let shortcuts: [TaskStatus] = [.todo, .inProgress, .procrastinated, .done, .wontDo]
+}
+
+extension Priority {
+    /// The priorities in the order of their shortcuts, ⌃0 to ⌃4.
+    package static let shortcuts: [Priority] = [.none, .low, .medium, .high, .urgent]
 }
 
 /// The menu bar item: quick add, and the apps connected through the CLI. The

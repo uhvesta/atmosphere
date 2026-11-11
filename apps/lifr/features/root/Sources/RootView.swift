@@ -142,6 +142,12 @@ package struct RootView: View {
             NavigationStack { SyncReviewView(store: store) }
                 .interactiveDismissDisabled()
         }
+        .sheet(item: $store.scope(state: \.goToTask, action: \.goToTask)) { store in
+            GoToTaskView(store: store)
+        }
+        .sheet(isPresented: $store.isShortcutsShown) {
+            KeyboardShortcutsView()
+        }
         .sheet(item: $store.scope(state: \.approval, action: \.approval)) { store in
             NavigationStack { ApprovalView(store: store) }
                 .sheetLayout()
@@ -712,15 +718,41 @@ private struct RegistersUndo: ViewModifier {
     @Environment(\.undoManager) private var undoManager
 
     func body(content: Content) -> some View {
-        content.onChange(of: store.lastChange?.id, initial: true) { _, id in
-            guard let undoManager else { return }
-            undoManager.removeAllActions(withTarget: UndoTarget.shared)
-            guard let id, let message = store.lastChange?.message else { return }
-            undoManager.registerUndo(withTarget: UndoTarget.shared) { _ in
-                MainActor.assumeIsolated { _ = store.send(.undoTapped(id)) }
+        content
+            .onChange(of: store.lastChange?.id, initial: true) { _, id in
+                guard let undoManager else { return }
+                guard let id, let message = store.lastChange?.message else {
+                    // While Undo is on its way, its Redo stays.
+                    if store.undoing == nil { undoManager.removeAllActions(withTarget: UndoTarget.shared) }
+                    return
+                }
+                undoManager.removeAllActions(withTarget: UndoTarget.shared)
+                register(undo: id, message, on: undoManager)
             }
-            undoManager.setActionName(message)
+            .onChange(of: store.redo?.id) { _, id in
+                guard let undoManager else { return }
+                // Undo from the toast leaves no Redo in the Edit menu, and
+                // a failed or overtaken Undo none at all.
+                if id == nil || !undoManager.canRedo {
+                    if store.lastChange == nil { undoManager.removeAllActions(withTarget: UndoTarget.shared) }
+                }
+            }
+    }
+
+    /// Undo for the change `id`, which registers its Redo as it runs.
+    private func register(undo id: UUID, _ message: String, on undoManager: UndoManager) {
+        undoManager.registerUndo(withTarget: UndoTarget.shared) { _ in
+            MainActor.assumeIsolated {
+                _ = store.send(.undoTapped(id))
+                undoManager.registerUndo(withTarget: UndoTarget.shared) { _ in
+                    MainActor.assumeIsolated {
+                        if let redo = store.redo { _ = store.send(.redoTapped(redo.id)) }
+                    }
+                }
+                undoManager.setActionName(message)
+            }
         }
+        undoManager.setActionName(message)
     }
 }
 

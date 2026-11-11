@@ -159,6 +159,14 @@ package struct RootFeature {
         /// Why Undo couldn't revert the last change.
         @Presents package var undoAlert: AlertState<Never>?
         @Shared(.lastChange) package var lastChange
+        /// The change Undo just took back, which Redo puts back, until
+        /// something else changes.
+        package var redo: LastChange?
+        /// The change Undo is taking back, for Redo's words.
+        package var undoing: LastChange?
+        @Presents package var goToTask: GoToTaskFeature.State?
+        /// Whether the list of keyboard shortcuts is up.
+        package var isShortcutsShown = false
         /// The last change whose toast went away; Undo stays in the Edit menu.
         package var dismissedToast: UUID?
         /// Whether Lifr asks for Face ID, Touch ID or the passcode.
@@ -315,6 +323,20 @@ package struct RootFeature {
         /// The toast's Undo, ⌘Z or a shake, for the change with this ID.
         case undoTapped(UUID)
         case undone(Result<Saved, any Error>)
+        /// ⇧⌘Z, for the change Undo took back with this ID.
+        case redoTapped(UUID)
+        case redone(String, Result<Saved, any Error>)
+        /// A menu's Go to: Today, Upcoming, Calendar and the like.
+        case goTo(SidebarItem)
+        /// A priority shortcut, for the open task.
+        case priorityShortcut(Priority)
+        /// A due date shortcut, for the open task: today, tomorrow or none.
+        case dueShortcut(DueShortcut)
+        /// Go to Task…
+        case goToTaskTapped
+        case goToTask(PresentationAction<GoToTaskFeature.Action>)
+        /// Help › Keyboard Shortcuts.
+        case shortcutsTapped
         /// The toast for the change with this ID came up; it goes after
         /// five seconds.
         case toastShown(UUID)
@@ -407,6 +429,7 @@ package struct RootFeature {
     @Dependency(\.lock) private var lock
     @Dependency(\.glance) private var glance
     @Dependency(\.bugRecorder) private var bugRecorder
+    @Dependency(\.uuid) private var uuid
 
     package init() {}
 
@@ -702,10 +725,90 @@ package struct RootFeature {
                 guard let slot = state.currentList, state[list: slot]?.detail != nil else { return .none }
                 return .send(list(slot, .detail(.presented(.statusPicked(status)))))
 
+            case .priorityShortcut(let priority):
+                guard let slot = state.currentList, state[list: slot]?.detail != nil else { return .none }
+                return .send(list(slot, .detail(.presented(.priorityPicked(priority)))))
+
+            case .dueShortcut(let due):
+                guard let slot = state.currentList, state[list: slot]?.detail != nil else { return .none }
+                return .send(list(slot, .detail(.presented(.dueDatePicked(due.date(now: now, in: timeZone))))))
+
+            case .goTo(let item):
+                switch state.platform {
+                case .mac:
+                    return .send(.selected(item))
+                case .phone:
+                    switch item {
+                    case .today: state.tab = .today
+                    case .search: state.tab = .search
+                    case .conversations: state.tab = .conversations
+                    case .upcoming, .calendar:
+                        state.tab = .upcoming
+                        return .send(.upcomingCalendarShown(item == .calendar))
+                    default: break
+                    }
+                    return .none
+                }
+
+            case .goToTaskTapped:
+                guard let workspace = state.workspace else { return .none }
+                state.goToTask = GoToTaskFeature.State(workspace: workspace)
+                return .none
+
+            case .goToTask(.presented(.delegate(.open(let id)))):
+                return .send(.reminderOpened(id))
+
+            case .goToTask:
+                return .none
+
+            case .shortcutsTapped:
+                state.isShortcutsShown = true
+                return .none
+
+            case .redoTapped(let id):
+                guard let redo = state.redo, redo.id == id, state.lastChange == nil,
+                    let workspace = state.workspace
+                else { return .none }
+                state.redo = nil
+                guard redo.isCurrent(in: workspace) else {
+                    state.undoAlert = AlertState {
+                        TextState("Couldn't redo")
+                    } actions: {
+                        ButtonState(role: .cancel) { TextState("OK") }
+                    } message: {
+                        TextState(
+                            """
+                            It changed again since, here or on another device, and redoing would lose that \
+                            change. Open it to make the change again by hand.
+                            """)
+                    }
+                    return .none
+                }
+                return .run { [store] send in
+                    if let entry = redo.entry {
+                        await send(.redone(redo.message, Result { try await store.revert(entries: [entry]) }))
+                    } else {
+                        await send(.redone(redo.message, Result { try await store.undo(redo.change) }))
+                    }
+                }
+
+            case .redone(let message, .success(let saved)):
+                // Undo takes the redone change back again.
+                let redone = LastChange(reversing: saved, id: uuid(), message: message)
+                state.$lastChange.withLock { last in
+                    if last == nil { last = redone }
+                }
+                return .merge(show(saved.snapshot, in: &state), .run { [feedback] _ in await feedback(.tap) })
+
+            case .redone(_, .failure(let error)):
+                state.undoAlert = .failed("Couldn't redo", error)
+                return .none
+
             case .undoTapped(let id):
                 guard let last = state.lastChange, last.id == id, let workspace = state.workspace else {
                     return .none
                 }
+                state.undoing = last
                 guard last.isCurrent(in: workspace) else {
                     state.$lastChange.withLock { $0 = nil }
                     state.undoAlert = AlertState {
@@ -730,11 +833,19 @@ package struct RootFeature {
                 }
 
             case .undone(.success(let saved)):
-                // Undoing isn't a change to undo in turn.
+                // Undoing isn't a change to undo in turn, but Redo puts it
+                // back. Not when it added labels, Projects or Avenues along
+                // with its tasks, which Undo took away and Redo wouldn't
+                // bring back.
                 state.$lastChange.withLock { $0 = nil }
+                if let undone = state.undoing, undone.entry != nil || undone.change.added.allSatisfy(\.isTask) {
+                    state.redo = LastChange(reversing: saved, id: uuid(), message: undone.message)
+                }
+                state.undoing = nil
                 return .merge(show(saved.snapshot, in: &state), .run { [feedback] _ in await feedback(.tap) })
 
             case .undone(.failure(let error)):
+                state.undoing = nil
                 state.undoAlert = .failed("Couldn't undo", error)
                 return .none
 
@@ -849,6 +960,7 @@ package struct RootFeature {
         .ifLet(\.$undoAlert, action: \.undoAlert)
         .ifLet(\.$lockAlert, action: \.lockAlert)
         .ifLet(\.$bugReport, action: \.bugReport) { BugReportFeature() }
+        .ifLet(\.$goToTask, action: \.goToTask) { GoToTaskFeature() }
     }
 
     /// The shake menu, recording the steps to a bug, and describing it.
@@ -1088,7 +1200,8 @@ extension RootFeature.Action {
     fileprivate var isCommand: Bool {
         switch self {
         case .newTaskTapped, .newTaskInTapped, .newAvenueTapped, .newProjectTapped, .newSubtaskTapped,
-            .statusShortcut, .undoTapped, .syncReviewTapped, .apiSwitched, .reportBugTapped, .recordStepsTapped:
+            .statusShortcut, .undoTapped, .syncReviewTapped, .apiSwitched, .reportBugTapped, .recordStepsTapped,
+            .redoTapped, .goTo, .priorityShortcut, .dueShortcut, .goToTaskTapped, .shortcutsTapped, .syncNowTapped:
             true
         default:
             false
