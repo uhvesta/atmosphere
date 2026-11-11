@@ -37,6 +37,19 @@ pub trait Runner: Send + Sync + 'static {
         self: Arc<Self>,
         turn: Turn,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Called when `fork` is made from `parent`, with the history it keeps,
+    /// before it runs a turn. A runner that keeps its own state per session
+    /// carries it over here.
+    fn forked(
+        &self,
+        parent: &SessionId,
+        fork: &SessionRecord,
+        history: &[Event],
+    ) -> Result<(), AgentError> {
+        let _ = (parent, fork, history);
+        Ok(())
+    }
 }
 
 /// What a [`Runner`] uses to record a turn and to ask for permission.
@@ -430,6 +443,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 before: options.before,
             }),
         };
+        self.runner.forked(id, &record, &events)?;
         Ok(self.create(record, events)?.record.clone())
     }
 

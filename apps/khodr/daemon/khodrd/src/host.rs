@@ -7,8 +7,9 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use khodr_agent::{
-    Agent, AgentError, Event, EventId, ForkOptions, LocalAgent, LocalModelConfig, LocalModelRunner,
-    Script, ScriptedRunner, SendMode, SessionId, SessionRecord, StartOptions, Watch,
+    Agent, AgentError, CopilotOptions, CopilotProvider, CopilotRunner, Event, EventId, ForkOptions,
+    LocalAgent, LocalModelConfig, LocalModelRunner, Script, ScriptedRunner, SendMode, SessionId,
+    SessionRecord, StartOptions, Watch,
 };
 use khodr_wire::{Reply, Service, ServiceFuture, describe, error, pb};
 use tokio::sync::{broadcast, mpsc};
@@ -121,9 +122,27 @@ impl Host {
             api_key: std::env::var("KHODR_LOCAL_API_KEY").ok(),
         });
         let local = LocalAgent::open(state.join("local"), local_model)?;
+        // Signed in with `copilot login`, it uses GitHub's models; given a
+        // provider, by the session or here, a model server of its own.
+        let copilot_state = state.join("copilot");
+        let copilot_runner = CopilotRunner::new(CopilotOptions {
+            program: std::env::var_os("KHODR_COPILOT")
+                .map_or_else(|| PathBuf::from("copilot"), PathBuf::from),
+            state: copilot_state.join("backend"),
+            env: Vec::new(),
+            provider: std::env::var("KHODR_COPILOT_PROVIDER_URL")
+                .ok()
+                .map(|base_url| CopilotProvider {
+                    kind: "openai".to_owned(),
+                    base_url,
+                    api_key: std::env::var("KHODR_COPILOT_PROVIDER_API_KEY").ok(),
+                }),
+        });
+        let copilot = LocalAgent::open(copilot_state.join("sessions"), copilot_runner)?;
         let mut backends: HashMap<pb::Backend, Arc<dyn Backend>> = HashMap::new();
         backends.insert(pb::Backend::Scripted, Arc::new(scripted));
         backends.insert(pb::Backend::Local, Arc::new(local));
+        backends.insert(pb::Backend::Copilot, Arc::new(copilot));
         let mut owners = HashMap::new();
         for (backend, agent) in &backends {
             for record in agent.sessions().await? {

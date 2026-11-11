@@ -1,10 +1,14 @@
 [package]
 name = "khodr-agent"
-description = "Khodr's agent interface, and the runtime and scripted backend that implement it in process."
+description = "Khodr's agent interface, the runtime for backends in process, and the backends: Copilot, a local model and a scripted one."
 version = "0.0.0"
 publish = false
 edition.workspace = true
 rust-version.workspace = true
+
+# tests/copilot_test.rs needs the pinned Copilot CLI: run it with
+# `bazel test //apps/khodr/daemon/agent:copilot_test`.
+autotests = false
 
 [lib]
 name = "khodr_agent"

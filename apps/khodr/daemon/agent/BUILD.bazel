@@ -1,11 +1,11 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 
 # The agent interface every backend implements, the runtime the in-process
-# backends share (turns, approvals, forks, history on disk), the local-model
-# backend and the scripted backend that tests run on.
+# backends share (turns, approvals, forks, history on disk), and the backends:
+# Copilot, a local model, and the scripted one tests run on.
 rust_library(
     name = "agent",
-    srcs = glob(["src/*.rs"]),
+    srcs = glob(["src/**/*.rs"]),
     crate_name = "khodr_agent",
     visibility = ["//apps/khodr/daemon:__subpackages__"],
     deps = [
@@ -22,6 +22,21 @@ rust_test(
     name = "agent_test",
     crate = ":agent",
     deps = ["@crates//:tempfile"],
+)
+
+# The Copilot backend on the pinned Copilot CLI, offline against a fake model
+# server.
+rust_test(
+    name = "copilot_test",
+    srcs = ["tests/copilot_test.rs"],
+    data = ["//apps/khodr/copilot"],
+    env = {"COPILOT_CLI": "$(rootpath //apps/khodr/copilot)"},
+    deps = [
+        ":agent",
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+        "@crates//:tokio",
+    ],
 )
 
 filegroup(

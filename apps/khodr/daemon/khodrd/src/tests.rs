@@ -232,20 +232,20 @@ async fn the_host_refuses_what_it_does_not_have() {
         "{unknown:?}"
     );
 
-    let mut copilot = start(state.path(), "");
-    if let pb::request::Kind::StartSession(start) = &mut copilot {
-        start.backend = pb::Backend::Copilot.into();
+    let mut unset = start(state.path(), "");
+    if let pb::request::Kind::StartSession(start) = &mut unset {
+        start.backend = pb::Backend::Unspecified.into();
     }
-    let copilot = client.call(copilot).await;
+    let unset = client.call(unset).await;
     assert!(
         matches!(
-            copilot,
+            unset,
             Err(ClientError::Refused {
                 code: pb::ErrorCode::UnknownBackend,
                 ..
             })
         ),
-        "{copilot:?}"
+        "{unset:?}"
     );
 
     let mut nowhere = start(state.path(), "");

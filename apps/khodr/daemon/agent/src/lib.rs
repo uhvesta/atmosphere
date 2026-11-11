@@ -9,6 +9,7 @@
 //! to play one turn. It keeps each session's history as JSON lines on disk,
 //! queues and steers turns, holds approvals and forks.
 
+mod copilot;
 mod error;
 mod event;
 mod local_model;
@@ -21,6 +22,7 @@ use std::future::Future;
 
 use tokio::sync::broadcast;
 
+pub use copilot::{COPILOT_VERSION, CopilotError, CopilotOptions, CopilotProvider, CopilotRunner};
 pub use error::AgentError;
 pub use event::{
     Event, EventId, EventKind, ForkOptions, Parent, PermissionKind, SendMode, SessionId,

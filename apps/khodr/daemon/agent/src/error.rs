@@ -68,6 +68,15 @@ pub enum AgentError {
         source: serde_json::Error,
     },
 
+    #[error(
+        "what the backend keeps for a session, {path}, is damaged. Removing the file keeps the session's history, but the agent starts the next turn without remembering it"
+    )]
+    CorruptBackendState {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+
     #[error("couldn't encode a session event as JSON")]
     Encode {
         #[source]
