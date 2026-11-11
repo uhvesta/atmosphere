@@ -12,6 +12,7 @@ import LifrGlance
 import LifrGlanceClient
 import LifrLists
 import LifrLockClient
+import LifrPasteboardClient
 import LifrProcrastinated
 import LifrQuickAdd
 import LifrRemindersClient
@@ -418,6 +419,11 @@ package struct RootFeature {
         /// Text sent from another app with the Mac's Services menu: Quick
         /// Add with one line as its title, or a task for each of several.
         case textSent(String)
+        /// ⌘V on the Mac's list: reads the clipboard for `textPasted`.
+        case pasteCommanded
+        /// Text pasted on the list shown: a task for each line where
+        /// a drop on its sidebar item puts them, or Quick Add elsewhere.
+        case textPasted(String?)
         case savedFilter(PresentationAction<SearchFeature.Action>)
         case conversations(ConversationsFeature.Action)
         case avenue(AvenueFeature.Action)
@@ -448,6 +454,7 @@ package struct RootFeature {
     @Dependency(\.spotlight) private var spotlight
     @Dependency(\.bugRecorder) private var bugRecorder
     @Dependency(\.uuid) private var uuid
+    @Dependency(\.pasteboard) private var pasteboard
 
     package init() {}
 
@@ -741,6 +748,19 @@ package struct RootFeature {
                 }
                 showQuickAdd(.task, in: &state)
                 return .send(.quickAdd(.presented(.linesPasted(text))))
+
+            case .pasteCommanded:
+                guard !state.isLocked else { return .none }
+                return .run { [pasteboard] send in await send(.textPasted(await pasteboard.read())) }
+
+            case .textPasted(let text):
+                guard let text, !QuickAddFeature.lines(text).isEmpty, !state.isLocked else { return .none }
+                switch state.selection {
+                case .today, .upcoming, .scope(.avenue), .scope(.project):
+                    return dropped(text, on: state.selection ?? .today, in: state)
+                default:
+                    return .send(.textSent(text))
+                }
 
             case .savedFilterMoved(let id, let up):
                 let ids = state.workspace?.sortedSavedFilters.map(\.id) ?? []

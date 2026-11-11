@@ -529,6 +529,29 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testPastingOnAListAddsATaskForEachLineThereOrOpensQuickAdd() async throws {
+        let health = health
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.selected(.scope(.avenue(health.id))))
+        await store.send(.textPasted("Stretch\nFoam roll"))
+        await store.receive(\.avenue.delegate.saved)
+        let inHealth = store.state.workspace?.tasks.values.filter { $0.avenueID == health.id }.map(\.title)
+        XCTAssertTrue(Set(inHealth ?? []).isSuperset(of: ["Stretch", "Foam roll"]))
+
+        await store.send(.textPasted("  \n"))
+        XCTAssertNil(store.state.quickAdd)
+
+        await store.send(.selected(.logbook))
+        await store.send(.textPasted("Renew the passport"))
+        await store.receive(\.textSent)
+        await store.receive(\.linkOpened)
+        XCTAssertEqual(store.state.quickAdd?.title, "Renew the passport")
+        await task.cancel()
+    }
+
     func testLeavingAListClosesItsTaskAndLeavingTheAssistantClosesItsChat() async {
         let run = records.task("Run", in: health, due: 0)
         let store = makeStore(.mac)

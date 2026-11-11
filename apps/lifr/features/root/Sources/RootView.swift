@@ -19,6 +19,7 @@ import LifrTrash
 import LifrUI
 import LifrUpcoming
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The app's window: tabs on iPhone, a sidebar on the Mac.
 package struct RootView: View {
@@ -336,6 +337,9 @@ private struct MacRootView: View {
                 content
                     .navigationSplitViewColumnWidth(min: 320, ideal: 380)
                     .toolbar { addMenu }
+                    #if os(macOS)
+                        .onPasteCommand(of: [.utf8PlainText]) { _ in store.send(.pasteCommanded) }
+                    #endif
             } detail: {
                 NavigationStack {
                     if store.selection == .conversations {
