@@ -114,6 +114,11 @@ message StartSession {
   // Instructions for the agent, set for the life of the session.
   string instructions = 4;
   string name = 5;
+  // The host to run on, as the daemon names it; empty for this machine.
+  string host = 6;
+  // Settings only the backend reads, as JSON; for the scripted backend, its
+  // script. A fork keeps them.
+  string backend_config = 7;
 }
 
 message SessionStarted {
@@ -216,6 +221,8 @@ message SessionInfo {
   // Empty for a root session.
   string parent_id = 7;
   string forked_before_event_id = 8;
+  // The host it runs on, as the daemon names it; empty for this machine.
+  string host = 9;
 }
 
 // One thing that happened in a session. Its id is stable for the life of the

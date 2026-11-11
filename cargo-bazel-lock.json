@@ -1,5 +1,5 @@
 {
-  "checksum": "e93271e0990658f80c04c80ab5db3409b7fb498b5f6aabff4b9468cd4f5d5d27",
+  "checksum": "32b5ba681165a29129268f623a111864d4952c5c5d73d7fed304e93c7c461bfc",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -2544,6 +2544,37 @@
       "name": "khodr-protoc-gen-prost",
       "repository": null,
       "targets": [],
+      "version": "0.0.0"
+    },
+    "khodr-wire 0.0.0": {
+      "common_attrs": {
+        "deps": [
+          {
+            "id": "prost 0.14.5",
+            "target": "prost"
+          },
+          {
+            "id": "thiserror 2.0.21",
+            "target": "thiserror"
+          },
+          {
+            "id": "tokio 1.54.1",
+            "target": "tokio"
+          }
+        ],
+        "edition": "2024"
+      },
+      "library_target_name": "khodr_wire",
+      "name": "khodr-wire",
+      "repository": null,
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "khodr_wire",
+            "crate_root": "src/lib.rs"
+          }
+        }
+      ],
       "version": "0.0.0"
     },
     "libbz2-rs-sys 0.2.6": {
@@ -7129,6 +7160,7 @@
     "bootstrap-revup 0.0.0": "tools/bootstrap/revup",
     "khodr-agent 0.0.0": "apps/khodr/daemon/agent",
     "khodr-protoc-gen-prost 0.0.0": "apps/khodr/proto/plugin",
+    "khodr-wire 0.0.0": "apps/khodr/daemon/wire",
     "swift-catalog 0.0.0": "tools/swift_catalog"
   }
 }

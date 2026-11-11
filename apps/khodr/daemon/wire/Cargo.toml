@@ -1,0 +1,18 @@
+[package]
+name = "khodr-wire"
+description = "Khodr's protocol on a byte stream: framing, the handshake, a client and a server."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+# Also depends on the protocol's Rust types, which Bazel generates
+# (//apps/khodr/proto:khodr_rust), so this crate builds with Bazel only.
+[lib]
+name = "khodr_wire"
+path = "src/lib.rs"
+
+[dependencies]
+prost.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

@@ -67,6 +67,14 @@ pub enum ScriptedError {
     NoRule { message: String },
 
     #[error(
+        "the session's script isn't valid; fix the JSON given as its backend config and start a new session with it"
+    )]
+    BadScript {
+        #[source]
+        source: serde_json::Error,
+    },
+
+    #[error(
         "the script writes to {path}, outside the session's working directory; use a relative path without `..`"
     )]
     OutsideWorkingDirectory { path: PathBuf },
@@ -85,6 +93,8 @@ pub enum ScriptedError {
     Agent(#[from] AgentError),
 }
 
+/// Plays each session's own script, from its backend config, or else the
+/// one it was made with.
 pub struct ScriptedRunner {
     script: Script,
 }
@@ -99,8 +109,15 @@ impl Runner for ScriptedRunner {
     type Error = ScriptedError;
 
     async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), ScriptedError> {
-        let rule = self
-            .script
+        let own = match &turn.record().backend_config {
+            Some(json) => Some(
+                serde_json::from_str::<Script>(json)
+                    .map_err(|source| ScriptedError::BadScript { source })?,
+            ),
+            None => None,
+        };
+        let script = own.as_ref().unwrap_or(&self.script);
+        let rule = script
             .rules
             .iter()
             .find(|rule| turn.text().contains(&rule.when))
@@ -573,6 +590,31 @@ mod tests {
             history
                 .iter()
                 .any(|event| event.kind == EventKind::TurnEnded { aborted: true })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_plays_its_own_script() {
+        let fixture = fixture(vec![rule("", vec![say("default")])]);
+        let script = Script {
+            rules: vec![rule("", vec![say("own")])],
+        };
+        let options = StartOptions {
+            working_directory: fixture.work.path().to_owned(),
+            backend_config: Some(serde_json::to_string(&script).expect("encodes")),
+            ..StartOptions::default()
+        };
+        let id = fixture.agent.start(options).await.expect("starts").id;
+        fixture
+            .agent
+            .send(&id, "hi".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+        assert!(
+            events
+                .iter()
+                .any(|event| event.kind == EventKind::AssistantMessage { text: "own".into() })
         );
     }
 

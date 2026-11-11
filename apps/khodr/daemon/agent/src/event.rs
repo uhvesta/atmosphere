@@ -194,6 +194,8 @@ pub struct StartOptions {
     pub model: Option<String>,
     /// Instructions for the agent, for the life of the session.
     pub instructions: Option<String>,
+    /// Settings only the backend reads, as JSON: the scripted backend's script.
+    pub backend_config: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -220,6 +222,8 @@ pub struct SessionRecord {
     pub working_directory: PathBuf,
     pub model: Option<String>,
     pub instructions: Option<String>,
+    #[serde(default)]
+    pub backend_config: Option<String>,
     /// None for a root session.
     pub parent: Option<Parent>,
 }

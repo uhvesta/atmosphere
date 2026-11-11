@@ -6,6 +6,7 @@ members = [
     "tools/bootstrap/revup",
     "apps/khodr/proto/plugin",
     "apps/khodr/daemon/agent",
+    "apps/khodr/daemon/wire",
 ]
 resolver = "3"
 

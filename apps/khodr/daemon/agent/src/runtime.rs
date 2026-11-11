@@ -299,6 +299,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
             working_directory: options.working_directory,
             model: options.model,
             instructions: options.instructions,
+            backend_config: options.backend_config,
             parent: None,
         };
         Ok(self.create(record, Vec::new())?.record.clone())
@@ -423,6 +424,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 .unwrap_or_else(|| parent.record.working_directory.clone()),
             model: parent.record.model.clone(),
             instructions: parent.record.instructions.clone(),
+            backend_config: parent.record.backend_config.clone(),
             parent: Some(Parent {
                 session: id.clone(),
                 before: options.before,
