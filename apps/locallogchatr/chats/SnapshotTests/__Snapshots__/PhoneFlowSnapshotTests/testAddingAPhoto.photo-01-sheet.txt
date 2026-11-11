@@ -18,6 +18,6 @@
 [text] "Replies come from the model on this device. Pick another from the model button by the field."
 [element] "" value: "Message"
 [button] "Add" hint: "Add photos or files"
-[button] "Model" value: "Gemma 4 E4B, On" hint: "Model, Thinking and Context Window"
+[button] "Model" value: "Gemma 4 E4B, Thinking" hint: "Model, Thinking and Context Window"
 [button] "Dictate" hint: "Dictate, on this device"
 [button, notEnabled] "Send"

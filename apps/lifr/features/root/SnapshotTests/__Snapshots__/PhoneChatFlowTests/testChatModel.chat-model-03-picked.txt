@@ -15,7 +15,7 @@
 [element] "" value: "Message"
 [button] "Thinking" value: "Long"
 [button] "Add" hint: "Add photos or files"
-[button] "Model" value: "Gemma 4 E2B, Long" hint: "Model, Thinking and Context Window"
+[button] "Model" value: "Gemma 4 E2B, Long Thinking" hint: "Model, Thinking and Context Window"
 [button] "Dictate" hint: "Dictate, on this device"
 [button, notEnabled] "Send"
 [text] "Long thinks up to four times as long before it answers, for harder questions."

@@ -10,7 +10,7 @@
 [button] "Remove Photo"
 [element] "" value: "Message"
 [button] "Add" hint: "Add photos or files"
-[button] "Model" value: "Gemma 4 E4B, On" hint: "Model, Thinking and Context Window"
+[button] "Model" value: "Gemma 4 E4B, Thinking" hint: "Model, Thinking and Context Window"
 [button] "Record" hint: "Record a clip for the model to hear"
 [button] "Send"
 [button] "Search"

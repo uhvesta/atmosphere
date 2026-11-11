@@ -35,7 +35,7 @@
 [element] "" value: "Ask about it"
 [text] "Long thinks up to four times as long before it answers, for harder questions."
 [button] "Add" hint: "Add photos or files"
-[button] "Model" value: "Qwen3.5 2B, Long" hint: "Model, Thinking and Context Window"
+[button] "Model" value: "Qwen3.5 2B, Long Thinking" hint: "Model, Thinking and Context Window"
 [button] "Dictate" hint: "Dictate, on this device"
 [button, notEnabled] "Send"
 [button] "Context Window" value: "8,192 tokens"

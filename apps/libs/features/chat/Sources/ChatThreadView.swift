@@ -421,7 +421,7 @@ where Parts.Message == Replier.Message {
         let current = store.state.current
         return ModelPill(
             name: current?.name ?? String(localized: "Model"),
-            detail: current?.thinks == true ? store.model.thinkingLevel.title : nil,
+            detail: current?.thinks == true ? store.model.thinkingLevel.pillTitle : nil,
             pick: { store.send(.modelTapped) })
     }
 

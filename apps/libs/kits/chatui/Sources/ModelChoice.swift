@@ -274,4 +274,14 @@ extension ThinkingLevel {
         case .long: String(localized: "Long")
         }
     }
+
+    /// What the model pill says after the model's name, which has to make
+    /// sense without the Thinking label beside it.
+    public var pillTitle: String {
+        switch self {
+        case .off: String(localized: "No Thinking")
+        case .on: String(localized: "Thinking")
+        case .long: String(localized: "Long Thinking")
+        }
+    }
 }
