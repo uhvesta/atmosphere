@@ -53,6 +53,8 @@ package struct SearchFeature {
     @ObservableState
     package struct State: Equatable {
         package var filter = SearchFilter()
+        /// Whether the search field has the keyboard, as after ⌘F.
+        package var isFieldFocused = false
         package var list: TaskListFeature.State
         /// The saved filter this search was opened from, if any.
         package var savedFilterID: UUID?

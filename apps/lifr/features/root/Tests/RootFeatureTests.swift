@@ -802,6 +802,16 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testFindGoesToSearchWithTheCursorInItsField() async {
+        for platform in [RootFeature.Platform.mac, .phone] {
+            let store = makeStore(platform)
+            await store.send(.goTo(.search))
+            await store.skipReceivedActions(strict: false)
+            XCTAssertTrue(store.state.search.isFieldFocused)
+            XCTAssertTrue(store.state.selection == .search || store.state.tab == .search)
+        }
+    }
+
     func testPrintIsOfferedForAShownListThatHasTasksAndNotWhileLocked() async {
         records.task("Run", in: health, due: 0)
         let store = makeStore(.mac)

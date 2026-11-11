@@ -23,7 +23,7 @@ package struct SearchView: View {
             }
         }
         .emptyAction(store.filter.filterCount == 0 ? nil : "Clear Filters") { store.send(.clearFiltersTapped) }
-        .searchable(text: $store.filter.text, prompt: "Titles, details and comments")
+        .modifier(SearchField(store: store))
         .navigationTitle(store.savedFilter?.name ?? String(localized: "Search"))
         .toolbar {
             Menu {
@@ -135,5 +135,18 @@ extension Binding {
 #Preview {
     NavigationStack {
         SearchView(store: Store(initialState: SearchFeature.State()) { SearchFeature() })
+    }
+}
+
+/// The search field, with the keyboard in it after ⌘F.
+private struct SearchField: ViewModifier {
+    @Bindable var store: StoreOf<SearchFeature>
+    @FocusState private var isFocused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .searchable(text: $store.filter.text, prompt: "Titles, details and comments")
+            .searchFocused($isFocused)
+            .bind($store.isFieldFocused, to: $isFocused)
     }
 }

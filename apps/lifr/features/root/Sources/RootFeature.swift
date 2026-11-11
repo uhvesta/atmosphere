@@ -838,6 +838,8 @@ package struct RootFeature {
                 return .send(list(slot, .detail(.presented(.dueDatePicked(due.date(now: now, in: timeZone))))))
 
             case .goTo(let item):
+                // Find puts the cursor in the search field.
+                if item == .search { state.search.isFieldFocused = true }
                 switch state.platform {
                 case .mac:
                     return .send(.selected(item))
