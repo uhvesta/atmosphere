@@ -58,13 +58,23 @@ package struct JournalWords {
     /// more", or that they revert `reverts` changes.
     package func summary(of steps: [JournalStep], reverts: Int = 0) -> String {
         if reverts > 0 {
-            return reverts == 1
-                ? String(localized: "Reverted a change") : String(localized: "Reverted \(reverts) changes")
+            return reverted(reverts, Set(steps.map(\.record)).count == 1 ? steps.first.map(name) : nil)
         }
         guard let first = steps.first else { return String(localized: "No change") }
         var text = "\(verb(first)) \(first.record.kind.noun)"
         if first.record.kind != .settings { text += " “\(title(first))”" }
         return steps.count == 1 ? text : text + " and \(steps.count - 1) more"
+    }
+
+    /// That `count` changes were reverted, naming the record when they're
+    /// all to one, since its rows then leave its name out.
+    private func reverted(_ count: Int, _ record: String?) -> String {
+        switch (count, record) {
+        case (1, let record?): String(localized: "Reverted a change to “\(record)”")
+        case (_, let record?): String(localized: "Reverted \(count) changes to “\(record)”")
+        case (1, nil): String(localized: "Reverted a change")
+        case (_, nil): String(localized: "Reverted \(count) changes")
+        }
     }
 
     private func verb(_ step: JournalStep) -> String {
@@ -117,8 +127,7 @@ package struct JournalWords {
     /// `summary(of:reverts:)` for an archived entry's steps.
     package func summary(of steps: [ArchivedStep], reverts: Int = 0) -> String {
         if reverts > 0 {
-            return reverts == 1
-                ? String(localized: "Reverted a change") : String(localized: "Reverted \(reverts) changes")
+            return reverted(reverts, Set(steps.map(\.record)).count == 1 ? steps.first.map(name) : nil)
         }
         guard let first = steps.first else { return String(localized: "No change") }
         var text = "\(verb(first)) \(first.record.kind.noun)"

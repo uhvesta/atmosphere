@@ -161,7 +161,7 @@ final class ActivityFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.workspace.tasks[task.id]?.title, "Run 5 km")
         XCTAssertNil(store.state.alert)
         let rows = store.state.rows(now: now, calendar: .current)
-        XCTAssertEqual(rows.first?.summary, "Reverted a change")
+        XCTAssertEqual(rows.first?.summary, "Reverted a change to “Run 5 km”")
         XCTAssertEqual(rows.first?.author, "iPhone")
         XCTAssertEqual(rows.dropFirst().first?.isReverted, true)
     }

@@ -2157,7 +2157,20 @@
     "Reverted %lld changes" : {
 
     },
+    "Reverted %lld changes to “%@”" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Reverted %1$lld changes to “%2$@”"
+          }
+        }
+      }
+    },
     "Reverted a change" : {
+
+    },
+    "Reverted a change to “%@”" : {
 
     },
     "Review" : {
