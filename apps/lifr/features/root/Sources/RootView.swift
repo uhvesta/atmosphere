@@ -339,6 +339,13 @@ private struct MacRootView: View {
                     .toolbar { addMenu }
                     #if os(macOS)
                         .onPasteCommand(of: [.utf8PlainText]) { _ in store.send(.pasteCommanded) }
+                        // Text from another app lands like ⌘V; a task
+                        // dragged within the list is left to the list.
+                        .dropDestination(for: String.self) { items, _ in
+                            guard !items.allSatisfy({ UUID(uuidString: $0) != nil }) else { return false }
+                            store.send(.textPasted(items.joined(separator: "\n")))
+                            return true
+                        }
                     #endif
             } detail: {
                 NavigationStack {

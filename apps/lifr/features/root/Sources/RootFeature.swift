@@ -443,7 +443,7 @@ package struct RootFeature {
         case textSent(String)
         /// ⌘V on the Mac's list: reads the clipboard for `textPasted`.
         case pasteCommanded
-        /// Text pasted on the list shown: a task for each line where
+        /// Text pasted or dropped on the list shown: a task for each line where
         /// a drop on its sidebar item puts them, or Quick Add elsewhere.
         case textPasted(String?)
         case savedFilter(PresentationAction<SearchFeature.Action>)
