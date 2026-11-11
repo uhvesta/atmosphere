@@ -1,0 +1,25 @@
+[package]
+name = "khodrd"
+description = "Khodr's daemon, and the host role that runs sessions on any machine."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "khodrd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "khodrd"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

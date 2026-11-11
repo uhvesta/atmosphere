@@ -517,6 +517,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "khodr-cli"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "khodr-protoc-gen-prost"
 version = "0.0.0"
 dependencies = [
@@ -530,6 +539,18 @@ name = "khodr-wire"
 version = "0.0.0"
 dependencies = [
  "prost",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "khodrd"
+version = "0.0.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
 ]

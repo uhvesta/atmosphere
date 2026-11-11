@@ -1,0 +1,25 @@
+load("@rules_rust//rust:defs.bzl", "rust_test")
+
+# End-to-end tests: the real khodrd and khodr binaries, as a person runs them.
+rust_test(
+    name = "fork_from_cli_test",
+    srcs = ["fork_from_cli_test.rs"],
+    data = [
+        "//apps/khodr/daemon/cli:khodr",
+        "//apps/khodr/daemon/khodrd",
+    ],
+    env = {
+        "KHODR": "$(rootpath //apps/khodr/daemon/cli:khodr)",
+        "KHODRD": "$(rootpath //apps/khodr/daemon/khodrd)",
+    },
+    deps = [
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

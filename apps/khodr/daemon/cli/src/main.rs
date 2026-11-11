@@ -1,0 +1,345 @@
+//! `khodr`: Khodr's sessions from the command line, through the daemon.
+
+mod error;
+mod print;
+
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use clap::{Parser, Subcommand, ValueEnum};
+use khodr_wire::{Client, pb};
+use tokio::net::UnixStream;
+
+use crate::error::CliError;
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Parser)]
+#[command(
+    name = "khodr",
+    version,
+    about = "Direct Khodr's coding agents from the command line."
+)]
+struct Arguments {
+    /// The daemon's socket; defaults to $KHODR_SOCKET, then the path khodrd
+    /// uses.
+    #[arg(long, global = true)]
+    socket: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Backend {
+    Scripted,
+    Local,
+    Copilot,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Start a session and print its id.
+    Start {
+        #[arg(long, value_enum)]
+        backend: Backend,
+        /// The folder the agent works in, on its host.
+        #[arg(long)]
+        directory: PathBuf,
+        #[arg(long, default_value = "")]
+        name: String,
+        /// The host to run on, as named in the hosts file; this Mac if unset.
+        #[arg(long, default_value = "")]
+        host: String,
+        #[arg(long, default_value = "")]
+        model: String,
+        #[arg(long, default_value = "")]
+        instructions: String,
+        /// A file of settings only the backend reads, such as the scripted
+        /// backend's script.
+        #[arg(long)]
+        backend_config: Option<PathBuf>,
+    },
+    /// Send a message to a session.
+    Send {
+        session: String,
+        text: String,
+        /// Steer the running turn instead of queueing after it.
+        #[arg(long)]
+        steer: bool,
+        /// Print what happens until the session is idle again.
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Answer a permission request.
+    Approve {
+        session: String,
+        request: String,
+        /// Refuse it instead.
+        #[arg(long)]
+        deny: bool,
+    },
+    /// Stop a session's running turn.
+    Abort { session: String },
+    /// Fork a session and print the fork's id.
+    Fork {
+        session: String,
+        /// Keep only the events before this one.
+        #[arg(long, default_value = "")]
+        before: String,
+        #[arg(long, default_value = "")]
+        name: String,
+    },
+    /// Print a session's events.
+    History { session: String },
+    /// Print a session's events, then each new one, until interrupted.
+    Watch { session: String },
+    /// List every host's sessions.
+    Sessions,
+}
+
+fn main() -> ExitCode {
+    let arguments = Arguments::parse();
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("khodr: couldn't start: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match runtime.block_on(run(arguments)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("khodr: {}", khodr_wire::describe(&error));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn connect(socket: Option<PathBuf>) -> Result<Client, CliError> {
+    let path = socket
+        .or_else(khodr_wire::default_socket)
+        .ok_or(CliError::NoSocket)?;
+    let stream = UnixStream::connect(&path)
+        .await
+        .map_err(|source| CliError::Connect { path, source })?;
+    let (reader, writer) = stream.into_split();
+    Ok(Client::connect(reader, writer, pb::Role::Client, VERSION).await?)
+}
+
+async fn run(arguments: Arguments) -> Result<(), CliError> {
+    use pb::request::Kind as Request;
+    use pb::response::Kind as Response;
+    let client = connect(arguments.socket).await?;
+    match arguments.command {
+        Command::Start {
+            backend,
+            directory,
+            name,
+            host,
+            model,
+            instructions,
+            backend_config,
+        } => {
+            let backend_config = match backend_config {
+                Some(path) => std::fs::read_to_string(&path)
+                    .map_err(|source| CliError::ReadBackendConfig { path, source })?,
+                None => String::new(),
+            };
+            let backend = match backend {
+                Backend::Scripted => pb::Backend::Scripted,
+                Backend::Local => pb::Backend::Local,
+                Backend::Copilot => pb::Backend::Copilot,
+            };
+            let request = Request::StartSession(pb::StartSession {
+                backend: backend.into(),
+                working_directory: directory.display().to_string(),
+                model,
+                instructions,
+                name,
+                host,
+                backend_config,
+            });
+            match client.call(request).await? {
+                Response::SessionStarted(pb::SessionStarted {
+                    session: Some(session),
+                }) => println!("{}", session.id),
+                other => return Err(unexpected("the started session", &other)),
+            }
+        }
+        Command::Send {
+            session,
+            text,
+            steer,
+            wait,
+        } => {
+            let mode = if steer {
+                pb::SendMode::Immediate
+            } else {
+                pb::SendMode::Enqueue
+            };
+            let request = Request::SendMessage(pb::SendMessage {
+                session_id: session.clone(),
+                text,
+                mode: mode.into(),
+            });
+            if wait {
+                send_and_wait(&client, &session, request).await?;
+            } else {
+                expect_ok(
+                    client.call(request).await?,
+                    |response| matches!(response, Response::MessageSent(_)),
+                    "MessageSent",
+                )?;
+            }
+        }
+        Command::Approve {
+            session,
+            request,
+            deny,
+        } => {
+            let request = Request::Approve(pb::Approve {
+                session_id: session,
+                permission_request_id: request,
+                approved: !deny,
+            });
+            expect_ok(
+                client.call(request).await?,
+                |response| matches!(response, Response::Approved(_)),
+                "Approved",
+            )?;
+        }
+        Command::Abort { session } => {
+            let request = Request::AbortTurn(pb::AbortTurn {
+                session_id: session,
+            });
+            expect_ok(
+                client.call(request).await?,
+                |response| matches!(response, Response::TurnAborted(_)),
+                "TurnAborted",
+            )?;
+        }
+        Command::Fork {
+            session,
+            before,
+            name,
+        } => {
+            let request = Request::ForkSession(pb::ForkSession {
+                session_id: session,
+                before_event_id: before,
+                name,
+            });
+            match client.call(request).await? {
+                Response::SessionForked(pb::SessionForked {
+                    session: Some(session),
+                }) => println!("{}", session.id),
+                other => return Err(unexpected("the forked session", &other)),
+            }
+        }
+        Command::History { session } => {
+            for event in history(&client, &session).await? {
+                println!("{}", print::event(&event));
+            }
+        }
+        Command::Watch { session } => {
+            let request = Request::WatchSession(pb::WatchSession {
+                session_id: session,
+            });
+            let (_, mut stream) = client.stream(request).await?;
+            while let Some(item) = stream.next().await {
+                println!("{}", print::event(&session_event(item)?));
+            }
+        }
+        Command::Sessions => match client
+            .call(Request::ListSessions(pb::ListSessions {}))
+            .await?
+        {
+            Response::Sessions(sessions) => {
+                for session in &sessions.sessions {
+                    println!("{}", print::session(session));
+                }
+            }
+            other => return Err(unexpected("the sessions", &other)),
+        },
+    }
+    Ok(())
+}
+
+async fn history(client: &Client, session: &str) -> Result<Vec<pb::SessionEvent>, CliError> {
+    let request = pb::request::Kind::ReadHistory(pb::ReadHistory {
+        session_id: session.to_owned(),
+    });
+    match client.call(request).await? {
+        pb::response::Kind::History(history) => Ok(history.events),
+        other => Err(unexpected("the history", &other)),
+    }
+}
+
+/// Sends, then prints the session's new events until it is idle again.
+async fn send_and_wait(
+    client: &Client,
+    session: &str,
+    request: pb::request::Kind,
+) -> Result<(), CliError> {
+    // The watch replays the history first; what is already there isn't new.
+    let seen = history(client, session).await?.len();
+    let watch = pb::request::Kind::WatchSession(pb::WatchSession {
+        session_id: session.to_owned(),
+    });
+    let (_, mut stream) = client.stream(watch).await?;
+    expect_ok(
+        client.call(request).await?,
+        |response| matches!(response, pb::response::Kind::MessageSent(_)),
+        "MessageSent",
+    )?;
+    let mut index = 0;
+    while let Some(item) = stream.next().await {
+        let event = session_event(item)?;
+        index += 1;
+        if index <= seen {
+            continue;
+        }
+        println!("{}", print::event(&event));
+        if matches!(event.kind, Some(pb::session_event::Kind::Idle(_))) {
+            return Ok(());
+        }
+    }
+    Err(CliError::WatchEnded)
+}
+
+fn session_event(item: Result<pb::StreamItem, pb::Error>) -> Result<pb::SessionEvent, CliError> {
+    match item {
+        Ok(pb::StreamItem {
+            kind: Some(pb::stream_item::Kind::SessionEvent(event)),
+        }) => Ok(event),
+        Ok(other) => Err(CliError::Wire(khodr_wire::ClientError::Unexpected {
+            expected: "a session event",
+            got: format!("{other:?}"),
+        })),
+        Err(error) => Err(CliError::Wire(khodr_wire::ClientError::Refused {
+            code: error.code(),
+            message: error.message,
+        })),
+    }
+}
+
+fn expect_ok(
+    response: pb::response::Kind,
+    ok: impl Fn(&pb::response::Kind) -> bool,
+    expected: &'static str,
+) -> Result<(), CliError> {
+    if ok(&response) {
+        Ok(())
+    } else {
+        Err(unexpected(expected, &response))
+    }
+}
+
+fn unexpected(expected: &'static str, got: &pb::response::Kind) -> CliError {
+    CliError::Wire(khodr_wire::ClientError::Unexpected {
+        expected,
+        got: format!("{got:?}"),
+    })
+}

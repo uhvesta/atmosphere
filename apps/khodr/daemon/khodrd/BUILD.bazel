@@ -1,0 +1,45 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# The one binary every machine runs: `khodrd daemon` on your Mac, which the
+# app and the CLI talk to on a local socket, and `khodrd host --stdio` on each
+# machine sessions run on, reached over SSH.
+rust_library(
+    name = "khodrd_lib",
+    srcs = glob(
+        ["src/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_name = "khodrd",
+    deps = [
+        "//apps/khodr/daemon/agent",
+        "//apps/khodr/daemon/wire",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
+    name = "khodrd_test",
+    crate = ":khodrd_lib",
+    deps = ["@crates//:tempfile"],
+)
+
+rust_binary(
+    name = "khodrd",
+    srcs = ["src/main.rs"],
+    visibility = ["//apps/khodr:__subpackages__"],
+    deps = [
+        ":khodrd_lib",
+        "//apps/khodr/daemon/wire",
+        "@crates//:clap",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

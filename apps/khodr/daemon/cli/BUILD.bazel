@@ -1,0 +1,20 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# `khodr`: sessions from the command line, through the daemon's socket.
+rust_binary(
+    name = "khodr",
+    srcs = glob(["src/*.rs"]),
+    visibility = ["//apps/khodr:__subpackages__"],
+    deps = [
+        "//apps/khodr/daemon/wire",
+        "@crates//:clap",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -10,11 +10,13 @@ mod client;
 mod error;
 mod frame;
 mod server;
+mod socket;
 
 pub use client::{Client, Stream};
 pub use error::{ClientError, WireError};
 pub use frame::{MAX_FRAME, read, write};
 pub use server::{Reply, Service, ServiceFuture, serve};
+pub use socket::{SOCKET_ENV, default_socket};
 
 /// The protocol's messages, generated from `khodr/v1/khodr.proto`.
 pub mod pb {
@@ -74,6 +76,18 @@ pub fn error(code: pb::ErrorCode, message: impl Into<String>) -> pb::response::K
         code: code.into(),
         message: message.into(),
     })
+}
+
+/// An error and its causes on one line, for a person to read.
+pub fn describe(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
 }
 
 #[cfg(test)]
