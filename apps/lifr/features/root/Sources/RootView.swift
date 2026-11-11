@@ -1,4 +1,5 @@
 import ChatUI
+import Combine
 import ComposableArchitecture
 import LifrAvenue
 import LifrBoard
@@ -45,9 +46,18 @@ package struct RootView: View {
                 store.send(.backgrounded)
             }
         }
+        .onReceive(Self.dayChanges) { _ in store.send(.dayChanged) }
         .alert($store.scope(state: \.lockAlert, action: \.lockAlert))
         .modifier(ShakeMenu(store: store))
         .task { await store.send(.task).finish() }
+    }
+
+    /// Midnight, or a change of the clock's time zone.
+    private static var dayChanges: AnyPublisher<Notification, Never> {
+        NotificationCenter.default.publisher(for: .NSCalendarDayChanged)
+            .merge(with: NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange))
+            .receive(on: RunLoop.main)
+            .eraseToAnyPublisher()
     }
 
     /// Whether the Undo toast and banners show at the bottom: on iPhone

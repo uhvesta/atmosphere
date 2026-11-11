@@ -729,6 +729,22 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testOnceTheDayChangesTomorrowsTasksAreDueToday() async {
+        records.task("Stretch", in: health, due: 1)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.today.list.rows.map(\.title), [])
+
+        store.dependencies.date.now = now + 24 * 60 * 60
+        await store.send(.dayChanged)
+        await store.receive(\.loaded)
+
+        XCTAssertEqual(store.state.today.list.rows.map(\.title), ["Stretch"])
+        XCTAssertEqual(store.state.upcoming.list.rows.map(\.title), [])
+        await task.cancel()
+    }
+
     func testComingToTheFrontSyncs() async {
         let syncs = LockIsolated(0)
         let store = makeStore(.phone, sync: counting(syncs))

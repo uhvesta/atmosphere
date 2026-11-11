@@ -242,6 +242,9 @@ package struct RootFeature {
         /// The app came to the front: lock it if it was away long enough,
         /// and sync what changed meanwhile.
         case foregrounded
+        /// Midnight passed, or the clock or time zone changed: what's due
+        /// today, overdue or procrastinated is worked out again.
+        case dayChanged
         /// The app went to the background.
         case backgrounded
         /// The lock screen's Unlock, or the lock coming on.
@@ -578,7 +581,12 @@ package struct RootFeature {
                 if state.sync.status != .syncing {
                     effects.append(.run { [sync] _ in _ = await sync.sync() })
                 }
+                // Away overnight, today is another day.
+                effects.append(reload())
                 return .merge(effects)
+
+            case .dayChanged:
+                return reload()
 
             case .syncNowTapped:
                 guard state.sync.status != .syncing else { return .none }
@@ -722,6 +730,11 @@ package struct RootFeature {
     /// Shows `snapshot`'s records on every screen, then schedules their
     /// reminders. Saves made at once, and updates from sync, can arrive in
     /// any order: records earlier than ones shown already are ignored.
+    /// Loads the records again and shows them on every screen, as of now.
+    private func reload() -> Effect<Action> {
+        .run { [store] send in await send(.loaded(Result { try await store.snapshot() })) }
+    }
+
     private func show(_ snapshot: Snapshot, in state: inout State) -> Effect<Action> {
         guard state.saves.isLatest(snapshot) else { return .none }
         let workspace = snapshot.workspace
