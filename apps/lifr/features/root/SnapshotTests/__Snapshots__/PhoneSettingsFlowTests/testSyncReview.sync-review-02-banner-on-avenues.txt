@@ -7,7 +7,7 @@
 [button] "Home, HOME, 0" value: "0 open"
 [button] "Anytime, 2"
 [button] "Later, 0"
-[button] "Logbook, 0"
+[button] "Logbook"
 [button] "Search"
 [button] "Today"
 [button] "Upcoming"

@@ -5,6 +5,8 @@
     [Button/IncrementArrow] ""
     [Button/DecrementArrow] ""
   [StaticText] "" value: "An In Progress task with no activity for longer than this counts as Procrastinated."
+  [Button] "Labels"
+  [StaticText] "" value: "Rename, merge or delete the labels on your tasks."
   [Heading] "Sync"
   [StaticText] "" value: "Status"
   [StaticText] "" value: "Not signed in"

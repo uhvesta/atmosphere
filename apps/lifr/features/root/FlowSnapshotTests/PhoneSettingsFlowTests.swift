@@ -92,6 +92,37 @@ final class PhoneSettingsFlowTests: PhoneFlowTestCase {
         flow.finish()
     }
 
+    /// Settings › Labels: the labels with their task counts, renaming one to
+    /// a name another has, then merging it into that one.
+    func testLabels() async throws {
+        var workspace = Workspace.sample(now: now, timeZone: .gmt)
+        let context = Context(actor: .user(device: "iPhone", surface: .iPhone), now: now)
+        let errand = workspace.createLabel(name: "Errand", in: context)
+        let errands = workspace.createLabel(name: "Errands", in: context)
+        let open = workspace.tasks.values.filter { $0.deletedAt == nil && $0.isOpen }
+            .sorted { $0.title < $1.title }
+        for (index, task) in open.prefix(3).enumerated() {
+            _ = try workspace.edit(
+                task.id, Workspace.TaskEdit(labelIDs: [index == 0 ? errands.id : errand.id]), in: context)
+        }
+        let (store, flow) = app("labels", workspace: workspace)
+        store.isSettingsShown = true
+        await flow.step("opened", image: false)
+        store.send(.settings(.labelsTapped))
+        await flow.step("list")
+        store.send(.settings(.labels(.presented(.rowTapped(errand.id)))))
+        store.send(.settings(.labels(.presented(.edit(.presented(.binding(.set(\.name, "errands"))))))))
+        store.send(.settings(.labels(.presented(.edit(.presented(.saveTapped))))))
+        await flow.step("name-taken")
+        store.send(.settings(.labels(.presented(.edit(.presented(.mergeTapped(errands.id)))))))
+        await flow.step("merge-asks")
+        store.send(.settings(.labels(.presented(.edit(.presented(.confirm(.presented(.merge(errands.id)))))))))
+        await flow.step("merged")
+        XCTAssertEqual(store.settings.labels?.rows.map(\.name), ["Errands"])
+        XCTAssertEqual(store.settings.labels?.rows.first?.taskCount, 3)
+        flow.finish()
+    }
+
     /// Settings, its Activity, Models (with a larger window for Gemma) and
     /// Skills.
     func testSettings() async {

@@ -302,11 +302,19 @@ package struct TaskDetailView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Text(
-                        entry.isComment ? LocalizedStringKey(entry.text) : LocalizedStringKey(stringLiteral: entry.text)
-                    )
-                    .font(entry.isComment ? .body : .callout)
-                    .foregroundStyle(entry.isComment ? .primary : .secondary)
+                    if store.editingCommentID == entry.id {
+                        commentEditor
+                    } else {
+                        Text(
+                            entry.isComment
+                                ? LocalizedStringKey(entry.text) : LocalizedStringKey(stringLiteral: entry.text)
+                        )
+                        .font(entry.isComment ? .body : .callout)
+                        .foregroundStyle(entry.isComment ? .primary : .secondary)
+                        if entry.isEdited {
+                            Text("Edited").font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
                     if entry.canUndo {
                         Button("Undo") { store.send(.historyUndoTapped(entry.id)) }
                             .font(.caption)
@@ -314,10 +322,22 @@ package struct TaskDetailView: View {
                             .frame(maxWidth: .infinity, alignment: .trailing)
                     }
                 }
-                .accessibilityElement(children: .combine)
+                .accessibilityElement(children: store.editingCommentID == entry.id ? .contain : .combine)
                 .accessibilityActions {
                     if entry.canUndo {
                         Button("Undo") { store.send(.historyUndoTapped(entry.id)) }
+                    }
+                    if entry.isMine {
+                        Button("Edit") { store.send(.commentEditTapped(entry.id)) }
+                        Button("Delete") { store.send(.commentDeleteTapped(entry.id)) }
+                    }
+                }
+                .contextMenu {
+                    if entry.isMine {
+                        Button("Edit", systemImage: "pencil") { store.send(.commentEditTapped(entry.id)) }
+                        Button("Delete", systemImage: "trash", role: .destructive) {
+                            store.send(.commentDeleteTapped(entry.id))
+                        }
                     }
                 }
             }
@@ -334,6 +354,23 @@ package struct TaskDetailView: View {
             }
         } header: {
             Text("Activity")
+        }
+        .alert($store.scope(state: \.commentDeletion, action: \.commentDeletion))
+    }
+
+    /// The comment being edited, with Save and Cancel.
+    @ViewBuilder private var commentEditor: some View {
+        if store.editingCommentID != nil {
+            TextField("Comment", text: $store.editedComment, axis: .vertical)
+            .onSubmit { store.send(.commentEditSaved) }
+            HStack {
+                Button("Cancel") { store.send(.commentEditCancelled) }
+                Spacer()
+                Button("Save") { store.send(.commentEditSaved) }
+                    .disabled(store.editedComment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .buttonStyle(.borderless)
+            .font(.callout)
         }
     }
 }

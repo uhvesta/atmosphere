@@ -1,5 +1,7 @@
 [header, text] "Procrastinated"
 [text] "An In Progress task with no activity for longer than this counts as Procrastinated."
+[button] "Labels"
+[text] "Rename, merge or delete the labels on your tasks."
 [header, text] "Sync"
 [text] "Status, Not synced yet"
 [button, toggle] "Sync continuously" value: "1"
@@ -8,4 +10,3 @@
 [header, text] "Privacy"
 [button, toggle] "Lock with Face ID" value: "0"
 [text] "Lifr asks when it opens, and when you come back after a minute away. The app switcher shows nothing while it's locked. Widgets show counts only. Apps you connected keep their access; revoke them in Connected apps on the Mac."
-[button] "Activity"

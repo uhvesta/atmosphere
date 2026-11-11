@@ -10,6 +10,11 @@ package struct TimelineEntry: Identifiable, Hashable, Sendable {
     package var date: Date
     package var text: String
     package var isComment: Bool
+    /// A comment the person wrote, on any of their devices, which they can
+    /// edit or delete.
+    package var isMine = false
+    /// Whether the comment was changed after it was posted.
+    package var isEdited = false
     /// Whether Undo can put back what this change did.
     package var canUndo = false
 }
@@ -32,7 +37,8 @@ extension Workspace {
             .filter { $0.taskID == id && $0.deletedAt == nil }
             .map {
                 TimelineEntry(
-                    id: $0.id, author: $0.author.displayName, date: $0.createdAt, text: $0.body, isComment: true)
+                    id: $0.id, author: $0.author.displayName, date: $0.createdAt, text: $0.body, isComment: true,
+                    isMine: $0.author.kind == .user, isEdited: $0.editedAt != nil)
             }
         let events =
             history

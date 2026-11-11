@@ -53,10 +53,15 @@ package struct TaskDetailFeature {
         package var showsCommentsOnly = false
         package var newSubtaskTitle = ""
         package var newComment = ""
+        /// The comment being edited, and its text as typed.
+        package var editingCommentID: UUID?
+        package var editedComment = ""
         package var banner: Banner?
         @Presents package var subtask: TaskDetailFeature.State?
         @Presents package var prompt: AlertState<StatusPrompt>?
         @Presents package var alert: AlertState<Never>?
+        /// Asks before a comment is deleted.
+        @Presents package var commentDeletion: AlertState<UUID>?
         /// What a Sub task's checkbox can move it to.
         @Presents package var statusPicker: ConfirmationDialogState<StatusPick>?
 
@@ -143,6 +148,11 @@ package struct TaskDetailFeature {
             refreshed.showsCommentsOnly = showsCommentsOnly
             refreshed.newSubtaskTitle = newSubtaskTitle
             refreshed.newComment = newComment
+            if let editingCommentID, refreshed.timeline.contains(where: { $0.id == editingCommentID }) {
+                refreshed.editingCommentID = editingCommentID
+                refreshed.editedComment = editedComment
+            }
+            refreshed.commentDeletion = commentDeletion
             refreshed.newLabelName = newLabelName
             refreshed.banner = banner
             refreshed.saves = saves
@@ -182,6 +192,11 @@ package struct TaskDetailFeature {
         case subtaskToggled(UUID)
         case addSubtaskSubmitted
         case commentSubmitted
+        case commentEditTapped(UUID)
+        case commentEditSaved
+        case commentEditCancelled
+        case commentDeleteTapped(UUID)
+        case commentDeletion(PresentationAction<UUID>)
         /// Undo on a change in the Activity list.
         case historyUndoTapped(UUID)
         case reminderPicked(ReminderChoice)
@@ -321,6 +336,40 @@ package struct TaskDetailFeature {
                 state.newComment = ""
                 return save { [id = state.id] in try await $0.addComment(body, to: id) }
 
+            case .commentEditTapped(let id):
+                guard let entry = state.timeline.first(where: { $0.id == id && $0.isMine }) else { return .none }
+                state.editingCommentID = id
+                state.editedComment = entry.text
+                return .none
+
+            case .commentEditSaved:
+                guard let id = state.editingCommentID else { return .none }
+                let body = state.editedComment.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !body.isEmpty else { return .none }
+                state.editingCommentID = nil
+                guard body != state.timeline.first(where: { $0.id == id })?.text else { return .none }
+                return save { try await $0.editComment(id, body: body) }
+
+            case .commentEditCancelled:
+                state.editingCommentID = nil
+                return .none
+
+            case .commentDeleteTapped(let id):
+                guard state.timeline.contains(where: { $0.id == id && $0.isMine }) else { return .none }
+                state.commentDeletion = AlertState {
+                    TextState("Delete this comment?")
+                } actions: {
+                    ButtonState(role: .destructive, action: id) { TextState("Delete") }
+                    ButtonState(role: .cancel) { TextState("Cancel") }
+                } message: {
+                    TextState("It's deleted on all your devices, and can't be brought back.")
+                }
+                return .none
+
+            case .commentDeletion(.presented(let id)):
+                if state.editingCommentID == id { state.editingCommentID = nil }
+                return save { try await $0.deleteComment(id) }
+
             case .historyUndoTapped(let eventID):
                 return save { try await $0.revert(eventID) }
 
@@ -387,13 +436,14 @@ package struct TaskDetailFeature {
                 }
                 return .none
 
-            case .binding, .prompt, .alert, .statusPicker, .delegate, .subtask:
+            case .binding, .prompt, .alert, .statusPicker, .commentDeletion, .delegate, .subtask:
                 return .none
             }
         }
         .ifLet(\.$subtask, action: \.subtask) { TaskDetailFeature() }
         .ifLet(\.$prompt, action: \.prompt)
         .ifLet(\.$alert, action: \.alert)
+        .ifLet(\.$commentDeletion, action: \.commentDeletion)
         .ifLet(\.$statusPicker, action: \.statusPicker)
     }
 

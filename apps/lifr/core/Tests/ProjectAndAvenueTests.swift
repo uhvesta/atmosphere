@@ -4,6 +4,45 @@ import TestingKit
 
 func projectAndAvenueTests() -> [TestCase] {
     [
+        TestCase("given two labels, when one is renamed to the other's name in any case, then it's refused") {
+            let fixture = try Fixture()
+            let errands = fixture.workspace.createLabel(name: "errands", in: fixture.context)
+            let calls = fixture.workspace.createLabel(name: "calls", in: fixture.context)
+            try expectError(.labelNameTaken("Errands")) {
+                try fixture.workspace.rename(label: calls.id, to: "Errands")
+            }
+            try fixture.workspace.rename(label: errands.id, to: "  Errands ")
+            try expectEqual(fixture.workspace.labels[errands.id]?.name, "Errands")
+            try expectEqual(fixture.workspace.labels[calls.id]?.name, "calls")
+        },
+        TestCase("given a label on tasks, when it merges into another, then they have only the other") {
+            let fixture = try Fixture()
+            let errands = fixture.workspace.createLabel(name: "errands", in: fixture.context)
+            let outside = fixture.workspace.createLabel(name: "outside", in: fixture.context)
+            let both = try fixture.task("Post the parcel")
+            _ = try fixture.workspace.edit(
+                both.id, Workspace.TaskEdit(labelIDs: [errands.id, outside.id]), in: fixture.context)
+            let one = try fixture.task("Buy stamps")
+            _ = try fixture.workspace.edit(one.id, Workspace.TaskEdit(labelIDs: [errands.id]), in: fixture.context)
+            _ = try fixture.workspace.merge(label: errands.id, into: outside.id, in: fixture.context)
+            try expectEqual(fixture.workspace.labels[errands.id], nil)
+            try expectEqual(fixture.workspace.tasks[both.id]?.labelIDs, [outside.id])
+            try expectEqual(fixture.workspace.tasks[one.id]?.labelIDs, [outside.id])
+        },
+        TestCase("given a label on a task, when it's deleted, then the task keeps its other labels") {
+            let fixture = try Fixture()
+            let errands = fixture.workspace.createLabel(name: "errands", in: fixture.context)
+            let outside = fixture.workspace.createLabel(name: "outside", in: fixture.context)
+            let task = try fixture.task("Post the parcel")
+            _ = try fixture.workspace.edit(
+                task.id, Workspace.TaskEdit(labelIDs: [errands.id, outside.id]), in: fixture.context)
+            _ = try fixture.workspace.merge(label: errands.id, into: nil, in: fixture.context)
+            try expectEqual(fixture.workspace.labels.keys.sorted { $0.uuidString < $1.uuidString }, [outside.id])
+            try expectEqual(fixture.workspace.tasks[task.id]?.labelIDs, [outside.id])
+            try expectError(.notFound(.label, errands.id.uuidString)) {
+                _ = try fixture.workspace.merge(label: errands.id, into: nil, in: fixture.context)
+            }
+        },
         TestCase("given a Project, when it's edited, then only the given fields change") {
             let fixture = try Fixture()
             let id = fixture.marathon.id

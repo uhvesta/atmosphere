@@ -361,6 +361,9 @@
     "%lld tasks are due today." : {
 
     },
+    "%lld tasks lose it. To put it back, revert this from Activity in Settings." : {
+
+    },
     "%lld threads" : {
 
     },
@@ -393,6 +396,9 @@
 
     },
     "1 task is due today." : {
+
+    },
+    "1 task loses it. To put it back, revert this from Activity in Settings." : {
 
     },
     "16 bits" : {
@@ -480,6 +486,9 @@
 
     },
     "Add a due date" : {
+
+    },
+    "Add a label from a task’s Labels section." : {
 
     },
     "Add a task or Project" : {
@@ -1058,10 +1067,16 @@
     "Delete All" : {
 
     },
+    "Delete Label" : {
+
+    },
     "Delete all archived conversations?" : {
 
     },
     "Delete all conversations?" : {
+
+    },
+    "Delete this comment?" : {
 
     },
     "Delete “%@”?" : {
@@ -1182,6 +1197,9 @@
 
     },
     "Edit description" : {
+
+    },
+    "Edited" : {
 
     },
     "Editing your message. Sending it writes the reply again." : {
@@ -1412,6 +1430,19 @@
     "It's deleted here and from iCloud, and can't be undone. Tasks it changed stay." : {
 
     },
+    "It's deleted on all your devices, and can't be brought back." : {
+
+    },
+    "Its %lld tasks get “%@” instead and “%@” is deleted. Revert in Activity to undo." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Its %1$lld tasks get “%2$@” instead and “%3$@” is deleted. Revert in Activity to undo."
+          }
+        }
+      }
+    },
     "Its file couldn't be read. Try attaching the photo again." : {
 
     },
@@ -1422,6 +1453,9 @@
 
     },
     "Its next request is refused. It can ask again, and you'd approve it anew." : {
+
+    },
+    "Its tasks get the other label instead, and this one is deleted." : {
 
     },
     "KEY" : {
@@ -1670,6 +1704,22 @@
     "Memory" : {
 
     },
+    "Merge" : {
+
+    },
+    "Merge Into…" : {
+
+    },
+    "Merge “%@” into “%@”?" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Merge “%1$@” into “%2$@”?"
+          }
+        }
+      }
+    },
     "Message" : {
 
     },
@@ -1830,6 +1880,9 @@
     "No Avenues" : {
 
     },
+    "No Labels" : {
+
+    },
     "No Project" : {
 
     },
@@ -1891,6 +1944,9 @@
 
     },
     "No skills on" : {
+
+    },
+    "No task has it. To bring it back, revert this from Activity in Settings." : {
 
     },
     "No task selected" : {
@@ -2187,6 +2243,9 @@
 
     },
     "Rename this conversation." : {
+
+    },
+    "Rename, merge or delete the labels on your tasks." : {
 
     },
     "Rename, move, reschedule or finish tasks and Projects." : {

@@ -310,6 +310,37 @@ package struct Workspace: Hashable, Codable, Sendable {
         return label
     }
 
+    /// Renames a label. A name another label has, ignoring case, is
+    /// refused: merge the two instead.
+    package mutating func rename(label id: UUID, to name: String) throws(LifrError) {
+        guard var label = labels[id] else { throw .notFound(.label, id.uuidString) }
+        let name = try Self.validName(name)
+        let taken = labels.values.contains { $0.id != id && $0.name.caseInsensitiveCompare(name) == .orderedSame }
+        guard !taken else { throw .labelNameTaken(name) }
+        label.name = name
+        labels[id] = label
+    }
+
+    /// Deletes a label, giving every task that had it `other` instead, or
+    /// nothing when `other` is `nil`.
+    package mutating func merge(label id: UUID, into other: UUID?, in context: Context) throws(LifrError) -> Change {
+        guard labels[id] != nil else { throw .notFound(.label, id.uuidString) }
+        if let other, other == id || labels[other] == nil { throw .notFound(.label, other.uuidString) }
+        var change = Change()
+        let tagged = tasks.values.filter { $0.labelIDs.contains(id) }.sorted { $0.id.uuidString < $1.id.uuidString }
+        for task in tagged {
+            var labelIDs = task.labelIDs
+            labelIDs.remove(id)
+            if let other { labelIDs.insert(other) }
+            update(task.id, in: context, &change) { $0.labelIDs = labelIDs }
+            record(
+                .fieldChanged, on: task.id, field: .labels, oldValue: Self.describe(task.labelIDs),
+                newValue: Self.describe(labelIDs), by: context.actor, in: context, &change)
+        }
+        labels[id] = nil
+        return change
+    }
+
     // MARK: - Tasks
 
     /// The fields of a new Task or Sub task.

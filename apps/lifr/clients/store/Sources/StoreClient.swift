@@ -178,9 +178,41 @@ extension StoreClient {
         }
     }
 
+    package func rename(label id: UUID, to name: String) async throws -> Saved {
+        try await save { (workspace, _) throws(LifrError) in
+            try workspace.rename(label: id, to: name)
+            return Change()
+        }
+    }
+
+    /// Deletes the label, or merges it into `other`. Activity reverts it;
+    /// there's no Undo, which would put the tasks back but not the label.
+    package func merge(label id: UUID, into other: UUID?) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            _ = try workspace.merge(label: id, into: other, in: context)
+            return Change()
+        }
+    }
+
     package func addComment(_ body: String, to id: UUID) async throws -> Saved {
         try await save { (workspace, context) throws(LifrError) in
             _ = try workspace.addComment(body, to: id, in: context)
+            return Change()
+        }
+    }
+
+    /// Changes the person's own comment. Others' comments, and agents',
+    /// can't be edited here.
+    package func editComment(_ id: UUID, body: String) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            try workspace.editComment(id, body: body, in: context)
+            return Change()
+        }
+    }
+
+    package func deleteComment(_ id: UUID) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            try workspace.deleteComment(id, in: context)
             return Change()
         }
     }

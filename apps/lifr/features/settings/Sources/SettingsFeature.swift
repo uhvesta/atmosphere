@@ -59,6 +59,7 @@ package struct SettingsFeature {
         /// Kept so the Activity log opens on what's shown.
         package var workspace = Workspace()
         @Presents package var activity: ActivityFeature.State?
+        @Presents package var labels: LabelsFeature.State?
         @Presents package var skills: SkillsFeature.State?
         @Presents package var instructions: InstructionsFeature.State?
         @Presents package var models: ModelsFeature.State?
@@ -77,6 +78,7 @@ package struct SettingsFeature {
             let workspace = snapshot.workspace
             self.workspace = workspace
             activity?.show(snapshot)
+            labels?.show(snapshot)
             procrastinatedAfterDays = workspace.settings.procrastinatedAfterDays
             avenues = workspace.avenues.values
                 .filter { $0.archivedAt == nil }
@@ -110,6 +112,8 @@ package struct SettingsFeature {
         case syncNowTapped
         case syncContinuouslyToggled(Bool)
         case activity(PresentationAction<ActivityFeature.Action>)
+        case labelsTapped
+        case labels(PresentationAction<LabelsFeature.Action>)
         case skillsTapped
         case skills(PresentationAction<SkillsFeature.Action>)
         case instructionsTapped
@@ -265,6 +269,14 @@ package struct SettingsFeature {
                 state.activity = ActivityFeature.State(workspace: state.workspace)
                 return .none
 
+            case .labelsTapped:
+                state.labels = LabelsFeature.State(workspace: state.workspace)
+                return .none
+
+            case .labels(.presented(.delegate(.saved(let snapshot)))):
+                state.show(snapshot)
+                return .send(.delegate(.saved(snapshot)))
+
             case .syncNowTapped:
                 guard state.sync.status != .syncing else { return .none }
                 return .run { [sync] _ in _ = await sync.sync() }
@@ -310,12 +322,13 @@ package struct SettingsFeature {
                 state.alert = .failed("Couldn't change connected apps", error)
                 return .none
 
-            case .sessionChanged(.success), .activity, .skills, .instructions, .models, .bugReports, .revoke, .alert,
-                .delegate:
+            case .sessionChanged(.success), .activity, .labels, .skills, .instructions, .models, .bugReports, .revoke,
+                .alert, .delegate:
                 return .none
             }
         }
         .ifLet(\.$activity, action: \.activity) { ActivityFeature() }
+        .ifLet(\.$labels, action: \.labels) { LabelsFeature() }
         .ifLet(\.$skills, action: \.skills) { SkillsFeature() }
         .ifLet(\.$instructions, action: \.instructions) { InstructionsFeature() }
         .ifLet(\.$models, action: \.models) { ModelsFeature() }

@@ -33,6 +33,11 @@ package struct SettingsView: View {
             } footer: {
                 Text("An In Progress task with no activity for longer than this counts as Procrastinated.")
             }
+            Section {
+                PushButton("Labels") { store.send(.labelsTapped) }
+            } footer: {
+                Text("Rename, merge or delete the labels on your tasks.")
+            }
             SyncSection(store: store)
             LockSection(store: store)
             Section {
@@ -76,6 +81,9 @@ package struct SettingsView: View {
         .navigationTitle("Settings")
         .navigationDestination(item: $store.scope(state: \.activity, action: \.activity)) { store in
             ActivityView(store: store)
+        }
+        .navigationDestination(item: $store.scope(state: \.labels, action: \.labels)) { store in
+            LabelsView(store: store)
         }
         .navigationDestination(item: $store.scope(state: \.skills, action: \.skills)) { store in
             SkillsView(store: store)
