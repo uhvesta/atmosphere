@@ -1,0 +1,27 @@
+[Window/StandardWindow] "Activity"
+  [Outline] ""
+    [Row/OutlineRow] ""
+    [Row/OutlineRow] ""
+      [StaticText] "" value: "Made by"
+      [PopUpButton] "" value: "Anyone"
+    [Row/OutlineRow] ""
+      [StaticText] "" value: "Changed"
+      [PopUpButton] "" value: "Anything"
+    [Row/OutlineRow] ""
+      [StaticText] "" value: "When"
+      [PopUpButton] "" value: "All time"
+    [Row/OutlineRow] ""
+    [Row/OutlineRow] ""
+      [StaticText] "" value: "No changes yet."
+    [Row/OutlineRow] ""
+      [StaticText] "" value: "No changes older than 90 days."
+  [Toolbar] ""
+    [RadioGroup] "Navigation Tab Bar"
+      [RadioButton/Segment] "General" value: "1" id: gearshape
+      [RadioButton/Segment] "Sync & Privacy" value: "0" id: arrow.triangle.2.circlepath.icloud
+      [RadioButton/Segment] "Assistant" value: "0" id: sparkles
+      [RadioButton/Segment] "Agents" value: "0" id: terminal
+    [Button] "Back" id: chevron.backward
+  [Button/CloseButton] ""
+  [Button/ZoomButton] ""
+  [Button/MinimizeButton] ""

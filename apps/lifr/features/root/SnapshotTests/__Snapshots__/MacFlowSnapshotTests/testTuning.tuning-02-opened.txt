@@ -18,8 +18,12 @@
   [Button] "Download GGUF on llama.cpp, Q4_K_M"
   [StaticText] "" value: "Only downloaded formats are compared. Download one to add it; nothing downloads until you tap."
   [Toolbar] ""
+    [RadioGroup] "Navigation Tab Bar"
+      [RadioButton/Segment] "General" value: "0" id: gearshape
+      [RadioButton/Segment] "Sync & Privacy" value: "0" id: arrow.triangle.2.circlepath.icloud
+      [RadioButton/Segment] "Assistant" value: "1" id: sparkles
+      [RadioButton/Segment] "Agents" value: "0" id: terminal
     [Button] "Back" id: chevron.backward
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""
-  [StaticText] "" value: "Tune Gemma 4 E2B"

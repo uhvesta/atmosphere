@@ -76,8 +76,12 @@
   [StaticText] "" value: "A KV cache at 8 or 4 bits keeps less memory for each token read, and its answers drift further from a 16-bit cache's."
   [StaticText] "" value: "Flash attention works out attention in one step, which takes less memory; a cache under 16 bits needs it. Layers not on the GPU run on the CPU."
   [Toolbar] ""
+    [RadioGroup] "Navigation Tab Bar"
+      [RadioButton/Segment] "General" value: "0" id: gearshape
+      [RadioButton/Segment] "Sync & Privacy" value: "0" id: arrow.triangle.2.circlepath.icloud
+      [RadioButton/Segment] "Assistant" value: "1" id: sparkles
+      [RadioButton/Segment] "Agents" value: "0" id: terminal
     [Button] "Back" id: chevron.backward
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""
-  [StaticText] "" value: "Tune Gemma 4 E2B"

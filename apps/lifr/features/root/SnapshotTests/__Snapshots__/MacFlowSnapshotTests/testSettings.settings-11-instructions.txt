@@ -1,0 +1,18 @@
+[Window/StandardWindow] "Instructions"
+  [Heading] "How the assistant should behave"
+  [TextArea] "Instructions" value: "You're the assistant in Lifr, the person's task manager. Be brief and plain, and ask when something isn't clear."
+  [StaticText] "" value: "112 of 600 characters"
+  [StaticText] "" value: "Lifr also tells the assistant about your records, the tools it can use and today's date, so drafts and changes keep working whatever you write."
+  [Heading] "History"
+  [Button, selected] "Lifr's default, In use"
+  [StaticText] "" value: "Every version you save is kept on this device only. Tap one to use it again."
+  [Toolbar] ""
+    [RadioGroup] "Navigation Tab Bar"
+      [RadioButton/Segment] "General" value: "0" id: gearshape
+      [RadioButton/Segment] "Sync & Privacy" value: "0" id: arrow.triangle.2.circlepath.icloud
+      [RadioButton/Segment] "Assistant" value: "1" id: sparkles
+      [RadioButton/Segment] "Agents" value: "0" id: terminal
+    [PopUpButton] "more toolbar items"
+  [Button/CloseButton] ""
+  [Button/ZoomButton] ""
+  [Button/MinimizeButton] ""

@@ -77,8 +77,12 @@
   [StaticText] "" value: "Speaks Persian"
   [StaticText] "" value: "The system voice needs no download. A voice model sounds more natural, and like the other models here it runs on this device. Where it doesn't speak a language, Lifr uses the system voice. Supertonic "
   [Toolbar] ""
+    [RadioGroup] "Navigation Tab Bar"
+      [RadioButton/Segment] "General" value: "0" id: gearshape
+      [RadioButton/Segment] "Sync & Privacy" value: "0" id: arrow.triangle.2.circlepath.icloud
+      [RadioButton/Segment] "Assistant" value: "1" id: sparkles
+      [RadioButton/Segment] "Agents" value: "0" id: terminal
     [Button] "Back" id: chevron.backward
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""
-  [StaticText] "" value: "Models"

@@ -1,0 +1,27 @@
+[Window/StandardWindow] "Settings"
+  [Heading] "Agent access"
+  [StaticText] "" value: "Inbox"
+  [PopUpButton] "" value: "Read and write"
+  [StaticText] "" value: "Health"
+  [PopUpButton] "" value: "Read and write"
+  [StaticText] "" value: "Work"
+  [PopUpButton] "" value: "Read and write"
+  [StaticText] "" value: "Home"
+  [PopUpButton] "" value: "Read and write"
+  [StaticText] "" value: "Agents never see a Hidden Avenue, whatever their grant says."
+  [Heading] "Connected apps"
+  [StaticText] "" value: "No apps yet. When an agent first runs lifr, Lifr asks you to approve it."
+  [Heading] "Command line"
+  [Button] "Install lifr"
+  [StaticText] "" value: "Launch at login"
+  [CheckBox/Switch] "" value: "0"
+  [StaticText] "" value: "Then connect Claude Code with: claude mcp add lifr -- lifr mcp. Launch at login keeps Lifr in the menu bar, so lifr never waits for it to start."
+  [Toolbar] ""
+    [RadioGroup] "Navigation Tab Bar"
+      [RadioButton/Segment] "General" value: "0" id: gearshape
+      [RadioButton/Segment] "Sync & Privacy" value: "0" id: arrow.triangle.2.circlepath.icloud
+      [RadioButton/Segment] "Assistant" value: "0" id: sparkles
+      [RadioButton/Segment] "Agents" value: "1" id: terminal
+  [Button/CloseButton] ""
+  [Button/ZoomButton] ""
+  [Button/MinimizeButton] ""
