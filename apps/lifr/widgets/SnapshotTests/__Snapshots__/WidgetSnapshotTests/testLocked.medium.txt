@@ -1,2 +1,3 @@
 [text] "Today, 5, tasks, 1 overdue"
+[button, link] "Add a Task"
 [text] "Unlock Lifr to see them"

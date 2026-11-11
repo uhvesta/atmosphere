@@ -1,0 +1,3 @@
+[element] "Open Lifr"
+[text] "Today, Open Lifr to see Today"
+[text] "Open Lifr"

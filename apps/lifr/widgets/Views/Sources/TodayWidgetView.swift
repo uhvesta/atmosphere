@@ -1,8 +1,13 @@
+import LifrCore
 import LifrGlance
 import SwiftUI
+import WidgetKit
 
 /// Today in a widget: how many tasks, how many overdue, and the first few
 /// titles where there's room. Only counts while the app lock is on.
+///
+/// Tapping the header opens Today, a title opens its task, a task's circle
+/// opens it with the statuses to pick, and + opens Quick Add.
 package struct TodayWidgetView: View {
     /// How much room the widget has.
     package enum Size: Hashable, Sendable {
@@ -27,6 +32,10 @@ package struct TodayWidgetView: View {
     }
 
     package var body: some View {
+        content.widgetURL(DeepLink.today.url)
+    }
+
+    @ViewBuilder private var content: some View {
         if let glance, size == .medium {
             // Side by side: a medium widget is too short to stack them.
             HStack(alignment: .top, spacing: 16) {
@@ -70,6 +79,14 @@ package struct TodayWidgetView: View {
     }
 
     private func header(_ glance: TodayGlance) -> some View {
+        HStack(alignment: .top) {
+            count(glance)
+            if size == .large { Spacer(minLength: 0) }
+            if size != .small { add }
+        }
+    }
+
+    private func count(_ glance: TodayGlance) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Label("Today", systemImage: "sun.max.fill")
                 .font(.headline)
@@ -91,6 +108,18 @@ package struct TodayWidgetView: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// Opens Quick Add.
+    @ViewBuilder private var add: some View {
+        if let url = DeepLink.add(title: nil).url {
+            Link(destination: url) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.orange)
+            }
+            .accessibilityLabel("Add a Task")
+        }
+    }
+
     private var locked: some View {
         Label("Unlock Lifr to see them", systemImage: "lock.fill")
             .font(.caption)
@@ -103,22 +132,36 @@ package struct TodayWidgetView: View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(glance.rows.prefix(size.rows)) { row in
                 HStack(spacing: 6) {
-                    Circle()
-                        .fill(row.isOverdue ? Color.red : Color.orange)
-                        .frame(width: 6, height: 6)
-                        .accessibilityHidden(true)
-                    Text(row.title)
-                        .font(.subheadline)
-                        .lineLimit(1)
+                    link(.task(row.id, picksStatus: true)) {
+                        Image(systemName: "circle")
+                            .font(.subheadline)
+                            .foregroundStyle(row.isOverdue ? Color.red : Color.orange)
+                    }
+                    .accessibilityLabel(Text("Change Status of \(row.title)"))
+                    link(.task(row.id, picksStatus: false)) {
+                        Text(row.title)
+                            .font(.subheadline)
+                            .foregroundStyle(Color.primary)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .accessibilityLabel(row.isOverdue ? Text("\(row.title), overdue") : Text(row.title))
                 }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(row.isOverdue ? Text("\(row.title), overdue") : Text(row.title))
             }
             if glance.rows.count > size.rows {
                 Text("\(glance.rows.count - size.rows) more")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    /// `label`, opening `link` when tapped.
+    @ViewBuilder private func link(_ link: DeepLink, @ViewBuilder label: () -> some View) -> some View {
+        if let url = link.url {
+            Link(destination: url, label: label)
+        } else {
+            label()
         }
     }
 }

@@ -1,2 +1,3 @@
 [text] "Today, 0, tasks"
+[button, link] "Add a Task"
 [text] "Nothing due today"

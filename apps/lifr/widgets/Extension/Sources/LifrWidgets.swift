@@ -1,3 +1,5 @@
+import AppIntents
+import LifrCore
 import LifrGlance
 import LifrWidgetViews
 import OSLog
@@ -9,6 +11,9 @@ import WidgetKit
 struct LifrWidgets: WidgetBundle {
     var body: some Widget {
         TodayWidget()
+        #if os(iOS)
+            NewTaskControl()
+        #endif
     }
 }
 
@@ -21,9 +26,38 @@ struct TodayWidget: Widget {
         }
         .configurationDisplayName("Today")
         .description("What's due today, and how much is overdue.")
-        .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
+        .supportedFamilies(families)
+    }
+
+    private var families: [WidgetFamily] {
+        #if os(iOS)
+            [.systemSmall, .systemMedium, .systemLarge, .accessoryCircular, .accessoryRectangular, .accessoryInline]
+        #else
+            [.systemSmall, .systemMedium, .systemLarge]
+        #endif
     }
 }
+
+#if os(iOS)
+    /// A Control Center and Action button control that opens Quick Add.
+    struct NewTaskControl: ControlWidget {
+        var body: some ControlWidgetConfiguration {
+            StaticControlConfiguration(kind: "NewTask") {
+                ControlWidgetButton(action: Self.openQuickAdd) {
+                    Label("New Task", systemImage: "plus.circle")
+                }
+            }
+            .displayName("New Task")
+            .description("Opens Quick Add in Lifr.")
+        }
+
+        private static var openQuickAdd: OpenURLIntent {
+            var intent = OpenURLIntent()
+            if let url = DeepLink.add(title: nil).url { intent.url = url }
+            return intent
+        }
+    }
+#endif
 
 struct TodayEntry: TimelineEntry {
     var date: Date
@@ -35,18 +69,20 @@ struct TodayEntry: TimelineEntry {
 /// widgets after each change, so the timeline only asks again once the
 /// days it has run out.
 struct TodayProvider: TimelineProvider {
-    func placeholder(in context: Context) -> TodayEntry {
+    func placeholder(in context: TimelineProviderContext) -> TodayEntry {
         TodayEntry(
             date: Date(),
             glance: TodayGlance(asOf: Date(), from: .distantPast, until: .distantFuture, rows: [], locked: true))
     }
 
-    func getSnapshot(in context: Context, completion: @escaping (TodayEntry) -> Void) {
+    func getSnapshot(in context: TimelineProviderContext, completion: @escaping @Sendable (TodayEntry) -> Void) {
         let now = Date()
         completion(TodayEntry(date: now, glance: glance()?.at(now)))
     }
 
-    func getTimeline(in context: Context, completion: @escaping (Timeline<TodayEntry>) -> Void) {
+    func getTimeline(
+        in context: TimelineProviderContext, completion: @escaping @Sendable (Timeline<TodayEntry>) -> Void
+    ) {
         let now = Date()
         let days = glance()?.days.filter { $0.until > now } ?? []
         let entries = days.map { TodayEntry(date: max($0.from, now), glance: $0) }
@@ -70,14 +106,13 @@ struct TodayEntryView: View {
     var entry: TodayEntry
 
     var body: some View {
-        TodayWidgetView(glance: entry.glance, size: size)
-    }
-
-    private var size: TodayWidgetView.Size {
         switch family {
-        case .systemMedium: .medium
-        case .systemLarge, .systemExtraLarge: .large
-        default: .small
+        case .accessoryCircular: TodayAccessoryView(glance: entry.glance, shape: .circular)
+        case .accessoryRectangular: TodayAccessoryView(glance: entry.glance, shape: .rectangular)
+        case .accessoryInline: TodayAccessoryView(glance: entry.glance, shape: .inline)
+        case .systemMedium: TodayWidgetView(glance: entry.glance, size: .medium)
+        case .systemLarge, .systemExtraLarge: TodayWidgetView(glance: entry.glance, size: .large)
+        default: TodayWidgetView(glance: entry.glance, size: .small)
         }
     }
 }

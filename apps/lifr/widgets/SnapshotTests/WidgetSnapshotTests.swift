@@ -68,5 +68,37 @@ final class WidgetSnapshotTests: XCTestCase {
 
     func testBeforeLifrWroteToday() {
         assertWidget(nil, .small, named: "small")
+        assertLockScreen(nil, named: "lock-screen")
+    }
+
+    func testLockScreen() {
+        assertLockScreen(
+            TodayGlance(asOf: now, from: now, until: now + 86_400, rows: rows, locked: false), named: "today")
+        assertLockScreen(
+            TodayGlance(asOf: now, from: now, until: now + 86_400, rows: rows, locked: true), named: "locked")
+        assertLockScreen(
+            TodayGlance(asOf: now, from: now, until: now + 86_400, rows: [], locked: false), named: "nothing-due")
+    }
+
+    /// The three Lock Screen shapes, as on iPhone 17, one above the other.
+    private func assertLockScreen(
+        _ glance: TodayGlance?, named name: String, file: StaticString = #filePath, testName: String = #function,
+        line: UInt = #line
+    ) {
+        let size = CGSize(width: 220, height: 200)
+        let view = VStack(alignment: .leading, spacing: 12) {
+            TodayAccessoryView(glance: glance, shape: .circular).frame(width: 72, height: 72)
+            TodayAccessoryView(glance: glance, shape: .rectangular).frame(width: 172, height: 76)
+            TodayAccessoryView(glance: glance, shape: .inline).frame(width: 200, height: 20, alignment: .leading)
+        }
+        .padding(8)
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .foregroundStyle(.white)
+        .background(Color(white: 0.2))
+        assertSnapshot(
+            of: view, as: .image(layout: .fixed(width: size.width, height: size.height)), named: name, file: file,
+            testName: testName, line: line)
+        assertSnapshot(
+            of: view, as: .accessibilityTree(size: size), named: name, file: file, testName: testName, line: line)
     }
 }

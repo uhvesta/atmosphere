@@ -66,7 +66,10 @@ swift_library(
     module_name = "LifrWidgetViews",
     target_compatible_with = ["//bazel/xcode"],
     visibility = ["//apps/lifr/features/root:__pkg__"],
-    deps = [":glance"],
+    deps = [
+        ":glance",
+        "//apps/lifr/core",
+    ],
 )
 
 swift_library(
@@ -78,6 +81,7 @@ swift_library(
     deps = [
         ":glance",
         ":views",
+        "//apps/lifr/core",
     ],
 )
 
