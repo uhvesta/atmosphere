@@ -204,6 +204,33 @@ final class QuickAddFeatureTests: XCTestCase {
         return try await store.dependencies.store.load()
     }
 
+    func testPastedLinesAddATaskEachAsOneChangeReadingEachLikeTheTitle() async throws {
+        _ = (health, home)
+        let store = try quickAdd()
+
+        await store.send(.binding(.set(\.avenueID, home.id)))
+        await store.send(.linesPasted("- Call the plumber tomorrow\n\n2. Buy paint !high\n[ ] Fix the gate\n"))
+        let workspace = try await saved(store)
+
+        let tasks = workspace.tasks.values.sorted { $0.title < $1.title }
+        XCTAssertEqual(tasks.map(\.title), ["Buy paint", "Call the plumber", "Fix the gate"])
+        XCTAssertEqual(Set(tasks.map(\.avenueID)), [home.id])
+        XCTAssertEqual(tasks[1].dueDate?.description, "2026-11-04")
+        XCTAssertEqual(tasks[0].priority, .high)
+        XCTAssertEqual(workspace.journal.count, records.workspace.journal.count + 1, "one change to undo")
+    }
+
+    func testPastingNoLinesAddsNothingAndSaysWhy() async throws {
+        _ = home
+        let store = try quickAdd()
+
+        await store.send(.linesPasted(" \n- \n"))
+
+        XCTAssertNotNil(store.state.error)
+        let workspace = try await store.dependencies.store.load()
+        XCTAssertTrue(workspace.tasks.isEmpty)
+    }
+
     func testCancellingClosesWithoutAddingTheTask() async throws {
         _ = home
         let store = try quickAdd()

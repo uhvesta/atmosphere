@@ -69,6 +69,8 @@
       [RadioButton/Segment] "Project" value: "0"
     [StaticText] "" value: "Title"
     [TextField] "" value: "Paint the fence"
+    [StaticText] "" value: "Add a task for each line copied"
+    [Button, disabled] "Paste" help: "Adds a task for each line copied"
     [StaticText] "" value: "Avenue"
     [PopUpButton] "" value: "Inbox"
     [StaticText] "" value: "Due"

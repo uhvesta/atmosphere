@@ -3172,6 +3172,9 @@
     "The assistant stopped without replying. Send the message again." : {
 
     },
+    "The clipboard has no lines to add. Copy a list, one task a line." : {
+
+    },
     "The clipboard has no text. Copy the other assistant's whole reply, then type /paste again." : {
 
     },

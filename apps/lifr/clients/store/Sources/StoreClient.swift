@@ -162,6 +162,15 @@ extension StoreClient {
         try await save { (workspace, context) throws(LifrError) in try workspace.createTask(new, in: context) }
     }
 
+    /// Creates each task in order, as one change: one Undo removes them all.
+    package func createTasks(_ tasks: [Workspace.NewTask]) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            var change = Change()
+            for new in tasks { change.merge(try workspace.createTask(new, in: context)) }
+            return change
+        }
+    }
+
     package func edit(_ id: UUID, _ edit: Workspace.TaskEdit) async throws -> Saved {
         try await save { (workspace, context) throws(LifrError) in try workspace.edit(id, edit, in: context) }
     }

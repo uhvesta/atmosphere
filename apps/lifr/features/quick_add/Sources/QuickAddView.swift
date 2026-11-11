@@ -27,6 +27,20 @@ package struct QuickAddView: View {
                     .focused($titleFocused)
                     .onSubmit { store.send(.addTapped) }
                     .submitLabel(.done)
+                if store.parent == nil, store.kind == .task {
+                    // The system's button reads the clipboard without
+                    // asking, as the person pressed it.
+                    HStack {
+                        Text("Add a task for each line copied")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        PasteButton(payloadType: String.self) { strings in
+                            store.send(.linesPasted(strings.joined(separator: "\n")))
+                        }
+                        .labelStyle(.titleAndIcon)
+                        .accessibilityHint("Adds a task for each line copied")
+                    }
+                }
             } footer: {
                 if store.entry?.parts.isEmpty == false || store.error != nil {
                     VStack(alignment: .leading, spacing: 8) {

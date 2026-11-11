@@ -1,5 +1,6 @@
 [button] "Cancel"
 [button] "Add"
+[text] "Add a task for each line copied"
 [button, toggle] "Add a time" value: "0"
 [button, toggle] "Add Sub tasks next" value: "0"
 [text] "Adds this task, then keeps Quick Add open for its Sub tasks."

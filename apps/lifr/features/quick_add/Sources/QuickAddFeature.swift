@@ -129,6 +129,9 @@ package struct QuickAddFeature {
     package enum Action: BindableAction {
         case binding(BindingAction<State>)
         case addTapped
+        /// Text pasted to add a task for each of its lines, each read as
+        /// the title is.
+        case linesPasted(String)
         /// A recognised part tapped: read its words as plain text.
         case partIgnored(String)
         case doneTapped
@@ -181,21 +184,29 @@ package struct QuickAddFeature {
                 if let parent = state.parent {
                     new.parentID = parent.id
                 } else {
-                    let entry = state.entry
-                    new.avenueID = entry?.avenueID ?? state.avenueID
-                    new.projectID = entry?.avenueID == nil ? state.projectID : entry?.projectID
-                    new.priority = entry?.priority ?? state.priority
-                    new.dueDate = entry?.dueDate ?? dueDate(state)
-                    new.dueTime =
-                        entry?.dueTime
-                        ?? (state.addsTime && new.dueDate != nil ? TimeOfDay(state.pickedTime, in: timeZone) : nil)
-                    new.labelIDs = entry?.labelIDs ?? []
-                    if new.dueDate != nil, let trigger = state.defaultReminder.trigger(dueTime: new.dueTime) {
-                        new.reminders = [trigger]
-                    }
+                    new = task(title, entry: state.entry, in: state)
                 }
                 return .run { [store, new] send in
                     await send(.added(Result { try await store.createTask(new) }))
+                }
+
+            case .linesPasted(let text):
+                guard state.parent == nil, state.kind == .task else { return .none }
+                let tasks = Self.lines(text).compactMap { line -> Workspace.NewTask? in
+                    let entry = QuickEntry(line, today: state.today, in: state.workspace, monthFirst: state.monthFirst)
+                    let title = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !title.isEmpty, entry.avenueID != nil || state.avenueID != nil else { return nil }
+                    return task(title, entry: entry, in: state)
+                }
+                guard !tasks.isEmpty else {
+                    state.error = String(localized: "The clipboard has no lines to add. Copy a list, one task a line.")
+                    return .none
+                }
+                state.error = nil
+                // Each line is a task of its own, not a parent of the next.
+                state.subtaskMode = false
+                return .run { [store, tasks] send in
+                    await send(.added(Result { try await store.createTasks(tasks) }))
                 }
 
             case .added(.success(let saved)):
@@ -234,6 +245,48 @@ package struct QuickAddFeature {
             case .binding, .delegate:
                 return .none
             }
+        }
+    }
+
+    /// A new top-level task called `title`: what `entry` read from its
+    /// line, then what's picked below the field.
+    private func task(_ title: String, entry: QuickEntry?, in state: State) -> Workspace.NewTask {
+        var new = Workspace.NewTask(title: title)
+        new.avenueID = entry?.avenueID ?? state.avenueID
+        new.projectID = entry?.avenueID == nil ? state.projectID : entry?.projectID
+        new.priority = entry?.priority ?? state.priority
+        new.dueDate = entry?.dueDate ?? dueDate(state)
+        new.dueTime =
+            entry?.dueTime
+            ?? (state.addsTime && new.dueDate != nil ? TimeOfDay(state.pickedTime, in: timeZone) : nil)
+        new.labelIDs = entry?.labelIDs ?? []
+        if new.dueDate != nil, let trigger = state.defaultReminder.trigger(dueTime: new.dueTime) {
+            new.reminders = [trigger]
+        }
+        return new
+    }
+
+    /// The lines of pasted text, without list markers such as "- ", "* ",
+    /// "1. " or "[ ] ", and without blank ones.
+    static func lines(_ text: String) -> [String] {
+        text.components(separatedBy: .newlines).compactMap { line in
+            var rest = Substring(line.trimmingCharacters(in: .whitespaces))
+            for marker in ["- ", "* ", "• ", "+ "] where rest.hasPrefix(marker) {
+                rest = rest.dropFirst(marker.count)
+                break
+            }
+            if let dot = rest.firstIndex(where: { $0 == "." || $0 == ")" }), dot > rest.startIndex,
+                rest[..<dot].allSatisfy(\.isNumber), rest[rest.index(after: dot)...].first == " "
+            {
+                rest = rest[rest.index(dot, offsetBy: 2)...]
+            }
+            for box in ["[ ] ", "[x] ", "[X] "] where rest.hasPrefix(box) {
+                rest = rest.dropFirst(box.count)
+                break
+            }
+            let title = rest.trimmingCharacters(in: .whitespaces)
+            // A marker with nothing after it, such as a lone "-".
+            return title.allSatisfy({ "-*•+".contains($0) }) ? nil : title
         }
     }
 
