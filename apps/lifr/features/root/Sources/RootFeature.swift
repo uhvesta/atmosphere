@@ -408,6 +408,9 @@ package struct RootFeature {
         case savedFilterTapped(UUID)
         /// A saved filter's Move Up or Move Down.
         case savedFilterMoved(UUID, up: Bool)
+        /// Tasks dragged onto a sidebar item: an Avenue or Project moves
+        /// them there, Today makes them due today and Upcoming tomorrow.
+        case tasksDropped([UUID], on: SidebarItem)
         case savedFilter(PresentationAction<SearchFeature.Action>)
         case conversations(ConversationsFeature.Action)
         case avenue(AvenueFeature.Action)
@@ -717,6 +720,9 @@ package struct RootFeature {
                 state.savedFilter = SearchFeature.State(
                     saved: saved, workspace: workspace, now: now, timeZone: timeZone)
                 return .none
+
+            case .tasksDropped(let ids, let item):
+                return dropped(ids, on: item, in: state)
 
             case .savedFilterMoved(let id, let up):
                 let ids = state.workspace?.sortedSavedFilters.map(\.id) ?? []
@@ -1275,6 +1281,38 @@ package struct RootFeature {
     }
 
     /// `action` for the list in `slot`.
+    /// Saves what dropping `ids` on `item` means, as one change, through
+    /// the list shown so it shows the result or why it was refused.
+    private func dropped(_ ids: [UUID], on item: SidebarItem, in state: State) -> Effect<Action> {
+        guard let workspace = state.workspace, let slot = state.currentList else { return .none }
+        let tasks = ids.compactMap { workspace.tasks[$0] }
+        let save: @Sendable () async throws -> Saved
+        switch item {
+        case .scope(.avenue(let avenueID)):
+            let moving = tasks.filter { $0.avenueID != avenueID || $0.projectID != nil }.map(\.id)
+            guard !moving.isEmpty else { return .none }
+            save = { [store] in try await store.move(moving, toAvenue: avenueID, project: nil) }
+        case .scope(.project(let projectID)):
+            guard let project = workspace.projects[projectID] else { return .none }
+            let moving = tasks.filter { $0.projectID != projectID }.map(\.id)
+            guard !moving.isEmpty else { return .none }
+            save = { [store] in try await store.move(moving, toAvenue: project.avenueID, project: projectID) }
+        case .today, .upcoming:
+            let today = CalendarDate(now, in: timeZone)
+            let day = item == .today ? today : today.adding(days: 1)
+            let edits = tasks.compactMap { task in Workspace.TaskEdit.due(day, for: task).map { (task.id, $0) } }
+            guard !edits.isEmpty else { return .none }
+            save = { [store] in try await store.edit(edits) }
+        default:
+            return .none
+        }
+        return .run { [feedback] send in
+            let saved = await Result { try await save() }
+            if case .success = saved { await feedback(.tap) }
+            await send(list(slot, .saved(saved)))
+        }
+    }
+
     private func list(_ slot: ListSlot, _ action: TaskListFeature.Action) -> Action {
         switch slot {
         case .today: .today(.list(action))

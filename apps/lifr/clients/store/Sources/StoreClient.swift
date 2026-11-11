@@ -175,6 +175,26 @@ extension StoreClient {
         try await save { (workspace, context) throws(LifrError) in try workspace.edit(id, edit, in: context) }
     }
 
+    /// Edits each task in order, as one change: one Undo puts them all back.
+    package func edit(_ edits: [(UUID, Workspace.TaskEdit)]) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            var change = Change()
+            for (id, edit) in edits { change.merge(try workspace.edit(id, edit, in: context)) }
+            return change
+        }
+    }
+
+    /// Moves each task as `move(_:toAvenue:project:)` does, as one change.
+    package func move(_ ids: [UUID], toAvenue avenueID: UUID, project projectID: UUID?) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in
+            var change = Change()
+            for id in ids {
+                change.merge(try workspace.move(id, toAvenue: avenueID, project: projectID, in: context))
+            }
+            return change
+        }
+    }
+
     /// `Workspace.move`: a top-level task and its Sub tasks to another Avenue
     /// or Project.
     package func move(_ id: UUID, toAvenue avenueID: UUID, project projectID: UUID?) async throws -> Saved {

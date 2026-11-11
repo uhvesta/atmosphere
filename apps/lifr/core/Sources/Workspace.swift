@@ -448,6 +448,22 @@ package struct Workspace: Hashable, Codable, Sendable {
             self.dueTime = dueTime
             self.labelIDs = labelIDs
         }
+
+        /// Makes `task` due on `day`, keeping its time. A task that runs
+        /// over days moves as a whole, and one that would start after
+        /// `day` starts on it. `nil` when it's already due then.
+        package static func due(_ day: CalendarDate, for task: LifrTask) -> TaskEdit? {
+            guard task.dueDate != day else { return nil }
+            var edit = TaskEdit(dueDate: .some(day))
+            if let start = task.startDate {
+                if let due = task.dueDate {
+                    edit.startDate = .some(start.adding(days: due.days(until: day)))
+                } else if start > day {
+                    edit.startDate = .some(day)
+                }
+            }
+            return edit
+        }
     }
 
     package mutating func edit(_ id: UUID, _ edit: TaskEdit, in context: Context) throws(LifrError) -> Change {

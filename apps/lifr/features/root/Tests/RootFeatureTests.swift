@@ -437,6 +437,58 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testDroppingTasksOnASidebarAvenueOrProjectMovesThem() async throws {
+        let races = records.project("Races", in: health)
+        let home = records.avenue("HOME", "Home")
+        let run = records.task("Run", in: health, due: 0)
+        let stretch = records.task("Stretch", in: health, due: 0)
+        let warmUp = records.task("Warm up", in: health, parent: run)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.tasksDropped([run.id, stretch.id], on: .scope(.project(races.id))))
+        await store.receive(\.today.delegate.saved)
+        let moved = try XCTUnwrap(store.state.workspace)
+        XCTAssertEqual(moved.tasks[run.id]?.projectID, races.id)
+        XCTAssertEqual(moved.tasks[stretch.id]?.projectID, races.id)
+        XCTAssertEqual(moved.tasks[warmUp.id]?.projectID, races.id, "a Sub task follows its parent")
+
+        await store.send(.tasksDropped([run.id], on: .scope(.avenue(home.id))))
+        await store.receive(\.today.delegate.saved)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.avenueID, home.id)
+        XCTAssertNil(store.state.workspace?.tasks[run.id]?.projectID)
+
+        await store.send(.tasksDropped([warmUp.id], on: .scope(.avenue(health.id))))
+        await store.receive(\.today.list.saved.failure)
+        XCTAssertEqual(store.state.workspace?.tasks[warmUp.id]?.avenueID, home.id, "a Sub task stays with its parent")
+        await task.cancel()
+    }
+
+    func testDroppingTasksOnTodayOrUpcomingMakesThemDueThenKeepingTheTimeAndSpan() async throws {
+        let race = records.task("Race", in: health, due: 3, at: "09:00", starts: 1)
+        let run = records.task("Run", in: health, due: 0)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.tasksDropped([race.id], on: .today))
+        await store.receive(\.today.delegate.saved)
+        let today = try XCTUnwrap(store.state.workspace?.tasks[race.id])
+        XCTAssertEqual(today.dueDate, try CalendarDate("2026-11-03"))
+        XCTAssertEqual(today.dueTime, race.dueTime)
+        XCTAssertEqual(today.startDate, try CalendarDate("2026-11-01"))
+
+        await store.send(.tasksDropped([race.id], on: .upcoming))
+        await store.receive(\.today.delegate.saved)
+        XCTAssertEqual(store.state.workspace?.tasks[race.id]?.dueDate, try CalendarDate("2026-11-04"))
+
+        // Already due today: nothing to save.
+        await store.send(.tasksDropped([run.id], on: .today))
+        await store.send(.tasksDropped([run.id], on: .calendar))
+        await task.cancel()
+    }
+
     func testLeavingAListClosesItsTaskAndLeavingTheAssistantClosesItsChat() async {
         let run = records.task("Run", in: health, due: 0)
         let store = makeStore(.mac)

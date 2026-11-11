@@ -96,16 +96,8 @@ package struct CalendarFeature {
                 return .none
 
             case .dropped(let id, let day):
-                guard let task = state.list.workspace?.tasks[id], task.dueDate != day else { return .none }
-                var edit = Workspace.TaskEdit(dueDate: .some(day))
-                // A task that runs over days moves as a whole.
-                if let start = task.startDate {
-                    if let due = task.dueDate {
-                        edit.startDate = .some(start.adding(days: due.days(until: day)))
-                    } else if start > day {
-                        edit.startDate = .some(day)
-                    }
-                }
+                guard let task = state.list.workspace?.tasks[id], let edit = Workspace.TaskEdit.due(day, for: task)
+                else { return .none }
                 return .run { [store, edit, feedback] send in
                     let saved = await Result { try await store.edit(id, edit) }
                     if case .success = saved { await feedback(.tap) }

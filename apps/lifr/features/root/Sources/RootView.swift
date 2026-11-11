@@ -495,9 +495,11 @@ private struct Sidebar: View {
         Label("Today", systemImage: "sun.max")
             .badge(store.today.list.rows.count)
             .tag(RootFeature.SidebarItem.today)
+            .modifier(TaskDrop(item: .today, store: store))
         Label("Upcoming", systemImage: "calendar")
             .badge(store.upcoming.list.rows.count)
             .tag(RootFeature.SidebarItem.upcoming)
+            .modifier(TaskDrop(item: .upcoming, store: store))
         Label("Calendar", systemImage: "square.grid.3x3")
             .tag(RootFeature.SidebarItem.calendar)
         shelf(.anytime)
@@ -553,6 +555,7 @@ private struct AvenueItems: View {
         }
         .badge(avenue.openCount)
         .tag(RootFeature.SidebarItem.scope(.avenue(avenue.id)))
+        .modifier(TaskDrop(item: .scope(.avenue(avenue.id)), store: store))
         .contextMenu {
             Button("New Task in \(avenue.name)") { store.send(.newTaskInTapped(.avenue(avenue.id))) }
             Button("New Project…") { store.send(.newProjectTapped(avenue.id)) }
@@ -566,6 +569,7 @@ private struct AvenueItems: View {
                 .padding(.leading)
                 .badge(project.openCount)
                 .tag(RootFeature.SidebarItem.scope(.project(project.id)))
+                .modifier(TaskDrop(item: .scope(.project(project.id)), store: store))
                 .contextMenu {
                     Button("New Task in \(project.name)") { store.send(.newTaskInTapped(.project(project.id))) }
                     Divider()
@@ -574,6 +578,27 @@ private struct AvenueItems: View {
                         move: { store.send(.avenues(.moveProject(project.id, up: $0))) })
                 }
         }
+    }
+}
+
+/// Takes tasks dragged from a list onto a sidebar item, highlighting the
+/// item while a drag is over it.
+private struct TaskDrop: ViewModifier {
+    var item: RootFeature.SidebarItem
+    var store: StoreOf<RootFeature>
+    @State private var isTargeted = false
+
+    func body(content: Content) -> some View {
+        content
+            .dropDestination(for: String.self) { ids, _ in
+                let dropped = ids.compactMap(UUID.init(uuidString:))
+                store.send(.tasksDropped(dropped, on: item))
+                return !dropped.isEmpty
+            } isTargeted: {
+                isTargeted = $0
+            }
+            .listRowBackground(
+                isTargeted ? RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.2)) : nil)
     }
 }
 
