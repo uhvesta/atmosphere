@@ -16,7 +16,9 @@ package struct AvenueFeature {
     package struct State: Equatable {
         package var scope: AvenueScope
         package var title: String
-        package var grouping: Grouping
+        /// How the list is grouped, remembered per Avenue or Project on this
+        /// device.
+        @Shared package var grouping: Grouping
         package var list: TaskListFeature.State
         package var newProjectName: String?
         /// The Project's fields, when the scope is a Project.
@@ -24,13 +26,21 @@ package struct AvenueFeature {
         @Presents package var editAvenue: EditAvenueFeature.State?
 
         package init(
-            scope: AvenueScope, workspace: Workspace, grouping: Grouping = .status, now: Date, timeZone: TimeZone
+            scope: AvenueScope, workspace: Workspace, grouping: Grouping? = nil, now: Date, timeZone: TimeZone
         ) {
             self.scope = scope
-            self.grouping = grouping
+            let id =
+                switch scope {
+                case .avenue(let id): "avenue-\(id.uuidString)"
+                case .project(let id): "project-\(id.uuidString)"
+                }
+            let shared = Shared(wrappedValue: Grouping.status, .appStorage("lifrGrouping-\(id)"))
+            if let grouping { shared.withLock { $0 = grouping } }
+            if case .project = scope, shared.wrappedValue == .project { shared.withLock { $0 = .status } }
+            _grouping = shared
             title = Self.title(of: scope, in: workspace)
             list = TaskListFeature.State(
-                query: .scope(scope, by: grouping), workspace: workspace, now: now, timeZone: timeZone)
+                query: .scope(scope, by: shared.wrappedValue), workspace: workspace, now: now, timeZone: timeZone)
             if case .project(let id) = scope {
                 project = ProjectDetailFeature.State(id: id, workspace: workspace)
             }
@@ -100,7 +110,7 @@ package struct AvenueFeature {
         Reduce { state, action in
             switch action {
             case .groupingPicked(let grouping):
-                state.grouping = grouping
+                state.$grouping.withLock { $0 = grouping }
                 state.list.query = .scope(state.scope, by: grouping)
                 if let snapshot = state.list.snapshot {
                     state.list.show(snapshot, now: now, timeZone: timeZone)

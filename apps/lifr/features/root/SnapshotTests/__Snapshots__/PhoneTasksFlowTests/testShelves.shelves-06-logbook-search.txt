@@ -1,0 +1,13 @@
+[button] "Avenues" id: BackButton
+[button] "More"
+[header] "Logbook"
+[searchField] "Search" value: "card"
+[header, text] "Today"
+[button] "Pick up a birthday card" value: "Done, INBOX-0019"
+[text] "“Pick up a birthday card” is Done"
+[button] "Undo"
+[button] "Search"
+[button] "Today"
+[button] "Upcoming"
+[button, selected] "Avenues"
+[button] "Assistant"

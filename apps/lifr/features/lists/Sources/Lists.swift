@@ -62,7 +62,7 @@ extension TaskQuery {
             "Nothing closed yet", systemImage: "book.closed",
             description: String(localized: "Tasks you mark Done or Won’t Do show up here.")),
         trailingActions: [.pickStatus],
-        adds: nil
+        adds: nil, searches: true
     ) { workspace, now, timeZone in
         let today = CalendarDate(now, in: timeZone)
         let closed = workspace.listedTasks

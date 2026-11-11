@@ -75,4 +75,18 @@ final class GroupingTests: XCTestCase {
         XCTAssertTrue(avenue.groupings.contains(.project))
         XCTAssertFalse(project.groupings.contains(.project))
     }
+
+    func testTheGroupingIsRememberedForEachAvenue() {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let home = records.avenue("HOME", "Home")
+        let work = records.avenue("WORK", "Work")
+        let workspace = records.workspace
+        var first = AvenueFeature.State(scope: .avenue(home.id), workspace: workspace, now: now, timeZone: .gmt)
+        first.$grouping.withLock { $0 = .priority }
+
+        let again = AvenueFeature.State(scope: .avenue(home.id), workspace: workspace, now: now, timeZone: .gmt)
+        let other = AvenueFeature.State(scope: .avenue(work.id), workspace: workspace, now: now, timeZone: .gmt)
+        XCTAssertEqual(again.grouping, .priority)
+        XCTAssertEqual(other.grouping, .status)
+    }
 }

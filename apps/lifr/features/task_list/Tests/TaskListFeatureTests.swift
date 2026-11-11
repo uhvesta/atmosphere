@@ -27,10 +27,11 @@ final class TaskListFeatureTests: XCTestCase {
     }
 
     private func load(
-        reordering: Bool = false, client: StoreClient? = nil
+        reordering: Bool = false, searching: Bool = false, client: StoreClient? = nil
     ) async -> TestStoreOf<TaskListFeature> {
         var query = open
         query.reorders = reordering
+        query.searches = searching
         let store = TestStore(initialState: TaskListFeature.State(query: query)) {
             TaskListFeature()
         } withDependencies: { [now, records] in
@@ -53,6 +54,35 @@ final class TaskListFeatureTests: XCTestCase {
         let store = await load()
 
         XCTAssertEqual(store.state.sections.map(\.id), ["todo", "inProgress"])
+    }
+
+    func testSearchingKeepsRowsWhoseTitleOrCodeMatchesAndDropsEmptySections() async {
+        records.task("Stretch", in: health)
+        let run = records.task("Plan long runs", in: health, status: .inProgress)
+        let store = await load(searching: true)
+
+        await store.send(.searchChanged("  long "))
+        XCTAssertEqual(store.state.rows.map(\.title), ["Plan long runs"])
+        XCTAssertEqual(store.state.sections.map(\.id), ["inProgress"])
+
+        await store.send(.searchChanged(run.code.rawValue))
+        XCTAssertEqual(store.state.rows.map(\.title), ["Plan long runs"])
+
+        await store.send(.searchChanged("swim"))
+        XCTAssertTrue(store.state.isEmpty)
+        XCTAssertTrue(store.state.isSearching)
+
+        await store.send(.searchChanged(""))
+        XCTAssertEqual(store.state.rows.count, 2)
+    }
+
+    func testAListThatDoesntSearchIgnoresTheSearchText() async {
+        records.task("Stretch", in: health)
+        let store = await load()
+
+        await store.send(.searchChanged("swim"))
+        XCTAssertFalse(store.state.isSearching)
+        XCTAssertEqual(store.state.rows.map(\.title), ["Stretch"])
     }
 
     func testSortingByTitleOrdersEachSectionAToZ() async {

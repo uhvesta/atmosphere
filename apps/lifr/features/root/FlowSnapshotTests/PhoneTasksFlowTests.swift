@@ -108,6 +108,14 @@ final class PhoneTasksFlowTests: PhoneFlowTestCase {
         await flow.step("later")
         store.shownShelf = .logbook
         await flow.step("logbook")
+        let closed = try XCTUnwrap(store.logbook.rows.first)
+        let word = try XCTUnwrap(closed.title.split(separator: " ").last.map(String.init))
+        store.send(.logbook(.searchChanged(word.lowercased())))
+        await flow.step("logbook-search")
+        XCTAssertEqual(store.logbook.rows.first?.id, closed.id)
+        store.send(.logbook(.searchChanged("zzz")))
+        await flow.step("logbook-no-results")
+        XCTAssertTrue(store.logbook.isEmpty)
         flow.finish()
     }
 

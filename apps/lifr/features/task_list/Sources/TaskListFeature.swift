@@ -28,6 +28,8 @@ package struct TaskListFeature {
         @Presents package var alert: AlertState<Never>?
         /// The order within sections, remembered per list on this device.
         @Shared package var sort: TaskSort
+        /// What the search field filters rows by, in a list that searches.
+        package var searchText = ""
 
         package init(query: TaskQuery) {
             self.query = query
@@ -49,6 +51,11 @@ package struct TaskListFeature {
 
         package var isEmpty: Bool { sections.allSatisfy(\.rows.isEmpty) }
 
+        /// Whether rows are being filtered by the search field.
+        package var isSearching: Bool { query.searches && !searchTerm.isEmpty }
+
+        private var searchTerm: String { searchText.trimmingCharacters(in: .whitespacesAndNewlines) }
+
         package var rows: [TaskRowData] { sections.flatMap(\.rows) }
 
         /// The records shown, with their place in the store's order.
@@ -59,7 +66,16 @@ package struct TaskListFeature {
         package mutating func show(_ snapshot: Snapshot, now: Date, timeZone: TimeZone) {
             guard saves.isLatest(snapshot) else { return }
             workspace = snapshot.workspace
-            sections = query.sections(snapshot.workspace, now, timeZone).filter { !$0.rows.isEmpty }
+            sections = query.sections(snapshot.workspace, now, timeZone)
+            if isSearching {
+                let term = searchTerm
+                for index in sections.indices {
+                    sections[index].rows.removeAll {
+                        !$0.title.localizedStandardContains(term) && !$0.code.localizedStandardContains(term)
+                    }
+                }
+            }
+            sections.removeAll { $0.rows.isEmpty }
             let sort = sorts.contains(sort) ? sort : .smart
             if sort != .smart {
                 let tasks = snapshot.workspace.tasks
@@ -89,6 +105,7 @@ package struct TaskListFeature {
         case saved(Result<Saved, any Error>)
         case bannerUndoTapped
         case sortPicked(TaskSort)
+        case searchChanged(String)
         /// Rows dragged within a section, as `onMove` reports them.
         case moved(section: String, from: IndexSet, to: Int)
         case bannerDismissed
@@ -179,6 +196,11 @@ package struct TaskListFeature {
 
             case .sortPicked(let sort):
                 state.$sort.withLock { $0 = sort }
+                if let snapshot = state.snapshot { state.show(snapshot, now: now, timeZone: timeZone) }
+                return .none
+
+            case .searchChanged(let text):
+                state.searchText = text
                 if let snapshot = state.snapshot { state.show(snapshot, now: now, timeZone: timeZone) }
                 return .none
 

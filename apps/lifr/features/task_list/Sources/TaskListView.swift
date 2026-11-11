@@ -54,7 +54,9 @@ package struct TaskListView<Header: View>: View {
             }
         }
         .overlay {
-            if !emptyBelowHeader, store.workspace != nil, store.isEmpty {
+            if store.isSearching, store.isEmpty {
+                ContentUnavailableView.search(text: store.searchText)
+            } else if !emptyBelowHeader, store.workspace != nil, store.isEmpty {
                 empty
             }
         }
@@ -75,7 +77,21 @@ package struct TaskListView<Header: View>: View {
                 }
             }
         }
+        .modifier(SearchField(store: store))
         .modifier(TaskListPresentations(store: store))
+    }
+}
+
+/// The search field of a list that searches, such as the Logbook.
+private struct SearchField: ViewModifier {
+    var store: StoreOf<TaskListFeature>
+
+    func body(content: Content) -> some View {
+        if store.query.searches {
+            content.searchable(text: Binding(get: { store.searchText }, set: { store.send(.searchChanged($0)) }))
+        } else {
+            content
+        }
     }
 }
 

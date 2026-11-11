@@ -1,0 +1,13 @@
+[button] "Avenues" id: BackButton
+[button] "More"
+[header] "Logbook"
+[searchField] "Search" value: "zzz"
+[text] "No Results for “zzz”"
+[text] "Check the spelling or try a new search."
+[text] "“Pick up a birthday card” is Done"
+[button] "Undo"
+[button] "Search"
+[button] "Today"
+[button] "Upcoming"
+[button, selected] "Avenues"
+[button] "Assistant"

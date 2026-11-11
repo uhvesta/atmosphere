@@ -32,12 +32,15 @@ package struct TaskQuery: Equatable, Sendable {
     /// Whether rows can be dragged into a manual order. Only lists of one
     /// Avenue or Project can, since every task has one order.
     package var reorders: Bool
+    /// Whether the list has a search field, filtering rows by title or code.
+    package var searches: Bool
     package var sections: @Sendable (_ workspace: Workspace, _ now: Date, _ timeZone: TimeZone) -> [TaskSection]
 
     package init(
         key: String, listID: String? = nil, empty: Empty,
         trailingActions: [RowAction] = [.status(.done), .status(.wontDo), .pickStatus],
         adds: NewTaskDefaults? = NewTaskDefaults(), reorders: Bool = false,
+        searches: Bool = false,
         sections: @escaping @Sendable (Workspace, Date, TimeZone) -> [TaskSection]
     ) {
         self.key = key
@@ -46,12 +49,14 @@ package struct TaskQuery: Equatable, Sendable {
         self.trailingActions = trailingActions
         self.adds = adds
         self.reorders = reorders
+        self.searches = searches
         self.sections = sections
     }
 
     package static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.key == rhs.key && lhs.listID == rhs.listID && lhs.empty == rhs.empty
             && lhs.trailingActions == rhs.trailingActions && lhs.adds == rhs.adds && lhs.reorders == rhs.reorders
+            && lhs.searches == rhs.searches
     }
 }
 
