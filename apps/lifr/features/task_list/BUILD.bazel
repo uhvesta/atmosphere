@@ -12,7 +12,9 @@ swift_library(
     visibility = ["//apps/lifr/features:__subpackages__"],
     deps = [
         "//apps/libs/kits/chatui",
+        "//apps/lifr/clients/feedback",
         "//apps/lifr/clients/store",
+        "//apps/lifr/clients/sync",
         "//apps/lifr/core",
         "//apps/lifr/features/task_detail",
         "//apps/lifr/ui",
@@ -29,7 +31,9 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     deps = [
         ":task_list",
+        "//apps/lifr/clients/feedback",
         "//apps/lifr/clients/store",
+        "//apps/lifr/clients/sync",
         "//apps/lifr/core",
         "//apps/lifr/features/task_detail",
         "//apps/lifr/ui",
@@ -50,7 +54,9 @@ lifr_snapshot_test(
     srcs = glob(["SnapshotTests/*.swift"]),
     deps = [
         ":task_list",
+        "//apps/lifr/clients/feedback",
         "//apps/lifr/clients/store",
+        "//apps/lifr/clients/sync",
         "//apps/lifr/core",
         "//apps/lifr/ui",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

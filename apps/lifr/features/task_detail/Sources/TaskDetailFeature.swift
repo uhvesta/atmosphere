@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrCore
+import LifrFeedbackClient
 import LifrRemindersClient
 import LifrStoreClient
 import LifrUI
@@ -252,6 +253,7 @@ package struct TaskDetailFeature {
     }
 
     @Dependency(\.store) private var store
+    @Dependency(\.feedback) private var feedback
     @Dependency(\.reminders) private var reminders
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
@@ -263,7 +265,7 @@ package struct TaskDetailFeature {
         Reduce { state, action in
             switch action {
             case .statusPicked(let status):
-                return save { [id = state.id] in try await $0.setStatus(status, id) }
+                return setStatus(status, state.id)
 
             case .priorityPicked(let priority):
                 return edit(state, Workspace.TaskEdit(priority: priority))
@@ -375,7 +377,7 @@ package struct TaskDetailFeature {
                 return .none
 
             case .statusPicker(.presented(let pick)):
-                return save { try await $0.setStatus(pick.status, pick.task) }
+                return setStatus(pick.status, pick.task)
 
             case .addSubtaskSubmitted:
                 let title = state.newSubtaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -501,7 +503,7 @@ package struct TaskDetailFeature {
                 } else {
                     state.alert = .failed("Couldn't change the task", error)
                 }
-                return .none
+                return .run { [feedback] _ in await feedback(.warning) }
 
             case .binding, .prompt, .alert, .statusPicker, .commentDeletion, .delegate, .subtask:
                 return .none
@@ -532,6 +534,14 @@ package struct TaskDetailFeature {
 
     private func edit(_ state: State, _ edit: Workspace.TaskEdit) -> Effect<Action> {
         save { [id = state.id] in try await $0.edit(id, edit) }
+    }
+
+    private func setStatus(_ status: TaskStatus, _ id: UUID) -> Effect<Action> {
+        save { [feedback] in
+            let saved = try await $0.setStatus(status, id)
+            await feedback(Feedback(status: status))
+            return saved
+        }
     }
 
     private func save(_ operation: @escaping @Sendable (StoreClient) async throws -> Saved) -> Effect<Action> {

@@ -75,6 +75,9 @@ package struct TaskListView<Header: View>: View {
             }
         }
         .task { await store.send(.task).finish() }
+        #if os(iOS)
+            .refreshable { await store.send(.pulled).finish() }
+        #endif
         .toolbar {
             ToolbarItem(placement: .secondaryAction) {
                 Menu {

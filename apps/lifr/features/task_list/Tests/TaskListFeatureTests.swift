@@ -1,7 +1,9 @@
 import ComposableArchitecture
 import Foundation
 import LifrCore
+import LifrFeedbackClient
 import LifrStoreClient
+import LifrSyncClient
 import LifrTaskDetail
 import LifrTaskList
 import XCTest
@@ -189,6 +191,56 @@ final class TaskListFeatureTests: XCTestCase {
         await store.receive(\.rowTapped)
 
         XCTAssertEqual(store.state.detail?.subtasks.map(\.title), ["Read"])
+    }
+
+    func testDoneFeelsLikeSuccessAnotherStatusLikeATapAndOpeningLikeNothing() async {
+        let stretch = records.task("Stretch", in: health)
+        let run = records.task("Run", in: health)
+        let store = await load()
+        let (feedback, played) = FeedbackClient.recording()
+        store.dependencies.feedback = feedback
+
+        await store.send(.rowTapped(stretch.id))
+        XCTAssertEqual(played.value, [])
+        await store.send(.rowAction(stretch.id, .status(.done)))
+        await store.receive(\.delegate.saved)
+        await store.send(.rowAction(run.id, .status(.inProgress)))
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(played.value, [.success, .tap])
+    }
+
+    func testPullingSyncsAndSaysWhySyncCantRunOnlyOnce() async {
+        let store = await load()
+        let syncs = LockIsolated(0)
+        var sync = SyncClient.off
+        sync.sync = {
+            syncs.withValue { $0 += 1 }
+            return SyncState(status: .failed(.noAccount))
+        }
+        store.dependencies.sync = sync
+
+        await store.send(.pulled)
+        await store.receive(\.pullFailed)
+        XCTAssertNotNil(store.state.alert)
+        await store.send(.alert(.dismiss))
+
+        await store.send(.pulled)
+        await store.receive(\.pullFailed)
+        XCTAssertNil(store.state.alert)
+        XCTAssertEqual(syncs.value, 2)
+    }
+
+    func testARefusedChangeWarns() async {
+        let review = records.task("Review", in: health)
+        records.task("Read", in: health, parent: review)
+        let store = await load()
+        let (feedback, played) = FeedbackClient.recording()
+        store.dependencies.feedback = feedback
+
+        await store.send(.rowAction(review.id, .status(.done)))
+        await store.receive(\.saved)
+        await store.finish()
+        XCTAssertEqual(played.value, [.warning])
     }
 
     func testWontDoPlusFinishClosesEverything() async {

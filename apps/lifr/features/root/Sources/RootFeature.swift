@@ -7,6 +7,7 @@ import LifrBugReport
 import LifrCalendar
 import LifrConversations
 import LifrCore
+import LifrFeedbackClient
 import LifrGlance
 import LifrGlanceClient
 import LifrLists
@@ -400,6 +401,7 @@ package struct RootFeature {
     @Dependency(\.sync) private var sync
     @Dependency(\.continuousClock) private var clock
     @Dependency(\.reminders) private var reminders
+    @Dependency(\.feedback) private var feedback
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
     @Dependency(\.lock) private var lock
@@ -730,7 +732,7 @@ package struct RootFeature {
             case .undone(.success(let saved)):
                 // Undoing isn't a change to undo in turn.
                 state.$lastChange.withLock { $0 = nil }
-                return show(saved.snapshot, in: &state)
+                return .merge(show(saved.snapshot, in: &state), .run { [feedback] _ in await feedback(.tap) })
 
             case .undone(.failure(let error)):
                 state.undoAlert = .failed("Couldn't undo", error)

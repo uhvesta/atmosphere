@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import LifrCore
+import LifrFeedbackClient
 import LifrStoreClient
 import LifrTaskList
 
@@ -34,6 +35,7 @@ package struct CalendarFeature {
     }
 
     @Dependency(\.store) private var store
+    @Dependency(\.feedback) private var feedback
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
 
@@ -85,8 +87,10 @@ package struct CalendarFeature {
                         edit.startDate = .some(day)
                     }
                 }
-                return .run { [store, edit] send in
-                    await send(.list(.saved(Result { try await store.edit(id, edit) })))
+                return .run { [store, edit, feedback] send in
+                    let saved = await Result { try await store.edit(id, edit) }
+                    if case .success = saved { await feedback(.tap) }
+                    await send(.list(.saved(saved)))
                 }
 
             case .list:

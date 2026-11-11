@@ -1,7 +1,9 @@
 import ComposableArchitecture
 import Foundation
 import LifrCore
+import LifrFeedbackClient
 import LifrStoreClient
+import LifrSyncClient
 import LifrTaskDetail
 import LifrUI
 
@@ -26,6 +28,9 @@ package struct TaskListFeature {
         /// Every status, from a row's Status swipe.
         @Presents package var statusPicker: ConfirmationDialogState<StatusPick>?
         @Presents package var alert: AlertState<Never>?
+        /// Whether a pull already said why sync can't run, so the next pull
+        /// just ends.
+        package var explainedSync = false
         /// The order within sections, remembered per list on this device.
         @Shared package var sort: TaskSort
         /// What the search field filters rows by, in a list that searches.
@@ -109,6 +114,9 @@ package struct TaskListFeature {
     package enum Action {
         /// The view appeared: load the records if they aren't yet.
         case task
+        /// Pull to sync; ends when the sync does.
+        case pulled
+        case pullFailed(String)
         case loaded(Result<Workspace, any Error>)
         /// The records changed elsewhere, such as in another tab or a sync.
         case show(Snapshot)
@@ -151,6 +159,8 @@ package struct TaskListFeature {
     }
 
     @Dependency(\.store) private var store
+    @Dependency(\.feedback) private var feedback
+    @Dependency(\.sync) private var sync
     @Dependency(\.date.now) private var now
     @Dependency(\.timeZone) private var timeZone
 
@@ -222,10 +232,31 @@ package struct TaskListFeature {
                 guard let retry = answer.retry else { return .none }
                 return setStatus(retry.status, retry.task, cascade: true)
 
+            case .pulled:
+                return .run { [sync] send in
+                    if case .failed(let error) = await sync.sync().status { await send(.pullFailed(error.description)) }
+                }
+
+            case .pullFailed(let reason):
+                guard !state.explainedSync else { return .none }
+                state.explainedSync = true
+                state.alert = AlertState {
+                    TextState("Couldn't sync")
+                } actions: {
+                    ButtonState(role: .cancel) { TextState("OK") }
+                } message: {
+                    TextState(reason)
+                }
+                return .none
+
             case .bannerUndoTapped:
                 guard let change = state.banner?.undo else { return .none }
                 state.banner = nil
-                return save { try await $0.undo(change) }
+                return save { [feedback] in
+                    let saved = try await $0.undo(change)
+                    await feedback(.tap)
+                    return saved
+                }
 
             case .sortPicked(let sort):
                 state.$sort.withLock { $0 = sort }
@@ -274,7 +305,7 @@ package struct TaskListFeature {
                 } else {
                     state.alert = .failed("Couldn't change the task", error)
                 }
-                return .none
+                return .run { [feedback] _ in await feedback(.warning) }
 
             case .detail(.presented(.delegate(.saved(let snapshot)))):
                 state.show(snapshot, now: now, timeZone: timeZone)
@@ -376,7 +407,11 @@ package struct TaskListFeature {
     }
 
     private func setStatus(_ status: TaskStatus, _ id: UUID, cascade: Bool = false) -> Effect<Action> {
-        save { try await $0.setStatus(status, id, cascade) }
+        save { [feedback] in
+            let saved = try await $0.setStatus(status, id, cascade)
+            await feedback(Feedback(status: status))
+            return saved
+        }
     }
 
     private func save(_ operation: @escaping @Sendable (StoreClient) async throws -> Saved) -> Effect<Action> {

@@ -11,6 +11,7 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     visibility = ["//apps/lifr/features:__subpackages__"],
     deps = [
+        "//apps/lifr/clients/feedback",
         "//apps/lifr/clients/reminders",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
@@ -28,6 +29,7 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     deps = [
         ":task_detail",
+        "//apps/lifr/clients/feedback",
         "//apps/lifr/clients/reminders",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
@@ -49,6 +51,7 @@ lifr_snapshot_test(
     srcs = glob(["SnapshotTests/*.swift"]),
     deps = [
         ":task_detail",
+        "//apps/lifr/clients/feedback",
         "//apps/lifr/clients/reminders",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
