@@ -50,6 +50,9 @@
     "%@ deleted it, and it was changed here." : {
 
     },
+    "%@ has no due date now." : {
+
+    },
     "%@ has no settings of its own to change." : {
 
     },
@@ -619,7 +622,13 @@
     "Added Sub task %@" : {
 
     },
+    "Added your comment to %@." : {
+
+    },
     "Added “%@”" : {
+
+    },
+    "Adds a comment to a task in Lifr." : {
 
     },
     "Adds a task to Lifr, due today unless you pick otherwise." : {
@@ -880,7 +889,13 @@
     "Change Projects" : {
 
     },
+    "Change Status" : {
+
+    },
     "Change Status…" : {
+
+    },
+    "Change a Task's Status" : {
 
     },
     "Change its status" : {
@@ -899,6 +914,9 @@
 
     },
     "Changed %lld tasks" : {
+
+    },
+    "Changed the status of %@." : {
 
     },
     "Changes older than 90 days can be looked at but not reverted." : {
@@ -965,6 +983,9 @@
 
     },
     "Comment on %@" : {
+
+    },
+    "Comment on a Task" : {
 
     },
     "Comment on tasks" : {
@@ -1826,6 +1847,9 @@
     "Lifr is locked" : {
 
     },
+    "Lifr is locked. Open Lifr and unlock it to change tasks." : {
+
+    },
     "Lifr is locked. Open Lifr and unlock it to finish tasks." : {
 
     },
@@ -2049,6 +2073,9 @@
     "Moved %@ to the Trash" : {
 
     },
+    "Moved %@." : {
+
+    },
     "Moved %lld tasks" : {
 
     },
@@ -2056,6 +2083,9 @@
 
     },
     "Moved to the trash" : {
+
+    },
+    "Moves a task in Lifr to another day, or leaves it with none." : {
 
     },
     "Moving a task moves its Sub tasks with it." : {
@@ -2342,10 +2372,16 @@
     "Open Lifr to see the task." : {
 
     },
+    "Open a Task" : {
+
+    },
     "Open the Calendar" : {
 
     },
     "Open the task" : {
+
+    },
+    "Opens a task in Lifr." : {
 
     },
     "Opens it" : {
@@ -2620,6 +2656,9 @@
     "Reschedule" : {
 
     },
+    "Reschedule a Task" : {
+
+    },
     "Reschedule…" : {
 
     },
@@ -2816,6 +2855,9 @@
 
     },
     "Set to Procrastinated by hand. It stays until you change its status." : {
+
+    },
+    "Sets a task in Lifr to To Do, In Progress, Done or another status." : {
 
     },
     "Settings" : {
@@ -3107,6 +3149,9 @@
 
     },
     "The assistant stopped without replying. Send the message again." : {
+
+    },
+    "The comment is empty. Say or type what to add." : {
 
     },
     "The draft fills in the fields below on this device. Check it before you save." : {
@@ -3449,13 +3494,22 @@
     "What's overdue?" : {
 
     },
+    "What's the comment?" : {
+
+    },
     "When" : {
 
     },
     "Where the conversation is" : {
 
     },
+    "Which status?" : {
+
+    },
     "Which task did you finish?" : {
+
+    },
+    "Which task?" : {
 
     },
     "Window" : {

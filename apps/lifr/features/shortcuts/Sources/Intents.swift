@@ -1,5 +1,6 @@
 import AppIntents
 import Foundation
+import LifrCore
 
 /// A task, for Shortcuts and Siri.
 package struct TaskEntity: AppEntity {
@@ -155,6 +156,123 @@ package struct FinishTaskIntent: AppIntent {
     }
 }
 
+/// A status, for Shortcuts and Siri.
+package enum StatusOption: String, AppEnum {
+    case todo, inProgress, procrastinated, done, wontDo
+
+    package static let typeDisplayRepresentation: TypeDisplayRepresentation = "Status"
+    package static let caseDisplayRepresentations: [StatusOption: DisplayRepresentation] = [
+        .todo: "To Do", .inProgress: "In Progress", .procrastinated: "Procrastinated", .done: "Done",
+        .wontDo: "Won't Do",
+    ]
+
+    var status: TaskStatus {
+        switch self {
+        case .todo: .todo
+        case .inProgress: .inProgress
+        case .procrastinated: .procrastinated
+        case .done: .done
+        case .wontDo: .wontDo
+        }
+    }
+}
+
+/// Changes a task's status, which Shortcuts asks for when it isn't set.
+package struct SetStatusIntent: AppIntent {
+    package static let title: LocalizedStringResource = "Change a Task's Status"
+    package static let description = IntentDescription(
+        "Sets a task in Lifr to To Do, In Progress, Done or another status.")
+
+    @Parameter(title: "Task", requestValueDialog: "Which task?")
+    package var task: TaskEntity
+    @Parameter(title: "Status", requestValueDialog: "Which status?")
+    package var status: StatusOption
+
+    @AppDependency private var shortcuts: Shortcuts
+
+    package init() {}
+
+    package static var parameterSummary: some ParameterSummary {
+        Summary("Set \(\.$task) to \(\.$status)")
+    }
+
+    package func perform() async throws -> some IntentResult & ProvidesDialog {
+        let task = try await shortcuts.setStatus(status.status, of: task.id)
+        return .result(dialog: "Changed the status of \(task.name).")
+    }
+}
+
+/// Moves a task's due date.
+package struct RescheduleIntent: AppIntent {
+    package static let title: LocalizedStringResource = "Reschedule a Task"
+    package static let description = IntentDescription("Moves a task in Lifr to another day, or leaves it with none.")
+
+    @Parameter(title: "Task", requestValueDialog: "Which task?")
+    package var task: TaskEntity
+    @Parameter(title: "Due", kind: .date)
+    package var date: Date?
+
+    @AppDependency private var shortcuts: Shortcuts
+
+    package init() {}
+
+    package static var parameterSummary: some ParameterSummary {
+        Summary("Move \(\.$task) to \(\.$date)")
+    }
+
+    package func perform() async throws -> some IntentResult & ProvidesDialog {
+        let task = try await shortcuts.reschedule(task.id, to: date)
+        return .result(dialog: date == nil ? "\(task.name) has no due date now." : "Moved \(task.name).")
+    }
+}
+
+/// Adds a comment to a task.
+package struct AddCommentIntent: AppIntent {
+    package static let title: LocalizedStringResource = "Comment on a Task"
+    package static let description = IntentDescription("Adds a comment to a task in Lifr.")
+
+    @Parameter(title: "Task", requestValueDialog: "Which task?")
+    package var task: TaskEntity
+    @Parameter(title: "Comment", requestValueDialog: "What's the comment?")
+    package var text: String
+
+    @AppDependency private var shortcuts: Shortcuts
+
+    package init() {}
+
+    package static var parameterSummary: some ParameterSummary {
+        Summary("Comment \(\.$text) on \(\.$task)")
+    }
+
+    package func perform() async throws -> some IntentResult & ProvidesDialog {
+        let task = try await shortcuts.comment(text, on: task.id)
+        return .result(dialog: "Added your comment to \(task.name).")
+    }
+}
+
+/// Opens a task in Lifr, after the lock if it's on.
+package struct OpenTaskIntent: AppIntent {
+    package static let title: LocalizedStringResource = "Open a Task"
+    package static let description = IntentDescription("Opens a task in Lifr.")
+    package static let openAppWhenRun = true
+
+    @Parameter(title: "Task", requestValueDialog: "Which task?")
+    package var task: TaskEntity
+
+    package init() {}
+
+    package static var parameterSummary: some ParameterSummary {
+        Summary("Open \(\.$task)")
+    }
+
+    @MainActor
+    package func perform() async throws -> some IntentResult & OpensIntent {
+        var open = OpenURLIntent()
+        if let url = DeepLink.task(task.id, picksStatus: false).url { open.url = url }
+        return .result(opensIntent: open)
+    }
+}
+
 /// What Siri offers without setting anything up.
 package struct LifrAppShortcuts: AppShortcutsProvider {
     package static var appShortcuts: [AppShortcut] {
@@ -170,5 +288,13 @@ package struct LifrAppShortcuts: AppShortcutsProvider {
             intent: FinishTaskIntent(),
             phrases: ["Finish a task in \(.applicationName)", "Finish \(\.$task) in \(.applicationName)"],
             shortTitle: "Finish a Task", systemImageName: "checkmark.circle")
+        AppShortcut(
+            intent: SetStatusIntent(),
+            phrases: ["Change a task's status in \(.applicationName)", "Set \(\.$task) in \(.applicationName)"],
+            shortTitle: "Change Status", systemImageName: "circle.dotted")
+        AppShortcut(
+            intent: OpenTaskIntent(),
+            phrases: ["Open a task in \(.applicationName)", "Open \(\.$task) in \(.applicationName)"],
+            shortTitle: "Open a Task", systemImageName: "arrow.up.forward.app")
     }
 }

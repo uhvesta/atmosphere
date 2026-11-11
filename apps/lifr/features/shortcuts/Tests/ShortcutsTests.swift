@@ -159,6 +159,78 @@ final class ShortcutsTests: XCTestCase {
         XCTAssertEqual(status, .done)
     }
 
+    func testChangesAStatusAndMovesTheDueDate() async throws {
+        let (shortcuts, store) = shortcuts()
+        let runs = try await shortcuts.openTasks(matching: "run")
+        let run = try XCTUnwrap(runs.first)
+
+        _ = try await shortcuts.setStatus(.inProgress, of: run.id)
+        _ = try await shortcuts.reschedule(run.id, to: now + 3 * 24 * 60 * 60)
+
+        let task = try await store.load().tasks[run.id]
+        XCTAssertEqual(task?.status, .inProgress)
+        XCTAssertEqual(task?.dueDate, CalendarDate(now, in: .gmt).adding(days: 3))
+        _ = try await shortcuts.reschedule(run.id, to: nil)
+        let undated = try await store.load().tasks[run.id]
+        XCTAssertNil(undated?.dueDate)
+    }
+
+    func testCommentsOnATaskButNotWithNothingToSay() async throws {
+        let (shortcuts, store) = shortcuts()
+        let runs = try await shortcuts.openTasks(matching: "run")
+        let run = try XCTUnwrap(runs.first)
+
+        _ = try await shortcuts.comment(" Felt good ", on: run.id)
+        do {
+            _ = try await shortcuts.comment("  ", on: run.id)
+            XCTFail("Expected it to fail")
+        } catch {
+            XCTAssertEqual(error as? ShortcutError, .noComment)
+        }
+
+        let comments = try await store.load().comments.values.filter { $0.taskID == run.id }
+        XCTAssertEqual(comments.map(\.body), ["Felt good"])
+    }
+
+    func testATaskInTheTrashCantBeChanged() async throws {
+        let (shortcuts, store) = shortcuts()
+        let runs = try await shortcuts.openTasks(matching: "run")
+        let run = try XCTUnwrap(runs.first)
+        _ = try await store.moveToTrash(run.id)
+
+        do {
+            _ = try await shortcuts.setStatus(.done, of: run.id)
+            XCTFail("Expected it to fail")
+        } catch {
+            XCTAssertEqual(error as? ShortcutError, .noTask)
+        }
+        let status = try await store.load().tasks[run.id]?.status
+        XCTAssertEqual(status, .todo)
+    }
+
+    func testWithTheLockOnNoTaskIsChanged() async throws {
+        let (unlocked, store) = shortcuts()
+        let runs = try await unlocked.openTasks(matching: "run")
+        let run = try XCTUnwrap(runs.first)
+        let locked = Shortcuts(store: store, locksApp: { true }, now: { Date() }, timeZone: .gmt)
+
+        for change in [
+            { _ = try await locked.setStatus(.wontDo, of: run.id) },
+            { _ = try await locked.reschedule(run.id, to: nil) },
+            { _ = try await locked.comment("Hi", on: run.id) },
+        ] as [() async throws -> Void] {
+            do {
+                try await change()
+                XCTFail("Expected it to fail")
+            } catch {
+                XCTAssertEqual(error as? ShortcutError, .locked)
+            }
+        }
+        let task = try await store.load().tasks[run.id]
+        XCTAssertEqual(task?.status, .todo)
+        XCTAssertNotNil(task?.dueDate)
+    }
+
     func testWithTheLockOnNothingIsFinished() async throws {
         let (unlocked, store) = shortcuts()
         let runs = try await unlocked.openTasks(matching: "run")

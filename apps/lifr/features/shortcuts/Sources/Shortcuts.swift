@@ -6,8 +6,9 @@ import LifrToday
 import LifrUI
 
 /// What Shortcuts and Siri can do in Lifr: add a task, say what's on
-/// Today, finish a task. With the lock on, nothing that names a task leaves
-/// the app; Today gives counts only.
+/// Today, finish a task, change its status or due date, or comment on
+/// it. With the lock on, nothing that names a task leaves the app; Today
+/// gives counts only.
 package struct Shortcuts: Sendable {
     package var store: StoreClient
     /// Whether the person turned on Lifr's lock.
@@ -120,10 +121,39 @@ package struct Shortcuts: Sendable {
 
     /// Marks the task done.
     package func finish(_ id: UUID) async throws -> Item {
+        try await setStatus(.done, of: id)
+    }
+
+    /// Gives the task `status`.
+    package func setStatus(_ status: TaskStatus, of id: UUID) async throws -> Item {
+        try await change(id) { try await store.setStatus(status, id) }
+    }
+
+    /// Makes the task due on the day `date` falls on here, or on no day.
+    package func reschedule(_ id: UUID, to date: Date?) async throws -> Item {
+        let due = date.map { CalendarDate($0, in: timeZone) }
+        return try await change(id) { try await store.edit(id, Workspace.TaskEdit(dueDate: .some(due))) }
+    }
+
+    /// Adds `text` to the task's comments.
+    package func comment(_ text: String, on id: UUID) async throws -> Item {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw ShortcutError.noComment }
+        return try await change(id) { try await store.addComment(text, to: id) }
+    }
+
+    /// Saves a change to a task that exists and isn't in the Trash, unless
+    /// the lock is on.
+    private func change(_ id: UUID, _ save: () async throws -> Saved) async throws -> Item {
         guard !locksApp() else { throw ShortcutError.locked }
-        let saved = try await store.setStatus(.done, id)
-        guard let task = saved.workspace.tasks[id] else { throw ShortcutError.noTask }
-        return item(task, in: saved.workspace)
+        guard let task = try await store.load().tasks[id], task.deletedAt == nil else { throw ShortcutError.noTask }
+        let saved: Saved
+        do {
+            saved = try await save()
+        } catch LifrError.notFound {
+            throw ShortcutError.noTask
+        }
+        return item(saved.workspace.tasks[id] ?? task, in: saved.workspace)
     }
 
     /// Rings the task's reminder again at `date`, as a new reminder; the due
@@ -154,6 +184,8 @@ private func earlier(_ lhs: CalendarDate?, than rhs: CalendarDate?) -> Bool {
 package enum ShortcutError: Error, Hashable, Sendable, CustomStringConvertible {
     /// The lock is on, and the shortcut would name or change a task.
     case locked
+    /// The comment was empty.
+    case noComment
     /// The task was deleted, or never existed on this device.
     case noTask
     /// The new task's title was empty.
@@ -164,7 +196,9 @@ package enum ShortcutError: Error, Hashable, Sendable, CustomStringConvertible {
     package var description: String {
         switch self {
         case .locked:
-            String(localized: "Lifr is locked. Open Lifr and unlock it to finish tasks.")
+            String(localized: "Lifr is locked. Open Lifr and unlock it to change tasks.")
+        case .noComment:
+            String(localized: "The comment is empty. Say or type what to add.")
         case .noTask:
             String(localized: "That task isn't in Lifr any more. Pick another.")
         case .noTitle:
