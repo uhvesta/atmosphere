@@ -72,6 +72,27 @@ final class PhoneTasksFlowTests: PhoneFlowTestCase {
         flow.finish()
     }
 
+    /// The trash: a task moved there from its detail, the Trash under the
+    /// Avenues, Empty Trash asking first, then restoring the task.
+    func testTrash() async throws {
+        let (store, flow) = app("trash")
+        await flow.step("launch", image: false)
+        let review = try task("Review Q4 roadmap", in: store)
+        store.send(.today(.list(.rowTapped(review))))
+        store.send(.today(.list(.detail(.presented(.trashTapped)))))
+        await flow.step("trashed", image: false)
+        store.tab = .avenues
+        await flow.step("avenues")
+        store.isTrashShown = true
+        await flow.step("trash")
+        store.send(.trash(.emptyTapped))
+        await flow.step("empty-asks")
+        store.send(.trash(.confirmation(.dismiss)))
+        store.send(.trash(.restoreTapped(review)))
+        await flow.step("restored")
+        flow.finish()
+    }
+
     /// A Project: rename it, give it a due date, archive it with its open
     /// task moved out and Undo that, archive it again, find it under
     /// Archived, then restore it. And edit its Avenue.

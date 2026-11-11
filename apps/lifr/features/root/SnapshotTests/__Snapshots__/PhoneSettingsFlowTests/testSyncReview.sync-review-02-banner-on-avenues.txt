@@ -4,6 +4,7 @@
 [button] "Health, HEALTH, 2" value: "2 open"
 [button] "Race day, 1" value: "1 open"
 [button] "Home, HOME, 0" value: "0 open"
+[button] "Trash, 0" value: "0 tasks"
 [button] "Search"
 [button] "Today"
 [button] "Upcoming"

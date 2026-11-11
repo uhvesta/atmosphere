@@ -1,0 +1,12 @@
+[button] "Avenues" id: BackButton
+[button, notEnabled] "Empty Trash"
+[header] "Trash"
+[text] "Trash Is Empty"
+[text] "Tasks you move to the trash stay here for 30 days, then they're deleted."
+[text] "Changed “Review Q4 roadmap”"
+[button] "Undo"
+[button] "Search"
+[button] "Today"
+[button] "Upcoming"
+[button, selected] "Avenues"
+[button] "Assistant"

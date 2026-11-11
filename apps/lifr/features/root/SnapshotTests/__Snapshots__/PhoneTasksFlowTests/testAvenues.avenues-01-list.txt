@@ -4,6 +4,7 @@
 [button] "Half marathon, 1" value: "1 open"
 [button] "Work, WORK, 1" value: "1 open"
 [button] "Home, HOME, 4" value: "4 open"
+[button] "Trash, 0" value: "0 tasks"
 [button] "Search"
 [button] "Today"
 [button] "Upcoming"

@@ -5,6 +5,7 @@
 [button] "Home, HOME, 4" value: "4 open"
 [header, text] "Archived"
 [button] "Spring half marathon, Health"
+[button] "Trash, 0" value: "0 tasks"
 [text] "Archived “Spring half marathon”"
 [button] "Undo"
 [button] "Search"

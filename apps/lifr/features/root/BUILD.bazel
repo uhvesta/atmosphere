@@ -16,6 +16,7 @@ _DEPS = [
     "//apps/lifr/features/avenue",
     "//apps/lifr/features/board",
     "//apps/lifr/features/calendar",
+    "//apps/lifr/features/trash",
     "//apps/lifr/features/bug_report",
     "//apps/lifr/features/conversations",
     "//apps/lifr/features/procrastinated",

@@ -145,6 +145,15 @@ package struct RecordsBuilder {
         }
     }
 
+    /// Moves the task to the trash `daysAgo` days before `now`.
+    package mutating func trash(_ task: LifrTask, daysAgo: Int = 0) {
+        do {
+            _ = try workspace.moveToTrash(task.id, in: context(at: now - Double(daysAgo) * 24 * 60 * 60))
+        } catch {
+            reportIssue(error)
+        }
+    }
+
     /// An ID for a stand-in: the last one the latest context could give.
     private var standInID: UUID { UUID(sequence: ids + 99) }
 

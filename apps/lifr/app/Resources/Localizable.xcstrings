@@ -281,6 +281,9 @@
     "%lld Sub task(s) are still open" : {
 
     },
+    "%lld Sub tasks" : {
+
+    },
     "%lld Sub tasks are still open" : {
 
     },
@@ -375,6 +378,9 @@
 
     },
     "+%lld" : {
+
+    },
+    "1 Sub task" : {
 
     },
     "1 Sub task is still open" : {
@@ -928,6 +934,9 @@
     "Couldn't change the task" : {
 
     },
+    "Couldn't change the trash" : {
+
+    },
     "Couldn't compact" : {
 
     },
@@ -1031,6 +1040,12 @@
     "Delete" : {
 
     },
+    "Delete %lld Tasks" : {
+
+    },
+    "Delete 1 Task" : {
+
+    },
     "Delete All" : {
 
     },
@@ -1044,6 +1059,15 @@
 
     },
     "Deleted" : {
+
+    },
+    "Deleted in %lld days" : {
+
+    },
+    "Deleted today" : {
+
+    },
+    "Deleted tomorrow" : {
 
     },
     "Deny" : {
@@ -1146,6 +1170,12 @@
 
     },
     "Editing your message. Sending it writes the reply again." : {
+
+    },
+    "Empty Trash" : {
+
+    },
+    "Empty Trash?" : {
 
     },
     "Engine's own" : {
@@ -2159,6 +2189,9 @@
     "Restart" : {
 
     },
+    "Restore" : {
+
+    },
     "Restore Avenue" : {
 
     },
@@ -2534,7 +2567,13 @@
     "Tasks" : {
 
     },
+    "Tasks are deleted 30 days after they're moved to the trash." : {
+
+    },
     "Tasks due in the next two weeks show up here, by day." : {
+
+    },
+    "Tasks due on this day show up here. To move one, drag it onto another day." : {
 
     },
     "Tasks due today, and overdue ones, show up here." : {
@@ -2547,6 +2586,9 @@
 
     },
     "Tasks you add here, or move here, show up in this list." : {
+
+    },
+    "Tasks you move to the trash stay here for 30 days, then they're deleted." : {
 
     },
     "That photo is no longer in your library, or access to it was turned off. Pick another." : {
@@ -2593,6 +2635,9 @@
 
     },
     "The recording stopped (%@). Record again; if another app is using the microphone, close it first." : {
+
+    },
+    "The recording stopped before the microphone started, so there's nothing to attach. Tap the microphone again to record." : {
 
     },
     "The reminder is saved and rings on your other devices, but not on this one. To hear it here, turn on notifications for Lifr in Settings." : {
@@ -2643,6 +2688,9 @@
       }
     },
     "These changed here and on another device in ways that can't both stand. Choose what to keep; you can undo it like any change." : {
+
+    },
+    "They're deleted from all your devices, and this can't be undone." : {
 
     },
     "They're deleted on this device and from iCloud. Tasks the assistant added or changed stay." : {
@@ -2719,6 +2767,12 @@
 
     },
     "Tomorrow at 9:00" : {
+
+    },
+    "Trash" : {
+
+    },
+    "Trash Is Empty" : {
 
     },
     "Trashed" : {

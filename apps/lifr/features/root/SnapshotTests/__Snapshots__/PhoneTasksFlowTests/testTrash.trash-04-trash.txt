@@ -1,0 +1,12 @@
+[button] "Avenues" id: BackButton
+[button] "Empty Trash"
+[header] "Trash"
+[text] "Review Q4 roadmap, WORK-0006, 3 Sub tasks, Deleted in 30 days"
+[text] "Tasks are deleted 30 days after they're moved to the trash."
+[text] "Moved “Review Q4 roadmap” to the Trash"
+[button] "Undo"
+[button] "Search"
+[button] "Today"
+[button] "Upcoming"
+[button, selected] "Avenues"
+[button] "Assistant"

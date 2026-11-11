@@ -7,11 +7,14 @@ import LifrUI
 import SwiftUI
 
 /// Every Avenue with its open task count, and its active Projects under it.
-package struct AvenuesView: View {
+package struct AvenuesView<Footer: View>: View {
     @Bindable package var store: StoreOf<AvenuesFeature>
+    /// Rows after the Avenues, such as the trash.
+    private let footer: Footer
 
-    package init(store: StoreOf<AvenuesFeature>) {
+    package init(store: StoreOf<AvenuesFeature>, @ViewBuilder footer: () -> Footer) {
         self.store = store
+        self.footer = footer()
     }
 
     package var body: some View {
@@ -55,6 +58,7 @@ package struct AvenuesView: View {
                     }
                 }
             }
+            footer
         }
         .tint(.primary)
         .overlay {
@@ -240,5 +244,11 @@ package struct EditAvenueView: View {
 #Preview {
     NavigationStack {
         AvenuesView(store: Store(initialState: AvenuesFeature.State()) { AvenuesFeature() })
+    }
+}
+
+extension AvenuesView where Footer == EmptyView {
+    package init(store: StoreOf<AvenuesFeature>) {
+        self.init(store: store) { EmptyView() }
     }
 }

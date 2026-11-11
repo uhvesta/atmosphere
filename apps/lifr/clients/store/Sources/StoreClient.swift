@@ -253,6 +253,33 @@ extension StoreClient {
         try await save { (workspace, context) throws(LifrError) in try workspace.moveToTrash(id, in: context) }
     }
 
+    /// `Workspace.restore`: a task and the Sub tasks trashed with it, out
+    /// of the trash.
+    package func restore(_ id: UUID) async throws -> Saved {
+        try await save { (workspace, context) throws(LifrError) in try workspace.restore(id, in: context) }
+    }
+
+    /// `Workspace.emptyTrash`: deletes everything in the trash for good.
+    package func emptyTrash() async throws -> Saved {
+        try await save { workspace, _ in
+            workspace.emptyTrash()
+            return Change()
+        }
+    }
+
+    /// `Workspace.purgeTrash`: deletes what has been in the trash longer
+    /// than it's kept. Saves nothing when there's nothing to delete.
+    package func purgeTrash(now: Date) async throws {
+        let workspace = try await load()
+        var purged = workspace
+        purged.purgeTrash(now: now)
+        guard purged.tasks.count != workspace.tasks.count else { return }
+        _ = try await save { workspace, _ in
+            workspace.purgeTrash(now: now)
+            return Change()
+        }
+    }
+
     /// `Workspace.setParent`: makes a task a Sub task of `parentID`, or a
     /// top-level task when it's nil.
     package func setParent(_ parentID: UUID?, of id: UUID) async throws -> Saved {

@@ -338,3 +338,14 @@ package struct HistoryEvent: Identifiable, Hashable, Codable, Sendable {
         self.createdAt = createdAt
     }
 }
+
+/// A task in the trash, and when it's deleted for good.
+package struct TrashedTask: Hashable, Sendable {
+    package var task: LifrTask
+    package var purgedAt: Date
+
+    package init(task: LifrTask, purgedAt: Date) {
+        self.task = task
+        self.purgedAt = purgedAt
+    }
+}

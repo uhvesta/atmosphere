@@ -22,6 +22,7 @@ import LifrSyncReview
 import LifrTaskDetail
 import LifrTaskList
 import LifrToday
+import LifrTrash
 import LifrUpcoming
 import OSLog
 
@@ -44,7 +45,7 @@ package struct RootFeature {
 
     /// What the Mac's sidebar can show.
     package enum SidebarItem: Hashable, Codable, Sendable {
-        case today, upcoming, calendar, procrastinated, conversations, search
+        case today, upcoming, calendar, procrastinated, conversations, search, trash
         case scope(AvenueScope)
     }
 
@@ -74,6 +75,9 @@ package struct RootFeature {
         package var today: TodayFeature.State
         package var upcoming = UpcomingFeature.State()
         package var calendar = CalendarFeature.State()
+        package var trash = TrashFeature.State()
+        /// Whether the iPhone's Avenues tab shows the trash.
+        package var isTrashShown = false
         /// Whether the iPhone's Upcoming tab shows the calendar rather than
         /// the list.
         @Shared(.upcomingShowsCalendar) package var upcomingShowsCalendar
@@ -175,7 +179,7 @@ package struct RootFeature {
                 case .calendar: .calendar
                 case .procrastinated: .procrastinated
                 case .search: .search
-                case .conversations: nil
+                case .conversations, .trash: nil
                 case .scope: content == .board ? .board : .avenue
                 case nil: nil
                 }
@@ -290,6 +294,7 @@ package struct RootFeature {
         case today(TodayFeature.Action)
         case upcoming(UpcomingFeature.Action)
         case calendar(CalendarFeature.Action)
+        case trash(TrashFeature.Action)
         /// The iPhone's Upcoming tab switched between its list and the
         /// calendar.
         case upcomingCalendarShown(Bool)
@@ -355,6 +360,7 @@ package struct RootFeature {
         Scope(state: \.today, action: \.today) { TodayFeature() }
         Scope(state: \.upcoming, action: \.upcoming) { UpcomingFeature() }
         Scope(state: \.calendar, action: \.calendar) { CalendarFeature() }
+        Scope(state: \.trash, action: \.trash) { TrashFeature() }
         Scope(state: \.procrastinated, action: \.procrastinated) { ProcrastinatedFeature() }
         Scope(state: \.avenues, action: \.avenues) { AvenuesFeature() }
         Scope(state: \.search, action: \.search) { SearchFeature() }
@@ -373,11 +379,12 @@ package struct RootFeature {
                 // start a second timer.
                 guard !state.isRunning else { return .none }
                 var effects: [Effect<Action>] = [
-                    // Changes too old to undo are packed first, so loading
-                    // leaves them out.
+                    // Changes too old to undo are packed, and tasks trashed
+                    // too long ago deleted, before loading.
                     .run { [store, now] send in
                         do {
                             try await store.archiveJournal(now.addingTimeInterval(-JournalEntry.undoWindow))
+                            try await store.purgeTrash(now: now)
                         } catch {
                             Logger(subsystem: "lifr", category: "store").error(
                                 "\(String(describing: error), privacy: .public)")
@@ -667,6 +674,7 @@ package struct RootFeature {
             case .today(.delegate(.saved(let snapshot))),
                 .upcoming(.list(.delegate(.saved(let snapshot)))),
                 .calendar(.list(.delegate(.saved(let snapshot)))),
+                .trash(.delegate(.saved(let snapshot))),
                 .procrastinated(.list(.delegate(.saved(let snapshot)))),
                 .avenues(.delegate(.saved(let snapshot))),
                 .search(.delegate(.saved(let snapshot))),
@@ -688,7 +696,8 @@ package struct RootFeature {
                 state.$upcomingShowsCalendar.withLock { $0 = shown }
                 return .none
 
-            case .binding, .remindersScheduled, .today, .upcoming, .calendar, .procrastinated, .avenues, .search,
+            case .binding, .remindersScheduled, .today, .upcoming, .calendar, .trash, .procrastinated, .avenues,
+                .search,
                 .avenue, .board, .conversations, .settings, .quickAdd, .approval, .undoAlert, .syncReview,
                 .lockAlert:
                 return .none
@@ -813,6 +822,7 @@ package struct RootFeature {
             TodayFeature().reduce(into: &state.today, action: .list(.show(snapshot))).map(Action.today),
             UpcomingFeature().reduce(into: &state.upcoming, action: .list(.show(snapshot))).map(Action.upcoming),
             CalendarFeature().reduce(into: &state.calendar, action: .list(.show(snapshot))).map(Action.calendar),
+            TrashFeature().reduce(into: &state.trash, action: .show(snapshot)).map(Action.trash),
             ProcrastinatedFeature().reduce(into: &state.procrastinated, action: .list(.show(snapshot)))
                 .map(Action.procrastinated),
             AvenuesFeature().reduce(into: &state.avenues, action: .show(snapshot)).map(Action.avenues),

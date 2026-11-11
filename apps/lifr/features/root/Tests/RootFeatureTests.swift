@@ -451,6 +451,39 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testATaskRestoredFromTheTrashIsBackOnToday() async {
+        let run = records.task("Run", in: health, due: 0)
+        records.trash(run)
+        let store = makeStore(.phone)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.trash.rows.map(\.title), ["Run"])
+        XCTAssertTrue(store.state.today.list.rows.isEmpty)
+
+        await store.send(.trash(.restoreTapped(run.id)))
+        await store.receive(\.trash.delegate.saved)
+
+        XCTAssertEqual(store.state.today.list.rows.map(\.title), ["Run"])
+        XCTAssertTrue(store.state.trash.rows.isEmpty)
+        await task.cancel()
+    }
+
+    func testOpeningDeletesTasksTrashedLongerThanTheTrashKeepsThem() async throws {
+        let old = records.task("Old", in: health)
+        let recent = records.task("Recent", in: health)
+        records.trash(old, daysAgo: 31)
+        records.trash(recent, daysAgo: 29)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = makeStore(.phone, store: client)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        XCTAssertEqual(store.state.trash.rows.map(\.title), ["Recent"])
+        let saved = try await client.load()
+        XCTAssertNil(saved.tasks[old.id])
+        await task.cancel()
+    }
+
     func testTheIPhonesUpcomingTabActsOnTheCalendarOnceShown() async {
         let store = makeStore(.phone)
         await store.send(.binding(.set(\.tab, .upcoming)))

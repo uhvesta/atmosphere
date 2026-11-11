@@ -13,6 +13,8 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Assistant"
     [Row/OutlineRow] ""
+      [StaticText] "" value: "Trash"
+    [Row/OutlineRow] ""
       [Heading] "Avenues"
     [Row/OutlineRow, selected] ""
       [StaticText] "Health" value: "4"

@@ -54,6 +54,52 @@ func commentAndTrashTests() -> [TestCase] {
             _ = try fixture.workspace.restore(parent.id, in: fixture.context)
             try expectEqual(fixture.get(subtask).deletedAt, nil)
         },
+        TestCase("given a Sub task restored while its parent is in the trash, then the parent comes back too") {
+            let fixture = try Fixture()
+            let parent = try fixture.task("Parent")
+            let subtask = try fixture.task("Sub task", parent: parent)
+            _ = try fixture.workspace.moveToTrash(parent.id, in: fixture.context)
+            _ = try fixture.workspace.restore(subtask.id, in: fixture.context)
+            try expectEqual(fixture.get(parent).deletedAt, nil)
+            try expectEqual(fixture.get(subtask).deletedAt, nil)
+        },
+        TestCase("given a Sub task trashed alone, then restoring its parent leaves it in the trash") {
+            let fixture = try Fixture()
+            let parent = try fixture.task("Parent")
+            let subtask = try fixture.task("Sub task", parent: parent)
+            _ = try fixture.workspace.moveToTrash(subtask.id, in: fixture.context)
+            fixture.advance(days: 1)
+            _ = try fixture.workspace.moveToTrash(parent.id, in: fixture.context)
+            _ = try fixture.workspace.restore(parent.id, in: fixture.context)
+            try expectEqual(fixture.get(parent).deletedAt, nil)
+            try expect(fixture.get(subtask).deletedAt != nil, "came back with a parent it wasn't trashed with")
+        },
+        TestCase("given the trash, then it lists newest first and leaves out Sub tasks trashed with their parent") {
+            let fixture = try Fixture()
+            let older = try fixture.task("Older")
+            let parent = try fixture.task("Parent")
+            _ = try fixture.task("Sub task", parent: parent)
+            _ = try fixture.task("Kept")
+            _ = try fixture.workspace.moveToTrash(older.id, in: fixture.context)
+            fixture.advance(days: 1)
+            _ = try fixture.workspace.moveToTrash(parent.id, in: fixture.context)
+            let trash = fixture.workspace.trash()
+            try expectEqual(trash.map(\.task.title), ["Parent", "Older"])
+            try expectEqual(trash.first?.purgedAt, fixture.now.addingTimeInterval(Workspace.trashRetention))
+        },
+        TestCase("given an emptied trash, then every trashed task is gone and the rest stay") {
+            let fixture = try Fixture()
+            let kept = try fixture.task("Kept")
+            let parent = try fixture.task("Parent")
+            let subtask = try fixture.task("Sub task", parent: parent)
+            _ = try fixture.workspace.addComment("Bye", to: parent.id, in: fixture.context)
+            _ = try fixture.workspace.moveToTrash(parent.id, in: fixture.context)
+            fixture.workspace.emptyTrash()
+            try expect(fixture.workspace.tasks[parent.id] == nil && fixture.workspace.tasks[subtask.id] == nil)
+            try expect(fixture.workspace.tasks[kept.id] != nil, "a task outside the trash was deleted")
+            try expect(fixture.workspace.comments.isEmpty)
+            try expect(fixture.workspace.trash().isEmpty)
+        },
         TestCase("given a task trashed 31 days ago, then purging deletes it with its comments and history") {
             let fixture = try Fixture()
             let kept = try fixture.task("Kept")

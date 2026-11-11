@@ -13,6 +13,7 @@ import LifrSearch
 import LifrSettings
 import LifrSyncReview
 import LifrToday
+import LifrTrash
 import LifrUI
 import LifrUpcoming
 import SwiftUI
@@ -196,8 +197,24 @@ private struct PhoneRootView: View {
             }
             Tab("Avenues", systemImage: "square.stack.3d.up", value: RootFeature.Tab.avenues) {
                 NavigationStack {
-                    AvenuesView(store: store.scope(state: \.avenues, action: \.avenues))
-                        .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
+                    AvenuesView(store: store.scope(state: \.avenues, action: \.avenues)) {
+                        Section {
+                            Button {
+                                store.isTrashShown = true
+                            } label: {
+                                LabeledContent {
+                                    Text("\(store.trash.rows.count)")
+                                } label: {
+                                    Label("Trash", systemImage: "trash")
+                                }
+                            }
+                            .accessibilityValue("\(store.trash.rows.count) tasks")
+                        }
+                    }
+                    .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
+                    .navigationDestination(isPresented: $store.isTrashShown) {
+                        TrashView(store: store.scope(state: \.trash, action: \.trash))
+                    }
                 }
             }
             Tab("Assistant", systemImage: "bubble.left.and.text.bubble.right", value: RootFeature.Tab.conversations) {
@@ -297,6 +314,8 @@ private struct MacRootView: View {
             ProcrastinatedView(store: store.scope(state: \.procrastinated, action: \.procrastinated))
         case .search:
             SearchView(store: store.scope(state: \.search, action: \.search))
+        case .trash:
+            TrashView(store: store.scope(state: \.trash, action: \.trash))
         case .conversations:
             // No stack of its own, so a chat opens in the detail column, as
             // a task does.
@@ -387,6 +406,8 @@ private struct Sidebar: View {
             .tag(RootFeature.SidebarItem.search)
         Label("Assistant", systemImage: "bubble.left.and.text.bubble.right")
             .tag(RootFeature.SidebarItem.conversations)
+        Label("Trash", systemImage: "trash")
+            .tag(RootFeature.SidebarItem.trash)
     }
 }
 

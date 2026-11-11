@@ -664,26 +664,56 @@ package struct Workspace: Hashable, Codable, Sendable {
     }
 
     /// Takes a task and the Sub tasks trashed with it back out of the trash.
+    /// A Sub task whose parent is in the trash brings the parent back too,
+    /// as a Sub task can't sit under a task in the trash.
     package mutating func restore(_ id: UUID, in context: Context) throws(LifrError) -> Change {
-        let task = try task(id)
         var change = Change()
-        guard let deletedAt = task.deletedAt else { return change }
+        try restore(id, in: context, &change)
+        return change
+    }
+
+    private mutating func restore(_ id: UUID, in context: Context, _ change: inout Change) throws(LifrError) {
+        let task = try task(id)
+        if let parentID = task.parentID, tasks[parentID]?.deletedAt != nil {
+            try restore(parentID, in: context, &change)
+        }
+        // The parent may have brought this one back with it.
+        guard let deletedAt = tasks[id]?.deletedAt else { return }
         let trashedWithIt = tasks.values.filter { $0.parentID == id && $0.deletedAt == deletedAt }
         for taskID in [id] + trashedWithIt.map(\.id) {
             update(taskID, in: context, &change) { $0.deletedAt = nil }
             record(.restored, on: taskID, by: context.actor, in: context, &change)
         }
-        return change
+    }
+
+    /// The tasks in the trash, newest first, with when each is deleted for
+    /// good. Sub tasks trashed with their parent are left out: they go and
+    /// come back with it.
+    package func trash() -> [TrashedTask] {
+        tasks.values
+            .compactMap { task -> TrashedTask? in
+                guard let deletedAt = task.deletedAt else { return nil }
+                if let parentID = task.parentID, tasks[parentID]?.deletedAt != nil { return nil }
+                return TrashedTask(task: task, purgedAt: deletedAt.addingTimeInterval(Self.trashRetention))
+            }
+            .sorted { ($1.purgedAt, $0.task.id.uuidString) < ($0.purgedAt, $1.task.id.uuidString) }
     }
 
     /// Deletes tasks trashed more than `trashRetention` ago, with their
     /// comments, reminders and history.
     package mutating func purgeTrash(now: Date) {
-        let expired = Set(
-            tasks.values.compactMap { task in
-                task.deletedAt.flatMap { now.timeIntervalSince($0) > Self.trashRetention ? task.id : nil }
-            })
-        let purged = expired.union(tasks.values.filter { $0.parentID.map(expired.contains) ?? false }.map(\.id))
+        purge(tasks.values.filter { $0.deletedAt.map { now.timeIntervalSince($0) > Self.trashRetention } ?? false })
+    }
+
+    /// Deletes every task in the trash now, with its comments, reminders and
+    /// history. It can't be undone.
+    package mutating func emptyTrash() {
+        purge(tasks.values.filter { $0.deletedAt != nil })
+    }
+
+    private mutating func purge(_ expired: [LifrTask]) {
+        let ids = Set(expired.map(\.id))
+        let purged = ids.union(tasks.values.filter { $0.parentID.map(ids.contains) ?? false }.map(\.id))
         for id in purged { tasks[id] = nil }
         comments = comments.filter { !purged.contains($0.value.taskID) }
         reminders = reminders.filter { !purged.contains($0.value.taskID) }
