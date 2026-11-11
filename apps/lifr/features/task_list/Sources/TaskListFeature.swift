@@ -49,8 +49,9 @@ package struct TaskListFeature {
             guard saves.isLatest(snapshot) else { return }
             workspace = snapshot.workspace
             sections = query.sections(snapshot.workspace, now, timeZone).filter { !$0.rows.isEmpty }
-            if var detail, detail.refresh(from: snapshot, now: now, timeZone: timeZone) {
-                self.detail = detail
+            // A task trashed, here or elsewhere, closes.
+            if var detail {
+                self.detail = detail.refresh(from: snapshot, now: now, timeZone: timeZone) ? detail : nil
             }
         }
     }

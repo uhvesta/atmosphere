@@ -151,6 +151,20 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.detail?.row.status, .inProgress)
     }
 
+    func testTheOpenTaskClosesOnceItsTrashedHereOrElsewhere() async {
+        let stretch = records.task("Stretch", in: health)
+        let store = await load()
+        await store.send(.rowTapped(stretch.id))
+        XCTAssertNotNil(store.state.detail)
+
+        var workspace = records.workspace
+        _ = try? workspace.moveToTrash(stretch.id, in: Context(actor: .user(device: "Mac", surface: .mac), now: now))
+        await store.send(.show(Snapshot(workspace, number: 1)))
+
+        XCTAssertNil(store.state.detail)
+        XCTAssertEqual(store.state.sections, [])
+    }
+
     func testUndoFromTheBannerRestoresTheParent() async {
         let review = records.task("Review", in: health)
         let read = records.task("Read", in: health, parent: review, status: .done)
