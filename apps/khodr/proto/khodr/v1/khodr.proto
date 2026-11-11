@@ -1,0 +1,315 @@
+// The one protocol Khodr speaks: between the app, the command-line tool and
+// the MCP server and the daemon on your Mac, and between that daemon and the
+// host role on each machine (over a local socket, or over SSH's stdin and
+// stdout).
+//
+// On the wire each message is one Envelope, preceded by its length as a
+// 4-byte big-endian unsigned integer. Both sides send a Hello first and
+// refuse a peer whose protocol_version differs.
+syntax = "proto3";
+
+package khodr.v1;
+
+// Bump when a change breaks older peers. Additive changes keep the number.
+enum ProtocolVersion {
+  PROTOCOL_VERSION_UNSPECIFIED = 0;
+  PROTOCOL_VERSION_CURRENT = 1;
+}
+
+message Envelope {
+  // The request this belongs to. A response, the events of a stream and its
+  // end all carry their request's id. Hello uses 0.
+  uint64 id = 1;
+
+  oneof body {
+    Hello hello = 2;
+    Request request = 3;
+    Response response = 4;
+    // One item of the stream a request opened (for example WatchSession).
+    StreamItem item = 5;
+    // The stream a request opened has ended, normally or with an error.
+    StreamEnd end = 6;
+    // The sender no longer wants the stream its request opened.
+    Cancel cancel = 7;
+  }
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  // The daemon on your Mac, which owns the board.
+  ROLE_DAEMON = 1;
+  // The host role, which runs sessions next to the code.
+  ROLE_HOST = 2;
+  // The app, the command-line tool or the MCP server.
+  ROLE_CLIENT = 3;
+}
+
+message Hello {
+  ProtocolVersion protocol_version = 1;
+  Role role = 2;
+  // The program's own version, for messages about updating it.
+  string program_version = 3;
+}
+
+message Request {
+  oneof kind {
+    StartSession start_session = 1;
+    SendMessage send_message = 2;
+    Approve approve = 3;
+    ForkSession fork_session = 4;
+    ReadHistory read_history = 5;
+    WatchSession watch_session = 6;
+    ListSessions list_sessions = 7;
+    AbortTurn abort_turn = 8;
+  }
+}
+
+message Response {
+  oneof kind {
+    Error error = 1;
+    SessionStarted session_started = 2;
+    MessageSent message_sent = 3;
+    Approved approved = 4;
+    SessionForked session_forked = 5;
+    History history = 6;
+    Sessions sessions = 7;
+    TurnAborted turn_aborted = 8;
+    // A stream request was accepted; its items follow as StreamItem.
+    Watching watching = 9;
+  }
+}
+
+message Error {
+  ErrorCode code = 1;
+  // For the person who has to fix it: what failed and how to resolve it.
+  string message = 2;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_UNKNOWN_SESSION = 1;
+  ERROR_CODE_UNKNOWN_EVENT = 2;
+  ERROR_CODE_UNKNOWN_PERMISSION_REQUEST = 3;
+  ERROR_CODE_UNKNOWN_BACKEND = 4;
+  ERROR_CODE_BUSY = 5;
+  ERROR_CODE_INVALID_REQUEST = 6;
+  ERROR_CODE_BACKEND_FAILED = 7;
+  ERROR_CODE_STORAGE_FAILED = 8;
+  ERROR_CODE_HOST_UNAVAILABLE = 9;
+}
+
+enum Backend {
+  BACKEND_UNSPECIFIED = 0;
+  BACKEND_SCRIPTED = 1;
+  BACKEND_LOCAL = 2;
+  BACKEND_COPILOT = 3;
+}
+
+message StartSession {
+  Backend backend = 1;
+  // The folder the agent works in, on the host.
+  string working_directory = 2;
+  // The model to use; empty for the backend's default.
+  string model = 3;
+  // Instructions for the agent, set for the life of the session.
+  string instructions = 4;
+  string name = 5;
+}
+
+message SessionStarted {
+  SessionInfo session = 1;
+}
+
+enum SendMode {
+  SEND_MODE_UNSPECIFIED = 0;
+  // Start a turn now, or wait for the running one to finish.
+  SEND_MODE_ENQUEUE = 1;
+  // Steer the running turn.
+  SEND_MODE_IMMEDIATE = 2;
+}
+
+message SendMessage {
+  string session_id = 1;
+  string text = 2;
+  SendMode mode = 3;
+}
+
+message MessageSent {}
+
+message Approve {
+  string session_id = 1;
+  string permission_request_id = 2;
+  bool approved = 3;
+}
+
+message Approved {}
+
+message ForkSession {
+  string session_id = 1;
+  // The fork keeps the events before this one, not including it. Empty keeps
+  // them all.
+  string before_event_id = 2;
+  string name = 3;
+}
+
+message SessionForked {
+  SessionInfo session = 1;
+}
+
+message ReadHistory {
+  string session_id = 1;
+}
+
+message History {
+  repeated SessionEvent events = 1;
+}
+
+// Streams the session's events: first every event so far, then each new one
+// as it happens.
+message WatchSession {
+  string session_id = 1;
+}
+
+message Watching {}
+
+message ListSessions {}
+
+message Sessions {
+  repeated SessionInfo sessions = 1;
+}
+
+message AbortTurn {
+  string session_id = 1;
+}
+
+message TurnAborted {}
+
+message StreamItem {
+  oneof kind {
+    SessionEvent session_event = 1;
+  }
+}
+
+message StreamEnd {
+  // Unset when the stream ended normally.
+  Error error = 1;
+}
+
+message Cancel {}
+
+enum SessionState {
+  SESSION_STATE_UNSPECIFIED = 0;
+  SESSION_STATE_IDLE = 1;
+  SESSION_STATE_WORKING = 2;
+  SESSION_STATE_WAITING_FOR_APPROVAL = 3;
+  SESSION_STATE_FAILED = 4;
+}
+
+message SessionInfo {
+  string id = 1;
+  string name = 2;
+  Backend backend = 3;
+  string working_directory = 4;
+  string model = 5;
+  SessionState state = 6;
+  // The session this was forked from, and the event it was forked before.
+  // Empty for a root session.
+  string parent_id = 7;
+  string forked_before_event_id = 8;
+}
+
+// One thing that happened in a session. Its id is stable for the life of the
+// session, and a fork's copies keep their ids.
+message SessionEvent {
+  string id = 1;
+  // Milliseconds since 1970 in UTC.
+  int64 time_unix_ms = 2;
+
+  oneof kind {
+    UserMessage user_message = 3;
+    TurnStarted turn_started = 4;
+    AssistantDelta assistant_delta = 5;
+    AssistantMessage assistant_message = 6;
+    Reasoning reasoning = 7;
+    ToolStarted tool_started = 8;
+    ToolCompleted tool_completed = 9;
+    PermissionRequested permission_requested = 10;
+    PermissionCompleted permission_completed = 11;
+    TurnEnded turn_ended = 12;
+    SessionIdle idle = 13;
+    SessionFailed failed = 14;
+    Usage usage = 15;
+  }
+}
+
+message UserMessage {
+  string text = 1;
+}
+
+message TurnStarted {}
+
+// Part of the reply as it streams. The AssistantMessage that follows holds
+// the whole of it.
+message AssistantDelta {
+  string text = 1;
+}
+
+message AssistantMessage {
+  string text = 1;
+}
+
+message Reasoning {
+  string text = 1;
+}
+
+message ToolStarted {
+  string call_id = 1;
+  string tool = 2;
+  // The tool's arguments, as JSON.
+  string arguments_json = 3;
+}
+
+message ToolCompleted {
+  string call_id = 1;
+  bool success = 2;
+  string output = 3;
+}
+
+enum PermissionKind {
+  PERMISSION_KIND_UNSPECIFIED = 0;
+  PERMISSION_KIND_SHELL = 1;
+  PERMISSION_KIND_WRITE = 2;
+  PERMISSION_KIND_READ = 3;
+  PERMISSION_KIND_OTHER = 4;
+}
+
+message PermissionRequested {
+  string request_id = 1;
+  PermissionKind kind = 2;
+  // What the agent wants to do, for the person deciding.
+  string summary = 3;
+}
+
+message PermissionCompleted {
+  string request_id = 1;
+  bool approved = 2;
+}
+
+message TurnEnded {
+  // Set when the turn was stopped before it finished.
+  bool aborted = 1;
+}
+
+message SessionIdle {}
+
+message SessionFailed {
+  string message = 1;
+}
+
+message Usage {
+  string model = 1;
+  uint64 input_tokens = 2;
+  uint64 output_tokens = 3;
+  // Copilot's premium requests; 0 for other backends.
+  double premium_requests = 4;
+}
