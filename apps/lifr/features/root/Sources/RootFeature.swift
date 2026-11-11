@@ -4,6 +4,7 @@ import LifrAPI
 import LifrAvenue
 import LifrBoard
 import LifrBugReport
+import LifrCalendar
 import LifrConversations
 import LifrCore
 import LifrGlance
@@ -43,7 +44,7 @@ package struct RootFeature {
 
     /// What the Mac's sidebar can show.
     package enum SidebarItem: Hashable, Codable, Sendable {
-        case today, upcoming, procrastinated, conversations, search
+        case today, upcoming, calendar, procrastinated, conversations, search
         case scope(AvenueScope)
     }
 
@@ -72,6 +73,10 @@ package struct RootFeature {
         package var content = Content.list
         package var today: TodayFeature.State
         package var upcoming = UpcomingFeature.State()
+        package var calendar = CalendarFeature.State()
+        /// Whether the iPhone's Upcoming tab shows the calendar rather than
+        /// the list.
+        @Shared(.upcomingShowsCalendar) package var upcomingShowsCalendar
         package var procrastinated = ProcrastinatedFeature.State()
         package var avenues = AvenuesFeature.State()
         package var search = SearchFeature.State()
@@ -158,7 +163,7 @@ package struct RootFeature {
             case .phone:
                 switch tab {
                 case .today: .today
-                case .upcoming: .upcoming
+                case .upcoming: upcomingShowsCalendar ? .calendar : .upcoming
                 case .avenues: avenues.avenue == nil ? nil : .openAvenue
                 case .search: .search
                 case .conversations: nil
@@ -167,6 +172,7 @@ package struct RootFeature {
                 switch selection {
                 case .today: .today
                 case .upcoming: .upcoming
+                case .calendar: .calendar
                 case .procrastinated: .procrastinated
                 case .search: .search
                 case .conversations: nil
@@ -180,6 +186,7 @@ package struct RootFeature {
             switch slot {
             case .today: today.list
             case .upcoming: upcoming.list
+            case .calendar: calendar.list
             case .procrastinated: procrastinated.list
             case .search: search.list
             case .avenue: avenue?.list
@@ -202,7 +209,7 @@ package struct RootFeature {
 
     /// Where a task list lives in `State`.
     package enum ListSlot: Hashable, Sendable {
-        case today, upcoming, procrastinated, search, avenue, board
+        case today, upcoming, calendar, procrastinated, search, avenue, board
         /// The Avenue opened from the iPhone's Avenues tab.
         case openAvenue
     }
@@ -282,6 +289,10 @@ package struct RootFeature {
         case reminderOpened(UUID)
         case today(TodayFeature.Action)
         case upcoming(UpcomingFeature.Action)
+        case calendar(CalendarFeature.Action)
+        /// The iPhone's Upcoming tab switched between its list and the
+        /// calendar.
+        case upcomingCalendarShown(Bool)
         case procrastinated(ProcrastinatedFeature.Action)
         case avenues(AvenuesFeature.Action)
         case search(SearchFeature.Action)
@@ -343,6 +354,7 @@ package struct RootFeature {
         BindingReducer()
         Scope(state: \.today, action: \.today) { TodayFeature() }
         Scope(state: \.upcoming, action: \.upcoming) { UpcomingFeature() }
+        Scope(state: \.calendar, action: \.calendar) { CalendarFeature() }
         Scope(state: \.procrastinated, action: \.procrastinated) { ProcrastinatedFeature() }
         Scope(state: \.avenues, action: \.avenues) { AvenuesFeature() }
         Scope(state: \.search, action: \.search) { SearchFeature() }
@@ -503,6 +515,7 @@ package struct RootFeature {
                 if left != item {
                     state.today.list.detail = nil
                     state.upcoming.list.detail = nil
+                    state.calendar.list.detail = nil
                     state.procrastinated.list.detail = nil
                     state.search.list.detail = nil
                 }
@@ -649,6 +662,7 @@ package struct RootFeature {
 
             case .today(.delegate(.saved(let snapshot))),
                 .upcoming(.list(.delegate(.saved(let snapshot)))),
+                .calendar(.list(.delegate(.saved(let snapshot)))),
                 .procrastinated(.list(.delegate(.saved(let snapshot)))),
                 .avenues(.delegate(.saved(let snapshot))),
                 .search(.delegate(.saved(let snapshot))),
@@ -666,8 +680,13 @@ package struct RootFeature {
             case .shaken, .reportBugTapped, .recordStepsTapped, .stopRecordingTapped, .bugReport:
                 return .none
 
-            case .binding, .remindersScheduled, .today, .upcoming, .procrastinated, .avenues, .search, .avenue, .board,
-                .conversations, .settings, .quickAdd, .approval, .undoAlert, .syncReview, .lockAlert:
+            case .upcomingCalendarShown(let shown):
+                state.$upcomingShowsCalendar.withLock { $0 = shown }
+                return .none
+
+            case .binding, .remindersScheduled, .today, .upcoming, .calendar, .procrastinated, .avenues, .search,
+                .avenue, .board, .conversations, .settings, .quickAdd, .approval, .undoAlert, .syncReview,
+                .lockAlert:
                 return .none
             }
         }
@@ -789,6 +808,7 @@ package struct RootFeature {
         let effects: [Effect<Action>] = [
             TodayFeature().reduce(into: &state.today, action: .list(.show(snapshot))).map(Action.today),
             UpcomingFeature().reduce(into: &state.upcoming, action: .list(.show(snapshot))).map(Action.upcoming),
+            CalendarFeature().reduce(into: &state.calendar, action: .list(.show(snapshot))).map(Action.calendar),
             ProcrastinatedFeature().reduce(into: &state.procrastinated, action: .list(.show(snapshot)))
                 .map(Action.procrastinated),
             AvenuesFeature().reduce(into: &state.avenues, action: .show(snapshot)).map(Action.avenues),
@@ -859,6 +879,15 @@ package struct RootFeature {
             break
         }
         if adds.isDueToday { quickAdd.due = .today }
+        if let day = adds.dueDate {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = timeZone
+            let components = DateComponents(year: day.year, month: day.month, day: day.day, hour: 12)
+            if let noon = calendar.date(from: components) {
+                quickAdd.due = .pick
+                quickAdd.pickedDate = noon
+            }
+        }
         state.quickAdd = quickAdd
     }
 
@@ -873,6 +902,7 @@ package struct RootFeature {
         switch slot {
         case .today: .today(.list(action))
         case .upcoming: .upcoming(.list(action))
+        case .calendar: .calendar(.list(action))
         case .procrastinated: .procrastinated(.list(action))
         case .search: .search(.list(action))
         case .avenue: .avenue(.list(action))
@@ -892,5 +922,13 @@ extension RootFeature.Action {
         default:
             false
         }
+    }
+}
+
+extension SharedKey where Self == AppStorageKey<Bool>.Default {
+    /// Whether the iPhone's Upcoming tab shows the calendar. This device
+    /// only; the list unless the person picks the calendar.
+    package static var upcomingShowsCalendar: Self {
+        Self[.appStorage("lifrUpcomingShowsCalendar"), default: false]
     }
 }

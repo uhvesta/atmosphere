@@ -45,6 +45,22 @@ final class PhoneTodayFlowTests: PhoneFlowTestCase {
         flow.finish()
     }
 
+    /// Upcoming as a calendar: the month over today's tasks, another day,
+    /// and the next month.
+    func testCalendar() async {
+        let (store, flow) = app("calendar")
+        store.tab = .upcoming
+        store.send(.upcomingCalendarShown(true))
+        await flow.step("opened")
+        if let day = store.calendar.weeks.joined().first(where: { !$0.colors.isEmpty && !$0.isToday }) {
+            store.send(.calendar(.daySelected(day.date)))
+        }
+        await flow.step("day-selected")
+        store.send(.calendar(.monthStepped(1)))
+        await flow.step("next-month")
+        flow.finish()
+    }
+
     /// Procrastinated, from Today.
     func testProcrastinated() async throws {
         let (store, flow) = app("procrastinated")

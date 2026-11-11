@@ -226,6 +226,26 @@
         }
       }
     },
+    "%@, %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, %2$@"
+          }
+        }
+      }
+    },
+    "%@, %@, overdue" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, %2$@, overdue"
+          }
+        }
+      }
+    },
     "%@, %lld tasks" : {
       "localizations" : {
         "en" : {
@@ -265,6 +285,9 @@
 
     },
     "%lld changes need review" : {
+
+    },
+    "%lld due" : {
 
     },
     "%lld fields were changed again since, so they stay as they are now." : {
@@ -349,6 +372,9 @@
       }
     },
     "%lldK tokens" : {
+
+    },
+    "+%lld" : {
 
     },
     "1 Sub task is still open" : {
@@ -702,6 +728,9 @@
 
     },
     "CPU time per token" : {
+
+    },
+    "Calendar" : {
 
     },
     "Can't Show This Photo" : {
@@ -1729,6 +1758,9 @@
     "Next Match" : {
 
     },
+    "Next Month" : {
+
+    },
     "Next Version" : {
 
     },
@@ -1953,6 +1985,9 @@
 
     },
     "Previous Match" : {
+
+    },
+    "Previous Month" : {
 
     },
     "Previous Version" : {
@@ -2912,6 +2947,9 @@
 
     },
     "none" : {
+
+    },
+    "nothing due" : {
 
     },
     "something removed" : {

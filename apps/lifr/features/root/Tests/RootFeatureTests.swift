@@ -436,6 +436,31 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testANewTaskFromTheCalendarIsDueOnTheSelectedDay() async throws {
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        let day = try CalendarDate("2026-11-20")
+
+        await store.send(.selected(.calendar))
+        await store.send(.calendar(.daySelected(day)))
+        await store.send(.newTaskTapped)
+
+        XCTAssertEqual(store.state.quickAdd?.due, .pick)
+        XCTAssertEqual(store.state.quickAdd.map { CalendarDate($0.pickedDate, in: .gmt) }, day)
+        await task.cancel()
+    }
+
+    func testTheIPhonesUpcomingTabActsOnTheCalendarOnceShown() async {
+        let store = makeStore(.phone)
+        await store.send(.binding(.set(\.tab, .upcoming)))
+        XCTAssertEqual(store.state.currentList, .upcoming)
+
+        await store.send(.upcomingCalendarShown(true))
+
+        XCTAssertEqual(store.state.currentList, .calendar)
+    }
+
     func testANewProjectStartsInTheAvenueOnScreenOrTheOneAsked() async {
         let home = records.avenue("HOME", "Home")
         let store = makeStore(.mac)

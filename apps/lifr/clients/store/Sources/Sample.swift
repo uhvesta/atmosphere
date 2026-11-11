@@ -81,8 +81,8 @@ package struct RecordsBuilder {
     package mutating func task(
         _ title: String, in avenue: Avenue, project: Project? = nil, parent: LifrTask? = nil,
         status: TaskStatus = .todo,
-        priority: Priority = .none, due days: Int? = nil, at time: String? = nil, idle: Int = 0,
-        labels: [Label] = []
+        priority: Priority = .none, due days: Int? = nil, at time: String? = nil, starts start: Int? = nil,
+        idle: Int = 0, labels: [Label] = []
     ) -> LifrTask {
         var new = Workspace.NewTask(title: title, avenueID: avenue.id, parentID: parent?.id)
         new.projectID = project?.id
@@ -90,6 +90,7 @@ package struct RecordsBuilder {
         new.status = status
         new.priority = priority
         new.dueDate = days.map { CalendarDate(now, in: timeZone).adding(days: $0) }
+        new.startDate = start.map { CalendarDate(now, in: timeZone).adding(days: $0) }
         do {
             new.dueTime = try time.map { time throws(LifrError) in try TimeOfDay(time) }
         } catch {

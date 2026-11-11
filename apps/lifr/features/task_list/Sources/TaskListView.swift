@@ -133,6 +133,8 @@ package struct TaskListRow: View {
         }
         .contentShape(Rectangle())
         .onTapGesture { store.send(.rowTapped(row.id)) }
+        // Onto a day in the calendar, to move it there.
+        .draggable(row.id.uuidString)
         .accessibilityElement(children: .combine)
         .accessibilityHint(note ?? "")
         .accessibilityAction { store.send(.rowTapped(row.id)) }

@@ -51,15 +51,18 @@ package struct TaskQuery: Equatable, Sendable {
 package struct NewTaskDefaults: Hashable, Sendable {
     package var scope: Scope?
     package var isDueToday: Bool
+    /// The day it's due, such as the calendar's selected day.
+    package var dueDate: CalendarDate?
 
     package enum Scope: Hashable, Sendable {
         case avenue(UUID)
         case project(UUID)
     }
 
-    package init(scope: Scope? = nil, isDueToday: Bool = false) {
+    package init(scope: Scope? = nil, isDueToday: Bool = false, dueDate: CalendarDate? = nil) {
         self.scope = scope
         self.isDueToday = isDueToday
+        self.dueDate = dueDate
     }
 }
 

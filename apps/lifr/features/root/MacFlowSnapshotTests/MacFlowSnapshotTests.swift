@@ -162,6 +162,12 @@ final class MacFlowSnapshotTests: XCTestCase {
         await flow.step("today")
         store.send(.selected(.upcoming))
         await flow.step("upcoming")
+        store.send(.selected(.calendar))
+        await flow.step("calendar")
+        if let day = store.calendar.weeks.joined().first(where: { !$0.colors.isEmpty && !$0.isToday }) {
+            store.send(.calendar(.daySelected(day.date)))
+        }
+        await flow.step("calendar-day")
         store.send(.selected(.procrastinated))
         await flow.step("procrastinated")
         store.send(.selected(.search))

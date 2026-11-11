@@ -8,6 +8,8 @@
   [Heading] "Sync"
   [StaticText] "" value: "Status"
   [StaticText] "" value: "Not signed in"
+  [StaticText, disabled] "" value: "Sync continuously"
+  [CheckBox/Switch, disabled] "" value: "1"
   [Button] "Sync Now"
   [StaticText] "" value: "Sign in to iCloud in Settings to sync your records between devices. Until then they stay on this device, and nothing is lost."
   [Heading] "Privacy"

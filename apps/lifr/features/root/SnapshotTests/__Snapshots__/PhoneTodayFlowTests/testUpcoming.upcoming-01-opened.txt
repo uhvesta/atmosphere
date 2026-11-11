@@ -1,3 +1,5 @@
+[button, selected] "List"
+[button] "Calendar"
 [button] "Add"
 [header] "Upcoming"
 [header, text] "Tomorrow"

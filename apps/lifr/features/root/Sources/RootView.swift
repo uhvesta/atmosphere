@@ -4,6 +4,7 @@ import ComposableArchitecture
 import LifrAvenue
 import LifrBoard
 import LifrBugReport
+import LifrCalendar
 import LifrConversations
 import LifrCore
 import LifrProcrastinated
@@ -165,8 +166,30 @@ private struct PhoneRootView: View {
             }
             Tab("Upcoming", systemImage: "calendar", value: RootFeature.Tab.upcoming) {
                 NavigationStack {
-                    UpcomingView(store: store.scope(state: \.upcoming, action: \.upcoming))
-                        .toolbar { newTask }
+                    Group {
+                        if store.upcomingShowsCalendar {
+                            CalendarView(store: store.scope(state: \.calendar, action: \.calendar)) {
+                                store.send(.newTaskTapped)
+                            }
+                        } else {
+                            UpcomingView(store: store.scope(state: \.upcoming, action: \.upcoming))
+                        }
+                    }
+                    .toolbar {
+                        ToolbarItem(placement: .principal) {
+                            Picker(
+                                "Show as",
+                                selection: Binding(
+                                    get: { store.upcomingShowsCalendar },
+                                    set: { store.send(.upcomingCalendarShown($0)) })
+                            ) {
+                                Text("List").tag(false)
+                                Text("Calendar").tag(true)
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                        newTask
+                    }
                 }
             }
             Tab("Avenues", systemImage: "square.stack.3d.up", value: RootFeature.Tab.avenues) {
@@ -261,6 +284,10 @@ private struct MacRootView: View {
             TodayView(store: store.scope(state: \.today, action: \.today))
         case .upcoming:
             UpcomingView(store: store.scope(state: \.upcoming, action: \.upcoming))
+        case .calendar:
+            CalendarView(store: store.scope(state: \.calendar, action: \.calendar)) {
+                store.send(.newTaskTapped)
+            }
         case .procrastinated:
             ProcrastinatedView(store: store.scope(state: \.procrastinated, action: \.procrastinated))
         case .search:
@@ -346,6 +373,8 @@ private struct Sidebar: View {
         Label("Upcoming", systemImage: "calendar")
             .badge(store.upcoming.list.rows.count)
             .tag(RootFeature.SidebarItem.upcoming)
+        Label("Calendar", systemImage: "square.grid.3x3")
+            .tag(RootFeature.SidebarItem.calendar)
         Label("Procrastinated", systemImage: "tortoise")
             .badge(store.procrastinated.list.rows.count)
             .tag(RootFeature.SidebarItem.procrastinated)
