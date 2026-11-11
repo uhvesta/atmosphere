@@ -267,7 +267,7 @@ private struct ConversationListRow: View {
             preview: found.map { Snippet.around(searched, in: $0.text) } ?? preview?.text,
             previewIsModel: preview?.role == .assistant,
             badge: conversation.draft == nil ? nil : .init("Draft to review", systemImage: "doc.badge.plus"),
-            isSynced: conversation.isSynced)
+            isSynced: conversation.isSynced, searched: found == nil ? [] : searched)
     }
 }
 

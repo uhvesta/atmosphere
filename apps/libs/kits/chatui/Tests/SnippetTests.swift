@@ -21,5 +21,13 @@ func snippetTests() -> [TestCase] {
             let snippet = Snippet.around(["last", "shed"], in: long)
             try expect(snippet.contains("shed"))
         },
+        TestCase("given a word in it twice, ignoring case and accents, then both are matched") {
+            let text = "Café plans: the cafe opens at nine."
+            let matched = Snippet.matches(["CAFE"], in: text).map { String(text[$0]) }
+            try expectEqual(matched, ["Café", "cafe"])
+        },
+        TestCase("given words that aren't in it, or nothing searched, then nothing is matched") {
+            try expect(Snippet.matches(["piano", ""], in: long).isEmpty)
+        },
     ]
 }

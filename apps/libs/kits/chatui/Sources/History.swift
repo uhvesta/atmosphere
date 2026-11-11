@@ -21,13 +21,16 @@ public struct ConversationRow: View {
     let previewIsModel: Bool
     let badge: Badge?
     let isSynced: Bool
+    let searched: [String]
 
     /// `preview` is the line under the title, such as `Snippet.around`
-    /// what a search found; `previewIsModel` when a model wrote it.
+    /// what a search found, with `searched` in it in bold; `previewIsModel`
+    /// when a model wrote it.
     public init(
         title: String, updatedAt: Date, isReplying: Bool, preview: String?, previewIsModel: Bool,
-        badge: Badge? = nil, isSynced: Bool
+        badge: Badge? = nil, isSynced: Bool, searched: [String] = []
     ) {
+        self.searched = searched
         self.title = title
         self.updatedAt = updatedAt
         self.isReplying = isReplying
@@ -54,7 +57,7 @@ public struct ConversationRow: View {
                         .font(.subheadline)
                         .foregroundStyle(.tint)
                 } else if let preview {
-                    Text(previewIsModel ? Markdown.plainText(preview) : Markdown.plainLine(preview))
+                    Text(highlighted(previewIsModel ? Markdown.plainText(preview) : Markdown.plainLine(preview)))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -76,6 +79,20 @@ public struct ConversationRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(.rect)
     }
+
+    /// `text` with what was searched for in it in bold, in the primary
+    /// color, so a match stands out from the rest of the line.
+    private func highlighted(_ text: String) -> AttributedString {
+        var attributed = AttributedString(text)
+        for match in Snippet.matches(searched, in: text) {
+            guard let lower = AttributedString.Index(match.lowerBound, within: attributed),
+                let upper = AttributedString.Index(match.upperBound, within: attributed)
+            else { continue }
+            attributed[lower..<upper].inlinePresentationIntent = .stronglyEmphasized
+            attributed[lower..<upper].foregroundColor = .primary
+        }
+        return attributed
+    }
 }
 
 /// Where a message shows what was searched for.
@@ -92,5 +109,21 @@ public enum Snippet {
         let near = text.index(range.lowerBound, offsetBy: -30)
         let start = text[near..<range.lowerBound].firstIndex(where: \.isWhitespace).map(text.index(after:)) ?? near
         return "…" + text[start...]
+    }
+
+    /// Where each of `searched` is in `text`, every time it's there.
+    /// Matches ignore case and accents.
+    public static func matches(_ searched: [String], in text: String) -> [Range<String.Index>] {
+        searched.filter { !$0.isEmpty }.flatMap { word in
+            var found: [Range<String.Index>] = []
+            var from = text.startIndex
+            while let range = text.range(
+                of: word, options: [.caseInsensitive, .diacriticInsensitive], range: from..<text.endIndex)
+            {
+                found.append(range)
+                from = range.upperBound
+            }
+            return found
+        }
     }
 }
