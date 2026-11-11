@@ -1063,6 +1063,9 @@
     "Copy Code" : {
 
     },
+    "Copy List" : {
+
+    },
     "Copy a Fix-up Prompt" : {
 
     },
@@ -2902,6 +2905,9 @@
     "Share" : {
 
     },
+    "Share List" : {
+
+    },
     "Share the Details" : {
 
     },
@@ -3143,6 +3149,9 @@
 
     },
     "Tasks due on this day show up here. To move one, drag it onto another day." : {
+
+    },
+    "Tasks due today and in the next two weeks show up here, by day." : {
 
     },
     "Tasks due today, and overdue ones, show up here." : {

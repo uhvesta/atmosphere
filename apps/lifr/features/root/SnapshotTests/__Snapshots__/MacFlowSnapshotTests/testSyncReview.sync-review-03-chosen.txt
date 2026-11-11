@@ -42,6 +42,8 @@
     [Button] "Hide Sidebar"
     [MenuButton] "Sort" id: arrow.up.arrow.down
     [Button, disabled] "Select Tasks"
+    [Button, disabled] "Copy List"
+    [Button, disabled] "Share List"
     [MenuButton] "Add" help: "Add a task or Project" id: add
   [Button/CloseButton, disabled] ""
   [Button/ZoomButton] ""

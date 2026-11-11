@@ -3,7 +3,7 @@
     [Row/OutlineRow] ""
       [StaticText] "Today" value: "5"
     [Row/OutlineRow] ""
-      [StaticText] "Upcoming" value: "3"
+      [StaticText] "Upcoming" value: "5"
     [Row/OutlineRow] ""
       [StaticText] "" value: "Calendar"
     [Row/OutlineRow] ""
@@ -46,6 +46,8 @@
     [Button] "Hide Sidebar"
     [MenuButton] "Sort" id: arrow.up.arrow.down
     [Button] "Select Tasks"
+    [Button] "Copy List"
+    [Button] "Share List"
     [MenuButton] "Add" help: "Add a task or Project" id: add
   [Button/CloseButton] ""
   [Button/ZoomButton] ""

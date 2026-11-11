@@ -85,6 +85,8 @@ package struct AvenueFeature {
         case list(TaskListFeature.Action)
         case groupingPicked(Grouping)
         case newProjectTapped
+        /// The iPhone's Add Task: Quick Add, in this Avenue or Project.
+        case addTaskTapped
         case newProjectCancelled
         case newProjectSubmitted
         case project(ProjectDetailFeature.Action)
@@ -150,7 +152,7 @@ package struct AvenueFeature {
                 state.show(snapshot, now: now, timeZone: timeZone)
                 return .send(.delegate(.saved(snapshot)))
 
-            case .binding, .list, .project, .editAvenue, .delegate:
+            case .binding, .list, .project, .editAvenue, .delegate, .addTaskTapped:
                 return .none
             }
         }

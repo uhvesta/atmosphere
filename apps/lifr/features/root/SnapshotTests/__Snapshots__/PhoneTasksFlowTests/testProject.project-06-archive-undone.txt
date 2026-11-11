@@ -1,4 +1,5 @@
 [button] "Avenues" id: BackButton
+[button] "Add Task"
 [button] "More"
 [header] "Spring half marathon"
 [element] "Project name" value: "Spring half marathon"

@@ -66,7 +66,7 @@ final class RootFeatureTests: XCTestCase {
         await store.receive(\.loaded)
 
         XCTAssertEqual(store.state.today.list.rows.map(\.title), ["Run"])
-        XCTAssertEqual(store.state.upcoming.list.rows.map(\.title), ["Stretch"])
+        XCTAssertEqual(store.state.upcoming.list.rows.map(\.title), ["Run", "Stretch"])
         XCTAssertEqual(store.state.avenues.avenues.map(\.name), ["Inbox", "Health"])
         XCTAssertEqual(store.state.settings.avenues.map(\.name), ["Inbox", "Health"])
         await store.receive(\.remindersScheduled)
@@ -802,6 +802,28 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testAddTaskOnAnAvenueOrProjectPageOpensQuickAddThere() async {
+        let marathon = records.project("Half marathon", in: health)
+        let store = makeStore(.phone)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.avenues(.opened(.project(marathon.id))))
+        await store.send(.avenues(.avenue(.presented(.addTaskTapped))))
+        await store.receive(\.newTaskInTapped)
+        XCTAssertEqual(store.state.quickAdd?.avenueID, health.id)
+        XCTAssertEqual(store.state.quickAdd?.projectID, marathon.id)
+        await store.send(.quickAdd(.dismiss))
+
+        await store.send(.avenues(.avenue(.dismiss)))
+        await store.send(.avenues(.opened(.avenue(health.id))))
+        await store.send(.avenues(.avenue(.presented(.addTaskTapped))))
+        await store.receive(\.newTaskInTapped)
+        XCTAssertEqual(store.state.quickAdd?.avenueID, health.id)
+        XCTAssertNil(store.state.quickAdd?.projectID)
+        await task.cancel()
+    }
+
     func testAProjectChangeOffersUndoAndRedoAndEachPutsItAndItsTasksBack() async throws {
         let marathon = records.project("Half marathon", in: health)
         let shoes = records.task("Buy running shoes", in: health, project: marathon)
@@ -1125,7 +1147,7 @@ final class RootFeatureTests: XCTestCase {
         await store.receive(\.loaded)
 
         XCTAssertEqual(store.state.today.list.rows.map(\.title), ["Stretch"])
-        XCTAssertEqual(store.state.upcoming.list.rows.map(\.title), [])
+        XCTAssertEqual(store.state.upcoming.list.sections.filter { !$0.rows.isEmpty }.map(\.title), ["Today"])
         await task.cancel()
     }
 

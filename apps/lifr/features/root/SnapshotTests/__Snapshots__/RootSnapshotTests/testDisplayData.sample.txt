@@ -7,7 +7,9 @@
     - "Long run, 10 km"
     - "Water the plants"
   - procrastinated: 2
-  ▿ upcoming: 3 elements
+  ▿ upcoming: 5 elements
+    - "Long run, 10 km"
+    - "Water the plants"
     - "Buy running shoes"
     - "Call the plumber"
     - "Renew passport"

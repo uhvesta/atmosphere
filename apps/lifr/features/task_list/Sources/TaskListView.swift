@@ -130,6 +130,14 @@ package struct TaskListView<Header: View>: View {
                 }
                 .disabled(!store.isSelecting && store.isEmpty)
             }
+            ToolbarItem(placement: .secondaryAction) {
+                Button("Copy List", systemImage: "doc.on.doc") { store.send(.copyListTapped) }
+                    .disabled(store.isEmpty)
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                ShareLink(item: store.markdown) { Label("Share List", systemImage: "square.and.arrow.up") }
+                    .disabled(store.isEmpty)
+            }
         }
         .modifier(SearchField(store: store))
         .modifier(TaskListPresentations(store: store))

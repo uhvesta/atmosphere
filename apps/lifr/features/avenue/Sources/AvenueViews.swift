@@ -144,16 +144,24 @@ package struct AvenueView: View {
         .emptyBelowHeader(store.project != nil)
         .navigationTitle(store.title)
         .toolbar {
-            if store.canGroupByProject {
-                Button {
-                    store.send(.newProjectTapped)
-                } label: {
-                    Label("New Project", systemImage: "folder.badge.plus")
+            #if os(iOS)
+                // The Mac's toolbar has the window's + menu.
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Add Task", systemImage: "plus") { store.send(.addTaskTapped) }
                 }
-                Button {
-                    store.send(.editAvenueTapped)
-                } label: {
-                    Label("Edit Avenue", systemImage: "slider.horizontal.3")
+            #endif
+            if store.canGroupByProject {
+                ToolbarItemGroup {
+                    Button {
+                        store.send(.newProjectTapped)
+                    } label: {
+                        Label("New Project", systemImage: "folder.badge.plus")
+                    }
+                    Button {
+                        store.send(.editAvenueTapped)
+                    } label: {
+                        Label("Edit Avenue", systemImage: "slider.horizontal.3")
+                    }
                 }
             }
         }

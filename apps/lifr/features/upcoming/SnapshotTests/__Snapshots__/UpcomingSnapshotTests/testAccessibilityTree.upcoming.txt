@@ -1,3 +1,6 @@
+[header, text] "Today"
+[button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
+[button] "Water the plants" value: "To Do, Today, HOME-0010"
 [header, text] "Tomorrow"
 [button] "Buy running shoes" value: "To Do, High priority, Nov 4, HEALTH-0017"
 [header, text] "Thursday, Nov 5"

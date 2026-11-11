@@ -87,6 +87,16 @@ package struct TaskListFeature {
 
         package var rows: [TaskRowData] { sections.flatMap(\.rows) }
 
+        /// The list as a Markdown checklist, with a heading over each
+        /// section, to copy or share.
+        package var markdown: String {
+            sections.filter { !$0.rows.isEmpty }.map { section in
+                let lines = section.rows.map(\.markdown).joined(separator: "\n")
+                return section.title.isEmpty ? lines : "## \(section.title)\n\n\(lines)"
+            }
+            .joined(separator: "\n\n")
+        }
+
         /// The picked tasks, in the order shown.
         package var selectedIDs: [UUID] { rows.map(\.id).filter(selection.contains) }
 
@@ -211,6 +221,8 @@ package struct TaskListFeature {
         case bannerDismissed
         /// Copy as Markdown: the task as a line of a checklist, with its code.
         case copyTapped(UUID)
+        /// Copy List: every row, as `markdown` puts them.
+        case copyListTapped
         case detail(PresentationAction<TaskDetailFeature.Action>)
         case reschedule(PresentationAction<RescheduleFeature.Action>)
         case prompt(PresentationAction<StatusPrompt>)
@@ -369,6 +381,10 @@ package struct TaskListFeature {
             case .bannerDismissed:
                 state.banner = nil
                 return .none
+
+            case .copyListTapped:
+                guard !state.isEmpty else { return .none }
+                return .run { [pasteboard, text = state.markdown] _ in await pasteboard.copy(text) }
 
             case .copyTapped(let id):
                 guard let row = state.rows.first(where: { $0.id == id }) else { return .none }

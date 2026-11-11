@@ -5,20 +5,26 @@ import LifrTaskList
 import LifrUI
 
 extension TaskQuery {
-    /// Open tasks due from tomorrow through the next 14 days, one section per
-    /// day. Today and overdue tasks are on Today.
+    /// Open tasks due today through the next 14 days, one section per day.
+    /// Overdue tasks are on Today.
     package static let upcoming = TaskQuery(
         key: "upcoming",
         empty: .init(
             "Nothing coming up", systemImage: "calendar",
-            description: String(localized: "Tasks due in the next two weeks show up here, by day."))
+            description: String(localized: "Tasks due today and in the next two weeks show up here, by day."))
     ) { workspace, now, timeZone in
         let today = CalendarDate(now, in: timeZone)
-        let days = (1...14).map { today.adding(days: $0) }
-        let open = workspace.listedTasks.filter { $0.isOpen && $0.dueDate.map { $0 > today } == true }
+        let days = (0...14).map { today.adding(days: $0) }
+        let open = workspace.listedTasks.filter { $0.isOpen && $0.dueDate.map { $0 >= today } == true }
         return days.enumerated().map { offset, day in
-            TaskSection(
-                id: day.description, title: offset == 0 ? String(localized: "Tomorrow") : day.weekdayTitle,
+            let title =
+                switch offset {
+                case 0: String(localized: "Today")
+                case 1: String(localized: "Tomorrow")
+                default: day.weekdayTitle
+                }
+            return TaskSection(
+                id: day.description, title: title,
                 rows: workspace.rows(open.filter { $0.dueDate == day }, now: now, timeZone: timeZone))
         }
     }

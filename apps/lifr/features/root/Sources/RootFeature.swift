@@ -1015,6 +1015,14 @@ package struct RootFeature {
                 .quickAdd(.presented(.delegate(.saved(let snapshot)))):
                 return show(snapshot, in: &state)
 
+            case .avenues(.avenue(.presented(.addTaskTapped))):
+                guard let scope = state.avenues.avenue?.scope else { return .none }
+                return .send(.newTaskInTapped(scope))
+
+            case .avenue(.addTaskTapped):
+                guard let scope = state.avenue?.scope else { return .none }
+                return .send(.newTaskInTapped(scope))
+
             case .board(.addTapped):
                 guard let scope = state.board?.scope else { return .none }
                 return .send(.newTaskInTapped(scope))

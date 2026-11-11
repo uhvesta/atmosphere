@@ -5,7 +5,7 @@
     [Row/OutlineRow] ""
       [StaticText] "Today" value: "5"
     [Row/OutlineRow] ""
-      [StaticText] "Upcoming" value: "3"
+      [StaticText] "Upcoming" value: "5"
     [Row/OutlineRow] ""
       [StaticText] "" value: "Calendar"
     [Row/OutlineRow] ""
@@ -65,6 +65,8 @@
     [Button] "Hide Sidebar"
     [MenuButton] "Sort" id: arrow.up.arrow.down
     [Button, disabled] "Select Tasks"
+    [Button, disabled] "Copy List"
+    [Button, disabled] "Share List"
     [RadioGroup] "Show as"
       [RadioButton/Segment] "List" value: "1"
       [RadioButton/Segment] "Board" value: "0"

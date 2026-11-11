@@ -84,6 +84,41 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertTrue(row.fullCode.hasPrefix("HEALTH-"))
     }
 
+    func testCopyListPutsEachRowUnderItsSectionsHeading() async throws {
+        records.task("Stretch", in: health)
+        records.task("Plan long runs", in: health, status: .inProgress)
+        let store = await load()
+        let copied = LockIsolated<[String]>([])
+        store.dependencies.pasteboard = PasteboardClient { text in copied.withValue { $0.append(text) } }
+        let titles = store.state.sections.map(\.title)
+        let rows = store.state.sections.map { try? XCTUnwrap($0.rows.first) }
+
+        await store.send(.copyListTapped)
+        await store.finish()
+
+        let text = try XCTUnwrap(copied.value.first)
+        XCTAssertEqual(copied.value.count, 1)
+        var at = text.startIndex
+        for (title, row) in zip(titles, rows) {
+            let line = try XCTUnwrap(row?.markdown)
+            let heading = try XCTUnwrap(text.range(of: "## \(title)", range: at..<text.endIndex))
+            let next = try XCTUnwrap(text.range(of: line, range: heading.upperBound..<text.endIndex))
+            at = next.upperBound
+        }
+        XCTAssertTrue(text.contains("- [ ] Stretch"))
+    }
+
+    func testCopyListOnAnEmptyListCopiesNothing() async {
+        let store = await load()
+        let copied = LockIsolated<[String]>([])
+        store.dependencies.pasteboard = PasteboardClient { text in copied.withValue { $0.append(text) } }
+
+        await store.send(.copyListTapped)
+        await store.finish()
+
+        XCTAssertEqual(copied.value, [])
+    }
+
     func testSearchingKeepsRowsWhoseTitleOrCodeMatchesAndDropsEmptySections() async {
         records.task("Stretch", in: health)
         let run = records.task("Plan long runs", in: health, status: .inProgress)

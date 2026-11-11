@@ -28,30 +28,32 @@ final class UpcomingFeatureTests: XCTestCase {
         return store
     }
 
-    func testGroupsTheNextTwoWeeksByDay() async {
+    func testGroupsTodayAndTheNextTwoWeeksByDay() async {
+        records.task("Stretch", in: health, due: 0)
         records.task("Buy running shoes", in: health, due: 1)
         records.task("Renew passport", in: health, due: 6)
         records.task("Call the plumber", in: health, due: 6)
 
         let store = await load()
 
-        XCTAssertEqual(store.state.list.sections.map(\.title), ["Tomorrow", "Monday, Nov 9"])
-        XCTAssertEqual(store.state.list.sections.map(\.rows.count), [1, 2])
+        XCTAssertEqual(store.state.list.sections.map(\.title), ["Today", "Tomorrow", "Monday, Nov 9"])
+        XCTAssertEqual(store.state.list.sections.map(\.rows.count), [1, 1, 2])
     }
 
-    func testOnADaylightSavingChangeTomorrowIsTheNextDayAndNoDayRepeats() throws {
+    func testOnADaylightSavingChangeEachDayFollowsTheLastAndNoneRepeats() throws {
         // 2026-11-01 00:30 in New York, the night clocks go back an hour.
         let night = Date(timeIntervalSince1970: 1_793_507_400)
         let newYork = try XCTUnwrap(TimeZone(identifier: "America/New_York"))
 
         let days = TaskQuery.upcoming.sections(records.workspace, night, newYork).map(\.id)
 
-        XCTAssertEqual(days.first, "2026-11-02")
+        XCTAssertEqual(days.first, "2026-11-01")
+        XCTAssertEqual(days.dropFirst().first, "2026-11-02")
         XCTAssertEqual(days.last, "2026-11-15")
-        XCTAssertEqual(Set(days).count, 14)
+        XCTAssertEqual(Set(days).count, 15)
     }
 
-    func testLeavesOutTodayOverdueClosedAndLaterTasks() async {
+    func testLeavesOutOverdueClosedAndLaterTasks() async {
         records.task("Today", in: health, due: 0)
         records.task("Overdue", in: health, due: -1)
         records.task("Done", in: health, status: .done, due: 2)
@@ -60,7 +62,7 @@ final class UpcomingFeatureTests: XCTestCase {
 
         let store = await load()
 
-        XCTAssertEqual(store.state.list.rows.map(\.title), ["Last day"])
+        XCTAssertEqual(store.state.list.rows.map(\.title), ["Today", "Last day"])
     }
 
     func testFinishingATaskTakesItOff() async {

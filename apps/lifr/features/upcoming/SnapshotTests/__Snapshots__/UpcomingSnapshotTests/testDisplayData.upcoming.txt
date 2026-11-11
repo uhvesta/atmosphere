@@ -1,4 +1,45 @@
-▿ 3 elements
+▿ 4 elements
+  ▿ TaskSection
+    - id: "2026-11-03"
+    - notes: 0 key/value pairs
+    ▿ rows: 2 elements
+      ▿ TaskRowData
+        - avenue: "Health"
+        - code: "HEALTH-0004"
+        ▿ due: Optional<Due>
+          ▿ some: Due
+            ▿ overdue: (2 elements)
+              ▿ .0: 2026-11-03
+                - year: 2026
+                - month: 11
+                - day: 3
+              ▿ .1: Optional<TimeOfDay>
+                ▿ some: 07:00
+                  - hour: 7
+                  - minute: 0
+        - fullCode: "HEALTH-0004"
+        - id: 00000000-0000-0000-0000-000000000401
+        - priority: Priority.high
+        - repeats: false
+        - starts: Optional<CalendarDate>.none
+        - status: TaskStatus.todo
+        - subtasks: Optional<Progress>.none
+        - title: "Long run, 10 km"
+      ▿ TaskRowData
+        - avenue: "Home"
+        - code: "HOME-0010"
+        ▿ due: Optional<Due>
+          ▿ some: Due
+            - today: Optional<TimeOfDay>.none
+        - fullCode: "HOME-0010"
+        - id: 00000000-0000-0000-0000-000000001001
+        - priority: Priority.none
+        - repeats: false
+        - starts: Optional<CalendarDate>.none
+        - status: TaskStatus.todo
+        - subtasks: Optional<Progress>.none
+        - title: "Water the plants"
+    - title: "Today"
   ▿ TaskSection
     - id: "2026-11-04"
     - notes: 0 key/value pairs
