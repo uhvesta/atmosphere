@@ -195,6 +195,10 @@ private struct LifrParts: ChatThreadParts {
             } edit: {
                 store.send(.editDraftTapped)
             }
+        } else if store.discardedDraft != nil {
+            ChatNotice("Draft discarded.", systemImage: "trash", action: "Undo") {
+                store.send(.undoDiscardTapped)
+            }
         }
     }
 

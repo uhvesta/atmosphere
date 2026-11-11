@@ -55,6 +55,9 @@ package struct ChatFeature {
         package var editsDraft = false
         /// The draft as it was when its editor opened, put back on Cancel.
         package var draftBeforeEdit: Plan?
+        /// The draft last discarded, put back on Undo until the next
+        /// message is sent.
+        package var discardedDraft: Plan?
         /// The drafts this chat added, by the journal entry that added
         /// them: undone, the draft is back to add again.
         package var addedDrafts: [UUID: Plan] = [:]
@@ -307,6 +310,7 @@ package struct ChatFeature {
         case editProposalDone
         case reproposed(messageID: UUID, Result<Proposal, any Error>)
         case discardDraftTapped
+        case undoDiscardTapped
         case addTapped
         case saved(Result<Saved, any Error>)
         /// Goes to the point before the last one shown.
@@ -860,9 +864,17 @@ package struct ChatFeature {
 
             case .discardDraftTapped:
                 guard state.canChangeDraft else { return .none }
+                state.discardedDraft = state.conversation.draft
                 state.conversation.draft = nil
                 state.problem = nil
                 state.editsDraft = false
+                return .none
+
+            case .undoDiscardTapped:
+                guard state.conversation.draft == nil, let draft = state.discardedDraft else { return .none }
+                state.conversation.draft = draft
+                state.discardedDraft = nil
+                check(&state)
                 return .none
 
             case .core(.binding(let binding)) where binding.keyPath == \Core.State.input:
@@ -992,6 +1004,7 @@ package struct ChatFeature {
         if state.core.reply != nil {
             state.skill = nil
             state.recordings = []
+            state.discardedDraft = nil
         }
         return effect
     }

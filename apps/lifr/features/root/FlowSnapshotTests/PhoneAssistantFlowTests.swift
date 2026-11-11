@@ -59,8 +59,8 @@ final class PhoneAssistantFlowTests: PhoneFlowTestCase {
         flow.finish()
     }
 
-    /// A draft edited and the edit cancelled, then discarded, then the
-    /// chat forked from its reply.
+    /// A draft edited and the edit cancelled, then discarded, put back with
+    /// Undo and discarded again, then the chat forked from its reply.
     func testAssistantDraftCancelDiscardFork() async throws {
         let plan = Plan(tasks: [
             .init(title: "Buy soil", place: "HOME"), .init(title: "Repot the fern", place: "HOME"),
@@ -90,6 +90,13 @@ final class PhoneAssistantFlowTests: PhoneFlowTestCase {
         await flow.step("discarded")
         XCTAssertNil(store.conversations.chats[id: id]?.conversation.draft)
         XCTAssertFalse(store.workspace?.tasks.values.contains { $0.title == "Buy soil" } ?? true)
+
+        flow.tap("Undo")
+        await flow.step("discard-undone")
+        XCTAssertEqual(store.conversations.chats[id: id]?.conversation.draft, drafted, "Undo didn't put it back")
+        flow.tap("Discard")
+        await flow.step("discarded-again")
+        XCTAssertNil(store.conversations.chats[id: id]?.conversation.draft)
 
         let reply = try XCTUnwrap(store.conversations.chats[id: id]?.conversation.messages.last?.id)
         store.send(.conversations(.chats(.element(id: id, action: .forkTapped(messageID: reply)))))

@@ -8,6 +8,8 @@
 [button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"
+[text] "Draft discarded."
+[button] "Undo"
 [element] "" value: "Message"
 [button] "Add" hint: "Add photos or files"
 [button] "Model" value: "Apple Intelligence" hint: "Model, Thinking and Context Window"
