@@ -608,8 +608,9 @@ Structure:
 - [x] This Mac's local-model backend uses it by default; its models in the picker
 - [x] Remote hosts reach it over a reverse port forward
 - [x] A session waits with a reason when the server is down
-- [ ] The picker marks the models known to call tools well → after R, once
-  there are downloaded models to measure
+- [x] The picker marks the models known to call tools well: the app measures
+  each model once, in the background, with small tool-call jobs, and keeps
+  the verdict
 
 **Done when:** an end-to-end test starts a local-model session against the
 server with a small model, which calls a tool and replies.

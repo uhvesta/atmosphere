@@ -568,11 +568,18 @@ fn list_models(
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|model| model["id"].as_str())
-        .map(|id| Model {
-            id: id.to_owned(),
-            name: id.to_owned(),
-            detail: None,
+        .filter_map(|model| {
+            let id = model["id"].as_str()?;
+            // Humata's own server says, for one, how well it calls tools.
+            let detail = model["detail"]
+                .as_str()
+                .map(str::trim)
+                .filter(|detail| !detail.is_empty());
+            Some(Model {
+                id: id.to_owned(),
+                name: id.to_owned(),
+                detail: detail.map(str::to_owned),
+            })
         })
         .collect();
     models.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1363,6 +1370,33 @@ mod tests {
             result,
             Err(LocalModelError::Status { status: 404, .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn listed_models_keep_what_the_server_says_sets_them_apart() {
+        let list = json!({"object": "list", "data": [
+            {"id": "qwen", "object": "model", "detail": "Calls tools well"},
+            {"id": "apple", "object": "model"},
+            {"id": "blank", "object": "model", "detail": "  "},
+        ]});
+        let server = serve(vec![(200, list.to_string())]).await;
+        let runner = LocalModelRunner::new(LocalModelConfig::default());
+        let models = server_models(runner.http.clone(), &server.base_url, None)
+            .await
+            .expect("the models are listed");
+
+        let details: Vec<(&str, Option<&str>)> = models
+            .iter()
+            .map(|model| (model.id.as_str(), model.detail.as_deref()))
+            .collect();
+        assert_eq!(
+            details,
+            [
+                ("apple", None),
+                ("blank", None),
+                ("qwen", Some("Calls tools well"))
+            ]
+        );
     }
 
     #[tokio::test]

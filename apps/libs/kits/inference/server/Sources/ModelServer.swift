@@ -7,10 +7,14 @@ import Network
 public struct ServedModel: Sendable {
     public var id: String
     public var runtime: any ModelRuntime
+    /// What a client's model picker shows beside it, such as how well it
+    /// calls tools; listed as `detail`, a field OpenAI's list doesn't have.
+    public var detail: String?
 
-    public init(id: String, runtime: any ModelRuntime) {
+    public init(id: String, runtime: any ModelRuntime, detail: String? = nil) {
         self.id = id
         self.runtime = runtime
+        self.detail = detail
     }
 }
 
@@ -106,7 +110,12 @@ public final class ModelServer: Sendable {
         guard let request = try? await channel.request() else { return }
         switch (request.method, request.path) {
         case ("GET", "/v1/models"):
-            let data: JSONValue = .array(models().map { .object(["id": .string($0.id), "object": "model"]) })
+            let data: JSONValue = .array(
+                models().map { model in
+                    var fields: [String: JSONValue] = ["id": .string(model.id), "object": "model"]
+                    if let detail = model.detail { fields["detail"] = .string(detail) }
+                    return .object(fields)
+                })
             try? await channel.respond(200, json: ["object": "list", "data": data])
         case ("POST", "/v1/chat/completions"):
             await complete(request.body, on: channel)

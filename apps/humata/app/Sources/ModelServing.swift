@@ -3,6 +3,7 @@ import HumataAppFeature
 import InferenceKit
 import InferenceKitLive
 import InferenceServerKit
+import os
 
 #if canImport(InferenceKitMLX)
     import InferenceKitMLX
@@ -30,6 +31,7 @@ private actor ModelServing {
                 started = try await server.start(port: 0)
             }
             port = started
+            probe(on: started)
             return started
         } catch {
             // Sessions on it wait and say the server isn't running.
@@ -60,7 +62,50 @@ private actor ModelServing {
         let downloaded = library.installed().filter { $0.spec.runtime == .mlx }.map { model in
             ServedModel(id: model.id.rawValue, runtime: EngineRuntime(model: model, host: host))
         }
-        return [ServedModel(id: "apple", runtime: AppleRuntime())] + downloaded
+        return ([ServedModel(id: "apple", runtime: AppleRuntime())] + downloaded).map { model in
+            let id = model.id
+            var model = model
+            model.detail = verdicts.withLock { $0[id] }.map(Self.detail)
+            return model
+        }
+    }
+
+    /// How well each model called tools when it was measured on this Mac,
+    /// by its id; kept between launches, since measuring loads the model.
+    private static let verdicts = OSAllocatedUnfairLock(initialState: storedVerdicts())
+    private static let verdictsKey = "toolProbeVerdicts"
+
+    private static func storedVerdicts() -> [String: ToolProbe.Verdict] {
+        guard let data = UserDefaults.standard.data(forKey: verdictsKey) else { return [:] }
+        return (try? JSONDecoder().decode([String: ToolProbe.Verdict].self, from: data)) ?? [:]
+    }
+
+    private static func detail(_ verdict: ToolProbe.Verdict) -> String {
+        switch verdict {
+        case .good: "Calls tools well"
+        case .poor: "Missed simple tool calls on this Mac; it may not work well as an agent"
+        }
+    }
+
+    /// Measures, one at a time and in the background, each model that
+    /// hasn't been yet, so the picker can say which call tools well. A
+    /// model that couldn't be asked is tried again next launch.
+    private func probe(on port: UInt16) {
+        guard let base = URL(string: "http://127.0.0.1:\(port)/v1") else { return }
+        Task.detached(priority: .background) {
+            for model in Self.models() {
+                let id = model.id
+                guard Self.verdicts.withLock({ $0[id] }) == nil else { continue }
+                guard let verdict = await ToolProbe.run(base: base, model: id) else { continue }
+                let all = Self.verdicts.withLock { verdicts in
+                    verdicts[id] = verdict
+                    return verdicts
+                }
+                if let data = try? JSONEncoder().encode(all) {
+                    UserDefaults.standard.set(data, forKey: Self.verdictsKey)
+                }
+            }
+        }
     }
 }
 
