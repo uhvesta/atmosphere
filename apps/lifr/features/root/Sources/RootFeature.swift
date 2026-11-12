@@ -1425,9 +1425,11 @@ package struct RootFeature {
     /// without titles while the lock is on.
     private func scheduleReminders(_ state: State) -> Effect<Action> {
         guard let workspace = state.workspace else { return .none }
-        let scheduled = workspace.scheduledReminders(now: now, timeZone: timeZone, hidingTitles: state.locksApp)
-        let badge = workspace.badgeCount(state.badgeCount, now: now, timeZone: timeZone)
-        return .run { [reminders] send in
+        // Worked out in the effect, off the main actor.
+        return .run { [reminders, now, timeZone, locked = state.locksApp, counted = state.badgeCount] send in
+            let scheduled = workspace.scheduledReminders(now: now, timeZone: timeZone, hidingTitles: locked)
+            let badge = workspace.badgeCount(counted, now: now, timeZone: timeZone)
+            guard !Task.isCancelled else { return }
             // Notifications that are off leave the reminders saved and
             // ringing elsewhere; the detail screen says so when one is
             // added. Any other failure is told once per launch.
@@ -1449,11 +1451,23 @@ package struct RootFeature {
     /// the titles, or only how many while the lock is on.
     private func writeGlance(_ state: State) -> Effect<Action> {
         guard let workspace = state.workspace else { return .none }
+        // Worked out in the effect, off the main actor; a newer save's
+        // glance replaces one still being worked out.
+        return .run { [glance, now, timeZone, locked = state.locksApp] _ in
+            guard let today = Self.glance(of: workspace, now: now, timeZone: timeZone, locked: locked),
+                !Task.isCancelled
+            else { return }
+            await glance.write(today)
+        }
+        .cancellable(id: CancelID.glance, cancelInFlight: true)
+    }
+
+    private static func glance(of workspace: Workspace, now: Date, timeZone: TimeZone, locked: Bool) -> TodayGlance? {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
         let start = calendar.startOfDay(for: now)
         let starts = (0...15).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
-        guard starts.count == 16 else { return .none }
+        guard starts.count == 16 else { return nil }
         func glanced(_ rows: [TaskRowData]) -> [TodayGlance.Row] {
             rows.map { row in
                 let isOverdue = if case .overdue = row.due { true } else { false }
@@ -1480,32 +1494,33 @@ package struct RootFeature {
         }
         let later = (1..<15).map { day in
             TodayGlance(
-                asOf: now, from: starts[day], until: starts[day + 1], rows: rows(at: starts[day]),
-                locked: state.locksApp)
+                asOf: now, from: starts[day], until: starts[day + 1], rows: rows(at: starts[day]), locked: locked)
         }
-        let today = TodayGlance(
-            asOf: now, from: start, until: starts[1], rows: rows(at: now), locked: state.locksApp, later: later,
+        return TodayGlance(
+            asOf: now, from: start, until: starts[1], rows: rows(at: now), locked: locked, later: later,
             avenues: avenues, dueCounts: dueCounts)
-        return .run { [glance] _ in await glance.write(today) }
-            .cancellable(id: CancelID.glance)
     }
 
     /// Lists every task not in the Trash in the system's search, or none
     /// while the lock is on.
     private func indexSpotlight(_ state: State) -> Effect<Action> {
         guard let workspace = state.workspace else { return .none }
-        let items: [SpotlightItem] =
-            state.locksApp
-            ? []
-            : workspace.tasks.values.filter { $0.deletedAt == nil }.sorted { $0.createdAt < $1.createdAt }.map {
-                let avenue = workspace.avenues[$0.avenueID]?.name
-                let code = workspace.displayCode(of: $0)
-                return SpotlightItem(
-                    id: $0.id, title: $0.title, detail: avenue.map { "\(code) · \($0)" } ?? code,
-                    details: $0.details)
-            }
-        return .run { [spotlight] _ in await spotlight.index(items) }
-            .cancellable(id: CancelID.spotlight, cancelInFlight: true)
+        // Worked out in the effect, off the main actor.
+        return .run { [spotlight, locked = state.locksApp] _ in
+            let items: [SpotlightItem] =
+                locked
+                ? []
+                : workspace.tasks.values.filter { $0.deletedAt == nil }.sorted { $0.createdAt < $1.createdAt }.map {
+                    let avenue = workspace.avenues[$0.avenueID]?.name
+                    let code = workspace.displayCode(of: $0)
+                    return SpotlightItem(
+                        id: $0.id, title: $0.title, detail: avenue.map { "\(code) · \($0)" } ?? code,
+                        details: $0.details)
+                }
+            guard !Task.isCancelled else { return }
+            await spotlight.index(items)
+        }
+        .cancellable(id: CancelID.spotlight, cancelInFlight: true)
     }
 
     /// Follows a link: a task from wherever the person is, Today, a day in

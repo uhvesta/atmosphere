@@ -109,13 +109,6 @@ package struct TaskSection: Identifiable, Hashable, Sendable {
 }
 
 extension Workspace {
-    /// Tasks that are in the trash or in an archived Avenue appear in no list.
-    package var listedTasks: [LifrTask] {
-        tasks.values
-            .filter { $0.deletedAt == nil && avenues[$0.avenueID]?.archivedAt == nil }
-            .sorted(by: LifrTask.listOrder)
-    }
-
     /// `tasks` as rows, as of `now`.
     package func rows(_ tasks: [LifrTask], now: Date, timeZone: TimeZone) -> [TaskRowData] {
         tasks.map { TaskRowData($0, in: self, now: now, timeZone: timeZone) }

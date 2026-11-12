@@ -26,6 +26,22 @@ func hierarchyTests() -> [TestCase] {
             try expectEqual(subtask.projectID, fixture.marathon.id)
             try expectEqual(fixture.workspace.subtasks(of: parent.id).map(\.id), [subtask.id])
         },
+        TestCase("given Sub tasks and lists read once, when tasks change, then each copy lists its own tasks") {
+            let fixture = try Fixture()
+            let parent = try fixture.task("Parent")
+            let first = try fixture.task("First", parent: parent)
+            let before = fixture.workspace
+            try expectEqual(before.subtasks(of: parent.id).map(\.id), [first.id])
+            try expectEqual(Set(before.listedTasks.map(\.id)), [parent.id, first.id])
+
+            let second = try fixture.task("Second", parent: parent)
+            _ = try fixture.workspace.moveToTrash(first.id, in: fixture.context)
+
+            try expectEqual(fixture.workspace.subtasks(of: parent.id).map(\.id), [second.id])
+            try expectEqual(Set(fixture.workspace.listedTasks.map(\.id)), [parent.id, second.id])
+            try expectEqual(before.subtasks(of: parent.id).map(\.id), [first.id])
+            try expectEqual(Set(before.listedTasks.map(\.id)), [parent.id, first.id])
+        },
         TestCase("given a Sub task, then it can't have its own Sub tasks") {
             let fixture = try Fixture()
             let parent = try fixture.task("Parent")

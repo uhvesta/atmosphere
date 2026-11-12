@@ -4,9 +4,13 @@ import Foundation
 /// the rules from the spec, writes history, and returns a `Change`. A refused
 /// operation throws and changes nothing.
 package struct Workspace: Hashable, Codable, Sendable {
-    package internal(set) var avenues: [UUID: Avenue] = [:]
+    package internal(set) var avenues: [UUID: Avenue] = [:] {
+        didSet { derived = Derived() }
+    }
     package internal(set) var projects: [UUID: Project] = [:]
-    package internal(set) var tasks: [UUID: LifrTask] = [:]
+    package internal(set) var tasks: [UUID: LifrTask] = [:] {
+        didSet { derived = Derived() }
+    }
     package internal(set) var labels: [UUID: Label] = [:]
     package internal(set) var comments: [UUID: Comment] = [:]
     package internal(set) var reminders: [UUID: Reminder] = [:]
@@ -20,6 +24,13 @@ package struct Workspace: Hashable, Codable, Sendable {
     /// newer version wrote or a task whose Avenue hasn't arrived. They're
     /// still there, so sync must never send them as removed.
     package var unreadable: Set<RecordID> = []
+    /// Lists worked out from `tasks` and `avenues`, until they change.
+    var derived = Derived()
+
+    private enum CodingKeys: String, CodingKey {
+        case avenues, projects, tasks, labels, comments, reminders, savedFilters, history, journal, settings
+        case unreadable
+    }
 
     /// How long trashed tasks are kept before `purgeTrash` deletes them.
     package static let trashRetention: TimeInterval = 30 * 24 * 60 * 60
@@ -63,9 +74,7 @@ package struct Workspace: Hashable, Codable, Sendable {
 
     /// A task's Sub tasks, not counting trashed ones, in sort order.
     package func subtasks(of id: UUID) -> [LifrTask] {
-        tasks.values
-            .filter { $0.parentID == id && $0.deletedAt == nil }
-            .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
+        liveChildren[id] ?? []
     }
 
     package func openSubtasks(of id: UUID) -> [LifrTask] {

@@ -46,7 +46,13 @@ extension LifrTask {
         case (let left?, let right?) where left != right: return left < right
         case (.some, nil): return true
         case (nil, .some): return false
-        default: return (lhs.sortOrder, lhs.id.uuidString) < (rhs.sortOrder, rhs.id.uuidString)
+        default: return siblingOrder(lhs, rhs)
         }
+    }
+
+    /// Manual order, then ID for ties. Spells out the ID only on a tie,
+    /// which sorting thousands of tasks would otherwise do every compare.
+    package static func siblingOrder(_ lhs: LifrTask, _ rhs: LifrTask) -> Bool {
+        lhs.sortOrder != rhs.sortOrder ? lhs.sortOrder < rhs.sortOrder : lhs.id.uuidString < rhs.id.uuidString
     }
 }
