@@ -68,6 +68,8 @@ public struct SlashSuggestion: Identifiable, Hashable, Sendable {
 public struct SlashSuggestions: View {
     let suggestions: [SlashSuggestion]
     let pick: (String) -> Void
+    /// About one row with a line of summary, at the person's text size.
+    @ScaledMetric(relativeTo: .body) private var rowHeight: CGFloat = 60
 
     public init(_ suggestions: [SlashSuggestion], pick: @escaping (String) -> Void) {
         self.suggestions = suggestions
@@ -107,7 +109,8 @@ public struct SlashSuggestions: View {
         .scrollBounceBehavior(.basedOnSize)
         // Shows there's more below when not all fit.
         .scrollIndicatorsFlash(onAppear: true)
-        .frame(maxHeight: 240)
+        // Four and a half rows, so a cut row says there's more to scroll to.
+        .frame(maxHeight: rowHeight * 4.5)
         .fixedSize(horizontal: false, vertical: true)
         // The shadow goes on the card alone: on the scroll view, it would be
         // drawn under each row and wash out their gray text.

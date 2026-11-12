@@ -256,6 +256,7 @@ package struct TaskListFeature {
     @Dependency(\.store) private var store
     @Dependency(\.feedback) private var feedback
     @Dependency(\.pasteboard) private var pasteboard
+    @Dependency(\.uuid) private var uuid
     @Dependency(\.sync) private var sync
     @Dependency(\.continuousClock) private var clock
     @Dependency(\.closedRowPause) private var closedRowPause
@@ -432,11 +433,22 @@ package struct TaskListFeature {
 
             case .copyListTapped:
                 guard !state.isEmpty else { return .none }
-                return .run { [pasteboard, text = state.markdown] _ in await pasteboard.copy(text) }
+                let rows = state.rows
+                let notice =
+                    rows.count == 1
+                    ? String(localized: "Copied \u{201C}\(rows[0].title)\u{201D}")
+                    : String(localized: "Copied \(rows.count) tasks")
+                return .run { [pasteboard, uuid, text = state.markdown] _ in
+                    await pasteboard.copy(text)
+                    Self.copied(notice, id: uuid())
+                }
 
             case .copyTapped(let id):
                 guard let row = state.rows.first(where: { $0.id == id }) else { return .none }
-                return .run { [pasteboard, line = row.markdown] _ in await pasteboard.copy(line) }
+                return .run { [pasteboard, uuid, line = row.markdown, title = row.title] _ in
+                    await pasteboard.copy(line)
+                    Self.copied(String(localized: "Copied \u{201C}\(title)\u{201D}"), id: uuid())
+                }
 
             case .saved(.success(let saved)):
                 let isLatest = saved.number >= state.saves.latest
@@ -675,5 +687,31 @@ extension DependencyValues {
     package var closedRowPause: Duration {
         get { self[ClosedRowPauseKey.self] }
         set { self[ClosedRowPauseKey.self] = newValue }
+    }
+}
+
+/// What was last copied from a list, said for a moment so the person
+/// knows it worked.
+package struct CopyNotice: Equatable, Sendable {
+    package var id: UUID
+    package var message: String
+
+    package init(id: UUID, message: String) {
+        self.id = id
+        self.message = message
+    }
+}
+
+extension SharedKey where Self == InMemoryKey<CopyNotice?>.Default {
+    /// The last copy from any list, shown by the root.
+    package static var lastCopy: Self {
+        Self[.inMemory("lifrLastCopy"), default: nil]
+    }
+}
+
+extension TaskListFeature {
+    fileprivate static func copied(_ message: String, id: UUID) {
+        @Shared(.lastCopy) var lastCopy
+        $lastCopy.withLock { $0 = CopyNotice(id: id, message: message) }
     }
 }

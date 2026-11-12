@@ -39,6 +39,8 @@ import OSLog
 package struct RootFeature {
     /// How long the last change's Undo stays on screen.
     static let toastDuration = Duration.seconds(5)
+    /// How long "Copied" stays: there's nothing to undo.
+    static let copyNoticeDuration = Duration.seconds(2)
 
     package enum Platform: Equatable, Sendable {
         /// Tabs, and no agents: only the Mac runs the CLI.
@@ -181,6 +183,8 @@ package struct RootFeature {
         /// once per launch.
         package var explainedReminders = false
         @Shared(.lastChange) package var lastChange
+        /// What a list last copied, while it's said.
+        @Shared(.lastCopy) package var lastCopy
         /// The change Undo just took back, which Redo puts back, until
         /// something else changes.
         package var redo: LastChange?
@@ -426,6 +430,8 @@ package struct RootFeature {
         /// five seconds.
         case toastShown(UUID)
         case toastExpired(UUID)
+        case copyNoticeShown(UUID)
+        case copyNoticeExpired(UUID)
         case notice(PresentationAction<Never>)
         case syncBannerDismissed
         case syncChanged(SyncState)
@@ -518,7 +524,7 @@ package struct RootFeature {
         case approval(PresentationAction<ApprovalFeature.Action>)
     }
 
-    private enum CancelID { case reminders, glance, spotlight, syncTimer }
+    private enum CancelID { case reminders, glance, spotlight, syncTimer, copyNotice }
 
     /// How often sync runs while the app is open, for what other devices
     /// sent.
@@ -1025,6 +1031,17 @@ package struct RootFeature {
 
             case .toastExpired(let id):
                 state.dismissedToast = id
+                return .none
+
+            case .copyNoticeShown(let id):
+                return .run { [clock] send in
+                    try await clock.sleep(for: Self.copyNoticeDuration)
+                    await send(.copyNoticeExpired(id))
+                }
+                .cancellable(id: CancelID.copyNotice, cancelInFlight: true)
+
+            case .copyNoticeExpired(let id):
+                if state.lastCopy?.id == id { state.$lastCopy.withLock { $0 = nil } }
                 return .none
 
             case .syncBannerDismissed:

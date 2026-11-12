@@ -1081,6 +1081,12 @@
     "Copied" : {
 
     },
+    "Copied %lld tasks" : {
+
+    },
+    "Copied “%@”" : {
+
+    },
     "Copy" : {
 
     },

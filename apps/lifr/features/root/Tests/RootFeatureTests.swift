@@ -906,6 +906,29 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testCopyingFromAListSaysSoForTwoSeconds() async throws {
+        records.task("Run", in: health, due: 0)
+        let store = makeStore(.phone)
+        let clock = TestClock()
+        store.dependencies.continuousClock = clock
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.today(.list(.copyListTapped)))
+        for _ in 0..<1_000 where store.state.lastCopy == nil { await Task.yield() }
+        let copy = try XCTUnwrap(store.state.lastCopy)
+        XCTAssertNil(store.state.toast, "Copying changes nothing to undo")
+
+        let shown = await store.send(.copyNoticeShown(copy.id))
+        await clock.advance(by: .seconds(1))
+        XCTAssertNotNil(store.state.lastCopy)
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.copyNoticeExpired)
+        XCTAssertNil(store.state.lastCopy)
+        await shown.finish()
+        await task.cancel()
+    }
+
     func testAChangeOffersUndoAndUndoRevertsIt() async throws {
         let run = records.task("Run", in: health, due: 0)
         let store = makeStore(.phone)

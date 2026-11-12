@@ -149,6 +149,18 @@ package struct RootView: View {
                     }
                     .transition(edgeTransition)
                 }
+                if let copy = store.lastCopy {
+                    UndoToast(
+                        message: copy.message, countsDown: false, undo: nil,
+                        dismiss: { store.send(.copyNoticeExpired(copy.id)) }
+                    )
+                    .id(copy.id)
+                    .task(id: copy.id) {
+                        AccessibilityNotification.Announcement(copy.message).post()
+                        await store.send(.copyNoticeShown(copy.id)).finish()
+                    }
+                    .transition(edgeTransition)
+                }
                 if let banner = store.syncBanner {
                     SyncBannerView(
                         banner: banner, syncNow: { store.send(.syncNowTapped) },
@@ -780,7 +792,8 @@ private struct UndoToast: View {
     /// Whether it goes after a few seconds, with a line that shows how
     /// long is left.
     var countsDown: Bool
-    var undo: () -> Void
+    /// None for a notice with nothing to undo.
+    var undo: (() -> Void)?
     /// Puts it away early: a swipe down, or VoiceOver's Escape.
     var dismiss: () -> Void
     /// How much of the time to undo is left, drawn as a line that runs down.
@@ -790,7 +803,7 @@ private struct UndoToast: View {
         HStack {
             Text(message).lineLimit(2)
             Spacer()
-            Button("Undo", action: undo).bold()
+            if let undo { Button("Undo", action: undo).bold() }
         }
         .font(.callout)
         .padding()

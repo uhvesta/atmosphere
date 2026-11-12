@@ -82,6 +82,8 @@ final class TaskListFeatureTests: XCTestCase {
 
         XCTAssertEqual(copied.value, ["- [ ] Stretch (\(row.fullCode))"])
         XCTAssertTrue(row.fullCode.hasPrefix("HEALTH-"))
+        @Shared(.lastCopy) var lastCopy
+        XCTAssertNotNil(lastCopy, "Copying says it worked")
     }
 
     func testCopyListPutsEachRowUnderItsSectionsHeading() async throws {
@@ -106,6 +108,8 @@ final class TaskListFeatureTests: XCTestCase {
             at = next.upperBound
         }
         XCTAssertTrue(text.contains("- [ ] Stretch"))
+        @Shared(.lastCopy) var lastCopy
+        XCTAssertNotNil(lastCopy, "Copying says it worked")
     }
 
     func testCopyListOnAnEmptyListCopiesNothing() async {
@@ -117,6 +121,8 @@ final class TaskListFeatureTests: XCTestCase {
         await store.finish()
 
         XCTAssertEqual(copied.value, [])
+        @Shared(.lastCopy) var lastCopy
+        XCTAssertNil(lastCopy, "Nothing copied, so nothing's said")
     }
 
     func testSearchingKeepsRowsWhoseTitleOrCodeMatchesAndDropsEmptySections() async {
