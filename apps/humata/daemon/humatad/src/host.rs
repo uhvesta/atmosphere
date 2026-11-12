@@ -391,7 +391,7 @@ impl Host {
             ),
             chats: state.join("chats"),
             program_version: crate::build(),
-            relay: Arc::default(),
+            relay: Arc::new(Relay::open(state.join("queued-tool-calls"))),
             socket: std::sync::OnceLock::new(),
             stop: tokio::sync::Notify::new(),
             env,

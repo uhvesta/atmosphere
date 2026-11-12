@@ -680,7 +680,7 @@ waiting on you. It kept these, in build order:
   the board and in the sidebar
 - [x] A host is updated only when idle, and only when its build really is old
   (a bundled build of another platform counts as current)
-- [ ] Agents on a host can ask and request moves while the Mac is away
+- [x] Agents on a host can ask and request moves while the Mac is away
   (queued on the host, sent on reconnect), and read the live spec when
   the Mac is there
 - [ ] New Session never sends one agent's model to another, and a Local Model

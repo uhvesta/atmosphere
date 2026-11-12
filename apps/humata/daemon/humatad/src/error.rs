@@ -383,6 +383,9 @@ pub enum DaemonError {
     )]
     NotAMove,
 
+    #[error("this session works on no task, so there's nothing to move; give item_id, from board")]
+    NoTaskToMove,
+
     #[error("a question is answered with a reply, not approved; reply to it or dismiss it")]
     NothingToApprove,
 
@@ -677,6 +680,7 @@ impl DaemonError {
             | Self::NothingToReview
             | Self::NoRequestText
             | Self::NotAMove
+            | Self::NoTaskToMove
             | Self::NothingToApprove
             | Self::NoReply
             | Self::ModelServerPort { .. } => pb::ErrorCode::InvalidRequest,
@@ -861,6 +865,33 @@ pub enum RelayError {
         "Humata on the Mac didn't answer within {seconds}s; it may have lost its connection to this host, so try again"
     )]
     TimedOut { seconds: u64 },
+
+    #[error(
+        "couldn't read the questions and move requests agents made while the Mac was away, from {path}"
+    )]
+    ReadQueue {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "the questions and move requests agents made while the Mac was away, in {path}, aren't in a form this build reads"
+    )]
+    BadQueue {
+        path: PathBuf,
+        #[source]
+        source: prost::DecodeError,
+    },
+
+    #[error(
+        "Humata on the Mac isn't connected, and the request couldn't be kept for when it is, in {path}; check the host's disk has room and its state folder is writable, then ask again"
+    )]
+    WriteQueue {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl RelayError {
@@ -868,6 +899,9 @@ impl RelayError {
         match self {
             Self::NotATool => pb::ErrorCode::InvalidRequest,
             Self::NotWatched | Self::TimedOut { .. } => pb::ErrorCode::HostUnavailable,
+            Self::ReadQueue { .. } | Self::BadQueue { .. } | Self::WriteQueue { .. } => {
+                pb::ErrorCode::StorageFailed
+            }
         }
     }
 }

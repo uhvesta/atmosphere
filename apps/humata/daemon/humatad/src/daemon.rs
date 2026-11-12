@@ -636,7 +636,12 @@ impl Daemon {
             return Err(DaemonError::NotAMove);
         }
         let placement = self.placement(&asked.session_id).await?;
-        let item = self.store.item(&asked.item_id)?;
+        let item_id = match (asked.item_id.as_str(), &placement.item) {
+            ("", Some(placed)) => placed.as_str(),
+            ("", None) => return Err(DaemonError::NoTaskToMove),
+            (given, _) => given,
+        };
+        let item = self.store.item(item_id)?;
         if placement.project.as_deref() != Some(item.project_id.as_str()) {
             return Err(StoreError::ItemInAnotherProject {
                 title: item.fields.title,

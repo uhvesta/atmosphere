@@ -1576,12 +1576,15 @@ message AskPerson {
 // Only to in review, done or won't do; the person approves it.
 message RequestMove {
   string session_id = 1;
+  // Empty for the session's own task.
   string item_id = 2;
   ItemStatus status = 3;
   string summary = 4;
 }
 
 message RequestMade {
+  // Unset when the host keeps it until the Mac reconnects, as it does while
+  // Humata on the Mac isn't connected.
   AgentRequest request = 1;
 }
 

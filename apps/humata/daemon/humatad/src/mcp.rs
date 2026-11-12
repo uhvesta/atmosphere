@@ -298,6 +298,10 @@ impl Server {
                     text: required(text("question"), "question")?,
                 };
                 match self.ask(pb::request::Kind::AskPerson(ask)).await? {
+                    pb::response::Kind::RequestMade(made) if made.request.is_none() => Ok(
+                        "Asked; Humata on the person's Mac isn't connected, so it waits on this host and reaches their inbox when the Mac reconnects. Their answer comes as your next message. End your turn unless you can carry on without it."
+                            .to_owned(),
+                    ),
                     pb::response::Kind::RequestMade(_) => Ok(
                         "Asked; it waits in the person's inbox, and their answer comes as your next message. End your turn unless you can carry on without it."
                             .to_owned(),
@@ -315,17 +319,9 @@ impl Server {
                         )
                     })?;
                 let summary = required(text("summary"), "summary")?;
-                let item_id = match text("item_id").filter(|id| !id.is_empty()) {
-                    Some(id) => id,
-                    None => {
-                        let session = self.session().await?;
-                        if session.item_id.is_empty() {
-                            return Err("this session works on no task; give item_id, from board"
-                                .to_owned());
-                        }
-                        session.item_id
-                    }
-                };
+                // Left empty, the daemon takes this session's task, so the
+                // request needs nothing from it while the Mac is away.
+                let item_id = text("item_id").unwrap_or_default();
                 let asked = pb::RequestMove {
                     session_id: self.session.clone(),
                     item_id,
@@ -333,6 +329,10 @@ impl Server {
                     summary,
                 };
                 match self.ask(pb::request::Kind::RequestMove(asked)).await? {
+                    pb::response::Kind::RequestMade(made) if made.request.is_none() => Ok(format!(
+                        "Asked the person to move it to {}; Humata on their Mac isn't connected, so it waits on this host and reaches their inbox when the Mac reconnects. They look over your changes, then approve, move it themselves, or send feedback as your next message.",
+                        status_name(status)
+                    )),
                     pb::response::Kind::RequestMade(_) => Ok(format!(
                         "Asked the person to move it to {}. They look over your changes, then approve, move it themselves, or send feedback as your next message.",
                         status_name(status)
