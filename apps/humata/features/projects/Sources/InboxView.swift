@@ -16,11 +16,14 @@ package struct InboxView: View {
     var markRead: (Session.ID) -> Void
     var widen: (Session.ID, ApprovalMode) -> Void
     var retry: (Session.ID) -> Void
+    /// Admin actions other clients asked for, oldest first.
+    var approvals: [AdminApproval]
+    var decide: ([AdminApproval.ID], _ approve: Bool, ApprovalGrantAsked?) -> Void
     /// When the list was read, for how long each has waited.
     var now: Date?
 
     package init(
-        entries: [InboxEntry], drafts: [AgentRequest.ID: String], now: Date?,
+        entries: [InboxEntry], approvals: [AdminApproval] = [], drafts: [AgentRequest.ID: String], now: Date?,
         open: @escaping (Session.ID) -> Void,
         openChanges: @escaping (Session.ID) -> Void,
         answer: @escaping (Session.ID, _ request: String, _ approved: Bool) -> Void,
@@ -28,8 +31,11 @@ package struct InboxView: View {
         draftChanged: @escaping (AgentRequest.ID, String) -> Void,
         markRead: @escaping (Session.ID) -> Void,
         widen: @escaping (Session.ID, ApprovalMode) -> Void,
-        retry: @escaping (Session.ID) -> Void
+        retry: @escaping (Session.ID) -> Void,
+        decide: @escaping ([AdminApproval.ID], _ approve: Bool, ApprovalGrantAsked?) -> Void = { _, _, _ in }
     ) {
+        self.approvals = approvals
+        self.decide = decide
         self.widen = widen
         self.retry = retry
         self.now = now
@@ -47,6 +53,10 @@ package struct InboxView: View {
         List {
             let blocked = entries.filter(\.reason.blocks)
             let toLookOver = entries.filter { !$0.reason.blocks }
+            ForEach(askers, id: \.self) { asker in
+                AdminApprovalsSection(
+                    asker: asker, approvals: approvals.filter { $0.asker == asker }, now: now, decide: decide)
+            }
             if !blocked.isEmpty {
                 Section("Blocked on You") {
                     ForEach(blocked, content: row)
@@ -59,7 +69,7 @@ package struct InboxView: View {
             }
         }
         .overlay {
-            if entries.isEmpty {
+            if entries.isEmpty && approvals.isEmpty {
                 ContentUnavailableView(
                     "Nothing Waiting on You", systemImage: "tray",
                     description: Text(
@@ -67,6 +77,21 @@ package struct InboxView: View {
             }
         }
         .navigationTitle("Inbox")
+        .toolbar {
+            if askers.count > 1 {
+                Menu("Every Admin Action") {
+                    Button("Approve All \(approvals.count)") { decide(approvals.map(\.id), true, nil) }
+                    Button("Deny All \(approvals.count)") { decide(approvals.map(\.id), false, nil) }
+                }
+                .help("Decide what every program asked to do as you at once")
+            }
+        }
+    }
+
+    /// The programs that asked for admin actions, in the order they first asked.
+    private var askers: [String] {
+        var seen = Set<String>()
+        return approvals.map(\.asker).filter { seen.insert($0).inserted }
     }
 
     @ViewBuilder
@@ -111,6 +136,7 @@ package struct InboxView: View {
                     Image(systemName: "chevron.down")
                 }
                 .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
                 .fixedSize()
                 .help("Stop asking in this session")
             } else if entry.reason == .failed, !entry.session.hostOffline {

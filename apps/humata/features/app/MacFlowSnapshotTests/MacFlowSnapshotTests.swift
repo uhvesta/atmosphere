@@ -986,6 +986,59 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// An agent's `humata mcp`, in a dev build, asks to change a spec and
+    /// delete a task as the person, and a command asks to add one: all wait
+    /// in the inbox, by who asked. The person approves the agent's both,
+    /// granting their scopes for an hour, and Settings lists the grant.
+    func testAdminActionsWaitForApproval() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let asked = daemon.start
+        daemon.askApproval(
+            AdminApproval(
+                id: "a1", client: "humata mcp", parent: "claude", scope: .board,
+                summary: "Change the spec of “Sign in”", before: "Sign in with a password.",
+                after: "Sign in with a password.\nOffer a magic link by email too.", asked: asked,
+                projectID: project.id))
+        daemon.askApproval(
+            AdminApproval(
+                id: "a2", client: "humata mcp", parent: "claude", scope: .destructive,
+                summary: "Delete “Old login screen” and the 2 subtasks under it", asked: asked,
+                projectID: project.id))
+        daemon.askApproval(
+            AdminApproval(
+                id: "a3", client: "humata item add --project humata", parent: "zsh", scope: .board,
+                summary: "Add task “Rate-limit sign in”", asked: asked, projectID: project.id))
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("admin", AppView(store: store))
+
+        try await until { store.daemon == .running && store.sidebar.approvals.count == 3 }
+        store.send(.sidebar(.selected(.inbox)))
+        try await until { store.sidebar.selection == .inbox }
+        await flow.step("inbox")
+
+        let grant = ApprovalGrantAsked(scopes: [.board, .destructive], duration: .seconds(3600))
+        store.send(.sidebar(.approvalsDecided(["a1", "a2"], approve: true, grant: grant)))
+        try await until { store.sidebar.approvals.map(\.id) == ["a3"] }
+        await flow.step("approved")
+        flow.finish()
+
+        let settings = FlowRecorder(
+            "approvals", ApprovalsView(store: store.scope(state: \.approvals, action: \.approvals)))
+        store.send(.approvals(.task))
+        try await until { store.approvals.approvals.grants.count == 1 }
+        await settings.step("grants")
+        settings.finish()
+    }
+
     private func sidebarShows(
         _ state: SessionState, _ store: StoreOf<AppFeature>, _ session: Session
     ) async throws {

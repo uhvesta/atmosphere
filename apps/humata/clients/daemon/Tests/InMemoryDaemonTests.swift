@@ -219,7 +219,7 @@ final class InMemoryDaemonTests: XCTestCase {
         let waiting = try await board(daemon, project.id)
         XCTAssertEqual(waiting, ["login: waitingOnYou", "form: waitingOnYou", "copy: todo"])
         let inbox = try await daemon.client.inbox()
-        XCTAssertEqual(inbox.map(\.reason), [.approval])
+        XCTAssertEqual(inbox.entries.map(\.reason), [.approval])
     }
 
     func testDoneStaysDoneAndLeavesTheInbox() async throws {
@@ -231,14 +231,14 @@ final class InMemoryDaemonTests: XCTestCase {
         let reviewed = try await board(daemon, project.id)
         XCTAssertEqual(reviewed, ["login: inReview"])
         let replies = try await daemon.client.inbox()
-        XCTAssertEqual(replies.map(\.reason), [.reply])
+        XCTAssertEqual(replies.entries.map(\.reason), [.reply])
 
         _ = try await daemon.client.updateItem(task.id, ItemUpdate(status: .done))
 
         let done = try await board(daemon, project.id)
         XCTAssertEqual(done, ["login: done"])
         let inbox = try await daemon.client.inbox()
-        XCTAssertEqual(inbox, [])
+        XCTAssertEqual(inbox, Inbox())
     }
 
     func testEveryBoardChangeCanBeReverted() async throws {

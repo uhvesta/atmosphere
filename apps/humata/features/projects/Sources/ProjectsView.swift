@@ -48,13 +48,16 @@ package struct ProjectsView: View {
             .modifier(Sheets(store: store))
     }
 
+    /// Everything in the inbox: sessions and admin actions.
+    private var waiting: Int { store.inbox.count + store.approvals.count }
+
     private var list: some View {
         List(selection: $store.selection.sending(\.selected)) {
             Label("Inbox", systemImage: "tray")
                 .badge(store.blockedCount)
                 .tag(SidebarItem.inbox)
                 .accessibilityLabel(
-                    Text("Inbox, \(store.blockedCount) blocked on you, \(store.inbox.count) in all"))
+                    Text("Inbox, \(store.blockedCount) blocked on you, \(waiting) in all"))
             Label("Hosts", systemImage: "server.rack")
                 .tag(SidebarItem.hosts)
             Label("Search Sessions", systemImage: "text.magnifyingglass")

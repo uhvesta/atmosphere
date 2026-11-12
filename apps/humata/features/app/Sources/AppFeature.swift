@@ -29,6 +29,7 @@ package struct AppFeature {
         package var opening: HumataLink?
         /// Settings > Environments.
         package var settings = EnvironmentsFeature.State()
+        package var approvals = ApprovalsFeature.State()
         /// What each session looked away from was showing, put back when
         /// it opens again while Humata runs.
         var left: [Session.ID: SessionFeature.State.Left] = [:]
@@ -79,6 +80,7 @@ package struct AppFeature {
         /// A `humata://` URL was opened, as by `humata mcp`'s show tool.
         case opened(URL)
         case settings(EnvironmentsFeature.Action)
+        case approvals(ApprovalsFeature.Action)
     }
 
     @Dependency(\.daemon) var daemon
@@ -90,6 +92,7 @@ package struct AppFeature {
     package var body: some ReducerOf<Self> {
         Scope(state: \.sidebar, action: \.sidebar) { ProjectsFeature() }
         Scope(state: \.settings, action: \.settings) { EnvironmentsFeature() }
+        Scope(state: \.approvals, action: \.approvals) { ApprovalsFeature() }
         Reduce { state, action in
             switch action {
             case .task:
@@ -131,7 +134,7 @@ package struct AppFeature {
             case .openLoginItemsTapped:
                 return .run { _ in service.openLoginItems() }
 
-            case .sidebar(.loaded(_, let sessions, let inbox)):
+            case .sidebar(.loaded(_, let sessions, let inbox, _)):
                 // Every two seconds: set only what changed, so the open
                 // session isn't drawn again for nothing.
                 if let open = state.session {
@@ -239,7 +242,7 @@ package struct AppFeature {
             case .session(.presented(.delegate(.answerRequest(let id, let answer)))):
                 return .send(.sidebar(.requestAnswered(id, answer)))
 
-            case .sidebar, .session, .board, .hosts, .search, .settings:
+            case .sidebar, .session, .board, .hosts, .search, .settings, .approvals:
                 return .none
             }
         }

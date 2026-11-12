@@ -48,8 +48,8 @@ security find-generic-password -s "$service" >/dev/null 2>&1 ||
 sh tools/bootstrap/bazelisk.sh
 bazel="$root/.tools/bin/bazel"
 echo "Building Humata $version from $commit…"
-"$bazel" build --config=xcode //apps/humata/app:macos
-out=$("$bazel" cquery --config=xcode --output=files //apps/humata/app:macos 2>/dev/null | head -n 1)
+"$bazel" build --config=xcode --//apps/humata/daemon/cli:admin=false //apps/humata/app:macos
+out=$("$bazel" cquery --config=xcode --//apps/humata/daemon/cli:admin=false --output=files //apps/humata/app:macos 2>/dev/null | head -n 1)
 [ -n "$out" ] && [ -e "$out" ] || fail "the build finished but its output wasn't found; run: bazel cquery --config=xcode --output=files //apps/humata/app:macos"
 
 scratch=$(mktemp -d)

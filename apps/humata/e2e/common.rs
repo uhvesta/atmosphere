@@ -26,6 +26,39 @@ pub struct Humata {
 }
 
 impl Humata {
+    /// `cli`, another build of humata, on the same daemon: a client other
+    /// than the app, whose admin actions wait for approval.
+    #[allow(dead_code, reason = "only the approvals test runs another client")]
+    pub fn other(&self, cli: PathBuf) -> Self {
+        Self {
+            cli,
+            socket: self.socket.clone(),
+        }
+    }
+
+    /// Runs `humata` with `input` on its stdin, and returns what it printed.
+    #[allow(dead_code, reason = "only some tests talk MCP in one go")]
+    pub fn with_input(&self, arguments: &[&str], input: &str) -> String {
+        use std::io::Write as _;
+        let mut child = Command::new(&self.cli)
+            .arg("--socket")
+            .arg(&self.socket)
+            .args(arguments)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|error| panic!("couldn't run humata: {error}"));
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(input.as_bytes())
+                .unwrap_or_else(|error| panic!("{error}"));
+        }
+        let output = child
+            .wait_with_output()
+            .unwrap_or_else(|error| panic!("{error}"));
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
     pub fn run(&self, arguments: &[&str]) -> String {
         let output = Command::new(&self.cli)
             .arg("--socket")
@@ -177,6 +210,9 @@ pub fn start(root: &Path, arguments: &[&std::ffi::OsStr]) -> (Running, Humata) {
         .arg("--socket")
         .arg(&socket)
         .args(arguments)
+        // The humata here acts as the app; a copy of it elsewhere is
+        // another client, whose admin actions wait for approval.
+        .env("HUMATA_E2E_APP", binary("HUMATA"))
         .spawn()
         .unwrap_or_else(|error| panic!("couldn't start humatad: {error}"));
     let daemon = Running(daemon);

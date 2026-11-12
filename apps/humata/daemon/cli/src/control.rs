@@ -7,10 +7,11 @@
 
 use std::time::Duration;
 
-use humata_wire::{Client, pb};
+use humata_wire::pb;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
+use crate::approved::Client;
 use crate::error::CliError;
 use crate::print;
 
@@ -108,22 +109,22 @@ async fn handle(client: &Client, message: &Value) -> Option<Value> {
 
 /// One tool: its name, what it does, its arguments' schema, and whether it
 /// changes nothing or destroys something.
-struct Tool {
-    name: &'static str,
-    description: &'static str,
-    properties: Value,
-    required: &'static [&'static str],
-    effect: Effect,
+pub(crate) struct Tool {
+    pub(crate) name: &'static str,
+    pub(crate) description: &'static str,
+    pub(crate) properties: Value,
+    pub(crate) required: &'static [&'static str],
+    pub(crate) effect: Effect,
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Effect {
+pub(crate) enum Effect {
     Reads,
     Changes,
     Destroys,
 }
 
-fn string(description: &str) -> Value {
+pub(crate) fn string(description: &str) -> Value {
     json!({"type": "string", "description": description})
 }
 
@@ -345,7 +346,11 @@ fn tool_list() -> Vec<Tool> {
 }
 
 fn tools() -> Vec<Value> {
-    tool_list()
+    #[allow(unused_mut)]
+    let mut listed = tool_list();
+    #[cfg(feature = "admin")]
+    listed.extend(crate::admin::tools());
+    listed
         .into_iter()
         .map(|tool| {
             json!({
@@ -362,11 +367,11 @@ fn tools() -> Vec<Value> {
 }
 
 /// A tool call's arguments.
-struct Arguments<'a>(&'a Value);
+pub(crate) struct Arguments<'a>(pub(crate) &'a Value);
 
 impl Arguments<'_> {
     /// A string, trimmed; empty when not given.
-    fn text(&self, field: &str) -> String {
+    pub(crate) fn text(&self, field: &str) -> String {
         self.0[field]
             .as_str()
             .map(str::trim)
@@ -374,7 +379,7 @@ impl Arguments<'_> {
             .to_owned()
     }
 
-    fn required(&self, field: &str) -> Result<String, String> {
+    pub(crate) fn required(&self, field: &str) -> Result<String, String> {
         Some(self.text(field))
             .filter(|value| !value.is_empty())
             .ok_or_else(|| format!("give {field}"))
@@ -384,7 +389,7 @@ impl Arguments<'_> {
         self.0[field].as_bool().unwrap_or_default()
     }
 
-    fn number(&self, field: &str) -> Option<u64> {
+    pub(crate) fn number(&self, field: &str) -> Option<u64> {
         self.0[field].as_u64()
     }
 }
@@ -402,18 +407,21 @@ async fn proposed(client: &Client, propose: pb::Propose) -> Result<String, Strin
     }
 }
 
-async fn ask(client: &Client, request: pb::request::Kind) -> Result<pb::response::Kind, String> {
+pub(crate) async fn ask(
+    client: &Client,
+    request: pb::request::Kind,
+) -> Result<pb::response::Kind, String> {
     client
         .call(request)
         .await
         .map_err(|error| humata_wire::describe(&error))
 }
 
-fn unexpected(got: &pb::response::Kind) -> String {
+pub(crate) fn unexpected(got: &pb::response::Kind) -> String {
     format!("humatad answered with {got:?}; update Humata so humata and humatad match")
 }
 
-fn lines<T>(items: &[T], line: impl Fn(&T) -> String, none: &str) -> String {
+pub(crate) fn lines<T>(items: &[T], line: impl Fn(&T) -> String, none: &str) -> String {
     if items.is_empty() {
         return none.to_owned();
     }
@@ -663,7 +671,13 @@ async fn call(client: &Client, name: &str, arguments: &Arguments<'_>) -> Result<
             }
         }
         "show" => show(arguments).await,
-        _ => Err(format!("humata has no tool {name:?}; see tools/list")),
+        _ => {
+            #[cfg(feature = "admin")]
+            if let Some(answer) = crate::admin::call(client, name, arguments).await {
+                return answer;
+            }
+            Err(format!("humata has no tool {name:?}; see tools/list"))
+        }
     }
 }
 

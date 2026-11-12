@@ -583,3 +583,42 @@ pub fn base_updated(updated: &pb::BaseUpdated) -> String {
     }
     out
 }
+
+fn scope(scope: pb::ApprovalScope) -> &'static str {
+    match scope {
+        pb::ApprovalScope::Proposals => "proposals",
+        pb::ApprovalScope::Board => "board",
+        pb::ApprovalScope::Destructive => "destructive",
+        pb::ApprovalScope::Unspecified => "-",
+    }
+}
+
+/// An admin action asked for: its id, state, scope, the client that asked
+/// and what it does.
+pub fn approval(approval: &pb::Approval) -> String {
+    let state = match approval.state() {
+        pb::ApprovalState::Approved => "approved",
+        pb::ApprovalState::Denied => "denied",
+        _ => "pending",
+    };
+    format!(
+        "{}\t{state}\t{}\t{}\t{}",
+        approval.id,
+        scope(approval.scope()),
+        or_dash(&approval.client),
+        approval.summary
+    )
+}
+
+/// A grant in force: its id, scopes, when it ends, and how many actions
+/// ran under it.
+pub fn grant(grant: &pb::Grant) -> String {
+    let scopes: Vec<&str> = grant.scopes().map(scope).collect();
+    format!(
+        "{}\t{}\tuntil {}\t{} used",
+        grant.id,
+        scopes.join(","),
+        grant.expires_unix_ms,
+        grant.used
+    )
+}

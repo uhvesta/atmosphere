@@ -714,6 +714,10 @@ impl Host {
             | Request::Search(_)
             | Request::ListPullRequests(_)
             | Request::ImportIssues(_)
+            | Request::WaitForApproval(_)
+            | Request::ListApprovals(_)
+            | Request::DecideApprovals(_)
+            | Request::RevokeGrant(_)
             | Request::SetModelServer(_) => {
                 return Err(HostError::NotForHosts);
             }

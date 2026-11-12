@@ -89,6 +89,15 @@ git init -q "$run/repository"
 git -C "$run/repository" -c user.name=check -c user.email=check@localhost commit -q --allow-empty -m check
 project=$(./humata-darwin-arm64 --socket "$socket" project add --name check --repository "$run/repository")
 [ -n "$project" ] || fail "the daemon didn't add a project."
+echo "Checking that humata mcp has no admin tools…"
+list='{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+for humata in ./humata-darwin-arm64 "$app/Contents/Helpers/humata"; do
+  tools=$(echo "$list" | "$humata" --socket "$socket" mcp)
+  echo "$tools" | grep -q '"propose_task"' || fail "$humata mcp didn't list its tools: $tools"
+  if echo "$tools" | grep -qE '"(apply_proposal|create_item|delete_item|approval_status)"'; then
+    fail "$humata was built with admin tools (--config=humata-admin), which are for dev builds only. Don't publish this release; build it again without that config."
+  fi
+done
 kill "$daemon"
 daemon=
 rm -rf "$run"

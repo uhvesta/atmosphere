@@ -14,6 +14,8 @@ package struct ProjectsFeature {
         package var sessions: IdentifiedArrayOf<Session> = []
         /// Every session waiting on you.
         package var inbox: [InboxEntry] = []
+        /// Admin actions other clients asked for, oldest first.
+        package var approvals: [AdminApproval] = []
         /// What the person has typed to each agent's request, kept until it's
         /// sent.
         package var drafts: [AgentRequest.ID: String] = [:]
@@ -40,7 +42,7 @@ package struct ProjectsFeature {
 
         /// The sessions in the inbox that can't go on without the person,
         /// as the Dock counts them.
-        package var blockedCount: Int { inbox.count(where: \.reason.blocks) }
+        package var blockedCount: Int { inbox.count(where: \.reason.blocks) + approvals.count }
 
         /// The projects, the most recently active first. One with nothing in
         /// it yet is new, so it comes first.
@@ -165,7 +167,7 @@ package struct ProjectsFeature {
         case task
         /// Reads the list once.
         case refresh
-        case loaded(projects: [Project], sessions: [Session], inbox: [InboxEntry])
+        case loaded(projects: [Project], sessions: [Session], inbox: [InboxEntry], approvals: [AdminApproval] = [])
         case loadFailed(String)
         case addProjectTapped
         case newSessionTapped(projectID: Project.ID)
@@ -220,6 +222,10 @@ package struct ProjectsFeature {
         /// its item.
         case changesTapped(Session.ID)
         case answerFailed(String)
+        /// The person approved or denied admin actions other clients asked
+        /// for; approving can let those of `grant`'s scopes run without
+        /// asking for its seconds.
+        case approvalsDecided([AdminApproval.ID], approve: Bool, grant: ApprovalGrantAsked? = nil)
         /// The person clicked the notification for a session.
         case notificationClicked(Session.ID)
         case destination(PresentationAction<Destination.Action>)
@@ -274,20 +280,21 @@ package struct ProjectsFeature {
             case .refresh:
                 return .run { send in await send(await load()) }
 
-            case .loaded(let projects, let sessions, let inbox):
+            case .loaded(let projects, let sessions, let inbox, let approvals):
                 if state.failure != nil { state.failure = nil }
                 // The open session needs no notice only while it's on screen.
                 let open = activity.isActive() ? state.selection : nil
                 let notices = state.loadedOnce ? Self.notices(new: inbox, old: state.inbox, open: open) : []
                 // The Dock counts only the sessions that can't go on without
                 // the person.
-                let blocked = inbox.count(where: \.reason.blocks)
+                let blocked = inbox.count(where: \.reason.blocks) + approvals.count
                 let badge = !state.loadedOnce || blocked != state.blockedCount ? blocked : nil
                 if !state.loadedOnce { state.loadedOnce = true }
                 state.now = date.now
                 // Read every two seconds and mostly the same: set only what
                 // changed, so the sidebar isn't drawn again for nothing.
                 if state.inbox != inbox { state.inbox = inbox }
+                if state.approvals != approvals { state.approvals = approvals }
                 let projects = IdentifiedArray(uniqueElements: projects)
                 if state.projects != projects { state.projects = projects }
                 let order = State.order(of: sessions, before: state.sessions, kept: state.order)
@@ -582,6 +589,18 @@ package struct ProjectsFeature {
                     await send(await load())
                 }
 
+            case .approvalsDecided(let ids, let approve, let grant):
+                // Gone from the inbox at once; the refresh says what ran.
+                state.approvals.removeAll { ids.contains($0.id) }
+                return .run { send in
+                    _ = try await daemon.decideApprovals(
+                        ids, approve, grant?.scopes ?? [], grant.map { UInt32($0.duration.components.seconds) } ?? 0)
+                    await send(await load())
+                } catch: { error, send in
+                    await send(.answerFailed(error.localizedDescription))
+                    await send(await load())
+                }
+
             case .inboxModeWidened(let id, let mode):
                 return .run { send in
                     try await daemon.setApprovalMode(id, mode)
@@ -752,7 +771,10 @@ package struct ProjectsFeature {
             async let projects = daemon.projects()
             async let sessions = daemon.sessions(nil)
             async let inbox = daemon.inbox()
-            return .loaded(projects: try await projects, sessions: try await sessions, inbox: try await inbox)
+            let read = try await inbox
+            return .loaded(
+                projects: try await projects, sessions: try await sessions, inbox: read.entries,
+                approvals: read.approvals)
         } catch {
             return .loadFailed(error.localizedDescription)
         }
@@ -1152,4 +1174,16 @@ package struct NewSessionFeature {
 
 extension String {
     var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+}
+
+/// Leave asked for with an approval: those of `scopes` run without asking,
+/// for `duration`.
+package struct ApprovalGrantAsked: Equatable, Sendable {
+    package var scopes: [ApprovalScope]
+    package var duration: Duration
+
+    package init(scopes: [ApprovalScope], duration: Duration) {
+        self.scopes = scopes
+        self.duration = duration
+    }
 }

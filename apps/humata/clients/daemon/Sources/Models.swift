@@ -409,10 +409,14 @@ package struct BoardChange: Identifiable, Hashable, Sendable {
     /// The change it reverted, if it did.
     package var reverts: UInt64?
     package var author: BoardAuthor
+    /// The admin approval it ran under, if another client asked for it.
+    package var approvalID: String?
+    /// The grant it ran under, if one covered it rather than the person.
+    package var grantID: String?
 
     package init(
         id: UInt64, itemID: String, time: Date, before: ItemFields?, after: ItemFields?, reverts: UInt64? = nil,
-        author: BoardAuthor = .unknown
+        author: BoardAuthor = .unknown, approvalID: String? = nil, grantID: String? = nil
     ) {
         self.id = id
         self.itemID = itemID
@@ -421,6 +425,8 @@ package struct BoardChange: Identifiable, Hashable, Sendable {
         self.after = after
         self.reverts = reverts
         self.author = author
+        self.approvalID = approvalID
+        self.grantID = grantID
     }
 
     /// The fields it changed, for an edit; none for adding or removing.
@@ -529,6 +535,118 @@ package struct InboxEntry: Identifiable, Hashable, Sendable {
     }
 
     package var id: String { request?.id ?? session.id }
+}
+
+/// What's waiting on the person: sessions, and admin actions other clients
+/// asked for.
+package struct Inbox: Hashable, Sendable {
+    package var entries: [InboxEntry]
+    /// Oldest first.
+    package var approvals: [AdminApproval]
+
+    package init(entries: [InboxEntry] = [], approvals: [AdminApproval] = []) {
+        self.entries = entries
+        self.approvals = approvals
+    }
+}
+
+/// What an admin action may do.
+package enum ApprovalScope: Hashable, Sendable, CaseIterable {
+    /// Applying and declining proposals.
+    case proposals
+    /// Adding and changing items and their specs, and importing issues.
+    case board
+    /// Deleting items and reverting board changes.
+    case destructive
+
+    package var title: String {
+        switch self {
+        case .proposals: String(localized: "Proposals")
+        case .board: String(localized: "Board Changes")
+        case .destructive: String(localized: "Deletions and Reverts")
+        }
+    }
+}
+
+package enum ApprovalState: Hashable, Sendable {
+    case pending, approved, denied
+}
+
+/// An admin action a client other than the app asked for, as the `humata`
+/// command or an agent's `humata mcp`, and what became of it.
+package struct AdminApproval: Identifiable, Hashable, Sendable {
+    package var id: String
+    /// The program that asked, with its arguments.
+    package var client: String
+    /// The program that started it, such as `claude`; empty if unknown.
+    package var parent: String
+    package var scope: ApprovalScope
+    package var summary: String
+    /// For a title or spec it changes: the text now and the text it sets.
+    package var before: String
+    package var after: String
+    package var state: ApprovalState
+    package var asked: Date
+    package var decided: Date?
+    /// The grant it ran under; nil when the person approved it.
+    package var grantID: String?
+    /// Once approved, what went wrong running it, if anything.
+    package var failure: String?
+    package var projectID: String?
+
+    package init(
+        id: String, client: String, parent: String = "", scope: ApprovalScope, summary: String,
+        before: String = "", after: String = "", state: ApprovalState = .pending, asked: Date,
+        decided: Date? = nil, grantID: String? = nil, failure: String? = nil, projectID: String? = nil
+    ) {
+        self.id = id
+        self.client = client
+        self.parent = parent
+        self.scope = scope
+        self.summary = summary
+        self.before = before
+        self.after = after
+        self.state = state
+        self.asked = asked
+        self.decided = decided
+        self.grantID = grantID
+        self.failure = failure
+        self.projectID = projectID
+    }
+
+    /// Who asked, as the person would name it: its parent program, then the client.
+    package var asker: String {
+        parent.isEmpty ? client : "\(parent) › \(client)"
+    }
+}
+
+/// Leave the person gave for admin actions of `scopes` to run without asking.
+package struct ApprovalGrant: Identifiable, Hashable, Sendable {
+    package var id: String
+    package var scopes: [ApprovalScope]
+    package var granted: Date
+    package var expires: Date
+    /// How many actions ran under it.
+    package var used: Int
+
+    package init(id: String, scopes: [ApprovalScope], granted: Date, expires: Date, used: Int = 0) {
+        self.id = id
+        self.scopes = scopes
+        self.granted = granted
+        self.expires = expires
+        self.used = used
+    }
+}
+
+/// The approvals the daemon keeps, newest first, and the grants in force.
+package struct Approvals: Hashable, Sendable {
+    package var approvals: [AdminApproval]
+    package var grants: [ApprovalGrant]
+
+    package init(approvals: [AdminApproval] = [], grants: [ApprovalGrant] = []) {
+        self.approvals = approvals
+        self.grants = grants
+    }
 }
 
 /// Which specs a session on an item reads ahead of its instructions.
@@ -1101,6 +1219,10 @@ package enum ErrorCode: Hashable, Sendable {
     case unknownProposal
     /// GitHub refused, or there's no token to reach it with.
     case github
+    /// Only the app may ask it, as it decides approvals.
+    case appOnly
+    /// The approval or grant isn't one the daemon keeps.
+    case unknownApproval
     case unknown
 }
 

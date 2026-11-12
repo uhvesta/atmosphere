@@ -582,6 +582,13 @@ struct BoardLogView: View {
                 Text(BoardLogFeature.describe(change, items: store.items))
                 HStack(spacing: 4) {
                     Text(store.state.name(of: change.author))
+                    if change.grantID != nil {
+                        Text("· under a grant")
+                            .help("An admin action another program asked for, run under leave you gave")
+                    } else if change.approvalID != nil {
+                        Text("· approved by you")
+                            .help("An admin action another program asked for, which you approved")
+                    }
                     Text("·")
                     Text(change.time, format: .dateTime.month().day().hour().minute())
                     if let revert = store.state.revert(of: change) {

@@ -125,7 +125,11 @@ impl Daemon {
 
     /// The pending proposal `id` of `session`, or of an outside agent if
     /// `session` is empty.
-    async fn pending(&self, session: &str, id: &str) -> Result<pb::Proposal, DaemonError> {
+    pub(super) async fn pending(
+        &self,
+        session: &str,
+        id: &str,
+    ) -> Result<pb::Proposal, DaemonError> {
         let unknown = || DaemonError::UnknownProposal {
             session: session.to_owned(),
             proposal: id.to_owned(),

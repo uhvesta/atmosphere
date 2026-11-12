@@ -125,6 +125,11 @@ package final class InMemoryDaemon: Sendable {
         /// What outside agents proposed, by project, oldest first, as
         /// proposed; decided in `decisions` with no session.
         var outside: [String: [Proposal]] = [:]
+        /// Admin actions other clients asked for, oldest first.
+        var approvals: [AdminApproval] = []
+        /// Grants in force.
+        var grants: [ApprovalGrant] = []
+        var nextGrant = 1
         var commandLinks = CommandLinks(
             folder: "/Users/you/.local/bin",
             links: [.init(name: "humata", state: .missing), .init(name: "humatad", state: .missing)],
@@ -510,7 +515,12 @@ package final class InMemoryDaemon: Sendable {
                 }
             },
             revert: { change in try self.revert(change) },
-            inbox: { self.inbox() },
+            inbox: { Inbox(entries: self.inbox(), approvals: self.pendingApprovals()) },
+            approvals: { self.approvals() },
+            decideApprovals: { ids, approve, scopes, seconds in
+                try self.decideApprovals(ids, approve: approve, scopes: scopes, seconds: seconds)
+            },
+            revokeGrant: { grant in try self.revokeGrant(grant) },
             answerRequest: { request, answer in try self.answerRequest(request, answer) },
             history: { session in
                 try self.known(session)

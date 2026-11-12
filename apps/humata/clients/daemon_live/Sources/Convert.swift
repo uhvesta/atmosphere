@@ -31,6 +31,8 @@ extension ErrorCode {
             case .unknownForward: .unknownForward
             case .unknownProposal: .unknownProposal
             case .github: .github
+            case .appOnly: .appOnly
+            case .unknownApproval: .unknownApproval
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -238,7 +240,61 @@ extension BoardChange {
             id: change.id, itemID: change.itemID, time: date(change.timeUnixMs),
             before: change.hasBefore ? ItemFields(change.before) : nil,
             after: change.hasAfter ? ItemFields(change.after) : nil,
-            reverts: change.reverts == 0 ? nil : change.reverts, author: BoardAuthor(change))
+            reverts: change.reverts == 0 ? nil : change.reverts, author: BoardAuthor(change),
+            approvalID: change.approvalID.isEmpty ? nil : change.approvalID,
+            grantID: change.grantID.isEmpty ? nil : change.grantID)
+    }
+}
+
+extension ApprovalScope {
+    init?(_ scope: Humata_V1_ApprovalScope) {
+        switch scope {
+        case .proposals: self = .proposals
+        case .board: self = .board
+        case .destructive: self = .destructive
+        case .unspecified, .UNRECOGNIZED: return nil
+        }
+    }
+
+    var proto: Humata_V1_ApprovalScope {
+        switch self {
+        case .proposals: .proposals
+        case .board: .board
+        case .destructive: .destructive
+        }
+    }
+}
+
+extension AdminApproval {
+    /// Nil for one of a scope or state this app doesn't know, from a newer daemon.
+    init?(_ approval: Humata_V1_Approval) {
+        guard let scope = ApprovalScope(approval.scope) else { return nil }
+        let state: ApprovalState
+        switch approval.state {
+        case .pending: state = .pending
+        case .approved: state = .approved
+        case .denied: state = .denied
+        case .unspecified, .UNRECOGNIZED: return nil
+        }
+        var failure: String?
+        if approval.hasResult, case .error(let error) = approval.result.kind {
+            failure = error.message
+        }
+        self.init(
+            id: approval.id, client: approval.client, parent: approval.parent, scope: scope,
+            summary: approval.summary, before: approval.before, after: approval.after, state: state,
+            asked: date(approval.askedUnixMs),
+            decided: approval.decidedUnixMs == 0 ? nil : date(approval.decidedUnixMs),
+            grantID: approval.grantID.isEmpty ? nil : approval.grantID, failure: failure,
+            projectID: approval.projectID.isEmpty ? nil : approval.projectID)
+    }
+}
+
+extension ApprovalGrant {
+    init(_ grant: Humata_V1_Grant) {
+        self.init(
+            id: grant.id, scopes: grant.scopes.compactMap(ApprovalScope.init), granted: date(grant.grantedUnixMs),
+            expires: date(grant.expiresUnixMs), used: Int(grant.used))
     }
 }
 

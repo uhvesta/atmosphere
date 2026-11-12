@@ -676,6 +676,19 @@ pub enum DaemonError {
     )]
     IncompleteProposal,
 
+    #[error(
+        "only the Humata app can decide approvals and revoke grants; open Humata and decide it in the inbox, or revoke it in Settings > Approvals"
+    )]
+    AppOnly,
+
+    #[error(
+        "there is no approval {id}; decided ones are kept only for the last 200 actions, so it may be gone. Ask again if the action is still wanted"
+    )]
+    UnknownApproval { id: String },
+
+    #[error("there is no grant {id}; list the grants in force with `humata approval list`")]
+    UnknownGrant { id: String },
+
     #[error("host {host:?} didn't answer")]
     Host {
         host: String,
@@ -721,6 +734,10 @@ impl DaemonError {
             | Self::RunGit { .. } => pb::ErrorCode::StorageFailed,
             Self::Refused { code, .. } => *code,
             Self::GitHub(_) => pb::ErrorCode::Github,
+            Self::AppOnly => pb::ErrorCode::AppOnly,
+            Self::UnknownApproval { .. } | Self::UnknownGrant { .. } => {
+                pb::ErrorCode::UnknownApproval
+            }
             Self::ProjectInUse { .. } | Self::ItemHasSessions { .. } => pb::ErrorCode::Busy,
             Self::DeleteUnarchived { .. } | Self::DeleteForked { .. } => {
                 pb::ErrorCode::InvalidRequest

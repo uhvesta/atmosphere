@@ -112,8 +112,17 @@ package struct DaemonClient: Sendable {
     /// Puts an item back as it was before the change, keeping each field
     /// changed again since.
     package var revert: @Sendable (_ change: UInt64) async throws -> Reverted
-    /// Every session waiting on you: approvals, then failures, then replies.
-    package var inbox: @Sendable () async throws -> [InboxEntry]
+    /// Every session waiting on you: approvals, then failures, then replies;
+    /// and the admin actions other clients asked for.
+    package var inbox: @Sendable () async throws -> Inbox
+    /// The admin approvals kept, newest first, and the grants in force.
+    package var approvals: @Sendable () async throws -> Approvals
+    /// Approves or denies pending admin actions; approving can grant
+    /// `scopes` for `seconds` too, to the actions after. Returns those decided.
+    package var decideApprovals:
+        @Sendable (_ ids: [String], _ approve: Bool, _ scopes: [ApprovalScope], _ seconds: UInt32) async throws ->
+            [AdminApproval]
+    package var revokeGrant: @Sendable (_ grant: String) async throws -> Void
     /// Answers an agent's question or move; it leaves the inbox.
     package var answerRequest: @Sendable (_ request: String, _ answer: RequestAnswer) async throws -> Void
     package var history: @Sendable (_ session: String) async throws -> [SessionEvent]

@@ -146,7 +146,7 @@ original spec; lettered ones were added since.
 | V Second review pass | Done |
 | P Performance pass | Done |
 | K Signed releases | Built; the first release waits for `gh auth login` |
-| X Admin mode, gated by approvals | Planned |
+| X Admin mode, gated by approvals | Done |
 
 ## Done milestones
 
@@ -893,9 +893,13 @@ at a time, in batches, time-boxed, and for scopes of actions.
   change. From the app they run at once. From `humata` or `humata mcp` the
   daemon runs one only under an approval, in every build.
 - **Who's asking.** The daemon reads the connecting process from the socket
-  (its pid and executable), so a client can't claim to be the app. Each
-  request names the client kind (command line or MCP) and its parent
-  process, e.g. `claude`.
+  (its pid, then its executable), so a client can't claim to be the app:
+  the app is the executable in `Contents/MacOS` of the bundle `humatad`
+  runs from. The approval names the client with its arguments, such as
+  `humata mcp`, and its parent process, such as `claude`; the daemon, not
+  the client, says whether a change came from MCP. The gate stops agents
+  acting as the person without asking; it isn't a wall against code
+  already running as the same user, which could drive the app itself.
 - **Asking.** An admin action without a grant waits in the inbox as an
   approval request: who asks, and what exactly it will do (the title and
   spec diff of a proposal, the fields of an edit). The command line waits
@@ -903,29 +907,35 @@ at a time, in batches, time-boxed, and for scopes of actions.
   `humata mcp` waits a short while, then answers that it's still waiting
   with the id, which `approval_status` reads later. Approved, the daemon
   runs it and keeps the result for the caller; denied, it says so.
-- **Deciding.** Approve or deny one; select several, or all from one
-  client, and approve or deny them together.
-- **Grants.** Approving can also grant: for a scope of actions
-  (proposals; items and specs; deletes and reverts, which no wider grant
-  covers), for a time (15 minutes, an hour, until Humata quits), and for
-  the command line, MCP or both. Settings > Approvals lists grants with
-  what they've run, and revokes them. Grants live in the daemon's SQLite
-  with their expiry.
-- **The journal.** A change made under an approval or grant records the
-  client, and which approval or grant let it run.
+- **Deciding.** The inbox groups the approvals by who asked, above the
+  sessions. Approve or deny one; all from one client from its section's
+  header; or every one from the toolbar.
+- **Grants.** Approving can also grant the scopes of what's approved
+  (proposals; items and specs; deletes and reverts, which only a grant
+  naming them covers) for 15 minutes, an hour or 8 hours, at most a day,
+  to every client. Settings > Approvals lists the grants in force with how
+  many actions ran under each, revokes them, and lists what was asked
+  lately. Grants live in the daemon's SQLite with their expiry; the last
+  200 decided approvals are kept.
+- **The journal.** A change made under an approval or grant records
+  which let it run; Board History says "approved by you" or "under a
+  grant".
 - **Dev builds only: the admin tools.** A Bazel flag,
-  `--//apps/humata:admin`, off by default and set by
+  `--//apps/humata/daemon/cli:admin`, off by default and set by
   `--config=humata-admin`, builds `humata` with its `admin` feature, which
   adds the admin actions to `humata mcp` as tools. Without it they aren't
-  in the binary. `release.sh` never sets it, and the release check fails
-  if the downloaded `humata mcp` lists any.
-- [ ] The daemon tells the app from other clients by the socket's peer
-- [ ] Admin actions from the command line and MCP wait for approval
-- [ ] Approve and deny one, several, or all from a client
-- [ ] Time-boxed, scoped grants, listed and revoked in Settings
-- [ ] The journal records the approval or grant behind a change
-- [ ] The `admin` flag and its MCP tools, tested end to end
-- [ ] The release check refuses a build with admin tools
+  in the binary. `release.sh` sets it off explicitly, and the release
+  check fails if the downloaded `humata mcp`, or the app's, lists any. The
+  end-to-end tests run a `humatad` built with its test-only `e2e` feature,
+  which lets them name the program that counts as the app.
+- [x] The daemon tells the app from other clients by the socket's peer
+- [x] Admin actions from the command line and MCP wait for approval
+- [x] Approve and deny one, several, or all from a client
+- [x] Time-boxed, scoped grants, listed and revoked in Settings
+- [x] The journal records the approval or grant behind a change
+- [x] The `admin` flag and its MCP tools, tested end to end
+- [x] The release check refuses a build with admin tools (written; it
+  runs with the first release)
 
 **Done when:** a dev build's `humata mcp` applies an outside agent's
 proposal once approved in the app, a grant lets the next ones run until it

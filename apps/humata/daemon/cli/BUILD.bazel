@@ -1,9 +1,28 @@
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+# Gives `humata mcp` admin tools, with which an agent drives the board as
+# the person would, each action waiting for their approval in Humata. For dev
+# builds only, set by --config=humata-admin in .bazelrc; the release is built
+# without, which apps/humata/tools/release/check.sh checks.
+bool_flag(
+    name = "admin",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "is_admin",
+    flag_values = {":admin": "true"},
+)
 
 # `humata`: sessions from the command line, through the daemon's socket.
 rust_binary(
     name = "humata",
     srcs = glob(["src/*.rs"]),
+    crate_features = select({
+        ":is_admin": ["admin"],
+        "//conditions:default": [],
+    }),
     visibility = ["//apps/humata:__subpackages__"],
     deps = [
         "//apps/humata/daemon/wire",
@@ -17,6 +36,24 @@ rust_binary(
 rust_test(
     name = "humata_test",
     crate = ":humata",
+)
+
+# `humata` with its admin tools, whatever the flag, for the end-to-end test
+# of driving the board through approvals.
+rust_binary(
+    name = "humata_admin",
+    testonly = True,
+    srcs = glob(["src/*.rs"]),
+    crate_features = ["admin"],
+    crate_name = "humata",
+    visibility = ["//apps/humata/e2e:__pkg__"],
+    deps = [
+        "//apps/humata/daemon/wire",
+        "@crates//:clap",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
 )
 
 filegroup(

@@ -149,13 +149,31 @@ pub struct ItemPatch {
 pub struct Author {
     pub surface: pb::ChangeSurface,
     pub session_id: Option<String>,
+    /// The approval, or grant, a client other than the app made it under.
+    pub via: Via,
+}
+
+/// What let a client other than the app make a change: the person's
+/// approval of it, or a grant. Empty for the app's own.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Via {
+    pub approval_id: String,
+    pub grant_id: String,
+}
+
+tokio::task_local! {
+    /// The approval or grant the admin action being run is under.
+    pub static RUNNING_UNDER: Via;
 }
 
 impl Author {
+    /// Made where `surface` says; under the approval or grant of the admin
+    /// action being run, if any.
     pub fn on(surface: pb::ChangeSurface) -> Self {
         Self {
             surface,
             session_id: None,
+            via: RUNNING_UNDER.try_with(Via::clone).unwrap_or_default(),
         }
     }
 
@@ -163,8 +181,8 @@ impl Author {
     /// `surface` says.
     pub fn session(session: &str, surface: pb::ChangeSurface) -> Self {
         Self {
-            surface,
             session_id: Some(session.to_owned()).filter(|id| !id.is_empty()),
+            ..Self::on(surface)
         }
     }
 }
@@ -194,6 +212,8 @@ impl Change {
             reverts: self.reverts.unwrap_or_default(),
             surface: self.author.surface.into(),
             session_id: self.author.session_id.clone().unwrap_or_default(),
+            approval_id: self.author.via.approval_id.clone(),
+            grant_id: self.author.via.grant_id.clone(),
         }
     }
 }

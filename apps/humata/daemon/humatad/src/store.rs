@@ -15,6 +15,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use crate::board::{Author, Change, Item, ItemFields, ItemPatch, Priority, Status};
 use crate::error::StoreError;
 
+mod approvals;
 mod planning;
 mod pulls;
 mod recoveries;
@@ -286,6 +287,24 @@ const MIGRATIONS: &[&str] = &["
         project_id TEXT NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
         proposal BLOB NOT NULL
     );
+", "
+    -- Admin actions asked for by clients other than the app: the Approval,
+    -- and the request to run once it's approved.
+    CREATE TABLE approvals (
+        id TEXT PRIMARY KEY,
+        state INTEGER NOT NULL,
+        grant_id TEXT NOT NULL,
+        approval BLOB NOT NULL,
+        request BLOB NOT NULL
+    );
+    -- What the person let run without asking, as a Grant.
+    CREATE TABLE grants (
+        id TEXT PRIMARY KEY,
+        grant_message BLOB NOT NULL
+    );
+    -- The approval or grant a change by another client ran under.
+    ALTER TABLE board_changes ADD COLUMN approval_id TEXT NOT NULL DEFAULT '';
+    ALTER TABLE board_changes ADD COLUMN grant_id TEXT NOT NULL DEFAULT '';
 "];
 
 /// What reverting a board change did.
@@ -941,7 +960,8 @@ impl Store {
         let connection = self.lock();
         let listed = (|| -> rusqlite::Result<Vec<Change>> {
             let mut statement = connection.prepare(
-                "SELECT id, item_id, time_unix_ms, before, after, reverts, surface, session_id
+                "SELECT id, item_id, time_unix_ms, before, after, reverts, surface, session_id,
+                     approval_id, grant_id
                  FROM board_changes
                  WHERE project_id = ?1 ORDER BY id DESC",
             )?;
@@ -973,7 +993,8 @@ impl Store {
         let mut connection = self.lock();
         let change = connection
             .query_row(
-                "SELECT id, item_id, time_unix_ms, before, after, reverts, surface, session_id
+                "SELECT id, item_id, time_unix_ms, before, after, reverts, surface, session_id,
+                     approval_id, grant_id
                  FROM board_changes
                  WHERE id = ?1",
                 [i64::try_from(id).unwrap_or(i64::MAX)],
@@ -1188,6 +1209,10 @@ fn change_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Change> {
     let reverts: Option<i64> = row.get(5)?;
     let surface: i32 = row.get(6)?;
     let session: String = row.get(7)?;
+    let via = crate::board::Via {
+        approval_id: row.get(8)?,
+        grant_id: row.get(9)?,
+    };
     Ok(Change {
         id: u64::try_from(id).unwrap_or_default(),
         item_id: row.get(1)?,
@@ -1198,6 +1223,7 @@ fn change_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Change> {
         author: Author {
             surface: pb::ChangeSurface::try_from(surface).unwrap_or_default(),
             session_id: Some(session).filter(|id| !id.is_empty()),
+            via,
         },
     })
 }
@@ -1286,8 +1312,8 @@ fn log(
     };
     transaction.execute(
         "INSERT INTO board_changes (project_id, item_id, time_unix_ms, before, after, reverts,
-             surface, session_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             surface, session_id, approval_id, grant_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             project,
             item,
@@ -1297,6 +1323,8 @@ fn log(
             reverts.and_then(|reverts| i64::try_from(reverts).ok()),
             i32::from(author.surface),
             author.session_id.as_deref().unwrap_or_default(),
+            author.via.approval_id,
+            author.via.grant_id,
         ],
     )?;
     Ok(())

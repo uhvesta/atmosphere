@@ -75,6 +75,10 @@ test:record_snapshots --nocache_test_results
 # Mac snapshot tests run on the host, where the sandbox would throw away the
 # references they write into the source tree.
 test:record_snapshots --strategy=TestRunner=local
+# Humata's `humata mcp` with admin tools, for driving the board from an agent
+# in dev builds; each action still waits for approval in the app.
+build:humata-admin --//apps/humata/daemon/cli:admin
+
 # Lifr signed for your team (see apps/lifr/identity.bzl): the Mac app and
 # `lifr` with Developer ID, and the iPhone app for devices with the team's
 # development profile. Each needs its certificate in the login keychain, and

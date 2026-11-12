@@ -1,5 +1,8 @@
 //! `humata`: Humata's sessions from the command line, through the daemon.
 
+#[cfg(feature = "admin")]
+mod admin;
+mod approved;
 mod control;
 mod error;
 mod print;
@@ -8,12 +11,18 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use humata_wire::{Client, pb};
+use humata_wire::pb;
+
+use crate::approved::{Client, Wait};
 use tokio::net::UnixStream;
 
 use crate::error::CliError;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// How long `humata mcp` waits for the person to approve an admin action
+/// before telling the agent it still waits, so a turn isn't held up long.
+const MCP_APPROVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
 #[derive(Parser)]
 #[command(
@@ -26,6 +35,11 @@ struct Arguments {
     /// uses.
     #[arg(long, global = true)]
     socket: Option<PathBuf>,
+    /// Don't wait for an action that needs your approval in Humata, such as
+    /// adding a task: print its approval's id and stop, leaving it to run
+    /// once approved.
+    #[arg(long, global = true)]
+    no_wait: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -402,6 +416,18 @@ struct FolderPlace {
 }
 
 #[derive(Subcommand)]
+enum ApprovalCommand {
+    /// The approvals pending and recent, newest first, then the grants in
+    /// force.
+    List,
+    /// How an approval stands.
+    Status { id: String },
+    /// Wait until the person decides an approval, then print what the
+    /// action answered.
+    Wait { id: String },
+}
+
+#[derive(Subcommand)]
 enum ProposalCommand {
     /// A session's proposals, oldest first, or with --project what agents
     /// outside Humata proposed for its board through `humata mcp`.
@@ -520,6 +546,10 @@ enum Command {
     /// proposed.
     #[command(subcommand)]
     Proposal(ProposalCommand),
+    /// The admin actions asked for from here or by agents, which wait for
+    /// your approval in Humata, and the grants that let them run.
+    #[command(subcommand)]
+    Approval(ApprovalCommand),
     /// List or import the Claude Code and Copilot sessions on a host that
     /// were started outside Humata.
     #[command(subcommand)]
@@ -828,7 +858,11 @@ fn main() -> ExitCode {
     }
 }
 
-async fn connect(socket: Option<PathBuf>) -> Result<Client, CliError> {
+async fn connect(
+    socket: Option<PathBuf>,
+    wait: Wait,
+    say_waiting: bool,
+) -> Result<Client, CliError> {
     let path = socket
         .or_else(humata_wire::default_socket)
         .ok_or(CliError::NoSocket)?;
@@ -836,13 +870,22 @@ async fn connect(socket: Option<PathBuf>) -> Result<Client, CliError> {
         .await
         .map_err(|source| CliError::Connect { path, source })?;
     let (reader, writer) = stream.into_split();
-    Ok(Client::connect(reader, writer, pb::Role::Client, VERSION).await?)
+    let client = humata_wire::Client::connect(reader, writer, pb::Role::Client, VERSION).await?;
+    Ok(Client::new(client, wait, say_waiting))
 }
 
 async fn run(arguments: Arguments) -> Result<(), CliError> {
     use pb::request::Kind as Request;
     use pb::response::Kind as Response;
-    let client = connect(arguments.socket).await?;
+    let mcp = matches!(arguments.command, Command::Mcp);
+    let wait = if mcp {
+        Wait::For(MCP_APPROVAL_WAIT)
+    } else if arguments.no_wait {
+        Wait::For(std::time::Duration::ZERO)
+    } else {
+        Wait::UntilDecided
+    };
+    let client = connect(arguments.socket, wait, !mcp).await?;
     match arguments.command {
         Command::Project(ProjectCommand::Add {
             name,
@@ -1001,6 +1044,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
         Command::Terminal(command) => terminal(&client, command).await?,
         Command::Port(command) => port(&client, command).await?,
         Command::Proposal(command) => proposal(&client, command).await?,
+        Command::Approval(command) => approval(&client, command).await?,
         Command::Stage(edit) => edit_changes(&client, edit, pb::ChangeAction::Stage).await?,
         Command::Unstage(edit) => edit_changes(&client, edit, pb::ChangeAction::Unstage).await?,
         Command::Revert(edit) => edit_changes(&client, edit, pb::ChangeAction::Revert).await?,
@@ -1978,6 +2022,39 @@ fn read_skills(given: &[String]) -> Result<Vec<pb::Skill>, CliError> {
             })
         })
         .collect()
+}
+
+async fn approval(client: &Client, command: ApprovalCommand) -> Result<(), CliError> {
+    match command {
+        ApprovalCommand::List => {
+            match client
+                .call(pb::request::Kind::ListApprovals(pb::ListApprovals {}))
+                .await?
+            {
+                pb::response::Kind::Approvals(listed) => {
+                    for approval in &listed.approvals {
+                        println!("{}", print::approval(approval));
+                    }
+                    for grant in &listed.grants {
+                        println!("grant\t{}", print::grant(grant));
+                    }
+                }
+                other => return Err(unexpected("the approvals", &other)),
+            }
+        }
+        ApprovalCommand::Status { id } => {
+            let approval = client
+                .wait_for(&id, Wait::For(std::time::Duration::ZERO))
+                .await?;
+            println!("{}", print::approval(&approval));
+        }
+        ApprovalCommand::Wait { id } => {
+            let approval = client.wait_for(&id, Wait::UntilDecided).await?;
+            println!("{}", print::approval(&approval));
+            approved::outcome(*approval)?;
+        }
+    }
+    Ok(())
 }
 
 async fn proposal(client: &Client, command: ProposalCommand) -> Result<(), CliError> {

@@ -2988,6 +2988,7 @@ async fn every_sessions_messages_are_searched_and_an_agent_searches_only_its_hos
     );
 }
 
+mod approvals;
 mod pulls;
 
 /// Whether `session` is listed as waiting on the person's answer.

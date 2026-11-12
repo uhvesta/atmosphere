@@ -432,7 +432,36 @@ extension DaemonClient {
                 guard case .inbox(let inbox) = try await daemon.call(.listInbox(Humata_V1_ListInbox())) else {
                     throw DaemonError.unexpected("something other than the inbox")
                 }
-                return try inbox.entries.compactMap(InboxEntry.init)
+                return Inbox(
+                    entries: try inbox.entries.compactMap(InboxEntry.init),
+                    approvals: inbox.approvals.compactMap(AdminApproval.init))
+            },
+            approvals: {
+                guard case .approvals(let approvals) = try await daemon.call(.listApprovals(Humata_V1_ListApprovals()))
+                else {
+                    throw DaemonError.unexpected("something other than the approvals")
+                }
+                return Approvals(
+                    approvals: approvals.approvals.compactMap(AdminApproval.init),
+                    grants: approvals.grants.map(ApprovalGrant.init))
+            },
+            decideApprovals: { ids, approve, scopes, seconds in
+                var decide = Humata_V1_DecideApprovals()
+                decide.ids = ids
+                decide.approve = approve
+                decide.grantScopes = scopes.map(\.proto)
+                decide.grantSeconds = seconds
+                guard case .approvalsDecided(let decided) = try await daemon.call(.decideApprovals(decide)) else {
+                    throw DaemonError.unexpected("something other than the decided approvals")
+                }
+                return decided.approvals.compactMap(AdminApproval.init)
+            },
+            revokeGrant: { grant in
+                var revoke = Humata_V1_RevokeGrant()
+                revoke.id = grant
+                guard case .grantRevoked = try await daemon.call(.revokeGrant(revoke)) else {
+                    throw DaemonError.unexpected("something other than the revoked grant")
+                }
             },
             answerRequest: { request, answer in
                 var asked = Humata_V1_AnswerRequest()

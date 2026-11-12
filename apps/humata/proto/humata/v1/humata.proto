@@ -185,6 +185,12 @@ message Request {
     DeleteSession delete_session = 86;
     DeleteItem delete_item = 87;
     Propose propose = 88;
+    // Admin actions from a client other than the app wait for the person:
+    // reading how one stands, the app deciding them, and grants.
+    WaitForApproval wait_for_approval = 89;
+    ListApprovals list_approvals = 90;
+    DecideApprovals decide_approvals = 91;
+    RevokeGrant revoke_grant = 92;
   }
 }
 
@@ -274,6 +280,13 @@ message Response {
     SessionDeleted session_deleted = 80;
     ItemDeleted item_deleted = 81;
     Proposed proposed = 82;
+    // An admin action asked for by a client other than the app, waiting for
+    // the person: sent instead of the action's own response.
+    NeedsApproval needs_approval = 83;
+    ApprovalStatus approval_status = 84;
+    Approvals approvals = 85;
+    ApprovalsDecided approvals_decided = 86;
+    GrantRevoked grant_revoked = 87;
   }
 }
 
@@ -320,6 +333,10 @@ enum ErrorCode {
   ERROR_CODE_UNKNOWN_PROPOSAL = 24;
   // GitHub refused the request or couldn't be reached.
   ERROR_CODE_GITHUB = 25;
+  // Only the Humata app may send this request, as deciding approvals.
+  ERROR_CODE_APP_ONLY = 26;
+  // No such approval or grant; it may have been dropped.
+  ERROR_CODE_UNKNOWN_APPROVAL = 27;
 }
 
 enum Backend {
@@ -791,7 +808,8 @@ message ProposalDeclined {
 
 // An outside agent proposes, through `humata mcp`, a task or a change to an
 // item's title or spec. It waits on the board until the person applies or
-// declines it; `humata mcp` has no tool to apply one.
+// declines it; only a dev build's admin tools may apply one, as the
+// person approves.
 message Propose {
   string project_id = 1;
   ProposalKind kind = 2;
@@ -1616,6 +1634,10 @@ message BoardChange {
   ChangeSurface surface = 7;
   // The session whose proposal or request it applied; empty for none.
   string session_id = 8;
+  // The approval or grant it ran under, when a client other than the app
+  // made it; empty for none.
+  string approval_id = 9;
+  string grant_id = 10;
 }
 
 message ReadBoardLog {
@@ -1729,7 +1751,113 @@ message InboxEntry {
 // Approvals first, then what agents ask, then failures, then replies.
 message Inbox {
   repeated InboxEntry entries = 1;
+  // Admin actions waiting for the person, oldest first.
+  repeated Approval approvals = 2;
 }
+
+// What an admin action may do. The app runs its admin actions at once; from
+// any other client, as `humata` or `humata mcp`, one runs only once the
+// person approves it, or under a grant for its scope.
+enum ApprovalScope {
+  APPROVAL_SCOPE_UNSPECIFIED = 0;
+  // Applying and declining proposals.
+  APPROVAL_SCOPE_PROPOSALS = 1;
+  // Adding and changing items and their specs, and importing issues.
+  APPROVAL_SCOPE_BOARD = 2;
+  // Deleting items and reverting board changes. Only a grant naming this
+  // scope covers it.
+  APPROVAL_SCOPE_DESTRUCTIVE = 3;
+}
+
+enum ApprovalState {
+  APPROVAL_STATE_UNSPECIFIED = 0;
+  APPROVAL_STATE_PENDING = 1;
+  // Approved and run; `result` has what it answered.
+  APPROVAL_STATE_APPROVED = 2;
+  APPROVAL_STATE_DENIED = 3;
+}
+
+// An admin action a client asked for, and what became of it.
+message Approval {
+  string id = 1;
+  // The program that asked, with its arguments, such as `humata mcp`.
+  string client = 2;
+  // The program that started it, such as `claude`; empty if unknown.
+  string parent = 3;
+  ApprovalScope scope = 4;
+  // What it will do, in a line.
+  string summary = 5;
+  // For a spec or title it changes: the text now and the text it sets.
+  string before = 6;
+  string after = 7;
+  ApprovalState state = 8;
+  int64 asked_unix_ms = 9;
+  int64 decided_unix_ms = 10;
+  // Once approved: what it answered, which may be an error.
+  Response result = 11;
+  // The grant it ran under; empty when the person approved it.
+  string grant_id = 12;
+  // The project it's for; empty if none.
+  string project_id = 13;
+}
+
+// Lets admin actions in `scopes` from clients other than the app run
+// without asking, until it expires or is revoked.
+message Grant {
+  string id = 1;
+  repeated ApprovalScope scopes = 2;
+  int64 granted_unix_ms = 3;
+  int64 expires_unix_ms = 4;
+  bool revoked = 5;
+  // How many actions ran under it.
+  uint32 used = 6;
+}
+
+message NeedsApproval {
+  Approval approval = 1;
+}
+
+// How approval `id` stands, waiting up to `wait_seconds` for the person to
+// decide it.
+message WaitForApproval {
+  string id = 1;
+  uint32 wait_seconds = 2;
+}
+
+message ApprovalStatus {
+  Approval approval = 1;
+}
+
+// The pending and recent approvals, newest first, and the grants not
+// expired or revoked.
+message ListApprovals {}
+
+message Approvals {
+  repeated Approval approvals = 1;
+  repeated Grant grants = 2;
+}
+
+// The app only: approves or denies the pending approvals `ids`. Approving
+// can also grant `grant_scopes` for `grant_seconds`, to the actions after.
+message DecideApprovals {
+  repeated string ids = 1;
+  bool approve = 2;
+  repeated ApprovalScope grant_scopes = 3;
+  uint32 grant_seconds = 4;
+}
+
+message ApprovalsDecided {
+  repeated Approval approvals = 1;
+  // The grant made, if one was asked for.
+  Grant grant = 2;
+}
+
+// The app only.
+message RevokeGrant {
+  string id = 1;
+}
+
+message GrantRevoked {}
 
 // A machine the daemon runs sessions on over SSH.
 message HostInfo {

@@ -82,4 +82,14 @@ pub enum ClientError {
         code: crate::pb::ErrorCode,
         message: String,
     },
+
+    #[error(
+        "you denied {summary} in Humata (approval {id}), so it didn't run; ask the person what they want instead of trying it again"
+    )]
+    Denied { id: String, summary: String },
+
+    #[error(
+        "{summary} still waits for the person's approval in Humata's inbox (approval {id}); it runs once they approve it. Check on it with `humata approval status {id}`, or wait with `humata approval wait {id}`"
+    )]
+    AwaitingApproval { id: String, summary: String },
 }

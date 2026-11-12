@@ -24,6 +24,8 @@ const REWATCH_LONGEST_WAIT: std::time::Duration = std::time::Duration::from_secs
 /// How long a list waits for each host before showing it as it last was.
 const HOST_LIST_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
+mod approvals;
+pub use approvals::Connection;
 mod forwards;
 mod planning;
 mod pulls;
@@ -65,6 +67,8 @@ pub struct Daemon {
     /// Held while the search index catches up, so two searches don't index
     /// one session's events twice.
     indexing: tokio::sync::Mutex<()>,
+    /// Told when an approval is asked for or decided.
+    approvals_changed: tokio::sync::Notify,
 }
 
 impl Daemon {
@@ -112,6 +116,7 @@ impl Daemon {
             forwards: std::sync::Mutex::default(),
             next_forward: std::sync::atomic::AtomicU64::new(0),
             indexing: tokio::sync::Mutex::new(()),
+            approvals_changed: tokio::sync::Notify::new(),
         });
         tokio::spawn(answer_tool_calls(Arc::downgrade(&daemon), calls));
         tokio::spawn(pulls::follow(Arc::downgrade(&daemon)));
@@ -611,7 +616,10 @@ impl Daemon {
                 .map_or(0, |session| session.last_active_unix_ms);
             (rank(entry), since)
         });
-        Ok(pb::Inbox { entries })
+        Ok(pb::Inbox {
+            entries,
+            approvals: self.pending_approvals()?,
+        })
     }
 
     /// Where `session` is, found on its host if the daemon hasn't seen it.
@@ -1243,6 +1251,30 @@ impl Daemon {
             Request::ApplyProposal(apply) => {
                 let applied = self.apply_proposal(std::mem::take(apply)).await?;
                 return Ok(Reply::Response(Response::ProposalApplied(applied)));
+            }
+            Request::WaitForApproval(wait) => {
+                let approval = self
+                    .wait_for_approval(
+                        &wait.id,
+                        std::time::Duration::from_secs(wait.wait_seconds.into()),
+                    )
+                    .await?;
+                return Ok(Reply::Response(Response::ApprovalStatus(Box::new(
+                    pb::ApprovalStatus {
+                        approval: Some(Box::new(approval)),
+                    },
+                ))));
+            }
+            Request::ListApprovals(_) => {
+                return Ok(Reply::Response(Response::Approvals(self.list_approvals()?)));
+            }
+            Request::DecideApprovals(decide) => {
+                let decided = self.decide_approvals(std::mem::take(decide)).await?;
+                return Ok(Reply::Response(Response::ApprovalsDecided(decided)));
+            }
+            Request::RevokeGrant(revoke) => {
+                self.revoke_grant(&revoke.id)?;
+                return Ok(Reply::Response(Response::GrantRevoked(pb::GrantRevoked {})));
             }
             Request::DeclineProposal(decline) => {
                 let proposal = self.decline_proposal(decline).await?;

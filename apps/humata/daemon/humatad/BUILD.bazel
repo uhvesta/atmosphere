@@ -46,6 +46,48 @@ rust_binary(
     ],
 )
 
+rust_library(
+    name = "humatad_e2e_lib",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_features = ["e2e"],
+    crate_name = "humatad",
+    deps = [
+        "//apps/humata/daemon/agent",
+        "//apps/humata/daemon/wire",
+        "@crates//:prost",
+        "@crates//:rusqlite",
+        "@crates//:rustix",
+        "@crates//:ruzstd",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:ureq",
+        "@crates//:uuid",
+    ],
+)
+
+# humatad for the end-to-end tests, which may name a program to stand in for
+# the app with HUMATA_E2E_APP. Never bundled.
+rust_binary(
+    name = "humatad_e2e",
+    testonly = True,
+    srcs = ["src/main.rs"],
+    crate_name = "humatad",
+    visibility = ["//apps/humata/e2e:__pkg__"],
+    deps = [
+        ":humatad_e2e_lib",
+        "//apps/humata/daemon/wire",
+        "@crates//:clap",
+        "@crates//:tokio",
+    ],
+)
+
 # humatad for every platform a host may be, bundled with the app so a host
 # gets the build for it whatever this Mac is. Named as `uname -sm` names them.
 humatad_builds(

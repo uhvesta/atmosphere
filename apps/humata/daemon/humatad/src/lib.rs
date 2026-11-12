@@ -14,6 +14,7 @@ mod hosts;
 mod login_env;
 mod machine;
 mod mcp;
+mod peer;
 mod ports;
 mod relay;
 mod socket;
@@ -325,10 +326,14 @@ pub async fn daemon(
                 .map_err(|source| StartError::Accept { source })?;
             let (daemon, build) = (daemon.clone(), build.clone());
             tokio::spawn(async move {
+                // Asked here, while the client is surely connected.
+                let peer = peer::Peer::of(&stream).await;
+                let connection = daemon::Connection::new(daemon, peer);
                 let (reader, writer) = stream.into_split();
                 // A client that goes away or speaks another version only
                 // ends its own connection.
-                let _ = humata_wire::serve(reader, writer, pb::Role::Daemon, &build, daemon).await;
+                let _ =
+                    humata_wire::serve(reader, writer, pb::Role::Daemon, &build, connection).await;
             });
         }
     };

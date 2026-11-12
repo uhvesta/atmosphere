@@ -190,7 +190,7 @@ final class ProjectsFeatureTests: XCTestCase {
             $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon.projects = { throw DaemonError.notRunning(socket: "/tmp/k.sock", reason: "refused") }
             $0.daemon.sessions = { _ in [] }
-            $0.daemon.inbox = { [] }
+            $0.daemon.inbox = { Inbox() }
         }
         await store.send(.refresh)
         await store.receive(\.loadFailed) {
