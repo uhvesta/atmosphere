@@ -120,6 +120,21 @@ func syncTests() -> [TestCase] {
             try expectEqual(try mac.records.note(shopping.id).title, "Groceries")
             try expectEqual(try phone.records.note(shopping.id).title, "Groceries")
         },
+        TestCase.async("given a held note, when the person chooses offline, then it isn't asked again") {
+            let (cloud, phone, mac) = try await synced()
+            phone.edit { $0.put(Note(id: shopping.id, title: "Groceries")) }
+            mac.edit { $0.put(Note(id: shopping.id, title: "Weekly shop")) }
+            await phone.syncer.sync()
+            await mac.syncer.sync()
+            cloud.setOnline(false, device: "Mac")
+            let state = await mac.syncer.resolve([RecordID(.note, shopping.id): [.title: .mine]])
+            try expectEqual(state.status, .failed(.unreachable("offline")))
+            try expectEqual(state.review, [])
+            cloud.setOnline(true, device: "Mac")
+            await mac.syncer.sync()
+            await phone.syncer.sync()
+            try expectEqual(try phone.records.note(shopping.id).title, "Weekly shop")
+        },
         TestCase.async("given a held note, when the person keeps their own title, then the other device gets it") {
             let (_, phone, mac) = try await synced()
             phone.edit { $0.put(Note(id: shopping.id, title: "Groceries")) }

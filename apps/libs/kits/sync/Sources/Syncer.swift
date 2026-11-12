@@ -146,6 +146,9 @@ public actor Syncer<Snapshot: SyncSnapshot> {
                 }
             }
             try keep(ledger)
+            // Answered, so not asked again even if the sync below can't
+            // finish; the choices are sent with the next sync that does.
+            state.review = ledger.conflicts(snapshot)
         } catch {
             publish(status: .failed(Self.syncError(error)), review: state.review)
             return state
