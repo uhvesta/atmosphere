@@ -114,6 +114,22 @@ func recurrenceTests() -> [TestCase] {
             try expectEqual(
                 fixture.workspace.reminders(of: next.id, timeZone: .gmt).map(\.trigger), [.beforeDue(seconds: 0)])
         },
+        TestCase("given a timed reminder, when the clocks change before the next, then it rings at the same time") {
+            let fixture = try Fixture()
+            fixture.timeZone = try TimeZone(identifier: "America/Los_Angeles").unwrap("no Los Angeles zone")
+            let task = try fixture.repeating("Weigh in", due: "2026-03-06", .weekly(weekdays: [6]))
+            // 09:00 in Los Angeles, before summer time starts on 8 March.
+            let nine = Date(timeIntervalSince1970: 1_772_816_400)
+            try fixture.workspace.addReminder(.at(nine), to: task.id, in: fixture.context)
+            try fixture.set(today: "2026-03-06")
+            _ = try fixture.workspace.setStatus(.done, of: task.id, in: fixture.context)
+            let next = try fixture.next(after: task)
+            try expectEqual(next.dueDate, try CalendarDate("2026-03-13"))
+            // 09:00 summer time, a week later.
+            let nineNextWeek = Date(timeIntervalSince1970: 1_773_417_600)
+            let reminders = fixture.workspace.reminders(of: next.id, timeZone: fixture.timeZone)
+            try expectEqual(reminders.map(\.trigger), [.at(nineNextWeek)])
+        },
         TestCase("given two devices close the same occurrence offline, then both make the same next one") {
             let phone = try Fixture()
             let task = try phone.repeating("Weigh in", due: "2026-11-09", .weekly(weekdays: [2]))

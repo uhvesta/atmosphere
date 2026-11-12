@@ -289,7 +289,12 @@ extension Workspace {
                 guard dueDate != nil else { continue }
                 trigger = reminder.trigger
             case .at(let date):
-                trigger = .at(date.addingTimeInterval(TimeInterval(shift) * 86_400))
+                // Calendar days, so it rings at the same clock time across
+                // a change to or from summer time.
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = context.timeZone
+                let moved = calendar.date(byAdding: .day, value: shift, to: date)
+                trigger = .at(moved ?? date.addingTimeInterval(TimeInterval(shift) * 86_400))
             }
             // Clear of the Sub tasks' IDs.
             let copy = Reminder(id: Recurrence.id(id, 10_000 + offset), taskID: id, trigger: trigger)

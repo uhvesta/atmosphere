@@ -8,6 +8,7 @@ final class Fixture {
     var workspace = Workspace()
     var now = Date(timeIntervalSince1970: 1_793_664_000)  // 2026-11-03T00:00:00Z
     var actor = Actor.user(device: "iPhone", surface: .iPhone)
+    var timeZone = TimeZone.current
     private var ids = 0
     private var codes = 0
     let health: Avenue
@@ -21,7 +22,7 @@ final class Fixture {
 
     var context: Context {
         Context(
-            actor: actor, now: now, newID: { [unowned self] in self.nextID() },
+            actor: actor, now: now, timeZone: timeZone, newID: { [unowned self] in self.nextID() },
             newCode: { [unowned self] in self.nextCode() })
     }
 
