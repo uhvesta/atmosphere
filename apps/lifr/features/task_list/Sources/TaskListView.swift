@@ -207,6 +207,7 @@ package struct TaskListRow: View {
     package var row: TaskRowData
     package var note: String?
     package var store: StoreOf<TaskListFeature>
+    @Environment(\.droppedText) private var droppedText
 
     package init(row: TaskRowData, note: String? = nil, store: StoreOf<TaskListFeature>) {
         self.row = row
@@ -246,16 +247,19 @@ package struct TaskListRow: View {
         // Onto a day in the calendar, to move it there. A list in manual
         // order drags rows to reorder them instead.
         .modifier(DraggableTask(id: row.id, isOn: !store.canReorder))
-        #if os(iOS)
-            // Another task dropped onto this one becomes its Sub task. The
-            // Mac leaves drops to the list, which adds text from other apps.
-            .dropDestination(for: String.self) { items, _ in
-                let ids = items.compactMap(UUID.init(uuidString:))
-                guard !ids.isEmpty, ids.count == items.count else { return false }
+        // Another task dropped onto this one becomes its Sub task. Text
+        // from another app goes where the list sends it, as if dropped
+        // beside the row.
+        .dropDestination(for: String.self) { items, _ in
+            let ids = items.compactMap(UUID.init(uuidString:))
+            if !ids.isEmpty, ids.count == items.count {
                 store.send(.droppedOnto(row.id, tasks: ids))
                 return true
             }
-        #endif
+            guard let droppedText, !items.isEmpty else { return false }
+            droppedText(items.joined(separator: "\n"))
+            return true
+        }
         .accessibilityElement(children: .combine)
         .accessibilityHint(note ?? "")
         .accessibilityAction { store.send(.rowTapped(row.id)) }
@@ -505,4 +509,10 @@ private struct PlaceholderRows: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Loading tasks")
     }
+}
+
+extension EnvironmentValues {
+    /// Where text another app drops onto a task's row goes; with none,
+    /// the row turns it down.
+    @Entry package var droppedText: (@MainActor (String) -> Void)?
 }

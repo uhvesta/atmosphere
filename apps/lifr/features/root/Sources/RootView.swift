@@ -372,6 +372,8 @@ private struct MacRootView: View {
                             store.send(.textPasted(items.joined(separator: "\n")))
                             return true
                         }
+                        // Rows take tasks dropped onto them, and hand text on.
+                        .environment(\.droppedText) { store.send(.textPasted($0)) }
                     #endif
             } detail: {
                 NavigationStack {
