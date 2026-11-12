@@ -93,7 +93,7 @@
   [TextField] ""
   [Heading] "Reminders"
   [Button] "Tue, Nov 3 at 12:00 PM"
-  [MenuButton] "Add reminder"
+  [MenuButton] "Add reminder" id: bell.badge
   [Heading] "Activity"
   [StaticText] "" value: "Show"
   [RadioGroup] ""

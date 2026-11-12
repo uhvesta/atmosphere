@@ -87,7 +87,7 @@
   [StaticText] "" value: "Add Sub task"
   [TextField] ""
   [Heading] "Reminders"
-  [MenuButton] "Add reminder"
+  [MenuButton] "Add reminder" id: bell.badge
   [Heading] "Activity"
   [StaticText] "" value: "Show"
   [RadioGroup] ""
@@ -98,7 +98,7 @@
   [StaticText] "" value: "Add a comment"
   [TextField] ""
   [Button, disabled] "Send comment" id: paperplane.fill
-  [MenuButton] "Make Sub Task Of…"
+  [MenuButton] "Make Sub Task Of…" id: arrow.turn.down.right
   [Button] "Move to Trash"
   [Toolbar] ""
     [Button] "Hide Sidebar"
