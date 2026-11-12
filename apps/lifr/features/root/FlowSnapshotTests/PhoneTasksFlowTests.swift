@@ -39,8 +39,8 @@ final class PhoneTasksFlowTests: PhoneFlowTestCase {
         flow.finish()
     }
 
-    /// Picking several tasks in Today: pick two, give them a priority, then
-    /// pick all, trash them and Undo that.
+    /// Picking several tasks in Today: pick two, give them a priority, then,
+    /// still picking, pick all, trash them and Undo that.
     func testBulkEdit() async throws {
         let (store, flow) = app("bulk-edit")
         await flow.step("launch", image: false)
@@ -56,8 +56,7 @@ final class PhoneTasksFlowTests: PhoneFlowTestCase {
         await flow.step("prioritized")
         XCTAssertEqual(store.workspace?.tasks[first]?.priority, .high)
         XCTAssertEqual(store.workspace?.tasks[last]?.priority, .high)
-        XCTAssertFalse(store.today.list.isSelecting)
-        store.send(.today(.list(.selectTapped)))
+        XCTAssertTrue(store.today.list.isSelecting)
         store.send(.today(.list(.selectAllTapped)))
         await flow.step("all-picked")
         store.send(.today(.list(.bulk(.trash))))

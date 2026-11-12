@@ -12,7 +12,7 @@
 [button] "Undo"
 [header, text] "Today"
 [button] "Deselect All"
-[button] "Done"
+[button] "Done Selecting"
 [text] "5 tasks picked"
 [button, selected] "Water the plants" value: "To Do, High priority, Today, HOME-0010"
 [button, notEnabled] "Label"
