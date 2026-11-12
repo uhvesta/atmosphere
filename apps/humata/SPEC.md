@@ -135,8 +135,10 @@ original spec; lettered ones were added since.
 | E Terminals and files | Done |
 | 6 Plan with the agent | Done (8dba5fb0) |
 | F Any host, any repository | Done |
-| 7 Search across sessions | In progress |
-| 8 Ship as pull requests | After 7 |
+| 7 Search across sessions | Done |
+| 8 Ship as pull requests | In progress |
+| G Drive Humata from outside | After 8 |
+| H Humata's own model server | After G |
 
 ## Done milestones
 
@@ -382,7 +384,7 @@ with specs, applies two, and finds exactly those two on the board. It passes
 **Outcome:** adding a Linux or Mac host over SSH just works, and a project
 can start from a GitHub URL as well as a folder.
 
-- [x] Build humatad for macOS (arm64, x86_64) and Linux (x86_64, arm64, static musl) when packaging, and bundle every build in the app under `Contents/Helpers/humatad-<os>-<arch>` (`//apps/humata/daemon/humatad:builds`, a split transition over the platforms)
+- [x] Build humatad for macOS (arm64, x86_64) and Linux (x86_64, arm64, static musl) when packaging, and bundle every build in the app under `Contents/Resources/builds/humatad-<os>-<arch>` (not `Helpers`, which codesign takes for Mac code; the Mac builds are signed ad hoc) (`//apps/humata/daemon/humatad:builds`, a split transition over the platforms)
 - [x] On install, pick the build matching the host's `uname -sm`, copy it into the host's folder (`~/.humata/bin/humatad` by default) atomically, and say which platform is missing if none matches; a host of this Mac's platform with no bundled build gets this humatad
 - [x] Link `humatad` into `~/.local/bin` on hosts, only where nothing or a link of that name is, and offer `humata` and `humatad` on this Mac (This Mac in Hosts, or `humata link`), saying how to add the folder to PATH when it isn't on it; shell profiles are never edited
 - [x] Reinstall on a host whose humatad is another build than the app's, as it does for this Mac; a host with no build for its platform keeps the one it has
@@ -434,12 +436,12 @@ Structure:
 - **Agents.** A `search_sessions` tool searches past sessions. An agent on
   this Mac searches every project; one on a host, through the relay, only
   the projects that have sessions on that host, as with the board.
-- [ ] Index messages, commands and their output, changes, review comments and specs on the Mac, from every host's history (SQLite FTS)
-- [ ] Search by words and by time, such as "last week", and filter by project, task or session
-- [ ] Related words from a cheap local model, with a word list as the fallback, the way Lifr's search does
-- [ ] Open a result at the matching point in its session, and fork from there
-- [ ] Give the agent a tool to search past sessions
-- [ ] Search every machine's sessions in one query, including offline ones
+- [x] Index messages, commands and their output, changes, review comments and specs on the Mac, from every host's history (SQLite FTS)
+- [x] Search by words and by time, such as "last week", and filter by project, task or session
+- [x] Related words from a cheap local model, with a word list as the fallback, the way Lifr's search does
+- [x] Open a result at the matching point in its session, and fork from there
+- [x] Give the agent a tool to search past sessions
+- [x] Search every machine's sessions in one query, including offline ones
 
 **Done when:** an end-to-end test finds a command run in one session from a
 search started in another project, and opens it at that turn.
@@ -449,6 +451,50 @@ search started in another project, and opens it at that turn.
 **Outcome:** a finished session becomes a merged pull request without leaving
 the app, and the board closes the task by itself.
 
+Structure:
+
+- **Git where the code is, GitHub from the Mac.** Committing, pushing and
+  merging run on the session's host, in its worktrees, with the host's
+  token handed to git through the credential helper, as cloning does.
+  GitHub's API is called only from the Mac, with the token in This Mac's
+  variables (`GH_TOKEN` or `GITHUB_TOKEN`), so the board can follow pull
+  requests while hosts sleep. `HUMATA_GITHUB_API` points the daemon at
+  another server, for GitHub Enterprise or a test; with it set, any remote's
+  last two path parts name the repository.
+- **Landing.** "Land…" on a session names a branch (from the session's
+  name, as `humata/fix-the-migrations`) and a message (the session's name
+  and the task's title). Each worktree with changes moves onto that branch
+  and commits everything git doesn't ignore; one without changes is left
+  out. A session can land again later: new changes are another commit on
+  the same branch. Landing waits for a turn to end.
+- **Pull requests.** "Land and Open Pull Request" also pushes each landed
+  branch to its repository's `origin` and opens a pull request against the
+  branch the session started from (the repository's default branch). One
+  pull request per repository; each one's description names the task and
+  links the others. Landing again pushes to the same pull requests. The
+  Mac keeps each pull request in its store, against its session and task.
+- **Following them.** The Mac reads each open pull request's state, its
+  reviews (the last of each reviewer's) and its checks every two minutes,
+  and at once when a task's page or the session opens. The task's page and
+  the session's toolbar show them. When every pull request of a session
+  has merged, its task moves to Done, the session is archived (removing
+  its worktrees, as archiving does) and its branch is deleted from each
+  repository on the host; its snapshots stay, so its history and changes
+  still read. A pull request closed without merging leaves things as they
+  are.
+- **Review comments.** Each read also brings in the pull request's review
+  comments: a new one starts an inline thread on its file and lines, or
+  joins the thread it replies to, marked with its author's GitHub login.
+  They wait, unsent, for the next "Send Review", as yours do.
+- **Updating from the base branch.** "Update from main" fetches the base
+  branch on the host and merges it into each worktree, keeping what the
+  session changed and hasn't landed. A merge that conflicts is left in the
+  worktree, and the agent is sent the conflicting files, asked to resolve
+  them and commit.
+- **Issues.** "Import Issues…" on the board reads a repository's open
+  issues (not pull requests) and makes a task of each, its title and its
+  body as the spec, once: an issue imported before is skipped. A pull
+  request for an imported task says it closes the issue.
 - [ ] Land a session's work: commit its changes on a branch of your naming, with a message you edit
 - [ ] Push the branch and open a pull request, one per repository, linked to each other and to the task
 - [ ] Show each pull request's review and CI status on the task, and move the task to Done when it merges
@@ -460,6 +506,84 @@ the app, and the board closes the task by itself.
 **Done when:** an end-to-end test opens a pull request against a local git
 server standing in for GitHub, marks it merged, and finds the task Done and
 the worktree gone.
+
+### Milestone G: drive Humata from outside
+
+**Outcome:** an agent outside Humata (Claude Code in a terminal, say) can
+set Humata up and use it as you would: add projects, start chats and
+planning sessions, talk to them, approve their requests, and show you the
+result in the app.
+
+Structure:
+
+- **`humata mcp`, a control server.** The command-line tool gains `mcp`, a
+  stdio MCP server you add to an outside agent (`claude mcp add humata --
+  humata mcp`). It is a client of the daemon's socket like the app and the
+  rest of the tool, so it reaches nothing they can't. It is not
+  `humatad mcp`, which serves one session's agent its board and specs. No
+  REST server and no port: an outside agent starts it as a child process.
+- **The whole daemon as tools.** Projects (list, create, add a repository by
+  path or GitHub URL), hosts (list, status), sessions (start a chat,
+  planning session or task session with a backend and a model; send;
+  stop; fork; archive), the inbox (list, approve, deny, answer), the board
+  and specs (read, create items, edit a spec), history and search. Each
+  tool maps to one request of the protocol, so a tool can't do what the
+  protocol refuses.
+- **Show in app.** A `show` tool opens a session, a task or the board in the
+  running app, through the app's URL scheme (`humata://session/<id>`), so
+  the agent can put what it made in front of you. It brings the app
+  forward only when asked to.
+- **Safety.** Destructive tools (archive, remove a project, delete a host)
+  say so in their descriptions and are marked destructive in MCP, so the
+  outside agent's client asks you before calling them.
+- [ ] `humata mcp` serves the daemon over stdio MCP
+- [ ] Tools for projects, hosts, sessions, the inbox, the board, specs, history and search
+- [ ] A `show` tool and a `humata://` URL scheme in the app
+- [ ] Destructive tools marked so
+
+**Done when:** an end-to-end test starts `humata mcp` against a test daemon,
+creates a project, starts a scripted chat, sends it a message, approves its
+request and reads the reply, all through MCP.
+
+### Milestone H: Humata's own model server
+
+**Outcome:** local models run inside Humata, with nothing else installed:
+the app serves them to its agents as an OpenAI-compatible endpoint.
+
+Structure:
+
+- **InferenceKit behind an OpenAI-compatible server.** The Mac app hosts a
+  server on loopback (`127.0.0.1`, a port it picks and tells the daemon)
+  with `/v1/models` and `/v1/chat/completions`, streaming and tool calls
+  included, backed by InferenceKit's on-device engines (MLX and Apple's
+  model), the same ones Lifr and LangReadr use. It is a kit-level server
+  (TCA-free), in Swift, since InferenceKit is.
+- **The local-model backend points at it.** The daemon's local-model backend
+  already speaks the OpenAI protocol; This Mac's default endpoint becomes
+  the app's server when it runs, and an Ollama or LM Studio server still
+  works by setting it. The model picker lists the server's models.
+- **Remote hosts** reach it through a reverse port forward over the SSH
+  connection already open, bound to loopback on the host, so a session on
+  a remote machine can use your Mac's GPU.
+- **Limits, said plainly.** It runs while the app runs; a session using it
+  waits, with the reason shown, when the app is closed. Small models call
+  tools less reliably than large ones; the picker marks the models known to
+  call tools well.
+- [ ] An OpenAI-compatible server on loopback, backed by InferenceKit, with streaming and tool calls
+- [ ] This Mac's local-model backend uses it by default; its models in the picker
+- [ ] Remote hosts reach it over a reverse port forward
+- [ ] A session waits with a reason when the server is down
+
+**Done when:** an end-to-end test starts a local-model session against the
+server with a small model, which calls a tool and replies.
+
+### The demo
+
+Once G and H are in, an outside agent, through `humata mcp`, sets up Humata
+for the owner to look at: projects for the `uhvesta/atmosphere` and
+`uhvesta/statify` repositories added by URL, a few chats with local models
+in each, and planning sessions writing Markdown specs, then opens the app on
+them.
 
 ## Later
 

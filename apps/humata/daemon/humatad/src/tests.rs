@@ -2326,3 +2326,117 @@ async fn forwarding_a_port_nothing_answers_on_is_refused() {
         "{forwarded:?}"
     );
 }
+
+async fn searched(client: &Client, search: pb::Search) -> pb::SearchResults {
+    match client.call(pb::request::Kind::Search(search)).await {
+        Ok(pb::response::Kind::SearchResults(results)) => results,
+        other => panic!("not searched: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn every_sessions_messages_are_searched_and_an_agent_searches_only_its_hosts() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let (here, elsewhere) = (git_repository(), git_repository());
+    let daemon = daemon_itself(state.path(), Hosts::default()).await;
+    let client = client_of(daemon.clone()).await;
+    let ours = project(&client, here.path()).await;
+    let theirs = project(&client, elsewhere.path()).await;
+    let first = started(&client, start_in(&ours.id)).await;
+    let second = started(&client, start_in(&theirs.id)).await;
+    send(&client, &first.id, "the migrations keep failing").await;
+    let events = after_turns(&client, &first.id, 1).await;
+    send(&client, &second.id, "deploy the migration tool").await;
+    after_turns(&client, &second.id, 1).await;
+
+    let search = |query: &str| pb::Search {
+        query: query.to_owned(),
+        ..Default::default()
+    };
+    let found = searched(&client, search("migration")).await;
+    let mut sessions: Vec<_> = found
+        .hits
+        .iter()
+        .map(|hit| hit.session_id.clone())
+        .collect();
+    sessions.sort();
+    let mut expected = vec![first.id.clone(), second.id.clone()];
+    expected.sort();
+    assert_eq!(sessions, expected);
+    let hit = found
+        .hits
+        .iter()
+        .find(|hit| hit.session_id == first.id)
+        .unwrap_or_else(|| panic!("{found:?}"));
+    assert_eq!(
+        hit.event_id,
+        user_message(&events, "the migrations keep failing")
+    );
+    assert_eq!(hit.turn, 1);
+    assert_eq!(hit.project_id, ours.id);
+
+    // A later turn is indexed by the next search.
+    send(&client, &first.id, "rename the crate").await;
+    after_turns(&client, &first.id, 2).await;
+    let found = searched(&client, search("renam")).await;
+    assert!(
+        found
+            .hits
+            .iter()
+            .any(|hit| hit.session_id == first.id && hit.turn == 2),
+        "{found:?}"
+    );
+
+    // Narrowed to a project, and a related word marks its hits.
+    let narrowed = pb::Search {
+        project_id: theirs.id.clone(),
+        ..search("deploy")
+    };
+    assert!(
+        searched(&client, narrowed)
+            .await
+            .hits
+            .iter()
+            .all(|hit| hit.session_id == second.id)
+    );
+    let related = pb::Search {
+        related: vec!["deploy".to_owned()],
+        ..search("ship")
+    };
+    let found = searched(&client, related).await;
+    assert!(
+        !found.hits.is_empty() && found.hits.iter().all(|hit| hit.related),
+        "{found:?}"
+    );
+
+    // Nothing to search for is refused.
+    let empty = client
+        .call(pb::request::Kind::Search(search("?? last week")))
+        .await;
+    assert!(
+        refused_with(&empty, pb::ErrorCode::InvalidRequest),
+        "{empty:?}"
+    );
+
+    // An agent on a host with no sessions finds nothing, and can't name
+    // another host's project.
+    let elsewhere_asked = daemon
+        .tool_call(
+            "other",
+            Some(pb::request::Kind::Search(search("migration"))),
+        )
+        .await;
+    assert!(
+        matches!(&elsewhere_asked, Ok(pb::response::Kind::SearchResults(results)) if results.hits.is_empty())
+    );
+    let named = pb::Search {
+        project_id: ours.id.clone(),
+        ..search("migration")
+    };
+    assert!(
+        daemon
+            .tool_call("other", Some(pb::request::Kind::Search(named)))
+            .await
+            .is_err()
+    );
+}

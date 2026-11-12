@@ -23,11 +23,16 @@ def _humatad_builds_impl(ctx):
         binary = binaries[DefaultInfo].files_to_run.executable
         output = ctx.actions.declare_file("{}/{}-{}".format(ctx.label.name, ctx.attr.prefix, name))
 
-        # A copy, not a symlink, so the app bundle gets the file itself.
+        # A copy, not a symlink, so the app bundle gets the file itself. A
+        # Mac build is signed ad hoc, as the linker signs only the Mac's own
+        # architecture, and an app holding unsigned code can't be signed.
+        command = 'cp "$1" "$2" && chmod 755 "$2"'
+        if name.startswith("darwin-"):
+            command += ' && /usr/bin/codesign --force --sign - "$2"'
         ctx.actions.run_shell(
             inputs = [binary],
             outputs = [output],
-            command = 'cp "$1" "$2" && chmod 755 "$2"',
+            command = command,
             arguments = [binary.path, output.path],
             mnemonic = "CopyHumatadBuild",
         )

@@ -18,9 +18,12 @@ package struct BoardFeature {
         /// once it was.
         package var failure: String?
         @Presents package var destination: Destination.State?
+        /// The item to open once the board is read, as when a search found it.
+        package var opening: Item.ID?
 
-        package init(project: Project) {
+        package init(project: Project, opening: Item.ID? = nil) {
             self.project = project
+            self.opening = opening
         }
 
         /// The items the board shows in `status`'s column, in the board's order.
@@ -107,6 +110,10 @@ package struct BoardFeature {
                     page.subtasks = state.subtasks(of: item)
                     page.sessions = state.sessions(on: item)
                     state.destination = .item(page)
+                }
+                if let opening = state.opening {
+                    state.opening = nil
+                    return .send(.cardTapped(opening))
                 }
                 return .none
 

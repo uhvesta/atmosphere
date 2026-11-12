@@ -475,3 +475,34 @@ pub fn command_links(linked: &pb::CommandsLinked) -> String {
     }
     printed
 }
+
+/// `<kind>\t<session>\t<turn>\t<event>\t<project>\t<item>\t<related>\t<snippet>`,
+/// `-` for none, with the words found between `**` and the snippet on one
+/// line.
+pub fn search_hit(hit: &pb::SearchHit) -> String {
+    let kind = match hit.kind() {
+        pb::SearchHitKind::Message | pb::SearchHitKind::Unspecified => "message",
+        pb::SearchHitKind::Reply => "reply",
+        pb::SearchHitKind::ToolCall => "tool_call",
+        pb::SearchHitKind::ToolOutput => "tool_output",
+        pb::SearchHitKind::Comment => "comment",
+        pb::SearchHitKind::Spec => "spec",
+    };
+    let snippet = hit
+        .snippet
+        .replace(['\u{E000}', '\u{E001}'], "**")
+        .replace(['\n', '\t'], " ");
+    format!(
+        "{kind}\t{}\t{}\t{}\t{}\t{}\t{}\t{snippet}",
+        or_dash(&hit.session_id),
+        if hit.turn == 0 {
+            "-".to_owned()
+        } else {
+            hit.turn.to_string()
+        },
+        or_dash(&hit.event_id),
+        or_dash(&hit.project_id),
+        or_dash(&hit.item_id),
+        if hit.related { "related" } else { "-" },
+    )
+}

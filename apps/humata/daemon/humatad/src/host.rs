@@ -643,7 +643,8 @@ impl Host {
             | Request::DeclineProposal(_)
             | Request::UpdateProject(_)
             | Request::ReadSpec(_)
-            | Request::LinkCommands(_) => {
+            | Request::LinkCommands(_)
+            | Request::Search(_) => {
                 return Err(HostError::NotForHosts);
             }
             Request::SetSpecs(set) => {

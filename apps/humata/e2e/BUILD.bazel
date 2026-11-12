@@ -278,3 +278,26 @@ rust_test(
     },
     deps = ["@crates//:tempfile"],
 )
+
+# Search across sessions: an agent finds a command another project's
+# session ran, and so does `humata search`.
+rust_test(
+    name = "search_test",
+    srcs = [
+        "common.rs",
+        "search_test.rs",
+    ],
+    crate_root = "search_test.rs",
+    data = [
+        "//apps/humata/daemon/cli:humata",
+        "//apps/humata/daemon/humatad",
+    ],
+    env = {
+        "HUMATA": "$(rootpath //apps/humata/daemon/cli:humata)",
+        "HUMATAD": "$(rootpath //apps/humata/daemon/humatad)",
+    },
+    deps = [
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+    ],
+)

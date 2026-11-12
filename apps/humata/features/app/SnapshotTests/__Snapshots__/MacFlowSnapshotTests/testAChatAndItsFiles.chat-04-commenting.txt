@@ -5,6 +5,8 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Hosts"
     [Row/OutlineRow] ""
+      [StaticText] "" value: "Search Sessions"
+    [Row/OutlineRow] ""
       [Heading] "Chats" help: "Bring in a Claude Code or Copilot session started outside Humata, with its history, Start a chat in no project, in a folder you pick or one of its own (⌘N)"
     [Row/OutlineRow, selected] ""
       [StaticText] "" value: "Reader plan"

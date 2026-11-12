@@ -597,3 +597,44 @@ extension Folder {
             truncated: folder.truncated)
     }
 }
+
+extension SearchQuery {
+    var proto: Humata_V1_Search {
+        var search = Humata_V1_Search()
+        search.query = text
+        search.related = related
+        search.projectID = projectID ?? ""
+        if let since { search.sinceUnixMs = Int64((since.timeIntervalSince1970 * 1000).rounded()) }
+        if let until { search.untilUnixMs = Int64((until.timeIntervalSince1970 * 1000).rounded()) }
+        return search
+    }
+}
+
+extension SearchResults {
+    init(_ results: Humata_V1_SearchResults) {
+        func time(_ unixMs: Int64) -> Date? {
+            unixMs == 0 ? nil : Date(timeIntervalSince1970: TimeInterval(unixMs) / 1000)
+        }
+        self.init(
+            hits: results.hits.map { hit in
+                let kind: SearchHit.Kind =
+                    switch hit.kind {
+                    case .reply: .reply
+                    case .toolCall: .toolCall
+                    case .toolOutput: .toolOutput
+                    case .comment: .comment
+                    case .spec: .spec
+                    case .message, .unspecified, .UNRECOGNIZED: .message
+                    }
+                return SearchHit(
+                    kind: kind, sessionID: hit.sessionID.isEmpty ? nil : hit.sessionID,
+                    sessionName: hit.sessionName, eventID: hit.eventID.isEmpty ? nil : hit.eventID,
+                    turn: Int(hit.turn), time: time(hit.timeUnixMs) ?? Date(timeIntervalSince1970: 0),
+                    projectID: hit.projectID.isEmpty ? nil : hit.projectID,
+                    itemID: hit.itemID.isEmpty ? nil : hit.itemID,
+                    threadID: hit.threadID == 0 ? nil : hit.threadID,
+                    snippet: SearchHit.runs(hit.snippet), related: hit.related)
+            },
+            words: results.words, since: time(results.sinceUnixMs), until: time(results.untilUnixMs))
+    }
+}

@@ -156,6 +156,9 @@ package struct DaemonClient: Sendable {
     package var forwards: @Sendable () async throws -> [Forward]
     /// Stops listening; connections already open run until they close.
     package var stopForward: @Sendable (_ forward: String) async throws -> Void
+    /// What every session said and did, on every host, that has the
+    /// query's words; best first, then those found by related words.
+    package var search: @Sendable (_ query: SearchQuery) async throws -> SearchResults
     /// The session's history, then each new event. Ends when the calling task
     /// is cancelled; throws if the connection drops.
     package var watch: @Sendable (_ session: String) async -> AsyncThrowingStream<SessionEvent, any Error> = { _ in

@@ -27,6 +27,7 @@ mod planning;
 mod recovery;
 mod repositories;
 mod review;
+mod search;
 
 /// Answers clients: sessions on this Mac go to the local host, others to the
 /// host they run on. Projects, and where each session is, are the daemon's.
@@ -56,6 +57,9 @@ pub struct Daemon {
     /// The ports forwarded to hosts, by id.
     forwards: std::sync::Mutex<BTreeMap<String, forwards::Forwarding>>,
     next_forward: std::sync::atomic::AtomicU64,
+    /// Held while the search index catches up, so two searches don't index
+    /// one session's events twice.
+    indexing: tokio::sync::Mutex<()>,
 }
 
 impl Daemon {
@@ -95,6 +99,7 @@ impl Daemon {
             backing_up: std::sync::Mutex::default(),
             forwards: std::sync::Mutex::default(),
             next_forward: std::sync::atomic::AtomicU64::new(0),
+            indexing: tokio::sync::Mutex::new(()),
         });
         tokio::spawn(answer_tool_calls(Arc::downgrade(&daemon), calls));
         daemon
@@ -1090,6 +1095,10 @@ impl Daemon {
                 let spec = self.read_spec(read)?;
                 return Ok(Reply::Response(Response::Spec(spec)));
             }
+            Request::Search(search) => {
+                let results = self.search(std::mem::take(search), None).await?;
+                return Ok(Reply::Response(Response::SearchResults(results)));
+            }
             Request::LinkCommands(link) => {
                 let linked = crate::commands::link_commands(link.check)?;
                 return Ok(Reply::Response(Response::CommandsLinked(linked)));
@@ -1526,6 +1535,21 @@ impl Daemon {
                 .sessions
                 .iter()
                 .any(|session| session.id == asked.session_id),
+            Some(Request::Search(search)) => {
+                if !search.project_id.is_empty() && !in_project(&search.project_id) {
+                    return Err(out_of_scope("another project's sessions"));
+                }
+                let mut scope: Vec<String> = sessions
+                    .sessions
+                    .iter()
+                    .map(|session| session.project_id.clone())
+                    .filter(|project| !project.is_empty())
+                    .collect();
+                scope.sort();
+                scope.dedup();
+                let results = self.search(search.clone(), Some(scope)).await?;
+                return Ok(pb::response::Kind::SearchResults(results));
+            }
             _ => return Err(out_of_scope("a request that isn't a humata tool's")),
         };
         let Some(request) = request.filter(|_| allowed) else {

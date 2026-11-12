@@ -34,7 +34,9 @@ macos_application(
     additional_contents = {
         "//apps/humata/daemon/cli:humata": "Helpers",
         "//apps/humata/daemon/humatad": "Helpers",
-        "//apps/humata/daemon/humatad:builds": "Helpers",
+        # Among the resources: codesign takes anything in Helpers for Mac
+        # code, which the Linux builds aren't.
+        "//apps/humata/daemon/humatad:builds": "Resources",
         ":daemon_plist": "Library/LaunchAgents",
     },
     bundle_id = HUMATA_BUNDLE_ID,

@@ -5,6 +5,7 @@ import HumataBoard
 import HumataDaemonClient
 import HumataProjects
 import HumataReview
+import HumataSearch
 import HumataSession
 import SwiftUI
 import XCTest
@@ -13,7 +14,10 @@ import XCTest
 /// since it can't click.
 @MainActor
 final class MacFlowSnapshotTests: XCTestCase {
-    private struct TimedOut: Error {}
+    /// What a flow waited on that never came, by its line.
+    private struct TimedOut: Error {
+        let line: UInt
+    }
 
     /// An agent edits a file in a project: the edit waits for the person,
     /// is approved, and a command then waits until the session allows
@@ -446,6 +450,49 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Search finds a message across sessions, then those with a related
+    /// word; a hit opens its session at the reply, offered as a fork point.
+    func testSearch() async throws {
+        let daemon = InMemoryDaemon { text in
+            [.say("The \(text) now run in a transaction, so a failed one leaves the schema as it was.")]
+        }
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let first = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "Fix the migrations", projectID: project.id))
+        try await daemon.client.send(first.id, "migrations", .enqueue)
+        try await daemon.client.send(first.id, "seeds", .enqueue)
+        let second = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "Tidy the schema", projectID: project.id))
+        try await daemon.client.send(second.id, "schema checks", .enqueue)
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.relatedWords = RelatedWordsClient { _ in ["migrate", "schema"] }
+            $0.calendar = Calendar(identifier: .gregorian)
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("search", AppView(store: store))
+
+        try await until { store.daemon == .running && store.sidebar.sessions.count == 2 }
+        store.send(.sidebar(.selected(.search)))
+        try await until { store.search != nil }
+        store.send(.search(.presented(.binding(.set(\.text, "migrations transaction")))))
+        store.send(.search(.presented(.submitted)))
+        try await until { store.search?.isSearching == false && store.search?.related.isEmpty == false }
+        await flow.step("hits")
+
+        let hit = try XCTUnwrap(store.search?.hits.first { !$0.related && $0.kind == .reply })
+        store.send(.search(.presented(.hitTapped(hit))))
+        try await until { store.session?.session.id == first.id && store.session?.highlighted == hit.eventID }
+        try await until { store.session?.items.isEmpty == false }
+        await flow.step("opened at the reply")
+        flow.finish()
+    }
+
     /// A session's terminal opens in its folder with ⌘T and runs what's
     /// typed; the host's Terminals list it beside one opened outside any
     /// session.
@@ -701,11 +748,11 @@ final class MacFlowSnapshotTests: XCTestCase {
         try await until { store.sidebar.sessions[id: session.id]?.state == state }
     }
 
-    private func until(_ condition: () -> Bool) async throws {
+    private func until(line: UInt = #line, _ condition: () -> Bool) async throws {
         for _ in 0..<500 {
             if condition() { return }
             try await Task.sleep(for: .milliseconds(10))
         }
-        throw TimedOut()
+        throw TimedOut(line: line)
     }
 }

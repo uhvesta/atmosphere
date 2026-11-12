@@ -194,19 +194,57 @@ package struct SessionView: View {
     }
 
     private var chat: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 14) {
-                ForEach(store.items) { item in
-                    row(item)
+        ScrollViewReader { reader in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(store.items) { item in
+                        row(item)
+                            .padding(item.id == store.highlightedItem ? 6 : 0)
+                            .background {
+                                if item.id == store.highlightedItem {
+                                    RoundedRectangle(cornerRadius: 8).fill(Color.yellow.opacity(0.18))
+                                }
+                            }
+                            .id(item.id)
+                    }
+                    if store.isWorking, !store.isWaiting {
+                        ReplyInProgress(
+                            text: store.streaming, thinking: nil, showsThinking: false, toggleThinking: {})
+                    }
                 }
-                if store.isWorking, !store.isWaiting {
-                    ReplyInProgress(
-                        text: store.streaming, thinking: nil, showsThinking: false, toggleThinking: {})
-                }
+                .padding()
             }
-            .padding()
+            .defaultScrollAnchor(.bottom)
+            .onChange(of: store.highlightedItem, initial: true) { _, item in
+                guard let item else { return }
+                reader.scrollTo(item, anchor: .center)
+            }
         }
-        .defaultScrollAnchor(.bottom)
+        .safeAreaInset(edge: .top) {
+            if store.highlighted != nil {
+                highlightBanner
+            }
+        }
+    }
+
+    /// Over the chat while a search hit is highlighted: forks from it, or
+    /// goes back to the chat as it is.
+    private var highlightBanner: some View {
+        HStack {
+            Image(systemName: "text.magnifyingglass")
+                .foregroundStyle(.secondary)
+            Text(
+                store.highlightedItem == nil
+                    ? "Finding what the search found…" : "What the search found is highlighted.")
+            Spacer()
+            Button("Fork from Here") { store.send(.forkFromHighlightTapped) }
+                .disabled(store.highlightedItem == nil)
+                .help("A new session with this chat up to the end of that turn, and the code as it was then.")
+            Button("Done") { store.send(.highlightDismissed) }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
     }
 
     @ViewBuilder

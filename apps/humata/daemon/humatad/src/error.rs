@@ -384,6 +384,11 @@ pub enum DaemonError {
     NoRepositories,
 
     #[error(
+        "there are no words to search for; give at least one word, not only punctuation or a time such as \"last week\""
+    )]
+    NothingToSearch,
+
+    #[error(
         "the repository {repository} must be an absolute path to a folder on this Mac; check that it exists"
     )]
     NotAFolder {
@@ -655,6 +660,7 @@ impl DaemonError {
             | Self::NoCommand { .. }
             | Self::NotAFolder { .. }
             | Self::NoRepositories
+            | Self::NothingToSearch
             | Self::CloneUrl { .. }
             | Self::ForHostsOnly
             | Self::NoSetupHere

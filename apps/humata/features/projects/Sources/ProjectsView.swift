@@ -62,6 +62,15 @@ package struct ProjectsView: View {
                         ? Text("Inbox, 1 session waiting") : Text("Inbox, \(store.inbox.count) sessions waiting"))
             Label("Hosts", systemImage: "server.rack")
                 .tag(SidebarItem.hosts)
+            Label("Search Sessions", systemImage: "text.magnifyingglass")
+                .tag(SidebarItem.search)
+                .background {
+                    // ⌘⇧F opens it from anywhere in the window.
+                    Button("Search Sessions") { store.send(.selected(.search)) }
+                        .keyboardShortcut("f", modifiers: [.command, .shift])
+                        .opacity(0)
+                        .accessibilityHidden(true)
+                }
             if let matches = store.state.matches {
                 results(matches)
             } else {

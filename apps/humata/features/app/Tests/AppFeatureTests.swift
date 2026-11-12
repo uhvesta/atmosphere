@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import HumataAppFeature
 import HumataDaemonClient
+import HumataProjects
 import HumataSession
 import XCTest
 
@@ -106,5 +107,53 @@ final class AppFeatureTests: XCTestCase {
         await store.send(\.sidebar.refresh)
         await store.receive(\.sidebar.loaded)
         XCTAssertEqual(store.state.session?.session.hostOffline, true)
+    }
+
+    func testASearchHitOpensItsSessionAtTheEventFound() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/work", name: "first"))
+        try await daemon.client.send(session.id, "the migrations fail", .enqueue)
+        let message = try XCTUnwrap(daemon.history(session.id).first { $0.kind == .userMessage("the migrations fail") })
+        var state = AppFeature.State()
+        state.sidebar.sessions = [session]
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.selected, .search)
+        await store.receive(\.sidebar.delegate.openSearch)
+        XCTAssertNotNil(store.state.search)
+        await store.send(\.search.delegate.openSession, (id: session.id, event: message.id))
+        XCTAssertNil(store.state.search)
+        XCTAssertEqual(store.state.sidebar.selection, .session(session.id))
+        XCTAssertEqual(store.state.session?.session.id, session.id)
+        XCTAssertEqual(store.state.session?.highlighted, message.id)
+    }
+
+    func testASearchHitOnASpecOpensItsBoard() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let item = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        var state = AppFeature.State()
+        state.sidebar.projects = [project]
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.selected, .search)
+        await store.receive(\.sidebar.delegate.openSearch)
+        await store.send(\.search.delegate.openItem, (projectID: project.id, itemID: item.id))
+        XCTAssertNil(store.state.search)
+        XCTAssertEqual(store.state.board?.project.id, project.id)
+        XCTAssertEqual(store.state.board?.opening, item.id)
     }
 }

@@ -19,9 +19,11 @@ mod planning;
 mod recoveries;
 mod requests;
 mod review;
+mod search;
 
 pub use planning::{Decision, Skill};
 pub use review::{Comment, NewThread, Review, Thread};
+pub use search::{Entry, EntryKind, Found, Indexed, MARK_END, MARK_START, Query, Whereabouts};
 
 /// Each step takes the schema from its index to the next version; the
 /// version is kept in `PRAGMA user_version`.
@@ -201,6 +203,24 @@ const MIGRATIONS: &[&str] = &["
     -- Where a repository added by its URL was cloned from; its path is then
     -- the Mac's clone of it.
     ALTER TABLE project_repositories ADD COLUMN url TEXT NOT NULL DEFAULT '';
+", "
+    -- What every session said and did, and the review comments and specs,
+    -- to search. A session's entries are added as its history grows;
+    -- comments and specs are indexed again before each search.
+    CREATE VIRTUAL TABLE search_entries USING fts5(
+        text, kind UNINDEXED, session UNINDEXED, event UNINDEXED, turn UNINDEXED,
+        time UNINDEXED, project UNINDEXED, item UNINDEXED, thread UNINDEXED,
+        tokenize = 'porter unicode61'
+    );
+    -- How far each session is indexed, and where it is.
+    CREATE TABLE search_sessions (
+        id TEXT PRIMARY KEY,
+        host TEXT NOT NULL,
+        project TEXT NOT NULL,
+        item TEXT NOT NULL,
+        events INTEGER NOT NULL,
+        turns INTEGER NOT NULL
+    );
 "];
 
 #[derive(Clone, Debug, PartialEq, Eq)]

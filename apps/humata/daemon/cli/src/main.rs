@@ -536,6 +536,23 @@ enum Command {
     /// List every session waiting on you, across projects, and what agents
     /// ask of you.
     Inbox,
+    /// Search what every session said and did, and the review comments and
+    /// specs: hits best first, each with its session, turn and event, to
+    /// read with `humata history` or fork from. A time in the words, such as
+    /// `last week` or `past 3 days`, narrows to then.
+    Search {
+        #[arg(required = true)]
+        words: Vec<String>,
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        item: Option<String>,
+        #[arg(long)]
+        session: Option<String>,
+        /// The most hits; 50 if not given.
+        #[arg(long)]
+        limit: Option<u32>,
+    },
     /// Link this Mac's humata and humatad into ~/.local/bin, where a
     /// terminal finds them. A file there of either name that isn't such a
     /// link is left alone, and no shell profile is changed.
@@ -934,6 +951,30 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             }
             other => return Err(unexpected("the inbox", &other)),
         },
+        Command::Search {
+            words,
+            project,
+            item,
+            session,
+            limit,
+        } => {
+            let search = pb::Search {
+                query: words.join(" "),
+                project_id: project.unwrap_or_default(),
+                item_id: item.unwrap_or_default(),
+                session_id: session.unwrap_or_default(),
+                limit: limit.unwrap_or_default(),
+                ..pb::Search::default()
+            };
+            match client.call(Request::Search(search)).await? {
+                Response::SearchResults(results) => {
+                    for hit in &results.hits {
+                        println!("{}", print::search_hit(hit));
+                    }
+                }
+                other => return Err(unexpected("the search results", &other)),
+            }
+        }
         Command::Link { check } => {
             match client
                 .call(Request::LinkCommands(pb::LinkCommands { check }))

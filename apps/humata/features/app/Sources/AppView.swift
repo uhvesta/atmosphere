@@ -2,6 +2,7 @@ import ComposableArchitecture
 import HumataBoard
 import HumataHosts
 import HumataProjects
+import HumataSearch
 import HumataSession
 import SwiftUI
 
@@ -36,6 +37,8 @@ package struct AppView: View {
                 } answerRequest: { request, answer in
                     store.send(.sidebar(.requestAnswered(request, answer)))
                 }
+            } else if let search = store.scope(state: \.search, action: \.search.presented) {
+                SearchView(store: search)
             } else if let hosts = store.scope(state: \.hosts, action: \.hosts.presented) {
                 HostsView(store: hosts)
             } else if let board = store.scope(state: \.board, action: \.board.presented) {

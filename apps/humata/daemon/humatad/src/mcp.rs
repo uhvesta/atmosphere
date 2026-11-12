@@ -158,6 +158,19 @@ impl Server {
         let text = |field: &str| arguments[field].as_str().map(str::trim).map(str::to_owned);
         match name {
             "board" => self.board().await,
+            "search_sessions" => {
+                let query = required(text("query"), "query")?;
+                let search = pb::Search {
+                    query,
+                    project_id: text("project_id").unwrap_or_default(),
+                    limit: SEARCH_HITS,
+                    ..pb::Search::default()
+                };
+                match self.ask(pb::request::Kind::Search(search)).await? {
+                    pb::response::Kind::SearchResults(results) => Ok(found(&results)),
+                    other => Err(unexpected(&other)),
+                }
+            }
             "read_item" => {
                 let item_id = required(text("item_id"), "item_id")?;
                 // The host's copy of this session's specs answers while the
@@ -484,6 +497,50 @@ fn describe_thread(thread: &pb::ReviewThread) -> String {
     text
 }
 
+/// The most hits search_sessions gives an agent, so they fit its context.
+const SEARCH_HITS: u32 = 20;
+
+/// Search results as an agent reads them: where each hit is and the text
+/// around it, the words found in bold.
+fn found(results: &pb::SearchResults) -> String {
+    if results.hits.is_empty() {
+        return format!(
+            "Nothing found for {:?}. Try fewer words, or others that mean the same.",
+            results.words
+        );
+    }
+    let mut text = String::new();
+    for hit in &results.hits {
+        let snippet = hit
+            .snippet
+            .replace([crate::store::MARK_START, crate::store::MARK_END], "**")
+            .replace('\n', " ");
+        let related = if hit.related { " (a related word)" } else { "" };
+        let place = match hit.kind() {
+            pb::SearchHitKind::Spec => format!("the spec of {}", hit.item_id),
+            pb::SearchHitKind::Comment => format!(
+                "a review comment on {} ({}), thread {}",
+                hit.session_name, hit.session_id, hit.thread_id
+            ),
+            kind => format!(
+                "{} ({}), turn {}, {}, event {}",
+                hit.session_name,
+                hit.session_id,
+                hit.turn,
+                match kind {
+                    pb::SearchHitKind::Message => "the person's message",
+                    pb::SearchHitKind::Reply => "the agent's reply",
+                    pb::SearchHitKind::ToolCall => "a tool call",
+                    _ => "a tool's output",
+                },
+                hit.event_id
+            ),
+        };
+        text.push_str(&format!("- {place}{related}: {snippet}\n"));
+    }
+    text
+}
+
 fn required(value: Option<String>, field: &str) -> Result<String, String> {
     value
         .filter(|value| !value.is_empty())
@@ -610,6 +667,14 @@ fn tools() -> Value {
                 "thread_id": string("The thread's number, from the review or review_threads."),
                 "text": string("Your answer, in Markdown."),
             }), &["thread_id", "text"]),
+        },
+        {
+            "name": "search_sessions",
+            "description": "Search what was said and done in the sessions of this project and the others on this machine, and their review comments and specs: to find how something was done or decided before. Each hit names the session, turn and event.",
+            "inputSchema": object(json!({
+                "query": string("Words to find, all of them. A time in it, such as \"last week\" or \"past 3 days\", narrows to then."),
+                "project_id": string("Only this project's sessions; defaults to every project on this machine."),
+            }), &["query"]),
         },
     ])
 }

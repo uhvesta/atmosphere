@@ -513,6 +513,53 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.items, [.person(id: "e1", text: "go"), .stopped(id: "e3")])
         XCTAssertFalse(store.state.isWorking)
     }
+
+    func testForkingFromAHighlightedReplyKeepsItsWholeTurn() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        try await daemon.client.send(session.id, "one", .enqueue)
+        try await daemon.client.send(session.id, "two", .enqueue)
+        let history = daemon.history(session.id)
+        let reply = try XCTUnwrap(history.first { $0.kind == .assistantMessage("You said: one") })
+        var state = SessionFeature.State(session: session, highlighted: reply.id)
+        state.events = IdentifiedArray(uniqueElements: history)
+        XCTAssertEqual(state.highlightedItem, reply.id)
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+
+        await store.send(.forkFromHighlightTapped)
+        await store.receive(\.forkTapped)
+        await store.receive(\.forked)
+        await store.receive(\.delegate.openSession)
+        let fork = try XCTUnwrap(daemon.sessions.last)
+        // The reply's turn whole, and nothing of the next.
+        let kept = daemon.history(fork.id)
+        XCTAssertTrue(kept.contains { $0.kind == .turnEnded(aborted: false) })
+        XCTAssertEqual(said(IdentifiedArray(uniqueElements: kept)), ["user: one", "agent: You said: one"])
+
+        await store.send(.highlightDismissed) {
+            $0.highlighted = nil
+        }
+    }
+
+    func testAHighlightedToolOutputIsShownOnItsCallsRowAndTheLastTurnForksWhole() {
+        let session = Session(id: "s", name: "s", backend: .scripted, workingDirectory: "/work")
+        let now = Date(timeIntervalSince1970: 0)
+        let events = [
+            SessionEvent(id: "e1", time: now, kind: .userMessage("test it")),
+            SessionEvent(id: "e2", time: now, kind: .toolStarted(callID: "c1", tool: "shell", argumentsJSON: "{}")),
+            SessionEvent(id: "e3", time: now, kind: .toolCompleted(callID: "c1", success: true, output: "ok")),
+            SessionEvent(id: "e4", time: now, kind: .turnEnded(aborted: false)),
+        ]
+        var state = SessionFeature.State(session: session, highlighted: "e3")
+        XCTAssertNil(state.highlightedItem)
+        state.events = IdentifiedArray(uniqueElements: events)
+        XCTAssertEqual(state.highlightedItem, "c1")
+        XCTAssertNil(state.forkPointAfterHighlight)
+    }
 }
 
 extension ChatItem {

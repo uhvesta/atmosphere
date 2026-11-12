@@ -619,6 +619,12 @@ extension DaemonClient {
                     throw DaemonError.unexpected("something other than the forward stopped")
                 }
             },
+            search: { query in
+                guard case .searchResults(let results) = try await daemon.call(.search(query.proto)) else {
+                    throw DaemonError.unexpected("something other than search results")
+                }
+                return SearchResults(results)
+            },
             watch: { session in
                 AsyncThrowingStream { continuation in
                     let task = Task {

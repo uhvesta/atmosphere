@@ -172,6 +172,7 @@ package struct ProjectsFeature {
             case openBoard(Project)
             case openInbox
             case openHosts
+            case openSearch
         }
     }
 
@@ -334,6 +335,8 @@ package struct ProjectsFeature {
                     return .send(.delegate(.openInbox))
                 case .hosts:
                     return .send(.delegate(.openHosts))
+                case .search:
+                    return .send(.delegate(.openSearch))
                 case .board(let id):
                     guard let project = state.projects[id: id] else { return .none }
                     return .send(.delegate(.openBoard(project)))
@@ -483,6 +486,8 @@ private func newestFirst<Item>(_ items: [Item], by time: (Item) -> Date) -> [Ite
 package enum SidebarItem: Hashable, Sendable {
     case inbox
     case hosts
+    /// Searching what every session said and did.
+    case search
     case board(Project.ID)
     case session(Session.ID)
 }

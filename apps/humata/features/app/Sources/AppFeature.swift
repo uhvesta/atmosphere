@@ -3,6 +3,7 @@ import HumataBoard
 import HumataDaemonClient
 import HumataHosts
 import HumataProjects
+import HumataSearch
 import HumataSession
 
 /// Humata's window: the sidebar of projects and sessions, and beside it the
@@ -20,6 +21,8 @@ package struct AppFeature {
         @Presents package var board: BoardFeature.State?
         /// The hosts; nil unless they're open.
         @Presents package var hosts: HostsFeature.State?
+        /// Searching every session; nil unless it's open.
+        @Presents package var search: SearchFeature.State?
 
         package init() {}
     }
@@ -49,6 +52,7 @@ package struct AppFeature {
         case session(PresentationAction<SessionFeature.Action>)
         case board(PresentationAction<BoardFeature.Action>)
         case hosts(PresentationAction<HostsFeature.Action>)
+        case search(PresentationAction<SearchFeature.Action>)
     }
 
     @Dependency(\.daemon) var daemon
@@ -115,6 +119,7 @@ package struct AppFeature {
             case .sidebar(.delegate(.openSession(let session))):
                 state.board = nil
                 state.hosts = nil
+                state.search = nil
                 guard state.session?.session.id != session.id else { return .none }
                 state.session = SessionFeature.State(session: session)
                 return .none
@@ -122,12 +127,14 @@ package struct AppFeature {
             case .sidebar(.delegate(.openChanges(let session))):
                 state.board = nil
                 state.hosts = nil
+                state.search = nil
                 if state.session?.session.id != session.id { state.session = SessionFeature.State(session: session) }
                 return .send(.session(.presented(.tabPicked(.review))))
 
             case .sidebar(.delegate(.openBoard(let project))):
                 state.session = nil
                 state.hosts = nil
+                state.search = nil
                 guard state.board?.project.id != project.id else { return .none }
                 state.board = BoardFeature.State(project: project)
                 return .none
@@ -136,11 +143,36 @@ package struct AppFeature {
                 state.session = nil
                 state.board = nil
                 state.hosts = nil
+                state.search = nil
+                return .none
+
+            case .sidebar(.delegate(.openSearch)):
+                state.session = nil
+                state.board = nil
+                state.hosts = nil
+                if state.search == nil {
+                    state.search = SearchFeature.State(projects: Array(state.sidebar.projects))
+                }
+                return .none
+
+            case .search(.presented(.delegate(.openSession(let id, let event)))):
+                guard let session = state.sidebar.sessions[id: id] else { return .none }
+                state.sidebar.selection = .session(id)
+                state.search = nil
+                state.session = SessionFeature.State(session: session, highlighted: event)
+                return .none
+
+            case .search(.presented(.delegate(.openItem(let projectID, let itemID)))):
+                guard let project = state.sidebar.projects[id: projectID] else { return .none }
+                state.sidebar.selection = .board(projectID)
+                state.search = nil
+                state.board = BoardFeature.State(project: project, opening: itemID)
                 return .none
 
             case .sidebar(.delegate(.openHosts)):
                 state.session = nil
                 state.board = nil
+                state.search = nil
                 if state.hosts == nil { state.hosts = HostsFeature.State() }
                 return .none
 
@@ -154,16 +186,18 @@ package struct AppFeature {
                 state.sidebar.selection = .session(session.id)
                 state.board = nil
                 state.hosts = nil
+                state.search = nil
                 state.session = SessionFeature.State(session: session)
                 return .send(.sidebar(.refresh))
 
-            case .sidebar, .session, .board, .hosts:
+            case .sidebar, .session, .board, .hosts, .search:
                 return .none
             }
         }
         .ifLet(\.$session, action: \.session) { SessionFeature() }
         .ifLet(\.$board, action: \.board) { BoardFeature() }
         .ifLet(\.$hosts, action: \.hosts) { HostsFeature() }
+        .ifLet(\.$search, action: \.search) { SearchFeature() }
     }
 
     private func restart(_ state: inout State) -> Effect<Action> {

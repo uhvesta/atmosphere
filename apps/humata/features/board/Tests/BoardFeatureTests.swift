@@ -186,4 +186,23 @@ final class BoardFeatureTests: XCTestCase {
         let items = try await board.daemon.client.items(board.project.id)
         XCTAssertEqual(items.count, 3)
     }
+
+    func testABoardOpenedAtAnItemShowsItsPageOnceRead() async throws {
+        let board = try await board()
+        let store = TestStore(initialState: BoardFeature.State(project: board.project, opening: board.subtask.id)) {
+            BoardFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        await store.receive(\.cardTapped)
+        guard case .item(let page)? = store.state.destination else {
+            return XCTFail("no item page: \(String(describing: store.state.destination))")
+        }
+        XCTAssertEqual(page.item.id, board.subtask.id)
+        XCTAssertNil(store.state.opening)
+    }
 }

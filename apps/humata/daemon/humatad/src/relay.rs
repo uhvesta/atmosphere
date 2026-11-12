@@ -115,6 +115,7 @@ impl Relay {
                 | pb::request::Kind::AskPerson(_)
                 | pb::request::Kind::RequestMove(_)
                 | pb::request::Kind::ReadSpec(_)
+                | pb::request::Kind::Search(_)
         ) {
             return Err(RelayError::NotATool);
         }

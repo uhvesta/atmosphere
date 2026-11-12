@@ -165,6 +165,8 @@ message Request {
     // For the Mac only: link its humata and humatad into ~/.local/bin, or
     // say how they're linked.
     LinkCommands link_commands = 78;
+    // For the Mac only: what every session said and did that has these words.
+    Search search = 79;
   }
 }
 
@@ -244,6 +246,7 @@ message Response {
     SpecsSet specs_set = 70;
     Spec spec = 71;
     CommandsLinked commands_linked = 72;
+    SearchResults search_results = 73;
   }
 }
 
@@ -1922,4 +1925,63 @@ message CommandsLinked {
   // Whether the login shell's PATH has the folder, so a terminal finds
   // what's linked there.
   bool on_path = 3;
+}
+
+// Search across every session's messages, replies, tool calls and their
+// output, review comments and specs.
+message Search {
+  // Words to find, every one of them; the last may be the start of a word.
+  // A time in it, as "last week" or "past 3 days", narrows to then.
+  string query = 1;
+  // Words that mean much the same, found as well and marked related.
+  repeated string related = 2;
+  string project_id = 3;
+  string item_id = 4;
+  string session_id = 5;
+  // The most hits; 0 for 50.
+  uint32 limit = 6;
+  // When the query names no time: from and before these, if set.
+  int64 since_unix_ms = 7;
+  int64 until_unix_ms = 8;
+}
+
+enum SearchHitKind {
+  SEARCH_HIT_KIND_UNSPECIFIED = 0;
+  SEARCH_HIT_KIND_MESSAGE = 1;
+  SEARCH_HIT_KIND_REPLY = 2;
+  SEARCH_HIT_KIND_TOOL_CALL = 3;
+  SEARCH_HIT_KIND_TOOL_OUTPUT = 4;
+  SEARCH_HIT_KIND_COMMENT = 5;
+  SEARCH_HIT_KIND_SPEC = 6;
+}
+
+message SearchHit {
+  SearchHitKind kind = 1;
+  // Empty for a spec.
+  string session_id = 2;
+  string session_name = 3;
+  // The event in the session's history; empty for a comment or a spec.
+  string event_id = 4;
+  // The turn it's in, from 1; 0 for a comment or a spec.
+  uint32 turn = 5;
+  int64 time_unix_ms = 6;
+  string project_id = 7;
+  string item_id = 8;
+  string host = 9;
+  // The review thread of a comment.
+  int64 thread_id = 10;
+  // The text around what was found, each word found between U+E000 and
+  // U+E001.
+  string snippet = 11;
+  // Found by a related word, not the query's own.
+  bool related = 12;
+}
+
+message SearchResults {
+  repeated SearchHit hits = 1;
+  // The query's words searched, without the time it named.
+  string words = 2;
+  // The time searched, if any.
+  int64 since_unix_ms = 3;
+  int64 until_unix_ms = 4;
 }

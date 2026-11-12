@@ -624,14 +624,20 @@ impl Remote {
 }
 
 /// The build for hosts that are `platform`, as `uname -sm` says, among the
-/// ones beside `humatad`: in the app, `humatad-<os>-<arch>` next to it; in
-/// a Bazel output, in `builds/` next to it.
+/// ones beside `humatad`: `humatad-<os>-<arch>` next to it or in `builds/`
+/// next to it, as in a Bazel output, or in the app, in `builds/` among its
+/// resources, as anything in `Contents/Helpers` must be signed Mac code.
 fn build_for(humatad: &Path, platform: &str) -> Option<PathBuf> {
     let name = format!("humatad-{}", build_name(platform)?);
     let folder = humatad.parent()?;
-    [folder.join(&name), folder.join("builds").join(&name)]
-        .into_iter()
-        .find(|path| path.is_file())
+    let resources = folder.parent()?.join("Resources/builds");
+    [
+        folder.join(&name),
+        folder.join("builds").join(&name),
+        resources.join(&name),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
 }
 
 /// `uname -sm`'s `Linux x86_64` as the builds name it, `linux-x86_64`.
@@ -788,6 +794,15 @@ Host !bad *.internal build
             Some(folder.path().join("humatad-darwin-arm64"))
         );
         assert_eq!(build_for(&humatad, "FreeBSD amd64"), None);
+
+        let app = folder.path().join("Humata.app/Contents");
+        let resources = app.join("Resources/builds");
+        std::fs::create_dir_all(&resources).expect("made");
+        std::fs::write(resources.join("humatad-linux-x86_64"), b"build").expect("written");
+        assert_eq!(
+            build_for(&app.join("Helpers/humatad"), "Linux x86_64"),
+            Some(resources.join("humatad-linux-x86_64"))
+        );
         assert_eq!(build_for(&humatad, "not a platform at all"), None);
     }
 }

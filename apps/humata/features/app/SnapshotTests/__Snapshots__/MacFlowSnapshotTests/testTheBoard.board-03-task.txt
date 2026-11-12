@@ -5,6 +5,8 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Hosts"
     [Row/OutlineRow] ""
+      [StaticText] "" value: "Search Sessions"
+    [Row/OutlineRow] ""
       [Heading] "humata" help: "Start a session in humata"
     [Row/OutlineRow, selected] ""
       [StaticText] "" value: "Board"

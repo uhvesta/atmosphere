@@ -125,7 +125,7 @@ package final class InMemoryDaemon: Sendable {
 
     let state = LockIsolated(State())
     private let script: @Sendable (String) -> [Step]
-    let start: Date
+    package let start: Date
     private let sshConfigHosts: [String]
 
     /// `sshHosts` are the hosts its ~/.ssh/config names.
@@ -497,6 +497,7 @@ package final class InMemoryDaemon: Sendable {
             forwardPort: { host, port, session in try self.forwardPort(host, port, session) },
             forwards: { self.state.value.forwards },
             stopForward: { id in try self.stopForward(id) },
+            search: { query in try self.search(query) },
             watch: { session in self.watch(session) }
         )
     }

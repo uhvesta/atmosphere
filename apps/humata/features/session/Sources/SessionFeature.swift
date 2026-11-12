@@ -48,9 +48,13 @@ package struct SessionFeature {
         /// The edited message's text.
         package var edited = ""
         @Presents package var alert: AlertState<Never>?
+        /// The event a search found, shown highlighted with a way to fork
+        /// from it; nil when none is.
+        package var highlighted: String?
 
-        package init(session: Session) {
+        package init(session: Session, highlighted: String? = nil) {
             self.session = session
+            self.highlighted = highlighted
             review = ReviewFeature.State(sessionID: session.id, turns: session.turns)
             docs = DocsFeature.State(sessionID: session.id)
             terminals = TerminalsFeature.State(place: HostPlace(sessionID: session.id), opensFirst: true)
@@ -58,6 +62,28 @@ package struct SessionFeature {
             let saved = Shared(wrappedValue: "", .appStorage(Self.draftKey(session.id)))
             _savedDraft = saved
             draft = saved.wrappedValue
+        }
+
+        /// The chat row of the highlighted event, once the history has it:
+        /// a tool's row for its call or output, otherwise the event's own.
+        package var highlightedItem: String? {
+            guard let highlighted, let event = events[id: highlighted] else { return nil }
+            switch event.kind {
+            case .toolStarted(let callID, _, _), .toolCompleted(let callID, _, _): return callID
+            default: return event.id
+            }
+        }
+
+        /// Where a fork from the highlighted event starts: before the first
+        /// event after its turn ended, so the fork keeps that whole turn; nil
+        /// to keep everything, when its turn is the last.
+        package var forkPointAfterHighlight: String? {
+            guard let highlighted, let index = events.index(id: highlighted) else { return nil }
+            let rest = events.elements[index...]
+            guard let ended = rest.firstIndex(where: { if case .turnEnded = $0.kind { true } else { false } }),
+                ended + 1 < events.count
+            else { return nil }
+            return events.elements[ended + 1].id
         }
 
         /// Where the session's draft is kept; storage keys can't hold dots.
@@ -167,6 +193,10 @@ package struct SessionFeature {
         /// Forks the session before `event`, or with all of it if nil. A
         /// chat-only fork keeps working in this session's copy of the code.
         case forkTapped(before: String?, chatOnly: Bool)
+        /// Forks with everything up to the end of the highlighted event's
+        /// turn, with the code as it was then.
+        case forkFromHighlightTapped
+        case highlightDismissed
         /// Starts editing the person's message `event`.
         case editTapped(String)
         case editCancelled
@@ -366,6 +396,14 @@ package struct SessionFeature {
                 } catch: { error, send in
                     await send(.failed(error.localizedDescription))
                 }
+
+            case .forkFromHighlightTapped:
+                guard state.highlighted != nil else { return .none }
+                return .send(.forkTapped(before: state.forkPointAfterHighlight, chatOnly: false))
+
+            case .highlightDismissed:
+                state.highlighted = nil
+                return .none
 
             case .editTapped(let id):
                 guard case .userMessage(let text)? = state.events[id: id]?.kind else { return .none }
