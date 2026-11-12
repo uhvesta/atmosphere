@@ -21,6 +21,8 @@ use crate::store::{Placement, Store};
 /// first and at most.
 const REWATCH_FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 const REWATCH_LONGEST_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long a list waits for each host before showing it as it last was.
+const HOST_LIST_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 mod forwards;
 mod planning;
@@ -736,20 +738,23 @@ impl Daemon {
 
     async fn list(&self, project: &str) -> Result<pb::Sessions, DaemonError> {
         let mut all = Vec::new();
-        // Every host at once, so a slow one costs its own time only.
-        let mut asking = tokio::task::JoinSet::new();
-        for (index, host) in self.remote_names().into_iter().enumerate() {
+        // Every host at once, each given a little while: a slow one shows
+        // as it last was, offline, and its connection goes on meanwhile,
+        // so the next list may have it.
+        let mut asking = Vec::new();
+        for host in self.remote_names() {
             let remote = self.remote(&host)?;
             let (hosts_file, build) = (self.hosts_file.clone(), self.build.clone());
-            asking.spawn(async move {
+            let answer = tokio::spawn(async move {
                 let request = pb::request::Kind::ListSessions(pb::ListSessions::default());
-                let answer = match remote.client(&hosts_file, &build).await {
+                match remote.client(&hosts_file, &build).await {
                     Ok(client) => remote.call(&client, request).await.ok(),
                     Err(_) => None,
-                };
-                (index, host, answer)
+                }
             });
+            asking.push((host, answer));
         }
+        let deadline = tokio::time::Instant::now() + HOST_LIST_WAIT;
         let local = self
             .forward(
                 "",
@@ -763,9 +768,14 @@ impl Daemon {
                 _ => None,
             },
         )];
-        let mut remotes = asking.join_all().await;
-        remotes.sort_by_key(|(index, _, _)| *index);
-        answers.extend(remotes.into_iter().map(|(_, host, answer)| (host, answer)));
+        for (host, answer) in asking {
+            let answer = tokio::time::timeout_at(deadline, answer)
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .flatten();
+            answers.push((host, answer));
+        }
         for (host, answer) in answers {
             let sessions = match answer {
                 Some(pb::response::Kind::Sessions(sessions)) => {

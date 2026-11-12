@@ -269,22 +269,53 @@ struct SessionRow: View {
                     .lineLimit(1)
                     .accessibilityLabel("Active \(since)")
             }
-            switch session.state {
-            case .working:
-                ProgressView().controlSize(.small)
-                    .accessibilityLabel("Working")
-            case .waitingForApproval:
-                Image(systemName: "hand.raised.fill")
-                    .foregroundStyle(.orange)
-                    .accessibilityLabel("Waiting for you")
-                    .help("Waiting for you to answer a request")
-            case .failed:
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-                    .accessibilityLabel("Failed")
-            case .idle:
-                EmptyView()
+            if session.hostOffline {
+                lastState
+            } else {
+                state
             }
+        }
+    }
+
+    @ViewBuilder private var state: some View {
+        switch session.state {
+        case .working:
+            ProgressView().controlSize(.small)
+                .accessibilityLabel("Working")
+        case .waitingForApproval:
+            Image(systemName: "hand.raised.fill")
+                .foregroundStyle(.orange)
+                .accessibilityLabel("Waiting for you")
+                .help("Waiting for you to answer a request")
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+                .accessibilityLabel("Failed")
+        case .idle:
+            EmptyView()
+        }
+    }
+
+    /// The state it was in when its host last answered, greyed, since it
+    /// may have changed since.
+    @ViewBuilder private var lastState: some View {
+        switch session.state {
+        case .working:
+            Image(systemName: "ellipsis.circle")
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Was working")
+                .help("Was working when its host last answered")
+        case .waitingForApproval:
+            Image(systemName: "hand.raised")
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Was waiting for you")
+                .help("Was waiting for you when its host last answered")
+        case .failed:
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Had failed")
+        case .idle:
+            EmptyView()
         }
     }
 

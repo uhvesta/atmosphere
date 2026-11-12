@@ -673,7 +673,7 @@ waiting on you. It kept these, in build order:
   note with the person's next message, and the editing session nothing
 - [x] The open session notifies when Humata isn't in front, and the poll and
   badge live with the app, not the sidebar view
-- [ ] A slow or dead host never stalls the lists (a short deadline, then the
+- [x] A slow or dead host never stalls the lists (a short deadline, then the
   cached list); offline sessions draw as last known, with no spinner and
   no Allow that can only fail
 - [ ] An agent's open question or move request counts as Waiting on You, on

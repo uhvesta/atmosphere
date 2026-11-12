@@ -250,6 +250,24 @@ fn a_managed_host_is_installed_set_up_and_survives_dropped_connections() {
         recovery_line(&humata, session).is_some_and(|line| line.ends_with("\ton host"))
     });
 
+    // A host that hangs, as one swapping or on a dying link does, doesn't
+    // hold up the list: its sessions show as they last were, offline, and
+    // come back once it answers again.
+    assert!(
+        pause_host(&folder, true),
+        "no host was running on its socket"
+    );
+    let asked = std::time::Instant::now();
+    let line = session_line(&humata, session);
+    let waited = asked.elapsed();
+    assert!(pause_host(&folder, false));
+    assert!(waited < std::time::Duration::from_secs(10), "{waited:?}");
+    assert!(line.contains("offline"), "{line}");
+    eventually("the session back online", || {
+        let line = session_line(&humata, session);
+        !line.is_empty() && !line.contains("offline")
+    });
+
     // With the host gone, its sessions still show, as they last were, and
     // watching one plays its history and ends.
     drop(sshd);
@@ -291,4 +309,14 @@ fn recovery_line(humata: &Humata, session: &str) -> Option<String> {
         .lines()
         .find(|line| line.starts_with(session))
         .map(str::to_owned)
+}
+
+/// Stops or resumes the host humatad in `folder` runs on its socket, as a
+/// machine that hangs would, and says whether one was running.
+fn pause_host(folder: &Path, paused: bool) -> bool {
+    let pattern = format!("{}/bin/humatad host --socket", folder.display());
+    Command::new("pkill")
+        .args([if paused { "-STOP" } else { "-CONT" }, "-f", &pattern])
+        .status()
+        .is_ok_and(|status| status.success())
 }

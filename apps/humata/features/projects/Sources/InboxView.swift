@@ -57,7 +57,12 @@ package struct InboxView: View {
                 InboxRow(entry: entry)
             }
             .buttonStyle(.plain)
-            if entry.reason == .approval, let request = entry.session.pending.first {
+            if entry.reason == .approval, entry.session.hostOffline {
+                // An answer couldn't reach the agent; it waits for the host.
+                Label("Host Offline", systemImage: "wifi.slash")
+                    .foregroundStyle(.secondary)
+                    .help("Its host isn't answering; you can answer once it's back")
+            } else if entry.reason == .approval, let request = entry.session.pending.first {
                 Button("Deny") { answer(entry.session.id, request.requestID, false) }
                     .help("Deny: \(request.summary)")
                 Button("Allow") { answer(entry.session.id, request.requestID, true) }
