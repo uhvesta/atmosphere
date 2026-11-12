@@ -16,6 +16,10 @@ package struct Workspace: Hashable, Codable, Sendable {
     /// Every operation's changes to the records, oldest first. Append-only.
     package internal(set) var journal: [JournalEntry] = []
     package var settings = Settings()
+    /// Records storage has that this version can't read, such as one a
+    /// newer version wrote or a task whose Avenue hasn't arrived. They're
+    /// still there, so sync must never send them as removed.
+    package var unreadable: Set<RecordID> = []
 
     /// How long trashed tasks are kept before `purgeTrash` deletes them.
     package static let trashRetention: TimeInterval = 30 * 24 * 60 * 60

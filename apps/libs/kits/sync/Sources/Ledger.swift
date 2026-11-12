@@ -45,8 +45,9 @@ public struct SyncLedger<Snapshot: SyncSnapshot>: Hashable, Codable, Sendable {
             }
         }
         for (record, theirs) in latest {
-            let mine = snapshot.value(of: record)
             let base = held[record].map(\.base) ?? bases[record] ?? nil
+            // One this device can't read is taken as unchanged here.
+            let mine = snapshot.unreadable.contains(record) ? base : snapshot.value(of: record)
             switch Record.merge(base: base, mine: mine, theirs: theirs.value) {
             case .merged(let value):
                 held[record] = nil
@@ -64,8 +65,9 @@ public struct SyncLedger<Snapshot: SyncSnapshot>: Hashable, Codable, Sendable {
     /// held for review.
     public func pending(_ snapshot: Snapshot) -> [CloudItem<Snapshot>] {
         var items: [CloudItem<Snapshot>] = []
+        let unreadable = snapshot.unreadable
         for record in snapshot.recordIDs.union(bases.keys).sorted(by: Snapshot.sendsBefore)
-        where held[record] == nil {
+        where held[record] == nil && !unreadable.contains(record) {
             let value = snapshot.value(of: record)
             if value != bases[record] ?? nil { items.append(.record(record, value)) }
         }

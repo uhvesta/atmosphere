@@ -173,14 +173,22 @@ public actor Syncer<Snapshot: SyncSnapshot> {
         _ changes: [CloudChange<Snapshot>], into snapshot: Snapshot, _ ledger: inout SyncLedger<Snapshot>
     ) async throws -> Snapshot {
         guard !changes.isEmpty else { return snapshot }
-        let synced = ledger.receive(changes, into: snapshot)
-        try keep(ledger)
-        guard !synced.isEmpty else { return snapshot }
-        do {
-            return try await store.importSynced(synced)
-        } catch {
-            throw SyncError.storeFailed(String(describing: error))
+        // The ledger only learns what the cloud has once the store has it
+        // too: a ledger kept ahead of a failed import would send this
+        // device's older values back over the other device's change.
+        var received = ledger
+        let synced = received.receive(changes, into: snapshot)
+        var imported = snapshot
+        if !synced.isEmpty {
+            do {
+                imported = try await store.importSynced(synced)
+            } catch {
+                throw SyncError.storeFailed(String(describing: error))
+            }
         }
+        ledger = received
+        try keep(ledger)
+        return imported
     }
 
     private func load() async throws -> Snapshot {

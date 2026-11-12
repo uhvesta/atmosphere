@@ -89,6 +89,29 @@ func syncTests() -> [TestCase] {
             await phone.syncer.sync()
             try expectEqual(try phone.records.note(shopping.id).title, "Weekly shop")
         },
+        TestCase.async("given a device that can't save what it fetched, when both sync again, then nothing reverts") {
+            let (_, phone, mac) = try await synced()
+            phone.edit { $0.put(Note(id: shopping.id, title: "Groceries")) }
+            await phone.syncer.sync()
+            mac.failsImport.update { $0 = true }
+            let failed = await mac.syncer.sync()
+            try expect(failed.status != .idle)
+            mac.failsImport.update { $0 = false }
+            await mac.syncer.sync()
+            await phone.syncer.sync()
+            try expectEqual(try phone.records.note(shopping.id).title, "Groceries")
+        },
+        TestCase.async("given a note one device can't read, when it syncs, then the other device keeps it") {
+            let (_, phone, mac) = try await synced()
+            let id = RecordID(NoteKind.note, shopping.id)
+            mac.edit { notebook in
+                notebook.items[id] = nil
+                notebook.unreadable = [id]
+            }
+            await mac.syncer.sync()
+            await phone.syncer.sync()
+            try expectEqual(try phone.records.note(shopping.id), shopping)
+        },
         TestCase.async("given a device offline, when it syncs, then it fails and sends once it's back") {
             let (cloud, phone, mac) = pair()
             cloud.setOnline(false, device: "iPhone")

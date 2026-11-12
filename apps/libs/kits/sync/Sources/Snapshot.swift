@@ -20,6 +20,9 @@ public protocol SyncSnapshot: Sendable {
     var recordIDs: Set<RecordID<Record.Kind>> { get }
     /// The record as it is now; nil when there's none.
     func value(of record: RecordID<Record.Kind>) -> Record?
+    /// Records that are there but this device can't read, such as ones a
+    /// newer version wrote. Sync never sends them as removed.
+    var unreadable: Set<RecordID<Record.Kind>> { get }
     /// The IDs of every log there is now.
     var logIDs: Set<UUID> { get }
     /// Every log, oldest first.
@@ -35,6 +38,9 @@ public protocol SyncSnapshot: Sendable {
 extension SyncSnapshot {
     /// Every log's ID, from `logs`. Override when there's a faster way.
     public var logIDs: Set<UUID> { Set(logs.map(\.id)) }
+
+    /// None, unless the app says otherwise.
+    public var unreadable: Set<RecordID<Record.Kind>> { [] }
 }
 
 /// What other devices changed, to write to this device's records.

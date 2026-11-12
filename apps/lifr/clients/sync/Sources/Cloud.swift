@@ -67,6 +67,8 @@ package struct SyncedRecords: SyncSnapshot {
 
     package func value(of record: RecordID) -> RecordValue? { workspace.value(of: record) }
 
+    package var unreadable: Set<RecordID> { workspace.unreadable }
+
     package var logIDs: Set<UUID> {
         Set(workspace.journal.map(\.id)).union(workspace.history.map(\.id))
     }

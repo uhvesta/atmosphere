@@ -13,6 +13,7 @@ struct Edit: SyncLog {
 struct Notebook: SyncSnapshot {
     var items: [RecordID<NoteKind>: Item] = [:]
     var logs: [Edit] = []
+    var unreadable: Set<RecordID<NoteKind>> = []
 
     var recordIDs: Set<RecordID<NoteKind>> { Set(items.keys) }
     func value(of record: RecordID<NoteKind>) -> Item? { items[record] }
@@ -37,15 +38,20 @@ final class Device: Sendable {
     let name: String
     let syncer: Syncer<Notebook>
     private let notebook: Mutexed<Notebook>
+    /// Whether the store refuses what sync brings in.
+    let failsImport: Mutexed<Bool>
 
     init(_ name: String, cloud: InMemoryCloud<Notebook>, notebook: Notebook = Notebook()) {
         self.name = name
         let stored = Mutexed(notebook)
         self.notebook = stored
+        let failsImport = Mutexed(false)
+        self.failsImport = failsImport
         let store = SyncStore<Notebook>(
             load: { stored.value },
             importSynced: { synced in
-                stored.update { notebook in
+                if failsImport.value { throw Unexpected("the disk is full") }
+                return stored.update { notebook in
                     for (id, value) in synced.records { notebook.items[id] = value }
                     notebook.logs += synced.logs
                 }

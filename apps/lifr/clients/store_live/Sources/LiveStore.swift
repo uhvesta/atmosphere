@@ -179,7 +179,7 @@ package actor LiveStore: ModelActor {
     private func read(_ index: Index) throws -> Workspace {
         let settings = try modelContext.fetch(
             FetchDescriptor<StoredSettings>(sortBy: [SortDescriptor(\.createdAt), SortDescriptor(\.id)]))
-        return Workspace(
+        var workspace = Workspace(
             avenues: index.avenues.values.compactMap(\.record),
             projects: index.projects.values.compactMap(\.record),
             tasks: index.tasks.values.compactMap(\.record),
@@ -194,6 +194,8 @@ package actor LiveStore: ModelActor {
             journal: journal(index),
             settings: settings.first.map { Settings(procrastinatedAfterDays: $0.procrastinatedAfterDays) }
                 ?? Settings())
+        workspace.unreadable = index.unreadable
+        return workspace
     }
 
     /// The journal, oldest first. Each device appends in its own order;
@@ -282,6 +284,17 @@ final class Index {
     var savedFilters: [UUID: StoredSavedFilter]
     var history: [UUID: StoredHistoryEvent]
     var journal: [UUID: StoredJournalEntry]
+
+    /// The records stored that don't read as records yet.
+    var unreadable: Set<RecordID> {
+        var ids = Set(avenues.filter { $0.value.record == nil }.keys.map { RecordID(.avenue, $0) })
+        ids.formUnion(projects.filter { $0.value.record == nil }.keys.map { RecordID(.project, $0) })
+        ids.formUnion(tasks.filter { $0.value.record == nil }.keys.map { RecordID(.task, $0) })
+        ids.formUnion(comments.filter { $0.value.record == nil }.keys.map { RecordID(.comment, $0) })
+        ids.formUnion(reminders.filter { $0.value.record == nil }.keys.map { RecordID(.reminder, $0) })
+        ids.formUnion(savedFilters.filter { $0.value.record == nil }.keys.map { RecordID(.savedFilter, $0) })
+        return ids
+    }
 
     init(_ context: ModelContext) throws {
         avenues = try Self.all(context)
