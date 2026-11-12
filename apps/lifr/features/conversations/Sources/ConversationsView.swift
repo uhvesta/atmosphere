@@ -82,7 +82,15 @@ package struct ConversationsView: View {
         )
         .onSubmit(of: .search) { store.send(.relatedTapped) }
         .overlay {
-            if !store.query.isEmpty, foundNothing {
+            if let loadError = store.loadError, store.state.sorted.isEmpty {
+                ContentUnavailableView {
+                    Label("Couldn't load your conversations", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(loadError)
+                } actions: {
+                    Button("Try Again") { store.send(.retryTapped) }
+                }
+            } else if !store.query.isEmpty, foundNothing {
                 ContentUnavailableView.search(text: store.query)
             } else if store.state.sorted.isEmpty {
                 ContentUnavailableView {

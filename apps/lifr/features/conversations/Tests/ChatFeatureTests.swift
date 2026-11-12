@@ -1866,6 +1866,49 @@ final class ChatFeatureTests: XCTestCase {
         return store
     }
 
+    private struct Unreadable: Error {}
+
+    func testConversationsThatFailToLoadCanBeLoadedAgain() async throws {
+        var conversation = Conversation(id: UUID(), createdAt: now)
+        conversation.messages = [ChatMessage(id: UUID(), role: .person, text: "Plan the week", at: now)]
+        let stored = ConversationsClient.inMemory([conversation])
+        let failing = LockIsolated(true)
+        var kept = stored
+        kept.load = {
+            if failing.value { throw Unreadable() }
+            return try await stored.load()
+        }
+        let store = list(kept)
+
+        await store.send(.task)
+        await store.skipReceivedActions()
+        XCTAssertNotNil(store.state.loadError)
+        XCTAssertTrue(store.state.conversations.isEmpty)
+
+        failing.setValue(false)
+        await store.send(.retryTapped)
+        await store.skipReceivedActions()
+        XCTAssertNil(store.state.loadError)
+        XCTAssertEqual(store.state.conversations.map(\.id), [conversation.id])
+    }
+
+    func testAConversationThatFailsToDeleteComesBack() async throws {
+        var conversation = Conversation(id: UUID(), createdAt: now)
+        conversation.messages = [ChatMessage(id: UUID(), role: .person, text: "Plan the week", at: now)]
+        let stored = ConversationsClient.inMemory([conversation])
+        var kept = stored
+        kept.delete = { _ in throw Unreadable() }
+        let store = list(kept)
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        await store.send(.deleteTapped(conversation.id))
+        await store.send(.confirm(.presented(.delete(conversation.id))))
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.conversations.map(\.id), [conversation.id])
+        XCTAssertNotNil(store.state.alert)
+    }
+
     func testTheListKeepsChatsThatHaveMessages() async throws {
         let kept = ConversationsClient.inMemory()
         let store = list(kept)

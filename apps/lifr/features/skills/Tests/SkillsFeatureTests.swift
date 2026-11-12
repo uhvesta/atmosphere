@@ -142,6 +142,35 @@ final class SkillsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.editor?.summary, SkillDraft.example.summary)
     }
 
+    func testSkillsThatFailToLoadCanBeLoadedAgain() async {
+        struct Unreadable: Error {}
+        let failing = LockIsolated(true)
+        let stored = SkillsClient.inMemory()
+        var client = stored
+        client.load = {
+            if failing.value { throw Unreadable() }
+            return try await stored.load()
+        }
+        let store = TestStore(initialState: SkillsFeature.State()) {
+            SkillsFeature()
+        } withDependencies: { [client] in
+            $0.skills = client
+            $0.assistant = .scripted()
+            $0.models = InMemoryModelLibrary().client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertNotNil(store.state.loadError)
+
+        failing.setValue(false)
+        await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertNil(store.state.loadError)
+        XCTAssertFalse(store.state.skills.isEmpty)
+    }
+
     func testADraftRunsOnTheModelPickedForItWithoutChangingTheDefault() async throws {
         let library = InMemoryModelLibrary(installed: [ModelCatalog.gemma4E2B])
         let used = LockIsolated<[ModelID?]>([])

@@ -31,25 +31,38 @@ package struct SettingsView: View {
 
     private func shows(_ part: SettingsPage) -> Bool { page == .all || page == part }
 
+    @ViewBuilder private var sections: some View {
+        if shows(.general) { general }
+        if shows(.sync) {
+            SyncSection(store: store)
+            LockSection(store: store)
+        }
+        if shows(.assistant) { assistant }
+        if shows(.general) {
+            Section {
+                PushButton("Bug Reports") { store.send(.bugReportsTapped) }
+            } footer: {
+                Text(bugReportsFooter)
+            }
+        }
+        if shows(.agents) && store.showsAgents {
+            avenueAccess
+            connectedApps
+            commandLine
+        }
+    }
+
     package var body: some View {
         Form {
-            if shows(.general) { general }
-            if shows(.sync) {
-                SyncSection(store: store)
-                LockSection(store: store)
-            }
-            if shows(.assistant) { assistant }
-            if shows(.general) {
+            if let loadError = store.loadError {
                 Section {
-                    PushButton("Bug Reports") { store.send(.bugReportsTapped) }
-                } footer: {
-                    Text(bugReportsFooter)
+                    Text(loadError).foregroundStyle(.red)
+                    Button("Try Again") { store.send(.task) }
+                } header: {
+                    Text("Couldn't load your settings")
                 }
-            }
-            if shows(.agents) && store.showsAgents {
-                avenueAccess
-                connectedApps
-                commandLine
+            } else {
+                sections
             }
         }
         .navigationTitle("Settings")

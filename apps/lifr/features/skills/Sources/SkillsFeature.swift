@@ -11,6 +11,8 @@ package struct SkillsFeature {
         package var skills: [Skill] = []
         @Presents package var editor: SkillEditor.State?
         @Presents package var alert: AlertState<Never>?
+        /// Why the skills couldn't be loaded, until they load.
+        package var loadError: String?
 
         package init(skills: [Skill] = []) {
             self.skills = skills
@@ -43,6 +45,7 @@ package struct SkillsFeature {
 
             case .loaded(.success(let skills)), .saved(.success(let skills)):
                 state.skills = skills
+                state.loadError = nil
                 return .none
 
             case .toggled(let id, let on):
@@ -76,11 +79,7 @@ package struct SkillsFeature {
                 return save { try await $0.save(skill) }
 
             case .loaded(.failure(let error)):
-                state.alert = AlertState {
-                    TextState("Couldn't load your skills")
-                } message: {
-                    TextState(String(describing: error))
-                }
+                state.loadError = String(describing: error)
                 return .none
 
             case .saved(.failure(let error)):

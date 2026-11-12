@@ -89,25 +89,54 @@ struct LifrApp: App {
 
     private var window: some Scene {
         WindowGroup(id: MenuBarContent.windowID) {
-            switch Storage.opened {
-            case .success(let store):
-                RootView(store: Storage.root)
-                    .task {
-                        if ProcessInfo.processInfo.arguments.contains(Storage.sampleDataArgument) {
-                            try? await store.insert(.sample(now: Date(), timeZone: .current))
-                        }
+            OpenedRoot()
+        }
+    }
+}
+
+/// The main window: the records, or why Lifr couldn't open them.
+private struct OpenedRoot: View {
+    var body: some View {
+        switch Storage.opening.result {
+        case .success(let store):
+            RootView(store: Storage.root)
+                .task {
+                    if ProcessInfo.processInfo.arguments.contains(Storage.sampleDataArgument) {
+                        try? await store.insert(.sample(now: Date(), timeZone: .current))
                     }
-            case .failure(let error):
-                ContentUnavailableView {
-                    Label("Lifr can't open its data", systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(error.description)
-                    Text("Quit Lifr and open it again. If this keeps happening, share these details in a bug report.")
-                } actions: {
-                    ShareLink("Share the Details", item: error.description)
                 }
+        case .failure(let error):
+            ContentUnavailableView {
+                Label("Lifr can't open its data", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(error.description)
+                Text("If this keeps happening, share these details in a bug report.")
+            } actions: {
+                #if os(macOS)
+                    // The menu bar and menus were made without the records,
+                    // so only a fresh start picks them up.
+                    Button("Reopen Lifr") { Storage.relaunch() }
+                #else
+                    Button("Try Again") { Storage.opening.retry() }
+                #endif
+                ShareLink("Share the Details", item: error.description)
             }
         }
+    }
+}
+
+/// Opens the records, and again when the person asks after a failure.
+@MainActor @Observable
+private final class Opening {
+    private(set) var result = Opening.open()
+
+    func retry() {
+        guard case .failure = result else { return }
+        result = Self.open()
+    }
+
+    private static func open() -> Result<LiveStore, LiveStoreError> {
+        Result { () throws(LiveStoreError) in try LiveStore(modelContainer: LiveStore.onDisk()) }
     }
 }
 
@@ -117,7 +146,21 @@ private enum Storage {
     /// app without typing them in.
     static let sampleDataArgument = "-LifrSampleData"
 
-    static let opened = Result { () throws(LiveStoreError) in try LiveStore(modelContainer: LiveStore.onDisk()) }
+    static let opening = Opening()
+
+    /// The records, once opened. Everything made from them is made after.
+    static var opened: Result<LiveStore, LiveStoreError> { opening.result }
+
+    #if os(macOS)
+        /// Starts a new Lifr and quits this one.
+        static func relaunch() {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.createsNewApplicationInstance = true
+            NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
+                Task { @MainActor in NSApplication.shared.terminate(nil) }
+            }
+        }
+    #endif
 
     static let actor = Actor.user(device: deviceName, surface: surface)
 

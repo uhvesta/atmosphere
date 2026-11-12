@@ -11,9 +11,12 @@ package struct BugReportsView: View {
     package var body: some View {
         List {
             if let error = store.error {
-                Section { Text(error.description).foregroundStyle(.red) }
+                Section {
+                    Text(error.description).foregroundStyle(.red)
+                    Button("Try Again") { store.send(.task) }
+                }
             }
-            if store.isLoaded, store.saved.reports.isEmpty, store.saved.unreadable.isEmpty {
+            if store.isLoaded, store.error == nil, store.saved.reports.isEmpty, store.saved.unreadable.isEmpty {
                 Text(emptyText).foregroundStyle(.secondary)
             }
             ForEach(store.saved.reports) { report in

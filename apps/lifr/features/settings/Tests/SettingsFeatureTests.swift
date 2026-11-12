@@ -183,6 +183,34 @@ final class SettingsFeatureTests: XCTestCase {
         await failing.skipInFlightEffects()
     }
 
+    func testSettingsThatFailToLoadCanBeLoadedAgain() async {
+        struct Unreadable: Error {}
+        let failing = LockIsolated(true)
+        let stored = StoreClient.inMemory(records.workspace)
+        var client = stored
+        client.load = {
+            if failing.value { throw Unreadable() }
+            return try await stored.load()
+        }
+        let store = TestStore(initialState: SettingsFeature.State(showsAgents: false)) {
+            SettingsFeature()
+        } withDependencies: { [client] in
+            $0.conversations = .inMemory()
+            $0.store = client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertNotNil(store.state.loadError)
+
+        failing.setValue(false)
+        await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertNil(store.state.loadError)
+        await store.finish()
+    }
+
     func testOnIPhoneLeavesAgentsOut() async {
         let store = TestStore(initialState: SettingsFeature.State(showsAgents: false)) {
             SettingsFeature()

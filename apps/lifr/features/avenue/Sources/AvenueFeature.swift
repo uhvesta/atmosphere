@@ -262,6 +262,8 @@ package struct AvenuesFeature {
         @Presents package var avenue: AvenueFeature.State?
         @Presents package var newAvenue: NewAvenueFeature.State?
         @Presents package var alert: AlertState<Never>?
+        /// Why the Avenues couldn't be loaded, until they load.
+        package var loadError: String?
 
         package init() {}
 
@@ -321,6 +323,7 @@ package struct AvenuesFeature {
                 return .run { [store] send in await send(.loaded(Result { try await store.load() })) }
 
             case .loaded(.success(let workspace)):
+                state.loadError = nil
                 state.show(Snapshot(workspace, number: 0), now: now, timeZone: timeZone)
                 return .none
 
@@ -329,7 +332,7 @@ package struct AvenuesFeature {
                 return .none
 
             case .loaded(.failure(let error)):
-                state.alert = .failed("Couldn't load your Avenues", error)
+                state.loadError = String(describing: error)
                 return .none
 
             case .opened(let scope):

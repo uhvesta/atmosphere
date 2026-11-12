@@ -21,6 +21,33 @@ final class AvenueFeatureTests: XCTestCase {
         values.withRandomNumberGenerator = WithRandomNumberGenerator(SystemRandomNumberGenerator())
     }
 
+    func testAvenuesThatFailToLoadCanBeLoadedAgain() async {
+        struct Unreadable: Error {}
+        let failing = LockIsolated(true)
+        let stored = StoreClient.inMemory(records.workspace)
+        let store = TestStore(initialState: AvenuesFeature.State()) {
+            AvenuesFeature()
+        } withDependencies: {
+            self.dependencies(&$0)
+            $0.store.load = {
+                if failing.value { throw Unreadable() }
+                return try await stored.load()
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertNotNil(store.state.loadError)
+        XCTAssertNil(store.state.workspace)
+
+        failing.setValue(false)
+        await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertNil(store.state.loadError)
+        XCTAssertNotNil(store.state.workspace)
+    }
+
     private func avenues() async -> TestStoreOf<AvenuesFeature> {
         let store = TestStore(initialState: AvenuesFeature.State()) {
             AvenuesFeature()

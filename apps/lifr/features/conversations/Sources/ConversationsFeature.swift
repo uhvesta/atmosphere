@@ -43,6 +43,8 @@ package struct ConversationsFeature {
         @Presents package var rename: RenameFeature.State?
         @Presents package var confirm: ConfirmationDialogState<Confirm>?
         @Presents package var alert: AlertState<Never>?
+        /// Why the conversations couldn't be loaded, until they load.
+        package var loadError: String?
         /// The chat open when Lifr last ran, with what was typed in it.
         @Shared(.openChat) package var lastOpen
 
@@ -157,6 +159,7 @@ package struct ConversationsFeature {
 
     package enum Action {
         case task
+        case retryTapped
         case loaded(Result<[Conversation], any Error>)
         case newTapped
         case opened(UUID)
@@ -184,6 +187,7 @@ package struct ConversationsFeature {
         /// Asks before deleting every archived conversation.
         case deleteArchivedTapped
         case failed(any Error)
+        case deleteFailed(any Error)
         case chats(IdentifiedActionOf<ChatFeature>)
         case confirm(PresentationAction<Confirm>)
         case alert(PresentationAction<Never>)
@@ -221,12 +225,13 @@ package struct ConversationsFeature {
     @ReducerBuilder<State, Action> private var chats: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
-            case .task:
+            case .task, .retryTapped:
                 return .run { [conversations] send in
                     await send(.loaded(Result { try await conversations.load() }))
                 }
 
             case .loaded(.success(let loaded)):
+                state.loadError = nil
                 state.conversations = IdentifiedArray(uniqueElements: loaded)
                 for chat in state.chats where !chat.conversation.messages.isEmpty {
                     state.conversations[id: chat.id] = chat.conversation
@@ -366,13 +371,26 @@ package struct ConversationsFeature {
             case .confirm(.presented(.deleteArchived)):
                 return delete(state.archived.map(\.id), in: &state)
 
-            case .loaded(.failure(let error)), .failed(let error):
+            case .loaded(.failure(let error)):
+                state.loadError = String(describing: error)
+                return .none
+
+            case .failed(let error):
                 state.alert = AlertState {
                     TextState("Conversations")
                 } message: {
                     TextState(String(describing: error))
                 }
                 return .none
+
+            case .deleteFailed(let error):
+                state.alert = AlertState {
+                    TextState("Couldn't delete the conversation")
+                } message: {
+                    TextState(String(describing: error))
+                }
+                // The rows were taken out before the store answered.
+                return .send(.task)
 
             case .chats(.element(_, .delegate(.fork(let fork)))):
                 state.conversations[id: fork.id] = fork
@@ -424,20 +442,25 @@ package struct ConversationsFeature {
 
     private func delete(_ ids: [UUID], in state: inout State) -> Effect<Action> {
         state.remove(ids)
-        return kept { [conversations, attachments] in
-            try await conversations.delete(ids)
-            for id in ids { await attachments.removeAll(id) }
-        }
+        return kept(
+            failed: { .deleteFailed($0) },
+            { [conversations, attachments] in
+                try await conversations.delete(ids)
+                for id in ids { await attachments.removeAll(id) }
+            })
     }
 
     /// Changes the kept chats after the changes made before this one, and
     /// says if it couldn't.
-    private func kept(_ work: @escaping @Sendable () async throws -> Void) -> Effect<Action> {
+    private func kept(
+        failed: @escaping @Sendable (any Error) -> Action = { .failed($0) },
+        _ work: @escaping @Sendable () async throws -> Void
+    ) -> Effect<Action> {
         let change = saves.enqueue(work)
         return .run { _ in
             try await change.value
         } catch: { error, send in
-            await send(.failed(error))
+            await send(failed(error))
         }
     }
 

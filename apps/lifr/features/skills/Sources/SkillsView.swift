@@ -14,6 +14,14 @@ package struct SkillsView: View {
 
     package var body: some View {
         Form {
+            if let loadError = store.loadError {
+                Section {
+                    Text(loadError).foregroundStyle(.red)
+                    Button("Try Again") { store.send(.task) }
+                } header: {
+                    Text("Couldn't load your skills")
+                }
+            }
             Section {
                 ForEach(store.skills.filter { !$0.isUser }) { skill in
                     toggle(skill)

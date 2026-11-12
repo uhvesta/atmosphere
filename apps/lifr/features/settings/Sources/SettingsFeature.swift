@@ -74,6 +74,9 @@ package struct SettingsFeature {
         @Presents package var bugReports: BugReportsFeature.State?
         @Presents package var revoke: ConfirmationDialogState<Revoke>?
         @Presents package var alert: AlertState<Never>?
+        /// Why the settings couldn't be loaded, until they load. Until then
+        /// none can be changed, so the defaults shown aren't saved over them.
+        package var loadError: String?
 
         package init(showsAgents: Bool) {
             self.showsAgents = showsAgents
@@ -175,6 +178,7 @@ package struct SettingsFeature {
                 )
 
             case .loaded(.success(let workspace)):
+                state.loadError = nil
                 state.show(Snapshot(workspace, number: 0))
                 return .none
 
@@ -346,7 +350,7 @@ package struct SettingsFeature {
                 return .send(.delegate(.saved(saved.snapshot)))
 
             case .loaded(.failure(let error)):
-                state.alert = .failed("Couldn't load your settings", error)
+                state.loadError = String(describing: error)
                 return .none
 
             case .saved(.failure(let error)):

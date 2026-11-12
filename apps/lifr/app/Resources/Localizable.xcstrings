@@ -1150,6 +1150,9 @@
     "Couldn't confirm it's you (%@). Try again." : {
 
     },
+    "Couldn't delete the conversation" : {
+
+    },
     "Couldn't dictate" : {
 
     },
@@ -1163,6 +1166,9 @@
 
     },
     "Couldn't load your Avenues" : {
+
+    },
+    "Couldn't load your conversations" : {
 
     },
     "Couldn't load your settings" : {
@@ -1706,6 +1712,9 @@
     "I ask to look back over my week" : {
 
     },
+    "If this keeps happening, share these details in a bug report." : {
+
+    },
     "In 1 hour" : {
 
     },
@@ -1900,6 +1909,9 @@
       }
     },
     "Lifr couldn't read that photo. Pick another, or take a screenshot of it and attach that." : {
+
+    },
+    "Lifr couldn't save the change: %@ Open Lifr to check, then try again." : {
 
     },
     "Lifr couldn't save the report to %@: %@. Free some space on this device, then save again; until then, Copy or Share keeps it." : {
@@ -2784,6 +2796,9 @@
 
     },
     "Renew" : {
+
+    },
+    "Reopen Lifr" : {
 
     },
     "Reopened %@" : {

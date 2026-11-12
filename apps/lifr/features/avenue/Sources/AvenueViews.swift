@@ -95,7 +95,15 @@ package struct AvenuesView<Footer: View>: View {
         }
         .tint(.primary)
         .overlay {
-            if store.workspace != nil, store.avenues.isEmpty {
+            if let loadError = store.loadError {
+                ContentUnavailableView {
+                    Label("Couldn't load your Avenues", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(loadError)
+                } actions: {
+                    Button("Try Again") { store.send(.task) }
+                }
+            } else if store.workspace != nil, store.avenues.isEmpty {
                 ContentUnavailableView(
                     "No Avenues", systemImage: "square.stack.3d.up",
                     description: Text("An Avenue is an area of life, such as Health or Home. Add one with +."))
