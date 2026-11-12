@@ -286,6 +286,45 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(left, [])
     }
 
+    func testASessionMovesToAHostAndBackOnlyBetweenTurns() async throws {
+        let daemon = InMemoryDaemon { _ in [.run(command: "make", output: "")] }
+        _ = try await daemon.client.addHost("far", "me@far")
+        _ = try await daemon.client.installHost("far")
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        var state = ProjectsFeature.State()
+        state.sessions = [session]
+        let store = TestStore(initialState: state) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.moveToHostTapped(session.id))
+        await store.receive(\.moveHostsLoaded)
+        XCTAssertNotNil(store.state.destination?.alert)
+        await store.send(.destination(.presented(.alert(.moveSession(session.id, host: "far")))))
+        await store.receive(\.sessionMoved)
+        XCTAssertEqual(store.state.sessions[id: session.id]?.host, "far")
+
+        await store.send(.moveToHostTapped(session.id))
+        await store.receive(\.moveHostsLoaded)
+        await store.send(.destination(.presented(.alert(.moveSession(session.id, host: "")))))
+        await store.receive(\.sessionMoved)
+        XCTAssertNil(store.state.sessions[id: session.id]?.host)
+
+        // In a turn, it stays where it is and the person is told why.
+        try await daemon.client.send(session.id, "build it", .enqueue)
+        await store.send(.moveToHostTapped(session.id))
+        await store.receive(\.moveHostsLoaded)
+        await store.send(.destination(.presented(.alert(.moveSession(session.id, host: "far")))))
+        await store.receive(\.sessionMoveFailed)
+        XCTAssertNotNil(store.state.destination?.alert)
+        let sessions = try await daemon.client.sessions(nil)
+        XCTAssertNil(sessions.first { $0.id == session.id }?.host)
+    }
+
     func testDeletingAnUnarchivedSessionIsRefused() async throws {
         let daemon = InMemoryDaemon()
         let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))

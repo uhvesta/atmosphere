@@ -610,6 +610,17 @@ pub enum DaemonError {
     )]
     DeleteOffline { name: String, host: String },
 
+    #[error("{name:?} is in a turn; stop it or wait for it to finish, then move it")]
+    MoveWhileWorking { name: String },
+
+    #[error("{name:?} is on {host} already")]
+    AlreadyThere { name: String, host: String },
+
+    #[error(
+        "{name:?} can't move while {fork:?}, forked from it, is on the same machine: its copy there is deleted once it moves. Move or delete the fork first"
+    )]
+    MoveForked { name: String, fork: String },
+
     #[error(
         "couldn't delete session {session}'s recovery copy at {path}; check that the folder is writable and try again"
     )]
@@ -705,6 +716,8 @@ impl DaemonError {
                 pb::ErrorCode::InvalidRequest
             }
             Self::DeleteOffline { .. } => pb::ErrorCode::HostUnavailable,
+            Self::MoveWhileWorking { .. } => pb::ErrorCode::Busy,
+            Self::AlreadyThere { .. } | Self::MoveForked { .. } => pb::ErrorCode::InvalidRequest,
             Self::DeleteRecovery { .. } => pb::ErrorCode::StorageFailed,
             Self::NoFile
             | Self::NoComment

@@ -206,6 +206,16 @@ impl Daemon {
         session: &str,
         target: &str,
     ) -> Result<pb::SessionInfo, DaemonError> {
+        // Moved while where it is answers: it must be between turns, and
+        // goes as it is now, not as its copy last was.
+        let source = self.live_source(session, target).await?;
+        if let Some(source) = &source {
+            self.back_up(source, session).await?;
+        }
+        // A copy left on the target by an earlier move makes way.
+        if self.store.moved_away(session, target)? {
+            self.remove_copy(target, session).await;
+        }
         let Some((from, mut backup)) = self.store.recovery(session)? else {
             return Err(DaemonError::NoRecovery {
                 session: session.to_owned(),
@@ -271,7 +281,85 @@ impl Daemon {
         };
         self.store.move_host(session, &from, target)?;
         self.own(&mut restored, target, project.as_deref(), item.as_deref())?;
+        if let Some(source) = &source {
+            self.remove_copy(source, session).await;
+        }
         Ok(restored)
+    }
+
+    /// The host `session` is on, if it answers with it there, for a move to
+    /// `target`. Refused while it's in a turn, already on `target`, or forked
+    /// there, since its copy is deleted once moved.
+    async fn live_source(
+        &self,
+        session: &str,
+        target: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let Some(host) = self
+            .store
+            .placement(session)?
+            .map(|placement| placement.host)
+        else {
+            return Ok(None);
+        };
+        let listed = match self
+            .ask(
+                &host,
+                pb::request::Kind::ListSessions(pb::ListSessions::default()),
+            )
+            .await
+        {
+            Ok(pb::response::Kind::Sessions(listed)) => listed.sessions,
+            // Gone, or not answering: moved from its copy, as it last was.
+            _ => return Ok(None),
+        };
+        let Some(info) = listed.iter().find(|info| info.id == session) else {
+            return Ok(None);
+        };
+        let name = info.name.clone();
+        if host == target {
+            let host = if host.is_empty() {
+                "this Mac".to_owned()
+            } else {
+                host
+            };
+            return Err(DaemonError::AlreadyThere { name, host });
+        }
+        if matches!(
+            info.state(),
+            pb::SessionState::Working | pb::SessionState::WaitingForApproval
+        ) {
+            return Err(DaemonError::MoveWhileWorking { name });
+        }
+        if let Some(fork) = listed.iter().find(|fork| fork.parent_id == session) {
+            let fork = fork.name.clone();
+            return Err(DaemonError::MoveForked { name, fork });
+        }
+        Ok(Some(host))
+    }
+
+    /// Deletes the copy of `session` that `host` holds, which moved away.
+    /// One that can't be deleted stays left out of the list.
+    async fn remove_copy(&self, host: &str, session: &str) {
+        let archive = pb::request::Kind::UpdateSession(pb::UpdateSession {
+            session_id: session.to_owned(),
+            archived: Some(true),
+            ..Default::default()
+        });
+        let delete = pb::request::Kind::DeleteSession(pb::DeleteSession {
+            session_id: session.to_owned(),
+        });
+        let removed = match self.ask(host, archive).await {
+            Ok(_) => self.ask(host, delete).await.map(drop),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = removed {
+            eprintln!(
+                "humatad: couldn't delete the copy of session {session} left on {}: {}",
+                if host.is_empty() { "this Mac" } else { host },
+                humata_wire::describe(&error)
+            );
+        }
     }
 
     /// Restores every session `host` lost onto it again.

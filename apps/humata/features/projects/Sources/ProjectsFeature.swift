@@ -122,6 +122,8 @@ package struct ProjectsFeature {
         package enum Alert: Equatable {
             case deleteProject(Project.ID)
             case deleteSession(Session.ID)
+            /// Moves the session to the host, or to this Mac for "".
+            case moveSession(Session.ID, host: String)
         }
     }
 
@@ -156,6 +158,11 @@ package struct ProjectsFeature {
         case deleteSessionTapped(Session.ID)
         case sessionDeleted(Session.ID)
         case sessionDeleteFailed(String)
+        /// Asks where to move a session: this Mac or one of the hosts.
+        case moveToHostTapped(Session.ID)
+        case moveHostsLoaded(Session.ID, hosts: [String])
+        case sessionMoved(Session)
+        case sessionMoveFailed(String)
         case keeperTapped(Session.ID, keeper: Bool)
         case compareTapped(Session.ID, with: Session.ID)
         case updated(Session)
@@ -430,6 +437,68 @@ package struct ProjectsFeature {
                 state.destination = .alert(
                     AlertState {
                         TextState("Couldn't delete the session")
+                    } message: {
+                        TextState(message)
+                    })
+                return .none
+
+            case .moveToHostTapped(let id):
+                return .run { send in
+                    let hosts = try await daemon.hosts().map(\.name).filter { !$0.isEmpty }
+                    await send(.moveHostsLoaded(id, hosts: hosts))
+                } catch: { error, send in
+                    await send(.sessionMoveFailed(error.localizedDescription))
+                }
+
+            case .moveHostsLoaded(let id, let hosts):
+                guard let session = state.sessions[id: id] else { return .none }
+                let here = session.host ?? ""
+                let targets = ([""] + hosts).filter { $0 != here }
+                guard !targets.isEmpty else {
+                    state.destination = .alert(
+                        AlertState {
+                            TextState("No Host to Move To")
+                        } message: {
+                            TextState("Add a host under Hosts, then move \(session.title) to it.")
+                        })
+                    return .none
+                }
+                state.destination = .alert(
+                    AlertState {
+                        TextState("Move \(session.title) to…")
+                    } actions: {
+                        for target in targets {
+                            ButtonState(action: .moveSession(id, host: target)) {
+                                TextState(target.isEmpty ? "This Mac" : target)
+                            }
+                        }
+                        ButtonState(role: .cancel) {
+                            TextState("Cancel")
+                        }
+                    } message: {
+                        TextState(
+                            "It goes with every turn and its files, and its copy where it is now is deleted. "
+                                + "Its agent's backend must be set up where it goes.")
+                    })
+                return .none
+
+            case .destination(.presented(.alert(.moveSession(let id, let host)))):
+                return .run { send in
+                    let moved = try await daemon.restoreSession(id, host.isEmpty ? nil : host)
+                    await send(.sessionMoved(moved))
+                    await send(await load())
+                } catch: { error, send in
+                    await send(.sessionMoveFailed(error.localizedDescription))
+                }
+
+            case .sessionMoved(let session):
+                state.sessions[id: session.id] = session
+                return .none
+
+            case .sessionMoveFailed(let message):
+                state.destination = .alert(
+                    AlertState {
+                        TextState("Couldn't move the session")
                     } message: {
                         TextState(message)
                     })

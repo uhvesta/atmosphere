@@ -193,6 +193,10 @@ package struct ProjectsView: View {
                 if session.projectID != nil {
                     Button("Move to Task…") { store.send(.moveTapped(session.id)) }
                 }
+                if !session.archived {
+                    Button("Move to Host…") { store.send(.moveToHostTapped(session.id)) }
+                        .disabled(session.state == .working || session.state == .waitingForApproval)
+                }
                 Button(session.keeper ? "Unmark as Keeper" : "Mark as Keeper") {
                     store.send(.keeperTapped(session.id, keeper: !session.keeper))
                 }

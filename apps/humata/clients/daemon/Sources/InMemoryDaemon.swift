@@ -252,10 +252,22 @@ package final class InMemoryDaemon: Sendable {
 
     private func restoreSession(_ id: String, onto host: String?) throws -> Session {
         try state.withValue { state in
-            guard let index = state.sessions.firstIndex(where: { $0.id == id && $0.host != nil }) else {
+            guard let index = state.sessions.firstIndex(where: { $0.id == id }) else {
                 throw DaemonError.refused(
                     .invalidRequest,
                     message: "There is no recovery copy of session \(id); one is kept after each turn on a host.")
+            }
+            let session = state.sessions[index]
+            // One that answers where it is moves only between turns, and not
+            // onto where it is already.
+            if !state.lost.contains(id) {
+                if session.state == .working || session.state == .waitingForApproval {
+                    throw DaemonError.refused(
+                        .busy, message: "\(session.name) is in a turn; stop it or wait for it, then move it.")
+                }
+                if session.host == host {
+                    throw DaemonError.refused(.invalidRequest, message: "\(session.name) is there already.")
+                }
             }
             if let host, state.offline.contains(host) {
                 throw DaemonError.refused(

@@ -694,7 +694,7 @@ waiting on you. It kept these, in build order:
   on the board
 - [x] Delete an archived session, freeing its folders, refs and copies; the
   Archived list folds away
-- [ ] Move a session to another machine, both ways, from its menu, with a
+- [x] Move a session to another machine, both ways, from its menu, with a
   fresh copy, removing the source
 - [ ] Closing an item offers to stop and archive its sessions
 - [ ] Delete a task, revertible from Board History
