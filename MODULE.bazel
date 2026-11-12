@@ -174,7 +174,7 @@ swift_deps.configure_package(
         "perl -pi -e 's|grammar_functor\\.cc\"|grammar_functor_source.h\"|' Libraries/MLXCXGrammar/grammar_functor_wrapper.cc",
     ],
 )
-use_repo(swift_deps, "swift_package", "swiftpkg_mlx_swift_lm", "swiftpkg_swift_composable_architecture", "swiftpkg_swift_snapshot_testing", "swiftpkg_swift_transformers")
+use_repo(swift_deps, "swift_package", "swiftpkg_mlx_swift", "swiftpkg_mlx_swift_lm", "swiftpkg_swift_composable_architecture", "swiftpkg_swift_snapshot_testing", "swiftpkg_swift_transformers")
 
 # Google's LiteRT-LM, which runs downloaded models for Lifr: its Swift API
 # and prebuilt runtime, pinned by SHA-256. See
