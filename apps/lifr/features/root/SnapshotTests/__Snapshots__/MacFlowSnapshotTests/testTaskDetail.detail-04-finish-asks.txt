@@ -73,13 +73,14 @@
   [Button] "Remove due date"
   [Button] "Add a time"
   [Button] "Add a start date"
+  [StaticText] "" value: "Repeat"
   [MenuButton] "Repeat" value: "Never"
   [StaticText] "" value: "Overdue"
   [StaticText] "" value: "Avenue"
   [PopUpButton] "" value: "Work"
   [StaticText] "" value: "Project"
   [PopUpButton] "" value: "None"
-  [StaticText] "" value: "Moving a task moves its Sub tasks with it."
+  [StaticText] "" value: "Moving a task moves its Sub tasks with it. In another Avenue it gets a new code."
   [Heading] "Labels"
   [StaticText] "" value: "New label"
   [TextField] ""
@@ -121,6 +122,6 @@
   [StaticText] "" value: "Today"
   [Sheet] "alert" id: _NS:87
     [StaticText] "" value: "3 Sub tasks are still open" id: _NS:74
-    [StaticText] "" value: ""Leave comments", "Send summary to the team", "Book a room". A task can be Done only when its Sub tasks are closed. Won't Do + Finish marks them Won't Do first." id: _NS:58
-    [Button] "Won't Do + Finish" id: action-button-1
+    [StaticText] "" value: ""Leave comments", "Send summary to the team", "Book a room". A task can be Done only when its Sub tasks are closed. Won't Do + Done marks them Won't Do first." id: _NS:58
+    [Button] "Won't Do + Done" id: action-button-1
     [Button] "Cancel" id: action-button-2

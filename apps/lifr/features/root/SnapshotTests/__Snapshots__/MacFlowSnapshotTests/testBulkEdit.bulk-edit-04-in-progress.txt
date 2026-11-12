@@ -1,5 +1,5 @@
 [Window/StandardWindow] "Today"
-  [StaticText] "" value: "4 tasks are In Progress"
+  [StaticText] "" value: "5 tasks are In Progress"
   [Button] "Undo"
   [Outline] "Sidebar"
     [Row/OutlineRow, selected] ""
@@ -73,13 +73,14 @@
   [Button] "Remove due date"
   [Button] "Add a time"
   [Button] "Add a start date"
+  [StaticText] "" value: "Repeat"
   [MenuButton] "Repeat" value: "Never"
   [StaticText] "" value: "Overdue"
   [StaticText] "" value: "Avenue"
   [PopUpButton] "" value: "Home"
   [StaticText] "" value: "Project"
   [PopUpButton] "" value: "None"
-  [StaticText] "" value: "Moving a task moves its Sub tasks with it."
+  [StaticText] "" value: "Moving a task moves its Sub tasks with it. In another Avenue it gets a new code."
   [Heading] "Labels"
   [StaticText] "" value: "New label"
   [TextField] ""
@@ -98,7 +99,7 @@
   [StaticText] "" value: "Add a comment"
   [TextField] ""
   [Button, disabled] "Send comment" id: paperplane.fill
-  [MenuButton] "Make Sub Task Of…" id: arrow.turn.down.right
+  [MenuButton] "Make Sub task Of…" id: arrow.turn.down.right
   [Button] "Move to Trash"
   [Toolbar] ""
     [Button] "Hide Sidebar"

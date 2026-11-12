@@ -60,7 +60,7 @@
       [StaticText] "" value: "Group by"
       [PopUpButton] "" value: "Status"
     [Row/OutlineRow] ""
-      [CheckBox] "Show Completed" value: "1"
+      [CheckBox] "Show Closed" value: "1"
     [Row/OutlineRow] ""
       [Heading] "To Do"
     [Row/OutlineRow] ""

@@ -43,7 +43,7 @@
   [Unknown] "Skill: change"
   [StaticText] "" value: "I called the plumber"
   [StaticText] "" value: "I'd mark it done."
-  [StaticText] "" value: "Changed task “Call the plumber”"
+  [StaticText] "" value: "Change task “Call the plumber”"
   [StaticText] "" value: "Status:"
   [StaticText] "" value: "To Do"
   [Image] "to" id: arrow.right
@@ -52,7 +52,7 @@
   [Unknown] "Skill: change"
   [StaticText] "" value: "Mark “Call the plumber” done"
   [StaticText] "" value: "I'd mark it done."
-  [StaticText] "" value: "Changed task “Call the plumber”"
+  [StaticText] "" value: "Change task “Call the plumber”"
   [StaticText] "" value: "Status:"
   [StaticText] "" value: "To Do"
   [Image] "to" id: arrow.right
