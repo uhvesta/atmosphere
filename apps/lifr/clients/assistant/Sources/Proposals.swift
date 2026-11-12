@@ -72,3 +72,8 @@ package enum ActionError: Error, Hashable, Sendable, CustomStringConvertible {
         }
     }
 }
+
+/// Its description is written for the person, so alerts show it.
+extension ActionError: LocalizedError {
+    package var errorDescription: String? { description }
+}

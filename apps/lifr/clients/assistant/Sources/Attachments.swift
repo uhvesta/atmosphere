@@ -247,3 +247,8 @@ extension DependencyValues {
         set { self[RecorderClient.self] = newValue }
     }
 }
+
+/// Its description is written for the person, so alerts show it.
+extension AttachmentError: LocalizedError {
+    package var errorDescription: String? { description }
+}

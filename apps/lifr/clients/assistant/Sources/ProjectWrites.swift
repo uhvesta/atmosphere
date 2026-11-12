@@ -162,3 +162,8 @@ extension AssistantTools {
         return project
     }
 }
+
+/// Its description is written for the person, so alerts show it.
+extension ProjectChangeError: LocalizedError {
+    package var errorDescription: String? { description }
+}

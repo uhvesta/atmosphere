@@ -160,3 +160,8 @@ extension DependencyValues {
         set { self[SessionClient.self] = newValue }
     }
 }
+
+/// Its description is written for the person, so alerts show it.
+extension SessionError: LocalizedError {
+    package var errorDescription: String? { description }
+}

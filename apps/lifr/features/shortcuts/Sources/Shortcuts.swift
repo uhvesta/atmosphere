@@ -316,3 +316,13 @@ package enum ShortcutError: Error, Hashable, Sendable, CustomStringConvertible {
         }
     }
 }
+
+/// Its description is written for the person, so alerts show it.
+extension ShortcutError: LocalizedError {
+    package var errorDescription: String? { description }
+}
+
+/// Shortcuts and Siri say the description.
+extension ShortcutError: CustomLocalizedStringResourceConvertible {
+    package var localizedStringResource: LocalizedStringResource { LocalizedStringResource(stringLiteral: description) }
+}

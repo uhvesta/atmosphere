@@ -321,3 +321,8 @@ extension ChatPhotosClient {
             removeAll: { chat in await attachments.removeAll(chat) })
     }
 }
+
+/// Its description is written for the person, so alerts show it.
+extension ReplyFailure: LocalizedError {
+    package var errorDescription: String? { description }
+}

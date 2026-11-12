@@ -390,3 +390,8 @@ extension String? {
         return text
     }
 }
+
+/// Its description is written for the person, so alerts show it.
+extension TaskChangeError: LocalizedError {
+    package var errorDescription: String? { description }
+}

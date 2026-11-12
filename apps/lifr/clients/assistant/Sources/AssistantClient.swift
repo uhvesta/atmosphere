@@ -557,3 +557,8 @@ extension AssistantReply {
         ]),
         isComplete: true)
 }
+
+/// Its description is written for the person, so alerts show it.
+extension AssistantError: LocalizedError {
+    package var errorDescription: String? { description }
+}

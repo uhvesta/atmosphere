@@ -268,3 +268,8 @@ enum ReportKey {
             status: status, reason: (SecCopyErrorMessageString(status, nil) as String?) ?? "unknown error")
     }
 }
+
+/// Its description is written for the person, so alerts show it.
+extension BugReportError: LocalizedError {
+    package var errorDescription: String? { description }
+}

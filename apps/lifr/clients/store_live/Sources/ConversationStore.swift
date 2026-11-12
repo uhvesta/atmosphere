@@ -295,3 +295,8 @@ extension SkillsClient {
         SkillsClient(load: { throw error }, save: { _ in throw error }, delete: { _ in throw error })
     }
 }
+
+/// Its description is written for the person, so alerts show it.
+extension ConversationStoreError: LocalizedError {
+    package var errorDescription: String? { description }
+}

@@ -112,3 +112,8 @@ package enum AppLock {
         return now.timeIntervalSince(away) >= grace
     }
 }
+
+/// Its description is written for the person, so alerts show it.
+extension LockError: LocalizedError {
+    package var errorDescription: String? { description }
+}

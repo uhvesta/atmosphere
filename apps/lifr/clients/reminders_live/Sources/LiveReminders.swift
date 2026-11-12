@@ -83,3 +83,8 @@ extension RemindersClient {
         ]
     }
 }
+
+/// Its description is written for the person, so alerts show it.
+extension LiveRemindersError: LocalizedError {
+    package var errorDescription: String? { description }
+}

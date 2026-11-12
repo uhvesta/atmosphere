@@ -178,3 +178,13 @@ extension PlanProblem: CustomStringConvertible {
 package func counted(_ count: Int, _ one: String, _ many: String) -> String {
     "\(count) \(count == 1 ? one : many)"
 }
+
+/// Its description is written for the person, so alerts show it.
+extension LifrError: LocalizedError {
+    package var errorDescription: String? { description }
+}
+
+/// Shortcuts and Siri say the description.
+extension LifrError: CustomLocalizedStringResourceConvertible {
+    package var localizedStringResource: LocalizedStringResource { LocalizedStringResource(stringLiteral: description) }
+}

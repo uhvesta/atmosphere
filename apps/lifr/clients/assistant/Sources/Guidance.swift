@@ -132,3 +132,8 @@ extension DependencyValues {
         set { self[GuidanceClient.self] = newValue }
     }
 }
+
+/// Its description is written for the person, so alerts show it.
+extension GuidanceError: LocalizedError {
+    package var errorDescription: String? { description }
+}
