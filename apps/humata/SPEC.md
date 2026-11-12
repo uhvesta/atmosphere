@@ -676,7 +676,7 @@ waiting on you. It kept these, in build order:
 - [x] A slow or dead host never stalls the lists (a short deadline, then the
   cached list); offline sessions draw as last known, with no spinner and
   no Allow that can only fail
-- [ ] An agent's open question or move request counts as Waiting on You, on
+- [x] An agent's open question or move request counts as Waiting on You, on
   the board and in the sidebar
 - [ ] A host is updated only when idle, and only when its build really is old
   (a bundled build of another platform counts as current)

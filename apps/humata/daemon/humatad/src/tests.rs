@@ -2558,3 +2558,60 @@ async fn every_sessions_messages_are_searched_and_an_agent_searches_only_its_hos
 }
 
 mod pulls;
+
+/// Whether `session` is listed as waiting on the person's answer.
+async fn asking(client: &Client, session: &str) -> bool {
+    let listed = client
+        .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+        .await;
+    let Ok(pb::response::Kind::Sessions(sessions)) = listed else {
+        panic!("{listed:?}")
+    };
+    sessions
+        .sessions
+        .iter()
+        .any(|listed| listed.id == session && listed.asking)
+}
+
+#[tokio::test]
+async fn an_open_question_puts_the_task_in_waiting_on_you_until_answered() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let task = item(&client, &project.id, "", "login").await;
+    let session = started(&client, start_on(&task.id)).await;
+    send(&client, &session.id, "hello").await;
+    after_turns(&client, &session.id, 1).await;
+    let in_review = vec![("login".to_owned(), pb::ItemStatus::InReview)];
+    assert_eq!(board(&client, &project.id).await, in_review);
+
+    let asked = client
+        .call(pb::request::Kind::AskPerson(pb::AskPerson {
+            session_id: session.id.clone(),
+            text: "Which login provider?".to_owned(),
+        }))
+        .await;
+    let Ok(pb::response::Kind::RequestMade(pb::RequestMade {
+        request: Some(request),
+    })) = asked
+    else {
+        panic!("{asked:?}")
+    };
+    assert!(asking(&client, &session.id).await);
+    assert_eq!(
+        board(&client, &project.id).await,
+        vec![("login".to_owned(), pb::ItemStatus::WaitingOnYou)]
+    );
+
+    let answered = client
+        .call(pb::request::Kind::AnswerRequest(pb::AnswerRequest {
+            request_id: request.id,
+            answer: Some(pb::answer_request::Answer::Reply("hello".to_owned())),
+        }))
+        .await;
+    assert!(answered.is_ok(), "{answered:?}");
+    after_turns(&client, &session.id, 2).await;
+    assert!(!asking(&client, &session.id).await);
+    assert_eq!(board(&client, &project.id).await, in_review);
+}

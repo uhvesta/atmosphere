@@ -142,6 +142,7 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, history: &[Event]) 
         .into(),
         project_id: String::new(),
         planning: false,
+        asking: false,
         host_offline: false,
         checkouts: record
             .checkouts

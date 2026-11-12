@@ -291,6 +291,11 @@ struct SessionRow: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.red)
                 .accessibilityLabel("Failed")
+        case .idle where session.asking:
+            Image(systemName: "hand.raised.fill")
+                .foregroundStyle(.orange)
+                .accessibilityLabel("Waiting for you")
+                .help("Asks you something, or to move its task")
         case .idle:
             EmptyView()
         }

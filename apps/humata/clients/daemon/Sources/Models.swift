@@ -201,13 +201,16 @@ package struct Session: Identifiable, Hashable, Sendable {
     package var lastActive: Date?
     /// It plans in its project, in no copy of the code.
     package var planning: Bool
+    /// It waits on the person to answer its question or its move request.
+    package var asking: Bool
 
     package init(
         id: String, name: String, backend: Backend, workingDirectory: String, model: String? = nil,
         state: SessionState = .idle, parentID: String? = nil, forkedBeforeEventID: String? = nil, host: String? = nil,
         approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil, archived: Bool = false,
         keeper: Bool = false, itemID: String? = nil, turns: Int = 0, seenTurns: Int = 0,
-        pending: [PendingPermission] = [], hostOffline: Bool = false, lastActive: Date? = nil, planning: Bool = false
+        pending: [PendingPermission] = [], hostOffline: Bool = false, lastActive: Date? = nil, planning: Bool = false,
+        asking: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -229,6 +232,7 @@ package struct Session: Identifiable, Hashable, Sendable {
         self.hostOffline = hostOffline
         self.lastActive = lastActive
         self.planning = planning
+        self.asking = asking
     }
 }
 

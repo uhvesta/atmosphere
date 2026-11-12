@@ -176,6 +176,11 @@ fn from_session(session: &pb::SessionInfo) -> Option<Status> {
     if session.archived {
         return None;
     }
+    // A question or a move request waits on the person, whatever the
+    // session does meanwhile.
+    if session.asking {
+        return Some(Status::WaitingOnYou);
+    }
     match session.state() {
         pb::SessionState::WaitingForApproval | pb::SessionState::Failed => {
             Some(Status::WaitingOnYou)

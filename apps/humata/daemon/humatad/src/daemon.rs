@@ -497,6 +497,7 @@ impl Daemon {
         session.item_id = item.unwrap_or_default();
         session.seen_turns = seen;
         session.planning = self.store.planning(&session.id)?;
+        session.asking = self.store.asking(&session.id)?;
         Ok(())
     }
 

@@ -387,6 +387,7 @@ package final class InMemoryDaemon: Sendable {
                     }.map { session in
                         var session = session
                         session.hostOffline = session.host.map(state.offline.contains) ?? false
+                        session.asking = state.requests.contains { $0.sessionID == session.id }
                         return session
                     }
                 }
@@ -998,7 +999,12 @@ extension InMemoryDaemon {
             let ordered = { (items: [Item]) in
                 items.sorted { ($0.priority, $1.created) > ($1.priority, $0.created) }
             }
-            let shown = Self.show(items, sessions: state.sessions)
+            let sessions = state.sessions.map { session in
+                var session = session
+                session.asking = state.requests.contains { $0.sessionID == session.id }
+                return session
+            }
+            let shown = Self.show(items, sessions: sessions)
             return ordered(shown.filter { $0.parentID == nil }).flatMap { task in
                 [task] + ordered(shown.filter { $0.parentID == task.id })
             }
@@ -1009,6 +1015,7 @@ extension InMemoryDaemon {
     /// you, working is In progress, a finished turn is In review.
     private static func said(by session: Session) -> ItemStatus? {
         guard !session.archived else { return nil }
+        if session.asking { return .waitingOnYou }
         switch session.state {
         case .waitingForApproval, .failed: return .waitingOnYou
         case .working: return .inProgress

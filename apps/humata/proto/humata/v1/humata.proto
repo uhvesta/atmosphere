@@ -1262,6 +1262,9 @@ message SessionInfo {
   int64 last_active_unix_ms = 20;
   // It plans in its project, in no copy of the code; the daemon keeps it.
   bool planning = 21;
+  // It waits on the person to answer its question or its move request.
+  // The daemon fills it in.
+  bool asking = 22;
 }
 
 // A session's git worktree of one repository.

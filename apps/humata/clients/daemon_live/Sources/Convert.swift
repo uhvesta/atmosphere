@@ -154,7 +154,8 @@ extension Session {
                 PendingPermission(requestID: $0.requestID, kind: PermissionKind($0.kind), summary: $0.summary)
             },
             hostOffline: info.hostOffline,
-            lastActive: info.lastActiveUnixMs == 0 ? nil : date(info.lastActiveUnixMs), planning: info.planning)
+            lastActive: info.lastActiveUnixMs == 0 ? nil : date(info.lastActiveUnixMs), planning: info.planning,
+            asking: info.asking)
     }
 }
 
