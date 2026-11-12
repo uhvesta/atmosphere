@@ -2,7 +2,8 @@ load("@rules_apple//apple:macos.bzl", "macos_unit_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
 # Haptics for changes the person made: a status picked, a drop, an undo, or a
-# change that was refused. Nothing on the Mac.
+# change that was refused, and an optional sound for finishing a task, the
+# only feedback on the Mac.
 swift_library(
     name = "feedback",
     package_name = "lifr",

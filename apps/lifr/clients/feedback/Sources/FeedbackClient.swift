@@ -3,7 +3,10 @@ import Foundation
 import LifrCore
 
 #if canImport(UIKit)
+    import AudioToolbox
     import UIKit
+#elseif canImport(AppKit)
+    import AppKit
 #endif
 
 /// A haptic for something the person did.
@@ -21,8 +24,9 @@ package enum Feedback: Hashable, Sendable {
     }
 }
 
-/// Plays haptics. The system's haptics setting decides whether any are
-/// felt.
+/// Plays haptics, and a soft sound for a task closed as Done when the
+/// person turned it on. The system's haptics setting decides whether any
+/// are felt, and the iPhone's silent switch silences the sound.
 package struct FeedbackClient: Sendable {
     package var play: @Sendable (Feedback) async -> Void = { _ in }
 
@@ -45,6 +49,10 @@ extension FeedbackClient: DependencyKey {
     package static let liveValue: Self = {
         #if canImport(UIKit) && !os(watchOS)
             return Self { feedback in
+                if feedback == .success, Self.playsCompletionSound {
+                    // The keyboard's soft click, which the silent switch mutes.
+                    AudioServicesPlaySystemSound(1104)
+                }
                 await MainActor.run {
                     switch feedback {
                     case .success: UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -53,11 +61,29 @@ extension FeedbackClient: DependencyKey {
                     }
                 }
             }
+        #elseif canImport(AppKit)
+            return Self { feedback in
+                guard feedback == .success, Self.playsCompletionSound else { return }
+                await MainActor.run { _ = NSSound(named: "Pop")?.play() }
+            }
         #else
             return Self()
         #endif
     }()
     package static let testValue = Self()
+
+    private static var playsCompletionSound: Bool {
+        @Shared(.completionSound) var on
+        return on
+    }
+}
+
+extension SharedKey where Self == AppStorageKey<Bool>.Default {
+    /// Whether finishing a task plays a soft sound. This device only; off
+    /// unless the person turns it on.
+    package static var completionSound: Self {
+        Self[.appStorage("lifrCompletionSound"), default: false]
+    }
 }
 
 extension DependencyValues {

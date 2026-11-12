@@ -500,6 +500,9 @@
     "A new task with a due date gets the reminder, and the badge counts open tasks. This device only." : {
 
     },
+    "A soft sound when you finish a task. This device only." : {
+
+    },
     "A task" : {
 
     },
@@ -3050,6 +3053,9 @@
 
     },
     "Sort" : {
+
+    },
+    "Sound when a task is done" : {
 
     },
     "Speak" : {

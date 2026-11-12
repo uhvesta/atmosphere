@@ -4,6 +4,7 @@ import LifrAPI
 import LifrAssistantClient
 import LifrBugReport
 import LifrCore
+import LifrFeedbackClient
 import LifrLockClient
 import LifrRemindersClient
 import LifrSessionClient
@@ -20,6 +21,7 @@ package struct SettingsView: View {
     @Shared(.picksSkills) private var picksSkills
     @Shared(.defaultReminder) private var defaultReminder
     @Shared(.badgeCount) private var badgeCount
+    @Shared(.completionSound) private var completionSound
     @Shared(.compactsConversations) private var compactsConversations
 
     package init(store: StoreOf<SettingsFeature>, page: SettingsPage = .all) {
@@ -114,6 +116,11 @@ package struct SettingsView: View {
             Text(
                 "A new task with a due date gets the reminder, and the badge counts open tasks. This device only."
             )
+        }
+        Section {
+            Toggle("Sound when a task is done", isOn: Binding($completionSound))
+        } footer: {
+            Text("A soft sound when you finish a task. This device only.")
         }
         Section {
             PushButton("Labels") { store.send(.labelsTapped) }
