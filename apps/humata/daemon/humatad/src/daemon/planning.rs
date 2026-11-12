@@ -179,7 +179,7 @@ impl Daemon {
                 Author::session(&apply.session_id, pb::ChangeSurface::Unspecified),
             )
         };
-        let item = match proposal.kind() {
+        let (item, decided) = match proposal.kind() {
             pb::ProposalKind::SpecEdit => {
                 // A proposal may change only the title, or only the spec.
                 let patch = ItemPatch {
@@ -204,7 +204,7 @@ impl Daemon {
                 if before.is_none_or(|before| before.fields.spec != item.fields.spec) {
                     self.spec_changed(&item, "").await;
                 }
-                item
+                (item, false)
             }
             _ => {
                 let fields = ItemFields {
@@ -214,16 +214,27 @@ impl Daemon {
                     title: apply.title.unwrap_or_else(|| proposal.title.clone()),
                     spec: apply.spec.unwrap_or_else(|| proposal.spec.clone()),
                 };
-                self.store.add_item(&project, fields, &author)?
+                // Decided with it, so a crash between can't leave the
+                // proposal open to be applied again.
+                let item = self.store.add_proposed_item(
+                    &project,
+                    fields,
+                    &author,
+                    &apply.session_id,
+                    &proposal.id,
+                )?;
+                (item, true)
             }
         };
-        self.store.decide(
-            &apply.session_id,
-            &proposal.id,
-            &Decision::Applied {
-                item: item.id.clone(),
-            },
-        )?;
+        if !decided {
+            self.store.decide(
+                &apply.session_id,
+                &proposal.id,
+                &Decision::Applied {
+                    item: item.id.clone(),
+                },
+            )?;
+        }
         proposal.state = pb::ProposalState::Applied.into();
         proposal.applied_item_id.clone_from(&item.id);
         let item = self.shown_item(&item).await?;

@@ -763,6 +763,29 @@ impl Store {
         fields: ItemFields,
         author: &Author,
     ) -> Result<Item, StoreError> {
+        self.add_item_deciding(project, fields, author, None)
+    }
+
+    /// Adds the item `session`'s proposal `proposal` proposed, and records
+    /// it applied, both or neither, so applying it again can't add it twice.
+    pub fn add_proposed_item(
+        &self,
+        project: &str,
+        fields: ItemFields,
+        author: &Author,
+        session: &str,
+        proposal: &str,
+    ) -> Result<Item, StoreError> {
+        self.add_item_deciding(project, fields, author, Some((session, proposal)))
+    }
+
+    fn add_item_deciding(
+        &self,
+        project: &str,
+        fields: ItemFields,
+        author: &Author,
+        proposed: Option<(&str, &str)>,
+    ) -> Result<Item, StoreError> {
         if fields.title.trim().is_empty() {
             return Err(StoreError::NoTitle);
         }
@@ -794,9 +817,26 @@ impl Store {
                 None,
                 author,
             )?;
-            transaction.commit()
+            if let Some((session, proposal)) = proposed {
+                let decided = transaction.execute(
+                    "INSERT INTO proposal_decisions
+                         (session_id, proposal_id, applied, item_id, decided_unix_ms)
+                     VALUES (?1, ?2, 1, ?3, ?4)
+                     ON CONFLICT (session_id, proposal_id) DO NOTHING",
+                    params![session, proposal, id, now],
+                )?;
+                // Dropped unsaved, which takes the item back out.
+                if decided == 0 {
+                    return Ok(false);
+                }
+            }
+            transaction.commit().map(|()| true)
         })();
-        added.map_err(self.failed())?;
+        if !added.map_err(self.failed())? {
+            return Err(StoreError::AlreadyDecided {
+                proposal: proposed.map(|(_, proposal)| proposal).unwrap_or_default().to_owned(),
+            });
+        }
         drop(connection);
         self.item(&id)
     }
@@ -1476,6 +1516,35 @@ mod tests {
             vec![first.clone(), second]
         );
         assert_eq!(reopened.project(&first.id).expect("found"), first);
+    }
+
+    #[test]
+    fn a_proposal_applied_twice_adds_its_task_once() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let store = store(dir.path());
+        let project = store
+            .add_project(
+                "one".into(),
+                repositories("/code/one"),
+                BTreeMap::new(),
+                String::new(),
+                Vec::new(),
+            )
+            .expect("added");
+        let fields = ItemFields {
+            parent_id: None,
+            status: Status::Todo,
+            priority: Priority::None,
+            title: "Tidy the schema".into(),
+            spec: String::new(),
+        };
+        let author = Author::on(pb::ChangeSurface::Mcp);
+        store
+            .add_proposed_item(&project.id, fields.clone(), &author, "s", "p1")
+            .expect("applied");
+        let again = store.add_proposed_item(&project.id, fields, &author, "s", "p1");
+        assert!(matches!(again, Err(StoreError::AlreadyDecided { .. })));
+        assert_eq!(store.items(&project.id).expect("listed").len(), 1);
     }
 
     #[test]
