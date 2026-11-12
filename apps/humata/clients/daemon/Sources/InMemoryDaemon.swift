@@ -122,6 +122,9 @@ package final class InMemoryDaemon: Sendable {
         /// What the person did about each session's proposals, by session
         /// then proposal.
         var decisions: [String: [String: Proposal.State]] = [:]
+        /// What outside agents proposed, by project, oldest first, as
+        /// proposed; decided in `decisions` with no session.
+        var outside: [String: [Proposal]] = [:]
         var commandLinks = CommandLinks(
             folder: "/Users/you/.local/bin",
             links: [.init(name: "humata", state: .missing), .init(name: "humatad", state: .missing)],
@@ -452,6 +455,7 @@ package final class InMemoryDaemon: Sendable {
             },
             startWork: { session, item in try self.startWork(session, on: item) },
             proposals: { session in try self.proposals(session) },
+            outsideProposals: { project in self.outsideProposals(project) },
             applyProposal: { session, proposal, title, spec in
                 try self.applyProposal(session, proposal, title: title, spec: spec)
             },

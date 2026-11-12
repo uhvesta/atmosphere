@@ -184,6 +184,7 @@ message Request {
     SetModelServer set_model_server = 85;
     DeleteSession delete_session = 86;
     DeleteItem delete_item = 87;
+    Propose propose = 88;
   }
 }
 
@@ -272,6 +273,7 @@ message Response {
     ModelServerSet model_server_set = 79;
     SessionDeleted session_deleted = 80;
     ItemDeleted item_deleted = 81;
+    Proposed proposed = 82;
   }
 }
 
@@ -709,10 +711,12 @@ message Approved {}
 // Something a session's agent proposed with `propose_task` or
 // `propose_spec_edit`. It lives in the session's history, on its host, so
 // proposing needs nothing from the Mac; nothing reaches the board until the
-// person applies it.
+// person applies it. An agent outside Humata proposes through `humata mcp`:
+// its proposals have no session and are kept by the daemon, for a project.
 message Proposal {
-  // The tool call's id, unique in the session.
+  // The tool call's id, unique in the session; for an outside agent's, unique.
   string id = 1;
+  // Empty for an outside agent's.
   string session_id = 2;
   ProposalKind kind = 3;
   // For a task: its title, its spec, and the task it goes under, if any.
@@ -732,6 +736,8 @@ message Proposal {
   int64 time_unix_ms = 12;
   // For a pending spec edit, the item's spec as it is now, to compare.
   string current_spec = 13;
+  // For an outside agent's, the project whose board it's for.
+  string project_id = 14;
 }
 
 enum ProposalKind {
@@ -747,8 +753,11 @@ enum ProposalState {
   PROPOSAL_STATE_DECLINED = 3;
 }
 
+// A session's proposals or, with no session, what outside agents proposed
+// for `project_id`.
 message ListProposals {
   string session_id = 1;
+  string project_id = 2;
 }
 
 // Oldest first.
@@ -759,6 +768,7 @@ message Proposals {
 // Adds the proposed task, or changes the item's spec, as proposed or as
 // edited here.
 message ApplyProposal {
+  // Empty for an outside agent's proposal.
   string session_id = 1;
   string proposal_id = 2;
   optional string title = 3;
@@ -776,6 +786,23 @@ message DeclineProposal {
 }
 
 message ProposalDeclined {
+  Proposal proposal = 1;
+}
+
+// An outside agent proposes, through `humata mcp`, a task or a change to an
+// item's title or spec. It waits on the board until the person applies or
+// declines it; `humata mcp` has no tool to apply one.
+message Propose {
+  string project_id = 1;
+  ProposalKind kind = 2;
+  string title = 3;
+  string spec = 4;
+  string parent_id = 5;
+  string item_id = 6;
+  string note = 7;
+}
+
+message Proposed {
   Proposal proposal = 1;
 }
 

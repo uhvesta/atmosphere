@@ -202,6 +202,14 @@ extension DaemonClient {
                 }
                 return proposals.proposals.map(Proposal.init)
             },
+            outsideProposals: { project in
+                var list = Humata_V1_ListProposals()
+                list.projectID = project
+                guard case .proposals(let proposals) = try await daemon.call(.listProposals(list)) else {
+                    throw DaemonError.unexpected("something other than the proposals")
+                }
+                return proposals.proposals.map(Proposal.init)
+            },
             applyProposal: { session, proposal, title, spec in
                 var apply = Humata_V1_ApplyProposal()
                 apply.sessionID = session

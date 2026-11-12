@@ -22,7 +22,12 @@ const GH: [&str; 3] = ["gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh"];
 /// It's asked for each time, so a new `gh auth login` counts at once, and
 /// kept only in memory.
 pub fn cli_token() -> Option<String> {
-    GH.iter().find_map(|gh| {
+    token_from(&GH.map(std::path::Path::new))
+}
+
+/// The token the first of `candidates` that runs and is signed in prints.
+fn token_from(candidates: &[&std::path::Path]) -> Option<String> {
+    candidates.iter().find_map(|gh| {
         let output = std::process::Command::new(gh)
             .args(["auth", "token", "--hostname", "github.com"])
             .stdin(std::process::Stdio::null())
@@ -490,6 +495,35 @@ pub fn standing(reviews: &[Review]) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in for `gh` at `dir/name` that runs `body` as a shell script.
+    fn stub_gh(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn the_token_comes_from_the_first_gh_that_runs_and_is_signed_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        let signed_out = stub_gh(dir.path(), "signed-out", "exit 1");
+        let empty = stub_gh(dir.path(), "empty", "exit 0");
+        let signed_in = stub_gh(
+            dir.path(),
+            "signed-in",
+            r#"[ "$*" = "auth token --hostname github.com" ] && echo "  gho_stub  " || exit 2"#,
+        );
+        let other = stub_gh(dir.path(), "other", "echo gho_other");
+
+        assert_eq!(
+            token_from(&[&missing, &signed_out, &empty, &signed_in, &other]),
+            Some("gho_stub".to_owned())
+        );
+        assert_eq!(token_from(&[&missing, &signed_out, &empty]), None);
+    }
 
     #[test]
     fn a_remote_names_its_repository_on_github_and_any_path_for_another_api() {

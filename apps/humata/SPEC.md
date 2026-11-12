@@ -145,7 +145,8 @@ original spec; lettered ones were added since.
 | J Agents ask, and a board journal | Done |
 | V Second review pass | Done |
 | P Performance pass | Done |
-| K Signed releases | In progress |
+| K Signed releases | Built; the first release waits for `gh auth login` |
+| X Admin mode, gated by approvals | Planned |
 
 ## Done milestones
 
@@ -534,7 +535,7 @@ Structure:
   path or GitHub URL), hosts (list, status), sessions (start a chat,
   planning session or task session with a backend and a model; send;
   stop; fork; archive), the inbox (list, approve, deny, answer), the board
-  and specs (read, create items, edit a spec), history and search. Each
+  and specs (read, and propose tasks and spec edits), history and search. Each
   tool maps to one request of the protocol, so a tool can't do what the
   protocol refuses.
 - **Show in app.** A `show` tool opens a session, a task or the board in the
@@ -808,6 +809,12 @@ there should be a journal of changes to undo, as in Lifr's Activity log.
 - [x] The journal shows authors and field changes, filtered by author
 - [x] Revert skips fields changed since, and says so
 - [x] ⌘Z and a toast undo the last board change
+- [x] Outside agents propose too: `humata mcp`'s `create_item` and
+  `edit_spec` became `propose_task` and `propose_spec_edit`. Their
+  proposals wait at the top of the project's board for the person to apply,
+  edit or decline, and `humata proposal list --project` lists them. The
+  outside agent can still approve agents' requests, but has no tool to
+  apply its own proposals.
 
 **Done when:** an agent's subtask and spec edit wait as proposals, the
 journal shows them as the session's once applied, and reverting an edit
@@ -874,6 +881,57 @@ and the chat redraws on every streamed word, so those paths matter most.
 - [x] The waiting strip no longer sits beside the bottom-anchored chat,
   which made SwiftUI lay it out without end
 
+### Milestone X: admin mode, gated by approvals
+
+The owner, 2026-11-12: an admin mode, only in dev builds and local testing,
+so an agent can drive Humata for the owner, and never in the released app.
+All admin access, the command line's included, is gated by approvals: one
+at a time, in batches, time-boxed, and for scopes of actions.
+
+- **Admin actions.** The person's own board actions: apply, edit or
+  decline a proposal; create, edit or delete an item; edit a spec; revert a
+  change. From the app they run at once. From `humata` or `humata mcp` the
+  daemon runs one only under an approval, in every build.
+- **Who's asking.** The daemon reads the connecting process from the socket
+  (its pid and executable), so a client can't claim to be the app. Each
+  request names the client kind (command line or MCP) and its parent
+  process, e.g. `claude`.
+- **Asking.** An admin action without a grant waits in the inbox as an
+  approval request: who asks, and what exactly it will do (the title and
+  spec diff of a proposal, the fields of an edit). The command line waits
+  for the decision and prints it; `--no-wait` returns the request's id.
+  `humata mcp` waits a short while, then answers that it's still waiting
+  with the id, which `approval_status` reads later. Approved, the daemon
+  runs it and keeps the result for the caller; denied, it says so.
+- **Deciding.** Approve or deny one; select several, or all from one
+  client, and approve or deny them together.
+- **Grants.** Approving can also grant: for a scope of actions
+  (proposals; items and specs; deletes and reverts, which no wider grant
+  covers), for a time (15 minutes, an hour, until Humata quits), and for
+  the command line, MCP or both. Settings > Approvals lists grants with
+  what they've run, and revokes them. Grants live in the daemon's SQLite
+  with their expiry.
+- **The journal.** A change made under an approval or grant records the
+  client, and which approval or grant let it run.
+- **Dev builds only: the admin tools.** A Bazel flag,
+  `--//apps/humata:admin`, off by default and set by
+  `--config=humata-admin`, builds `humata` with its `admin` feature, which
+  adds the admin actions to `humata mcp` as tools. Without it they aren't
+  in the binary. `release.sh` never sets it, and the release check fails
+  if the downloaded `humata mcp` lists any.
+- [ ] The daemon tells the app from other clients by the socket's peer
+- [ ] Admin actions from the command line and MCP wait for approval
+- [ ] Approve and deny one, several, or all from a client
+- [ ] Time-boxed, scoped grants, listed and revoked in Settings
+- [ ] The journal records the approval or grant behind a change
+- [ ] The `admin` flag and its MCP tools, tested end to end
+- [ ] The release check refuses a build with admin tools
+
+**Done when:** a dev build's `humata mcp` applies an outside agent's
+proposal once approved in the app, a grant lets the next ones run until it
+expires, a denied one changes nothing, and a default build's `humata mcp`
+lists no admin tool.
+
 ### Milestone K: signed releases
 
 The owner, 2026-11-12: release signed apps and binaries on GitHub, and
@@ -898,9 +956,13 @@ not an OAuth app.
   downloaded `humata` talks to. Only then is it published.
   `apps/humata/tools/release/check.sh <tag>` runs the same check on any
   release later.
-- [x] The daemon uses `gh`'s token when This Mac has none
-- [ ] The release command signs, notarizes and uploads a draft
+- [x] The daemon uses `gh`'s token when This Mac has none, tested against
+  stand-in `gh` scripts: signed in, signed out, printing nothing, missing
+- [ ] The release command signs, notarizes and uploads a draft (written;
+  its first run waits for the owner to publish, with `gh auth login` and
+  the Developer ID certificate on this Mac)
 - [ ] The check downloads, verifies and runs the release before publishing
+  (written; runs as part of that first release)
 
 **Done when:** a release is on GitHub whose download Gatekeeper accepts
 and whose daemon and command line run.

@@ -15,6 +15,7 @@ swift_library(
         "//apps/humata/clients/daemon",
         "//apps/humata/features/projects",
         "//apps/humata/features/review",
+        "//apps/humata/features/session",
         "//apps/libs/kits/board",
         "//apps/libs/kits/chatui",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
@@ -33,6 +34,7 @@ swift_library(
         "//apps/humata/clients/daemon",
         "//apps/humata/features/projects",
         "//apps/humata/features/review",
+        "//apps/humata/features/session",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

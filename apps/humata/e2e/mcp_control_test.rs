@@ -1,6 +1,7 @@
 //! An agent outside Humata drives it through `humata mcp`: it creates a
 //! project, starts a scripted session in it, sends it a message, approves
-//! the write it asks for and reads the reply, all as MCP tool calls.
+//! the write it asks for and reads the reply, all as MCP tool calls. Its
+//! board changes are proposals, which wait until the person applies them.
 
 mod common;
 
@@ -164,6 +165,73 @@ fn an_outside_agent_sets_up_and_drives_a_session_through_mcp() {
     let refused = mcp.request(
         "tools/call",
         json!({"name": "send_message", "arguments": {"session_id": "nope", "text": "hi"}}),
+    );
+    assert_eq!(refused["isError"], json!(true));
+}
+
+#[test]
+fn an_outside_agent_proposes_board_changes_that_wait_for_the_person() {
+    let scratch = common::scratch();
+    let root = scratch.path();
+    let repository = root.join("repository");
+    common::git_repository(&repository, &[("README.md", "hello\n")]);
+    let (_daemon, humata) = common::start(root, &[]);
+    let mut mcp = Mcp::start(&root.join("d.sock"));
+    mcp.request("initialize", json!({"protocolVersion": "2025-06-18"}));
+    let created = mcp.call(
+        "create_project",
+        json!({"name": "demo", "repositories": [repository.display().to_string()]}),
+    );
+    let project = after(&created, "project ");
+    let task = humata
+        .run(&["item", "add", "--project", &project, "Log in"])
+        .trim()
+        .to_owned();
+
+    mcp.call(
+        "propose_task",
+        json!({"project_id": project, "title": "Dark mode", "spec": "Follow the system."}),
+    );
+    mcp.call(
+        "propose_spec_edit",
+        json!({"project_id": project, "item_id": task, "spec": "Email and password."}),
+    );
+    // Nothing reached the board.
+    assert!(
+        !mcp.call("board", json!({"project_id": project}))
+            .contains("Dark mode")
+    );
+    assert_eq!(
+        mcp.call("read_spec", json!({"project_id": project, "item_id": task})),
+        "Log in has no spec yet."
+    );
+
+    // The person sees both waiting, and applies them.
+    let listed = humata.run(&["proposal", "list", "--project", &project]);
+    let pending: Vec<&str> = listed
+        .lines()
+        .filter(|line| line.contains("\tpending\t"))
+        .filter_map(|line| line.split('\t').next())
+        .collect();
+    assert_eq!(pending.len(), 2, "{listed}");
+    for proposal in &pending {
+        humata.run(&["proposal", "apply", "", proposal]);
+    }
+    assert!(
+        mcp.call("board", json!({"project_id": project}))
+            .contains("Dark mode")
+    );
+    assert_eq!(
+        mcp.call("read_spec", json!({"project_id": project, "item_id": task})),
+        "Email and password."
+    );
+    // Each is decided once.
+    humata.fails(&["proposal", "apply", "", pending[0]]);
+
+    // A proposal that names no title is refused, and says why.
+    let refused = mcp.request(
+        "tools/call",
+        json!({"name": "propose_task", "arguments": {"project_id": project, "title": " "}}),
     );
     assert_eq!(refused["isError"], json!(true));
 }

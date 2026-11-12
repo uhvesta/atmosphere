@@ -277,6 +277,15 @@ const MIGRATIONS: &[&str] = &["
     -- The archived sessions a deleted item had, one id a line, put back on
     -- it when the deletion is reverted.
     ALTER TABLE board_changes ADD COLUMN sessions TEXT NOT NULL DEFAULT '';
+", "
+    -- What agents outside Humata proposed through `humata mcp`, as a
+    -- Proposal, until the person decides it; decisions are kept with the
+    -- sessions' in proposal_decisions, with no session.
+    CREATE TABLE outside_proposals (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+        proposal BLOB NOT NULL
+    );
 "];
 
 /// What reverting a board change did.

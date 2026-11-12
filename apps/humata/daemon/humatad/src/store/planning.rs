@@ -1,7 +1,10 @@
 //! What the daemon keeps for planning: the person's decisions on what
 //! agents proposed, which sessions only plan, and each project's skills.
-//! The proposals themselves are in the sessions' histories.
+//! The sessions' proposals themselves are in their histories; outside
+//! agents' are kept here.
 
+use humata_wire::pb;
+use prost::Message as _;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{Store, StoreError, now_unix_ms};
@@ -89,6 +92,49 @@ impl Store {
                 .collect()
         })();
         listed.map_err(self.failed())
+    }
+
+    /// Keeps what an outside agent proposed for its project's board.
+    pub fn add_outside_proposal(&self, proposal: &pb::Proposal) -> Result<(), StoreError> {
+        self.lock()
+            .execute(
+                "INSERT INTO outside_proposals (id, project_id, proposal) VALUES (?1, ?2, ?3)",
+                params![proposal.id, proposal.project_id, proposal.encode_to_vec()],
+            )
+            .map_err(self.failed())?;
+        Ok(())
+    }
+
+    /// What outside agents proposed for `project`, oldest first, as
+    /// proposed: their decisions are in [`Store::decisions`] with no session.
+    pub fn outside_proposals(&self, project: &str) -> Result<Vec<pb::Proposal>, StoreError> {
+        let connection = self.lock();
+        let listed = (|| -> rusqlite::Result<Vec<Vec<u8>>> {
+            let mut statement = connection.prepare_cached(
+                "SELECT proposal FROM outside_proposals WHERE project_id = ?1 ORDER BY rowid",
+            )?;
+            statement.query_map([project], |row| row.get(0))?.collect()
+        })();
+        let listed = listed.map_err(self.failed())?;
+        // One this build can't read is left out.
+        Ok(listed
+            .iter()
+            .filter_map(|bytes| pb::Proposal::decode(bytes.as_slice()).ok())
+            .collect())
+    }
+
+    /// The outside agent's proposal `id`, as proposed.
+    pub fn outside_proposal(&self, id: &str) -> Result<Option<pb::Proposal>, StoreError> {
+        let bytes: Option<Vec<u8>> = self
+            .lock()
+            .query_row(
+                "SELECT proposal FROM outside_proposals WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(self.failed())?;
+        Ok(bytes.and_then(|bytes| pb::Proposal::decode(bytes.as_slice()).ok()))
     }
 
     /// Marks `session` as one that plans, in no copy of the code.

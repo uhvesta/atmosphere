@@ -671,6 +671,11 @@ pub enum DaemonError {
     )]
     NoProposedItem { proposal: String },
 
+    #[error(
+        "a proposed task needs a title, and a proposed change needs item_id and a new title or spec, or both; give them and propose again"
+    )]
+    IncompleteProposal,
+
     #[error("host {host:?} didn't answer")]
     Host {
         host: String,
@@ -756,7 +761,8 @@ impl DaemonError {
             | Self::BadPort { .. }
             | Self::OutOfScope { .. }
             | Self::NoBoard { .. }
-            | Self::NoProposedItem { .. } => pb::ErrorCode::InvalidRequest,
+            | Self::NoProposedItem { .. }
+            | Self::IncompleteProposal => pb::ErrorCode::InvalidRequest,
             Self::Listen { .. } => pb::ErrorCode::Busy,
             Self::NotAPortStream { .. } => pb::ErrorCode::HostUnavailable,
             Self::UnknownForward { .. } => pb::ErrorCode::UnknownForward,

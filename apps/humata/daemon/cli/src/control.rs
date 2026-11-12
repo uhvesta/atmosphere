@@ -287,13 +287,14 @@ fn tool_list() -> Vec<Tool> {
             effect: Effect::Reads,
         },
         Tool {
-            name: "create_item",
-            description: "Adds a task to a project's board, or a subtask under one, with a Markdown spec. Answers its id.",
+            name: "propose_task",
+            description: "Proposes a task for a project's board, or a subtask under one, with a Markdown spec. It isn't added until the person applies it on the board in Humata, perhaps edited; use show to put the board in front of them.",
             properties: json!({
                 "project_id": project(),
                 "title": string("Its title"),
                 "spec": string("What it is and when it's done, in Markdown"),
                 "parent_id": string("The task to put it under, for a subtask"),
+                "note": string("Why, for the person deciding"),
             }),
             required: &["project_id", "title"],
             effect: Effect::Changes,
@@ -306,13 +307,16 @@ fn tool_list() -> Vec<Tool> {
             effect: Effect::Reads,
         },
         Tool {
-            name: "edit_spec",
-            description: "Replaces a task's spec. The board's log keeps the old one, to undo it from.",
+            name: "propose_spec_edit",
+            description: "Proposes a new spec or title for a task or subtask. It changes only when the person applies it on the board in Humata; until then read_spec shows it as it was.",
             properties: json!({
+                "project_id": project(),
                 "item_id": string("The task's id, from board"),
-                "spec": string("The whole new spec, in Markdown"),
+                "title": string("Its new title, if it changes"),
+                "spec": string("The whole new spec, in Markdown, if it changes"),
+                "note": string("Why, for the person deciding"),
             }),
-            required: &["item_id", "spec"],
+            required: &["project_id", "item_id"],
             effect: Effect::Changes,
         },
         Tool {
@@ -382,6 +386,19 @@ impl Arguments<'_> {
 
     fn number(&self, field: &str) -> Option<u64> {
         self.0[field].as_u64()
+    }
+}
+
+/// Proposes `propose`, which waits for the person on the board.
+async fn proposed(client: &Client, propose: pb::Propose) -> Result<String, String> {
+    match ask(client, pb::request::Kind::Propose(propose)).await? {
+        pb::response::Kind::Proposed(pb::Proposed {
+            proposal: Some(proposal),
+        }) => Ok(format!(
+            "Proposed {:?} ({}). It waits on the project's board until the person applies or declines it; don't count on it until then.",
+            proposal.title, proposal.id
+        )),
+        other => Err(unexpected(&other)),
     }
 }
 
@@ -589,24 +606,20 @@ async fn call(client: &Client, name: &str, arguments: &Arguments<'_>) -> Result<
             Ok(lines(
                 &items,
                 print::item,
-                "The board is empty; add a task with create_item.",
+                "The board is empty; suggest a task with propose_task.",
             ))
         }
-        "create_item" => {
-            let request = Request::CreateItem(pb::CreateItem {
+        "propose_task" => {
+            let propose = pb::Propose {
                 project_id: arguments.required("project_id")?,
-                parent_id: arguments.text("parent_id"),
+                kind: pb::ProposalKind::Task.into(),
                 title: arguments.required("title")?,
                 spec: arguments.0["spec"].as_str().unwrap_or_default().to_owned(),
-                surface: pb::ChangeSurface::Mcp.into(),
+                parent_id: arguments.text("parent_id"),
+                note: arguments.text("note"),
                 ..Default::default()
-            });
-            match ask(client, request).await? {
-                Response::ItemCreated(pb::ItemCreated { item: Some(item) }) => {
-                    Ok(format!("Added {}: {}.", item.id, item.title))
-                }
-                other => Err(unexpected(&other)),
-            }
+            };
+            proposed(client, propose).await
         }
         "read_spec" => {
             let item = arguments.required("item_id")?;
@@ -621,23 +634,17 @@ async fn call(client: &Client, name: &str, arguments: &Arguments<'_>) -> Result<
                 found.spec
             })
         }
-        "edit_spec" => {
-            let spec = arguments.0["spec"]
-                .as_str()
-                .filter(|spec| !spec.trim().is_empty())
-                .ok_or("give spec: the whole new spec, in Markdown")?;
-            let request = Request::UpdateItem(pb::UpdateItem {
+        "propose_spec_edit" => {
+            let propose = pb::Propose {
+                project_id: arguments.required("project_id")?,
+                kind: pb::ProposalKind::SpecEdit.into(),
                 item_id: arguments.required("item_id")?,
-                spec: Some(spec.to_owned()),
-                surface: pb::ChangeSurface::Mcp.into(),
+                title: arguments.text("title"),
+                spec: arguments.0["spec"].as_str().unwrap_or_default().to_owned(),
+                note: arguments.text("note"),
                 ..Default::default()
-            });
-            match ask(client, request).await? {
-                Response::ItemUpdated(_) => {
-                    Ok("Replaced the spec; the board's log can undo it.".to_owned())
-                }
-                other => Err(unexpected(&other)),
-            }
+            };
+            proposed(client, propose).await
         }
         "search" => {
             let request = Request::Search(pb::Search {

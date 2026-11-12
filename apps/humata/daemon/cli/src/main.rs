@@ -403,13 +403,18 @@ struct FolderPlace {
 
 #[derive(Subcommand)]
 enum ProposalCommand {
-    /// A session's proposals, oldest first.
+    /// A session's proposals, oldest first, or with --project what agents
+    /// outside Humata proposed for its board through `humata mcp`.
     List {
-        session: String,
+        #[arg(required_unless_present = "project")]
+        session: Option<String>,
+        #[arg(long, conflicts_with = "session")]
+        project: Option<String>,
     },
     /// Add the proposed task, or change the item's spec, and print the
     /// item's id.
     Apply {
+        /// The session that proposed it, or "" for an outside agent.
         session: String,
         proposal: String,
         /// Use this title instead of the proposed one.
@@ -420,6 +425,7 @@ enum ProposalCommand {
         spec: Option<PathBuf>,
     },
     Decline {
+        /// The session that proposed it, or "" for an outside agent.
         session: String,
         proposal: String,
     },
@@ -1978,9 +1984,10 @@ async fn proposal(client: &Client, command: ProposalCommand) -> Result<(), CliEr
     use pb::request::Kind as Request;
     use pb::response::Kind as Response;
     match command {
-        ProposalCommand::List { session } => {
+        ProposalCommand::List { session, project } => {
             let request = Request::ListProposals(pb::ListProposals {
-                session_id: session,
+                session_id: session.unwrap_or_default(),
+                project_id: project.unwrap_or_default(),
             });
             match client.call(request).await? {
                 Response::Proposals(proposals) => {

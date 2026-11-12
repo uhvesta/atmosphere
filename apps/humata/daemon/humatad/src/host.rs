@@ -707,6 +707,7 @@ impl Host {
             | Request::ListProposals(_)
             | Request::ApplyProposal(_)
             | Request::DeclineProposal(_)
+            | Request::Propose(_)
             | Request::UpdateProject(_)
             | Request::ReadSpec(_)
             | Request::LinkCommands(_)

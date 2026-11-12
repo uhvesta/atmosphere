@@ -3,8 +3,9 @@ import Foundation
 import HumataDaemonClient
 
 /// The tasks and spec edits a session's agent proposed, shown as cards in
-/// its chat: each applied as proposed or as edited here, or declined.
-/// Nothing reaches the board until it is applied.
+/// its chat, or an outside agent proposed through `humata mcp`, shown on
+/// the project's board: each applied as proposed or as edited here, or
+/// declined. Nothing reaches the board until it is applied.
 @Reducer
 package struct ProposalsFeature {
     /// A proposal opened to change before applying it.
@@ -22,7 +23,11 @@ package struct ProposalsFeature {
 
     @ObservableState
     package struct State: Equatable {
+        /// Empty for outside agents' proposals.
         package var sessionID: String
+        /// The project whose outside agents' proposals these are; nil for a
+        /// session's.
+        package var projectID: String?
         package var proposals: IdentifiedArrayOf<Proposal> = []
         package var editing: Editing?
         /// The proposals being applied or declined, so their buttons wait.
@@ -32,6 +37,15 @@ package struct ProposalsFeature {
         package init(sessionID: String) {
             self.sessionID = sessionID
         }
+
+        /// What outside agents proposed for `projectID`'s board.
+        package init(outsideAgentsOf projectID: String) {
+            self.sessionID = ""
+            self.projectID = projectID
+        }
+
+        /// The proposals not decided yet, oldest first.
+        package var pending: [Proposal] { proposals.filter { $0.state == .pending } }
     }
 
     package enum Action: BindableAction {
@@ -74,15 +88,21 @@ package struct ProposalsFeature {
 
             case .refresh:
                 let session = state.sessionID
+                let project = state.projectID
                 return .run { send in
-                    await send(.listed(try await daemon.proposals(session)))
+                    if let project {
+                        await send(.listed(try await daemon.outsideProposals(project)))
+                    } else {
+                        await send(.listed(try await daemon.proposals(session)))
+                    }
                 } catch: { error, send in
                     await send(.failed(id: nil, message: error.localizedDescription))
                 }
                 .cancellable(id: CancelID.list, cancelInFlight: true)
 
             case .listed(let proposals):
-                state.proposals = IdentifiedArray(uniqueElements: proposals)
+                let listed = IdentifiedArray(uniqueElements: proposals)
+                if listed != state.proposals { state.proposals = listed }
                 return .none
 
             case .applyTapped(let id):

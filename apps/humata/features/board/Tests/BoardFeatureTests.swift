@@ -2,6 +2,7 @@ import ComposableArchitecture
 import HumataBoard
 import HumataDaemonClient
 import HumataProjects
+import HumataSession
 import XCTest
 
 @MainActor
@@ -598,6 +599,31 @@ final class BoardFeatureTests: XCTestCase {
         await store.receive(\.failed)
         XCTAssertEqual(store.state.pullRequests.map(\.state), [.merged])
         XCTAssertFalse(store.state.readingPullRequests)
+        await store.finish()
+    }
+
+    func testAnOutsideAgentsProposalReachesTheBoardOnlyOnceApplied() async throws {
+        let board = try await board()
+        board.daemon.proposeFromOutside(
+            Proposal(id: "p1", title: "signup", spec: "A signup form"), for: board.project.id)
+        board.daemon.proposeFromOutside(Proposal(id: "p2", title: "logout"), for: board.project.id)
+        let store = store(board)
+        await store.send(.proposals(.refresh))
+        await store.receive(\.proposals.listed)
+        XCTAssertEqual(store.state.proposals.pending.map(\.title), ["signup", "logout"])
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        XCTAssertFalse(titles(Array(store.state.items)).contains("signup"))
+
+        await store.send(.proposals(.applyTapped("p1")))
+        await store.receive(\.proposals.decided)
+        await store.receive(\.loaded)
+        XCTAssertTrue(titles(Array(store.state.items)).contains("signup"))
+
+        await store.send(.proposals(.declineTapped("p2")))
+        await store.receive(\.proposals.decided)
+        XCTAssertTrue(store.state.proposals.pending.isEmpty)
+        XCTAssertFalse(titles(Array(store.state.items)).contains("logout"))
         await store.finish()
     }
 }

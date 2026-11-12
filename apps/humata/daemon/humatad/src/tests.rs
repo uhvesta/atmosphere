@@ -3206,6 +3206,7 @@ async fn proposals_of(client: &Client, session: &str) -> Vec<pb::Proposal> {
     match client
         .call(pb::request::Kind::ListProposals(pb::ListProposals {
             session_id: session.to_owned(),
+            ..Default::default()
         }))
         .await
     {

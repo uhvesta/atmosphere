@@ -5,7 +5,7 @@ import SwiftUI
 /// A task or spec edit the agent proposed, in the chat where it proposed
 /// it: its title and spec, then Apply, Edit and Decline until it's decided,
 /// and for an applied task, a way to start work on it.
-struct ProposalCard: View {
+package struct ProposalCard: View {
     let proposal: Proposal
     let deciding: Bool
     /// Whether work on an applied task can start from here: only from a
@@ -16,7 +16,17 @@ struct ProposalCard: View {
     /// Lines of the spec shown until the person asks for all of them.
     private static let shownLines = 8
 
-    var body: some View {
+    package init(
+        proposal: Proposal, deciding: Bool, canStartWork: Bool,
+        send: @escaping (ProposalsFeature.Action) -> Void
+    ) {
+        self.proposal = proposal
+        self.deciding = deciding
+        self.canStartWork = canStartWork
+        self.send = send
+    }
+
+    package var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
                 Label(kind, systemImage: proposal.kind == .task ? "checklist" : "doc.text")
@@ -110,10 +120,14 @@ struct ProposalCard: View {
 }
 
 /// A proposal open to change before it's applied.
-struct ProposalEditor: View {
+package struct ProposalEditor: View {
     @Bindable var store: StoreOf<ProposalsFeature>
 
-    var body: some View {
+    package init(store: StoreOf<ProposalsFeature>) {
+        self.store = store
+    }
+
+    package var body: some View {
         if let editing = store.editing {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Edit the Proposal")

@@ -24,9 +24,78 @@ impl Daemon {
             Reply::Response(pb::response::Kind::History(history)) => history.events,
             _ => Vec::new(),
         };
+        self.decided(session, proposed(&events, session))
+    }
+
+    /// What outside agents proposed for `project`'s board, oldest first,
+    /// with what the person did about each.
+    pub(super) fn outside_proposals(
+        &self,
+        project: &str,
+    ) -> Result<Vec<pb::Proposal>, DaemonError> {
+        self.store.project(project)?;
+        self.decided("", self.store.outside_proposals(project)?)
+    }
+
+    /// Keeps what an outside agent proposed, through `humata mcp`, until the
+    /// person decides it in the app.
+    pub(super) fn propose(&self, propose: pb::Propose) -> Result<pb::Proposal, DaemonError> {
+        self.store.project(&propose.project_id)?;
+        let in_project = |id: &str| -> Result<(), DaemonError> {
+            let item = self.store.item(id)?;
+            if item.project_id == propose.project_id {
+                Ok(())
+            } else {
+                Err(crate::error::StoreError::UnknownItem { id: id.to_owned() }.into())
+            }
+        };
+        let blank = |text: &str| text.trim().is_empty();
+        match propose.kind() {
+            pb::ProposalKind::SpecEdit => {
+                if blank(&propose.item_id) || (blank(&propose.title) && blank(&propose.spec)) {
+                    return Err(DaemonError::IncompleteProposal);
+                }
+                in_project(&propose.item_id)?;
+            }
+            _ => {
+                if blank(&propose.title) {
+                    return Err(DaemonError::IncompleteProposal);
+                }
+                if !propose.parent_id.is_empty() {
+                    in_project(&propose.parent_id)?;
+                }
+            }
+        }
+        let kind = match propose.kind() {
+            pb::ProposalKind::SpecEdit => pb::ProposalKind::SpecEdit,
+            _ => pb::ProposalKind::Task,
+        };
+        let proposal = pb::Proposal {
+            id: uuid::Uuid::new_v4().to_string(),
+            kind: kind.into(),
+            title: propose.title,
+            spec: propose.spec,
+            parent_id: propose.parent_id,
+            item_id: propose.item_id,
+            note: propose.note,
+            project_id: propose.project_id,
+            time_unix_ms: crate::store::now_unix_ms(),
+            ..pb::Proposal::default()
+        };
+        self.store.add_outside_proposal(&proposal)?;
+        let mut decided = self.decided("", vec![proposal])?;
+        Ok(decided.remove(0))
+    }
+
+    /// `proposals` of `session` (empty for outside agents'), with what the
+    /// person did about each.
+    fn decided(
+        &self,
+        session: &str,
+        mut proposals: Vec<pb::Proposal>,
+    ) -> Result<Vec<pb::Proposal>, DaemonError> {
         let decisions: HashMap<String, Decision> =
             self.store.decisions(session)?.into_iter().collect();
-        let mut proposals = proposed(&events, session);
         for proposal in &mut proposals {
             match decisions.get(&proposal.id) {
                 Some(Decision::Applied { item }) => {
@@ -54,15 +123,20 @@ impl Daemon {
         Ok(proposals)
     }
 
-    /// The pending proposal `id` of `session`.
+    /// The pending proposal `id` of `session`, or of an outside agent if
+    /// `session` is empty.
     async fn pending(&self, session: &str, id: &str) -> Result<pb::Proposal, DaemonError> {
         let unknown = || DaemonError::UnknownProposal {
             session: session.to_owned(),
             proposal: id.to_owned(),
         };
-        let proposal = self
-            .proposals(session)
-            .await?
+        let proposals = if session.is_empty() {
+            let proposal = self.store.outside_proposal(id)?.ok_or_else(unknown)?;
+            self.decided("", vec![proposal])?
+        } else {
+            self.proposals(session).await?
+        };
+        let proposal = proposals
             .into_iter()
             .find(|proposal| proposal.id == id)
             .ok_or_else(unknown)?;
@@ -82,14 +156,25 @@ impl Daemon {
         apply: pb::ApplyProposal,
     ) -> Result<pb::ProposalApplied, DaemonError> {
         let mut proposal = self.pending(&apply.session_id, &apply.proposal_id).await?;
-        let project = self
-            .store
-            .placement(&apply.session_id)?
-            .and_then(|placement| placement.project)
-            .ok_or_else(|| DaemonError::NoBoard {
-                session: apply.session_id.clone(),
-            })?;
-        let author = Author::session(&apply.session_id, pb::ChangeSurface::Unspecified);
+        let (project, author) = if apply.session_id.is_empty() {
+            // An outside agent's: the board's log says it came through MCP.
+            (
+                proposal.project_id.clone(),
+                Author::on(pb::ChangeSurface::Mcp),
+            )
+        } else {
+            let project = self
+                .store
+                .placement(&apply.session_id)?
+                .and_then(|placement| placement.project)
+                .ok_or_else(|| DaemonError::NoBoard {
+                    session: apply.session_id.clone(),
+                })?;
+            (
+                project,
+                Author::session(&apply.session_id, pb::ChangeSurface::Unspecified),
+            )
+        };
         let item = match proposal.kind() {
             pb::ProposalKind::SpecEdit => {
                 // A proposal may change only the title, or only the spec.

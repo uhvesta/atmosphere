@@ -83,8 +83,40 @@ extension InMemoryDaemon {
         }
     }
 
+    /// An outside agent proposes `proposal` for `project`'s board, as
+    /// through `humata mcp`.
+    package func proposeFromOutside(_ proposal: Proposal, for project: String) {
+        state.withValue { $0.outside[project, default: []].append(proposal) }
+    }
+
+    func outsideProposals(_ project: String) -> [Proposal] {
+        state.withValue { state in
+            let decided = state.decisions["", default: [:]]
+            return (state.outside[project] ?? []).map { proposal in
+                var proposal = proposal
+                proposal.state = decided[proposal.id] ?? .pending
+                if proposal.kind == .specEdit, let item = state.items.first(where: { $0.id == proposal.itemID }) {
+                    if proposal.title.isEmpty { proposal.title = item.title }
+                    if proposal.state == .pending { proposal.currentSpec = item.spec }
+                }
+                return proposal
+            }
+        }
+    }
+
+    /// The project an outside agent's proposal `id` is for.
+    private func outsideProject(of id: String) -> String? {
+        state.value.outside.first { $0.value.contains { $0.id == id } }?.key
+    }
+
     private func pending(_ session: String, _ proposalID: String) throws -> Proposal {
-        guard let proposal = try proposals(session).first(where: { $0.id == proposalID }) else {
+        let listed =
+            if session.isEmpty {
+                outsideProject(of: proposalID).map(outsideProposals) ?? []
+            } else {
+                try proposals(session)
+            }
+        guard let proposal = listed.first(where: { $0.id == proposalID }) else {
             throw DaemonError.refused(
                 .unknownProposal, message: "Session \(session) proposed nothing as \(proposalID); list its proposals.")
         }
@@ -96,22 +128,26 @@ extension InMemoryDaemon {
 
     func applyProposal(_ session: String, _ proposalID: String, title: String?, spec: String?) throws -> Item {
         let proposal = try pending(session, proposalID)
+        let author: BoardAuthor = session.isEmpty ? .mcp : .session(session)
         let item: Item
         switch proposal.kind {
         case .task:
-            guard let project = state.value.sessions.first(where: { $0.id == session })?.projectID else {
+            let project =
+                session.isEmpty
+                ? outsideProject(of: proposalID) : state.value.sessions.first(where: { $0.id == session })?.projectID
+            guard let project else {
                 throw DaemonError.refused(
                     .invalidRequest, message: "Session \(session) is in no project, so its tasks have no board.")
             }
             item = try createItem(
                 project,
                 ItemFields(parentID: proposal.parentID, title: title ?? proposal.title, spec: spec ?? proposal.spec),
-                by: .session(session))
+                by: author)
         case .specEdit:
             guard let itemID = proposal.itemID else { throw Self.unknownItem(proposalID) }
             let proposedSpec = proposal.spec.isEmpty ? nil : proposal.spec
             item = try updateItem(
-                itemID, ItemUpdate(title: title ?? proposal.title, spec: spec ?? proposedSpec), by: .session(session))
+                itemID, ItemUpdate(title: title ?? proposal.title, spec: spec ?? proposedSpec), by: author)
         }
         state.withValue { $0.decisions[session, default: [:]][proposalID] = .applied(itemID: item.id) }
         return item

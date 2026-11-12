@@ -2,6 +2,7 @@ import ComposableArchitecture
 import Foundation
 import HumataDaemonClient
 import HumataProjects
+import HumataSession
 
 /// A project's board: its tasks and subtasks in a column per status, read
 /// again every few seconds as their sessions move them. Dropping a card on
@@ -32,10 +33,14 @@ package struct BoardFeature {
         /// The first change Undo may take back: none made before the board
         /// opened. Nil until the board's log is read.
         package var undoFrom: BoardChange.ID?
+        /// What agents outside Humata proposed through `humata mcp`, which
+        /// reaches the board only once the person applies it here.
+        package var proposals: ProposalsFeature.State
 
         package init(project: Project, opening: Item.ID? = nil) {
             self.project = project
             self.opening = opening
+            self.proposals = ProposalsFeature.State(outsideAgentsOf: project.id)
         }
 
         /// The items the board shows in `status`'s column, in the board's order.
@@ -103,6 +108,7 @@ package struct BoardFeature {
         case importIssuesTapped
         case imported(ImportedIssues)
         case destination(PresentationAction<Destination.Action>)
+        case proposals(ProposalsFeature.Action)
         case delegate(Delegate)
 
         @CasePathable
@@ -125,6 +131,7 @@ package struct BoardFeature {
     package init() {}
 
     package var body: some ReducerOf<Self> {
+        Scope(state: \.proposals, action: \.proposals) { ProposalsFeature() }
         Reduce { state, action in
             switch action {
             case .task:
@@ -132,6 +139,7 @@ package struct BoardFeature {
                 let refresh = Effect<Action>.run { send in
                     while !Task.isCancelled {
                         await send(await load(project))
+                        await send(.proposals(.refresh))
                         try await clock.sleep(for: Self.refreshInterval)
                     }
                 }
@@ -365,7 +373,10 @@ package struct BoardFeature {
                 state.destination = nil
                 return .send(.delegate(.openSession(session)))
 
-            case .destination, .delegate:
+            case .proposals(.decided(_, .applied)):
+                return .send(.refresh)
+
+            case .destination, .proposals, .delegate:
                 return .none
             }
         }

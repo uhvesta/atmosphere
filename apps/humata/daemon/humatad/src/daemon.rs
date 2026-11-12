@@ -1225,9 +1225,19 @@ impl Daemon {
                 return Ok(Reply::Response(Response::Items(pb::Items { items })));
             }
             Request::ListProposals(list) => {
-                let proposals = self.proposals(&list.session_id).await?;
+                let proposals = if list.session_id.is_empty() {
+                    self.outside_proposals(&list.project_id)?
+                } else {
+                    self.proposals(&list.session_id).await?
+                };
                 return Ok(Reply::Response(Response::Proposals(pb::Proposals {
                     proposals,
+                })));
+            }
+            Request::Propose(propose) => {
+                let proposal = self.propose(std::mem::take(propose))?;
+                return Ok(Reply::Response(Response::Proposed(pb::Proposed {
+                    proposal: Some(proposal),
                 })));
             }
             Request::ApplyProposal(apply) => {

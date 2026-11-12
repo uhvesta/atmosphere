@@ -4,6 +4,7 @@ import ComposableArchitecture
 import HumataDaemonClient
 import HumataProjects
 import HumataReview
+import HumataSession
 import SwiftUI
 
 extension Priority {
@@ -59,6 +60,10 @@ package struct BoardView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(.bar)
                 }
+                let proposed = store.proposals.pending
+                if !proposed.isEmpty {
+                    outsideProposals(proposed)
+                }
             }
         }
         .overlay(alignment: .bottom) {
@@ -90,7 +95,11 @@ package struct BoardView: View {
             }
         }
         .alert($store.scope(state: \.destination?.alert, action: \.destination.alert))
+        .alert($store.scope(state: \.proposals.alert, action: \.proposals.alert))
         .task { await store.send(.task).finish() }
+        .sheet(isPresented: editingProposal) {
+            ProposalEditor(store: store.scope(state: \.proposals, action: \.proposals))
+        }
         .sheet(item: $store.scope(state: \.destination?.item, action: \.destination.item)) {
             ItemView(store: $0)
         }
@@ -100,6 +109,39 @@ package struct BoardView: View {
         .sheet(item: $store.scope(state: \.destination?.log, action: \.destination.log)) {
             BoardLogView(store: $0)
         }
+    }
+
+    /// What agents outside Humata proposed through `humata mcp`, waiting
+    /// for the person to apply, edit or decline it.
+    private func outsideProposals(_ proposed: [Proposal]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(
+                proposed.count == 1
+                    ? "1 proposal from an outside agent" : "\(proposed.count) proposals from outside agents"
+            )
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: 8) {
+                    ForEach(proposed) { proposal in
+                        ProposalCard(
+                            proposal: proposal, deciding: store.proposals.deciding.contains(proposal.id),
+                            canStartWork: false
+                        ) { store.send(.proposals($0)) }
+                        .frame(width: 320)
+                    }
+                }
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.bar)
+    }
+
+    private var editingProposal: Binding<Bool> {
+        Binding(
+            get: { store.proposals.editing != nil },
+            set: { if !$0 { store.send(.proposals(.editCancelled)) } })
     }
 
     private func column(_ status: ItemStatus) -> some View {

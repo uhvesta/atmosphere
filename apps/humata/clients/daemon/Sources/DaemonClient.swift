@@ -55,8 +55,12 @@ package struct DaemonClient: Sendable {
     /// What the session's agent proposed, oldest first, with what the
     /// person did about each.
     package var proposals: @Sendable (_ session: String) async throws -> [Proposal]
+    /// What agents outside Humata proposed for the project's board through
+    /// `humata mcp`, oldest first; apply or decline them with no session.
+    package var outsideProposals: @Sendable (_ project: String) async throws -> [Proposal]
     /// Adds the proposed task, or changes the item's spec, with `title` or
-    /// `spec` instead of the proposed ones when given.
+    /// `spec` instead of the proposed ones when given. `session` is empty
+    /// for an outside agent's proposal.
     package var applyProposal:
         @Sendable (_ session: String, _ proposal: String, _ title: String?, _ spec: String?) async throws -> Item
     package var declineProposal: @Sendable (_ session: String, _ proposal: String) async throws -> Void
