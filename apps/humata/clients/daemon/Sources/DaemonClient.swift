@@ -100,6 +100,9 @@ package struct DaemonClient: Sendable {
     /// Adds a task to `project`, or a subtask under `fields.parentID`.
     package var createItem: @Sendable (_ project: String, _ fields: ItemFields) async throws -> Item
     package var updateItem: @Sendable (_ item: String, _ update: ItemUpdate) async throws -> Item
+    /// Removes a task or subtask; Board History brings it back. Refused while
+    /// it has subtasks or unarchived sessions.
+    package var deleteItem: @Sendable (_ item: String) async throws -> Void
     /// The project's board changes, newest first.
     package var boardLog: @Sendable (_ project: String) async throws -> [BoardChange]
     /// Puts an item back as it was before the change; nil when that removed it.

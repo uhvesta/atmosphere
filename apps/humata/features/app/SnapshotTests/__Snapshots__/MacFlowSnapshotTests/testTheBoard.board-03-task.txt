@@ -55,5 +55,6 @@
     [Heading] "Sessions"
     [Button] "Start Work" help: "Start a session with your last New Session settings, told to do what the spec says"
     [Button] "Start Session…"
+    [Button] "Delete…"
     [Button] "Done"
     [Button] "Edit"

@@ -772,6 +772,43 @@ impl Store {
         self.item(id)
     }
 
+    /// Removes item `id`, logged so reverting the change brings it back.
+    /// Refused while subtasks or sessions are on it.
+    pub fn delete_item(&self, id: &str) -> Result<(), StoreError> {
+        let item = self.item(id)?;
+        let mut connection = self.lock();
+        let transaction = connection.transaction().map_err(self.failed())?;
+        let (subtasks, sessions): (i64, i64) = transaction
+            .query_row(
+                "SELECT
+                    (SELECT count(*) FROM items WHERE parent_id = ?1),
+                    (SELECT count(*) FROM sessions WHERE item_id = ?1)",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(self.failed())?;
+        if subtasks > 0 || sessions > 0 {
+            return Err(StoreError::ItemInUse {
+                title: item.fields.title,
+                subtasks,
+                sessions,
+            });
+        }
+        let deleted = (|| {
+            transaction.execute("DELETE FROM items WHERE id = ?1", [id])?;
+            log(
+                &transaction,
+                &item.project_id,
+                id,
+                Some(&item.fields),
+                None,
+                None,
+            )?;
+            transaction.commit()
+        })();
+        deleted.map_err(self.failed())
+    }
+
     pub fn item(&self, id: &str) -> Result<Item, StoreError> {
         let connection = self.lock();
         let found = connection

@@ -51,7 +51,7 @@ package struct BoardFeature {
         case item(ItemFeature)
         case newItem(NewItemFeature)
         case log(BoardLogFeature)
-        case alert(AlertState<CloseAlert>)
+        case alert(AlertState<BoardAlert>)
     }
 
     package enum Action {
@@ -69,6 +69,8 @@ package struct BoardFeature {
         case startWorkTapped(Item.ID)
         case dropped(Item.ID, on: ItemStatus)
         case moved(Item)
+        /// Asks to delete the item, then does.
+        case deleteTapped(Item.ID)
         case logTapped
         /// Makes a task of each open GitHub issue of the project's
         /// repositories not imported before.
@@ -212,6 +214,23 @@ package struct BoardFeature {
                 // A task shows its subtasks' sessions, so read it all again.
                 return .send(.refresh)
 
+            case .deleteTapped(let id):
+                guard let item = state.items[id: id] else { return .none }
+                state.destination = .alert(.deleting(item))
+                return .none
+
+            case .destination(.presented(.alert(.delete(let id)))):
+                return .run { send in
+                    try await daemon.deleteItem(id)
+                    await send(.refresh)
+                } catch: { error, send in
+                    await send(.failed(error.localizedDescription))
+                }
+
+            case .destination(.presented(.item(.delegate(.deleted)))):
+                state.destination = nil
+                return .send(.refresh)
+
             case .logTapped:
                 state.destination = .log(BoardLogFeature.State(project: state.project, items: state.items))
                 return .none
@@ -310,7 +329,7 @@ package struct ItemFeature {
     package enum Destination {
         case newSession(NewSessionFeature)
         case newSubtask(NewItemFeature)
-        case alert(AlertState<CloseAlert>)
+        case alert(AlertState<BoardAlert>)
     }
 
     package enum Action: BindableAction {
@@ -335,6 +354,7 @@ package struct ItemFeature {
         case startWorkTapped
         case startWorkFailed(String)
         case addSubtaskTapped
+        case deleteTapped
         case comments(SpecCommentsFeature.Action)
         case destination(PresentationAction<Destination.Action>)
         case delegate(Delegate)
@@ -344,6 +364,8 @@ package struct ItemFeature {
             /// The board changed; read it again.
             case changed
             case openSession(Session)
+            /// The item was deleted; the page closes.
+            case deleted
         }
     }
 
@@ -437,6 +459,18 @@ package struct ItemFeature {
 
             case .destination(.presented(.alert(.keep(_, let status)))):
                 return update(state.item.id, ItemUpdate(status: status))
+
+            case .deleteTapped:
+                state.destination = .alert(.deleting(state.item))
+                return .none
+
+            case .destination(.presented(.alert(.delete(let id)))):
+                return .run { send in
+                    try await daemon.deleteItem(id)
+                    await send(.delegate(.deleted))
+                } catch: { error, send in
+                    await send(.failed(error.localizedDescription))
+                }
 
             case .priorityPicked(let priority):
                 guard priority != state.item.priority else { return .none }

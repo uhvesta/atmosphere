@@ -1792,6 +1792,76 @@ async fn every_board_change_can_be_reverted() {
 }
 
 #[tokio::test]
+async fn a_task_is_deleted_once_its_sessions_are_archived_and_comes_back_on_revert() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let task = item(&client, &project.id, "", "login").await;
+    let session = started(&client, start_on(&task.id)).await;
+    let delete = || {
+        client.call(pb::request::Kind::DeleteItem(pb::DeleteItem {
+            item_id: task.id.clone(),
+        }))
+    };
+
+    // With a live session on it, it stays.
+    let refused = delete().await;
+    assert!(
+        matches!(
+            refused,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::Busy,
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(board(&client, &project.id).await.len(), 1);
+
+    // Archived, the session moves to the project and the task goes.
+    update(
+        &client,
+        pb::UpdateSession {
+            session_id: session.id.clone(),
+            name: None,
+            archived: Some(true),
+            keeper: None,
+            item_id: None,
+        },
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{error}"));
+    let deleted = delete().await;
+    assert!(
+        matches!(deleted, Ok(pb::response::Kind::ItemDeleted(_))),
+        "{deleted:?}"
+    );
+    assert!(board(&client, &project.id).await.is_empty());
+    let listed = client
+        .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+        .await;
+    let Ok(pb::response::Kind::Sessions(listed)) = listed else {
+        panic!("{listed:?}")
+    };
+    let moved = listed
+        .sessions
+        .iter()
+        .find(|listed| listed.id == session.id);
+    assert_eq!(moved.map(|moved| moved.item_id.as_str()), Some(""));
+
+    // Board History brings it back.
+    let removal = board_log(&client, &project.id).await[0].id;
+    client
+        .call(pb::request::Kind::RevertBoardChange(
+            pb::RevertBoardChange { change_id: removal },
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(board(&client, &project.id).await.len(), 1);
+}
+
+#[tokio::test]
 async fn a_subtask_of_a_subtask_and_an_unknown_item_are_refused() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let repository = git_repository();

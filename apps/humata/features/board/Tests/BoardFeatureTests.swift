@@ -161,6 +161,23 @@ final class BoardFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.items[id: board.task.id]?.fields.status, .wontDo)
     }
 
+    func testDeletingACardRemovesItAndATaskWithSubtasksStays() async throws {
+        let board = try await board()
+        let store = store(board)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.deleteTapped(board.task.id))
+        await store.send(.destination(.presented(.alert(.delete(board.task.id)))))
+        await store.receive(\.failed)
+        XCTAssertNotNil(store.state.items[id: board.task.id])
+
+        await store.send(.deleteTapped(board.other.id))
+        await store.send(.destination(.presented(.alert(.delete(board.other.id)))))
+        await store.receive(\.loaded)
+        XCTAssertEqual(titles(store.state.cards(in: .todo)), ["login", "form"])
+    }
+
     func testANewSubtaskShowsOnTheBoard() async throws {
         let board = try await board()
         let store = store(board)

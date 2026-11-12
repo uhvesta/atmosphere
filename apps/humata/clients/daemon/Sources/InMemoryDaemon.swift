@@ -480,6 +480,7 @@ package final class InMemoryDaemon: Sendable {
             items: { project in try self.items(project) },
             createItem: { project, fields in try self.createItem(project, fields) },
             updateItem: { item, update in try self.updateItem(item, update) },
+            deleteItem: { item in try self.deleteItem(item) },
             boardLog: { project in
                 self.state.withValue { state in
                     let all = state.items + state.removed.values
@@ -1129,6 +1130,28 @@ extension InMemoryDaemon {
             return state.items[index].projectID
         }
         return try shown(itemID, in: projectID)
+    }
+
+    private func deleteItem(_ itemID: String) throws {
+        try state.withValue { state in
+            guard let index = state.items.firstIndex(where: { $0.id == itemID }) else {
+                throw Self.unknownItem(itemID)
+            }
+            let item = state.items[index]
+            guard !state.items.contains(where: { $0.parentID == itemID }) else {
+                throw DaemonError.refused(.invalidRequest, message: "\(item.title) has subtasks; remove them first.")
+            }
+            guard !state.sessions.contains(where: { $0.itemID == itemID && !$0.archived }) else {
+                throw DaemonError.refused(.busy, message: "\(item.title) has sessions; archive them first.")
+            }
+            for session in state.sessions.indices where state.sessions[session].itemID == itemID {
+                state.sessions[session].itemID = nil
+            }
+            let time = start + Double(1000 + state.nextChange)
+            state.items.remove(at: index)
+            state.removed[itemID] = item
+            Self.log(&state, item: itemID, before: item.fields, after: nil, time: time)
+        }
     }
 
     private func shown(_ itemID: String, in project: String) throws -> Item {

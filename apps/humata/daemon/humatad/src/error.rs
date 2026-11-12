@@ -495,6 +495,11 @@ pub enum DaemonError {
     ProjectInUse { name: String, working: usize },
 
     #[error(
+        "{title:?} has {live} sessions that aren't archived; archive them or move them to another task, then delete it"
+    )]
+    ItemHasSessions { title: String, live: usize },
+
+    #[error(
         "there is no host named {host:?}; add it with `humata host add` (it is kept in {hosts}), or leave the host empty for this Mac"
     )]
     UnknownHost { host: String, hosts: PathBuf },
@@ -711,7 +716,7 @@ impl DaemonError {
             | Self::RunGit { .. } => pb::ErrorCode::StorageFailed,
             Self::Refused { code, .. } => *code,
             Self::GitHub(_) => pb::ErrorCode::Github,
-            Self::ProjectInUse { .. } => pb::ErrorCode::Busy,
+            Self::ProjectInUse { .. } | Self::ItemHasSessions { .. } => pb::ErrorCode::Busy,
             Self::DeleteUnarchived { .. } | Self::DeleteForked { .. } => {
                 pb::ErrorCode::InvalidRequest
             }

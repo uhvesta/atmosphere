@@ -183,6 +183,7 @@ message Request {
     // SSH, on its hosts.
     SetModelServer set_model_server = 85;
     DeleteSession delete_session = 86;
+    DeleteItem delete_item = 87;
   }
 }
 
@@ -270,6 +271,7 @@ message Response {
     BranchesDeleted branches_deleted = 78;
     ModelServerSet model_server_set = 79;
     SessionDeleted session_deleted = 80;
+    ItemDeleted item_deleted = 81;
   }
 }
 
@@ -840,6 +842,15 @@ message DeleteSession {
 }
 
 message SessionDeleted {}
+
+// Removes a task or subtask, logged so Board History can bring it back.
+// Refused while it has subtasks or sessions that aren't archived; its
+// archived sessions move to the project.
+message DeleteItem {
+  string item_id = 1;
+}
+
+message ItemDeleted {}
 
 // What a session changed in each repository over a range of its history.
 message ReadChanges {

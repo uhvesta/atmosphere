@@ -391,6 +391,13 @@ extension DaemonClient {
                 }
                 return Item(updated.item)
             },
+            deleteItem: { item in
+                var request = Humata_V1_DeleteItem()
+                request.itemID = item
+                guard case .itemDeleted = try await daemon.call(.deleteItem(request)) else {
+                    throw DaemonError.unexpected("something other than the deleted item")
+                }
+            },
             boardLog: { project in
                 var read = Humata_V1_ReadBoardLog()
                 read.projectID = project

@@ -2,13 +2,15 @@ import ComposableArchitecture
 import HumataDaemonClient
 import HumataProjects
 
-/// What the person chose on closing an item that still has sessions.
-package enum CloseAlert: Equatable {
+/// What the person chose in an alert about an item: on closing it with
+/// sessions, or deleting it.
+package enum BoardAlert: Equatable {
     case stopAndArchive(Item.ID, ItemStatus)
     case keep(Item.ID, ItemStatus)
+    case delete(Item.ID)
 }
 
-extension AlertState where Action == CloseAlert {
+extension AlertState where Action == BoardAlert {
     /// Asks whether to stop and archive the `sessions` unarchived sessions on
     /// `item` as it moves to `status`, a closed one.
     static func closing(_ item: Item, to status: ItemStatus, sessions: Int) -> Self {
@@ -28,6 +30,26 @@ extension AlertState where Action == CloseAlert {
             TextState(
                 "Its sessions keep running and asking for approval until they're archived. "
                     + "An archived session can be unarchived later.")
+        }
+    }
+}
+
+extension AlertState where Action == BoardAlert {
+    /// Confirms deleting `item`.
+    static func deleting(_ item: Item) -> Self {
+        AlertState {
+            TextState("Delete \(item.title)?")
+        } actions: {
+            ButtonState(role: .destructive, action: .delete(item.id)) {
+                TextState("Delete")
+            }
+            ButtonState(role: .cancel) {
+                TextState("Cancel")
+            }
+        } message: {
+            TextState(
+                "Its archived sessions move to the project. Board History can bring it back. "
+                    + "One with subtasks or unarchived sessions can't be deleted until they're gone.")
         }
     }
 }

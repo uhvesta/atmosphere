@@ -697,7 +697,7 @@ waiting on you. It kept these, in build order:
 - [x] Move a session to another machine, both ways, from its menu, with a
   fresh copy, removing the source
 - [x] Closing an item offers to stop and archive its sessions
-- [ ] Delete a task, revertible from Board History
+- [x] Delete a task, revertible from Board History
 - [ ] A session shows its task and opens it
 - [ ] Listing sessions reads a kept summary instead of copying every history
 - [ ] The task page's subtasks open, and spec comments go to a live session

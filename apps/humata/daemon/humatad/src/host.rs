@@ -671,6 +671,7 @@ impl Host {
             | Request::DeleteProject(_)
             | Request::CreateItem(_)
             | Request::UpdateItem(_)
+            | Request::DeleteItem(_)
             | Request::ListItems(_)
             | Request::ReadBoardLog(_)
             | Request::RevertBoardChange(_)

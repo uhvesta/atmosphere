@@ -113,6 +113,8 @@ package struct BoardView: View {
             if item.parentID == nil {
                 Button("Add Subtask…") { store.send(.addTapped(parent: item.id)) }
             }
+            Divider()
+            Button("Delete…", role: .destructive) { store.send(.deleteTapped(item.id)) }
         } onTap: {
             store.send(.cardTapped(item.id))
         }
@@ -326,6 +328,9 @@ struct ItemView: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button("Edit") { store.send(.editTapped) }
+                }
+                ToolbarItem(placement: .destructiveAction) {
+                    Button("Delete…", role: .destructive) { store.send(.deleteTapped) }
                 }
             } else {
                 ToolbarItem(placement: .cancellationAction) {

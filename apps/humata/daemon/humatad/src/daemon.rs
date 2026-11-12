@@ -728,6 +728,30 @@ impl Daemon {
         Ok(self.store.update_item(&update.item_id, patch)?)
     }
 
+    /// Deletes item `id`, refused while sessions on it aren't archived. Its
+    /// archived sessions move to its project.
+    async fn delete_item(&self, id: &str) -> Result<(), DaemonError> {
+        let item = self.store.item(id)?;
+        let on_it: Vec<pb::SessionInfo> = self
+            .list(&item.project_id)
+            .await?
+            .sessions
+            .into_iter()
+            .filter(|session| session.item_id == id)
+            .collect();
+        let live = on_it.iter().filter(|session| !session.archived).count();
+        if live > 0 {
+            return Err(DaemonError::ItemHasSessions {
+                title: item.fields.title,
+                live,
+            });
+        }
+        for session in &on_it {
+            self.store.move_session(&session.id, None)?;
+        }
+        Ok(self.store.delete_item(id)?)
+    }
+
     /// Every host's sessions, or only `project`'s if it isn't empty. A host
     /// that can't be reached shows what it last had, marked offline, so one
     /// machine being off doesn't hide the rest.
@@ -1144,6 +1168,10 @@ impl Daemon {
                 return Ok(Reply::Response(Response::ItemUpdated(pb::ItemUpdated {
                     item: Some(item),
                 })));
+            }
+            Request::DeleteItem(delete) => {
+                self.delete_item(&delete.item_id).await?;
+                return Ok(Reply::Response(Response::ItemDeleted(pb::ItemDeleted {})));
             }
             Request::ListItems(list) => {
                 let items = self.shown_items(&list.project_id).await?;
