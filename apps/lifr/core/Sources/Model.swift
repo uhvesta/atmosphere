@@ -53,6 +53,13 @@ package enum AgentAccess: String, Hashable, Codable, Sendable, CaseIterable {
 
 /// An ongoing area of life. Avenues never end; they are only archived.
 package struct Avenue: Identifiable, Hashable, Codable, Sendable {
+    /// The colors an Avenue can have, by stored name. The app's accent
+    /// picks from the same ones.
+    package static let colors = [
+        "blue", "red", "orange", "yellow", "green", "mint", "teal", "cyan", "indigo", "purple", "pink", "brown",
+        "gray",
+    ]
+
     package var id: UUID
     package var key: AvenueKey
     package var name: String

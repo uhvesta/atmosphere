@@ -10,10 +10,7 @@ import LifrTaskDetail
 @Reducer
 package struct EditAvenueFeature {
     /// The colors an Avenue can have, by stored name.
-    package static let colors = [
-        "blue", "red", "orange", "yellow", "green", "mint", "teal", "cyan", "indigo", "purple", "pink", "brown",
-        "gray",
-    ]
+    package static let colors = Avenue.colors
     /// The symbols an Avenue can have.
     package static let symbols = [
         "circle", "heart", "briefcase", "house", "book", "dumbbell", "leaf", "dollarsign.circle", "person.2",

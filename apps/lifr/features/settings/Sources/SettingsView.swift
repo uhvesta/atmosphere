@@ -117,6 +117,7 @@ package struct SettingsView: View {
                 "A new task with a due date gets the reminder, and the badge counts open tasks. This device only."
             )
         }
+        AppearanceSection()
         Section {
             Toggle("Sound when a task is done", isOn: Binding($completionSound))
         } footer: {

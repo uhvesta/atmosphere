@@ -45,6 +45,7 @@ package struct RootView: View {
                 PrivacyCover()
             }
         }
+        .modifier(AccentTint())
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 store.send(.conversations(.resumed))

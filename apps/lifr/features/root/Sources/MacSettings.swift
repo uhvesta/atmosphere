@@ -22,6 +22,7 @@ package struct MacSettingsView: View {
         }
         .formStyle(.grouped)
         .frame(minWidth: 560, idealWidth: 620, minHeight: 520, idealHeight: 680)
+        .modifier(AccentTint())
     }
 
     private var tabs: some View {

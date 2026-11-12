@@ -87,6 +87,8 @@ ios_application(
         "Info-iOS.plist",
     ],
     minimum_os_version = "18.0",
+    # Settings › App Icon offers the others in the catalog.
+    primary_app_icon = "AppIcon",
     # Any device build, so Xcode can run it on a phone; the simulator
     # needs none. TestFlight uploads use the App Store one.
     provisioning_profile = select({
