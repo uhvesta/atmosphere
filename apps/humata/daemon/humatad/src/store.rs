@@ -2,6 +2,7 @@
 //! each session belongs to. A session's history stays with the agent on its
 //! host; this only says where to find it.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -196,6 +197,10 @@ const MIGRATIONS: &[&str] = &["
         text TEXT NOT NULL,
         PRIMARY KEY (project_id, position)
     );
+", "
+    -- Where a repository added by its URL was cloned from; its path is then
+    -- the Mac's clone of it.
+    ALTER TABLE project_repositories ADD COLUMN url TEXT NOT NULL DEFAULT '';
 "];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -204,6 +209,8 @@ pub struct Project {
     pub name: String,
     /// The repositories on this Mac its sessions work in; at least one.
     pub repositories: Vec<Repository>,
+    /// Where each repository added by its URL was cloned from, by its name.
+    pub urls: BTreeMap<String, String>,
     pub instructions: String,
     pub created_unix_ms: i64,
     /// Read by every session in it, after its instructions.
@@ -269,6 +276,7 @@ impl Store {
         &self,
         name: String,
         repositories: Vec<Repository>,
+        urls: BTreeMap<String, String>,
         instructions: String,
         skills: Vec<Skill>,
     ) -> Result<Project, StoreError> {
@@ -276,6 +284,7 @@ impl Store {
             id: uuid::Uuid::new_v4().to_string(),
             name,
             repositories,
+            urls,
             instructions,
             created_unix_ms: now_unix_ms(),
             skills,
@@ -301,18 +310,12 @@ impl Store {
                     project.created_unix_ms,
                 ],
             )?;
-            for (position, repository) in project.repositories.iter().enumerate() {
-                transaction.execute(
-                    "INSERT INTO project_repositories (project_id, position, name, path)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![
-                        project.id,
-                        i64::try_from(position).unwrap_or(i64::MAX),
-                        repository.name,
-                        repository.path.to_string_lossy(),
-                    ],
-                )?;
-            }
+            insert_repositories(
+                &transaction,
+                &project.id,
+                &project.repositories,
+                &project.urls,
+            )?;
             planning::insert_skills(&transaction, &project.id, &project.skills)?;
             transaction.commit()
         })();
@@ -380,6 +383,36 @@ impl Store {
         deleted
             .and_then(|()| transaction.commit())
             .map_err(self.failed())
+    }
+
+    /// Replaces `project`'s repositories, for sessions started after.
+    pub fn set_repositories(
+        &self,
+        project: &str,
+        repositories: &[Repository],
+        urls: &BTreeMap<String, String>,
+    ) -> Result<(), StoreError> {
+        self.project(project)?;
+        let mut connection = self.lock();
+        let set = (|| {
+            let transaction = connection.transaction()?;
+            transaction.execute(
+                "DELETE FROM project_repositories WHERE project_id = ?1",
+                [project],
+            )?;
+            insert_repositories(&transaction, project, repositories, urls)?;
+            // The first also goes in the column the first schema had.
+            let first = repositories
+                .first()
+                .map(|repository| repository.path.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            transaction.execute(
+                "UPDATE projects SET repository = ?2 WHERE id = ?1",
+                params![project, first],
+            )?;
+            transaction.commit()
+        })();
+        set.map_err(self.failed())
     }
 
     /// Records that `session` runs on `host`, and, if given, belongs to
@@ -988,12 +1021,37 @@ fn log(
     Ok(())
 }
 
+fn insert_repositories(
+    transaction: &Transaction<'_>,
+    project: &str,
+    repositories: &[Repository],
+    urls: &BTreeMap<String, String>,
+) -> rusqlite::Result<()> {
+    for (position, repository) in repositories.iter().enumerate() {
+        transaction.execute(
+            "INSERT INTO project_repositories (project_id, position, name, path, url)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                project,
+                i64::try_from(position).unwrap_or(i64::MAX),
+                repository.name,
+                repository.path.to_string_lossy(),
+                urls.get(&repository.name)
+                    .map(String::as_str)
+                    .unwrap_or_default(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 /// A project's row, without its repositories.
 fn project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     Ok(Project {
         id: row.get(0)?,
         name: row.get(1)?,
         repositories: Vec::new(),
+        urls: BTreeMap::new(),
         instructions: row.get(2)?,
         created_unix_ms: row.get(3)?,
         skills: Vec::new(),
@@ -1002,19 +1060,27 @@ fn project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
 
 fn with_repositories(connection: &Connection, project: Project) -> rusqlite::Result<Project> {
     let mut statement = connection.prepare_cached(
-        "SELECT name, path FROM project_repositories WHERE project_id = ?1 ORDER BY position",
+        "SELECT name, path, url FROM project_repositories WHERE project_id = ?1 ORDER BY position",
     )?;
-    let repositories = statement
+    let rows: Vec<(Repository, String)> = statement
         .query_map([&project.id], |row| {
-            Ok(Repository {
+            let repository = Repository {
                 name: row.get(0)?,
                 path: PathBuf::from(row.get::<_, String>(1)?),
-            })
+            };
+            Ok((repository, row.get(2)?))
         })?
         .collect::<Result<_, _>>()?;
+    let urls = rows
+        .iter()
+        .filter(|(_, url)| !url.is_empty())
+        .map(|(repository, url)| (repository.name.clone(), url.clone()))
+        .collect();
+    let repositories = rows.into_iter().map(|(repository, _)| repository).collect();
     let skills = planning::skills(connection, &project.id)?;
     Ok(Project {
         repositories,
+        urls,
         skills,
         ..project
     })
@@ -1081,6 +1147,7 @@ mod tests {
             .add_project(
                 "one".into(),
                 repositories("/code/one"),
+                BTreeMap::new(),
                 "be brief".into(),
                 Vec::new(),
             )
@@ -1089,6 +1156,7 @@ mod tests {
             .add_project(
                 "two".into(),
                 repositories("/code/two"),
+                BTreeMap::new(),
                 String::new(),
                 Vec::new(),
             )
@@ -1123,6 +1191,7 @@ mod tests {
             .add_project(
                 "one".into(),
                 repositories("/code/one"),
+                BTreeMap::new(),
                 String::new(),
                 Vec::new(),
             )

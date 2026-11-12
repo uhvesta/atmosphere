@@ -133,7 +133,8 @@ extension InMemoryDaemon {
     }
 
     func updateProject(_ projectID: String, _ update: ProjectUpdate) throws -> Project {
-        try state.withValue { state in
+        let repositories = try update.repositories.map(Self.named)
+        return try state.withValue { state in
             guard let index = state.projects.firstIndex(where: { $0.id == projectID }) else {
                 throw DaemonError.refused(.unknownProject, message: "There is no project \(projectID).")
             }
@@ -144,6 +145,7 @@ extension InMemoryDaemon {
                 state.projects[index].name = name
             }
             if let instructions = update.instructions { state.projects[index].instructions = instructions }
+            if let repositories { state.projects[index].repositories = repositories }
             if let skills = update.skills {
                 state.projects[index].skills = skills.compactMap { skill in
                     let name = skill.name.trimmingCharacters(in: .whitespacesAndNewlines)

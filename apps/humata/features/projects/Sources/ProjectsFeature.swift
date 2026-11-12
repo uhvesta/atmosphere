@@ -508,8 +508,8 @@ package struct NewProjectFeature {
     @ObservableState
     package struct State: Equatable {
         package var name = ""
-        /// The repositories' folders, as absolute paths. Each session works
-        /// across all of them.
+        /// The repositories' folders, as absolute paths, or URLs to clone.
+        /// Each session works across all of them.
         package var repositories: IdentifiedArrayOf<RepositoryRow> = [RepositoryRow(id: 0)]
         var nextRow = 1
         package var instructions = ""
@@ -518,13 +518,14 @@ package struct NewProjectFeature {
 
         package init() {}
 
-        /// The folders filled in so far.
+        /// The folders and URLs filled in so far.
         var paths: [String] {
             repositories.map(\.path.trimmed).filter { !$0.isEmpty }
         }
 
         package var canCreate: Bool {
-            !creating && !name.trimmed.isEmpty && !paths.isEmpty && paths.allSatisfy { $0.hasPrefix("/") }
+            !creating && !name.trimmed.isEmpty && !paths.isEmpty
+                && repositories.allSatisfy { $0.path.trimmed.isEmpty || $0.repository != nil }
         }
     }
 
@@ -582,7 +583,7 @@ package struct NewProjectFeature {
                 guard state.canCreate else { return .none }
                 state.creating = true
                 let (name, repositories, instructions) = (
-                    state.name.trimmed, state.paths.map { Repository(path: $0) }, state.instructions
+                    state.name.trimmed, state.repositories.compactMap(\.repository), state.instructions
                 )
                 return .run { send in
                     let project = try await daemon.createProject(name, repositories, instructions)
@@ -605,15 +606,27 @@ package struct NewProjectFeature {
     }
 }
 
-/// A row of the new project's repositories.
+/// A row of a project's repositories, as it's being written.
 package struct RepositoryRow: Identifiable, Hashable, Sendable {
     package var id: Int
-    /// The folder as typed or picked.
+    /// Its folder's name in a session's copy; empty to name it after its
+    /// folder or URL.
+    package var name = ""
+    /// The folder as typed or picked, or the URL to clone.
     package var path = ""
 
-    package init(id: Int, path: String = "") {
+    package init(id: Int, name: String = "", path: String = "") {
         self.id = id
+        self.name = name
         self.path = path
+    }
+
+    /// The row as one of the project's, if it's filled in with a URL or an
+    /// absolute path.
+    package var repository: Repository? {
+        let (name, path) = (name.trimmed, path.trimmed)
+        if Repository.isURL(path) { return Repository(name: name, url: path) }
+        return path.hasPrefix("/") ? Repository(name: name, path: path) : nil
     }
 }
 
@@ -811,5 +824,5 @@ package struct NewSessionFeature {
 }
 
 extension String {
-    fileprivate var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
+    var trimmed: String { trimmingCharacters(in: .whitespacesAndNewlines) }
 }

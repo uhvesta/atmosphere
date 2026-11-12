@@ -120,6 +120,9 @@ package struct DaemonClient: Sendable {
     package var checkHost: @Sendable (_ host: String) async throws -> HostHealth
     /// Copies Humata's program to the host; returns its version.
     package var installHost: @Sendable (_ host: String) async throws -> String
+    /// Links this Mac's commands into `~/.local/bin`, or with `check` only
+    /// says how they're linked. Never replaces what isn't such a link.
+    package var linkCommands: @Sendable (_ check: Bool) async throws -> CommandLinks
     /// The hosts named in ~/.ssh/config, to add one by.
     package var sshHosts: @Sendable () async throws -> [String]
     /// The Mac's copies of the sessions on hosts, kept after each turn.

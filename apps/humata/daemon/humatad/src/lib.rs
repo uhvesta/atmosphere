@@ -3,6 +3,7 @@
 //! use (`humatad mcp`). One binary, so a host is set up by copying it.
 
 mod board;
+mod commands;
 mod convert;
 mod daemon;
 mod error;
@@ -309,6 +310,7 @@ pub async fn daemon(
         Hosts::load(hosts)?,
         hosts.to_owned(),
         state.join("recovery"),
+        cache.join("repositories"),
         build.to_string(),
     );
     let listener = socket::listen(socket).await?;

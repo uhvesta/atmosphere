@@ -74,6 +74,30 @@ rust_test(
     deps = ["@crates//:tempfile"],
 )
 
+# Installing on a host of another platform: the build for it, linked onto
+# its PATH, or a refusal for a platform with none.
+rust_test(
+    name = "install_build_test",
+    srcs = [
+        "common.rs",
+        "install_build_test.rs",
+        "ssh_host.rs",
+    ],
+    crate_root = "install_build_test.rs",
+    data = [
+        "//apps/humata/daemon/cli:humata",
+        "//apps/humata/daemon/humatad",
+        "//apps/humata/daemon/humatad:builds",
+        "//apps/humata/e2e/sshd:test_sshd",
+    ],
+    env = {
+        "HUMATA": "$(rootpath //apps/humata/daemon/cli:humata)",
+        "HUMATAD": "$(rootpath //apps/humata/daemon/humatad)",
+        "TEST_SSHD": "$(rootpath //apps/humata/e2e/sshd:test_sshd)",
+    },
+    deps = ["@crates//:tempfile"],
+)
+
 # A terminal on a host over SSH, through a dropped connection.
 rust_test(
     name = "terminal_over_ssh_test",

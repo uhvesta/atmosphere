@@ -162,6 +162,9 @@ message Request {
     SetSpecs set_specs = 76;
     // A spec on the session's board, or the host's copy of it.
     ReadSpec read_spec = 77;
+    // For the Mac only: link its humata and humatad into ~/.local/bin, or
+    // say how they're linked.
+    LinkCommands link_commands = 78;
   }
 }
 
@@ -240,6 +243,7 @@ message Response {
     ProjectUpdated project_updated = 69;
     SpecsSet specs_set = 70;
     Spec spec = 71;
+    CommandsLinked commands_linked = 72;
   }
 }
 
@@ -344,8 +348,13 @@ enum SpecScope {
 message Repository {
   // Its folder's name in the session's copy; unique within a session.
   string name = 1;
-  // The repository's folder.
+  // The repository's folder. For one added by its URL, the Mac's clone of
+  // it, which the daemon makes.
   string path = 2;
+  // Where it's cloned from, for one added by its URL rather than a folder,
+  // such as https://github.com/owner/name.git. The Mac's clone is fetched
+  // before each session there; hosts clone it from here.
+  string url = 3;
 }
 
 // What a session may do without asking. A fork keeps its parent's.
@@ -393,7 +402,8 @@ message CreateProject {
   reserved 2;
   reserved "repository";
   string instructions = 3;
-  // At least one. A repository without a name is named after its folder.
+  // At least one, each a folder or a URL. A repository without a name is
+  // named after its folder or URL.
   repeated Repository repositories = 4;
   repeated Skill skills = 5;
 }
@@ -406,6 +416,13 @@ message UpdateProject {
   optional string instructions = 3;
   // Replaces every skill when set.
   Skills skills = 4;
+  // Replaces every repository when set, for sessions started after; those
+  // running keep their copies. Named as in CreateProject.
+  Repositories repositories = 5;
+}
+
+message Repositories {
+  repeated Repository repositories = 1;
 }
 
 message Skills {
@@ -1872,3 +1889,37 @@ message ClosePort {
 }
 
 message PortClosed {}
+
+// Links the Mac's humata and humatad into ~/.local/bin, where a terminal
+// finds them. A file there of either name that isn't such a link is left
+// alone, and no shell profile is changed.
+message LinkCommands {
+  // Only say how they're linked.
+  bool check = 1;
+}
+
+enum CommandLinkState {
+  COMMAND_LINK_STATE_UNSPECIFIED = 0;
+  // Nothing of that name is in the folder.
+  COMMAND_LINK_STATE_MISSING = 1;
+  // A link to this Humata's.
+  COMMAND_LINK_STATE_LINKED = 2;
+  // A link to another copy, as from an older copy of the app.
+  COMMAND_LINK_STATE_STALE = 3;
+  // Something else of that name, which is never replaced.
+  COMMAND_LINK_STATE_OTHER = 4;
+}
+
+message CommandLink {
+  string name = 1;
+  CommandLinkState state = 2;
+}
+
+message CommandsLinked {
+  // ~/.local/bin, in full.
+  string folder = 1;
+  repeated CommandLink links = 2;
+  // Whether the login shell's PATH has the folder, so a terminal finds
+  // what's linked there.
+  bool on_path = 3;
+}

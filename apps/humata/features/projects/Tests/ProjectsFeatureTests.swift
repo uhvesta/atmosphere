@@ -84,6 +84,34 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertFalse(state.canCreate)
     }
 
+    func testAProjectCanBeAddedByTheURLsOfItsRepositories() async throws {
+        let daemon = InMemoryDaemon()
+        var state = NewProjectFeature.State()
+        state.name = "app"
+        state.repositories = [
+            RepositoryRow(id: 0, path: "https://github.com/owner/app.git"),
+            RepositoryRow(id: 1, path: "git@github.com:owner/api.git"),
+            RepositoryRow(id: 2, path: "/code/docs"),
+        ]
+        XCTAssertTrue(state.canCreate)
+        let store = TestStore(initialState: state) {
+            NewProjectFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.createTapped)
+        await store.receive(\.delegate.created)
+        let projects = try await daemon.client.projects()
+        let project = try XCTUnwrap(projects.first)
+        XCTAssertEqual(project.repositories.map(\.name), ["app", "api", "docs"])
+        XCTAssertEqual(
+            project.repositories.map(\.url), ["https://github.com/owner/app.git", "git@github.com:owner/api.git", ""])
+        XCTAssertTrue(project.repositories.allSatisfy { $0.path.hasPrefix("/") })
+    }
+
     func testAProjectOfSeveralRepositoriesWorksInAll() async throws {
         let daemon = InMemoryDaemon()
         let store = TestStore(initialState: NewProjectFeature.State()) {

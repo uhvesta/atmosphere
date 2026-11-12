@@ -140,10 +140,15 @@ impl Daemon {
         Ok(proposal)
     }
 
-    pub(super) fn update_project(
+    pub(super) async fn update_project(
         &self,
         update: pb::UpdateProject,
     ) -> Result<pb::Project, DaemonError> {
+        // Cloned first, so a URL that can't be cloned changes nothing.
+        let repositories = match update.repositories {
+            Some(wanted) => Some(self.resolve_repositories(wanted.repositories).await?),
+            None => None,
+        };
         self.store.update_project(
             &update.project_id,
             update.name.as_deref().map(str::trim),
@@ -152,6 +157,10 @@ impl Daemon {
         if let Some(skills) = update.skills {
             self.store
                 .set_skills(&update.project_id, &crate::convert::skills(skills.skills))?;
+        }
+        if let Some((repositories, urls)) = repositories {
+            self.store
+                .set_repositories(&update.project_id, &repositories, &urls)?;
         }
         Ok(crate::convert::project(
             self.store.project(&update.project_id)?,
@@ -419,6 +428,7 @@ mod tests {
             id: "p".into(),
             name: "p".into(),
             repositories: Vec::new(),
+            urls: std::collections::BTreeMap::new(),
             instructions: "Use tabs.".into(),
             created_unix_ms: 0,
             skills: vec![Skill {

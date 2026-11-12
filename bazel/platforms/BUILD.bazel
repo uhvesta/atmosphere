@@ -15,14 +15,20 @@
 
 package(default_visibility = ["//visibility:public"])
 
-platform(
-    name = "macos_arm64",
-    constraint_values = [
-        "@llvm//constraints/cxxstdlib:libcxx",
-        "@platforms//cpu:aarch64",
-        "@platforms//os:macos",
-    ],
-)
+[
+    platform(
+        name = "macos_{}".format(arch),
+        constraint_values = [
+            "@llvm//constraints/cxxstdlib:libcxx",
+            "@platforms//cpu:{}".format(cpu),
+            "@platforms//os:macos",
+        ],
+    )
+    for arch, cpu in [
+        ("arm64", "aarch64"),
+        ("x86_64", "x86_64"),
+    ]
+]
 
 [
     platform(

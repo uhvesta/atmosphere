@@ -1,20 +1,28 @@
 import Foundation
-import LifrAPI
-import LifrModelsClient
+import InferenceKit
+import JSONKit
 
-/// Related words from a model the person picked for searching.
-enum ModelWords {
-    static let instructions = """
-        You help a person search their conversations with the assistant of Lifr, a task app. Given what they \
-        searched for, answer with up to 12 words or short phrases a conversation about it would likely have: \
-        other words for it, things that belong to it and examples. For "groceries": milk, eggs, bread, \
-        supermarket, shopping. One per line, in lowercase, without numbers or any other text.
+/// Related words from a model on the device, such as Apple's or one the
+/// person picked for searching.
+public enum ModelWords {
+    /// What the model is told, for a search of `searched`, such as "their
+    /// conversations with the assistant of Lifr, a task app".
+    public static func instructions(searching searched: String) -> String {
         """
+        You help a person search \(searched). Given what they searched for, answer with up to 12 words or short \
+        phrases a conversation about it would likely have: other words for it, things that belong to it and \
+        examples. For "groceries": milk, eggs, bread, supermarket, shopping. One per line, in lowercase, without \
+        numbers or any other text.
+        """
+    }
 
-    /// What `model` relates to `query`; empty when it can't answer.
-    static func related(to query: String, on model: any ModelRuntime) async -> [String] {
+    /// What `model` relates to `query` in a search of `searched`; empty
+    /// when it can't answer.
+    public static func related(to query: String, searching searched: String, on model: any ModelRuntime) async
+        -> [String]
+    {
         guard model.status == .available else { return [] }
-        let turn = ModelTurn(instructions: instructions, prompt: "Search: \(query)")
+        let turn = ModelTurn(instructions: instructions(searching: searched), prompt: "Search: \(query)")
         guard case .string(let answer)? = try? await model.respond(to: turn, partial: { _ in }) else { return [] }
         return words(in: answer, besides: query)
     }

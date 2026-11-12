@@ -222,6 +222,7 @@ pub fn wire_repository(repository: &Repository) -> pb::Repository {
     pb::Repository {
         name: repository.name.clone(),
         path: repository.path.display().to_string(),
+        url: String::new(),
     }
 }
 
@@ -229,7 +230,18 @@ pub fn project(project: Project) -> pb::Project {
     pb::Project {
         id: project.id,
         name: project.name,
-        repositories: project.repositories.iter().map(wire_repository).collect(),
+        repositories: project
+            .repositories
+            .iter()
+            .map(|repository| pb::Repository {
+                url: project
+                    .urls
+                    .get(&repository.name)
+                    .cloned()
+                    .unwrap_or_default(),
+                ..wire_repository(repository)
+            })
+            .collect(),
         instructions: project.instructions,
         created_unix_ms: project.created_unix_ms,
         skills: project

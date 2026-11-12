@@ -311,8 +311,11 @@ struct NewProjectView: View {
             Section {
                 ForEach($store.repositories) { $row in
                     HStack {
-                        TextField("Repository", text: $row.path, prompt: Text("/path/to/repository"))
-                            .labelsHidden()
+                        TextField(
+                            "Repository", text: $row.path,
+                            prompt: Text("/path/to/repository or https://github.com/owner/name")
+                        )
+                        .labelsHidden()
                         if store.repositories.count > 1 {
                             Button {
                                 store.send(.removeRepositoryTapped(row.id))
@@ -333,8 +336,9 @@ struct NewProjectView: View {
                 Text("Repositories")
             } footer: {
                 Text(
-                    "Git repositories on this Mac. Each session works in its own copy of all of them, so the "
-                        + "folders themselves are left as they are."
+                    "Git repositories on this Mac, or URLs to clone, such as a GitHub repository's. Each "
+                        + "session works in its own copy of all of them, so the folders themselves are left as "
+                        + "they are, and a URL's clone is fetched before each session starts."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)

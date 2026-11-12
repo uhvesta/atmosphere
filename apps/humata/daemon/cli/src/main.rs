@@ -95,13 +95,14 @@ enum ImportCommand {
 
 #[derive(Subcommand)]
 enum ProjectCommand {
-    /// Add a project of repositories on this Mac, and print its id.
+    /// Add a project of repositories, and print its id.
     Add {
         #[arg(long)]
         name: String,
-        /// A repository's folder on this Mac, as `PATH` or `NAME=PATH`; give
-        /// it once for each. NAME is its folder in each session's copy, the
-        /// folder's own name if not given.
+        /// A repository: its folder on this Mac or its URL, which this Mac
+        /// clones, as `PATH`, `URL`, `NAME=PATH` or `NAME=URL`; give it once
+        /// for each. NAME is its folder in each session's copy, the folder's
+        /// or URL's own name if not given.
         #[arg(long = "repository", required = true)]
         repositories: Vec<String>,
         /// Instructions for every session in it.
@@ -112,11 +113,15 @@ enum ProjectCommand {
         #[arg(long = "skill")]
         skills: Vec<String>,
     },
-    /// Change a project's name, instructions or skills.
+    /// Change a project's name, instructions, skills or repositories.
     Update {
         project: String,
         #[arg(long)]
         name: Option<String>,
+        /// Replaces every repository, for sessions started after, given as
+        /// for `project add`; give it once for each.
+        #[arg(long = "repository")]
+        repositories: Vec<String>,
         #[arg(long)]
         instructions: Option<String>,
         /// Replaces every skill, as `NAME=FILE`; give it once for each.
@@ -531,6 +536,14 @@ enum Command {
     /// List every session waiting on you, across projects, and what agents
     /// ask of you.
     Inbox,
+    /// Link this Mac's humata and humatad into ~/.local/bin, where a
+    /// terminal finds them. A file there of either name that isn't such a
+    /// link is left alone, and no shell profile is changed.
+    Link {
+        /// Only say how they're linked.
+        #[arg(long)]
+        check: bool,
+    },
     /// Answer what an agent asked, by the request id `humata inbox` prints:
     /// reply, approve its move, move its task elsewhere, or dismiss it.
     Answer {
@@ -792,9 +805,20 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             project,
             name,
             instructions,
+            repositories,
             skills,
             no_skills,
         }) => {
+            let repositories = if repositories.is_empty() {
+                None
+            } else {
+                Some(pb::Repositories {
+                    repositories: repositories
+                        .iter()
+                        .map(|given| repository(given))
+                        .collect::<Result<_, _>>()?,
+                })
+            };
             let skills = if no_skills || !skills.is_empty() {
                 Some(pb::Skills {
                     skills: read_skills(&skills)?,
@@ -807,6 +831,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 name,
                 instructions,
                 skills,
+                repositories,
             });
             match client.call(request).await? {
                 Response::ProjectUpdated(_) => {}
@@ -909,6 +934,15 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             }
             other => return Err(unexpected("the inbox", &other)),
         },
+        Command::Link { check } => {
+            match client
+                .call(Request::LinkCommands(pb::LinkCommands { check }))
+                .await?
+            {
+                Response::CommandsLinked(linked) => print!("{}", print::command_links(&linked)),
+                other => return Err(unexpected("the links", &other)),
+            }
+        }
         Command::Answer {
             request,
             reply,
@@ -1827,12 +1861,32 @@ fn repository(given: &str) -> Result<pb::Repository, CliError> {
         Some((name, path)) if !name.contains('/') => (name, path),
         _ => ("", given),
     };
+    if is_url(path) {
+        return Ok(pb::Repository {
+            name: name.to_owned(),
+            path: String::new(),
+            url: path.to_owned(),
+        });
+    }
     let path = PathBuf::from(path);
     let path = std::path::absolute(&path).map_err(|source| CliError::Resolve { path, source })?;
     Ok(pb::Repository {
         name: name.to_owned(),
         path: path.display().to_string(),
+        url: String::new(),
     })
+}
+
+/// Whether git takes `given` as a URL rather than a folder: `scheme://…`,
+/// or scp's `user@host:path`.
+fn is_url(given: &str) -> bool {
+    if given.contains("://") {
+        return true;
+    }
+    match given.split_once(':') {
+        Some((before, _)) => before.contains('@') && !before.contains('/'),
+        None => false,
+    }
 }
 
 async fn update(client: &Client, update: pb::UpdateSession) -> Result<(), CliError> {

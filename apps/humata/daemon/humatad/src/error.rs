@@ -331,6 +331,9 @@ pub enum DaemonError {
     #[error(transparent)]
     Store(#[from] StoreError),
 
+    #[error(transparent)]
+    Commands(#[from] crate::commands::CommandsError),
+
     /// The session's host said no; its message says why.
     #[error("{message}")]
     Refused {
@@ -387,6 +390,26 @@ pub enum DaemonError {
         repository: PathBuf,
         #[source]
         source: Option<std::io::Error>,
+    },
+
+    #[error(
+        "couldn't clone {url}: {output}. Check the URL, and that git on this Mac can reach it: for a private repository, sign git in, as with `gh auth login`"
+    )]
+    CloneUrl { url: String, output: String },
+
+    #[error(
+        "couldn't keep the clones of repositories added by URL in {path}; check that the disk has room and the cache folder is writable"
+    )]
+    CreateClones {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("couldn't run git; install it, as with `xcode-select --install`, and try again")]
+    RunGit {
+        #[source]
+        source: std::io::Error,
     },
 
     #[error("only a host answers this; the daemon sends it to its hosts itself")]
@@ -488,12 +511,12 @@ pub enum DaemonError {
     NotManaged { host: String },
 
     #[error(
-        "host {host:?} is {theirs:?} and this Mac is {ours:?}, so this humatad won't run there; build humatad for {theirs:?} and give its path to install"
+        "host {host:?} is {platform:?}, and this Humata has no humatad built for it beside {looked_in}; install a Humata that includes that platform, or build humatad for it and give its path to `humata host install --binary`"
     )]
-    OtherPlatform {
+    NoBuildFor {
         host: String,
-        theirs: String,
-        ours: String,
+        platform: String,
+        looked_in: PathBuf,
     },
 
     #[error("couldn't read the humatad to install, {path}; check that it exists and is readable")]
@@ -603,7 +626,10 @@ impl DaemonError {
             Self::Store(StoreError::AlreadyDecided { .. }) | Self::UnknownProposal { .. } => {
                 pb::ErrorCode::UnknownProposal
             }
-            Self::Store(_) => pb::ErrorCode::StorageFailed,
+            Self::Store(_)
+            | Self::Commands(_)
+            | Self::CreateClones { .. }
+            | Self::RunGit { .. } => pb::ErrorCode::StorageFailed,
             Self::Refused { code, .. } => *code,
             Self::ProjectInUse { .. } => pb::ErrorCode::Busy,
             Self::NoFile
@@ -623,12 +649,13 @@ impl DaemonError {
             | Self::BadHostName { .. }
             | Self::NoDestination
             | Self::NotManaged { .. }
-            | Self::OtherPlatform { .. }
+            | Self::NoBuildFor { .. }
             | Self::ReadBinary { .. }
             | Self::NoOrigin { .. }
             | Self::NoCommand { .. }
             | Self::NotAFolder { .. }
             | Self::NoRepositories
+            | Self::CloneUrl { .. }
             | Self::ForHostsOnly
             | Self::NoSetupHere
             | Self::BadPort { .. }

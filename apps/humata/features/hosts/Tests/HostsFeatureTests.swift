@@ -38,6 +38,32 @@ final class HostsFeatureTests: XCTestCase {
         XCTAssertFalse(status.githubToken)
     }
 
+    func testThisMacShowsItsCommandsUnlinkedUntilLinked() async throws {
+        let daemon = InMemoryDaemon()
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.selected(""))
+        await store.receive(\.commandLinksLoaded)
+        let checked = try XCTUnwrap(store.state.commandLinks)
+        XCTAssertTrue(checked.linkable)
+        XCTAssertEqual(checked.links.map(\.state), [.missing, .missing])
+
+        await store.send(.linkCommandsTapped)
+        XCTAssertTrue(store.state.linking)
+        await store.receive(\.commandLinksLoaded)
+        XCTAssertFalse(store.state.linking)
+        XCTAssertEqual(store.state.commandLinks?.links.map(\.state), [.linked, .linked])
+        XCTAssertEqual(store.state.commandLinks?.linkable, false)
+
+        await store.send(.selected("gpu"))
+        XCTAssertNil(store.state.commandLinks)
+    }
+
     func testTheListChecksEveryHost() async throws {
         let daemon = InMemoryDaemon()
         for name in ["a", "b"] {

@@ -100,6 +100,9 @@ package struct HostsView: View {
             let editor = store.scope(state: \.editor, action: \.editor)
         {
             Form {
+                if let links = store.commandLinks {
+                    CommandsSection(links: links, linking: store.linking) { store.send(.linkCommandsTapped) }
+                }
                 HostEditorSections(store: editor)
                 SkippedSection(skipped: store.skipped) { store.send(.removeSkippedTapped($0)) }
             }
@@ -125,6 +128,59 @@ package struct HostsView: View {
             }
             .formStyle(.grouped)
             .id(host.id)
+        }
+    }
+}
+
+/// This Mac's `humata` and `humatad` in `~/.local/bin`, so a terminal finds
+/// them: how each is linked, a button to link them, and what to add to the
+/// shell's startup file when that folder isn't on its PATH, which Humata
+/// never changes itself.
+private struct CommandsSection: View {
+    let links: CommandLinks
+    let linking: Bool
+    let link: () -> Void
+
+    var body: some View {
+        Section {
+            ForEach(links.links, id: \.name) { command in
+                LabeledContent {
+                    Text(Self.describe(command.state))
+                        .foregroundStyle(command.state == .linked ? .primary : .secondary)
+                } label: {
+                    Text(command.name).monospaced()
+                }
+            }
+            if links.linkable {
+                Button(linking ? "Linking…" : "Link Commands", action: link)
+                    .disabled(linking)
+                    .help("Link humata and humatad into \(links.folder); nothing else there is replaced")
+            }
+            if !links.onPath {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(
+                        "\(links.folder) isn't on your shell's PATH. Add this line to ~/.zprofile, then open "
+                            + "a new terminal:")
+                    Text("export PATH=\"$HOME/.local/bin:$PATH\"")
+                        .monospaced()
+                        .textSelection(.enabled)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Commands")
+        } footer: {
+            Text("Linked into \(links.folder), the humata and humatad here run in any terminal on this Mac.")
+        }
+    }
+
+    private static func describe(_ state: CommandLinks.Link.State) -> String {
+        switch state {
+        case .missing: "Not linked"
+        case .linked: "Linked"
+        case .stale: "Linked to another copy of Humata"
+        case .other: "Another program of this name is there; it's left alone"
         }
     }
 }

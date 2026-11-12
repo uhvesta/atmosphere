@@ -8,8 +8,9 @@ import HumataTerminal
 /// the list shows and on request; adding one from ~/.ssh/config; installing
 /// Humata's program on one; its agents' variables and setup script; the
 /// sessions on it that couldn't be opened; the Mac's copies of its sessions,
-/// to restore those it lost or move them elsewhere; its terminals; its files; and
-/// removing one.
+/// to restore those it lost or move them elsewhere; its terminals; its files;
+/// removing one; and for this Mac, linking its commands where a terminal
+/// finds them.
 @Reducer
 package struct HostsFeature {
     @ObservableState
@@ -37,6 +38,9 @@ package struct HostsFeature {
         package var files: FileBrowserFeature.State?
         /// The selected host's forwarded ports.
         package var ports: PortsFeature.State?
+        /// How this Mac's commands are linked, while it's selected.
+        package var commandLinks: CommandLinks?
+        package var linking = false
         @Presents package var destination: Destination.State?
 
         package init() {}
@@ -99,6 +103,9 @@ package struct HostsFeature {
         case failed(title: String, message: String)
         case editor(HostEditorFeature.Action)
         case paneSelected(Pane)
+        case commandLinksLoaded(CommandLinks)
+        case linkCommandsTapped
+        case linkFailed(String)
         case terminals(TerminalsFeature.Action)
         case files(FileBrowserFeature.Action)
         case ports(PortsFeature.Action)
@@ -319,6 +326,30 @@ package struct HostsFeature {
                 state.pane = pane
                 return .none
 
+            case .commandLinksLoaded(let links):
+                state.linking = false
+                state.commandLinks = links
+                return .none
+
+            case .linkCommandsTapped:
+                guard !state.linking else { return .none }
+                state.linking = true
+                return .run { send in
+                    await send(.commandLinksLoaded(try await daemon.linkCommands(false)))
+                } catch: { error, send in
+                    await send(.linkFailed(error.localizedDescription))
+                }
+
+            case .linkFailed(let message):
+                state.linking = false
+                state.destination = .alert(
+                    AlertState {
+                        TextState("Couldn't link the commands")
+                    } message: {
+                        TextState(message)
+                    })
+                return .none
+
             case .editor, .destination, .terminals, .files, .ports:
                 return .none
             }
@@ -340,8 +371,9 @@ package struct HostsFeature {
         state.ports = id.map { PortsFeature.State(host: $0.isEmpty ? nil : $0) }
         state.skipped = []
         state.recoveries = []
+        state.commandLinks = nil
         guard let id else { return .none }
-        guard !id.isEmpty else { return loadSkipped(id) }
+        guard !id.isEmpty else { return .merge(loadSkipped(id), loadCommandLinks()) }
         return .merge(loadSkipped(id), loadRecoveries(id))
     }
 
@@ -352,6 +384,15 @@ package struct HostsFeature {
             await send(.recoveriesLoaded(id, (try? await daemon.recoveries()) ?? []))
         }
         .cancellable(id: RecoveriesLoad.id, cancelInFlight: true)
+    }
+
+    /// Without an answer, nothing about them shows.
+    private func loadCommandLinks() -> Effect<Action> {
+        .run { send in
+            if let links = try? await daemon.linkCommands(true) {
+                await send(.commandLinksLoaded(links))
+            }
+        }
     }
 
     /// One that can't be reached has none to list until it can be.

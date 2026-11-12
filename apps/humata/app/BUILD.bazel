@@ -32,7 +32,9 @@ genrule(
 macos_application(
     name = "macos",
     additional_contents = {
+        "//apps/humata/daemon/cli:humata": "Helpers",
         "//apps/humata/daemon/humatad": "Helpers",
+        "//apps/humata/daemon/humatad:builds": "Helpers",
         ":daemon_plist": "Library/LaunchAgents",
     },
     bundle_id = HUMATA_BUNDLE_ID,

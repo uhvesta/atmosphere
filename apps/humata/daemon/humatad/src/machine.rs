@@ -27,6 +27,18 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
 /// The variables that give agents a GitHub token.
 const TOKENS: [&str; 3] = ["GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"];
 
+/// Has git answer GitHub's request for a password with the host's token,
+/// read from its variables each time, so the token is never written to the
+/// clone's config or anywhere else on the host. The empty helper first
+/// drops any the host's own git config names for GitHub.
+const GITHUB_CREDENTIALS: [&str; 4] = [
+    "-c",
+    "credential.https://github.com.helper=",
+    "-c",
+    "credential.https://github.com.helper=!f() { test \"$1\" = get || exit 0; echo username=x-access-token; \
+     echo \"password=${GH_TOKEN:-${GITHUB_TOKEN:-$COPILOT_GITHUB_TOKEN}}\"; }; f",
+];
+
 /// The variables that sign Claude Code in.
 const ANTHROPIC_KEYS: [&str; 2] = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"];
 
@@ -228,7 +240,11 @@ impl Machine {
         for repository in clone.repositories {
             let path = folder.join(plain(&repository.name)?);
             let mut git = Command::new("git");
-            git.envs(self.env.vars()).stdin(Stdio::null());
+            let vars = self.env.vars();
+            if vars.iter().any(|(name, _)| TOKENS.contains(&name.as_str())) {
+                git.args(GITHUB_CREDENTIALS);
+            }
+            git.envs(vars).stdin(Stdio::null());
             if path.join(".git").exists() {
                 git.arg("-C")
                     .arg(&path)
@@ -254,6 +270,7 @@ impl Machine {
             cloned.push(pb::Repository {
                 name: repository.name,
                 path: path.display().to_string(),
+                url: String::new(),
             });
         }
         let mut tips = Vec::with_capacity(cloned.len());

@@ -533,6 +533,7 @@ async fn daemon_itself(state: &Path, hosts: Hosts) -> Arc<Daemon> {
             hosts,
             state.join("hosts.json"),
             state.join("recovery"),
+            state.join("repositories"),
             "test".to_owned(),
         ),
         Err(error) => panic!("couldn't open the host: {error}"),
@@ -678,6 +679,7 @@ fn create_project(repository: &Path) -> pb::request::Kind {
     pb::request::Kind::CreateProject(pb::CreateProject {
         name: "humata".to_owned(),
         repositories: vec![pb::Repository {
+            url: String::new(),
             name: String::new(),
             path: repository.display().to_string(),
         }],
@@ -988,6 +990,7 @@ async fn a_project_of_several_repositories_names_each_folder_apart() {
     let (one, two) = (git_repository(), git_repository());
     let client = daemon(state.path(), Hosts::default()).await;
     let repository = |name: &str, path: &Path| pb::Repository {
+        url: String::new(),
         name: name.to_owned(),
         path: path.display().to_string(),
     };
@@ -1019,6 +1022,157 @@ async fn a_project_of_several_repositories_names_each_folder_apart() {
     for name in names {
         assert!(folder.join(name).join("README.md").is_file(), "{name}");
     }
+}
+
+/// Commits `file` to the repository at `path`.
+fn commit(path: &Path, file: &str) {
+    std::fs::write(path.join(file), "new\n").unwrap_or_else(|error| panic!("{error}"));
+    for arguments in [&["add", file][..], &["commit", "--quiet", "-m", file]] {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(arguments)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@localhost")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@localhost")
+            .status()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(status.success(), "git {arguments:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_project_from_a_url_checks_out_whats_there_when_each_session_starts() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let upstream = git_repository();
+    let url = format!("file://{}", upstream.path().display());
+    let client = daemon(state.path(), Hosts::default()).await;
+    let created = client
+        .call(pb::request::Kind::CreateProject(pb::CreateProject {
+            name: "remote".to_owned(),
+            repositories: vec![pb::Repository {
+                url: url.clone(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }))
+        .await;
+    let Ok(pb::response::Kind::ProjectCreated(pb::ProjectCreated {
+        project: Some(project),
+    })) = created
+    else {
+        panic!("{created:?}")
+    };
+    let repository = &project.repositories[0];
+    assert_eq!(repository.url, url);
+    assert!(!repository.path.is_empty());
+
+    // One repository is the folder a session works in.
+    let first = started(&client, start_in(&project.id)).await;
+    send(&client, &first.id, "hello").await;
+    after_turns(&client, &first.id, 1).await;
+    let folder = PathBuf::from(&first.working_directory);
+    assert!(folder.join("README.md").is_file());
+    assert!(!folder.join("LATER.md").exists());
+
+    commit(upstream.path(), "LATER.md");
+    let second = started(&client, start_in(&project.id)).await;
+    send(&client, &second.id, "hello").await;
+    after_turns(&client, &second.id, 1).await;
+    let folder = PathBuf::from(&second.working_directory);
+    assert!(
+        folder.join("LATER.md").is_file(),
+        "the clone wasn't fetched"
+    );
+}
+
+#[tokio::test]
+async fn a_url_that_cant_be_cloned_makes_no_project_and_changes_none() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let gone = pb::Repository {
+        url: format!("file://{}/nothing-here", state.path().display()),
+        ..Default::default()
+    };
+    let created = client
+        .call(pb::request::Kind::CreateProject(pb::CreateProject {
+            name: "gone".to_owned(),
+            repositories: vec![gone.clone()],
+            ..Default::default()
+        }))
+        .await;
+    assert!(
+        matches!(
+            &created,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::InvalidRequest,
+                ..
+            })
+        ),
+        "{created:?}"
+    );
+
+    let made = project(&client, repository.path()).await;
+    let updated = client
+        .call(pb::request::Kind::UpdateProject(pb::UpdateProject {
+            project_id: made.id.clone(),
+            repositories: Some(pb::Repositories {
+                repositories: vec![gone],
+            }),
+            ..Default::default()
+        }))
+        .await;
+    assert!(updated.is_err(), "{updated:?}");
+    let listed = client
+        .call(pb::request::Kind::ListProjects(pb::ListProjects {}))
+        .await;
+    let Ok(pb::response::Kind::Projects(projects)) = listed else {
+        panic!("{listed:?}")
+    };
+    assert_eq!(projects.projects[0].repositories, made.repositories);
+}
+
+#[tokio::test]
+async fn a_projects_repositories_change_for_sessions_started_after() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let (one, two) = (git_repository(), git_repository());
+    commit(two.path(), "TWO.md");
+    let client = daemon(state.path(), Hosts::default()).await;
+    let made = project(&client, one.path()).await;
+    let before = started(&client, start_in(&made.id)).await;
+    send(&client, &before.id, "hello").await;
+    after_turns(&client, &before.id, 1).await;
+
+    let updated = client
+        .call(pb::request::Kind::UpdateProject(pb::UpdateProject {
+            project_id: made.id.clone(),
+            repositories: Some(pb::Repositories {
+                repositories: vec![pb::Repository {
+                    name: "two".to_owned(),
+                    path: two.path().display().to_string(),
+                    url: String::new(),
+                }],
+            }),
+            ..Default::default()
+        }))
+        .await;
+    assert!(updated.is_ok(), "{updated:?}");
+    let after = started(&client, start_in(&made.id)).await;
+    send(&client, &after.id, "hello").await;
+    after_turns(&client, &after.id, 1).await;
+
+    assert!(
+        PathBuf::from(&after.working_directory)
+            .join("TWO.md")
+            .is_file()
+    );
+    assert!(
+        !PathBuf::from(&before.working_directory)
+            .join("TWO.md")
+            .exists()
+    );
 }
 
 #[tokio::test]
@@ -1698,6 +1852,7 @@ async fn a_session_backed_up_from_one_host_carries_on_on_another_with_its_code()
         backend_config: WRITER.to_owned(),
         approval_mode: pb::ApprovalMode::AllowEverything.into(),
         repositories: vec![pb::Repository {
+            url: String::new(),
             name: "code".to_owned(),
             path: repository.path().display().to_string(),
         }],
@@ -1733,6 +1888,7 @@ async fn a_session_backed_up_from_one_host_carries_on_on_another_with_its_code()
         pb::request::Kind::RestoreBackup(pb::RestoreBackup {
             backup: Some(backup),
             repositories: vec![pb::Repository {
+                url: String::new(),
                 name: "code".to_owned(),
                 path: clone.display().to_string(),
             }],
@@ -1782,6 +1938,7 @@ async fn a_backup_leaves_out_the_commits_the_mac_has() {
         backend_config: WRITER.to_owned(),
         approval_mode: pb::ApprovalMode::AllowEverything.into(),
         repositories: vec![pb::Repository {
+            url: String::new(),
             name: "code".to_owned(),
             path: repository.path().display().to_string(),
         }],
@@ -1868,6 +2025,7 @@ async fn a_session_lost_mid_turn_comes_back_with_the_files_written_so_far() {
         backend_config: WRITE_THEN_WAIT.to_owned(),
         approval_mode: pb::ApprovalMode::AllowEverything.into(),
         repositories: vec![pb::Repository {
+            url: String::new(),
             name: "code".to_owned(),
             path: repository.path().display().to_string(),
         }],
@@ -1902,6 +2060,7 @@ async fn a_session_lost_mid_turn_comes_back_with_the_files_written_so_far() {
         .call(pb::request::Kind::RestoreBackup(pb::RestoreBackup {
             backup: Some(backup),
             repositories: vec![pb::Repository {
+                url: String::new(),
                 name: "code".to_owned(),
                 path: clone.display().to_string(),
             }],

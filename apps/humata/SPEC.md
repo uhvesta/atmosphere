@@ -133,9 +133,9 @@ original spec; lettered ones were added since.
 | C Polish: majors and minors | Done |
 | D Durable hosts | Done |
 | E Terminals and files | Done |
-| 6 Plan with the agent | Done |
-| F Any host, any repository | In progress |
-| 7 Search across sessions | After F |
+| 6 Plan with the agent | Done (8dba5fb0) |
+| F Any host, any repository | Done |
+| 7 Search across sessions | In progress |
 | 8 Ship as pull requests | After 7 |
 
 ## Done milestones
@@ -382,22 +382,58 @@ with specs, applies two, and finds exactly those two on the board. It passes
 **Outcome:** adding a Linux or Mac host over SSH just works, and a project
 can start from a GitHub URL as well as a folder.
 
-- [ ] Build humatad for macOS (arm64, x86_64) and Linux (x86_64, arm64, static musl) when packaging, and bundle every build in the app under `Contents/Helpers/humatad-<os>-<arch>`
-- [ ] On install, pick the build matching the host's `uname -sm`, copy it to `~/.humata/bin/humatad` atomically, and say which platform is missing if none matches
-- [ ] Link `humata` and `humatad` into `~/.local/bin` on hosts, and offer the same on this Mac, saying how to add the folder to PATH when it isn't on it; never edit shell profiles without asking
-- [ ] Reinstall on a host whose humatad is another build than the app's, as it does for this Mac
-- [ ] Make a project from GitHub repositories as well as folders, in any mix: add each by URL (`https://github.com/o/r` or `git@github.com:o/r`), and the Mac clones it into the cache folder once and fetches it before each session; hosts clone from GitHub with their token instead of from the Mac
-- [ ] Add, remove and rename a project's repositories after it's made, for sessions started after
+- [x] Build humatad for macOS (arm64, x86_64) and Linux (x86_64, arm64, static musl) when packaging, and bundle every build in the app under `Contents/Helpers/humatad-<os>-<arch>` (`//apps/humata/daemon/humatad:builds`, a split transition over the platforms)
+- [x] On install, pick the build matching the host's `uname -sm`, copy it into the host's folder (`~/.humata/bin/humatad` by default) atomically, and say which platform is missing if none matches; a host of this Mac's platform with no bundled build gets this humatad
+- [x] Link `humatad` into `~/.local/bin` on hosts, only where nothing or a link of that name is, and offer `humata` and `humatad` on this Mac (This Mac in Hosts, or `humata link`), saying how to add the folder to PATH when it isn't on it; shell profiles are never edited
+- [x] Reinstall on a host whose humatad is another build than the app's, as it does for this Mac; a host with no build for its platform keeps the one it has
+- [x] Make a project from GitHub repositories as well as folders, in any mix: add each by URL (`https://github.com/o/r` or `git@github.com:o/r`), and the Mac clones it into the cache folder once and fetches it before each session; hosts clone from the URL themselves, with their token passed to git through a credential helper so it's never written to disk
+- [x] Add, remove and rename a project's repositories after it's made, for sessions started after (project settings, or `humata project update --repository`)
 
 **Done when:** an end-to-end test installs the bundled Linux build on a Linux
-container over SSH and runs a session there, and a project made from a URL to
-a local git server starts a session with the repository checked out.
+host over SSH, and a project made from a URL to a local git server starts a
+session with the repository checked out. Both pass. This Mac has no
+container runtime, so `install_build_test` stands in for the Linux container:
+the test sshd's `uname` says Linux, and the test checks the Linux build and
+its link are installed (a session can't run, as the build can't run on a
+Mac). `a_project_from_a_url_checks_out_whats_there_when_each_session_starts`
+clones from a `file://` URL and finds a later commit in the next session.
 
 ### Milestone 7: search across sessions
 
 **Outcome:** anything an agent said or did can be found again, by you or by
 another agent.
 
+Structure:
+
+- **One index, on the Mac.** An SQLite FTS5 table in the daemon's store
+  (porter stemming, so "test" finds "tests" and "testing") holds your
+  messages, the agent's replies, each tool call (a shell call by its
+  command) and the start of its output, review comments, and specs. Each
+  entry keeps its session, event, turn, time, project, task and host.
+- **Caught up before each search.** The daemon lists every session, as it
+  does for the sidebar, and reads the history of each one whose turns or
+  state changed since it was last indexed, indexing only the events after
+  the last one it has. A host that's offline answers from what's indexed
+  already, and from its sessions' last-read histories, so one query covers
+  every machine. Specs and comments are indexed again from the store.
+- **Words and time.** A query is words, all of which must match, and may
+  hold a time, such as "today", "yesterday", "this week", "last week",
+  "this month", "last month" or "last 3 days", taken out of the words and
+  read in this Mac's time zone. It can be narrowed to a project, a task or
+  a session. Hits come best match first, with a snippet marking the words
+  found.
+- **Related words.** The app asks for words related to the query, from
+  Apple's on-device model, falling back to the system's word lists, as
+  Lifr's search does: both now come from one kit, `//apps/libs/kits/words`,
+  which Lifr uses too. They're matched only after the words themselves,
+  and their hits are marked related. The CLI and agents search the words
+  alone.
+- **Opening a hit.** A hit opens its session scrolled to the event, which
+  is highlighted, with "Fork from Here" forking the session after that
+  turn.
+- **Agents.** A `search_sessions` tool searches past sessions. An agent on
+  this Mac searches every project; one on a host, through the relay, only
+  the projects that have sessions on that host, as with the board.
 - [ ] Index messages, commands and their output, changes, review comments and specs on the Mac, from every host's history (SQLite FTS)
 - [ ] Search by words and by time, such as "last week", and filter by project, task or session
 - [ ] Related words from a cheap local model, with a word list as the fallback, the way Lifr's search does

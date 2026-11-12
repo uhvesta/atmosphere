@@ -59,6 +59,9 @@ extension DaemonClient {
                 if let name = update.name { request.name = name }
                 if let instructions = update.instructions { request.instructions = instructions }
                 if let skills = update.skills { request.skills.skills = skills.map(\.proto) }
+                if let repositories = update.repositories {
+                    request.repositories.repositories = repositories.map(\.proto)
+                }
                 guard case .projectUpdated(let updated) = try await daemon.call(.updateProject(request)) else {
                     throw DaemonError.unexpected("something other than the updated project")
                 }
@@ -482,6 +485,14 @@ extension DaemonClient {
                     throw DaemonError.unexpected("something other than the installed version")
                 }
                 return installed.programVersion
+            },
+            linkCommands: { check in
+                var link = Humata_V1_LinkCommands()
+                link.check = check
+                guard case .commandsLinked(let linked) = try await daemon.call(.linkCommands(link)) else {
+                    throw DaemonError.unexpected("something other than the commands' links")
+                }
+                return CommandLinks(linked)
             },
             sshHosts: {
                 guard case .sshHosts(let hosts) = try await daemon.call(.listSshHosts(Humata_V1_ListSshHosts())) else {

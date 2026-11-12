@@ -16,7 +16,6 @@ use crate::error::StoreError;
 use crate::host::Host;
 use crate::hosts::{self, HostConfig, Hosts, Remote, Ssh, ToolCall};
 use crate::store::{Placement, Store};
-use humata_agent::Repository;
 
 /// How long a watch whose host dropped waits before watching again, at
 /// first and at most.
@@ -26,6 +25,7 @@ const REWATCH_LONGEST_WAIT: std::time::Duration = std::time::Duration::from_secs
 mod forwards;
 mod planning;
 mod recovery;
+mod repositories;
 mod review;
 
 /// Answers clients: sessions on this Mac go to the local host, others to the
@@ -48,6 +48,8 @@ pub struct Daemon {
     me: Weak<Daemon>,
     /// Where recovery copies' code is kept, a mirror per repository.
     recovery: PathBuf,
+    /// The Mac's clones of repositories added by their URLs.
+    clones: PathBuf,
     /// The sessions being backed up, each with whether to back it up again
     /// once done.
     backing_up: std::sync::Mutex<HashMap<String, bool>>,
@@ -64,6 +66,7 @@ impl Daemon {
         hosts: Hosts,
         hosts_file: PathBuf,
         recovery: PathBuf,
+        clones: PathBuf,
         build: String,
     ) -> Arc<Self> {
         let (tool_calls, calls) = mpsc::unbounded_channel();
@@ -88,6 +91,7 @@ impl Daemon {
             build,
             tool_calls,
             recovery,
+            clones,
             backing_up: std::sync::Mutex::default(),
             forwards: std::sync::Mutex::default(),
             next_forward: std::sync::atomic::AtomicU64::new(0),
@@ -323,7 +327,10 @@ impl Daemon {
         for repository in &project.repositories {
             repositories.push(pb::RemoteRepository {
                 name: repository.name.clone(),
-                url: origin(host, &repository.path).await?,
+                url: match project.urls.get(&repository.name) {
+                    Some(url) => url.clone(),
+                    None => origin(host, &repository.path).await?,
+                },
             });
         }
         let request = pb::request::Kind::CloneRepositories(pb::CloneRepositories {
@@ -772,40 +779,12 @@ impl Daemon {
         }
     }
 
-    fn create_project(&self, create: pb::CreateProject) -> Result<pb::Project, DaemonError> {
-        if create.repositories.is_empty() {
-            return Err(DaemonError::NoRepositories);
-        }
-        let mut repositories: Vec<Repository> = Vec::new();
-        for repository in create.repositories {
-            let path = PathBuf::from(repository.path);
-            let not_a_folder = |source| DaemonError::NotAFolder {
-                repository: path.clone(),
-                source,
-            };
-            if !path.is_absolute() {
-                return Err(not_a_folder(None));
-            }
-            let metadata = std::fs::metadata(&path).map_err(|source| not_a_folder(Some(source)))?;
-            if !metadata.is_dir() {
-                return Err(not_a_folder(None));
-            }
-            let wanted = Some(repository.name)
-                .filter(|name| !name.is_empty())
-                .or_else(|| {
-                    path.file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                });
-            let taken: Vec<&str> = repositories
-                .iter()
-                .map(|known| known.name.as_str())
-                .collect();
-            let name = folder_name(wanted.as_deref(), &taken);
-            repositories.push(Repository { name, path });
-        }
+    async fn create_project(&self, create: pb::CreateProject) -> Result<pb::Project, DaemonError> {
+        let (repositories, urls) = self.resolve_repositories(create.repositories).await?;
         let project = self.store.add_project(
             create.name,
             repositories,
+            urls,
             create.instructions,
             convert::skills(create.skills),
         )?;
@@ -841,6 +820,7 @@ impl Daemon {
         let checkout = !start.planning;
         if checkout && start.working_directory.is_empty() && start.repositories.is_empty() {
             start.repositories = if start.host.is_empty() {
+                self.refresh(&project).await;
                 project
                     .repositories
                     .iter()
@@ -1034,7 +1014,7 @@ impl Daemon {
                 return Ok(Reply::Response(Response::Sessions(sessions)));
             }
             Request::CreateProject(create) => {
-                let project = self.create_project(std::mem::take(create))?;
+                let project = self.create_project(std::mem::take(create)).await?;
                 return Ok(Reply::Response(Response::ProjectCreated(
                     pb::ProjectCreated {
                         project: Some(project),
@@ -1099,7 +1079,7 @@ impl Daemon {
                 )));
             }
             Request::UpdateProject(update) => {
-                let project = self.update_project(std::mem::take(update))?;
+                let project = self.update_project(std::mem::take(update)).await?;
                 return Ok(Reply::Response(Response::ProjectUpdated(
                     pb::ProjectUpdated {
                         project: Some(project),
@@ -1109,6 +1089,10 @@ impl Daemon {
             Request::ReadSpec(read) => {
                 let spec = self.read_spec(read)?;
                 return Ok(Reply::Response(Response::Spec(spec)));
+            }
+            Request::LinkCommands(link) => {
+                let linked = crate::commands::link_commands(link.check)?;
+                return Ok(Reply::Response(Response::CommandsLinked(linked)));
             }
             Request::ReadBoardLog(read) => {
                 let changes = self.store.board_log(&read.project_id)?;

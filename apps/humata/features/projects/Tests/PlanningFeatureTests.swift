@@ -66,4 +66,55 @@ final class PlanningFeatureTests: XCTestCase {
         XCTAssertEqual(saved.first?.instructions, "be thorough")
         XCTAssertEqual(saved.first?.name, "code")
     }
+
+    func testProjectSettingsChangeTheRepositoriesOnlyWhenEdited() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        let store = TestStore(initialState: ProjectSettingsFeature.State(project: project)) {
+            ProjectSettingsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.addRepositoryTapped)
+        let rows = store.state.repositories.ids
+        await store.send(
+            \.binding.repositories,
+            [
+                RepositoryRow(id: rows[0], name: "app", path: "/code"),
+                RepositoryRow(id: rows[1], path: "relative/folder"),
+            ])
+        XCTAssertFalse(store.state.canSave)
+        await store.send(
+            \.binding.repositories,
+            [
+                RepositoryRow(id: rows[0], name: "app", path: "/code"),
+                RepositoryRow(id: rows[1], path: "https://github.com/owner/api"),
+            ])
+        await store.send(.saveTapped)
+        await store.receive(\.delegate.saved)
+
+        let projects = try await daemon.client.projects()
+        let saved = try XCTUnwrap(projects.first)
+        XCTAssertEqual(saved.repositories.map(\.name), ["app", "api"])
+        XCTAssertEqual(saved.repositories.map(\.url), ["", "https://github.com/owner/api"])
+
+        let unchanged = LockIsolated<ProjectUpdate?>(nil)
+        let untouched = TestStore(initialState: ProjectSettingsFeature.State(project: saved)) {
+            ProjectSettingsFeature()
+        } withDependencies: {
+            $0.daemon.updateProject = { _, update in
+                unchanged.setValue(update)
+                return saved
+            }
+        }
+        untouched.exhaustivity = .off
+        await untouched.send(\.binding.instructions, "be brief")
+        await untouched.send(.saveTapped)
+        await untouched.receive(\.delegate.saved)
+        XCTAssertNotNil(unchanged.value)
+        XCTAssertNil(unchanged.value?.repositories)
+        XCTAssertEqual(unchanged.value?.instructions, "be brief")
+    }
 }

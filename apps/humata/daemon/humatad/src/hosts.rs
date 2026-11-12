@@ -358,11 +358,19 @@ impl Remote {
     ) -> Result<(Arc<Client>, Child), DaemonError> {
         let config = self.config();
         let (mut client, mut child) = self.connect(&config, hosts, build).await?;
-        if let Some(ssh) = &config.ssh
-            && client.peer().program_version != build
-            && self.platform(ssh).await.ok() == local_platform().await
-        {
-            self.install(ssh, None).await?;
+        let outdated = config
+            .ssh
+            .as_ref()
+            .filter(|_| client.peer().program_version != build);
+        // Without a build for it, the host keeps the one it has.
+        let reinstalled = match outdated {
+            Some(ssh) => match self.install(ssh, None).await {
+                Err(DaemonError::NoBuildFor { .. }) => false,
+                other => other.map(|()| true)?,
+            },
+            None => false,
+        };
+        if reinstalled {
             // A host on its socket outlives this connection, so it is asked
             // to stop for the next one to start the new build. One on stdio
             // refuses and stops with the connection.
@@ -500,25 +508,31 @@ impl Remote {
         }
     }
 
-    /// Copies humatad to the host: `binary`, or this one if the host is the
-    /// same platform as this Mac. Takes effect on the next connection.
+    /// Copies humatad to the host: `binary`, this one for a host like this
+    /// Mac, or the build for the host's platform that came with this one, then links it into the host's
+    /// `~/.local/bin`. Takes effect on the next connection.
     pub async fn install(&self, ssh: &Ssh, binary: Option<PathBuf>) -> Result<(), DaemonError> {
         let binary = match binary {
             Some(binary) => binary,
             None => {
-                let theirs = self.platform(ssh).await?;
-                let ours = local_platform().await.unwrap_or_default();
-                if theirs != ours {
-                    return Err(DaemonError::OtherPlatform {
-                        host: self.name.clone(),
-                        theirs,
-                        ours,
-                    });
-                }
-                std::env::current_exe().map_err(|source| DaemonError::ReadBinary {
+                let platform = self.platform(ssh).await?;
+                let ours = std::env::current_exe().map_err(|source| DaemonError::ReadBinary {
                     path: PathBuf::from("humatad"),
                     source,
-                })?
+                })?;
+                // A host like this Mac gets this very build, so its hello
+                // matches; the bundled one for it may be built apart.
+                if Some(&platform) == local_platform().await.as_ref() {
+                    ours
+                } else if let Some(build) = build_for(&ours, &platform) {
+                    build
+                } else {
+                    return Err(DaemonError::NoBuildFor {
+                        host: self.name.clone(),
+                        platform,
+                        looked_in: ours,
+                    });
+                }
             }
         };
         let bytes = tokio::fs::read(&binary)
@@ -528,8 +542,13 @@ impl Remote {
                 source,
             })?;
         let folder = quoted(&format!("{}/bin", ssh.folder));
+        // The link is made only where nothing else of that name is, so a
+        // humatad installed some other way is never replaced.
+        let link = format!("{}/bin/humatad", absolute_on_host(&ssh.folder));
         let script = format!(
-            "mkdir -p {folder} && cat > {folder}/humatad.new && chmod 755 {folder}/humatad.new && mv {folder}/humatad.new {folder}/humatad"
+            "mkdir -p {folder} && cat > {folder}/humatad.new && chmod 755 {folder}/humatad.new && mv {folder}/humatad.new {folder}/humatad \
+             && {{ mkdir -p \"$HOME/.local/bin\" && {{ [ ! -e \"$HOME/.local/bin/humatad\" ] || [ -L \"$HOME/.local/bin/humatad\" ]; }} \
+             && ln -sfn {link} \"$HOME/.local/bin/humatad\" || true; }}"
         );
         self.ssh(ssh, &script, Some(bytes)).await.map(drop)
     }
@@ -601,6 +620,43 @@ impl Remote {
                 host: self.name.clone(),
                 source,
             })
+    }
+}
+
+/// The build for hosts that are `platform`, as `uname -sm` says, among the
+/// ones beside `humatad`: in the app, `humatad-<os>-<arch>` next to it; in
+/// a Bazel output, in `builds/` next to it.
+fn build_for(humatad: &Path, platform: &str) -> Option<PathBuf> {
+    let name = format!("humatad-{}", build_name(platform)?);
+    let folder = humatad.parent()?;
+    [folder.join(&name), folder.join("builds").join(&name)]
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
+/// `uname -sm`'s `Linux x86_64` as the builds name it, `linux-x86_64`.
+/// Linux on 64-bit ARM says `aarch64`, though a few kernels say `arm64`.
+fn build_name(platform: &str) -> Option<String> {
+    let mut words = platform.split_whitespace();
+    let (os, arch) = (words.next()?.to_lowercase(), words.next()?.to_lowercase());
+    if words.next().is_some() {
+        return None;
+    }
+    let arch = match (os.as_str(), arch.as_str()) {
+        ("linux", "arm64") => "aarch64".to_owned(),
+        ("darwin", "aarch64") => "arm64".to_owned(),
+        _ => arch,
+    };
+    Some(format!("{os}-{arch}"))
+}
+
+/// `folder` as a shell word that is absolute on the host: one not starting
+/// with `/` is in the home folder SSH starts in.
+fn absolute_on_host(folder: &str) -> String {
+    if folder.starts_with('/') {
+        quoted(folder)
+    } else {
+        format!("\"$HOME\"/{}", quoted(folder))
     }
 }
 
@@ -706,5 +762,32 @@ Host !bad *.internal build
 
         assert_eq!(loaded.hosts, hosts.hosts);
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn each_platform_gets_the_build_named_for_it() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let humatad = folder.path().join("humatad");
+        let builds = folder.path().join("builds");
+        std::fs::create_dir(&builds).expect("made");
+        for name in ["humatad-linux-x86_64", "humatad-linux-aarch64"] {
+            std::fs::write(builds.join(name), b"build").expect("written");
+        }
+        std::fs::write(folder.path().join("humatad-darwin-arm64"), b"build").expect("written");
+
+        assert_eq!(
+            build_for(&humatad, "Linux x86_64"),
+            Some(builds.join("humatad-linux-x86_64"))
+        );
+        assert_eq!(
+            build_for(&humatad, "Linux arm64"),
+            Some(builds.join("humatad-linux-aarch64"))
+        );
+        assert_eq!(
+            build_for(&humatad, "Darwin arm64"),
+            Some(folder.path().join("humatad-darwin-arm64"))
+        );
+        assert_eq!(build_for(&humatad, "FreeBSD amd64"), None);
+        assert_eq!(build_for(&humatad, "not a platform at all"), None);
     }
 }

@@ -30,12 +30,30 @@ package struct Repository: Hashable, Sendable {
     /// Its folder's name in a session's copy of the project; empty when
     /// adding one, for the daemon to name it after its folder.
     package var name: String
-    /// Its folder on this Mac.
+    /// Its folder on this Mac; for one added by its URL, Humata's clone of
+    /// it, and empty when adding it.
     package var path: String
+    /// Where it's cloned from, for one added by its URL rather than a folder.
+    package var url: String
 
     package init(name: String = "", path: String) {
         self.name = name
         self.path = path
+        url = ""
+    }
+
+    package init(name: String = "", path: String = "", url: String) {
+        self.name = name
+        self.path = path
+        self.url = url
+    }
+
+    /// Whether `text` is a URL to clone, as `https://…` or `git@host:owner/name`,
+    /// rather than a folder.
+    package static func isURL(_ text: String) -> Bool {
+        if text.contains("://") { return true }
+        guard !text.hasPrefix("/"), !text.hasPrefix("~"), let colon = text.firstIndex(of: ":") else { return false }
+        return text[..<colon].contains("@")
     }
 }
 
@@ -81,11 +99,17 @@ package struct ProjectUpdate: Hashable, Sendable {
     package var instructions: String?
     /// Replaces every skill; an empty list removes them.
     package var skills: [Skill]?
+    /// Replaces the repositories, for sessions started after; sessions
+    /// already started keep their copies.
+    package var repositories: [Repository]?
 
-    package init(name: String? = nil, instructions: String? = nil, skills: [Skill]? = nil) {
+    package init(
+        name: String? = nil, instructions: String? = nil, skills: [Skill]? = nil, repositories: [Repository]? = nil
+    ) {
         self.name = name
         self.instructions = instructions
         self.skills = skills
+        self.repositories = repositories
     }
 }
 
@@ -907,6 +931,46 @@ package enum HostHealth: Hashable, Sendable {
     case reachable(HostStatus)
     /// Why it couldn't be reached, for the person who has to fix it.
     case unreachable(String)
+}
+
+/// This Mac's `humata` and `humatad`, linked into a folder a terminal
+/// looks in, or not.
+package struct CommandLinks: Hashable, Sendable {
+    package struct Link: Hashable, Sendable {
+        package enum State: Hashable, Sendable {
+            case missing
+            case linked
+            /// Linked to another copy of Humata, as an older one.
+            case stale
+            /// Something else of the name is there, which stays.
+            case other
+        }
+
+        package var name: String
+        package var state: State
+
+        package init(name: String, state: State) {
+            self.name = name
+            self.state = state
+        }
+    }
+
+    /// `~/.local/bin`, in full.
+    package var folder: String
+    package var links: [Link]
+    /// Whether the login shell's PATH has `folder`.
+    package var onPath: Bool
+
+    package init(folder: String, links: [Link], onPath: Bool) {
+        self.folder = folder
+        self.links = links
+        self.onPath = onPath
+    }
+
+    /// Whether linking would change anything.
+    package var linkable: Bool {
+        links.contains { $0.state == .missing || $0.state == .stale }
+    }
 }
 
 /// What the daemon said went wrong.

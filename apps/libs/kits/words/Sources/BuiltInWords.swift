@@ -5,9 +5,9 @@ import NaturalLanguage
 /// word searched for that names a thing, an action or a quality, the words
 /// closest to it, such as "grocery", "shopping" and "store" for
 /// "groceries". No model, nothing to download, and quick.
-enum BuiltInWords {
+public enum BuiltInWords {
     /// At most this many words in all.
-    static let limit = 12
+    public static let limit = 12
     /// At most this many for each word searched for.
     private static let perWord = 8
     /// Words further than this from the one searched for are too loosely
@@ -16,7 +16,7 @@ enum BuiltInWords {
 
     /// Words close to `query`'s, the closest to each word first, without
     /// its own; empty in a language the system has no word lists for.
-    static func related(to query: String) -> [String] {
+    public static func related(to query: String) -> [String] {
         let words = meaningful(in: query)
         guard !words.isEmpty, let embedding = embedding(for: query) else { return [] }
         let searched = Set(words)

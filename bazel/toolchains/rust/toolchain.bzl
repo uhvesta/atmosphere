@@ -19,6 +19,7 @@ _TOOLCHAIN_TRIPLES = {
 # for musl platforms.
 _CROSS_TARGETS = {
     "aarch64-apple-darwin": ["@platforms//os:macos", "@platforms//cpu:aarch64"],
+    "x86_64-apple-darwin": ["@platforms//os:macos", "@platforms//cpu:x86_64"],
     "aarch64-unknown-linux-gnu": ["@platforms//os:linux", "@platforms//cpu:aarch64"],
     "aarch64-unknown-linux-musl": ["@platforms//os:linux", "@platforms//cpu:aarch64", "@llvm//constraints/libc:musl"],
     "x86_64-unknown-linux-gnu": ["@platforms//os:linux", "@platforms//cpu:x86_64"],

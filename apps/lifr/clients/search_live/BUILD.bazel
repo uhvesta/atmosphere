@@ -13,6 +13,7 @@ swift_library(
     target_compatible_with = ["//bazel/xcode"],
     visibility = ["//apps/lifr/app:__subpackages__"],
     deps = [
+        "//apps/libs/kits/words",
         "//apps/lifr/api",
         "//apps/lifr/clients/models",
         "//apps/lifr/clients/search",

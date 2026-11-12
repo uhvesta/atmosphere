@@ -1,4 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load(":builds.bzl", "humatad_builds")
 
 # The one binary every machine runs: `humatad daemon` on your Mac, which the
 # app and the CLI talk to on a local socket, and `humatad host --stdio` on each
@@ -42,6 +43,21 @@ rust_binary(
         "@crates//:clap",
         "@crates//:tokio",
     ],
+)
+
+# humatad for every platform a host may be, bundled with the app so a host
+# gets the build for it whatever this Mac is. Named as `uname -sm` names them.
+humatad_builds(
+    name = "builds",
+    binary = ":humatad",
+    platforms = {
+        "//bazel/platforms:linux_arm64": "linux-aarch64",
+        "//bazel/platforms:linux_x86_64": "linux-x86_64",
+        "//bazel/platforms:macos_arm64": "darwin-arm64",
+        "//bazel/platforms:macos_x86_64": "darwin-x86_64",
+    },
+    prefix = "humatad",
+    visibility = ["//apps/humata:__subpackages__"],
 )
 
 filegroup(

@@ -453,3 +453,25 @@ pub fn importable(session: &pb::ImportableSession) -> String {
         session.summary
     )
 }
+
+/// `<name>\t<state>\t<folder>` per command, then what to add to the shell's
+/// startup file when the folder isn't on its PATH.
+pub fn command_links(linked: &pb::CommandsLinked) -> String {
+    let mut printed = String::new();
+    for link in &linked.links {
+        let state = match link.state() {
+            pb::CommandLinkState::Linked => "linked",
+            pb::CommandLinkState::Stale => "linked to another copy of Humata",
+            pb::CommandLinkState::Other => "something else of that name is there, left alone",
+            pb::CommandLinkState::Missing | pb::CommandLinkState::Unspecified => "not linked",
+        };
+        printed.push_str(&format!("{}\t{state}\t{}\n", link.name, linked.folder));
+    }
+    if !linked.on_path {
+        printed.push_str(&format!(
+            "{} isn't on your login shell's PATH; add `export PATH=\"{}:$PATH\"` to its startup file, such as ~/.zprofile\n",
+            linked.folder, linked.folder
+        ));
+    }
+    printed
+}

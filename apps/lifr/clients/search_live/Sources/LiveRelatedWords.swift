@@ -1,6 +1,7 @@
 import LifrAPI
 import LifrModelsClient
 import LifrSearchClient
+import WordsKit
 
 extension RelatedWordsClient {
     /// Related words from the system's word lists, or from the model
@@ -13,11 +14,9 @@ extension RelatedWordsClient {
         RelatedWordsClient(
             source: { selected() == .builtIn ? .builtIn : .model },
             related: { query in
-                if selected() != .builtIn {
-                    let words = await ModelWords.related(to: query, on: runtime())
-                    if !words.isEmpty { return words }
-                }
-                return BuiltInWords.related(to: query)
+                await RelatedWords.related(
+                    to: query, searching: "their conversations with the assistant of Lifr, a task app",
+                    on: selected() == .builtIn ? nil : runtime())
             })
     }
 }

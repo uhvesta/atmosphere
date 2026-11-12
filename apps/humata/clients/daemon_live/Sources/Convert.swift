@@ -77,13 +77,14 @@ extension ApprovalMode {
 
 extension Repository {
     init(_ repository: Humata_V1_Repository) {
-        self.init(name: repository.name, path: repository.path)
+        self.init(name: repository.name, path: repository.path, url: repository.url)
     }
 
     var proto: Humata_V1_Repository {
         var repository = Humata_V1_Repository()
         repository.name = name
         repository.path = path
+        repository.url = url
         return repository
     }
 }
@@ -343,6 +344,24 @@ extension HostHealth {
                 claude: status.claudeVersion.isEmpty
                     ? .failure(ProgramProblem(status.claudeProblem)) : .success(status.claudeVersion),
                 anthropicKey: status.anthropicKey))
+    }
+}
+
+extension CommandLinks {
+    init(_ linked: Humata_V1_CommandsLinked) {
+        self.init(
+            folder: linked.folder,
+            links: linked.links.map { link in
+                let state: Link.State =
+                    switch link.state {
+                    case .linked: .linked
+                    case .stale: .stale
+                    case .other: .other
+                    case .missing, .unspecified, .UNRECOGNIZED: .missing
+                    }
+                return Link(name: link.name, state: state)
+            },
+            onPath: linked.onPath)
     }
 }
 

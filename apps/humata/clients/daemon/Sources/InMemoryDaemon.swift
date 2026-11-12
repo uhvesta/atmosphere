@@ -117,6 +117,10 @@ package final class InMemoryDaemon: Sendable {
         /// What the person did about each session's proposals, by session
         /// then proposal.
         var decisions: [String: [String: Proposal.State]] = [:]
+        var commandLinks = CommandLinks(
+            folder: "/Users/you/.local/bin",
+            links: [.init(name: "humata", state: .missing), .init(name: "humatad", state: .missing)],
+            onPath: false)
     }
 
     let state = LockIsolated(State())
@@ -479,6 +483,7 @@ package final class InMemoryDaemon: Sendable {
             removeHost: { host in try self.removeHost(host) },
             checkHost: { host in try self.checkHost(host) },
             installHost: { host in try self.installHost(host) },
+            linkCommands: { check in self.linkCommands(check) },
             sshHosts: { self.sshConfigHosts },
             recoveries: { self.recoveries() },
             restoreSession: { session, host in try self.restoreSession(session, onto: host) },
@@ -522,26 +527,7 @@ package final class InMemoryDaemon: Sendable {
     }
 
     private func createProject(name: String, repositories: [Repository], instructions: String) throws -> Project {
-        guard !repositories.isEmpty else {
-            throw DaemonError.refused(.invalidRequest, message: "A project needs a repository to work in.")
-        }
-        var named: [Repository] = []
-        for repository in repositories {
-            guard repository.path.hasPrefix("/") else {
-                throw DaemonError.refused(
-                    .invalidRequest,
-                    message: "The repository \(repository.path) must be an absolute path to a folder on this Mac.")
-            }
-            var name = repository.name.isEmpty ? (repository.path as NSString).lastPathComponent : repository.name
-            let base = name
-            var suffix = 2
-            while named.contains(where: { $0.name == name }) {
-                name = "\(base)-\(suffix)"
-                suffix += 1
-            }
-            named.append(Repository(name: name, path: repository.path))
-        }
-        let repositories = named
+        let repositories = try Self.named(repositories)
         return state.withValue { state in
             let project = Project(
                 id: "p\(state.nextProject)", name: name, repositories: repositories, instructions: instructions,
@@ -638,6 +624,38 @@ package final class InMemoryDaemon: Sendable {
 
     /// Where a session's copy of the project is: the repository's folder in
     /// it if there is one, otherwise the folder holding each.
+    /// `repositories` as a project keeps them: each named uniquely, and one
+    /// added by its URL given a clone's folder.
+    static func named(_ repositories: [Repository]) throws -> [Repository] {
+        guard !repositories.isEmpty else {
+            throw DaemonError.refused(.invalidRequest, message: "A project needs a repository to work in.")
+        }
+        var named: [Repository] = []
+        for repository in repositories {
+            let url = repository.url.trimmingCharacters(in: .whitespaces)
+            let fromURL = url.split(whereSeparator: { $0 == "/" || $0 == ":" }).last.map {
+                String($0).replacingOccurrences(of: ".git", with: "")
+            }
+            guard url.isEmpty ? repository.path.hasPrefix("/") : Repository.isURL(url) else {
+                throw DaemonError.refused(
+                    .invalidRequest,
+                    message: "The repository \(url.isEmpty ? repository.path : url) must be a URL to clone or "
+                        + "an absolute path to a folder on this Mac.")
+            }
+            let folder = url.isEmpty ? (repository.path as NSString).lastPathComponent : fromURL ?? "repository"
+            var name = repository.name.isEmpty ? folder : repository.name
+            let base = name
+            var suffix = 2
+            while named.contains(where: { $0.name == name }) {
+                name = "\(base)-\(suffix)"
+                suffix += 1
+            }
+            let path = url.isEmpty ? repository.path : "/Users/me/Library/Caches/Humata/repositories/\(folder)"
+            named.append(Repository(name: name, path: path, url: url))
+        }
+        return named
+    }
+
     static func copy(of project: Project, for session: String) -> String {
         let folder = "/copies/\(session)"
         guard project.repositories.count == 1, let repository = project.repositories.first else { return folder }
@@ -1207,6 +1225,18 @@ extension InMemoryDaemon {
             }
             state.installed.insert(name)
             return "0.0.0"
+        }
+    }
+
+    private func linkCommands(_ check: Bool) -> CommandLinks {
+        state.withValue { state in
+            if !check {
+                for index in state.commandLinks.links.indices
+                where [.missing, .stale].contains(state.commandLinks.links[index].state) {
+                    state.commandLinks.links[index].state = .linked
+                }
+            }
+            return state.commandLinks
         }
     }
 
