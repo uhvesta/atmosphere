@@ -33,8 +33,11 @@ private final class DaemonKeeper: @unchecked Sendable {
     /// The humatad this app started, when it isn't a login item.
     private var child: Process?
 
-    /// How long humatad has to answer after it is started.
-    private static let answerSeconds = 10
+    /// How long humatad has to answer after it is started. Before it
+    /// listens it reads the login shell's environment, which may take 10
+    /// seconds on its own, and restores its sessions; a child that exits, or
+    /// a login item launchd won't run, ends the wait sooner.
+    private static let answerSeconds = 60
 
     init(socket: String, programVersion: String) {
         self.socket = socket
@@ -155,6 +158,7 @@ private final class DaemonKeeper: @unchecked Sendable {
         for _ in 0..<(Self.answerSeconds * 10) {
             if await answers() { return }
             if !asLoginItem, runningChild() == nil { break }
+            if asLoginItem, agent.status != .enabled { break }
             try await Task.sleep(for: .milliseconds(100))
         }
         throw DaemonServiceError.noAnswer(socket: socket, seconds: Self.answerSeconds)

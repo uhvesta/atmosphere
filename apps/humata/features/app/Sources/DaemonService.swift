@@ -61,9 +61,10 @@ package enum DaemonServiceError: LocalizedError, CustomStringConvertible {
             "Couldn't run Humata's daemon at \(path): \(underlying.localizedDescription) Download Humata again and "
                 + "replace this copy."
         case .noAnswer(let socket, let seconds):
-            "Humata's daemon started but didn't answer at \(socket) within \(seconds) seconds. If another humatad "
-                + "is running, quit it (for example with `pkill -x humatad`; its turns in progress stop), then try "
-                + "again."
+            "Humata's daemon started but didn't answer at \(socket) within \(seconds) seconds. Check that your "
+                + "login shell starts without waiting for input, since humatad reads its environment first. If "
+                + "another humatad is running, quit it (for example with `pkill -x humatad`; its turns in progress "
+                + "stop), then try again."
         case .notManaged(let socket):
             "A humatad from another build of Humata, which this app didn't start, is answering at \(socket). Quit "
                 + "it (for example with `pkill -x humatad`; its turns in progress stop), then try again."
