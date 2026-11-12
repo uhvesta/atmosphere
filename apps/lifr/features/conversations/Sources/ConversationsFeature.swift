@@ -420,9 +420,7 @@ package struct ConversationsFeature {
             for conversation in changed { state.conversations[id: conversation.id] = conversation }
             if case .chats = action { state.prune() }
             guard !changed.isEmpty else { return .none }
-            return kept { [conversations] in
-                for conversation in changed { try await conversations.save(conversation) }
-            }
+            return .merge(changed.map(save))
         }
     }
 
@@ -439,7 +437,7 @@ package struct ConversationsFeature {
     }
 
     private func save(_ conversation: Conversation) -> Effect<Action> {
-        kept { [conversations] in try await conversations.save(conversation) }
+        kept(saving: conversation.id) { [conversations] in try await conversations.save(conversation) }
     }
 
     private func delete(_ ids: [UUID], in state: inout State) -> Effect<Action> {
@@ -455,10 +453,11 @@ package struct ConversationsFeature {
     /// Changes the kept chats after the changes made before this one, and
     /// says if it couldn't.
     private func kept(
+        saving chat: UUID? = nil,
         failed: @escaping @Sendable (any Error) -> Action = { .failed($0) },
         _ work: @escaping @Sendable () async throws -> Void
     ) -> Effect<Action> {
-        let change = saves.enqueue(work)
+        let change = saves.enqueue(saving: chat, work)
         return .run { _ in
             try await change.value
         } catch: { error, send in
