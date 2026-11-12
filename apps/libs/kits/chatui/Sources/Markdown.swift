@@ -97,10 +97,14 @@ enum Markdown {
     /// Only those that read as an address, starting `http`, `https` or
     /// `www.`, or an email: a name like `main.rs` stays text. Code and
     /// what's linked already are left as they are.
+    /// Made once: each paragraph is styled again as a reply streams.
+    /// Matching with it is safe from any thread.
+    nonisolated(unsafe) private static let linkDetector = try? NSDataDetector(
+        types: NSTextCheckingResult.CheckingType.link.rawValue)
+
     private static func linkBareAddresses(in string: inout AttributedString) {
         let plain = String(string.characters)
-        guard plain.contains("http") || plain.contains("www.") || plain.contains("@"),
-            let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+        guard plain.contains("http") || plain.contains("www.") || plain.contains("@"), let detector = linkDetector
         else { return }
         let matches = detector.matches(in: plain, range: NSRange(plain.startIndex..., in: plain))
         for match in matches {

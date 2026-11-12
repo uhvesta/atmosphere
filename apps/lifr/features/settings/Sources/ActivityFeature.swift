@@ -129,7 +129,7 @@ package struct ActivityFeature {
             let words = JournalWords(workspace) { actor in self.author(actor) }
             let recent = workspace.journal.reversed()
                 .filter { matches($0.actor, $0.at, $0.steps.map(\.record.kind)) }
-                .map { row($0, isReverted: reverted.contains($0.id)) }
+                .map { row($0, isReverted: reverted.contains($0.id), words: words) }
             let archivedRows = older.reversed()
                 .filter { matches($0.actor, $0.at, $0.steps.map(\.record.kind)) }
                 .map { entry in
@@ -141,9 +141,8 @@ package struct ActivityFeature {
             return recent + archivedRows
         }
 
-        private func row(_ entry: JournalEntry, isReverted: Bool) -> ActivityRow {
-            let words = JournalWords(workspace) { actor in self.author(actor) }
-            return ActivityRow(
+        private func row(_ entry: JournalEntry, isReverted: Bool, words: JournalWords) -> ActivityRow {
+            ActivityRow(
                 id: entry.id, summary: words.summary(of: entry.steps, reverts: entry.reverts.count),
                 author: author(entry.actor), at: entry.at, changes: words.fields(of: entry.steps),
                 isReverted: isReverted, isRevert: !entry.reverts.isEmpty)

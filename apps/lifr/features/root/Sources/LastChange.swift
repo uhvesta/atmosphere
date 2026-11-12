@@ -42,7 +42,7 @@ package struct LastChange: Equatable, Sendable {
     private init?(_ saved: Saved, id: UUID, message: String?) {
         let change = saved.change
         let workspace = saved.workspace
-        let steps = change.entry.flatMap { entry in workspace.journal.first { $0.id == entry } }?.steps ?? []
+        let steps = change.entry.flatMap { entry in workspace.journal.last { $0.id == entry } }?.steps ?? []
         let place =
             steps.first { $0.record.kind == .avenue && Self.isUndoable($0) }
             ?? steps.first { $0.record.kind == .project && Self.isUndoable($0) }

@@ -221,6 +221,13 @@ package struct TaskListRow: View {
 
     private var isPicked: Bool { store.selection.contains(row.id) }
 
+    /// Whether the keyboard is on this row. Only a row that's the last
+    /// picked or the open task can be, so the rest skip looking.
+    private var isCursor: Bool {
+        guard store.selectionAnchor == row.id || store.detail?.id == row.id else { return false }
+        return store.cursor == row.id
+    }
+
     package var body: some View {
         HStack(spacing: 10) {
             if store.isSelecting {
@@ -243,7 +250,7 @@ package struct TaskListRow: View {
         #if os(macOS)
             // Where ↑ ↓, Return, Space and ⌫ act.
             .listRowBackground(
-                store.cursor == row.id && !store.isSelecting
+                isCursor && !store.isSelecting
                     ? RoundedRectangle(cornerRadius: 6).fill(.tint.opacity(0.15)) : nil)
         #endif
         .onTapGesture { tapped() }
