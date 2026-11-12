@@ -383,6 +383,80 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(daemon.sessions.first?.host, "far")
     }
 
+    func testTheNextSessionStartsFromWhatTheLastOneDid() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        let store = TestStore(initialState: NewSessionFeature.State(project: project)) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.binding.backend, .claude)
+        await store.send(\.binding.model, "opus")
+        await store.send(\.binding.approvalMode, .allowEdits)
+        await store.send(.startTapped)
+        await store.receive(\.delegate.started)
+
+        let next = NewSessionFeature.State(project: nil)
+        XCTAssertEqual(next.backend, .claude)
+        XCTAssertEqual(next.model, "opus")
+        XCTAssertEqual(next.approvalMode, .allowEdits)
+    }
+
+    func testCopilotAndLocalModelsUseTheModelServerGiven() throws {
+        var state = NewSessionFeature.State(project: nil)
+        state.modelServer = " http://127.0.0.1:11434/v1 "
+        state.backend = .copilot
+        let copilot = try XCTUnwrap(state.backendConfig?.data(using: .utf8))
+        let provider = try XCTUnwrap(
+            (try JSONSerialization.jsonObject(with: copilot) as? [String: [String: String]])?["provider"])
+        XCTAssertEqual(provider["base_url"], "http://127.0.0.1:11434/v1")
+        state.backend = .local
+        let local = try XCTUnwrap(state.backendConfig?.data(using: .utf8))
+        XCTAssertEqual(
+            (try JSONSerialization.jsonObject(with: local) as? [String: String])?["base_url"],
+            "http://127.0.0.1:11434/v1")
+        state.backend = .claude
+        XCTAssertNil(state.backendConfig)
+        state.backend = .copilot
+        state.modelServer = ""
+        XCTAssertNil(state.backendConfig)
+    }
+
+    func testASessionMovesToATaskAndBackToTheProject() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "first", projectID: project.id))
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        await store.send(.moveTapped(session.id))
+        await store.send(\.destination.move.task)
+        await store.receive(\.destination.move.itemsLoaded)
+        XCTAssertEqual(store.state.destination?.move?.items?.map(\.id), [task.id])
+        await store.send(\.destination.move.binding.itemID, task.id)
+        await store.send(\.destination.move.moveTapped)
+        await store.receive(\.destination.move.delegate.moved)
+        XCTAssertNil(store.state.destination)
+        XCTAssertEqual(store.state.sessions[id: session.id]?.itemID, task.id)
+
+        await store.send(.moveTapped(session.id))
+        await store.send(\.destination.move.binding.itemID, nil)
+        await store.send(\.destination.move.moveTapped)
+        await store.receive(\.destination.move.delegate.moved)
+        XCTAssertNil(store.state.sessions[id: session.id]?.itemID)
+    }
+
     func testASessionOnAnUnreachableHostShowsOffline() async throws {
         let daemon = InMemoryDaemon()
         _ = try await daemon.client.addHost("far", "me@far")

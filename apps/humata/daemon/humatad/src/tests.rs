@@ -415,6 +415,57 @@ async fn a_host_whose_command_fails_is_unavailable_and_the_rest_still_list() {
     );
 }
 
+#[tokio::test]
+async fn a_host_that_failed_is_left_alone_for_a_while_unless_checked() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let tries = state.path().join("tries");
+    let mut hosts = Hosts::default();
+    hosts.hosts.insert(
+        "off".to_owned(),
+        HostConfig {
+            command: vec![
+                "sh".to_owned(),
+                "-c".to_owned(),
+                format!("echo try >> '{}'; exit 1", tries.display()),
+            ],
+            ..HostConfig::default()
+        },
+    );
+    let client = daemon(state.path(), hosts).await;
+    let attempts = || {
+        std::fs::read_to_string(&tries)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+
+    for _ in 0..3 {
+        let started = client.call(start(state.path(), "off")).await;
+        assert!(
+            matches!(
+                started,
+                Err(ClientError::Refused {
+                    code: pb::ErrorCode::HostUnavailable,
+                    ..
+                })
+            ),
+            "{started:?}"
+        );
+    }
+    assert_eq!(attempts(), 1);
+
+    let checked = client
+        .call(pb::request::Kind::CheckHost(pb::CheckHost {
+            name: "off".to_owned(),
+        }))
+        .await;
+    let Ok(pb::response::Kind::HostHealth(health)) = checked else {
+        panic!("{checked:?}")
+    };
+    assert!(!health.reachable);
+    assert_eq!(attempts(), 2);
+}
+
 fn create_project(repository: &Path) -> pb::request::Kind {
     pb::request::Kind::CreateProject(pb::CreateProject {
         name: "humata".to_owned(),

@@ -101,6 +101,8 @@ message Request {
     // A session's folder, to browse.
     ListFiles list_files = 38;
     ReadFile read_file = 39;
+    // Seen state is the daemon's; a host refuses it.
+    MarkSeen mark_seen = 40;
   }
 }
 
@@ -144,6 +146,7 @@ message Response {
     ReviewSent review_sent = 35;
     Files files = 36;
     FileContents file_contents = 37;
+    Seen seen = 38;
   }
 }
 
@@ -479,6 +482,15 @@ message MarkViewed {
 
 message FileViewed {}
 
+// The person has seen the session's first `turns` finished turns. Seen
+// turns only go up.
+message MarkSeen {
+  string session_id = 1;
+  uint32 turns = 2;
+}
+
+message Seen {}
+
 // Comments on lines `start_line` to `end_line` of a file as it is in the
 // session's copy; in rendered Markdown, on `quote`, the text picked there.
 message CreateThread {
@@ -680,6 +692,9 @@ message SessionInfo {
   // Its host couldn't be reached, so this is the daemon's copy from when it
   // last could: it may have moved on since.
   bool host_offline = 17;
+  // How many of its finished turns the person has seen. The daemon fills
+  // it in; the inbox lists a reply only while turns is more.
+  uint32 seen_turns = 18;
 }
 
 // A session's git worktree of one repository.
@@ -1072,6 +1087,12 @@ message HostStatus {
   // COPILOT_GITHUB_TOKEN. Without one, Copilot needs `copilot login` there.
   bool github_token = 6;
   SetupResult setup = 7;
+  // Empty, with the reason in claude_problem, if it couldn't be run.
+  string claude_version = 8;
+  string claude_problem = 9;
+  // Whether its agents have ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN.
+  // Without one, Claude Code needs `claude` signed in there.
+  bool anthropic_key = 10;
 }
 
 message RemoteRepository {

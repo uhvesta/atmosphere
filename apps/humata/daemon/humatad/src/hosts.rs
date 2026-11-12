@@ -9,7 +9,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use humata_wire::{Client, pb};
 use serde::{Deserialize, Serialize};
@@ -163,6 +163,10 @@ impl Ssh {
                 // Never stops to ask for a password the daemon can't type.
                 "-o",
                 "BatchMode=yes",
+                // Gives up on a machine that is off instead of waiting a
+                // minute or more for TCP to.
+                "-o",
+                "ConnectTimeout=10",
                 // Notices a dead connection, so its turns are closed.
                 "-o",
                 "ServerAliveInterval=15",
@@ -188,12 +192,28 @@ const STDERR_KEPT: usize = 4096;
 /// How long a command over SSH to set up a host may take.
 const SSH_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// How long the command may take to connect and greet.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long after a failed connection the next is tried, doubling each time
+/// up to the longest.
+const FIRST_RETRY: Duration = Duration::from_secs(5);
+const LONGEST_RETRY: Duration = Duration::from_secs(120);
+
 /// A host reached through a command, connected on first use and again after
-/// the connection drops.
+/// the connection drops. After a failed connection it isn't tried again for
+/// a while, so a machine that is off doesn't slow every request.
 pub struct Remote {
     name: String,
     config: Mutex<HostConfig>,
     connection: tokio::sync::Mutex<Option<(Arc<Client>, Child)>>,
+    retry: Mutex<Option<Retry>>,
+}
+
+struct Retry {
+    at: Instant,
+    wait: Duration,
+    why: String,
 }
 
 impl Remote {
@@ -202,6 +222,7 @@ impl Remote {
             name,
             config: Mutex::new(config),
             connection: tokio::sync::Mutex::new(None),
+            retry: Mutex::new(None),
         }
     }
 
@@ -217,11 +238,15 @@ impl Remote {
     pub async fn reconfigure(&self, config: HostConfig) -> Result<(), DaemonError> {
         let configure = config.configure();
         *self.config.lock().unwrap_or_else(PoisonError::into_inner) = config;
-        let connection = self.connection.lock().await;
-        if let Some((client, _)) = connection.as_ref()
-            && client.is_connected()
-        {
-            self.send_configure(client, configure).await?;
+        let client = self
+            .connection
+            .lock()
+            .await
+            .as_ref()
+            .filter(|(client, _)| client.is_connected())
+            .map(|(client, _)| client.clone());
+        if let Some(client) = client {
+            self.send_configure(&client, configure).await?;
         }
         Ok(())
     }
@@ -244,7 +269,11 @@ impl Remote {
     /// The connection to the host, made if there is none. A managed host
     /// running another build of humatad than this one is updated first, if it
     /// is the same platform as this Mac.
-    pub async fn client(&self, hosts: &Path, build: &str) -> Result<Arc<Client>, DaemonError> {
+    pub async fn client(
+        self: &Arc<Self>,
+        hosts: &Path,
+        build: &str,
+    ) -> Result<Arc<Client>, DaemonError> {
         let mut connection = self.connection.lock().await;
         if let Some((client, _)) = connection.as_ref()
             && client.is_connected()
@@ -252,6 +281,53 @@ impl Remote {
             return Ok(client.clone());
         }
         *connection = None;
+        if let Some(retry) = self
+            .retry
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            let left = retry.at.saturating_duration_since(Instant::now());
+            if !left.is_zero() {
+                return Err(DaemonError::Resting {
+                    host: self.name.clone(),
+                    why: retry.why.clone(),
+                    seconds: left.as_secs().max(1),
+                });
+            }
+        }
+        let made = self.connected(hosts, build).await;
+        let mut retry = self.retry.lock().unwrap_or_else(PoisonError::into_inner);
+        match made {
+            Ok((client, child)) => {
+                *retry = None;
+                *connection = Some((client.clone(), child));
+                Ok(client)
+            }
+            Err(failure) => {
+                let wait = retry
+                    .as_ref()
+                    .map_or(FIRST_RETRY, |last| (last.wait * 2).min(LONGEST_RETRY));
+                *retry = Some(Retry {
+                    at: Instant::now() + wait,
+                    wait,
+                    why: humata_wire::describe(&failure),
+                });
+                Err(failure)
+            }
+        }
+    }
+
+    /// Lets the next request try to connect at once.
+    pub fn retry_now(&self) {
+        *self.retry.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    async fn connected(
+        self: &Arc<Self>,
+        hosts: &Path,
+        build: &str,
+    ) -> Result<(Arc<Client>, Child), DaemonError> {
         let config = self.config();
         let (mut client, mut child) = self.connect(&config, hosts, build).await?;
         if let Some(ssh) = &config.ssh
@@ -264,9 +340,22 @@ impl Remote {
             (client, child) = self.connect(&config, hosts, build).await?;
         }
         let client = Arc::new(client);
-        self.send_configure(&client, config.configure()).await?;
-        *connection = Some((client.clone(), child));
-        Ok(client)
+        // The variables before anything else, then the setup script, which
+        // can take minutes, without holding up the requests behind this one.
+        let mut configure = config.configure();
+        let script = std::mem::take(&mut configure.setup_script);
+        self.send_configure(&client, configure.clone()).await?;
+        if !script.trim().is_empty() {
+            configure.setup_script = script;
+            let remote = self.clone();
+            let setup = client.clone();
+            tokio::spawn(async move {
+                if let Err(error) = remote.send_configure(&setup, configure).await {
+                    eprintln!("humatad: {}", humata_wire::describe(&error));
+                }
+            });
+        }
+        Ok((client, child))
     }
 
     /// Drops the connection, so the next request makes a new one.
@@ -326,9 +415,17 @@ impl Remote {
                 }
             }
         });
-        match Client::connect(stdout, stdin, pb::Role::Daemon, build).await {
-            Ok(client) => Ok((client, child)),
-            Err(source) => {
+        let greeting = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            Client::connect(stdout, stdin, pb::Role::Daemon, build),
+        );
+        match greeting.await {
+            Err(_) => Err(DaemonError::ConnectTimedOut {
+                host: self.name.clone(),
+                seconds: CONNECT_TIMEOUT.as_secs(),
+            }),
+            Ok(Ok(client)) => Ok((client, child)),
+            Ok(Err(source)) => {
                 // Lets the command finish printing why it stopped.
                 let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
                 let stderr = said.lock().unwrap_or_else(PoisonError::into_inner).clone();

@@ -41,7 +41,8 @@ package struct ToolCall: Hashable, Sendable {
         guard let data = argumentsJSON.data(using: .utf8),
             let arguments = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
-        return (arguments["command"] ?? arguments["path"]) as? String
+        let keys = ["command", "file_path", "path", "notebook_path", "pattern", "url", "query", "description"]
+        return keys.lazy.compactMap { arguments[$0] as? String }.first { !$0.isEmpty }
     }
 }
 

@@ -124,6 +124,12 @@ extension DaemonClient {
                 }
                 return try Session(updated.session)
             },
+            markSeen: { session, turns in
+                var mark = Humata_V1_MarkSeen()
+                mark.sessionID = session
+                mark.turns = UInt32(clamping: turns)
+                _ = try await daemon.call(.markSeen(mark))
+            },
             changes: { session, query in
                 guard case .changes(let changes) = try await daemon.call(.readChanges(query.proto(session))) else {
                     throw DaemonError.unexpected("something other than the session's changes")

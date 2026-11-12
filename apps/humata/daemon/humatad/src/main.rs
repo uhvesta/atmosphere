@@ -56,6 +56,18 @@ enum Role {
 
 fn main() -> ExitCode {
     let arguments = Arguments::parse();
+    if matches!(arguments.role, Role::Daemon { .. } | Role::Host { .. }) {
+        match humatad::login_environment() {
+            Ok(variables) => {
+                for (name, value) in variables {
+                    // SAFETY: nothing else runs yet; the runtime and its
+                    // threads start below.
+                    unsafe { std::env::set_var(name, value) };
+                }
+            }
+            Err(error) => eprintln!("humatad: {}", humata_wire::describe(&error)),
+        }
+    }
     let runtime = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime,
         Err(error) => {

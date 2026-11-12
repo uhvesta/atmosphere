@@ -9,6 +9,7 @@ mod error;
 mod files;
 mod host;
 mod hosts;
+mod login_env;
 mod machine;
 mod mcp;
 mod socket;
@@ -18,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub use error::StartError;
+pub use login_env::{LoginEnvError, login_environment};
 pub use mcp::{McpError, mcp_stdio};
 
 use daemon::Daemon;

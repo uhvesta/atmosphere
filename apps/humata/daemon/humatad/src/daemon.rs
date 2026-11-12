@@ -178,6 +178,7 @@ impl Daemon {
             .install(&ssh, convert::optional(install.binary).map(PathBuf::from))
             .await?;
         remote.disconnect().await;
+        remote.retry_now();
         let client = remote.client(&self.hosts_file, &self.build).await?;
         Ok(pb::HostInstalled {
             program_version: client.peer().program_version.clone(),
@@ -186,6 +187,7 @@ impl Daemon {
 
     async fn check_host(&self, name: &str) -> Result<pb::HostHealth, DaemonError> {
         let remote = self.remote(name)?;
+        remote.retry_now();
         let status = match remote.client(&self.hosts_file, &self.build).await {
             Ok(client) => {
                 remote
@@ -322,11 +324,12 @@ impl Daemon {
         self.store.place(&session.id, host, project, item)?;
         session.host = host.to_owned();
         let placement = self.store.placement(&session.id)?;
-        let (project, item) = placement
-            .map(|placement| (placement.project, placement.item))
+        let (project, item, seen) = placement
+            .map(|placement| (placement.project, placement.item, placement.seen_turns))
             .unwrap_or_default();
         session.project_id = project.unwrap_or_default();
         session.item_id = item.unwrap_or_default();
+        session.seen_turns = seen;
         Ok(())
     }
 
@@ -350,20 +353,23 @@ impl Daemon {
     /// Every session waiting on you, across projects.
     async fn inbox(&self) -> Result<pb::Inbox, DaemonError> {
         let projects = self.store.projects()?;
+        let sessions = self.list("").await?.sessions;
         let mut items: HashMap<String, pb::Item> = HashMap::new();
         for project in &projects {
-            for item in self.shown_items(&project.id).await? {
-                items.insert(item.id.clone(), item);
-            }
+            let mut shown: Vec<pb::Item> = self
+                .store
+                .items(&project.id)?
+                .iter()
+                .map(Item::wire)
+                .collect();
+            board::show(&mut shown, &sessions);
+            items.extend(shown.into_iter().map(|item| (item.id.clone(), item)));
         }
         let names: HashMap<&str, &str> = projects
             .iter()
             .map(|project| (project.id.as_str(), project.name.as_str()))
             .collect();
-        let mut entries: Vec<pb::InboxEntry> = self
-            .list("")
-            .await?
-            .sessions
+        let mut entries: Vec<pb::InboxEntry> = sessions
             .into_iter()
             .filter_map(|session| {
                 let item = items.get(&session.item_id);
@@ -416,11 +422,39 @@ impl Daemon {
     /// machine being off doesn't hide the rest.
     async fn list(&self, project: &str) -> Result<pb::Sessions, DaemonError> {
         let mut all = Vec::new();
-        let hosts = std::iter::once(String::new()).chain(self.remote_names());
-        for host in hosts {
-            let request = pb::request::Kind::ListSessions(pb::ListSessions::default());
-            let sessions = match self.forward(&host, request).await {
-                Ok(Reply::Response(pb::response::Kind::Sessions(sessions))) => {
+        // Every host at once, so a slow one costs its own time only.
+        let mut asking = tokio::task::JoinSet::new();
+        for (index, host) in self.remote_names().into_iter().enumerate() {
+            let remote = self.remote(&host)?;
+            let (hosts_file, build) = (self.hosts_file.clone(), self.build.clone());
+            asking.spawn(async move {
+                let request = pb::request::Kind::ListSessions(pb::ListSessions::default());
+                let answer = match remote.client(&hosts_file, &build).await {
+                    Ok(client) => remote.call(&client, request).await.ok(),
+                    Err(_) => None,
+                };
+                (index, host, answer)
+            });
+        }
+        let local = self
+            .forward(
+                "",
+                pb::request::Kind::ListSessions(pb::ListSessions::default()),
+            )
+            .await;
+        let mut answers = vec![(
+            String::new(),
+            match local {
+                Ok(Reply::Response(kind)) => Some(kind),
+                _ => None,
+            },
+        )];
+        let mut remotes = asking.join_all().await;
+        remotes.sort_by_key(|(index, _, _)| *index);
+        answers.extend(remotes.into_iter().map(|(_, host, answer)| (host, answer)));
+        for (host, answer) in answers {
+            let sessions = match answer {
+                Some(pb::response::Kind::Sessions(sessions)) => {
                     if !host.is_empty() {
                         self.store.cache_sessions(&host, &sessions.sessions)?;
                     }
@@ -708,6 +742,10 @@ impl Daemon {
             Request::EditChanges(edit) => self.host_of(&edit.session_id).await?,
             Request::ListFiles(list) => self.host_of(&list.session_id).await?,
             Request::ReadFile(read) => self.host_of(&read.session_id).await?,
+            Request::MarkSeen(mark) => {
+                self.store.mark_seen(&mark.session_id, mark.turns)?;
+                return Ok(Reply::Response(Response::Seen(pb::Seen {})));
+            }
             Request::MarkViewed(mark) => {
                 self.mark_viewed(mark)?;
                 return Ok(Reply::Response(Response::FileViewed(pb::FileViewed {})));

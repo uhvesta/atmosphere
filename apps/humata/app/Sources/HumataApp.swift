@@ -23,5 +23,9 @@ struct HumataApp: App {
             AppView(store: store)
                 .frame(minWidth: 820, minHeight: 520)
         }
+        .commands {
+            // One window over one store; ⌘N starts a chat in it instead.
+            CommandGroup(replacing: .newItem) {}
+        }
     }
 }

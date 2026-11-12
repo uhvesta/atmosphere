@@ -158,31 +158,74 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.alert?.message, TextState(refusal.description))
     }
 
-    func testALostConnectionIsShownAndWatchingAgainResumes() async throws {
+    func testALostConnectionIsShownAndWatchedAgainAfterAWait() async throws {
         let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let clock = TestClock()
         let store = TestStore(initialState: SessionFeature.State(session: session)) {
             SessionFeature()
         } withDependencies: {
             $0.daemon.watch = { _ in AsyncThrowingStream { $0.finish(throwing: DaemonError.disconnected) } }
+            $0.continuousClock = clock
         }
         store.exhaustivity = .off
 
         await store.send(.task)
         await store.receive(\.watchEnded)
         XCTAssertTrue(store.state.disconnected)
-        XCTAssertNotNil(store.state.alert)
 
-        await store.send(.task) {
-            $0.disconnected = false
-        }
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.task)
         await store.receive(\.watchEnded)
+
+        await clock.advance(by: .seconds(2))
+        await store.receive(\.task)
+        await store.receive(\.watchEnded)
+        await store.skipInFlightEffects()
+    }
+
+    func testAMessageThatWasntSentGoesBackInTheBox() async {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.send = { _, _, _ in throw DaemonError.disconnected }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.binding(.set(\.draft, "ship it")))
+        await store.send(.sendTapped(.enqueue))
+        XCTAssertEqual(store.state.draft, "")
+        await store.receive(\.sendFailed)
+        XCTAssertEqual(store.state.draft, "ship it")
+        XCTAssertNotNil(store.state.alert)
     }
 
     private func store() -> TestStoreOf<SessionFeature> {
         let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
-        let store = TestStore(initialState: SessionFeature.State(session: session)) { SessionFeature() }
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.markSeen = { _, _ in }
+        }
         store.exhaustivity = .off
         return store
+    }
+
+    func testAnEndedTurnOnScreenIsMarkedSeen() async {
+        let seen = LockIsolated<[Int]>([])
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.markSeen = { _, turns in seen.withValue { $0.append(turns) } }
+        }
+        store.exhaustivity = .off
+        await store.send(.received(event("e1", .turnStarted)))
+        await store.send(.received(event("e2", .turnEnded(aborted: false))))
+        await store.send(.received(event("e3", .turnStarted)))
+        await store.send(.received(event("e4", .turnEnded(aborted: false))))
+        await store.finish()
+        XCTAssertEqual(seen.value.last, 2)
     }
 
     private func event(_ id: String, _ kind: SessionEvent.Kind) -> SessionEvent {

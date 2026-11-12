@@ -162,6 +162,7 @@ package final class InMemoryDaemon: Sendable {
                 try self.fork(session, before: before, name: name, chatOnly: chatOnly)
             },
             update: { session, update in try self.update(session, update) },
+            markSeen: { session, turns in try self.markSeen(session, turns) },
             changes: { session, query in try self.changes(session, query) },
             editChanges: { session, edit in try self.editChanges(session, edit) },
             markViewed: { session, file, blob, viewed in try self.markViewed(session, file, blob, viewed) },
@@ -513,6 +514,14 @@ package final class InMemoryDaemon: Sendable {
         }
     }
 
+    private func markSeen(_ session: String, _ turns: Int) throws {
+        try known(session)
+        state.withValue { state in
+            guard let index = state.sessions.firstIndex(where: { $0.id == session }) else { return }
+            state.sessions[index].seenTurns = max(state.sessions[index].seenTurns, turns)
+        }
+    }
+
     private func update(_ session: String, _ update: SessionUpdate) throws -> Session {
         try known(session)
         return try state.withValue { state in
@@ -794,7 +803,9 @@ extension InMemoryDaemon {
                     programVersion: "0.0.0", platform: "Linux x86_64", freeDiskBytes: 120_000_000_000,
                     copilot: .success("1.0.0"),
                     githubToken: ["GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"].contains { env[$0] != nil },
-                    setup: host.setupScript.isEmpty ? nil : SetupResult(succeeded: true, output: "", time: start)))
+                    setup: host.setupScript.isEmpty ? nil : SetupResult(succeeded: true, output: "", time: start),
+                    claude: .success("2.1.322 (Claude Code)"),
+                    anthropicKey: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"].contains { env[$0] != nil }))
         }
     }
 
@@ -820,7 +831,8 @@ extension InMemoryDaemon {
                 switch session.state {
                 case .waitingForApproval: reason = .approval
                 case .failed: reason = .failed
-                case .idle where session.turns > 0 && item?.fields.status.closed != true: reason = .reply
+                case .idle where session.turns > session.seenTurns && item?.fields.status.closed != true:
+                    reason = .reply
                 case .idle, .working: return nil
                 }
                 return InboxEntry(

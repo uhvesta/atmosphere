@@ -3,6 +3,92 @@ import Foundation
 import HumataDaemonClient
 
 /// Renames a session.
+/// Moves a project's session to one of its tasks or subtasks, or to the
+/// project itself.
+@Reducer
+package struct MoveSessionFeature {
+    @ObservableState
+    package struct State: Equatable {
+        package var session: Session
+        /// The project's items, tasks before their subtasks; nil until read.
+        package var items: [Item]?
+        /// Where it goes: an item's id, or nil for the project itself.
+        package var itemID: String?
+        package var saving = false
+        @Presents package var alert: AlertState<Never>?
+
+        package init(session: Session) {
+            self.session = session
+            self.itemID = session.itemID
+        }
+    }
+
+    package enum Action: BindableAction {
+        case binding(BindingAction<State>)
+        case task
+        case itemsLoaded([Item])
+        case moveTapped
+        case failed(String)
+        case alert(PresentationAction<Never>)
+        case delegate(Delegate)
+
+        @CasePathable
+        package enum Delegate: Equatable {
+            case moved(Session)
+        }
+    }
+
+    @Dependency(\.daemon) var daemon
+
+    package init() {}
+
+    package var body: some ReducerOf<Self> {
+        BindingReducer()
+        Reduce { state, action in
+            switch action {
+            case .binding, .alert, .delegate:
+                return .none
+
+            case .task:
+                guard let project = state.session.projectID else { return .none }
+                return .run { send in
+                    await send(.itemsLoaded(try await daemon.items(project)))
+                } catch: { error, send in
+                    await send(.failed(error.localizedDescription))
+                }
+
+            case .itemsLoaded(let items):
+                let tasks = items.filter { $0.fields.parentID == nil }
+                state.items = tasks.flatMap { task in
+                    [task] + items.filter { $0.fields.parentID == task.id }
+                }
+                return .none
+
+            case .moveTapped:
+                guard !state.saving else { return .none }
+                state.saving = true
+                let id = state.session.id
+                let placement = state.itemID.map(Placement.item) ?? .project
+                return .run { send in
+                    await send(.delegate(.moved(try await daemon.update(id, SessionUpdate(placement: placement)))))
+                } catch: { error, send in
+                    await send(.failed(error.localizedDescription))
+                }
+
+            case .failed(let message):
+                state.saving = false
+                state.alert = AlertState {
+                    TextState("Couldn't move the session")
+                } message: {
+                    TextState(message)
+                }
+                return .none
+            }
+        }
+        .ifLet(\.$alert, action: \.alert)
+    }
+}
+
 @Reducer
 package struct RenameSessionFeature {
     @ObservableState

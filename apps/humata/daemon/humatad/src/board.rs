@@ -245,7 +245,7 @@ pub fn inbox_reason(session: &pb::SessionInfo, item: Option<&pb::Item>) -> Optio
     match session.state() {
         pb::SessionState::WaitingForApproval => Some(pb::InboxReason::Approval),
         pb::SessionState::Failed => Some(pb::InboxReason::Failed),
-        pb::SessionState::Idle if session.turns > 0 => {
+        pb::SessionState::Idle if session.turns > session.seen_turns => {
             let closed = item.is_some_and(|item| Status::from_wire(item.status()).closed());
             (!closed).then_some(pb::InboxReason::Reply)
         }
@@ -372,5 +372,14 @@ mod tests {
         assert_eq!(reason(pb::SessionState::Idle, 1, Some(&done)), None);
         assert_eq!(reason(pb::SessionState::Idle, 0, None), None);
         assert_eq!(reason(pb::SessionState::Working, 1, None), None);
+    }
+
+    #[test]
+    fn a_reply_leaves_the_inbox_once_seen_until_the_next_turn_ends() {
+        let mut seen = session("", pb::SessionState::Idle, 2);
+        seen.seen_turns = 2;
+        assert_eq!(inbox_reason(&seen, None), None);
+        seen.turns = 3;
+        assert_eq!(inbox_reason(&seen, None), Some(pb::InboxReason::Reply));
     }
 }

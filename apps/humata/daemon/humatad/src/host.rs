@@ -185,8 +185,8 @@ impl Host {
         let workspaces = || Workspaces::new(worktrees);
         // Empty until the daemon sends the host's variables after connecting.
         let env = Env::default();
-        let copilot_program = std::env::var_os("HUMATA_COPILOT")
-            .map_or_else(|| PathBuf::from("copilot"), PathBuf::from);
+        let copilot_program = program("HUMATA_COPILOT", "copilot");
+        let claude_program = program("HUMATA_CLAUDE", "claude");
         let scripted = LocalAgent::open(
             state.join("scripted"),
             ScriptedRunner::new(Script::default()),
@@ -221,7 +221,7 @@ impl Host {
         // Claude subscription.
         let claude_state = state.join("claude");
         let claude_runner = ClaudeRunner::new(ClaudeOptions {
-            program: claude_program(),
+            program: claude_program.clone(),
             state: claude_state.join("backend"),
             env: env.clone(),
             mcp,
@@ -242,7 +242,7 @@ impl Host {
         Ok(Self {
             backends,
             owners: Mutex::new(owners),
-            machine: Machine::new(state.to_owned(), env, copilot_program),
+            machine: Machine::new(state.to_owned(), env, copilot_program, claude_program),
             chats: state.join("chats"),
             program_version: crate::build(),
         })
@@ -382,6 +382,7 @@ impl Host {
             | Request::InstallHost(_)
             | Request::ListSshHosts(_)
             | Request::MarkViewed(_)
+            | Request::MarkSeen(_)
             | Request::CreateThread(_)
             | Request::ReplyToThread(_)
             | Request::ResolveThread(_)
@@ -541,23 +542,24 @@ impl Service for Host {
     }
 }
 
-/// The `claude` program: HUMATA_CLAUDE, else the first on PATH, else where
-/// its installer puts it, as a humatad the app starts gets a bare PATH.
-fn claude_program() -> PathBuf {
-    if let Some(program) = std::env::var_os("HUMATA_CLAUDE") {
+/// An agent's program: the one `variable` names, else the first `name` on
+/// PATH, else one in the folders installers use, which a shell's PATH may
+/// have but humatad's, started by launchd or over SSH, lacks.
+fn program(variable: &str, name: &str) -> PathBuf {
+    if let Some(program) = std::env::var_os(variable) {
         return PathBuf::from(program);
     }
-    let on_path = std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path)
-            .map(|dir| dir.join("claude"))
-            .find(|program| program.is_file())
-    });
-    let installed = || {
-        std::env::var_os("HOME")
-            .map(|home| PathBuf::from(home).join(".local/bin/claude"))
-            .filter(|program| program.is_file())
-    };
-    on_path
-        .or_else(installed)
-        .unwrap_or_else(|| PathBuf::from("claude"))
+    let path = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let installed = home
+        .iter()
+        .flat_map(|home| [home.join(".local/bin"), home.join(".npm-global/bin")])
+        .chain(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
+    path.into_iter()
+        .chain(installed)
+        .map(|dir| dir.join(name))
+        .find(|program| program.is_file())
+        .unwrap_or_else(|| PathBuf::from(name))
 }

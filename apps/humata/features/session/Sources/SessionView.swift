@@ -1,3 +1,4 @@
+import AppKit
 import ChatKit
 import ChatUI
 import ComposableArchitecture
@@ -31,8 +32,8 @@ package struct SessionView: View {
             }
             if store.disconnected {
                 ChatNotice(
-                    "Lost the connection to Humata's daemon.", systemImage: "bolt.horizontal.circle",
-                    action: "Reconnect"
+                    "Lost the connection to Humata's daemon. Reconnecting…", systemImage: "bolt.horizontal.circle",
+                    action: "Reconnect Now"
                 ) { store.send(.task) }
             }
             if store.session.hostOffline, let host = store.session.host {
@@ -86,7 +87,8 @@ package struct SessionView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
-            .help("The chat, the session's changes to review, or the files in its folder")
+            .help("The chat, the session's changes to review, or the files in its folder (⌘1, ⌘2, ⌘3)")
+            .background { tabShortcuts }
             Spacer()
             if let usage = store.usage {
                 Text(Self.describe(usage))
@@ -102,6 +104,21 @@ package struct SessionView: View {
             }
             .fixedSize()
             .help("Try something else from here, while this session stays as it is")
+            Menu {
+                Button("Copy Folder Path") { copy(store.session.workingDirectory) }
+                if store.session.host == nil {
+                    Button("Show in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([folder])
+                    }
+                    Button("Open in Terminal") { open(folder, with: "com.apple.Terminal") }
+                }
+            } label: {
+                Label("Folder", systemImage: "folder")
+            }
+            .fixedSize()
+            .help(
+                store.session.host.map { "The folder it works in on \($0)" }
+                    ?? "The folder it works in, to look at or work in yourself")
             Picker("Approvals", selection: approvalMode) {
                 ForEach(ApprovalMode.allCases, id: \.self) { mode in
                     Text(Self.name(mode)).tag(mode)
@@ -113,6 +130,30 @@ package struct SessionView: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
+    }
+
+    /// ⌘1, ⌘2 and ⌘3 for the views, in the order the picker shows them.
+    private var tabShortcuts: some View {
+        ZStack {
+            ForEach(Array(store.tabs.enumerated()), id: \.element) { index, tab in
+                Button(title(tab)) { store.send(.tabPicked(tab)) }
+                    .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+            }
+        }
+        .opacity(0)
+        .accessibilityHidden(true)
+    }
+
+    private var folder: URL { URL(filePath: store.session.workingDirectory, directoryHint: .isDirectory) }
+
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func open(_ folder: URL, with bundleID: String) {
+        guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
+        NSWorkspace.shared.open([folder], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration())
     }
 
     private var approvalMode: Binding<ApprovalMode> {
@@ -237,7 +278,8 @@ package struct SessionView: View {
                     Spacer()
                     Button("Steer Now") { store.send(.sendTapped(.steer)) }
                         .font(.caption.weight(.semibold))
-                        .help("Send it to the running turn")
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .help("Send it to the running turn (⌘↩)")
                 }
                 .padding(.horizontal, 4)
             }

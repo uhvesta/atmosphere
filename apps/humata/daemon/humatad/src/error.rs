@@ -335,6 +335,20 @@ pub enum DaemonError {
         source: WireError,
     },
 
+    #[error(
+        "host {host:?} took more than {seconds} seconds to answer; check that it is on and its network is up, then use Check in Hosts"
+    )]
+    ConnectTimedOut { host: String, seconds: u64 },
+
+    #[error(
+        "host {host:?} couldn't be reached a moment ago ({why}); humatad tries again in {seconds} seconds, or now when you use Check in Hosts"
+    )]
+    Resting {
+        host: String,
+        why: String,
+        seconds: u64,
+    },
+
     #[error("there is already a host named {host:?}; pick another name, or remove that one first")]
     HostExists { host: String },
 
@@ -444,9 +458,11 @@ impl DaemonError {
             | Self::NotAFolder { .. }
             | Self::NoRepositories
             | Self::ForHostsOnly => pb::ErrorCode::InvalidRequest,
-            Self::Spawn { .. } | Self::Connect { .. } | Self::Ssh { .. } => {
-                pb::ErrorCode::HostUnavailable
-            }
+            Self::Spawn { .. }
+            | Self::Connect { .. }
+            | Self::ConnectTimedOut { .. }
+            | Self::Resting { .. }
+            | Self::Ssh { .. } => pb::ErrorCode::HostUnavailable,
             Self::Host {
                 source: ClientError::Refused { code, .. },
                 ..

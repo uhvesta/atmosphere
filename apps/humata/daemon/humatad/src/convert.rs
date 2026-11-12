@@ -155,6 +155,7 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, history: &[Event]) 
                 .count(),
         )
         .unwrap_or(u32::MAX),
+        seen_turns: 0,
     }
 }
 

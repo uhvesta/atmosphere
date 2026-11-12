@@ -92,6 +92,8 @@ package struct Session: Identifiable, Hashable, Sendable {
     package var itemID: String?
     /// How many turns it has finished.
     package var turns: Int
+    /// How many of its finished turns the person has seen.
+    package var seenTurns: Int
     /// Its host can't be reached, so this is as it last was.
     package var hostOffline: Bool
 
@@ -99,7 +101,8 @@ package struct Session: Identifiable, Hashable, Sendable {
         id: String, name: String, backend: Backend, workingDirectory: String, model: String? = nil,
         state: SessionState = .idle, parentID: String? = nil, forkedBeforeEventID: String? = nil, host: String? = nil,
         approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil, archived: Bool = false,
-        keeper: Bool = false, itemID: String? = nil, turns: Int = 0, hostOffline: Bool = false
+        keeper: Bool = false, itemID: String? = nil, turns: Int = 0, seenTurns: Int = 0,
+        hostOffline: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -116,6 +119,7 @@ package struct Session: Identifiable, Hashable, Sendable {
         self.keeper = keeper
         self.itemID = itemID
         self.turns = turns
+        self.seenTurns = seenTurns
         self.hostOffline = hostOffline
     }
 }
@@ -701,16 +705,22 @@ package struct HostStatus: Hashable, Sendable {
     package var platform: String
     package var freeDiskBytes: UInt64
     /// Copilot's version, or why it couldn't be run.
-    package var copilot: Result<String, CopilotProblem>
+    package var copilot: Result<String, ProgramProblem>
     /// Whether its agents have a GitHub token; without one, Copilot needs
     /// `copilot login` there.
     package var githubToken: Bool
     /// Nil when it has no setup script.
     package var setup: SetupResult?
+    /// Claude Code's version, or why it couldn't be run.
+    package var claude: Result<String, ProgramProblem>
+    /// Whether its agents have ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN;
+    /// without one, Claude Code needs `claude` signed in there.
+    package var anthropicKey: Bool
 
     package init(
-        programVersion: String, platform: String, freeDiskBytes: UInt64, copilot: Result<String, CopilotProblem>,
-        githubToken: Bool, setup: SetupResult? = nil
+        programVersion: String, platform: String, freeDiskBytes: UInt64, copilot: Result<String, ProgramProblem>,
+        githubToken: Bool, setup: SetupResult? = nil,
+        claude: Result<String, ProgramProblem> = .failure(ProgramProblem("Not checked")), anthropicKey: Bool = false
     ) {
         self.programVersion = programVersion
         self.platform = platform
@@ -718,11 +728,13 @@ package struct HostStatus: Hashable, Sendable {
         self.copilot = copilot
         self.githubToken = githubToken
         self.setup = setup
+        self.claude = claude
+        self.anthropicKey = anthropicKey
     }
 }
 
-/// Why Copilot couldn't be run on a host.
-package struct CopilotProblem: Error, Hashable, Sendable {
+/// Why an agent's program couldn't be run on a host.
+package struct ProgramProblem: Error, Hashable, Sendable {
     package var message: String
 
     package init(_ message: String) {

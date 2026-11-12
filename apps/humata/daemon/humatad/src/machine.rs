@@ -27,6 +27,9 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
 /// The variables that give agents a GitHub token.
 const TOKENS: [&str; 3] = ["GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"];
 
+/// The variables that sign Claude Code in.
+const ANTHROPIC_KEYS: [&str; 2] = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"];
+
 /// The last run of the setup script, kept beside the host's sessions so a
 /// script that succeeded isn't run again on every connection.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -55,14 +58,19 @@ pub struct Machine {
     state: PathBuf,
     env: Env,
     copilot: PathBuf,
+    claude: PathBuf,
+    /// Held while the setup script runs, so it never runs twice at once.
+    setup: tokio::sync::Mutex<()>,
 }
 
 impl Machine {
-    pub fn new(state: PathBuf, env: Env, copilot: PathBuf) -> Self {
+    pub fn new(state: PathBuf, env: Env, copilot: PathBuf, claude: PathBuf) -> Self {
         Self {
             state,
             env,
             copilot,
+            claude,
+            setup: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -91,6 +99,7 @@ impl Machine {
             return Ok(pb::SetupResult::default());
         }
         let digest = hex(&Sha256::digest(configure.setup_script.as_bytes()));
+        let _running = self.setup.lock().await;
         if let Some(last) = self.last_setup()
             && last.script == digest
             && last.succeeded
@@ -144,34 +153,17 @@ impl Machine {
             .await
             .and_then(|out| free_kilobytes(&out))
             .map_or(0, |kilobytes| kilobytes * 1024);
-        let mut version = Command::new(&self.copilot);
-        version.arg("--version").envs(self.env.vars());
-        let (copilot_version, copilot_problem) = match tokio::time::timeout(
-            VERSION_TIMEOUT,
-            version.stdin(Stdio::null()).kill_on_drop(true).output(),
-        )
-        .await
-        {
-            Err(_) => (
-                String::new(),
-                format!("`{} --version` didn't finish", self.copilot.display()),
-            ),
-            Ok(Err(error)) => (
-                String::new(),
-                format!(
-                    "couldn't run {}: {error}. Install the Copilot CLI on this host, or set HUMATA_COPILOT to it",
-                    self.copilot.display()
-                ),
-            ),
-            Ok(Ok(output)) if output.status.success() => (
-                String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-                String::new(),
-            ),
-            Ok(Ok(output)) => (String::new(), printed(&output)),
-        };
-        let github_token = TOKENS.iter().any(|name| {
+        let (copilot_version, copilot_problem) = self
+            .version(&self.copilot, "the Copilot CLI", "HUMATA_COPILOT")
+            .await;
+        let (claude_version, claude_problem) = self
+            .version(&self.claude, "Claude Code", "HUMATA_CLAUDE")
+            .await;
+        let has = |name: &&str| {
             self.env.has(name) || std::env::var_os(name).is_some_and(|value| !value.is_empty())
-        });
+        };
+        let github_token = TOKENS.iter().any(has);
+        let anthropic_key = ANTHROPIC_KEYS.iter().any(has);
         pb::HostStatus {
             program_version,
             platform,
@@ -180,6 +172,42 @@ impl Machine {
             copilot_problem,
             github_token,
             setup: self.last_setup().map(|run| run.wire()),
+            claude_version,
+            claude_problem,
+            anthropic_key,
+        }
+    }
+
+    /// `program --version`'s first line, or why it couldn't be run.
+    async fn version(&self, program: &Path, what: &str, variable: &str) -> (String, String) {
+        let mut version = Command::new(program);
+        version
+            .arg("--version")
+            .envs(self.env.vars())
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
+        match tokio::time::timeout(VERSION_TIMEOUT, version.output()).await {
+            Err(_) => (
+                String::new(),
+                format!("`{} --version` didn't finish", program.display()),
+            ),
+            Ok(Err(error)) => (
+                String::new(),
+                format!(
+                    "couldn't run {}: {error}. Install {what} on this host, or set {variable} to it",
+                    program.display()
+                ),
+            ),
+            Ok(Ok(output)) if output.status.success() => (
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned(),
+                String::new(),
+            ),
+            Ok(Ok(output)) => (String::new(), printed(&output)),
         }
     }
 
@@ -296,6 +324,7 @@ mod tests {
             state.to_owned(),
             Env::default(),
             PathBuf::from("/nonexistent/copilot"),
+            PathBuf::from("/nonexistent/claude"),
         )
     }
 
@@ -373,6 +402,9 @@ mod tests {
         assert!(status.github_token);
         assert!(status.copilot_version.is_empty());
         assert!(!status.copilot_problem.is_empty());
+        assert!(status.claude_version.is_empty());
+        assert!(!status.claude_problem.is_empty());
+        assert!(!status.anthropic_key);
     }
 
     #[tokio::test]

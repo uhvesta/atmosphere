@@ -197,7 +197,8 @@ impl Session {
 impl<R: Runner> LocalAgent<R> {
     /// Opens the sessions under `root`, creating it if needed. A session
     /// whose turn was cut off, because the program stopped, is closed with an
-    /// aborted turn.
+    /// aborted turn. One that can't be read is skipped, its folder left as
+    /// it is, and why goes to the program's log.
     pub fn open(root: impl Into<PathBuf>, runner: R) -> Result<Self, AgentError> {
         let root = root.into();
         let dir = root.join("sessions");
@@ -219,7 +220,14 @@ impl<R: Runner> LocalAgent<R> {
             if !path.join(RECORD_FILE).is_file() {
                 continue;
             }
-            let session = load(&path)?;
+            // One damaged session mustn't keep the others closed.
+            let session = match load(&path) {
+                Ok(session) => session,
+                Err(error) => {
+                    eprintln!("humata: skipped a session: {}", describe(&error));
+                    continue;
+                }
+            };
             for kind in closing(&session.log.events()) {
                 session.log.append(Event::now(kind))?;
             }

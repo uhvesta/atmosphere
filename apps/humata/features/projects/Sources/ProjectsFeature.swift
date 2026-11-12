@@ -69,6 +69,7 @@ package struct ProjectsFeature {
         case newProject(NewProjectFeature)
         case newSession(NewSessionFeature)
         case rename(RenameSessionFeature)
+        case move(MoveSessionFeature)
         case compare(CompareFeature)
         case alert(AlertState<Never>)
     }
@@ -87,6 +88,7 @@ package struct ProjectsFeature {
         case newChatTapped
         case selected(SidebarItem?)
         case renameTapped(Session.ID)
+        case moveTapped(Session.ID)
         case archiveTapped(Session.ID, archived: Bool)
         case keeperTapped(Session.ID, keeper: Bool)
         case compareTapped(Session.ID, with: Session.ID)
@@ -195,6 +197,11 @@ package struct ProjectsFeature {
                 state.destination = .rename(RenameSessionFeature.State(session: session))
                 return .none
 
+            case .moveTapped(let id):
+                guard let session = state.sessions[id: id] else { return .none }
+                state.destination = .move(MoveSessionFeature.State(session: session))
+                return .none
+
             case .archiveTapped(let id, let archived):
                 return update(id, SessionUpdate(archived: archived))
 
@@ -208,9 +215,13 @@ package struct ProjectsFeature {
 
             case .updated(let session),
                 .destination(.presented(.rename(.delegate(.renamed(let session))))),
+                .destination(.presented(.move(.delegate(.moved(let session))))),
                 .destination(.presented(.compare(.delegate(.updated(let session))))):
                 state.sessions[id: session.id] = session
-                if case .rename = state.destination { state.destination = nil }
+                switch state.destination {
+                case .rename, .move: state.destination = nil
+                default: break
+                }
                 return .none
 
             case .updateFailed(let message):
@@ -429,17 +440,47 @@ package struct NewSessionFeature {
         /// Empty for the backend's default.
         package var model = ""
         package var approvalMode = ApprovalMode.askEveryTime
+        /// An OpenAI-compatible server, such as Ollama's, for Copilot or a
+        /// local model to use instead of a paid one; empty for none, or the
+        /// local model's default.
+        package var modelServer = ""
         /// The hosts it could run on besides this Mac.
         package var hosts: [RemoteHost] = []
         /// Where it runs; nil for this Mac.
         package var host: RemoteHost.ID?
         package var starting = false
         @Presents package var alert: AlertState<Never>?
+        /// What the last session started with, for the next to start from.
+        @Shared(.appStorage("newSessionBackend")) var lastBackend = Backend.copilot
+        @Shared(.appStorage("newSessionModel")) var lastModel = ""
+        @Shared(.appStorage("newSessionApprovalMode")) var lastApprovalMode = ApprovalMode.askEveryTime
+        @Shared(.appStorage("newSessionHost")) var lastHost: String?
+        @Shared(.appStorage("newSessionModelServer")) var lastModelServer = ""
+
+        /// Whether the backend can use a model server of the person's.
+        package var takesModelServer: Bool { backend == .copilot || backend == .local }
+
+        /// The backend's settings for the model server, as JSON.
+        package var backendConfig: String? {
+            let server = modelServer.trimmed
+            guard takesModelServer, !server.isEmpty else { return nil }
+            let config: [String: Any] =
+                backend == .copilot ? ["provider": ["base_url": server]] : ["base_url": server]
+            guard let data = try? JSONSerialization.data(withJSONObject: config, options: [.sortedKeys]) else {
+                return nil
+            }
+            return String(data: data, encoding: .utf8)
+        }
 
         package init(project: Project?, item: Item? = nil) {
             self.project = project
             self.item = item
             self.name = item?.title ?? ""
+            backend = lastBackend
+            model = lastModel
+            approvalMode = lastApprovalMode
+            host = lastHost
+            modelServer = lastModelServer
         }
     }
 
@@ -484,11 +525,16 @@ package struct NewSessionFeature {
             case .startTapped:
                 guard !state.starting else { return .none }
                 state.starting = true
+                state.$lastBackend.withLock { $0 = state.backend }
+                state.$lastModel.withLock { $0 = state.model }
+                state.$lastApprovalMode.withLock { $0 = state.approvalMode }
+                state.$lastHost.withLock { $0 = state.host }
+                state.$lastModelServer.withLock { $0 = state.modelServer }
                 let model = state.model.trimmed
                 let request = StartRequest(
                     backend: state.backend, workingDirectory: state.project == nil ? state.folder : nil,
                     name: state.name.trimmed, host: state.host,
-                    model: model.isEmpty ? nil : model,
+                    model: model.isEmpty ? nil : model, backendConfig: state.backendConfig,
                     approvalMode: state.approvalMode, projectID: state.project?.id, itemID: state.item?.id,
                     specs: state.item?.parentID == nil ? .item : state.specs)
                 return .run { send in

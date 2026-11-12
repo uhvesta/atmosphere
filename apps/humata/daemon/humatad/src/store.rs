@@ -135,6 +135,9 @@ const MIGRATIONS: &[&str] = &["
         blob TEXT NOT NULL,
         PRIMARY KEY (session_id, repository, path)
     );
+", "
+    -- How many of its finished turns the person has seen.
+    ALTER TABLE sessions ADD COLUMN seen_turns INTEGER NOT NULL DEFAULT 0;
 "];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,6 +158,8 @@ pub struct Placement {
     pub project: Option<String>,
     /// The task or subtask it works on; None for its project itself.
     pub item: Option<String>,
+    /// How many of its finished turns the person has seen.
+    pub seen_turns: u32,
 }
 
 pub struct Store {
@@ -328,17 +333,30 @@ impl Store {
     pub fn placement(&self, session: &str) -> Result<Option<Placement>, StoreError> {
         self.lock()
             .query_row(
-                "SELECT host, project_id, item_id FROM sessions WHERE id = ?1",
+                "SELECT host, project_id, item_id, seen_turns FROM sessions WHERE id = ?1",
                 [session],
                 |row| {
                     Ok(Placement {
                         host: row.get(0)?,
                         project: row.get(1)?,
                         item: row.get(2)?,
+                        seen_turns: row.get(3)?,
                     })
                 },
             )
             .optional()
+            .map_err(self.failed())
+    }
+
+    /// Records that the person has seen `turns` of the session's finished
+    /// turns, unless more were seen already.
+    pub fn mark_seen(&self, session: &str, turns: u32) -> Result<(), StoreError> {
+        self.lock()
+            .execute(
+                "UPDATE sessions SET seen_turns = max(seen_turns, ?2) WHERE id = ?1",
+                params![session, turns],
+            )
+            .map(drop)
             .map_err(self.failed())
     }
 
@@ -1014,7 +1032,17 @@ mod tests {
                 host: "build".into(),
                 project: Some(project.id),
                 item: None,
+                seen_turns: 0,
             })
+        );
+        store.mark_seen("s", 3).expect("marked");
+        store.mark_seen("s", 2).expect("marked");
+        assert_eq!(
+            store
+                .placement("s")
+                .expect("read")
+                .map(|placed| placed.seen_turns),
+            Some(3)
         );
     }
 

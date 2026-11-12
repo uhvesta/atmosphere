@@ -31,6 +31,9 @@ package struct SessionFeature {
         package var expandedThinking: Set<String> = []
         /// Whether the daemon stopped sending events; watching again resumes.
         package var disconnected = false
+        /// Times in a row watching has ended without an event, which spaces
+        /// out the next try.
+        var watchRetries = 0
         /// The person's message being edited, by event id; nil when none is.
         package var editing: String?
         /// The edited message's text.
@@ -107,6 +110,8 @@ package struct SessionFeature {
         case received(SessionEvent)
         case watchEnded(failure: String?)
         case sendTapped(SendMode)
+        /// The message wasn't sent; it goes back in the box if that is empty.
+        case sendFailed(text: String, message: String)
         case abortTapped
         case answerPermission(requestID: String, approved: Bool)
         case approvalModePicked(ApprovalMode)
@@ -138,8 +143,12 @@ package struct SessionFeature {
     }
 
     @Dependency(\.daemon) var daemon
+    @Dependency(\.continuousClock) var clock
 
-    private enum CancelID { case watch }
+    private enum CancelID { case watch, seen }
+
+    /// The longest wait before watching again.
+    private static let longestRetry = 30
 
     package init() {}
 
@@ -166,6 +175,8 @@ package struct SessionFeature {
 
             case .task:
                 state.disconnected = false
+                // The history is sent again, and the reply with it.
+                state.streaming = ""
                 let session = state.session.id
                 return .run { send in
                     do {
@@ -181,20 +192,34 @@ package struct SessionFeature {
                 .cancellable(id: CancelID.watch, cancelInFlight: true)
 
             case .received(let event):
+                state.watchRetries = 0
                 state.receive(event)
                 // The agent may have answered the review, or changed the code
                 // or the files.
                 guard case .turnEnded = event.kind else { return .none }
+                // The reply is on screen, so it leaves the inbox.
+                let session = state.session.id
+                let seen = state.events.filter { if case .turnEnded = $0.kind { true } else { false } }.count
+                let markSeen: Effect<Action> = .run { _ in try? await daemon.markSeen(session, seen) }
+                    .cancellable(id: CancelID.seen, cancelInFlight: true)
                 switch state.tab {
-                case .chat: return .none
-                case .review: return .send(.review(.refresh))
-                case .files: return .send(.docs(.refresh))
+                case .chat: return markSeen
+                case .review: return .merge(markSeen, .send(.review(.refresh)))
+                case .files: return .merge(markSeen, .send(.docs(.refresh)))
                 }
 
-            case .watchEnded(let failure):
+            case .watchEnded:
+                // The daemon restarted or the host dropped; watch again, less
+                // often the longer it stays away. The notice says so and
+                // lets the person try at once.
                 state.disconnected = true
-                if let failure { state.alert = Self.alert(failure) }
-                return .none
+                let wait = min(1 << min(state.watchRetries, 5), Self.longestRetry)
+                state.watchRetries += 1
+                return .run { send in
+                    try await clock.sleep(for: .seconds(wait))
+                    await send(.task)
+                }
+                .cancellable(id: CancelID.watch, cancelInFlight: true)
 
             case .sendTapped(let mode):
                 let text = state.draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -204,8 +229,13 @@ package struct SessionFeature {
                 return .run { _ in
                     try await daemon.send(session, text, mode)
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.sendFailed(text: text, message: error.localizedDescription))
                 }
+
+            case .sendFailed(let text, let message):
+                if state.draft.isEmpty { state.draft = text }
+                state.alert = Self.alert(message)
+                return .none
 
             case .abortTapped:
                 let session = state.session.id

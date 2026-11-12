@@ -1,3 +1,4 @@
+import AppKit
 import ComposableArchitecture
 import HumataDaemonClient
 import SwiftUI
@@ -39,23 +40,16 @@ package struct ProjectsView: View {
                     } label: {
                         Label("Add Project", systemImage: "folder.badge.plus")
                     }
-                    .help("Add a project for a repository on this Mac")
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+                    .help("Add a project for a repository on this Mac (⇧⌘N)")
                 }
             }
             .task { await store.send(.task).finish() }
-            .sheet(item: $store.scope(state: \.destination?.newProject, action: \.destination.newProject)) {
-                NewProjectView(store: $0)
+            .modifier(Sheets(store: store))
+            .onChange(of: store.inbox.count, initial: true) { _, waiting in
+                // The Dock says how many sessions wait on the person.
+                NSApp?.dockTile.badgeLabel = waiting == 0 ? nil : String(waiting)
             }
-            .sheet(item: $store.scope(state: \.destination?.newSession, action: \.destination.newSession)) {
-                NewSessionView(store: $0)
-            }
-            .sheet(item: $store.scope(state: \.destination?.rename, action: \.destination.rename)) {
-                RenameSessionView(store: $0)
-            }
-            .sheet(item: $store.scope(state: \.destination?.compare, action: \.destination.compare)) {
-                CompareView(store: $0)
-            }
-            .alert($store.scope(state: \.destination?.alert, action: \.destination.alert))
     }
 
     private var list: some View {
@@ -101,7 +95,8 @@ package struct ProjectsView: View {
                             .labelStyle(.iconOnly)
                     }
                     .buttonStyle(.borderless)
-                    .help("Start a chat in no project, in a folder you pick or one of its own")
+                    .keyboardShortcut("n", modifiers: .command)
+                    .help("Start a chat in no project, in a folder you pick or one of its own (⌘N)")
                 }
             }
             if !store.state.archived.isEmpty {
@@ -135,6 +130,9 @@ package struct ProjectsView: View {
             .tag(SidebarItem.session(session.id))
             .contextMenu {
                 Button("Rename…") { store.send(.renameTapped(session.id)) }
+                if session.projectID != nil {
+                    Button("Move to Task…") { store.send(.moveTapped(session.id)) }
+                }
                 Button(session.keeper ? "Unmark as Keeper" : "Mark as Keeper") {
                     store.send(.keeperTapped(session.id, keeper: !session.keeper))
                 }
@@ -313,9 +311,20 @@ package struct NewSessionView: View {
                     Text("Claude Code").tag(Backend.claude)
                     Text("Copilot").tag(Backend.copilot)
                     Text("Local Model").tag(Backend.local)
-                    Text("Scripted").tag(Backend.scripted)
+                    // For flows and tests only; set by them, never picked.
+                    if store.backend == .scripted {
+                        Text("Scripted").tag(Backend.scripted)
+                    }
                 }
                 TextField("Model", text: $store.model, prompt: Text("The agent's default"))
+                if store.takesModelServer {
+                    TextField(
+                        "Model Server", text: $store.modelServer,
+                        prompt: Text(store.backend == .local ? "http://127.0.0.1:11434/v1" : "GitHub's models")
+                    )
+                    .help(
+                        "An OpenAI-compatible server, such as Ollama's, so turns cost no tokens. Name its model above.")
+                }
                 if !store.hosts.isEmpty {
                     Picker("Runs On", selection: $store.host) {
                         Text("This Mac").tag(RemoteHost.ID?.none)
@@ -443,6 +452,75 @@ struct RenameSessionView: View {
             }
         }
         .alert($store.scope(state: \.alert, action: \.alert))
+    }
+}
+
+struct MoveSessionView: View {
+    @Bindable var store: StoreOf<MoveSessionFeature>
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Form {
+            if let items = store.items {
+                Picker("Works On", selection: $store.itemID) {
+                    Text("The Project Itself").tag(String?.none)
+                    ForEach(items) { item in
+                        Text(item.fields.parentID == nil ? item.fields.title : "    \(item.fields.title)")
+                            .tag(String?.some(item.id))
+                    }
+                }
+            } else {
+                ProgressView()
+            }
+        }
+        .formStyle(.grouped)
+        .frame(minWidth: 360)
+        .task { await store.send(.task).finish() }
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Move") { store.send(.moveTapped) }
+                    .disabled(store.saving || store.items == nil || store.itemID == store.session.itemID)
+            }
+        }
+        .alert($store.scope(state: \.alert, action: \.alert))
+    }
+}
+
+/// The sidebar's sheets and alert, apart so the body type-checks in time.
+private struct Sheets: ViewModifier {
+    @Bindable var store: StoreOf<ProjectsFeature>
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(item: $store.scope(state: \.destination?.newProject, action: \.destination.newProject)) {
+                NewProjectView(store: $0)
+            }
+            .sheet(item: $store.scope(state: \.destination?.newSession, action: \.destination.newSession)) {
+                NewSessionView(store: $0)
+            }
+            .sheet(item: $store.scope(state: \.destination?.rename, action: \.destination.rename)) {
+                RenameSessionView(store: $0)
+            }
+            .modifier(SessionSheets(store: store))
+    }
+}
+
+/// The sheets about one session, and the alert.
+private struct SessionSheets: ViewModifier {
+    @Bindable var store: StoreOf<ProjectsFeature>
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(item: $store.scope(state: \.destination?.move, action: \.destination.move)) {
+                MoveSessionView(store: $0)
+            }
+            .sheet(item: $store.scope(state: \.destination?.compare, action: \.destination.compare)) {
+                CompareView(store: $0)
+            }
+            .alert($store.scope(state: \.destination?.alert, action: \.destination.alert))
     }
 }
 

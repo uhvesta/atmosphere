@@ -111,6 +111,7 @@ extension Session {
             forkedBeforeEventID: optional(info.forkedBeforeEventID), host: optional(info.host),
             approvalMode: ApprovalMode(info.approvalMode), projectID: optional(info.projectID),
             archived: info.archived, keeper: info.keeper, itemID: optional(info.itemID), turns: Int(info.turns),
+            seenTurns: Int(info.seenTurns),
             hostOffline: info.hostOffline)
     }
 }
@@ -281,8 +282,11 @@ extension HostHealth {
                 programVersion: status.programVersion, platform: status.platform,
                 freeDiskBytes: status.freeDiskBytes,
                 copilot: status.copilotVersion.isEmpty
-                    ? .failure(CopilotProblem(status.copilotProblem)) : .success(status.copilotVersion),
-                githubToken: status.githubToken, setup: status.hasSetup ? SetupResult(status.setup) : nil))
+                    ? .failure(ProgramProblem(status.copilotProblem)) : .success(status.copilotVersion),
+                githubToken: status.githubToken, setup: status.hasSetup ? SetupResult(status.setup) : nil,
+                claude: status.claudeVersion.isEmpty
+                    ? .failure(ProgramProblem(status.claudeProblem)) : .success(status.claudeVersion),
+                anthropicKey: status.anthropicKey))
     }
 }
 

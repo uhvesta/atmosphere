@@ -173,6 +173,17 @@ private struct HealthSection: View {
                     LabeledContent("Copilot", value: "Not working")
                 }
                 LabeledContent("GitHub Token", value: status.githubToken ? "Set" : "None")
+                switch status.claude {
+                case .success(let version):
+                    LabeledContent("Claude Code", value: version)
+                    LabeledContent(
+                        "Anthropic Key", value: status.anthropicKey ? "Set" : "None, unless `claude` is signed in there"
+                    )
+                case .failure(let problem):
+                    // Not a problem unless its sessions use Claude Code.
+                    LabeledContent("Claude Code", value: "Not installed")
+                        .help(problem.message)
+                }
                 if let setup = status.setup {
                     LabeledContent("Setup", value: setup.succeeded ? "Ran" : "Failed")
                     if !setup.succeeded, !setup.output.isEmpty {

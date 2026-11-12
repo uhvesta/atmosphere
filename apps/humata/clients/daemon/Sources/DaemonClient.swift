@@ -27,6 +27,9 @@ package struct DaemonClient: Sendable {
         @Sendable (_ session: String, _ before: String?, _ name: String?, _ chatOnly: Bool) async throws -> Session
     /// Renames, archives or unarchives, or marks the session as the keeper.
     package var update: @Sendable (_ session: String, _ update: SessionUpdate) async throws -> Session
+    /// Records that the person has seen the session's first `turns` finished
+    /// turns, so its reply leaves the inbox until another turn ends.
+    package var markSeen: @Sendable (_ session: String, _ turns: Int) async throws -> Void
     /// What the session changed in each repository over the query's range.
     package var changes: @Sendable (_ session: String, _ query: ChangesQuery) async throws -> [RepositoryChanges]
     /// Stages, unstages or reverts a file or hunk in the session's copy.
