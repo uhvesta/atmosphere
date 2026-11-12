@@ -83,7 +83,6 @@
       [Button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004" id: HEALTH-0004
     [Row/OutlineRow] ""
       [Button] "Water the plants" value: "To Do, Today, HOME-0010" id: HOME-0010
-  [StaticText] "" value: "Title"
   [TextField] "Title" value: "Review Q4 roadmap"
   [StaticText] "" value: "Status"
   [PopUpButton] "" value: "In Progress"

@@ -1,6 +1,6 @@
 [button] "Today" id: BackButton
 [header] "HEALTH-0006"
-[element] "Title" value: "Review Q4 roadmap"
+[element] "" value: "Review Q4 roadmap"
 [button] "Status, In Progress"
 [button] "Priority, Urgent"
 [text] "Created, Nov 3, 2026"

@@ -17,7 +17,8 @@ package struct ProjectDetailView: View {
 
     package var body: some View {
         Section {
-            TextField("Name", text: $store.name)
+            TextField("Name", text: $store.name, prompt: Text("Name"))
+                .titleField()
                 .accessibilityLabel("Project name")
                 .font(.title3.bold())
                 .focused($focused, equals: .name)

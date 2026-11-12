@@ -23,7 +23,8 @@ package struct QuickAddView: View {
                 }
             }
             Section {
-                TextField(fieldTitle, text: $store.title)
+                TextField(fieldTitle, text: $store.title, prompt: Text(fieldTitle))
+                    .titleField()
                     .focused($titleFocused)
                     .onSubmit { store.send(.addTapped) }
                     .submitLabel(.done)

@@ -1,6 +1,6 @@
 [button] "Today" id: BackButton
 [header] "HOME-0011"
-[element] "Title" value: "Fix the bike's back brake"
+[element] "" value: "Fix the bike's back brake"
 [button] "Status, Procrastinated"
 [button] "Priority, Low"
 [text] "Created, Nov 3, 2026"

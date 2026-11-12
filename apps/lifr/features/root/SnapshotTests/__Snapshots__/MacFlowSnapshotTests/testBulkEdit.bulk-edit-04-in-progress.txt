@@ -54,7 +54,6 @@
       [Heading] "Today"
     [Row/OutlineRow] ""
       [Button] "Water the plants" value: "In Progress, Today, HOME-0010" id: HOME-0010
-  [StaticText] "" value: "Title"
   [TextField] "Title" value: "Fix the bike's back brake"
   [StaticText] "" value: "Status"
   [PopUpButton] "" value: "In Progress"

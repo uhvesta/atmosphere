@@ -3,7 +3,7 @@
 [button] "Cancel"
 [button] "Save"
 [header] "Custom repeat"
-[element] "Title" value: "Fix the bike's back brake"
+[element] "" value: "Fix the bike's back brake"
 [button, selected] "On a schedule"
 [button] "After closing"
 [button] "Status, Procrastinated"

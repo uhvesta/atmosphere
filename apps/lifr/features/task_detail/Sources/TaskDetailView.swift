@@ -57,19 +57,23 @@ package struct TaskDetailView: View {
     @ViewBuilder
     private var fields: some View {
         Section {
-            TextField("Title", text: $store.title, axis: .vertical)
-                .accessibilityLabel("Title")
+            TextField("Title", text: $store.title, prompt: Text("Title"), axis: .vertical)
+                .titleField()
                 .font(.title2.bold())
                 .focused($titleFocused)
                 .onSubmit { store.send(.titleSubmitted) }
                 .submitLabel(.done)
-            Picker("Status", selection: Binding(get: { store.row.status }, set: { store.send(.statusPicked($0)) })) {
+            StackedPicker(
+                "Status", value: store.row.status.title,
+                selection: Binding(get: { store.row.status }, set: { store.send(.statusPicked($0)) })
+            ) {
                 ForEach(TaskStatus.allCases, id: \.self) { status in
                     Text(status.title).tag(status)
                 }
             }
-            Picker(
-                "Priority", selection: Binding(get: { store.row.priority }, set: { store.send(.priorityPicked($0)) })
+            StackedPicker(
+                "Priority", value: store.row.priority.title ?? String(localized: "None"),
+                selection: Binding(get: { store.row.priority }, set: { store.send(.priorityPicked($0)) })
             ) {
                 ForEach(Priority.allCases, id: \.self) { priority in
                     Text(priority.title ?? String(localized: "None")).tag(priority)
@@ -227,13 +231,26 @@ package struct TaskDetailView: View {
         return calendar.date(from: parts) ?? Date()
     }
 
+    private var avenueName: String {
+        store.avenueChoices.first { $0.id == store.avenueID }?.name ?? ""
+    }
+
+    private var projectName: String {
+        let projects = store.projectChoices + store.otherProjectChoices.flatMap(\.projects)
+        return projects.first { $0.id == store.projectID }?.name ?? String(localized: "None")
+    }
+
     private var place: some View {
         Section {
-            Picker("Avenue", selection: Binding(get: { store.avenueID }, set: { store.send(.avenuePicked($0)) })) {
+            StackedPicker(
+                "Avenue", value: avenueName,
+                selection: Binding(get: { store.avenueID }, set: { store.send(.avenuePicked($0)) })
+            ) {
                 ForEach(store.avenueChoices) { Text($0.name).tag($0.id) }
             }
-            Picker(
-                "Project", selection: Binding(get: { store.projectID }, set: { store.send(.projectPicked($0)) })
+            StackedPicker(
+                "Project", value: projectName,
+                selection: Binding(get: { store.projectID }, set: { store.send(.projectPicked($0)) })
             ) {
                 Text("None").tag(UUID?.none)
                 ForEach(store.projectChoices) { Text($0.name).tag(UUID?.some($0.id)) }
@@ -485,5 +502,51 @@ package struct TaskDetailView: View {
         }
     } else {
         Text("The sample has no task with Sub tasks.")
+    }
+}
+
+/// A picker whose chosen value wraps at accessibility text sizes, rather
+/// than being cut to a few letters, under its label.
+private struct StackedPicker<Selection: Hashable, Content: View>: View {
+    let title: LocalizedStringKey
+    let value: String
+    @Binding var selection: Selection
+    @ViewBuilder let content: () -> Content
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    init(
+        _ title: LocalizedStringKey, value: String, selection: Binding<Selection>,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.title = title
+        self.value = value
+        _selection = selection
+        self.content = content
+    }
+
+    var body: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            Menu {
+                Picker(title, selection: $selection, content: content)
+                    .pickerStyle(.inline)
+                    .labelsHidden()
+            } label: {
+                VStack(alignment: .leading) {
+                    Text(title).foregroundStyle(.primary)
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(value)
+                        Image(systemName: "chevron.up.chevron.down").imageScale(.small)
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .tint(.primary)
+            .accessibilityLabel(Text(title))
+            .accessibilityValue(value)
+        } else {
+            Picker(title, selection: $selection, content: content)
+        }
     }
 }

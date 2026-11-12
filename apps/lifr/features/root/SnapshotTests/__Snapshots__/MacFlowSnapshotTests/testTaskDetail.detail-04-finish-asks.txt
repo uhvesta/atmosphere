@@ -54,7 +54,6 @@
       [Heading] "Today"
     [Row/OutlineRow] ""
       [Button] "Water the plants" value: "To Do, Today, HOME-0010" id: HOME-0010
-  [StaticText] "" value: "Title"
   [TextField] "Title" value: "Review Q4 roadmap"
   [StaticText] "" value: "Status"
   [PopUpButton] "" value: "In Progress"
