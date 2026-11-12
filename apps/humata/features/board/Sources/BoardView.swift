@@ -176,6 +176,36 @@ struct PriorityBadge: View {
     }
 }
 
+/// A spec as Markdown to write, or rendered the way sessions' people read it.
+private struct SpecEditor: View {
+    @Binding var spec: String
+    @Binding var previewing: Bool
+    let minHeight: CGFloat
+
+    var body: some View {
+        Picker("Spec", selection: $previewing) {
+            Text("Write").tag(false)
+            Text("Preview").tag(true)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        if previewing {
+            Group {
+                if spec.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("Nothing to preview yet.").foregroundStyle(.secondary)
+                } else {
+                    MarkdownText(spec).textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
+        } else {
+            TextEditor(text: $spec)
+                .font(.body.monospaced())
+                .frame(minHeight: minHeight)
+        }
+    }
+}
+
 /// An item's page: its status, priority and spec, its subtasks, and its
 /// sessions with what each changed.
 struct ItemView: View {
@@ -213,9 +243,10 @@ struct ItemView: View {
                 if let draft = store.draft {
                     TextField(
                         "Title", text: Binding(get: { draft.title }, set: { store.draft?.title = $0 }))
-                    TextEditor(text: Binding(get: { draft.spec }, set: { store.draft?.spec = $0 }))
-                        .font(.body.monospaced())
-                        .frame(minHeight: 160)
+                    SpecEditor(
+                        spec: Binding(get: { draft.spec }, set: { store.draft?.spec = $0 }),
+                        previewing: Binding(get: { draft.previewing }, set: { store.draft?.previewing = $0 }),
+                        minHeight: 160)
                 } else if store.item.spec.isEmpty {
                     Text("No spec yet. Edit to write what the work is and when it's done.")
                         .foregroundStyle(.secondary)
@@ -306,9 +337,7 @@ struct NewItemView: View {
                 }
             }
             Section {
-                TextEditor(text: $store.spec)
-                    .font(.body.monospaced())
-                    .frame(minHeight: 140)
+                SpecEditor(spec: $store.spec, previewing: $store.previewingSpec, minHeight: 140)
             } header: {
                 Text("Spec")
             } footer: {

@@ -97,6 +97,10 @@ final class BoardFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.destination?.item?.parent?.id, board.task.id)
         await store.send(\.destination.item.editTapped)
         await store.send(\.destination.item.binding.draft, ItemFeature.Draft(title: "form", spec: "# Fields\n- email"))
+        // Saved from the preview, what was written is kept.
+        await store.send(
+            \.destination.item.binding.draft,
+            ItemFeature.Draft(title: "form", spec: "# Fields\n- email", previewing: true))
         await store.send(\.destination.item.saveTapped)
         await store.receive(\.destination.item.updated)
 

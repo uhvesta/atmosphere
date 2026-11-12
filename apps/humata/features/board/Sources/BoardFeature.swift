@@ -208,10 +208,13 @@ package struct ItemFeature {
     package struct Draft: Equatable {
         package var title: String
         package var spec: String
+        /// Whether the spec shows rendered instead of as Markdown to edit.
+        package var previewing: Bool
 
-        package init(title: String, spec: String) {
+        package init(title: String, spec: String, previewing: Bool = false) {
             self.title = title
             self.spec = spec
+            self.previewing = previewing
         }
     }
 
@@ -365,6 +368,8 @@ package struct NewItemFeature {
         package var title = ""
         /// Markdown.
         package var spec = ""
+        /// Whether the spec shows rendered instead of as Markdown to edit.
+        package var previewingSpec = false
         package var priority = Priority.none
         package var creating = false
         @Presents package var alert: AlertState<Never>?

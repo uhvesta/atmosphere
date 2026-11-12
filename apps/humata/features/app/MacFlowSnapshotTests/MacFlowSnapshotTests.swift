@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import FlowKit
 import HumataAppFeature
+import HumataBoard
 import HumataDaemonClient
 import HumataProjects
 import HumataReview
@@ -324,6 +325,35 @@ final class MacFlowSnapshotTests: XCTestCase {
         store.send(.board(.presented(.cardTapped(task.id))))
         try await until { store.board?.destination?.item != nil }
         await flow.step("task")
+
+        store.send(.board(.presented(.destination(.presented(.item(.editTapped))))))
+        let written =
+            spec + """
+
+
+                ## Done when
+
+                1. A wrong password says so under the **password** field
+                2. `signedIn` survives a relaunch
+                """
+        let draft = { (previewing: Bool) in
+            _ = store.send(
+                .board(
+                    .presented(
+                        .destination(
+                            .presented(
+                                .item(
+                                    .binding(
+                                        .set(
+                                            \.draft,
+                                            ItemFeature.Draft(title: "Sign in", spec: written, previewing: previewing))
+                                    )))))))
+        }
+        draft(false)
+        await flow.step("spec writing")
+        draft(true)
+        await flow.step("spec preview")
+        store.send(.board(.presented(.destination(.presented(.item(.cancelEditTapped))))))
 
         store.send(.board(.presented(.destination(.dismiss))))
         store.send(.sidebar(.refresh))
