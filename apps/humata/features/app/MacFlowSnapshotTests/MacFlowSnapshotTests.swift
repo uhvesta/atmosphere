@@ -798,6 +798,38 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// A session on this Mac moves to a host between turns: the places it
+    /// can go are offered with what moving does, and it lists there after.
+    func testMovingASession() async throws {
+        let daemon = InMemoryDaemon(sshHosts: ["build-box"])
+        _ = try await daemon.client.addHost("build-box", "build-box")
+        _ = try await daemon.client.installHost("build-box")
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "Profile the build", projectID: project.id))
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("move", AppView(store: store))
+
+        try await until { store.daemon == .running && store.sidebar.sessions.count == 1 }
+        store.send(.sidebar(.selected(.session(session.id))))
+        store.send(.sidebar(.moveToHostTapped(session.id)))
+        try await until { store.sidebar.destination?.alert != nil }
+        await flow.step("where")
+
+        store.send(.sidebar(.destination(.presented(.alert(.moveSession(session.id, host: "build-box"))))))
+        try await until { store.sidebar.sessions[id: session.id]?.host == "build-box" }
+        await flow.step("moved")
+        flow.finish()
+    }
+
     /// Archived sessions fold away under a count, and one is deleted for
     /// good after a warning.
     func testArchivedSessions() async throws {
