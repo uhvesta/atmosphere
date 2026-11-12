@@ -606,25 +606,7 @@ package struct RootFeature {
                 guard !state.isRunning else { return .none }
                 if state.isWindow { return startWindow(&state) }
                 var effects: [Effect<Action>] = [
-                    // Changes too old to undo are packed, tasks trashed too
-                    // long ago deleted, and the Inbox added, before loading.
-                    // Each runs even when one before it fails.
-                    .run { [store, now] send in
-                        let steps: [@Sendable () async throws -> Void] = [
-                            { try await store.archiveJournal(now.addingTimeInterval(-JournalEntry.undoWindow)) },
-                            { try await store.purgeTrash(now: now) },
-                            { try await store.ensureInbox() },
-                        ]
-                        for step in steps {
-                            do {
-                                try await step()
-                            } catch {
-                                Logger(subsystem: "lifr", category: "store").error(
-                                    "\(String(describing: error), privacy: .public)")
-                            }
-                        }
-                        await send(.loaded(Result { try await store.snapshot() }))
-                    },
+                    tidy(ensuringInbox: true),
                     .run { [store] send in
                         for await update in await store.updates() { await send(.updated(update)) }
                     },
@@ -1093,7 +1075,9 @@ package struct RootFeature {
                 return .merge(effects)
 
             case .dayChanged:
-                return reload()
+                // Lifr can stay open for days: what has aged out of undo and
+                // the trash goes on each new day, not only at launch.
+                return tidy(ensuringInbox: false)
 
             case .syncNowTapped:
                 guard state.sync.status != .syncing else { return .none }
@@ -1360,6 +1344,27 @@ package struct RootFeature {
     /// reminders. Saves made at once, and updates from sync, can arrive in
     /// any order: records earlier than ones shown already are ignored.
     /// Loads the records again and shows them on every screen, as of now.
+    /// Packs changes too old to undo and deletes tasks trashed too long
+    /// ago, adds the Inbox when asked, then loads. Each step runs even when
+    /// one before it fails.
+    private func tidy(ensuringInbox: Bool) -> Effect<Action> {
+        .run { [store, now] send in
+            var steps: [@Sendable () async throws -> Void] = [
+                { try await store.archiveJournal(now.addingTimeInterval(-JournalEntry.undoWindow)) },
+                { try await store.purgeTrash(now: now) },
+            ]
+            if ensuringInbox { steps.append { try await store.ensureInbox() } }
+            for step in steps {
+                do {
+                    try await step()
+                } catch {
+                    Logger(subsystem: "lifr", category: "store").error("\(String(describing: error), privacy: .public)")
+                }
+            }
+            await send(.loaded(Result { try await store.snapshot() }))
+        }
+    }
+
     private func reload() -> Effect<Action> {
         .run { [store] send in await send(.loaded(Result { try await store.snapshot() })) }
     }

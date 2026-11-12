@@ -1224,6 +1224,29 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertNil(LastChange(saved, id: UUID()))
     }
 
+    func testABulkStatusCountsPickedTasksAlreadyInThatStatus() async throws {
+        let run = records.task("Run", in: health)
+        let swim = records.task("Swim", in: health)
+        let ride = records.task("Ride", in: health)
+        let fresh = StoreClient.inMemory(records.workspace)
+        records.setStatus(.inProgress, of: swim)
+        let started = StoreClient.inMemory(records.workspace)
+        let ids = [run.id, swim.id, ride.id]
+
+        let (none, one) = try await withDependencies {
+            $0.uuid = .incrementing
+            $0.date.now = now
+        } operation: {
+            let none = try await fresh.apply(.status(.inProgress), to: ids, cascade: false)
+            let one = try await started.apply(.status(.inProgress), to: ids, cascade: false)
+            return (none, one)
+        }
+
+        let all = try XCTUnwrap(LastChange(none, id: UUID()))
+        let some = try XCTUnwrap(LastChange(one, id: UUID()))
+        XCTAssertEqual(some.message, all.message)
+    }
+
     func testMovingATaskToAnotherAvenueNamesItsNewCode() async throws {
         let run = records.task("Run", in: health)
         let work = records.avenue("WORK", "Work")
@@ -1423,6 +1446,25 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.settings.sync.review, review)
         await store.skipReceivedActions()
         XCTAssertEqual(syncs.value, 1)
+        await task.cancel()
+    }
+
+    func testOnceTheDayChangesTasksTrashedTooLongAgoAreDeleted() async throws {
+        let aging = records.task("Aging", in: health)
+        records.trash(aging, daysAgo: 29)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = makeStore(.mac, store: client)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.trash.rows.map(\.title), ["Aging"])
+
+        store.dependencies.date.now = now + 2 * 24 * 60 * 60
+        await store.send(.dayChanged)
+        await store.receive(\.loaded)
+
+        XCTAssertTrue(store.state.trash.rows.isEmpty)
+        let saved = try await client.load()
+        XCTAssertNil(saved.tasks[aging.id])
         await task.cancel()
     }
 

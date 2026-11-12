@@ -120,7 +120,16 @@ package struct LastChange: Equatable, Sendable {
         let title = task.map { "“\($0.title)”" } ?? "A task"
         // Several picked tasks changed at once.
         // Sub tasks that went with their parent don't count.
-        let changed = Set(change.events.filter { $0.reason == nil }.map(\.taskID))
+        var changed = Set(change.events.filter { $0.reason == nil }.map(\.taskID))
+        // A picked task already in the status it was given is only touched,
+        // with no event, but it's in that status as asked.
+        if event?.field == .status, let status = event?.newValue {
+            let followed = Set(change.events.filter { $0.reason != nil }.map(\.taskID))
+            changed.formUnion(
+                change.previous.keys.filter { id in
+                    !followed.contains(id) && workspace.tasks[id]?.status.rawValue == status
+                })
+        }
         let picked = changed.filter { id in
             let task = workspace.tasks[id] ?? change.previous[id] ?? nil
             return task?.parentID.map { !changed.contains($0) } ?? true

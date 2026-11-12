@@ -553,10 +553,18 @@ package struct TaskListFeature {
             let today = CalendarDate(now, in: timeZone)
             return bulk(.dueDate(days.map { today.adding(days: $0) }), state.selectedIDs)
 
-        case .bulkSaved(_, .success(let saved)):
+        case .bulkSaved(let edit, .success(let saved)):
             // The keyboard row stays, so the next key goes on from there.
-            state.isSelecting = false
-            state.selection = []
+            // After a priority, label or due date the tasks stay picked for
+            // the next edit; a status, move or trash ends picking, as most of
+            // them leave the list.
+            switch edit {
+            case .priority, .addLabel, .dueDate:
+                break
+            case .status, .move, .trash:
+                state.isSelecting = false
+                state.selection = []
+            }
             return .send(.saved(.success(saved)))
 
         case .bulkSaved(.status(let status), .failure(let error))

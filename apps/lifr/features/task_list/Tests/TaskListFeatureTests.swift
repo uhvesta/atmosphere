@@ -654,7 +654,7 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertNil(store.state.statusPicker)
     }
 
-    func testPickedTasksChangeTogetherAndPickingEnds() async throws {
+    func testPickedTasksChangeTogetherAndStayPickedForTheNextEdit() async throws {
         let run = records.task("Run", in: health)
         let swim = records.task("Swim", in: health)
         let ride = records.task("Ride", in: health)
@@ -672,6 +672,12 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(tasks[run.id]?.priority, .high)
         XCTAssertEqual(tasks[ride.id]?.priority, .high)
         XCTAssertEqual(tasks[swim.id]?.priority, swim.priority)
+        XCTAssertTrue(store.state.isSelecting)
+        XCTAssertEqual(store.state.selection, [run.id, ride.id])
+
+        await store.send(.bulk(.status(.inProgress)))
+        await store.receive(\.bulkSaved)
+        await store.receive(\.delegate.saved)
         XCTAssertFalse(store.state.isSelecting)
         XCTAssertEqual(store.state.selection, [])
     }
