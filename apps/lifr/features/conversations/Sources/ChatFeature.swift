@@ -1271,7 +1271,7 @@ package struct ChatFeature {
     }
 
     /// Asks which open tasks the prompt lists: none, all, or one Avenue's,
-    /// for the first few Avenues an assistant may add to.
+    /// for each Avenue an assistant may add to.
     private static func scopeAlert(goal: String, preset: Skill?, workspace: Workspace) -> AlertState<Action.Alert> {
         let avenues = workspace.avenues.values
             .filter { $0.archivedAt == nil && $0.agentAccess == .full }
@@ -1281,7 +1281,7 @@ package struct ChatFeature {
         } actions: {
             ButtonState(action: .exportPlan(goal: goal, scope: .names)) { TextState("Names Only") }
             ButtonState(action: .exportPlan(goal: goal, scope: .everything)) { TextState("With All Open Tasks") }
-            for avenue in avenues.prefix(4) {
+            for avenue in avenues {
                 ButtonState(action: .exportPlan(goal: goal, scope: .avenue(avenue.id))) {
                     TextState("With Tasks in \(avenue.name)")
                 }

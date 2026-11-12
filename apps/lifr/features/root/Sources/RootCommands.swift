@@ -27,7 +27,7 @@ package struct RootCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Task") { store.send(.newTaskTapped) }
                 .keyboardShortcut("n")
-            Button("New Sub Task") { store.send(.newSubtaskTapped) }
+            Button("New Sub task") { store.send(.newSubtaskTapped) }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             Button("New Project") { store.send(.newProjectTapped(nil)) }
                 .keyboardShortcut("n", modifiers: [.command, .option])
@@ -79,7 +79,7 @@ package struct RootCommands: Commands {
             Button("Trash") { store.send(.goTo(.trash)) }
             Divider()
             Toggle(
-                "Show Completed",
+                "Show Closed",
                 isOn: Binding(
                     get: { store.avenue?.showsCompleted ?? true },
                     set: { store.send(.avenue(.showsCompletedToggled($0))) })
@@ -121,7 +121,7 @@ package struct RootCommands: Commands {
             Button("No Due Date") { store.send(.dueShortcut(.none)) }
                 .disabled(store.openTaskID == nil)
         }
-        CommandMenu("Chat") {
+        CommandMenu("Assistant") {
             Button("Export Plan Prompt") { store.send(.chatCommandChosen(.export)) }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
                 .disabled(store.state.openChatID == nil)

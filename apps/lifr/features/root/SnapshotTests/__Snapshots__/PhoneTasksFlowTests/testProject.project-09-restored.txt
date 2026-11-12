@@ -13,7 +13,7 @@
 [button] "Complete Project"
 [button] "Archive Project"
 [button] "Group by, Status"
-[button, toggle] "Show Completed" value: "1"
+[button, toggle] "Show Closed" value: "1"
 [text] "Reopened “Spring half marathon”"
 [button] "Undo"
 [text] "No tasks yet"

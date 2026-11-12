@@ -8,7 +8,7 @@
 [element] "Skill: change"
 [text] "I called the plumber"
 [text] "I'd mark it done."
-[text] "Changed task “Call the plumber”"
+[text] "Change task “Call the plumber”"
 [text] "Status:"
 [text] "To Do"
 [text] "Done"

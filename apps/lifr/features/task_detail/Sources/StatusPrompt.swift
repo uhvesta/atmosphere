@@ -43,13 +43,13 @@ extension AlertState where Action == StatusPrompt {
                     ButtonState(action: .showSubtasks(task: id)) { TextState("Show Them") }
                 }
                 ButtonState(role: .destructive, action: .finishDroppingSubtasks(task: id)) {
-                    TextState("Won't Do + Finish")
+                    TextState("Won't Do + Done")
                 }
                 ButtonState(role: .cancel) { TextState("Cancel") }
             } message: {
                 TextState(
                     "\(titles.map { "\"\($0)\"" }.joined(separator: ", ")). A task can be Done only when its "
-                        + "Sub tasks are closed. Won't Do + Finish marks them Won't Do first.")
+                        + "Sub tasks are closed. Won't Do + Done marks them Won't Do first.")
             }
         case .wontDoNeedsCascade(let id, let open)?:
             return AlertState {

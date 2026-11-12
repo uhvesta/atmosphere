@@ -6,7 +6,7 @@
 [element] "Skill: change"
 [text] "Push “Call the plumber” to next Monday"
 [text] "I moved Call the plumber to next Monday."
-[text] "Changed task “Call the plumber”"
+[text] "Change task “Call the plumber”"
 [text] "Due date:"
 [text] "Thu, Nov 5"
 [text] "Mon, Nov 9"

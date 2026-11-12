@@ -259,7 +259,7 @@ package struct TaskDetailView: View {
                         Button(choice.name) { store.send(.parentPicked(choice.id)) }
                     }
                 } label: {
-                    Label("Make Sub Task Of…", systemImage: "arrow.turn.down.right")
+                    Label("Make Sub task Of…", systemImage: "arrow.turn.down.right")
                 }
             }
             Button("Move to Trash", systemImage: "trash", role: .destructive) { store.send(.trashTapped) }
@@ -408,7 +408,7 @@ package struct TaskDetailView: View {
                         }
                     }
                     if entry.canUndo {
-                        Button("Undo") { store.send(.historyUndoTapped(entry.id)) }
+                        Button("Revert") { store.send(.historyUndoTapped(entry.id)) }
                             .font(.caption)
                             .buttonStyle(.borderless)
                             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -417,7 +417,7 @@ package struct TaskDetailView: View {
                 .accessibilityElement(children: store.editingCommentID == entry.id ? .contain : .combine)
                 .accessibilityActions {
                     if entry.canUndo {
-                        Button("Undo") { store.send(.historyUndoTapped(entry.id)) }
+                        Button("Revert") { store.send(.historyUndoTapped(entry.id)) }
                     }
                     if entry.isMine {
                         Button("Edit") { store.send(.commentEditTapped(entry.id)) }

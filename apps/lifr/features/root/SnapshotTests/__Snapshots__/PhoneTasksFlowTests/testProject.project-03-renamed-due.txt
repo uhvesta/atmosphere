@@ -14,7 +14,7 @@
 [button] "Archive Project"
 [text] "Complete the Project once its tasks are closed."
 [button] "Group by, Status"
-[button, toggle] "Show Completed" value: "1"
+[button, toggle] "Show Closed" value: "1"
 [header, text] "To Do"
 [text] "Changed “Spring half marathon”"
 [button] "Undo"

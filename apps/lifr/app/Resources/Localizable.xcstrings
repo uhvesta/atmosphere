@@ -910,6 +910,9 @@
     "Cart" : {
 
     },
+    "Change" : {
+
+    },
     "Change %@" : {
 
     },
@@ -2030,6 +2033,9 @@
     "Make Sub Task Of…" : {
 
     },
+    "Make Sub task Of…" : {
+
+    },
     "Make a Plan Prompt" : {
 
     },
@@ -2278,6 +2284,9 @@
 
     },
     "New Sub Task" : {
+
+    },
+    "New Sub task" : {
 
     },
     "New Tab" : {
@@ -2879,10 +2888,23 @@
     "Revert %lld changes" : {
 
     },
+    "Revert %lld changes to “%@”" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Revert %1$lld changes to “%2$@”"
+          }
+        }
+      }
+    },
     "Revert %lld changes, back to this one?" : {
 
     },
     "Revert a change" : {
+
+    },
+    "Revert a change to “%@”" : {
 
     },
     "Revert everything since" : {
@@ -3075,6 +3097,9 @@
 
     },
     "Show All (%lld More)" : {
+
+    },
+    "Show Closed" : {
 
     },
     "Show Completed" : {
@@ -3763,6 +3788,9 @@
 
     },
     "Won't Do + %@" : {
+
+    },
+    "Won't Do + Done" : {
 
     },
     "Won't Do + Finish" : {

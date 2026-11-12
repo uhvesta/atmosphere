@@ -151,7 +151,7 @@ package struct AvenueView: View {
             // Only status groups show closed tasks.
             if store.grouping == .status {
                 Toggle(
-                    "Show Completed",
+                    "Show Closed",
                     isOn: Binding(get: { store.showsCompleted }, set: { store.send(.showsCompletedToggled($0)) }))
             }
         }

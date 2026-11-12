@@ -16,7 +16,8 @@ extension AssistantKit.Proposal where Action == AssistantAction, Step == Journal
     ) -> ProposalCard {
         let words = JournalWords(workspace) { _ in "" }
         return ProposalCard(
-            summary: words.summary(of: steps, reverts: reverts),
+            // Until it's applied, what it would do.
+            summary: words.summary(of: steps, reverts: reverts, proposed: decision != .applied),
             changes: words.fields(of: steps, hiding: Self.bookkeeping), decision: decision, canUndo: canUndo,
             isBusy: isBusy, apply: apply, edit: edit, decline: decline, undo: undo)
     }

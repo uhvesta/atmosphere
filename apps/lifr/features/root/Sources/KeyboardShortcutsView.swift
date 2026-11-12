@@ -8,7 +8,7 @@ struct KeyboardShortcutsView: View {
         (
             "Anywhere",
             [
-                ("⌘N", "New Task"), ("⇧⌘N", "New Sub Task"), ("⌥⌘N", "New Project"),
+                ("⌘N", "New Task"), ("⇧⌘N", "New Sub task"), ("⌥⌘N", "New Project"),
                 ("⌘F", "Find"), ("⌘K", "Go to Task"), ("⌘R", "Sync Now"),
                 ("⌘Z", "Undo"), ("⇧⌘Z", "Redo"),
                 ("⌘1", "Go to Today"), ("⌘2", "Go to Upcoming"), ("⌘3", "Go to Calendar"),

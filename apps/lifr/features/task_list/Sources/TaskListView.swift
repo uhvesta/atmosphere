@@ -346,7 +346,7 @@ private struct BulkBar: View {
                 Button(store.selection.count == store.rows.count ? "Deselect All" : "Select All") {
                     store.send(.selectAllTapped)
                 }
-                Button("Done") { store.send(.selectTapped) }
+                Button("Done Selecting") { store.send(.selectTapped) }
                     .bold()
             }
             HStack {
@@ -496,7 +496,7 @@ struct RescheduleView: View {
                     Button(role: .destructive) {
                         store.send(.clearTapped)
                     } label: {
-                        Label("No due date", systemImage: "xmark.circle")
+                        Label("No Due Date", systemImage: "xmark.circle")
                     }
                 }
                 Section {

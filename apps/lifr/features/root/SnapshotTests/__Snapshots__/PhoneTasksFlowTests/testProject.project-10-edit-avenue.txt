@@ -9,7 +9,7 @@
 [header] "Edit Avenue"
 [button] "Group by, Status"
 [element] "Name" value: "Health"
-[button, toggle] "Show Completed" value: "1"
+[button, toggle] "Show Closed" value: "1"
 [button] "Color, Green"
 [header, text] "Procrastinated"
 [button] "Symbol, heart"

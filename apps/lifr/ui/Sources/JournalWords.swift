@@ -55,13 +55,15 @@ package struct JournalWords {
     private static let naming: Set<Field> = [.name, .title, .code]
 
     /// What the steps did in a line, such as "Changed task “Run” and 2
-    /// more", or that they revert `reverts` changes.
-    package func summary(of steps: [JournalStep], reverts: Int = 0) -> String {
+    /// more", or that they revert `reverts` changes. When they're only
+    /// `proposed`, what they would do: "Change task “Run” and 2 more".
+    package func summary(of steps: [JournalStep], reverts: Int = 0, proposed: Bool = false) -> String {
         if reverts > 0 {
-            return reverted(reverts, Set(steps.map(\.record)).count == 1 ? steps.first.map(name) : nil)
+            let record = Set(steps.map(\.record)).count == 1 ? steps.first.map(name) : nil
+            return proposed ? revert(reverts, record) : reverted(reverts, record)
         }
         guard let first = steps.first else { return String(localized: "No change") }
-        var text = "\(verb(first)) \(first.record.kind.noun)"
+        var text = "\(proposed ? proposedVerb(first) : verb(first)) \(first.record.kind.noun)"
         if first.record.kind != .settings { text += " “\(title(first))”" }
         return steps.count == 1 ? text : text + " and \(steps.count - 1) more"
     }
@@ -74,6 +76,31 @@ package struct JournalWords {
         case (_, let record?): String(localized: "Reverted \(count) changes to “\(record)”")
         case (1, nil): String(localized: "Reverted a change")
         case (_, nil): String(localized: "Reverted \(count) changes")
+        }
+    }
+
+    /// `reverted`, before it's done.
+    private func revert(_ count: Int, _ record: String?) -> String {
+        switch (count, record) {
+        case (1, let record?): String(localized: "Revert a change to “\(record)”")
+        case (_, let record?): String(localized: "Revert \(count) changes to “\(record)”")
+        case (1, nil): String(localized: "Revert a change")
+        case (_, nil): String(localized: "Revert \(count) changes")
+        }
+    }
+
+    /// `verb`, before it's done.
+    private func proposedVerb(_ step: JournalStep) -> String {
+        switch (step.before, step.after) {
+        case (nil, _): return String(localized: "Add")
+        case (_, nil): return String(localized: "Remove")
+        case (.task(let old)?, .task(let new)?):
+            if old.deletedAt == nil, new.deletedAt != nil { return String(localized: "Trash") }
+            if old.deletedAt != nil, new.deletedAt == nil { return String(localized: "Restore") }
+            return String(localized: "Change")
+        case (.comment(let old)?, .comment(let new)?) where old.deletedAt == nil && new.deletedAt != nil:
+            return String(localized: "Delete")
+        default: return String(localized: "Change")
         }
     }
 

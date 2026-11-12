@@ -15,7 +15,7 @@ extension TaskFilter.Due {
         case .overdue: String(localized: "Overdue")
         case .today: String(localized: "Today")
         case .nextSevenDays: String(localized: "Next 7 days")
-        case .none: String(localized: "No due date")
+        case .none: String(localized: "No Due Date")
         }
     }
 }

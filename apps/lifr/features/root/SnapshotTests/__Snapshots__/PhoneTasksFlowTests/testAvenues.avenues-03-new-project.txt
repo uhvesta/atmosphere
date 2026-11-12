@@ -5,7 +5,7 @@
 [button] "More"
 [header] "Health"
 [button] "Group by, Status"
-[button, toggle] "Show Completed" value: "1"
+[button, toggle] "Show Closed" value: "1"
 [text] "New Project"
 [element] "" value: "Name"
 [header, text] "Procrastinated"

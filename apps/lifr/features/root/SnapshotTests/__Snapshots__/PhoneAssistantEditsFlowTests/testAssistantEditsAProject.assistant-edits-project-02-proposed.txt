@@ -6,7 +6,7 @@
 [element] "Skill: change"
 [text] "Rename the Half marathon to “Spring half marathon”, due 2026-12-06"
 [text] "I renamed it to Spring half marathon, due 6 December."
-[text] "Changed Project “Spring half marathon”"
+[text] "Change Project “Spring half marathon”"
 [text] "Name:"
 [text] "Half marathon"
 [text] "Spring half marathon"

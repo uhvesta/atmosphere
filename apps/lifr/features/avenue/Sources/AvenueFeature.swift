@@ -75,7 +75,7 @@ package struct AvenueFeature {
             }
         }
 
-        /// Lists the tasks again, after the grouping or Show Completed
+        /// Lists the tasks again, after the grouping or Show Closed
         /// changed.
         mutating func requery(now: Date, timeZone: TimeZone) {
             list.query = .scope(scope, by: grouping, showsCompleted: showsCompleted)
@@ -99,7 +99,7 @@ package struct AvenueFeature {
         case binding(BindingAction<State>)
         case list(TaskListFeature.Action)
         case groupingPicked(Grouping)
-        /// Show Completed, on or off.
+        /// Show Closed, on or off.
         case showsCompletedToggled(Bool)
         case newProjectTapped
         /// The iPhone's Add Task: Quick Add, in this Avenue or Project.
