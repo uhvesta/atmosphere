@@ -124,6 +124,9 @@ package struct ProjectsFeature {
             case deleteSession(Session.ID)
             /// Moves the session to the host, or to this Mac for "".
             case moveSession(Session.ID, host: String)
+            /// Answers a request to close an item, stopping and archiving its
+            /// sessions after if `archive`.
+            case closeItem(AgentRequest.ID, RequestAnswer, archive: Bool)
         }
     }
 
@@ -537,15 +540,35 @@ package struct ProjectsFeature {
                 }
 
             case .requestAnswered(let id, let answer):
-                state.inbox.removeAll { $0.request?.id == id }
-                return .run { send in
-                    try await daemon.answerRequest(id, answer)
-                    await send(.requestAnswerSent(id))
-                    await send(await load())
-                } catch: { error, send in
-                    await send(.answerFailed(error.localizedDescription))
-                    await send(await load())
+                let live = state.closing(id, with: answer)
+                if !live.isEmpty {
+                    state.destination = .alert(
+                        AlertState {
+                            TextState("Stop and archive its sessions?")
+                        } actions: {
+                            ButtonState(action: .closeItem(id, answer, archive: true)) {
+                                TextState(
+                                    live.count == 1
+                                        ? "Stop and Archive 1 Session" : "Stop and Archive \(live.count) Sessions")
+                            }
+                            ButtonState(action: .closeItem(id, answer, archive: false)) {
+                                TextState("Keep Them")
+                            }
+                            ButtonState(role: .cancel) {
+                                TextState("Cancel")
+                            }
+                        } message: {
+                            TextState(
+                                "The item closes. Its sessions keep running and asking for approval until "
+                                    + "they're archived; an archived session can be unarchived later.")
+                        })
+                    return .none
                 }
+                return answerRequest(&state, id, answer, archiving: [])
+
+            case .destination(.presented(.alert(.closeItem(let id, let answer, let archive)))):
+                let live = archive ? state.closing(id, with: answer) : []
+                return answerRequest(&state, id, answer, archiving: live)
 
             case .requestAnswerSent(let id):
                 state.drafts[id] = nil
@@ -625,6 +648,27 @@ package struct ProjectsFeature {
         return new.filter { before[$0.id] != $0.reason && open != .session($0.session.id) }.map(Notice.init)
     }
 
+    /// Answers request `id`, then stops and archives `sessions`.
+    private func answerRequest(
+        _ state: inout State, _ id: AgentRequest.ID, _ answer: RequestAnswer, archiving sessions: [Session]
+    ) -> Effect<Action> {
+        state.inbox.removeAll { $0.request?.id == id }
+        return .run { send in
+            try await daemon.answerRequest(id, answer)
+            await send(.requestAnswerSent(id))
+            for session in sessions where session.state == .working || session.state == .waitingForApproval {
+                try await daemon.abort(session.id)
+            }
+            for session in sessions {
+                _ = try await daemon.update(session.id, SessionUpdate(archived: true))
+            }
+            await send(await load())
+        } catch: { error, send in
+            await send(.answerFailed(error.localizedDescription))
+            await send(await load())
+        }
+    }
+
     private func load() async -> Action {
         do {
             async let projects = daemon.projects()
@@ -638,6 +682,24 @@ package struct ProjectsFeature {
 }
 
 extension ProjectsFeature.Destination.State: Equatable {}
+
+extension ProjectsFeature.State {
+    /// The unarchived sessions on the item that answering request `id` with
+    /// `answer` closes; none if it closes none.
+    fileprivate func closing(_ id: AgentRequest.ID, with answer: RequestAnswer) -> [Session] {
+        guard let request = inbox.lazy.compactMap(\.request).first(where: { $0.id == id }),
+            case .move(let item, let asked) = request.kind
+        else { return [] }
+        let status: ItemStatus? =
+            switch answer {
+            case .approve: asked
+            case .move(let other): other
+            case .reply, .dismiss: nil
+            }
+        guard let status, status.closed else { return [] }
+        return sessions.filter { $0.itemID == item && !$0.archived }
+    }
+}
 
 /// `items`, the latest by `time` first, in the order given when as recent.
 private func newestFirst<Item>(_ items: [Item], by time: (Item) -> Date) -> [Item] {

@@ -51,7 +51,7 @@ package struct BoardFeature {
         case item(ItemFeature)
         case newItem(NewItemFeature)
         case log(BoardLogFeature)
-        case alert(AlertState<Never>)
+        case alert(AlertState<CloseAlert>)
     }
 
     package enum Action {
@@ -193,11 +193,19 @@ package struct BoardFeature {
 
             case .dropped(let id, let status):
                 guard let item = state.items[id: id], item.fields.status != status else { return .none }
-                return .run { send in
-                    await send(.moved(try await daemon.updateItem(id, ItemUpdate(status: status))))
-                } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                let live = state.sessions(on: item).filter { !$0.archived }
+                if status.closed, !live.isEmpty {
+                    state.destination = .alert(.closing(item, to: status, sessions: live.count))
+                    return .none
                 }
+                return move(id, to: status, archiving: [])
+
+            case .destination(.presented(.alert(.stopAndArchive(let id, let status)))):
+                guard let item = state.items[id: id] else { return .none }
+                return move(id, to: status, archiving: state.sessions(on: item).filter { !$0.archived })
+
+            case .destination(.presented(.alert(.keep(let id, let status)))):
+                return move(id, to: status, archiving: [])
 
             case .moved(let item):
                 state.items[id: item.id] = item
@@ -234,6 +242,16 @@ package struct BoardFeature {
             return .loaded(items: try await items, sessions: try await sessions)
         } catch {
             return .failed(error.localizedDescription)
+        }
+    }
+
+    /// Moves the item to `status`, stopping and archiving `sessions` first.
+    private func move(_ id: Item.ID, to status: ItemStatus, archiving sessions: [Session]) -> Effect<Action> {
+        .run { send in
+            try await stopAndArchive(sessions, with: daemon)
+            await send(.moved(try await daemon.updateItem(id, ItemUpdate(status: status))))
+        } catch: { error, send in
+            await send(.failed(error.localizedDescription))
         }
     }
 }
@@ -292,7 +310,7 @@ package struct ItemFeature {
     package enum Destination {
         case newSession(NewSessionFeature)
         case newSubtask(NewItemFeature)
-        case alert(AlertState<Never>)
+        case alert(AlertState<CloseAlert>)
     }
 
     package enum Action: BindableAction {
@@ -399,6 +417,25 @@ package struct ItemFeature {
 
             case .statusPicked(let status):
                 guard status != state.item.fields.status else { return .none }
+                let live = state.sessions.filter { !$0.archived }
+                if status.closed, !live.isEmpty {
+                    state.destination = .alert(.closing(state.item, to: status, sessions: live.count))
+                    return .none
+                }
+                return update(state.item.id, ItemUpdate(status: status))
+
+            case .destination(.presented(.alert(.stopAndArchive(_, let status)))):
+                let live = state.sessions.filter { !$0.archived }
+                let id = state.item.id
+                return .run { send in
+                    try await stopAndArchive(live, with: daemon)
+                    await send(.updated(try await daemon.updateItem(id, ItemUpdate(status: status))))
+                    await send(.delegate(.changed))
+                } catch: { error, send in
+                    await send(.failed(error.localizedDescription))
+                }
+
+            case .destination(.presented(.alert(.keep(_, let status)))):
                 return update(state.item.id, ItemUpdate(status: status))
 
             case .priorityPicked(let priority):

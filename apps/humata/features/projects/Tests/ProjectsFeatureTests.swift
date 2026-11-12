@@ -831,11 +831,17 @@ final class ProjectsFeatureTests: XCTestCase {
         let history = try await daemon.client.history(session.id)
         XCTAssertTrue(history.contains { $0.kind == .userMessage("Email.") })
 
+        // Moving it to Done asks about its session, which is stopped and
+        // archived once the move is made.
         await store.send(.requestAnswered(move.id, .approve))
+        XCTAssertNotNil(store.state.destination?.alert)
+        await store.send(.destination(.presented(.alert(.closeItem(move.id, .approve, archive: true)))))
         await store.receive(\.loaded)
         let status = try await daemon.client.items(project.id).first?.status
         XCTAssertEqual(status, .done)
         XCTAssertFalse(store.state.inbox.contains { $0.request != nil })
+        let archived = try await daemon.client.sessions(nil).first { $0.id == session.id }?.archived
+        XCTAssertEqual(archived, true)
 
         // Answered already, from elsewhere: the person is told.
         await store.send(.requestAnswered(move.id, .dismiss))

@@ -116,11 +116,49 @@ final class BoardFeatureTests: XCTestCase {
         XCTAssertEqual(titles(store.state.cards(in: .inReview)), ["login"])
 
         await store.send(.dropped(board.task.id, on: .done))
+        await store.send(.destination(.presented(.alert(.keep(board.task.id, .done)))))
         await store.receive(\.moved)
         await store.receive(\.loaded)
 
         XCTAssertEqual(titles(store.state.cards(in: .done)), ["login"])
         XCTAssertEqual(titles(store.state.cards(in: .inReview)), [])
+    }
+
+    func testClosingACardOffersToStopAndArchiveItsSessions() async throws {
+        let board = try await board { _ in [.run(command: "make", output: "")] }
+        let working = try await board.daemon.client.start(StartRequest(backend: .scripted, itemID: board.task.id))
+        let idle = try await board.daemon.client.start(StartRequest(backend: .scripted, itemID: board.task.id))
+        try await board.daemon.client.send(working.id, "build it", .enqueue)
+        let store = store(board)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.dropped(board.task.id, on: .done))
+        XCTAssertNotNil(store.state.destination?.alert)
+        await store.send(.destination(.presented(.alert(.stopAndArchive(board.task.id, .done)))))
+        await store.receive(\.moved)
+
+        let sessions = try await board.daemon.client.sessions(nil)
+        XCTAssertEqual(Set(sessions.filter(\.archived).map(\.id)), [working.id, idle.id])
+        XCTAssertFalse(sessions.contains { $0.state == .working || $0.state == .waitingForApproval })
+        XCTAssertEqual(store.state.items[id: board.task.id]?.fields.status, .done)
+    }
+
+    func testKeepingTheSessionsClosesTheCardAndLeavesThemBe() async throws {
+        let board = try await board()
+        let session = try await board.daemon.client.start(StartRequest(backend: .scripted, itemID: board.task.id))
+        let store = store(board)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.dropped(board.task.id, on: .wontDo))
+        await store.send(.destination(.presented(.alert(.keep(board.task.id, .wontDo)))))
+        await store.receive(\.moved)
+
+        let sessions = try await board.daemon.client.sessions(nil)
+        XCTAssertEqual(sessions.map(\.id), [session.id])
+        XCTAssertFalse(sessions.contains(where: \.archived))
+        XCTAssertEqual(store.state.items[id: board.task.id]?.fields.status, .wontDo)
     }
 
     func testANewSubtaskShowsOnTheBoard() async throws {
