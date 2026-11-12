@@ -1,5 +1,5 @@
 //! humatad: the daemon on your Mac (`humatad daemon`), the host role on any
-//! machine (`humatad host --stdio`), and the MCP server agents on the Mac
+//! machine (`humatad host`, reached over SSH through `humatad relay`), and the MCP server agents on the Mac
 //! use (`humatad mcp`). One binary, so a host is set up by copying it.
 
 mod board;
@@ -18,6 +18,7 @@ mod store;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 pub use error::StartError;
 pub use login_env::{LoginEnvError, login_environment};
@@ -30,6 +31,7 @@ use humata_agent::McpServer;
 use humata_wire::pb;
 use sha2::{Digest, Sha256};
 use store::Store;
+use tokio::net::UnixStream;
 
 /// Sent in the hello, for messages about updating.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -87,18 +89,19 @@ pub fn default_cache() -> Result<PathBuf, StartError> {
     }
 }
 
-/// Serves the host role on stdin and stdout until the daemon hangs up.
-/// Sessions' copies of their code go under `<cache>/worktrees`.
-pub async fn host_stdio(state: &Path, cache: &Path) -> Result<(), StartError> {
+/// How long a relay waits for the host it started to listen.
+const HOST_START_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Opens the host role's sessions under `state`, their copies of the code
+/// under `<cache>/worktrees`, and serves its agents' humata tools.
+async fn open_host(state: &Path, cache: &Path) -> Result<Arc<Host>, StartError> {
     // The board is the daemon's: this host's agents reach it through the
-    // relay, which asks the daemon over this connection. Without the relay's
-    // socket they work on without the humata tools.
-    let build = build();
+    // relay, which asks the daemon over the daemon's connection. Without the
+    // relay's socket they work on without the humata tools.
     let socket = state.join("mcp.sock");
     let mut listening = socket::listen(&socket).await;
     if let Err(StartError::AlreadyRunning { .. }) = listening {
-        // A host from the last connection still on its way out; this one
-        // takes over its agents' tools.
+        // A host on its way out; this one takes over its agents' tools.
         let _ = std::fs::remove_file(&socket);
         listening = socket::listen(&socket).await;
     }
@@ -116,7 +119,7 @@ pub async fn host_stdio(state: &Path, cache: &Path) -> Result<(), StartError> {
     let host = Arc::new(Host::open(state, &cache.join("worktrees"), mcp).await?);
     if let Some(listener) = listener {
         let relay = host.relay();
-        let build = build.clone();
+        let build = build();
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 let (relay, build) = (relay.clone(), build.clone());
@@ -127,6 +130,14 @@ pub async fn host_stdio(state: &Path, cache: &Path) -> Result<(), StartError> {
             }
         });
     }
+    Ok(host)
+}
+
+/// Serves the host role on stdin and stdout until the daemon hangs up.
+/// Sessions' copies of their code go under `<cache>/worktrees`.
+pub async fn host_stdio(state: &Path, cache: &Path) -> Result<(), StartError> {
+    let build = build();
+    let host = open_host(state, cache).await?;
     humata_wire::serve(
         tokio::io::stdin(),
         tokio::io::stdout(),
@@ -137,6 +148,128 @@ pub async fn host_stdio(state: &Path, cache: &Path) -> Result<(), StartError> {
     .await
     .map(drop)
     .map_err(|source| StartError::Stdio { source })
+}
+
+/// Serves the host role on `socket`, one daemon connection after another,
+/// so sessions keep going while no daemon is connected. Stops when the
+/// daemon asks, once a new humatad is installed, or on SIGTERM.
+pub async fn host_socket(state: &Path, cache: &Path, socket: &Path) -> Result<(), StartError> {
+    let listener = socket::listen(socket).await?;
+    let build: Arc<str> = build().into();
+    let host = open_host(state, cache).await?;
+    host.serve_on(socket);
+    let serving = async {
+        loop {
+            let (stream, _) = listener
+                .accept()
+                .await
+                .map_err(|source| StartError::Accept { source })?;
+            let (host, build) = (host.clone(), build.clone());
+            tokio::spawn(async move {
+                let (reader, writer) = stream.into_split();
+                let _ = humata_wire::serve(reader, writer, pb::Role::Host, &build, host).await;
+            });
+        }
+    };
+    let result = tokio::select! {
+        result = serving => result,
+        () = host.stopped() => return Ok(()),
+        () = socket::terminated() => Ok(()),
+    };
+    let _ = std::fs::remove_file(socket);
+    result
+}
+
+/// Joins stdin and stdout to the host on `socket`, starting it first if
+/// none is listening, until either side hangs up. SSH runs this, so a
+/// dropped connection ends only the relay, never the host's sessions.
+pub async fn relay(socket: &Path, state: &Path, cache: &Path) -> Result<(), StartError> {
+    let stream = match UnixStream::connect(socket).await {
+        Ok(stream) => stream,
+        Err(_) => start_host(socket, state, cache).await?,
+    };
+    let failed = |source| StartError::Relay {
+        socket: socket.to_owned(),
+        source,
+    };
+    let (mut reader, mut writer) = stream.into_split();
+    let mut stdin = tokio::io::stdin();
+    let mut stdout = tokio::io::stdout();
+    tokio::select! {
+        result = tokio::io::copy(&mut stdin, &mut writer) => result.map(drop).map_err(failed),
+        result = tokio::io::copy(&mut reader, &mut stdout) => result.map(drop).map_err(failed),
+    }
+}
+
+/// Starts `humatad host --socket` on its own, its output in
+/// `<state>/host.log`, and connects once it listens.
+async fn start_host(socket: &Path, state: &Path, cache: &Path) -> Result<UnixStream, StartError> {
+    let program = std::env::current_exe().map_err(|source| StartError::OwnProgram { source })?;
+    let log = state.join("host.log");
+    let opened = std::fs::create_dir_all(state).and_then(|()| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+    });
+    let output = opened.map_err(|source| StartError::OpenHostLog {
+        path: log.clone(),
+        source,
+    })?;
+    let errors = output
+        .try_clone()
+        .map_err(|source| StartError::OpenHostLog {
+            path: log.clone(),
+            source,
+        })?;
+    // Paths made absolute, since the host outlives this folder's meaning to
+    // the shell that started it.
+    let absolute = |path: &Path| std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
+    let mut child = tokio::process::Command::new(&program)
+        .arg("host")
+        .arg("--socket")
+        .arg(absolute(socket))
+        .arg("--state")
+        .arg(absolute(state))
+        .arg("--cache")
+        .arg(absolute(cache))
+        .stdin(std::process::Stdio::null())
+        .stdout(output)
+        .stderr(errors)
+        // Its own group, so the SSH session ending doesn't signal it.
+        .process_group(0)
+        .spawn()
+        .map_err(|source| StartError::SpawnHost {
+            program: program.clone(),
+            source,
+        })?;
+    let deadline = tokio::time::Instant::now() + HOST_START_TIMEOUT;
+    loop {
+        if let Ok(stream) = UnixStream::connect(socket).await {
+            return Ok(stream);
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            // Another relay's host may have won the race to listen.
+            if let Ok(stream) = UnixStream::connect(socket).await {
+                return Ok(stream);
+            }
+            let said = std::fs::read_to_string(&log).unwrap_or_default();
+            let tail: Vec<&str> = said.lines().rev().take(20).collect();
+            return Err(StartError::HostExited {
+                status,
+                log,
+                said: tail.into_iter().rev().collect::<Vec<_>>().join("\n"),
+            });
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(StartError::HostNotListening {
+                socket: socket.to_owned(),
+                seconds: HOST_START_TIMEOUT.as_secs(),
+                log,
+            });
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// `humatad mcp` talking to `socket`, for agents to start.

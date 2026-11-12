@@ -219,6 +219,70 @@ async fn sessions_survive_the_host_restarting() {
     assert_eq!(said(&after_turns(&client, &id, 2).await).len(), 4);
 }
 
+/// A client of the host listening on `socket`, once it does.
+async fn host_at(socket: &Path) -> Client {
+    for _ in 0..200 {
+        if let Ok(stream) = tokio::net::UnixStream::connect(socket).await {
+            let (reader, writer) = stream.into_split();
+            match Client::connect(reader, writer, pb::Role::Daemon, "test").await {
+                Ok(client) => return client,
+                Err(error) => panic!("couldn't connect: {error}"),
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("nothing listening on {}", socket.display())
+}
+
+#[tokio::test]
+async fn a_host_on_its_socket_keeps_turns_going_between_connections_and_stops_when_asked() {
+    // Short enough for a socket path.
+    let dir = tempfile::Builder::new()
+        .prefix("humata")
+        .tempdir_in("/tmp")
+        .unwrap_or_else(|error| panic!("{error}"));
+    let (state, socket) = (dir.path().join("state"), dir.path().join("host.sock"));
+    let serving = tokio::spawn({
+        let (state, socket) = (state.clone(), socket.clone());
+        async move { crate::host_socket(&state, &state.join("cache"), &socket).await }
+    });
+    let work = dir.path().join("work");
+    std::fs::create_dir_all(&work).unwrap_or_else(|error| panic!("{error}"));
+    let script = r#"{"rules": [{"when": "wait", "steps": [
+        {"step": "wait_for", "path": "go"},
+        {"step": "say", "text": "went"}
+    ]}]}"#;
+
+    let id = {
+        let client = host_at(&socket).await;
+        let mut request = start(&work, "");
+        if let pb::request::Kind::StartSession(start) = &mut request {
+            start.backend_config = script.to_owned();
+        }
+        let session = started(&client, request).await;
+        send(&client, &session.id, "wait").await;
+        session.id
+    };
+    // The first connection is gone, its turn still waiting.
+    std::fs::write(work.join("go"), "").unwrap_or_else(|error| panic!("{error}"));
+    let client = host_at(&socket).await;
+    assert_eq!(
+        said(&after_turns(&client, &id, 1).await),
+        ["user: wait", "agent: went"]
+    );
+
+    let stopping = client
+        .call(pb::request::Kind::StopHost(pb::StopHost {}))
+        .await;
+    assert!(
+        matches!(stopping, Ok(pb::response::Kind::HostStopping(_))),
+        "{stopping:?}"
+    );
+    assert!(!socket.exists());
+    let stopped = tokio::time::timeout(Duration::from_secs(10), serving).await;
+    assert!(matches!(stopped, Ok(Ok(Ok(())))), "{stopped:?}");
+}
+
 #[tokio::test]
 async fn a_session_that_cant_be_read_is_listed_with_why_and_can_be_removed() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));

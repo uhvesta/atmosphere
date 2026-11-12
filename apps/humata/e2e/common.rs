@@ -42,6 +42,20 @@ impl Humata {
         stdout
     }
 
+    /// Starts `humata` without waiting for it, its output piped.
+    #[allow(dead_code, reason = "not every test runs a command alongside others")]
+    pub fn spawn(&self, arguments: &[&str]) -> Running {
+        let child = Command::new(&self.cli)
+            .arg("--socket")
+            .arg(&self.socket)
+            .args(arguments)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|error| panic!("couldn't run humata: {error}"));
+        Running(child)
+    }
+
     /// Runs `humata` expecting it to fail, and returns what it said why.
     #[allow(dead_code, reason = "not every test sees a command fail")]
     pub fn fails(&self, arguments: &[&str]) -> String {

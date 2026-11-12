@@ -138,17 +138,23 @@ impl HostConfig {
         }
     }
 
-    /// The command that reaches the host's `humatad host --stdio`.
+    /// The command that reaches the host. A managed host's goes through
+    /// `humatad relay` to the host on its socket, which keeps running between
+    /// connections; a humatad from before the relay is run on stdio instead,
+    /// until the daemon updates it.
     fn command(&self) -> Vec<String> {
         let Some(ssh) = &self.ssh else {
             return self.command.clone();
         };
         let folder = &ssh.folder;
+        let program = quoted(&format!("{folder}/bin/humatad"));
+        let state = quoted(&format!("{folder}/state"));
+        let cache = quoted(&format!("{folder}/cache"));
+        let socket = quoted(&format!("{folder}/host.sock"));
         let remote = format!(
-            "{} host --stdio --state {} --cache {}",
-            quoted(&format!("{folder}/bin/humatad")),
-            quoted(&format!("{folder}/state")),
-            quoted(&format!("{folder}/cache")),
+            "if {program} relay --help >/dev/null 2>&1; \
+             then exec {program} relay --socket {socket} --state {state} --cache {cache}; \
+             else exec {program} host --stdio --state {state} --cache {cache}; fi"
         );
         let mut command = ssh.base();
         command.push(remote);
@@ -356,9 +362,15 @@ impl Remote {
             && client.peer().program_version != build
             && self.platform(ssh).await.ok() == local_platform().await
         {
+            self.install(ssh, None).await?;
+            // A host on its socket outlives this connection, so it is asked
+            // to stop for the next one to start the new build. One on stdio
+            // refuses and stops with the connection.
+            let _ = client
+                .call(pb::request::Kind::StopHost(pb::StopHost {}))
+                .await;
             drop(client);
             let _ = child.kill().await;
-            self.install(ssh, None).await?;
             (client, child) = self.connect(&config, hosts, build).await?;
         }
         let client = Arc::new(client);
@@ -660,7 +672,9 @@ Host !bad *.internal build
         assert_eq!(command[command.len() - 2], "build");
         let remote = &command[command.len() - 1];
         assert!(
-            remote.starts_with(r"'it'\''s here/bin/humatad' host --stdio"),
+            remote.contains(
+                r"exec 'it'\''s here/bin/humatad' relay --socket 'it'\''s here/host.sock'"
+            ),
             "{remote}"
         );
     }

@@ -53,7 +53,7 @@ impl Store {
         let connection = self.lock();
         let mut statement = connection
             .prepare(&format!(
-                "{COLUMNS} WHERE answered_unix_ms IS NULL ORDER BY created_unix_ms, id"
+                "{COLUMNS} WHERE answered_unix_ms IS NULL ORDER BY created_unix_ms, rowid"
             ))
             .map_err(self.failed())?;
         statement

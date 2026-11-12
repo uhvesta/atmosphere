@@ -292,8 +292,8 @@ Structure:
 
 Work:
 
-- [ ] `humatad host` as a detached process with its socket, and `humatad relay` used by SSH
-- [ ] Reconnect re-watches from the last event, and a cut turn is marked aborted on restart
+- [x] `humatad host` as a detached process with its socket, and `humatad relay` used by SSH
+- [x] Reconnect re-watches from the last event, and a cut turn is marked aborted on restart
 - [ ] Snapshot refs fetched into a mirror on the Mac after each turn
 - [ ] Backend state (Claude transcript, Copilot session folder) copied to the Mac after each turn
 - [ ] Restore a session onto a set-up host: clone, push refs, worktrees, history, backend state

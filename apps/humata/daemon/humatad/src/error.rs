@@ -616,6 +616,49 @@ pub enum StartError {
         #[source]
         source: WireError,
     },
+
+    #[error("couldn't find this humatad's own program to start the host with")]
+    OwnProgram {
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("couldn't open the host's log {path}; check that its folder is writable")]
+    OpenHostLog {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("couldn't start the host program {program}; check that it is there and executable")]
+    SpawnHost {
+        program: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("the host stopped before it was listening ({status}); its log {log} says why:\n{said}")]
+    HostExited {
+        status: std::process::ExitStatus,
+        log: PathBuf,
+        said: String,
+    },
+
+    #[error(
+        "the host started but isn't listening on {socket} after {seconds} seconds; see its log {log}, and stop it by hand if it is stuck"
+    )]
+    HostNotListening {
+        socket: PathBuf,
+        seconds: u64,
+        log: PathBuf,
+    },
+
+    #[error("the relay between this connection and the host's socket {socket} failed")]
+    Relay {
+        socket: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 /// Why an agent's call to the humata tools on a host wasn't answered.

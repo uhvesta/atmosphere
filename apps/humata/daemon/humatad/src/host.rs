@@ -218,6 +218,10 @@ pub struct Host {
     program_version: String,
     /// Where this host's agents' humata tool calls wait for the daemon.
     relay: Arc<Relay>,
+    /// The socket a detached host serves on, removed when it is asked to
+    /// stop.
+    socket: std::sync::OnceLock<PathBuf>,
+    stop: tokio::sync::Notify,
 }
 
 impl Host {
@@ -300,7 +304,20 @@ impl Host {
             chats: state.join("chats"),
             program_version: crate::build(),
             relay: Arc::default(),
+            socket: std::sync::OnceLock::new(),
+            stop: tokio::sync::Notify::new(),
         })
+    }
+
+    /// Marks this host as serving on `socket`, which a [`pb::StopHost`]
+    /// removes.
+    pub fn serve_on(&self, socket: &Path) {
+        let _ = self.socket.set(socket.to_owned());
+    }
+
+    /// Resolves once the daemon asks this host to stop.
+    pub async fn stopped(&self) {
+        self.stop.notified().await;
     }
 
     pub fn relay(&self) -> Arc<Relay> {
@@ -368,6 +385,16 @@ impl Host {
         use pb::request::Kind as Request;
         use pb::response::Kind as Response;
         Ok(Reply::Response(match request {
+            Request::StopHost(pb::StopHost {}) => {
+                // Gone before the answer, so the daemon's next connection
+                // can't reach this host and starts the new one.
+                if let Some(socket) = self.socket.get() {
+                    let _ = std::fs::remove_file(socket);
+                }
+                // Kept until the server waits, if it isn't yet.
+                self.stop.notify_one();
+                Response::HostStopping(pb::HostStopping {})
+            }
             Request::StartSession(start) => {
                 let backend = start.backend();
                 let approval = convert::approval_mode(start.approval_mode());

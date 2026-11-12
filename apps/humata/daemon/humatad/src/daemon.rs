@@ -18,6 +18,11 @@ use crate::hosts::{self, HostConfig, Hosts, Remote, Ssh, ToolCall};
 use crate::store::{Placement, Store};
 use humata_agent::Repository;
 
+/// How long a watch whose host dropped waits before watching again, at
+/// first and at most.
+const REWATCH_FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+const REWATCH_LONGEST_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 mod review;
 
 /// Answers clients: sessions on this Mac go to the local host, others to the
@@ -36,6 +41,8 @@ pub struct Daemon {
     build: String,
     /// Hosts' agents' calls to the humata tools, for [`Daemon::answer_tool_calls`].
     tool_calls: mpsc::UnboundedSender<ToolCall>,
+    /// This daemon, for work that outlives the request that started it.
+    me: Weak<Daemon>,
 }
 
 impl Daemon {
@@ -58,7 +65,8 @@ impl Daemon {
                 (name, Arc::new(remote))
             })
             .collect();
-        let daemon = Arc::new(Self {
+        let daemon = Arc::new_cyclic(|me| Self {
+            me: me.clone(),
             local: Arc::new(local),
             remotes: RwLock::new(remotes),
             editing: tokio::sync::Mutex::new(()),
@@ -844,8 +852,11 @@ impl Daemon {
             .cached_history(&session)?
             .map_or(0, |history| history.events.len());
         let (items, receiver) = mpsc::channel(64);
+        let (daemon, host) = (self.me.clone(), host.to_owned());
         tokio::spawn(async move {
             let mut events = Vec::new();
+            // Events of a replay already passed on, after re-watching.
+            let mut skip = 0;
             let mut keep = |events: &Vec<pb::SessionEvent>| {
                 if events.len() <= kept {
                     return;
@@ -864,11 +875,31 @@ impl Daemon {
                     next = upstream.recv() => next,
                     () = items.closed() => break,
                 };
-                let Some(item) = next else { break };
+                let Some(item) = next else {
+                    // The host's connection dropped, or it ended the watch.
+                    // Its sessions outlive the connection, so this watches
+                    // again from the start of the history and passes on
+                    // only what is past the events already sent.
+                    let Some(daemon) = daemon.upgrade() else {
+                        break;
+                    };
+                    match daemon.rewatch(&host, &session, &items).await {
+                        Some(stream) => {
+                            upstream = stream;
+                            skip = events.len();
+                            continue;
+                        }
+                        None => break,
+                    }
+                };
                 if let Ok(pb::StreamItem {
                     kind: Some(pb::stream_item::Kind::SessionEvent(event)),
                 }) = &item
                 {
+                    if skip > 0 {
+                        skip -= 1;
+                        continue;
+                    }
                     events.push(event.clone());
                     if matches!(
                         event.kind,
@@ -888,6 +919,33 @@ impl Daemon {
             response,
             items: receiver,
         })
+    }
+
+    /// Watches `session` on `host` again, waiting longer between tries while
+    /// the host is unreachable, until it answers or `client` stops
+    /// listening. None if the host no longer has the session.
+    async fn rewatch(
+        &self,
+        host: &str,
+        session: &str,
+        client: &mpsc::Sender<Result<pb::StreamItem, pb::Error>>,
+    ) -> Option<mpsc::Receiver<Result<pb::StreamItem, pb::Error>>> {
+        let mut wait = REWATCH_FIRST_WAIT;
+        loop {
+            let request = pb::request::Kind::WatchSession(pb::WatchSession {
+                session_id: session.to_owned(),
+            });
+            match self.forward(host, request).await {
+                Ok(Reply::Stream { items, .. }) => return Some(items),
+                Err(failure) if failure.code() == pb::ErrorCode::HostUnavailable => {}
+                _ => return None,
+            }
+            tokio::select! {
+                () = tokio::time::sleep(wait) => {}
+                () = client.closed() => return None,
+            }
+            wait = (wait * 2).min(REWATCH_LONGEST_WAIT);
+        }
     }
 
     async fn answer(&self, request: pb::request::Kind) -> Result<Reply, DaemonError> {
@@ -1065,7 +1123,8 @@ impl Daemon {
             | Request::ReadHostStatus(_)
             | Request::CloneRepositories(_)
             | Request::WatchToolCalls(_)
-            | Request::AnswerToolCall(_) => {
+            | Request::AnswerToolCall(_)
+            | Request::StopHost(_) => {
                 return Err(DaemonError::ForHostsOnly);
             }
             Request::WatchSession(watch) => {

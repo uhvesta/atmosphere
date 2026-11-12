@@ -1,7 +1,7 @@
 //! A host Humata manages over SSH, as a person sets one up: added by its SSH
 //! destination, humatad installed and set up there, a project's repository
-//! cloned there for a session, a connection dropped mid-turn, and the host
-//! going away.
+//! cloned there for a session, a connection dropped mid-turn, the host
+//! stopping mid-turn, and the host going away.
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -14,6 +14,10 @@ mod common;
 
 const SCRIPT: &str = r#"{"rules": [
     {"when": "hold", "steps": [{"step": "wait_for", "path": "never"}]},
+    {"when": "wait", "steps": [
+        {"step": "wait_for", "path": "go"},
+        {"step": "say", "text": "went"}
+    ]},
     {"when": "hello", "steps": [{"step": "say", "text": "hi there"}]}
 ]}"#;
 
@@ -64,6 +68,26 @@ fn cut_ssh(folder: &Path) -> usize {
     cut
 }
 
+/// Stops the host humatad in `folder` runs on its socket, as a crash or a
+/// reboot would, and says whether one was running.
+fn stop_host(folder: &Path) -> bool {
+    let pattern = format!("{}/bin/humatad host --socket", folder.display());
+    Command::new("pkill")
+        .args(["-KILL", "-f", &pattern])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Stops the host in its folder when the test ends, since it outlives the
+/// connections to it.
+struct DetachedHost<'a>(&'a Path);
+
+impl Drop for DetachedHost<'_> {
+    fn drop(&mut self) {
+        stop_host(self.0);
+    }
+}
+
 fn git(path: &Path, arguments: &[&str]) {
     let status = Command::new("git")
         .arg("-C")
@@ -107,6 +131,7 @@ fn a_managed_host_is_installed_set_up_and_survives_dropped_connections() {
     let hosts_file = root.join("hosts.json");
     let (_daemon, humata) = common::start(root, &[OsStr::new("--hosts"), hosts_file.as_os_str()]);
     let folder = root.join("far");
+    let _host = DetachedHost(&folder);
     let folder_text = folder.display().to_string();
     humata.run(&[
         "host",
@@ -200,13 +225,37 @@ fn a_managed_host_is_installed_set_up_and_survives_dropped_connections() {
         pairs(&[("user", "hello"), ("assistant", "hi there")])
     );
 
-    // A turn cut off by a dropped connection ends aborted, and the next one
-    // runs once the daemon reconnects.
-    humata.run(&["send", session, "hold"]);
+    // A turn going when the connection drops keeps going on the host, and a
+    // watch from before the drop sees it through once the daemon reconnects.
+    let mut waiting = humata.spawn(&["send", session, "wait", "--wait"]);
     eventually("the turn working", || {
         session_line(&humata, session).contains("WORKING")
     });
     assert!(cut_ssh(&folder) > 0, "no ssh reached the host");
+    eventually("the turn still working after reconnecting", || {
+        session_line(&humata, session).contains("WORKING")
+    });
+    let go = humata.working_directory(session).join("go");
+    std::fs::write(&go, "").unwrap_or_else(|error| panic!("{error}"));
+    eventually("the watch from before the drop finished", || {
+        waiting.0.try_wait().ok().flatten().is_some()
+    });
+    let mut seen = String::new();
+    if let Some(mut stdout) = waiting.0.stdout.take() {
+        std::io::Read::read_to_string(&mut stdout, &mut seen)
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+    assert!(seen.contains("assistant\twent"), "{seen}");
+
+    // A host that stops mid-turn, as in a crash, is started again by the
+    // next connection, with the cut-off turn ended aborted so the session
+    // takes messages again.
+    humata.run(&["send", session, "hold"]);
+    eventually("the held turn working", || {
+        session_line(&humata, session).contains("WORKING")
+    });
+    assert!(stop_host(&folder), "no host was running on its socket");
+    let _ = cut_ssh(&folder);
     eventually("the cut-off turn closed", || {
         succeeds(&humata, &["history", session])
             && humata
@@ -228,6 +277,7 @@ fn a_managed_host_is_installed_set_up_and_survives_dropped_connections() {
     // watching one plays its history and ends.
     drop(sshd);
     let _ = cut_ssh(&folder);
+    stop_host(&folder);
     eventually("the session shown offline", || {
         session_line(&humata, session).contains("offline")
     });

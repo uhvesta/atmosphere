@@ -122,6 +122,7 @@ message Request {
     // Sessions on a host that couldn't be opened, and removing one.
     ListSkipped list_skipped = 51;
     RemoveSkipped remove_skipped = 52;
+    StopHost stop_host = 53;
   }
 }
 
@@ -176,6 +177,7 @@ message Response {
     Models models = 46;
     Skipped skipped = 47;
     SkippedRemoved skipped_removed = 48;
+    HostStopping host_stopping = 49;
   }
 }
 
@@ -377,6 +379,13 @@ message RemoveSkipped {
 }
 
 message SkippedRemoved {}
+
+// Asks a host serving on its own socket to stop, once its replacement is
+// installed. It removes its socket first, so the next connection starts the
+// new one. Daemon to host only.
+message StopHost {}
+
+message HostStopping {}
 
 message Models {
   repeated ModelChoice models = 1;

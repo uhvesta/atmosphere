@@ -31,11 +31,15 @@ enum Role {
         #[arg(long)]
         hosts: Option<PathBuf>,
     },
-    /// Run sessions on this machine for a daemon, over stdin and stdout.
+    /// Run sessions on this machine for a daemon: over stdin and stdout, or
+    /// on a socket, where they keep going between connections.
     Host {
-        /// Speak on stdin and stdout. Nothing else is supported yet.
-        #[arg(long, required = true)]
+        /// Speak on stdin and stdout, stopping when they close.
+        #[arg(long, conflicts_with = "socket", required_unless_present = "socket")]
         stdio: bool,
+        /// Listen on this socket, one daemon connection after another.
+        #[arg(long)]
+        socket: Option<PathBuf>,
         /// Where to keep sessions.
         #[arg(long)]
         state: Option<PathBuf>,
@@ -43,6 +47,20 @@ enum Role {
         /// $HUMATA_CACHE, then the system's cache folder.
         #[arg(long)]
         cache: Option<PathBuf>,
+    },
+    /// Join stdin and stdout to the host on a socket, starting the host if
+    /// none is listening. A daemon runs this over SSH.
+    Relay {
+        /// The host's socket.
+        #[arg(long)]
+        socket: PathBuf,
+        /// Where the host keeps sessions, if it has to be started.
+        #[arg(long)]
+        state: PathBuf,
+        /// Where the host keeps sessions' copies of their code, if it has to
+        /// be started.
+        #[arg(long)]
+        cache: PathBuf,
     },
     /// Serve the session in $HUMATA_SESSION's agent the board and review
     /// tools, over MCP on stdin and stdout. Humata starts it for the agent.
@@ -115,8 +133,14 @@ async fn run(role: Role) -> Result<(), humatad::StartError> {
             };
             humatad::daemon(&state, &cache, &socket, &hosts).await
         }
+        Role::Relay {
+            socket,
+            state,
+            cache,
+        } => humatad::relay(&socket, &state, &cache).await,
         Role::Host {
             stdio: _,
+            socket,
             state,
             cache,
         } => {
@@ -128,7 +152,10 @@ async fn run(role: Role) -> Result<(), humatad::StartError> {
                 Some(cache) => cache,
                 None => humatad::default_cache()?,
             };
-            humatad::host_stdio(&state, &cache).await
+            match socket {
+                Some(socket) => humatad::host_socket(&state, &cache, &socket).await,
+                None => humatad::host_stdio(&state, &cache).await,
+            }
         }
     }
 }
