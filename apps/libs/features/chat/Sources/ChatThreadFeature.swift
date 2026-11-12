@@ -36,6 +36,9 @@ public struct ChatCore<Replier: ChatReplier> {
         public var input = ""
         /// The reply as it's written; nil when none is.
         public var reply: String?
+        /// Whether a reply is being written: `reply != nil`, kept apart so
+        /// what only asks whether doesn't change with every word.
+        public var isReplying = false
         /// What the model thinks before the reply, as it's written.
         public var replyThinking: ThreadThinking?
         public var showsReplyThinking = false
@@ -139,7 +142,7 @@ public struct ChatCore<Replier: ChatReplier> {
         }
 
         public var canSend: Bool {
-            !held && canReply && reply == nil && rival?.done != false && dictatedAfter == nil && !attaching
+            !held && canReply && !isReplying && rival?.done != false && dictatedAfter == nil && !attaching
                 && (!input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pending.isEmpty
                     || !pendingPhotos.isEmpty || sendsEmpty)
         }
@@ -149,7 +152,7 @@ public struct ChatCore<Replier: ChatReplier> {
 
         /// Whether the chat can go to another branch or write a reply
         /// again: not while one is written.
-        public var canGo: Bool { !held && reply == nil && rival?.done != false && !thread.messages.isEmpty }
+        public var canGo: Bool { !held && !isReplying && rival?.done != false && !thread.messages.isEmpty }
 
         /// The second model, once it's looked up; nil when it isn't picked.
         public var rivalCurrent: RunnableModel? {
@@ -420,11 +423,11 @@ public struct ChatCore<Replier: ChatReplier> {
                 return changed(state)
 
             case .progressed(.text(let text)):
-                if state.reply != nil { state.reply = text }
+                if state.isReplying, state.reply != text { state.reply = text }
                 return .none
 
             case .progressed(.thinking(let thinking)):
-                if state.reply != nil { state.replyThinking = thinking }
+                if state.isReplying, state.replyThinking != thinking { state.replyThinking = thinking }
                 return .none
 
             case .replied(.success(let reply)):
@@ -437,6 +440,7 @@ public struct ChatCore<Replier: ChatReplier> {
                 // the chat as if nothing happened.
                 if reply.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, reply.extra == nil {
                     state.reply = nil
+                    state.isReplying = false
                     state.replyThinking = nil
                     state.replyPrompt = nil
                     state.showsReplyThinking = false
@@ -462,6 +466,7 @@ public struct ChatCore<Replier: ChatReplier> {
 
             case .replied(.failure(let error)):
                 state.reply = nil
+                state.isReplying = false
                 state.replyThinking = nil
                 state.replyPrompt = nil
                 state.showsReplyThinking = false
@@ -737,6 +742,7 @@ public struct ChatCore<Replier: ChatReplier> {
     /// Writes the reply to the last message, sending it as it's written.
     private func write(_ state: inout State) -> Effect<Action> {
         state.reply = ""
+        state.isReplying = true
         state.replyThinking = nil
         state.showsReplyThinking = false
         state.stoppedBeforeReplying = false
@@ -770,6 +776,7 @@ public struct ChatCore<Replier: ChatReplier> {
         extra: Message.Extra? = nil, in state: inout State
     ) -> Effect<Action> {
         state.reply = nil
+        state.isReplying = false
         state.replyThinking = nil
         let prompt = state.replyPrompt
         state.replyPrompt = nil

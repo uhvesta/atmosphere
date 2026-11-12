@@ -179,7 +179,7 @@ package struct ChatFeature {
         /// Whether a reply is being written, waits to be sent again, is
         /// being finished, or failed: the chat is kept until it isn't.
         package var isWorking: Bool {
-            core.reply != nil || core.rival?.done == false || stopped || reloading || naming || compacting
+            core.isReplying || core.rival?.done == false || stopped || reloading || naming || compacting
                 || alert != nil || core.problem != nil || recording || core.attaching
         }
 
@@ -193,7 +193,7 @@ package struct ChatFeature {
         /// Whether older messages can be summarized now: there are some
         /// after the newest summary, and no reply is being written.
         package var canCompact: Bool {
-            availability == .available && core.reply == nil && !compacting && !conversation.compactable.isEmpty
+            availability == .available && !core.isReplying && !compacting && !conversation.compactable.isEmpty
         }
 
         /// Whether to offer Compact: the last reply was written without
@@ -202,7 +202,7 @@ package struct ChatFeature {
 
         /// Whether the draft can be added, edited or discarded: not while a
         /// reply is still writing it.
-        package var canChangeDraft: Bool { conversation.draft != nil && core.reply == nil && !addingDraft }
+        package var canChangeDraft: Bool { conversation.draft != nil && !core.isReplying && !addingDraft }
 
         package var canAdd: Bool { canChangeDraft && problem == nil }
 
@@ -218,7 +218,7 @@ package struct ChatFeature {
         }
 
         /// Whether a reply is being written, which Stop ends.
-        package var canStop: Bool { core.reply != nil }
+        package var canStop: Bool { core.isReplying }
 
         package var canSend: Bool { core.canSend }
 
@@ -690,11 +690,12 @@ package struct ChatFeature {
                 state.stopped = false
                 let thinking = state.core.replyThinking
                 state.core.reply = nil
+                state.core.isReplying = false
                 state.core.host.pick = nil
                 let effect = core(.retryTapped(messageID: asked.id), &state)
                 // What was written before it was turned away stays until
                 // the reply carries on.
-                if state.core.reply != nil {
+                if state.core.isReplying {
                     state.core.reply = written
                     state.core.replyThinking = thinking
                 }
@@ -1166,7 +1167,7 @@ package struct ChatFeature {
         state.core.host.pick = state.skill == nil && picks ? pickable(in: state) : nil
         let effect = core(.sendTapped, &state)
         state.core.host.pick = nil
-        if state.core.reply != nil {
+        if state.core.isReplying {
             state.skill = nil
             state.recordings = []
             state.discardedDraft = nil

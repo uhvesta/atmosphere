@@ -47,7 +47,7 @@ package enum ChatCommand: String, CaseIterable, Equatable, Sendable {
         case .back: state.canGo && state.conversation.back != nil
         case .forward: state.canGo && state.conversation.forward != nil
         case .rename, .model, .skills, .new, .export: true
-        case .paste: state.core.reply == nil && !state.editsDraft
+        case .paste: !state.core.isReplying && !state.editsDraft
         }
     }
 }

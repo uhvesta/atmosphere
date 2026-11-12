@@ -27,8 +27,15 @@ package actor LiveStore: ModelActor {
     /// Every record. See Mapping.swift for records that are skipped until
     /// sync brings in what they refer to.
     package func load() throws(LiveStoreError) -> Workspace {
+        try loaded().workspace
+    }
+
+    /// Every record, and the models they were read from, so a write after
+    /// it needn't fetch them all again.
+    private func loaded() throws(LiveStoreError) -> (workspace: Workspace, index: Index) {
         do {
-            return try read(Index(modelContext))
+            let index = try Index(modelContext)
+            return (try read(index), index)
         } catch {
             throw .loadFailed(error)
         }
@@ -39,10 +46,10 @@ package actor LiveStore: ModelActor {
     package func save(
         in context: @Sendable () -> Context, _ operation: StoreOperation
     ) throws -> Saved {
-        let before = try load()
+        let (before, index) = try loaded()
         var after = before
         let change = try after.perform(in: context(), operation)
-        try write(from: before, to: after)
+        try write(from: before, to: after, in: index)
         changes += 1
         return Saved(workspace: after, change: change, number: changes)
     }
@@ -55,8 +62,10 @@ package actor LiveStore: ModelActor {
     /// Reconciles after another process changed the store, and reads the
     /// records it left, numbered after every save and update before.
     package func reconciled(in context: @Sendable () -> Context) throws(LiveStoreError) -> Update {
-        let fixes = try reconcile(in: context)
-        let workspace = try load()
+        let (fixes, unchanged) = try reconcileKeepingRead(in: context)
+        // With nothing fixed nothing was written, so what was read stands.
+        let workspace: Workspace
+        if let unchanged { workspace = unchanged } else { workspace = try load() }
         changes += 1
         return Update(workspace: workspace, fixes: fixes, number: changes)
     }
@@ -77,15 +86,23 @@ package actor LiveStore: ModelActor {
     /// CloudKit import. Two devices fixing the same records make the same
     /// changes.
     package func reconcile(in context: @Sendable () -> Context) throws(LiveStoreError) -> [Fix] {
-        let before = try load()
+        try reconcileKeepingRead(in: context).fixes
+    }
+
+    /// `reconcile`, and the records it read when it fixed nothing.
+    private func reconcileKeepingRead(
+        in context: @Sendable () -> Context
+    ) throws(LiveStoreError) -> (fixes: [Fix], unchanged: Workspace?) {
+        let (before, index) = try loaded()
         var after = before
         var fixes: [Fix] = []
         after.perform(in: context()) { workspace, context in
             fixes = workspace.reconcile(in: context)
             return Change()
         }
-        if !fixes.isEmpty { try write(from: before, to: after) }
-        return fixes
+        guard !fixes.isEmpty else { return ([], before) }
+        try write(from: before, to: after, in: index)
+        return (fixes, nil)
     }
 
     /// Writes what sync brought in without a journal entry of its own, then
@@ -93,7 +110,7 @@ package actor LiveStore: ModelActor {
     package func importSynced(
         _ changes: SyncedChanges, in context: @Sendable () -> Context
     ) throws(LiveStoreError) -> [Fix] {
-        let before = try load()
+        let (before, index) = try loaded()
         var after = before
         after.importSynced(records: changes.records, journal: changes.journal, history: changes.history)
         var fixes: [Fix] = []
@@ -101,7 +118,7 @@ package actor LiveStore: ModelActor {
             fixes = workspace.reconcile(in: context)
             return Change()
         }
-        try write(from: before, to: after)
+        try write(from: before, to: after, in: index)
         return fixes
     }
 
@@ -153,7 +170,7 @@ package actor LiveStore: ModelActor {
     /// Adds every record in `workspace` that isn't stored yet, and changes
     /// none that are, such as fixtures in tests.
     package func insert(_ workspace: Workspace) throws(LiveStoreError) {
-        let before = try load()
+        let (before, index) = try loaded()
         let merged = Workspace(
             avenues: Array(before.avenues.values) + workspace.avenues.values.filter { before.avenues[$0.id] == nil },
             projects: Array(before.projects.values)
@@ -171,7 +188,7 @@ package actor LiveStore: ModelActor {
                     !before.history.contains { $0.id == event.id }
                 },
             journal: before.journal, settings: before.settings)
-        try write(from: before, to: merged)
+        try write(from: before, to: merged, in: index)
     }
 
     // MARK: - Reading
@@ -190,7 +207,9 @@ package actor LiveStore: ModelActor {
             // Each device appends in its own order; sync interleaves them by
             // time.
             history: index.history.values.compactMap(\.record)
-                .sorted { ($0.createdAt, $0.id.uuidString) < ($1.createdAt, $1.id.uuidString) },
+                .sorted {
+                    $0.createdAt != $1.createdAt ? $0.createdAt < $1.createdAt : $0.id.uuidString < $1.id.uuidString
+                },
             journal: journal(index),
             settings: settings.first.map { Settings(procrastinatedAfterDays: $0.procrastinatedAfterDays) }
                 ?? Settings())
@@ -205,14 +224,15 @@ package actor LiveStore: ModelActor {
             journal[id] = model.record
         }
         return index.journal.keys.compactMap { journal[$0] }
-            .sorted { ($0.at, $0.id.uuidString) < ($1.at, $1.id.uuidString) }
+            .sorted { $0.at != $1.at ? $0.at < $1.at : $0.id.uuidString < $1.id.uuidString }
     }
 
     // MARK: - Writing
 
-    private func write(from before: Workspace, to after: Workspace) throws(LiveStoreError) {
+    /// Writes what changed from `before`, which was read from `index`, in
+    /// one save.
+    private func write(from before: Workspace, to after: Workspace, in index: Index) throws(LiveStoreError) {
         do {
-            let index = try Index(modelContext)
             sync(before.avenues, after.avenues, &index.avenues) { $0.write($1) }
             sync(before.labels, after.labels, &index.labels) { $0.write($1) }
             sync(before.projects, after.projects, &index.projects) { $0.write($1, in: index) }
@@ -224,9 +244,13 @@ package actor LiveStore: ModelActor {
             sync(before.comments, after.comments, &index.comments) { $0.write($1, in: index) }
             sync(before.reminders, after.reminders, &index.reminders) { $0.write($1, in: index) }
             sync(before.savedFilters, after.savedFilters, &index.savedFilters) { $0.write($1) }
-            let previous = Dictionary(before.history.map { ($0.id, $0) }) { first, _ in first }
-            let next = Dictionary(after.history.map { ($0.id, $0) }) { first, _ in first }
-            sync(previous, next, &index.history) { $0.write($1, in: index) }
+            // Most changes leave history alone, and an untouched array
+            // compares equal without looking at its events.
+            if before.history != after.history {
+                let previous = Dictionary(before.history.map { ($0.id, $0) }) { first, _ in first }
+                let next = Dictionary(after.history.map { ($0.id, $0) }) { first, _ in first }
+                sync(previous, next, &index.history) { $0.write($1, in: index) }
+            }
             // Append-only: entries are only ever added.
             for entry in after.journal where index.journal[entry.id] == nil {
                 let model = StoredJournalEntry(id: entry.id)

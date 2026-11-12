@@ -113,7 +113,7 @@ package struct ConversationsView: View {
             store.send(.foundTapped(conversation.id, messageID: found.message?.id))
         } label: {
             ConversationListRow(
-                conversation: conversation, replying: store.chats[id: conversation.id]?.core.reply != nil,
+                conversation: conversation, replying: store.chats[id: conversation.id]?.core.isReplying == true,
                 found: found.message, searched: store.searched.words + store.related)
         }
         .buttonStyle(.plain)

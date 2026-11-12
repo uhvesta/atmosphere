@@ -147,7 +147,7 @@ where Parts.Message == Replier.Message {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 parts.top()
-                if store.thread.messages.isEmpty, store.reply == nil {
+                if store.thread.messages.isEmpty, !store.isReplying {
                     parts.empty()
                 }
                 let messages = store.thread.messages
@@ -166,7 +166,7 @@ where Parts.Message == Replier.Message {
                         }
                         branches(at: message)
                         parts.after(message)
-                        if message.id == store.thread.messages.last?.id, store.reply == nil, store.rival == nil {
+                        if message.id == store.thread.messages.last?.id, !store.isReplying, store.rival == nil {
                             after(message)
                         }
                     }
@@ -179,12 +179,10 @@ where Parts.Message == Replier.Message {
                     }
                     .id(message.id)
                 }
-                if let reply = store.reply {
-                    ReplyInProgress(
-                        text: reply, thinking: store.replyThinking?.model,
-                        thinks: store.state.current?.thinks != false && store.model.thinkingLevel != .off,
-                        showsThinking: store.showsReplyThinking,
-                        toggleThinking: { store.send(.thinkingToggled(messageID: nil)) })
+                if store.isReplying {
+                    // Its own view, so each word written redraws the reply
+                    // alone, not every message above it.
+                    Writing(store: store)
                 }
                 if let problem = store.problem {
                     Label(problem, systemImage: "exclamationmark.triangle")
@@ -411,7 +409,7 @@ where Parts.Message == Replier.Message {
 
     private var sendButton: SendButton {
         SendButton(
-            canSend: store.canSend, canStop: store.reply != nil || store.rival?.done == false,
+            canSend: store.canSend, canStop: store.isReplying || store.rival?.done == false,
             send: { store.send(.sendTapped) },
             stop: { store.send(.stopTapped) })
     }
@@ -502,6 +500,21 @@ private struct AddContext<Replier: ChatReplier>: ViewModifier {
 
 /// A message's photos in a row, scrolling sideways when they don't fit,
 /// each opening on its own when tapped. One photo shows larger.
+/// The reply as it's written.
+private struct Writing<Replier: ChatReplier>: View {
+    let store: StoreOf<ChatCore<Replier>>
+
+    var body: some View {
+        if let reply = store.reply {
+            ReplyInProgress(
+                text: reply, thinking: store.replyThinking?.model,
+                thinks: store.state.current?.thinks != false && store.model.thinkingLevel != .off,
+                showsThinking: store.showsReplyThinking,
+                toggleThinking: { store.send(.thinkingToggled(messageID: nil)) })
+        }
+    }
+}
+
 private struct PhotoRow: View {
     let files: [URL?]
     let trailing: Bool

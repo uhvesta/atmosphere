@@ -145,13 +145,41 @@ struct FileViewer: View {
 
 /// Reads a photo the app keeps on the device.
 public enum PhotoFile {
+    /// A photo's file never changes once written, so each is read once
+    /// rather than every time a message redraws. The system empties it
+    /// when memory runs low.
+    #if canImport(UIKit)
+        nonisolated(unsafe) private static let read: NSCache<NSURL, UIImage> = {
+            let read = NSCache<NSURL, UIImage>()
+            read.countLimit = 60
+            return read
+        }()
+    #else
+        nonisolated(unsafe) private static let read: NSCache<NSURL, NSImage> = {
+            let read = NSCache<NSURL, NSImage>()
+            read.countLimit = 60
+            return read
+        }()
+    #endif
+
     public static func image(_ file: URL) -> Image? {
+        // One taken off the device shows as such, not as it was.
+        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+        if let image = read.object(forKey: file as NSURL) { return Self.image(of: image) }
         #if canImport(UIKit)
-            UIImage(contentsOfFile: file.path).map { Image(uiImage: $0) }
+            guard let image = UIImage(contentsOfFile: file.path) else { return nil }
         #else
-            NSImage(contentsOf: file).map { Image(nsImage: $0) }
+            guard let image = NSImage(contentsOf: file) else { return nil }
         #endif
+        read.setObject(image, forKey: file as NSURL)
+        return Self.image(of: image)
     }
+
+    #if canImport(UIKit)
+        private static func image(of image: UIImage) -> Image { Image(uiImage: image) }
+    #else
+        private static func image(of image: NSImage) -> Image { Image(nsImage: image) }
+    #endif
 
     /// Puts the photo in `file` on the clipboard, to paste elsewhere.
     static func copy(_ file: URL) {
