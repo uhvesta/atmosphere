@@ -202,10 +202,17 @@ private struct LifrParts: ChatThreadParts {
         }
     }
 
-    /// Says the last reply was written without older messages, with
+    /// Says the reply stopped because the assistant was busy, with Try
+    /// Again; or the last reply was written without older messages, with
     /// Compact; or that they're being summarized.
     @ViewBuilder func notices() -> some View {
-        if store.compacting {
+        if store.stopped {
+            ChatNotice(
+                "The assistant is busy. Lifr tries again when it's back on screen.",
+                systemImage: "pause.circle", action: "Try Again"
+            ) { store.send(.resume) }
+            Divider()
+        } else if store.compacting {
             ChatNotice("Summarizing older messages…", systemImage: "text.badge.minus", isBusy: true)
             Divider()
         } else if store.state.offersCompact {
