@@ -103,6 +103,7 @@ message Request {
     ReadFile read_file = 39;
     // Seen state is the daemon's; a host refuses it.
     MarkSeen mark_seen = 40;
+    Unqueue unqueue = 41;
   }
 }
 
@@ -147,6 +148,7 @@ message Response {
     Files files = 36;
     FileContents file_contents = 37;
     Seen seen = 38;
+    Unqueued unqueued = 39;
   }
 }
 
@@ -176,6 +178,8 @@ enum ErrorCode {
   ERROR_CODE_UNKNOWN_THREAD = 15;
   // What the request worked on changed since it was read; read it again.
   ERROR_CODE_CHANGED = 16;
+  // The queued message already started or was taken out.
+  ERROR_CODE_UNKNOWN_QUEUED_MESSAGE = 17;
 }
 
 enum Backend {
@@ -491,6 +495,15 @@ message MarkSeen {
 
 message Seen {}
 
+// Takes a queued message out before its turn starts.
+message Unqueue {
+  string session_id = 1;
+  // The id its MessageQueued event gave it.
+  string queue_id = 2;
+}
+
+message Unqueued {}
+
 // Comments on lines `start_line` to `end_line` of a file as it is in the
 // session's copy; in rendered Markdown, on `quote`, the text picked there.
 message CreateThread {
@@ -730,6 +743,8 @@ message SessionEvent {
     SessionFailed failed = 14;
     Usage usage = 15;
     Checkpoint checkpoint = 16;
+    MessageQueued message_queued = 17;
+    Dequeued dequeued = 18;
   }
 }
 
@@ -806,6 +821,19 @@ message PermissionCompleted {
 message TurnEnded {
   // Set when the turn was stopped before it finished.
   bool aborted = 1;
+}
+
+// A message waits for the running turn to end.
+message MessageQueued {
+  // Names it until it leaves the queue.
+  string queue_id = 1;
+  string text = 2;
+}
+
+// The queued message left the queue: its turn is starting, or the person
+// took it out.
+message Dequeued {
+  string queue_id = 1;
 }
 
 message SessionIdle {}

@@ -241,7 +241,8 @@ final class SessionFeatureTests: XCTestCase {
                     "e2",
                     .toolStarted(
                         callID: "c1", tool: "Edit",
-                        argumentsJSON: #"{"file_path":"a.swift","old_string":"let a = 1","new_string":"let a = 2\nlet b = 3"}"#
+                        argumentsJSON: #"{"file_path":"a.swift","old_string":"let a = 1","#
+                            + #""new_string":"let a = 2\nlet b = 3"}"#
                     ))))
         await store.send(
             .received(
@@ -416,6 +417,69 @@ final class SessionFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testAMessageQueuedWhileItWaitsCanBeTakenOut() async throws {
+        let daemon = InMemoryDaemon(script: edit)
+        let session = try await started(daemon)
+        let (store, task) = await watching(daemon, session)
+        try await daemon.client.send(session.id, "write the notes", .enqueue)
+        await until(store) { $0.isWaiting }
+
+        await store.send(\.binding.draft, "then the changelog")
+        await store.send(.sendTapped(.enqueue))
+        await until(store) { !$0.queued.isEmpty }
+        XCTAssertEqual(store.state.queued.map(\.text), ["then the changelog"])
+        let queued = try XCTUnwrap(store.state.queued.first?.id)
+
+        await store.send(.unqueueTapped(queued))
+        await until(store) { $0.queued.isEmpty }
+        await store.send(.abortTapped)
+        await until(store) { !$0.isWorking }
+        XCTAssertFalse(store.state.items.contains { $0.isPerson("then the changelog") })
+        await task.cancel()
+    }
+
+    func testAQueuedMessageLeavesTheQueueWhenItsTurnStarts() async throws {
+        let daemon = InMemoryDaemon(script: edit)
+        let session = try await started(daemon)
+        let (store, task) = await watching(daemon, session)
+        try await daemon.client.send(session.id, "write the notes", .enqueue)
+        await until(store) { $0.isWaiting }
+        try await daemon.client.send(session.id, "then the changelog", .enqueue)
+        await until(store) { !$0.queued.isEmpty }
+
+        await store.send(.abortTapped)
+        await until(store) { $0.items.contains { $0.isPerson("then the changelog") } }
+        XCTAssertEqual(store.state.queued, [])
+        await task.cancel()
+    }
+
+    func testADraftIsKeptForItsSessionOnly() async {
+        let first = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let second = Session(id: "s2", name: "second", backend: .scripted, workingDirectory: "/work")
+        let store = TestStore(initialState: SessionFeature.State(session: first)) {
+            SessionFeature()
+        }
+        store.exhaustivity = .off
+        await store.send(\.binding.draft, "half written")
+
+        XCTAssertEqual(SessionFeature.State(session: first).draft, "half written")
+        XCTAssertEqual(SessionFeature.State(session: second).draft, "")
+    }
+
+    func testASentMessageClearsTheKeptDraft() async {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.send = { _, _, _ in }
+        }
+        store.exhaustivity = .off
+        await store.send(\.binding.draft, "ship it")
+        await store.send(.sendTapped(.enqueue))
+
+        XCTAssertEqual(SessionFeature.State(session: session).draft, "")
+    }
+
     func testUsageAddsUpEachTurn() async {
         let store = store()
         await store.send(
@@ -424,6 +488,21 @@ final class SessionFeatureTests: XCTestCase {
             .received(event("e2", .usage(model: "b", inputTokens: 5, outputTokens: 3, premiumRequests: 0.5))))
         XCTAssertEqual(
             store.state.usage, Usage(model: "b", inputTokens: 15, outputTokens: 5, premiumRequests: 1.5))
+    }
+
+    func testEachTurnShowsWhatItUsedWhereItEnds() {
+        let events = [
+            event("e1", .userMessage("go")), event("e2", .turnStarted),
+            event("e3", .usage(model: "a", inputTokens: 10, outputTokens: 2, premiumRequests: 1)),
+            event("e4", .usage(model: "a", inputTokens: 5, outputTokens: 3, premiumRequests: 0)),
+            event("e5", .assistantMessage("done")), event("e6", .turnEnded(aborted: false)), event("e7", .idle),
+            event("e8", .userMessage("again")), event("e9", .turnStarted), event("e10", .turnEnded(aborted: true)),
+        ]
+        let costs = ChatItem.items(events).compactMap { item -> Usage? in
+            if case .cost(_, let usage) = item { usage } else { nil }
+        }
+        XCTAssertEqual(costs, [Usage(model: "a", inputTokens: 15, outputTokens: 5, premiumRequests: 1)])
+        guard case .cost? = ChatItem.items(events.prefix(7)).last else { return XCTFail("no cost at the end") }
     }
 
     func testAStoppedTurnSaysSo() async {

@@ -223,6 +223,12 @@ package struct SessionView: View {
             PermissionCard(permission: permission) { request, approved in
                 store.send(.answerPermission(requestID: request, approved: approved))
             }
+        case .cost(_, let usage):
+            Label(Self.describe(usage), systemImage: "gauge.with.dots.needle.33percent")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .help("What this turn used")
         case .stopped:
             Label("Stopped", systemImage: "stop.circle")
                 .font(.footnote)
@@ -270,6 +276,9 @@ package struct SessionView: View {
         ) {
             store.send(.sendTapped(.enqueue))
         } top: {
+            ForEach(store.queued) { queued in
+                QueuedRow(queued: queued) { store.send(.unqueueTapped(queued.id)) }
+            }
             if store.isWorking, !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 HStack {
                     Text("Return queues it for after this turn.")
@@ -446,4 +455,32 @@ struct PermissionCard: View {
 private struct TextToSelect: Identifiable {
     let id = UUID()
     let text: String
+}
+
+/// A message waiting for its turn, above the box, with a way to take it out.
+private struct QueuedRow: View {
+    let queued: QueuedMessage
+    let remove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "clock")
+                .foregroundStyle(.secondary)
+            Text(queued.text)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+            Button("Remove", systemImage: "xmark.circle.fill", action: remove)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help("Take it out before its turn starts")
+        }
+        .font(.caption)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(.fill.quaternary, in: .rect(cornerRadius: 6))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Queued: \(queued.text)")
+    }
 }

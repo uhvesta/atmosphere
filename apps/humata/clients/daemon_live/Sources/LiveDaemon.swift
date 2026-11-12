@@ -97,6 +97,12 @@ extension DaemonClient {
                 abort.sessionID = session
                 _ = try await daemon.call(.abortTurn(abort))
             },
+            unqueue: { session, queueID in
+                var unqueue = Humata_V1_Unqueue()
+                unqueue.sessionID = session
+                unqueue.queueID = queueID
+                _ = try await daemon.call(.unqueue(unqueue))
+            },
             fork: { session, before, name, chatOnly in
                 var fork = Humata_V1_ForkSession()
                 fork.sessionID = session

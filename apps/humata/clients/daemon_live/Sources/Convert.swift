@@ -22,6 +22,7 @@ extension ErrorCode {
             case .unknownHost: .unknownHost
             case .unknownThread: .unknownThread
             case .changed: .changed
+            case .unknownQueuedMessage: .unknownQueuedMessage
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -245,6 +246,8 @@ extension SessionEvent {
                 model: usage.model, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
                 premiumRequests: usage.premiumRequests)
         case .checkpoint: kind = .checkpoint
+        case .messageQueued(let queued): kind = .messageQueued(queueID: queued.queueID, text: queued.text)
+        case .dequeued(let dequeued): kind = .dequeued(queueID: dequeued.queueID)
         case nil: return nil
         }
         self.init(id: event.id, time: Date(timeIntervalSince1970: Double(event.timeUnixMs) / 1000), kind: kind)

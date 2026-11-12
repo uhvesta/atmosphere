@@ -426,6 +426,60 @@ mod tests {
         assert_eq!(answers(&events), vec![(true, true), (true, false)]);
     }
 
+    fn queued_ids(events: &[Event]) -> Vec<String> {
+        let mut queued = Vec::new();
+        for event in events {
+            match &event.kind {
+                EventKind::MessageQueued { queue_id, .. } => queued.push(queue_id.clone()),
+                EventKind::Dequeued { queue_id } => queued.retain(|id| id != queue_id),
+                _ => {}
+            }
+        }
+        queued
+    }
+
+    #[tokio::test]
+    async fn an_unqueued_message_never_runs() {
+        let fixture = fixture(vec![rule("", vec![write_file("a.txt", "one")])]);
+        let id = fixture.start().await;
+        fixture
+            .agent
+            .send(&id, "first".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&fixture.agent, &id, waiting).await;
+        fixture
+            .agent
+            .send(&id, "second".into(), SendMode::Enqueue)
+            .await
+            .expect("queued");
+        let events = wait_for(&fixture.agent, &id, |events| !queued_ids(events).is_empty()).await;
+        let queued = queued_ids(&events);
+        assert_eq!(queued.len(), 1);
+        fixture
+            .agent
+            .unqueue(&id, &queued[0])
+            .await
+            .expect("unqueued");
+        let request = permission_request(&events).expect("a permission request");
+        fixture
+            .agent
+            .approve(&id, &request, true)
+            .await
+            .expect("approved");
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+        assert!(queued_ids(&events).is_empty());
+        assert!(!events.iter().any(|event| event.kind
+            == EventKind::UserMessage {
+                text: "second".into()
+            }));
+        let again = fixture.agent.unqueue(&id, &queued[0]).await;
+        assert!(matches!(
+            again,
+            Err(AgentError::UnknownQueuedMessage { .. })
+        ));
+    }
+
     #[tokio::test]
     async fn allowing_everything_never_waits() {
         let fixture = fixture(vec![rule(

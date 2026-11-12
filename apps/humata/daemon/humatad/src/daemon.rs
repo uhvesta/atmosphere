@@ -725,6 +725,7 @@ impl Daemon {
             }
             Request::WatchSession(watch) => self.host_of(&watch.session_id).await?,
             Request::AbortTurn(abort) => self.host_of(&abort.session_id).await?,
+            Request::Unqueue(unqueue) => self.host_of(&unqueue.session_id).await?,
             Request::SetApprovalMode(set) => self.host_of(&set.session_id).await?,
             Request::UpdateSession(update) => {
                 let host = self.host_of(&update.session_id).await?;

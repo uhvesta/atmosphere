@@ -14,11 +14,13 @@ package enum ChatItem: Identifiable, Hashable, Sendable {
     /// The person stopped the turn.
     case stopped(id: String)
     case failure(id: String, message: String)
+    /// What a turn used, where it ended; only for turns that report it.
+    case cost(id: String, Usage)
 
     package var id: String {
         switch self {
         case .person(let id, _), .reply(let id, _), .thinking(let id, _), .permission(let id, _), .stopped(let id),
-            .failure(let id, _):
+            .failure(let id, _), .cost(let id, _):
             id
         case .tool(let call): call.id
         }
@@ -140,6 +142,7 @@ extension ChatItem {
         var calls: [String: Int] = [:]
         var running: String?
         var requests: [String: Int] = [:]
+        var turn: [SessionEvent] = []
 
         func answer(_ request: String, _ answer: Permission.Answer) {
             guard let index = requests[request] else { return }
@@ -155,6 +158,16 @@ extension ChatItem {
         }
 
         for event in events {
+            if case .usage = event.kind { turn.append(event) }
+            if case .turnEnded = event.kind {
+                defer { turn = [] }
+                if case .turnEnded(aborted: true) = event.kind {
+                    running = nil
+                    items.append(.stopped(id: event.id))
+                }
+                if let usage = Usage.total(turn) { items.append(.cost(id: "\(event.id)-cost", usage)) }
+                continue
+            }
             switch event.kind {
             case .userMessage(let text):
                 items.append(.person(id: event.id, text: text))
@@ -194,12 +207,9 @@ extension ChatItem {
                 }
             case .permissionCompleted(let request, let approved, let automatic):
                 answer(request, automatic ? .allowedByMode : approved ? .approved : .denied)
-            case .turnEnded(aborted: true):
-                running = nil
-                items.append(.stopped(id: event.id))
             case .failed(let message):
                 items.append(.failure(id: event.id, message: message))
-            case .turnStarted, .assistantDelta, .turnEnded, .idle, .usage, .checkpoint:
+            case .turnStarted, .assistantDelta, .turnEnded, .idle, .usage, .checkpoint, .messageQueued, .dequeued:
                 continue
             }
         }
@@ -222,4 +232,10 @@ extension Usage {
         }
         return usage
     }
+}
+
+/// A message waiting for its own turn.
+package struct QueuedMessage: Identifiable, Hashable, Sendable {
+    package var id: String
+    package var text: String
 }

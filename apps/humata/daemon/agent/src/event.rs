@@ -121,6 +121,17 @@ pub enum EventKind {
     TurnEnded {
         aborted: bool,
     },
+    /// A message waits for the running turn to end; `queue_id` names it
+    /// until it leaves the queue.
+    MessageQueued {
+        queue_id: String,
+        text: String,
+    },
+    /// The queued message left the queue: its turn is starting, or the
+    /// person took it out.
+    Dequeued {
+        queue_id: String,
+    },
     Idle,
     Failed {
         message: String,

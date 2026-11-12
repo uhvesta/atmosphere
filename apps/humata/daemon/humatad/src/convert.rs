@@ -63,6 +63,13 @@ pub fn event(event: &Event) -> pb::SessionEvent {
             automatic: *automatic,
         }),
         EventKind::TurnEnded { aborted } => Kind::TurnEnded(pb::TurnEnded { aborted: *aborted }),
+        EventKind::MessageQueued { queue_id, text } => Kind::MessageQueued(pb::MessageQueued {
+            queue_id: queue_id.clone(),
+            text: text.clone(),
+        }),
+        EventKind::Dequeued { queue_id } => Kind::Dequeued(pb::Dequeued {
+            queue_id: queue_id.clone(),
+        }),
         EventKind::Idle => Kind::Idle(pb::SessionIdle {}),
         EventKind::Failed { message } => Kind::Failed(pb::SessionFailed {
             message: message.clone(),

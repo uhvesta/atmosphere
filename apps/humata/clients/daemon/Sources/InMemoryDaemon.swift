@@ -41,7 +41,8 @@ package final class InMemoryDaemon: Sendable {
         var sessions: [Session] = []
         var histories: [String: [SessionEvent]] = [:]
         var paused: [String: Paused] = [:]
-        var queues: [String: [String]] = [:]
+        var queues: [String: [(id: String, text: String)]] = [:]
+        var nextQueued = 1
         /// Each copy of the code's writes, oldest first, by the id of the
         /// session that made the copy.
         var copies: [String: [Write]] = [:]
@@ -158,6 +159,7 @@ package final class InMemoryDaemon: Sendable {
             approve: { session, request, approved in try self.answer(session, request, approved: approved) },
             setApprovalMode: { session, mode in try self.setApprovalMode(session, mode) },
             abort: { session in try self.abort(session) },
+            unqueue: { session, queueID in try self.unqueue(session, queueID) },
             fork: { session, before, name, chatOnly in
                 try self.fork(session, before: before, name: name, chatOnly: chatOnly)
             },
@@ -308,17 +310,46 @@ package final class InMemoryDaemon: Sendable {
             throw DaemonError.refused(
                 .archived, message: "Session \(session) is archived; unarchive it to work in it again.")
         }
-        let busy = state.withValue { state -> Bool in
-            guard state.paused[session] != nil else { return false }
-            if mode == .enqueue { state.queues[session, default: []].append(text) }
-            return true
+        let (busy, queued) = state.withValue { state -> (Bool, String?) in
+            guard state.paused[session] != nil else { return (false, nil) }
+            guard mode == .enqueue else { return (true, nil) }
+            defer { state.nextQueued += 1 }
+            let id = "q\(state.nextQueued)"
+            state.queues[session, default: []].append((id: id, text: text))
+            return (true, id)
         }
-        if !busy {
+        if let queued {
+            append(.messageQueued(queueID: queued, text: text), to: session)
+        } else if !busy {
             play(session, text)
         } else if mode == .steer {
             // A turn waiting on a person reads the steer when it resumes.
             append(.userMessage(text), to: session)
         }
+    }
+
+    /// Takes the next queued message off the session's queue, if any.
+    private func nextQueued(_ session: String) -> String? {
+        let next = state.withValue { state in
+            state.queues[session]?.isEmpty == false ? state.queues[session]?.removeFirst() : nil
+        }
+        guard let next else { return nil }
+        append(.dequeued(queueID: next.id), to: session)
+        return next.text
+    }
+
+    private func unqueue(_ session: String, _ queueID: String) throws {
+        try known(session)
+        let removed = state.withValue { state -> Bool in
+            guard let index = state.queues[session]?.firstIndex(where: { $0.id == queueID }) else { return false }
+            state.queues[session]?.remove(at: index)
+            return true
+        }
+        guard removed else {
+            throw DaemonError.refused(
+                .unknownQueuedMessage, message: "Session \(session) has no queued message \(queueID).")
+        }
+        append(.dequeued(queueID: queueID), to: session)
     }
 
     /// Plays turns for `text`, then for each queued message, until one
@@ -329,9 +360,7 @@ package final class InMemoryDaemon: Sendable {
             append(.userMessage(text), to: session)
             append(.turnStarted, to: session)
             guard proceed(session, steps: script(text)) else { return }
-            next = state.withValue { state in
-                state.queues[session]?.isEmpty == false ? state.queues[session]?.removeFirst() : nil
-            }
+            next = self.nextQueued(session)
         }
     }
 
@@ -409,9 +438,7 @@ package final class InMemoryDaemon: Sendable {
     /// Carries on a turn after an answer, then runs what was queued.
     private func resume(_ session: String, rest: [Step]) {
         guard proceed(session, steps: rest) else { return }
-        let next = state.withValue { state in
-            state.queues[session]?.isEmpty == false ? state.queues[session]?.removeFirst() : nil
-        }
+        let next = nextQueued(session)
         if let next { play(session, next) }
     }
 
@@ -433,9 +460,7 @@ package final class InMemoryDaemon: Sendable {
         let stopped = state.withValue { $0.paused.removeValue(forKey: session) != nil }
         guard stopped else { return }
         append(.turnEnded(aborted: true), to: session)
-        let next = state.withValue { state in
-            state.queues[session]?.isEmpty == false ? state.queues[session]?.removeFirst() : nil
-        }
+        let next = nextQueued(session)
         if let next {
             play(session, next)
         } else {

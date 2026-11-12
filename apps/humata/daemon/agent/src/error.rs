@@ -20,6 +20,11 @@ pub enum AgentError {
     UnknownPermissionRequest { session: SessionId, request: String },
 
     #[error(
+        "session {session} has no queued message {queued}; its turn has started already, or it was taken out"
+    )]
+    UnknownQueuedMessage { session: SessionId, queued: String },
+
+    #[error(
         "couldn't create the folder {path} for session state; check that it is writable and the disk has room"
     )]
     CreateDirectory {

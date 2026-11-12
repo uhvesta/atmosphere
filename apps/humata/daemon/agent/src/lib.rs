@@ -85,6 +85,13 @@ pub trait Agent: Send + Sync {
         mode: ApprovalMode,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
+    /// Takes a queued message out before its turn starts.
+    fn unqueue(
+        &self,
+        session: &SessionId,
+        queue_id: &str,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
     /// Stops the running turn, if any. Queued messages still run.
     fn abort(&self, session: &SessionId) -> impl Future<Output = Result<(), Self::Error>> + Send;
 

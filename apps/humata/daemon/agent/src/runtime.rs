@@ -141,9 +141,40 @@ struct Control {
     generation: u64,
     /// Between a turn's start and its end.
     turn_open: bool,
-    queue: VecDeque<String>,
+    queue: VecDeque<Queued>,
     steering: VecDeque<String>,
     pending: HashMap<String, Pending>,
+}
+
+/// A message waiting for the running turn to end.
+struct Queued {
+    id: String,
+    text: String,
+}
+
+impl Session {
+    /// Queues `text` at the back, or the front for a steer between turns,
+    /// and says so in the history.
+    fn queue(&self, control: &mut Control, text: String, front: bool) {
+        let id = crate::event::EventId::random().to_string();
+        self.note(EventKind::MessageQueued {
+            queue_id: id.clone(),
+            text: text.clone(),
+        });
+        let queued = Queued { id, text };
+        if front {
+            control.queue.push_front(queued);
+        } else {
+            control.queue.push_back(queued);
+        }
+    }
+
+    /// The next queued message, which leaves the queue to run.
+    fn next_queued(&self, control: &mut Control) -> Option<String> {
+        let next = control.queue.pop_front()?;
+        self.note(EventKind::Dequeued { queue_id: next.id });
+        Some(next.text)
+    }
 }
 
 /// A permission request waiting for its answer.
@@ -388,7 +419,7 @@ async fn drive<R: Runner>(
         control.turn_open = false;
         control.steering.clear();
         control.pending.clear();
-        match control.queue.pop_front() {
+        match session.next_queued(&mut control) {
             Some(next) => text = next,
             None => {
                 control.running = None;
@@ -441,7 +472,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
             return Ok(());
         }
         match mode {
-            SendMode::Enqueue => control.queue.push_back(text),
+            SendMode::Enqueue => session.queue(&mut control, text, false),
             SendMode::Immediate if control.turn_open => {
                 session
                     .log
@@ -449,8 +480,26 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 control.steering.push_back(text);
             }
             // Between turns, or while one is being stopped: it goes next.
-            SendMode::Immediate => control.queue.push_front(text),
+            SendMode::Immediate => session.queue(&mut control, text, true),
         }
+        Ok(())
+    }
+
+    async fn unqueue(&self, id: &SessionId, queue_id: &str) -> Result<(), AgentError> {
+        let session = self.session(id)?;
+        let mut control = session.lock();
+        let position = control
+            .queue
+            .iter()
+            .position(|queued| queued.id == queue_id)
+            .ok_or_else(|| AgentError::UnknownQueuedMessage {
+                session: id.clone(),
+                queued: queue_id.to_owned(),
+            })?;
+        control.queue.remove(position);
+        session.note(EventKind::Dequeued {
+            queue_id: queue_id.to_owned(),
+        });
         Ok(())
     }
 
@@ -559,7 +608,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
             control.turn_open = false;
         }
         control.steering.clear();
-        match control.queue.pop_front() {
+        match session.next_queued(&mut control) {
             Some(next) => {
                 control.running = None;
                 self.start_driver(&session, &mut control, next);
@@ -819,9 +868,29 @@ fn note_checkpoint(session: &Session, checkpoint: Result<Option<Vec<Snapshot>>, 
     }
 }
 
-/// What closes a history that stops inside a turn: the turn ends, aborted,
-/// and the session goes idle.
+/// What closes a history that stops inside a turn: messages still queued
+/// leave the queue, since it didn't outlive the process, the turn ends,
+/// aborted, and the session goes idle.
 fn closing(events: &[Event]) -> Vec<EventKind> {
+    let mut queued: Vec<&str> = Vec::new();
+    for event in events {
+        match &event.kind {
+            EventKind::MessageQueued { queue_id, .. } => queued.push(queue_id),
+            EventKind::Dequeued { queue_id } => queued.retain(|id| id != queue_id),
+            _ => {}
+        }
+    }
+    let mut kinds: Vec<EventKind> = queued
+        .into_iter()
+        .map(|id| EventKind::Dequeued {
+            queue_id: id.to_owned(),
+        })
+        .collect();
+    kinds.extend(closing_turn(events));
+    kinds
+}
+
+fn closing_turn(events: &[Event]) -> Vec<EventKind> {
     match SessionState::after(events) {
         SessionState::Working | SessionState::WaitingForApproval => {
             vec![EventKind::TurnEnded { aborted: true }, EventKind::Idle]
@@ -940,6 +1009,26 @@ pub(crate) mod tests {
         assert_eq!(
             closing(&events),
             vec![EventKind::TurnEnded { aborted: true }, EventKind::Idle]
+        );
+    }
+
+    #[test]
+    fn a_message_queued_before_a_cut_is_dropped() {
+        let events = vec![
+            Event::now(EventKind::UserMessage { text: "hi".into() }),
+            Event::now(EventKind::TurnStarted),
+            Event::now(EventKind::TurnEnded { aborted: false }),
+            Event::now(EventKind::Idle),
+            Event::now(EventKind::MessageQueued {
+                queue_id: "q1".into(),
+                text: "next".into(),
+            }),
+        ];
+        assert_eq!(
+            closing(&events),
+            vec![EventKind::Dequeued {
+                queue_id: "q1".into()
+            }]
         );
     }
 

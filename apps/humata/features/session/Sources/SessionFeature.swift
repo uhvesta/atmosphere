@@ -26,7 +26,10 @@ package struct SessionFeature {
         package var events: IdentifiedArrayOf<SessionEvent> = []
         /// The reply so far, until its whole message arrives.
         package var streaming = ""
-        package var draft = ""
+        /// The message being written; it is kept per session, so it is
+        /// still there after opening another session or quitting.
+        package var draft: String
+        @Shared var savedDraft: String
         /// The thinking the person opened, by item id.
         package var expandedThinking: Set<String> = []
         /// Whether the daemon stopped sending events; watching again resumes.
@@ -44,6 +47,28 @@ package struct SessionFeature {
             self.session = session
             review = ReviewFeature.State(sessionID: session.id, turns: session.turns)
             docs = DocsFeature.State(sessionID: session.id)
+            let saved = Shared(wrappedValue: "", .appStorage(Self.draftKey(session.id)))
+            _savedDraft = saved
+            draft = saved.wrappedValue
+        }
+
+        /// Where the session's draft is kept; storage keys can't hold dots.
+        static func draftKey(_ session: String) -> String {
+            "draft_" + session.replacingOccurrences(of: ".", with: "_")
+        }
+
+        /// Messages sent while a turn ran, waiting for their own turn,
+        /// first to run first.
+        package var queued: [QueuedMessage] {
+            var queued: [QueuedMessage] = []
+            for event in events {
+                switch event.kind {
+                case .messageQueued(let id, let text): queued.append(QueuedMessage(id: id, text: text))
+                case .dequeued(let id): queued.removeAll { $0.id == id }
+                default: continue
+                }
+            }
+            return queued
         }
 
         /// The views it has: a review only for a project's code.
@@ -113,6 +138,8 @@ package struct SessionFeature {
         /// The message wasn't sent; it goes back in the box if that is empty.
         case sendFailed(text: String, message: String)
         case abortTapped
+        /// Takes the queued message out before its turn starts.
+        case unqueueTapped(String)
         case answerPermission(requestID: String, approved: Bool)
         case approvalModePicked(ApprovalMode)
         /// The daemon refused the new mode, so the session keeps `previous`.
@@ -162,6 +189,10 @@ package struct SessionFeature {
         }
         Reduce { state, action in
             switch action {
+            case .binding(\.draft):
+                state.$savedDraft.withLock { $0 = state.draft }
+                return .none
+
             case .binding, .delegate, .alert, .review, .docs:
                 return .none
 
@@ -225,6 +256,7 @@ package struct SessionFeature {
                 let text = state.draft.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { return .none }
                 state.draft = ""
+                state.$savedDraft.withLock { $0 = "" }
                 let session = state.session.id
                 return .run { _ in
                     try await daemon.send(session, text, mode)
@@ -233,7 +265,10 @@ package struct SessionFeature {
                 }
 
             case .sendFailed(let text, let message):
-                if state.draft.isEmpty { state.draft = text }
+                if state.draft.isEmpty {
+                    state.draft = text
+                    state.$savedDraft.withLock { $0 = text }
+                }
                 state.alert = Self.alert(message)
                 return .none
 
@@ -241,6 +276,14 @@ package struct SessionFeature {
                 let session = state.session.id
                 return .run { _ in
                     try await daemon.abort(session)
+                } catch: { error, send in
+                    await send(.failed(error.localizedDescription))
+                }
+
+            case .unqueueTapped(let queued):
+                let session = state.session.id
+                return .run { _ in
+                    try await daemon.unqueue(session, queued)
                 } catch: { error, send in
                     await send(.failed(error.localizedDescription))
                 }

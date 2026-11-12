@@ -20,6 +20,8 @@ package struct DaemonClient: Sendable {
     package var setApprovalMode: @Sendable (_ session: String, _ mode: ApprovalMode) async throws -> Void
     /// Stops the running turn.
     package var abort: @Sendable (_ session: String) async throws -> Void
+    /// Takes a queued message out before its turn starts.
+    package var unqueue: @Sendable (_ session: String, _ queueID: String) async throws -> Void
     /// A new session with the history before `before`, or all of it if nil.
     /// It gets its own copy of the code as it was there, unless `chatOnly`,
     /// when it works in the same copy as the session.

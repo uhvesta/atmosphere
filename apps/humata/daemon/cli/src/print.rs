@@ -50,6 +50,10 @@ pub fn event(event: &pb::SessionEvent) -> String {
                 }
             ),
         ),
+        Some(Kind::MessageQueued(queued)) => {
+            ("queued", format!("{} {}", queued.queue_id, queued.text))
+        }
+        Some(Kind::Dequeued(dequeued)) => ("dequeued", dequeued.queue_id.clone()),
         Some(Kind::TurnEnded(ended)) => (
             "turn_ended",
             if ended.aborted {

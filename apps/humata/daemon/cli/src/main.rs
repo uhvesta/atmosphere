@@ -402,6 +402,9 @@ enum Command {
     },
     /// Stop a session's running turn.
     Abort { session: String },
+    /// Take a queued message out before its turn starts; its id is in the
+    /// `queued` event.
+    Unqueue { session: String, queue_id: String },
     /// Fork a session and print the fork's id.
     Fork {
         session: String,
@@ -711,6 +714,17 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 client.call(request).await?,
                 |response| matches!(response, Response::TurnAborted(_)),
                 "TurnAborted",
+            )?;
+        }
+        Command::Unqueue { session, queue_id } => {
+            let request = Request::Unqueue(pb::Unqueue {
+                session_id: session,
+                queue_id,
+            });
+            expect_ok(
+                client.call(request).await?,
+                |response| matches!(response, Response::Unqueued(_)),
+                "Unqueued",
             )?;
         }
         Command::Fork {

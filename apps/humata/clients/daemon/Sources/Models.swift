@@ -605,6 +605,11 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
         /// The session's code was saved after a turn; a fork with code made
         /// after this starts from it.
         case checkpoint
+        /// A message sent while a turn ran, waiting for its own turn.
+        case messageQueued(queueID: String, text: String)
+        /// A queued message left the queue: its turn started, or it was
+        /// taken out.
+        case dequeued(queueID: String)
     }
 
     package var id: String
@@ -785,6 +790,8 @@ package enum ErrorCode: Hashable, Sendable {
     case unknownThread
     /// What the request worked on changed since it was read.
     case changed
+    /// The queued message already started or was taken out.
+    case unknownQueuedMessage
     case unknown
 }
 

@@ -239,8 +239,8 @@ for you without hunting, land work, and find your way around.
 
 - [x] Approve or deny from the inbox: each approval row shows what the agent asks, with Allow and Deny
 - [x] Approvals show the diff of a write, not only its path
-- [ ] A draft per session, kept when you switch away; queued messages shown above the box, each removable
-- [ ] History cost: each turn's tokens and premium requests, and the session's total
+- [x] A draft per session, kept when you switch away; queued messages shown above the box, each removable
+- [x] History cost: each turn's tokens and premium requests, and the session's total
 - [ ] Sessions stay readable offline from the Mac's copy of their history
 - [ ] Sidebar: sorted by last activity, with timestamps, an unread mark, search by name, and delete project
 - [ ] Import existing sessions: Claude Code transcripts and Copilot session folders already on a host

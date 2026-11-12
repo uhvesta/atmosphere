@@ -42,6 +42,7 @@ trait Backend: Send + Sync {
         mode: ApprovalMode,
     ) -> BoxFuture<'a, ()>;
     fn abort<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()>;
+    fn unqueue<'a>(&'a self, session: &'a SessionId, queue_id: &'a str) -> BoxFuture<'a, ()>;
     fn fork<'a>(
         &'a self,
         session: &'a SessionId,
@@ -108,6 +109,13 @@ where
     }
     fn abort<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()> {
         Box::pin(async move { Agent::abort(self, session).await.map_err(Into::into) })
+    }
+    fn unqueue<'a>(&'a self, session: &'a SessionId, queue_id: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            Agent::unqueue(self, session, queue_id)
+                .await
+                .map_err(Into::into)
+        })
     }
     fn fork<'a>(
         &'a self,
@@ -401,6 +409,14 @@ impl Host {
                 Response::RepositoriesCloned(pb::RepositoriesCloned {
                     repositories: self.machine.clone(clone).await?,
                 })
+            }
+            Request::Unqueue(unqueue) => {
+                let session = SessionId::new(unqueue.session_id);
+                self.owner(&session)?
+                    .1
+                    .unqueue(&session, &unqueue.queue_id)
+                    .await?;
+                Response::Unqueued(pb::Unqueued {})
             }
             Request::AbortTurn(abort) => {
                 let session = SessionId::new(abort.session_id);

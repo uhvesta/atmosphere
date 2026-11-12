@@ -112,6 +112,9 @@ impl HostError {
             Self::Agent(AgentError::UnknownPermissionRequest { .. }) => {
                 pb::ErrorCode::UnknownPermissionRequest
             }
+            Self::Agent(AgentError::UnknownQueuedMessage { .. }) => {
+                pb::ErrorCode::UnknownQueuedMessage
+            }
             Self::Agent(AgentError::Archived { .. }) => pb::ErrorCode::Archived,
             Self::Agent(AgentError::ArchiveWhileWorking { .. }) => pb::ErrorCode::Busy,
             Self::Agent(AgentError::NoWorkspaces { .. }) => pb::ErrorCode::InvalidRequest,
