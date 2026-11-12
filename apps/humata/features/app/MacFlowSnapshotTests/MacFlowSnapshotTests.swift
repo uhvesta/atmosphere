@@ -464,6 +464,13 @@ final class MacFlowSnapshotTests: XCTestCase {
         let second = try await daemon.client.start(
             StartRequest(backend: .scripted, name: "Tidy the schema", projectID: project.id))
         try await daemon.client.send(second.id, "schema checks", .enqueue)
+        // Every turn answered first, so what search finds doesn't depend on
+        // how far the agents got.
+        try await untilDaemon {
+            let sessions = try await daemon.client.sessions(project.id)
+            let turns = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.turns) })
+            return turns[first.id] == 2 && turns[second.id] == 1 && sessions.allSatisfy { $0.state == .idle }
+        }
         let store = Store(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
@@ -658,8 +665,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         let move = try XCTUnwrap(store.sidebar.inbox.first?.request)
         store.send(.sidebar(.requestAnswered(move.id, .approve)))
         try await until { store.sidebar.inbox.isEmpty }
-        let status = try await daemon.client.items(project.id).first?.status
-        XCTAssertEqual(status, .inReview)
+        try await untilDaemon { try await daemon.client.items(project.id).first?.status == .inReview }
         store.send(.sidebar(.selected(.inbox)))
         try await until { store.session == nil }
         await flow.step("approved")
@@ -908,6 +914,15 @@ final class MacFlowSnapshotTests: XCTestCase {
     private func until(line: UInt = #line, _ condition: () -> Bool) async throws {
         for _ in 0..<500 {
             if condition() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw TimedOut(line: line)
+    }
+
+    /// Waits for the daemon, rather than the store, to get somewhere.
+    private func untilDaemon(line: UInt = #line, _ condition: () async throws -> Bool) async throws {
+        for _ in 0..<500 {
+            if try await condition() { return }
             try await Task.sleep(for: .milliseconds(10))
         }
         throw TimedOut(line: line)

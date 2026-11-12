@@ -171,9 +171,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_port_nothing_listens_on_is_refused() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
+        // Bound but not listening, so the port stays taken while it refuses:
+        // a port freed instead can be another test's by the time it's tried.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind(([127, 0, 0, 1], 0).into()).unwrap();
+        let port = socket.local_addr().unwrap().port();
         let ports = Arc::new(Ports::default());
         assert!(matches!(
             ports.connect(u32::from(port)).await,
