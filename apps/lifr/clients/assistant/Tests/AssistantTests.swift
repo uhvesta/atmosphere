@@ -185,6 +185,17 @@ final class AssistantTests: XCTestCase {
         XCTAssertLessThan(lateAt, try XCTUnwrap(text.range(of: code(today))).lowerBound)
     }
 
+    func testOverviewCountsEverySectionAndShowsSomeOfEach() {
+        let home = records.avenue("HOME", "Home")
+        for index in 0..<30 { records.task("Late \(index)", in: home, due: -2) }
+        let soon = records.task("Soon", in: home, due: 3)
+
+        let text = tools.overview()
+
+        XCTAssertTrue(text.contains("(30)"))
+        XCTAssertTrue(text.contains(code(soon)))
+    }
+
     func testTheScriptedClientStreamsTheTextThenTheWholeReply() async throws {
         let client = AssistantClient.scripted([.example])
         let request = AssistantRequest(messages: [], workspace: Workspace(), now: now, timeZone: .gmt)

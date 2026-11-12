@@ -159,16 +159,19 @@ package final class AssistantTools: Sendable {
             ("Due in the next 7 days", { $0.dueDate.map { $0 > today && $0 <= week } ?? false }),
             ("Procrastinated", { $0.effectiveStatus(now: now, settings: workspace.settings) == .procrastinated }),
         ]
-        for (title, matches) in sections {
-            let tasks = open.filter(matches).sorted(by: LifrTask.listOrder)
-            text += "\n\(title): " + (tasks.isEmpty ? "none" : "\n" + lines(tasks))
+        let found = sections.map { title, matches in (title, open.filter(matches).sorted(by: LifrTask.listOrder)) }
+        // Every section gets its count and a share of the lines, so a long
+        // Overdue list can't push the others out.
+        let share = max(1, Self.limit / max(1, found.filter { !$0.1.isEmpty }.count))
+        for (title, tasks) in found {
+            text += "\n\(title) (\(tasks.count)): " + (tasks.isEmpty ? "none" : "\n" + lines(tasks, limit: share))
         }
         return text
     }
 
-    func lines(_ tasks: [LifrTask]) -> String {
-        var text = tasks.prefix(Self.limit).map(line).joined(separator: "\n")
-        if tasks.count > Self.limit { text += "\n(\(tasks.count - Self.limit) more; search with more words)" }
+    func lines(_ tasks: [LifrTask], limit: Int = AssistantTools.limit) -> String {
+        var text = tasks.prefix(limit).map(line).joined(separator: "\n")
+        if tasks.count > limit { text += "\n(\(tasks.count - limit) more; search with more words)" }
         return text
     }
 
