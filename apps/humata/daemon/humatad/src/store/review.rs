@@ -44,6 +44,9 @@ pub struct Comment {
     /// The review it was sent with; none until it is.
     pub review: Option<i64>,
     pub created_unix_ms: i64,
+    /// The GitHub reviewer's login, for one brought in from GitHub; empty
+    /// for yours.
+    pub login: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,6 +92,7 @@ fn comment(row: &Row<'_>) -> rusqlite::Result<Comment> {
         text: row.get(1)?,
         review: row.get(2)?,
         created_unix_ms: row.get(3)?,
+        login: row.get(4)?,
     })
 }
 
@@ -99,6 +103,31 @@ fn unknown_thread(id: i64) -> StoreError {
 impl Store {
     /// Starts a thread with your first comment on it.
     pub fn add_thread(&self, new: &NewThread, text: &str) -> Result<Thread, StoreError> {
+        self.insert_thread(new, text, None)
+    }
+
+    /// Starts a thread with a GitHub reviewer's comment, GitHub's
+    /// `github_id`, on it.
+    pub fn add_github_thread(
+        &self,
+        new: &NewThread,
+        github_id: u64,
+        login: &str,
+        text: &str,
+    ) -> Result<Thread, StoreError> {
+        self.insert_thread(new, text, Some((github_id, login)))
+    }
+
+    fn insert_thread(
+        &self,
+        new: &NewThread,
+        text: &str,
+        github: Option<(u64, &str)>,
+    ) -> Result<Thread, StoreError> {
+        let (github_id, login) = match github {
+            Some((id, login)) => (Some(i64::try_from(id).unwrap_or(i64::MAX)), login),
+            None => (None, ""),
+        };
         let id = {
             let mut connection = self.lock();
             let added = (|| {
@@ -122,9 +151,10 @@ impl Store {
                 )?;
                 let id = transaction.last_insert_rowid();
                 transaction.execute(
-                    "INSERT INTO review_comments (thread_id, text, created_unix_ms)
-                     VALUES (?1, ?2, ?3)",
-                    params![id, text, now],
+                    "INSERT INTO review_comments (thread_id, text, created_unix_ms, github_id,
+                         github_login)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![id, text, now, github_id, login],
                 )?;
                 transaction.commit()?;
                 Ok(id)
@@ -145,6 +175,33 @@ impl Store {
             )
             .map_err(self.failed())?;
         self.thread(id)
+    }
+
+    /// Adds a GitHub reviewer's comment, GitHub's `github_id`, to thread
+    /// `id`, once: one brought in before is left as it is.
+    pub fn add_github_comment(
+        &self,
+        id: i64,
+        github_id: u64,
+        login: &str,
+        text: &str,
+    ) -> Result<(), StoreError> {
+        self.lock()
+            .execute(
+                "INSERT INTO review_comments (thread_id, text, created_unix_ms, github_id,
+                     github_login)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (github_id) DO NOTHING",
+                params![
+                    id,
+                    text,
+                    now_unix_ms(),
+                    i64::try_from(github_id).unwrap_or(i64::MAX),
+                    login
+                ],
+            )
+            .map(drop)
+            .map_err(self.failed())
     }
 
     pub fn resolve_thread(&self, id: i64, resolved: bool) -> Result<Thread, StoreError> {
@@ -342,7 +399,7 @@ impl Store {
 
 fn comments(connection: &rusqlite::Connection, thread: i64) -> rusqlite::Result<Vec<Comment>> {
     let mut statement = connection.prepare(
-        "SELECT id, text, review_id, created_unix_ms FROM review_comments
+        "SELECT id, text, review_id, created_unix_ms, github_login FROM review_comments
          WHERE thread_id = ?1 ORDER BY id",
     )?;
     statement

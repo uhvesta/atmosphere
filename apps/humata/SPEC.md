@@ -136,9 +136,12 @@ original spec; lettered ones were added since.
 | 6 Plan with the agent | Done (8dba5fb0) |
 | F Any host, any repository | Done |
 | 7 Search across sessions | Done |
-| 8 Ship as pull requests | In progress |
-| G Drive Humata from outside | After 8 |
-| H Humata's own model server | After G |
+| 8 Ship as pull requests | Done |
+| G Drive Humata from outside | In progress |
+| S Settings and environments | After G |
+| H Humata's own model server | After S |
+| The demo | After H |
+| R Review pass | After the demo |
 
 ## Done milestones
 
@@ -446,7 +449,7 @@ Structure:
 **Done when:** an end-to-end test finds a command run in one session from a
 search started in another project, and opens it at that turn.
 
-### Milestone 8: ship as pull requests
+### Milestone 8: ship as pull requests — done
 
 **Outcome:** a finished session becomes a merged pull request without leaving
 the app, and the board closes the task by itself.
@@ -461,13 +464,13 @@ Structure:
   requests while hosts sleep. `HUMATA_GITHUB_API` points the daemon at
   another server, for GitHub Enterprise or a test; with it set, any remote's
   last two path parts name the repository.
-- **Landing.** "Land…" on a session names a branch (from the session's
-  name, as `humata/fix-the-migrations`) and a message (the session's name
+- **Landing.** "Land…" in a session's Ship menu names a branch (from the
+  session's name, as `fix-the-migrations`) and a message (the session's name
   and the task's title). Each worktree with changes moves onto that branch
   and commits everything git doesn't ignore; one without changes is left
   out. A session can land again later: new changes are another commit on
   the same branch. Landing waits for a turn to end.
-- **Pull requests.** "Land and Open Pull Request" also pushes each landed
+- **Pull requests.** "Land and Open Pull Requests" also pushes each landed
   branch to its repository's `origin` and opens a pull request against the
   branch the session started from (the repository's default branch). One
   pull request per repository; each one's description names the task and
@@ -486,7 +489,7 @@ Structure:
   comments: a new one starts an inline thread on its file and lines, or
   joins the thread it replies to, marked with its author's GitHub login.
   They wait, unsent, for the next "Send Review", as yours do.
-- **Updating from the base branch.** "Update from main" fetches the base
+- **Updating from the base branch.** "Update from the Base Branch" fetches the base
   branch on the host and merges it into each worktree, keeping what the
   session changed and hasn't landed. A merge that conflicts is left in the
   worktree, and the agent is sent the conflicting files, asked to resolve
@@ -495,13 +498,13 @@ Structure:
   issues (not pull requests) and makes a task of each, its title and its
   body as the spec, once: an issue imported before is skipped. A pull
   request for an imported task says it closes the issue.
-- [ ] Land a session's work: commit its changes on a branch of your naming, with a message you edit
-- [ ] Push the branch and open a pull request, one per repository, linked to each other and to the task
-- [ ] Show each pull request's review and CI status on the task, and move the task to Done when it merges
-- [ ] Bring GitHub review comments into the inline threads
-- [ ] Update a session from its base branch and hand conflicts to the agent
-- [ ] Import GitHub issues as tasks
-- [ ] Remove a session's worktrees and branches after its pull request merges
+- [x] Land a session's work: commit its changes on a branch of your naming, with a message you edit
+- [x] Push the branch and open a pull request, one per repository, linked to each other and to the task
+- [x] Show each pull request's review and CI status on the task, and move the task to Done when it merges
+- [x] Bring GitHub review comments into the inline threads
+- [x] Update a session from its base branch and hand conflicts to the agent
+- [x] Import GitHub issues as tasks
+- [x] Remove a session's worktrees and branches after its pull request merges
 
 **Done when:** an end-to-end test opens a pull request against a local git
 server standing in for GitHub, marks it merged, and finds the task Done and
@@ -545,6 +548,38 @@ Structure:
 creates a project, starts a scripted chat, sends it a message, approves its
 request and reads the reply, all through MCP.
 
+### Milestone S: Settings and environments
+
+**Outcome:** machines are set up in one place, Settings (⌘,), the way the
+owner thinks of them:
+
+- **Adding a host:** Settings > Environments lists the hosts in
+  `~/.ssh/config`. Each shows whether it has been added, the version
+  installed there and whether it's reachable; Add takes one in, and a
+  destination that isn't in the config can still be typed.
+- **On the remote machine:** adding a host installs humatad there, and
+  Settings offers Update when the bundled version is newer. Its variables,
+  GitHub token and setup script are edited from the same pane. The token is
+  still held only in memory.
+- **Running sessions:** a session started on that host runs there, with its
+  files browsed and edited, its terminals and its Git operations (review,
+  land, pull requests) all on the host. That already works; this milestone
+  doesn't change it.
+
+Structure: a SwiftUI `Settings` scene on the Mac app over the existing
+HostsFeature's add, install and setup actions, so no new protocol is needed.
+The sidebar's Hosts view keeps what's running: sessions per host, recovery
+copies, terminals and ports. On iPhone the same pane sits under the app's
+settings.
+
+- [ ] A Settings window with an Environments pane
+- [ ] `~/.ssh/config` hosts listed with added, version and reachability
+- [ ] Add installs humatad; Update when a newer build is bundled
+- [ ] Variables, token and setup script edited from the pane
+
+**Done when:** a flow test opens Settings > Environments, adds a host from
+the SSH config and sees it installed and reachable.
+
 ### Milestone H: Humata's own model server
 
 **Outcome:** local models run inside Humata, with nothing else installed:
@@ -584,6 +619,26 @@ for the owner to look at: projects for the `uhvesta/atmosphere` and
 `uhvesta/statify` repositories added by URL, a few chats with local models
 in each, and planning sessions writing Markdown specs, then opens the app on
 them.
+
+### R Review pass
+
+Once the demo is in:
+
+1. Haiku agents gather the code and every UI and UX flow.
+2. Fable 5.2 agents, at high or medium effort, are given the app's goal
+   (this spec's opening sections) and what was gathered. They look for jank,
+   feature gaps, and what people need to work agentically on many things at
+   once with many agents.
+3. They check the vision: a Jira-like board to break work down, sessions
+   backed by its tasks, and sessions that are ephemeral and cross-machine.
+   Then they look for gaps in how it was built.
+4. An independent Fable 5.2 agent at xhigh effort reviews every finding and
+   keeps only the good ones. The agents decide; the owner doesn't weigh in.
+5. The kept findings are built, then pushed.
+
+Only strict improvements count: additions to the UX that simplify without
+losing behaviour, or that add behaviour badly needed. No redesigns or
+rethinks.
 
 ## Later
 

@@ -29,6 +29,7 @@
     [Button] "Add Project"
     [Button] "Hide Sidebar"
     [Button] "History"
+    [Button] "Import Issues"
     [Button] "Add Task"
   [Button/CloseButton] ""
   [Button/ZoomButton] ""

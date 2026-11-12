@@ -1,5 +1,6 @@
 //! `humata`: Humata's sessions from the command line, through the daemon.
 
+mod control;
 mod error;
 mod print;
 
@@ -553,6 +554,39 @@ enum Command {
         #[arg(long)]
         limit: Option<u32>,
     },
+    /// Commit a session's work onto a branch in each repository it changed,
+    /// and with --pull-requests, push them and open a pull request for each.
+    Land {
+        session: String,
+        /// The branch to land on, new in each repository.
+        #[arg(long)]
+        branch: String,
+        /// The commit message; its first line titles the pull requests.
+        #[arg(long, short)]
+        message: String,
+        /// Push the branches to their origins.
+        #[arg(long)]
+        push: bool,
+        /// Push and open or find a pull request for each branch on GitHub.
+        #[arg(long)]
+        pull_requests: bool,
+    },
+    /// List a session's or a task's pull requests, read again from GitHub
+    /// with --refresh.
+    Prs {
+        #[arg(long, conflicts_with = "item", required_unless_present = "item")]
+        session: Option<String>,
+        #[arg(long)]
+        item: Option<String>,
+        #[arg(long)]
+        refresh: bool,
+    },
+    /// Merge each repository's base branch into a session's worktrees; on
+    /// conflicts, the agent is asked to resolve them.
+    Update { session: String },
+    /// Make a task of each open GitHub issue of a project's repositories
+    /// that wasn't imported before.
+    ImportIssues { project: String },
     /// Link this Mac's humata and humatad into ~/.local/bin, where a
     /// terminal finds them. A file there of either name that isn't such a
     /// link is left alone, and no shell profile is changed.
@@ -756,6 +790,9 @@ enum Command {
         #[arg(long, default_value = "")]
         project: String,
     },
+    /// Serve Humata to an agent outside it, as MCP tools on stdin and
+    /// stdout: `claude mcp add humata -- humata mcp`.
+    Mcp,
 }
 
 fn main() -> ExitCode {
@@ -975,6 +1012,69 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 other => return Err(unexpected("the search results", &other)),
             }
         }
+        Command::Land {
+            session,
+            branch,
+            message,
+            push,
+            pull_requests,
+        } => {
+            let land = pb::LandSession {
+                session_id: session,
+                branch,
+                message,
+                push,
+                open_pull_requests: pull_requests,
+            };
+            match client.call(Request::LandSession(land)).await? {
+                Response::SessionLanded(landed) => print!("{}", print::landed(&landed)),
+                other => return Err(unexpected("the landed branches", &other)),
+            }
+        }
+        Command::Prs {
+            session,
+            item,
+            refresh,
+        } => {
+            let list = pb::ListPullRequests {
+                session_id: session.unwrap_or_default(),
+                item_id: item.unwrap_or_default(),
+                refresh,
+            };
+            match client.call(Request::ListPullRequests(list)).await? {
+                Response::PullRequests(pulls) => {
+                    for pull in &pulls.pull_requests {
+                        println!("{}", print::pull_request(pull));
+                    }
+                }
+                other => return Err(unexpected("the pull requests", &other)),
+            }
+        }
+        Command::Update { session } => {
+            let update = pb::UpdateFromBase {
+                session_id: session,
+            };
+            match client.call(Request::UpdateFromBase(update)).await? {
+                Response::BaseUpdated(updated) => print!("{}", print::base_updated(&updated)),
+                other => return Err(unexpected("the update", &other)),
+            }
+        }
+        Command::ImportIssues { project } => {
+            let import = pb::ImportIssues {
+                project_id: project,
+            };
+            match client.call(Request::ImportIssues(import)).await? {
+                Response::IssuesImported(imported) => {
+                    for item in &imported.items {
+                        println!("{}", print::item(item));
+                    }
+                    if imported.skipped > 0 {
+                        println!("{} imported before, skipped", imported.skipped);
+                    }
+                }
+                other => return Err(unexpected("the imported issues", &other)),
+            }
+        }
         Command::Link { check } => {
             match client
                 .call(Request::LinkCommands(pb::LinkCommands { check }))
@@ -1085,7 +1185,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             });
             let sent = |response: &Response| matches!(response, Response::MessageSent(_));
             if wait {
-                call_and_wait(&client, &session, request, sent, "MessageSent").await?;
+                call_and_wait(&client, &session, request, sent, "MessageSent", printed).await?;
             } else {
                 expect_ok(client.call(request).await?, sent, "MessageSent")?;
             }
@@ -1103,7 +1203,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             });
             let approved = |response: &Response| matches!(response, Response::Approved(_));
             if wait {
-                call_and_wait(&client, &session, request, approved, "Approved").await?;
+                call_and_wait(&client, &session, request, approved, "Approved", printed).await?;
             } else {
                 expect_ok(client.call(request).await?, approved, "Approved")?;
             }
@@ -1319,6 +1419,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             }
             other => return Err(unexpected("the sessions", &other)),
         },
+        Command::Mcp => control::serve(&client, tokio::io::stdin(), tokio::io::stdout()).await?,
     }
     Ok(())
 }
@@ -1930,6 +2031,10 @@ fn is_url(given: &str) -> bool {
     }
 }
 
+fn printed(event: &pb::SessionEvent) {
+    println!("{}", print::event(event));
+}
+
 async fn update(client: &Client, update: pb::UpdateSession) -> Result<(), CliError> {
     match client
         .call(pb::request::Kind::UpdateSession(update))
@@ -1950,14 +2055,16 @@ async fn history(client: &Client, session: &str) -> Result<Vec<pb::SessionEvent>
     }
 }
 
-/// Makes `request`, then prints the session's new events until it is idle
-/// again or waits for a person to answer a permission request.
+/// Makes `request`, then hands each of the session's new events to
+/// `on_event` until it is idle again or waits for a person to answer a
+/// permission request.
 async fn call_and_wait(
     client: &Client,
     session: &str,
     request: pb::request::Kind,
     answered: impl Fn(&pb::response::Kind) -> bool,
     expected: &'static str,
+    mut on_event: impl FnMut(&pb::SessionEvent),
 ) -> Result<(), CliError> {
     // The watch replays the history first; what is already there isn't new.
     let seen = history(client, session).await?.len();
@@ -1973,7 +2080,7 @@ async fn call_and_wait(
         if index <= seen {
             continue;
         }
-        println!("{}", print::event(&event));
+        on_event(&event);
         match &event.kind {
             Some(pb::session_event::Kind::Idle(_)) => return Ok(()),
             Some(pb::session_event::Kind::PermissionRequested(asked))

@@ -161,6 +161,28 @@ rust_test(
     deps = ["@crates//:tempfile"],
 )
 
+# An agent outside Humata drives it through `humata mcp`.
+rust_test(
+    name = "mcp_control_test",
+    srcs = [
+        "common.rs",
+        "mcp_control_test.rs",
+    ],
+    crate_root = "mcp_control_test.rs",
+    data = [
+        "//apps/humata/daemon/cli:humata",
+        "//apps/humata/daemon/humatad",
+    ],
+    env = {
+        "HUMATA": "$(rootpath //apps/humata/daemon/cli:humata)",
+        "HUMATAD": "$(rootpath //apps/humata/daemon/humatad)",
+    },
+    deps = [
+        "@crates//:serde_json",
+        "@crates//:tempfile",
+    ],
+)
+
 # Session trees: a fork before a turn has the files and history as they were
 # there, without a commit.
 rust_test(

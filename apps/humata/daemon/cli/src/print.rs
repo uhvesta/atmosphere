@@ -207,8 +207,9 @@ pub fn thread(thread: &pb::ReviewThread) -> String {
     );
     for comment in &thread.comments {
         let author = match comment.author() {
-            pb::CommentAuthor::You => "you",
-            pb::CommentAuthor::Agent => "agent",
+            pb::CommentAuthor::You => "you".to_owned(),
+            pb::CommentAuthor::Agent => "agent".to_owned(),
+            pb::CommentAuthor::Github => format!("@{} on GitHub", comment.login),
         };
         text.push_str(&format!(
             "\t{}\t{author}\t{}\t{}\n",
@@ -505,4 +506,66 @@ pub fn search_hit(hit: &pb::SearchHit) -> String {
         or_dash(&hit.item_id),
         if hit.related { "related" } else { "-" },
     )
+}
+
+pub fn landed(landed: &pb::SessionLanded) -> String {
+    let mut out = String::new();
+    for repository in &landed.repositories {
+        let commit = repository.commit.get(..8).unwrap_or(&repository.commit);
+        let pushed = if repository.pushed { ", pushed" } else { "" };
+        out.push_str(&format!(
+            "{}\t{} at {commit} onto {}{pushed}\n",
+            repository.name, repository.branch, repository.base
+        ));
+    }
+    for pull in &landed.pull_requests {
+        out.push_str(&pull_request(pull));
+        out.push('\n');
+    }
+    out
+}
+
+pub fn pull_request(pull: &pb::PullRequest) -> String {
+    let state = match pull.state() {
+        pb::PullRequestState::Merged => "merged",
+        pb::PullRequestState::Closed => "closed",
+        _ => "open",
+    };
+    let review = match pull.review() {
+        pb::ReviewStanding::Approved => "approved",
+        pb::ReviewStanding::ChangesRequested => "changes requested",
+        pb::ReviewStanding::Commented => "commented",
+        _ => "no review",
+    };
+    let checks = match pull.checks() {
+        pb::ChecksState::Passing => "checks pass",
+        pb::ChecksState::Failing => "checks fail",
+        pb::ChecksState::Pending => "checks running",
+        _ => "no checks",
+    };
+    format!(
+        "{}#{}\t{state}, {review}, {checks}\t{}\t{}",
+        pull.github_repository, pull.number, pull.title, pull.url
+    )
+}
+
+pub fn base_updated(updated: &pb::BaseUpdated) -> String {
+    let mut out = String::new();
+    for repository in &updated.repositories {
+        let outcome = match repository.outcome() {
+            pb::MergeOutcome::UpToDate => "up to date".to_owned(),
+            pb::MergeOutcome::Conflicts => {
+                format!("conflicts in {}", repository.conflicts.join(", "))
+            }
+            _ => "merged".to_owned(),
+        };
+        out.push_str(&format!(
+            "{}\t{} {outcome}\n",
+            repository.name, repository.upstream
+        ));
+    }
+    if updated.sent_to_agent {
+        out.push_str("the agent was asked to resolve the conflicts\n");
+    }
+    out
 }

@@ -287,6 +287,86 @@ impl Machine {
             tips,
         })
     }
+
+    /// Pushes `branch` from the worktree at `directory` to its `origin`,
+    /// setting it as the branch's upstream.
+    pub async fn push(
+        &self,
+        directory: &Path,
+        repository: &str,
+        branch: &str,
+    ) -> Result<(), HostError> {
+        let output = self
+            .remote_git(
+                directory,
+                &["push", "--quiet", "--set-upstream", "origin", branch],
+            )
+            .await?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(HostError::Push {
+            repository: repository.to_owned(),
+            branch: branch.to_owned(),
+            output: printed(&output),
+        })
+    }
+
+    /// Fetches the worktree at `directory`'s `origin`, if it has one.
+    pub async fn fetch(&self, directory: &Path, repository: &str) -> Result<(), HostError> {
+        if origin(directory).await.is_empty() {
+            return Ok(());
+        }
+        let output = self
+            .remote_git(directory, &["fetch", "--quiet", "origin"])
+            .await?;
+        if output.status.success() {
+            return Ok(());
+        }
+        Err(HostError::Fetch {
+            repository: repository.to_owned(),
+            output: printed(&output),
+        })
+    }
+
+    /// Runs git in `directory` with the host's variables, answering
+    /// GitHub's request for a password with the host's token if it has one.
+    async fn remote_git(
+        &self,
+        directory: &Path,
+        arguments: &[&str],
+    ) -> Result<std::process::Output, HostError> {
+        let mut git = Command::new("git");
+        let vars = self.env.vars();
+        if vars.iter().any(|(name, _)| TOKENS.contains(&name.as_str())) {
+            git.args(GITHUB_CREDENTIALS);
+        }
+        git.envs(vars)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(Stdio::null())
+            .arg("-C")
+            .arg(directory)
+            .args(arguments)
+            .output()
+            .await
+            .map_err(|source| HostError::RunGit { source })
+    }
+}
+
+/// The URL of the `origin` remote of the repository at `directory`; empty
+/// if it has none.
+pub async fn origin(directory: &Path) -> String {
+    Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(["remote", "get-url", "origin"])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .unwrap_or_default()
 }
 
 /// `name` if it is one plain folder name, not a path.

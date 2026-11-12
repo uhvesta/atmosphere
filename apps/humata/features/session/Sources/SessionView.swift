@@ -63,6 +63,7 @@ package struct SessionView: View {
         .navigationTitle(store.session.name.isEmpty ? "Session" : store.session.name)
         .task { await store.send(.task).finish() }
         .alert($store.scope(state: \.alert, action: \.alert))
+        .sheet(item: $store.scope(state: \.land, action: \.land)) { LandView(store: $0) }
         .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
         .sheet(isPresented: editingProposal) {
             ProposalEditor(store: store.scope(state: \.proposals, action: \.proposals))
@@ -89,10 +90,13 @@ package struct SessionView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(store.session.name.isEmpty ? "Session" : store.session.name)
                     .font(.headline)
+                    .lineLimit(1)
                 Text(engine)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
+            .frame(minWidth: 90, alignment: .leading)
             Spacer()
             Picker("View", selection: Binding(get: { store.tab }, set: { store.send(.tabPicked($0)) })) {
                 ForEach(store.tabs, id: \.self) { tab in
@@ -111,6 +115,19 @@ package struct SessionView: View {
                     .foregroundStyle(.secondary)
                     .help("What this session has used")
             }
+            ViewThatFits(in: .horizontal) {
+                actions.labelStyle(.titleAndIcon)
+                actions.labelStyle(.iconOnly)
+            }
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 10)
+    }
+
+    /// Fork, Ship, Folder and the approval mode; icons only when the
+    /// window is too narrow for their names.
+    private var actions: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
             Menu {
                 Button("Fork With the Code") { store.send(.forkTapped(before: nil, chatOnly: false)) }
                 Button("Fork the Chat Only") { store.send(.forkTapped(before: nil, chatOnly: true)) }
@@ -119,6 +136,17 @@ package struct SessionView: View {
             }
             .fixedSize()
             .help("Try something else from here, while this session stays as it is")
+            if store.ships {
+                Menu {
+                    Button("Land…") { store.send(.landTapped) }
+                    Button("Update from the Base Branch") { store.send(.updateFromBaseTapped) }
+                        .disabled(store.updating || store.isWorking)
+                } label: {
+                    Label("Ship", systemImage: "shippingbox")
+                }
+                .fixedSize()
+                .help("Land the work on a branch or as pull requests, or merge the base branch's new commits in")
+            }
             Menu {
                 Button("Copy Folder Path") { copy(store.session.workingDirectory) }
                 if store.session.host == nil {
@@ -143,8 +171,6 @@ package struct SessionView: View {
             .fixedSize()
             .help("What the agent may do without asking")
         }
-        .padding(.horizontal)
-        .padding(.vertical, 10)
     }
 
     /// ⌘1, ⌘2 and so on for the views, in the order the picker shows them,

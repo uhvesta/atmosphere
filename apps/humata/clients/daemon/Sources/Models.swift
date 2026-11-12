@@ -665,13 +665,15 @@ package struct ReviewThread: Identifiable, Hashable, Sendable {
     }
 
     /// Comments not sent to the agent yet.
-    package var pending: Int { comments.filter { $0.author == .you && !$0.sent }.count }
+    package var pending: Int { comments.filter { $0.author != .agent && !$0.sent }.count }
 }
 
 package struct ReviewComment: Identifiable, Hashable, Sendable {
     package enum Author: Hashable, Sendable {
         case you
         case agent
+        /// A reviewer on the pull request, by their GitHub login.
+        case github(String)
     }
 
     package var id: String
@@ -1007,6 +1009,8 @@ package enum ErrorCode: Hashable, Sendable {
     case unknownForward
     /// The session proposed nothing by that id, or it was decided already.
     case unknownProposal
+    /// GitHub refused, or there's no token to reach it with.
+    case github
     case unknown
 }
 

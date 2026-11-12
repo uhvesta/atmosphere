@@ -159,6 +159,18 @@ package struct DaemonClient: Sendable {
     /// What every session said and did, on every host, that has the
     /// query's words; best first, then those found by related words.
     package var search: @Sendable (_ query: SearchQuery) async throws -> SearchResults
+    /// Commits the session's work onto a new branch in each repository it
+    /// changed; pushes them, and opens or finds their pull requests, if asked.
+    package var land: @Sendable (_ session: String, _ request: LandRequest) async throws -> Landed
+    /// The pull requests of a session or a task, read again from GitHub
+    /// first with `refresh`.
+    package var pullRequests: @Sendable (_ of: PullRequestsOf, _ refresh: Bool) async throws -> [PullRequest]
+    /// Merges each repository's base into the session's copy; on conflicts,
+    /// the agent is asked to resolve them.
+    package var updateFromBase: @Sendable (_ session: String) async throws -> BaseUpdate
+    /// Makes a task of each open GitHub issue of the project's repositories
+    /// not imported before.
+    package var importIssues: @Sendable (_ project: String) async throws -> ImportedIssues
     /// The session's history, then each new event. Ends when the calling task
     /// is cancelled; throws if the connection drops.
     package var watch: @Sendable (_ session: String) async -> AsyncThrowingStream<SessionEvent, any Error> = { _ in

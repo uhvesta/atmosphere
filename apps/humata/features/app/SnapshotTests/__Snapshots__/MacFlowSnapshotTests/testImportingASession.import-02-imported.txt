@@ -24,6 +24,7 @@
     [RadioButton/Segment] "Files" value: "0"
     [RadioButton/Segment] "Terminal" value: "0"
   [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is"
+  [MenuButton] "Ship" help: "Land the work on a branch or as pull requests, or merge the base branch's new commits in"
   [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself"
   [StaticText] "" value: "Approvals"
   [PopUpButton] "" value: "Ask Every Time" help: "What the agent may do without asking"

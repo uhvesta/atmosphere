@@ -625,6 +625,46 @@ extension DaemonClient {
                 }
                 return SearchResults(results)
             },
+            land: { session, request in
+                var land = Humata_V1_LandSession()
+                land.sessionID = session
+                land.branch = request.branch
+                land.message = request.message
+                land.push = request.push
+                land.openPullRequests = request.openPullRequests
+                guard case .sessionLanded(let landed) = try await daemon.call(.landSession(land)) else {
+                    throw DaemonError.unexpected("something other than the landed branches")
+                }
+                return Landed(landed)
+            },
+            pullRequests: { of, refresh in
+                var list = Humata_V1_ListPullRequests()
+                switch of {
+                case .session(let session): list.sessionID = session
+                case .item(let item): list.itemID = item
+                }
+                list.refresh = refresh
+                guard case .pullRequests(let pulls) = try await daemon.call(.listPullRequests(list)) else {
+                    throw DaemonError.unexpected("something other than the pull requests")
+                }
+                return pulls.pullRequests.map(PullRequest.init)
+            },
+            updateFromBase: { session in
+                var update = Humata_V1_UpdateFromBase()
+                update.sessionID = session
+                guard case .baseUpdated(let updated) = try await daemon.call(.updateFromBase(update)) else {
+                    throw DaemonError.unexpected("something other than the update")
+                }
+                return BaseUpdate(updated)
+            },
+            importIssues: { project in
+                var request = Humata_V1_ImportIssues()
+                request.projectID = project
+                guard case .issuesImported(let imported) = try await daemon.call(.importIssues(request)) else {
+                    throw DaemonError.unexpected("something other than the imported issues")
+                }
+                return ImportedIssues(items: imported.items.map(Item.init), skipped: Int(imported.skipped))
+            },
             watch: { session in
                 AsyncThrowingStream { continuation in
                     let task = Task {

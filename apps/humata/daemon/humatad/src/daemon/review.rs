@@ -345,6 +345,9 @@ fn compose(pending: &[(&Thread, Vec<&Comment>)], at: impl Fn(&Thread) -> (u32, u
             text.push_str(&format!("On the text \"{}\":\n", thread.quote));
         }
         for comment in comments {
+            if !comment.login.is_empty() {
+                text.push_str(&format!("@{} on GitHub: ", comment.login));
+            }
             text.push_str(comment.text.trim());
             text.push('\n');
         }
@@ -542,11 +545,16 @@ fn wire_thread(thread: &Thread, replies: &[AgentReply]) -> pb::ReviewThread {
         .iter()
         .map(|comment| pb::ReviewComment {
             id: comment.id.to_string(),
-            author: pb::CommentAuthor::You.into(),
+            author: if comment.login.is_empty() {
+                pb::CommentAuthor::You.into()
+            } else {
+                pb::CommentAuthor::Github.into()
+            },
             text: comment.text.clone(),
             sent: comment.review.is_some(),
             time_unix_ms: comment.created_unix_ms,
             turn: 0,
+            login: comment.login.clone(),
         })
         .collect();
     comments.extend(
@@ -560,6 +568,7 @@ fn wire_thread(thread: &Thread, replies: &[AgentReply]) -> pb::ReviewThread {
                 sent: true,
                 time_unix_ms: reply.time_unix_ms,
                 turn: reply.turn,
+                login: String::new(),
             }),
     );
     comments.sort_by_key(|comment| comment.time_unix_ms);
@@ -755,6 +764,7 @@ mod tests {
         let comment = Comment {
             id: 1,
             text: "why one?".into(),
+            login: String::new(),
             review: None,
             created_unix_ms: 0,
         };

@@ -134,6 +134,21 @@ pub enum AgentError {
     ArchiveWhileWorking { session: SessionId },
 
     #[error(
+        "session {session} is working, so its changes can't be committed now; stop its turn or wait for it to finish, then land it"
+    )]
+    LandWhileWorking { session: SessionId },
+
+    #[error(
+        "session {session} is working, so its base branch can't be merged in now; stop its turn or wait for it to finish, then update it"
+    )]
+    UpdateWhileWorking { session: SessionId },
+
+    #[error(
+        "session {session} has no copy of code of its own to commit or update: it works in no repository, is archived, or is a fork of the chat working in its parent's copy. Land the parent, or unarchive this one"
+    )]
+    NoCodeToLand { session: SessionId },
+
+    #[error(
         "there is no Claude Code or Copilot session {id} on this host to import; list the importable sessions to find its id"
     )]
     UnknownImport { id: String },

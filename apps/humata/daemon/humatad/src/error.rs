@@ -106,6 +106,20 @@ pub enum HostError {
         output: String,
     },
 
+    #[error(
+        "couldn't push the branch {branch} of {repository} to its origin (git said: {output}). Check that the host's GitHub token can write to the repository. If the branch is on the remote already with other commits, don't force-push over them: land on a new branch name instead"
+    )]
+    Push {
+        repository: String,
+        branch: String,
+        output: String,
+    },
+
+    #[error(
+        "couldn't fetch {repository}'s origin on this host (git said: {output}), so nothing was merged. Check that the host can reach the remote and its token can read it, then update again"
+    )]
+    Fetch { repository: String, output: String },
+
     #[error("{name:?} isn't a plain folder name; give a name without slashes or ..")]
     NotAName { name: String },
 
@@ -161,12 +175,17 @@ impl HostError {
             Self::Agent(AgentError::ImportedFolderMissing { .. } | AgentError::NotImportable) => {
                 pb::ErrorCode::InvalidRequest
             }
-            Self::Agent(AgentError::ArchiveWhileWorking { .. }) => pb::ErrorCode::Busy,
+            Self::Agent(
+                AgentError::ArchiveWhileWorking { .. }
+                | AgentError::LandWhileWorking { .. }
+                | AgentError::UpdateWhileWorking { .. },
+            ) => pb::ErrorCode::Busy,
             Self::Agent(
                 AgentError::NoWorkspaces { .. }
                 | AgentError::SessionExists { .. }
                 | AgentError::MissingRepository { .. }
-                | AgentError::BadBackendFile { .. },
+                | AgentError::BadBackendFile { .. }
+                | AgentError::NoCodeToLand { .. },
             ) => pb::ErrorCode::InvalidRequest,
             Self::Agent(AgentError::Workspace {
                 source: WorkspaceError::ChangeGone { .. },
@@ -178,7 +197,11 @@ impl HostError {
                     | WorkspaceError::NoCopy { .. }
                     | WorkspaceError::UnknownTurn { .. }
                     | WorkspaceError::UnknownBranch { .. }
-                    | WorkspaceError::NoSuchFile { .. },
+                    | WorkspaceError::NoSuchFile { .. }
+                    | WorkspaceError::BadBranch { .. }
+                    | WorkspaceError::BranchTaken { .. }
+                    | WorkspaceError::NoBase { .. }
+                    | WorkspaceError::NoIdentity { .. },
                 ..
             }) => pb::ErrorCode::InvalidRequest,
             Self::Agent(AgentError::Workspace { .. }) => pb::ErrorCode::BackendFailed,
@@ -202,6 +225,8 @@ impl HostError {
             Self::FellBehind { .. }
             | Self::RunGit { .. }
             | Self::Clone { .. }
+            | Self::Push { .. }
+            | Self::Fetch { .. }
             | Self::Snapshots { .. } => pb::ErrorCode::BackendFailed,
             Self::EncodeBackup { .. } => pb::ErrorCode::StorageFailed,
             Self::SaveSetup { .. }
@@ -333,6 +358,9 @@ pub enum DaemonError {
 
     #[error(transparent)]
     Commands(#[from] crate::commands::CommandsError),
+
+    #[error(transparent)]
+    GitHub(#[from] crate::github::GitHubError),
 
     /// The session's host said no; its message says why.
     #[error("{message}")]
@@ -636,6 +664,7 @@ impl DaemonError {
             | Self::CreateClones { .. }
             | Self::RunGit { .. } => pb::ErrorCode::StorageFailed,
             Self::Refused { code, .. } => *code,
+            Self::GitHub(_) => pb::ErrorCode::Github,
             Self::ProjectInUse { .. } => pb::ErrorCode::Busy,
             Self::NoFile
             | Self::NoComment

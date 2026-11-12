@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 
 # `humata`: sessions from the command line, through the daemon's socket.
 rust_binary(
@@ -8,9 +8,15 @@ rust_binary(
     deps = [
         "//apps/humata/daemon/wire",
         "@crates//:clap",
+        "@crates//:serde_json",
         "@crates//:thiserror",
         "@crates//:tokio",
     ],
+)
+
+rust_test(
+    name = "humata_test",
+    crate = ":humata",
 )
 
 filegroup(

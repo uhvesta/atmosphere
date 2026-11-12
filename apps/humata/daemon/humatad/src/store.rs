@@ -16,12 +16,14 @@ use crate::board::{Change, Item, ItemFields, ItemPatch, Priority, Status};
 use crate::error::StoreError;
 
 mod planning;
+mod pulls;
 mod recoveries;
 mod requests;
 mod review;
 mod search;
 
 pub use planning::{Decision, Skill};
+pub use pulls::{Checks, PullRequest, PullState, Standing};
 pub use review::{Comment, NewThread, Review, Thread};
 pub use search::{Entry, EntryKind, Found, Indexed, MARK_END, MARK_START, Query, Whereabouts};
 
@@ -221,6 +223,39 @@ const MIGRATIONS: &[&str] = &["
         events INTEGER NOT NULL,
         turns INTEGER NOT NULL
     );
+", "
+    -- Each session's pull requests, one per repository, as last read.
+    CREATE TABLE pull_requests (
+        session_id TEXT NOT NULL,
+        repository TEXT NOT NULL,
+        github TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        url TEXT NOT NULL,
+        title TEXT NOT NULL,
+        branch TEXT NOT NULL,
+        base TEXT NOT NULL,
+        state TEXT NOT NULL,
+        review TEXT NOT NULL,
+        checks TEXT NOT NULL,
+        read_unix_ms INTEGER NOT NULL,
+        PRIMARY KEY (session_id, repository)
+    );
+    -- Merged sessions whose worktrees and branches were removed.
+    CREATE TABLE cleaned_sessions (
+        session_id TEXT PRIMARY KEY,
+        cleaned_unix_ms INTEGER NOT NULL
+    );
+    -- GitHub issues made tasks, as owner/name#12.
+    CREATE TABLE imported_issues (
+        project_id TEXT NOT NULL,
+        issue TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        PRIMARY KEY (project_id, issue)
+    );
+    -- Review comments brought in from GitHub, by their id there.
+    ALTER TABLE review_comments ADD COLUMN github_id INTEGER;
+    ALTER TABLE review_comments ADD COLUMN github_login TEXT NOT NULL DEFAULT '';
+    CREATE UNIQUE INDEX review_comments_by_github ON review_comments (github_id);
 "];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1137,7 +1172,7 @@ fn migrate(connection: &mut Connection, path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn now_unix_ms() -> i64 {
+pub(crate) fn now_unix_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| {

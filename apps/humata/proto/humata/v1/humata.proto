@@ -167,6 +167,17 @@ message Request {
     LinkCommands link_commands = 78;
     // For the Mac only: what every session said and did that has these words.
     Search search = 79;
+    // Commit a session's changes on a branch, and push it and open pull
+    // requests, between turns.
+    LandSession land_session = 80;
+    // For the Mac only: a session's or a task's pull requests.
+    ListPullRequests list_pull_requests = 81;
+    // Merge each repository's base branch into the session's copy.
+    UpdateFromBase update_from_base = 82;
+    // For the Mac only: make tasks of a project's repositories' open issues.
+    ImportIssues import_issues = 83;
+    // For hosts only: delete branches a merged session landed on.
+    DeleteBranches delete_branches = 84;
   }
 }
 
@@ -247,6 +258,11 @@ message Response {
     Spec spec = 71;
     CommandsLinked commands_linked = 72;
     SearchResults search_results = 73;
+    SessionLanded session_landed = 74;
+    PullRequests pull_requests = 75;
+    BaseUpdated base_updated = 76;
+    IssuesImported issues_imported = 77;
+    BranchesDeleted branches_deleted = 78;
   }
 }
 
@@ -291,6 +307,8 @@ enum ErrorCode {
   ERROR_CODE_UNKNOWN_FORWARD = 23;
   // The session has no such proposal, or it was applied or declined.
   ERROR_CODE_UNKNOWN_PROPOSAL = 24;
+  // GitHub refused the request or couldn't be reached.
+  ERROR_CODE_GITHUB = 25;
 }
 
 enum Backend {
@@ -1105,6 +1123,8 @@ message ReviewThread {
 enum CommentAuthor {
   COMMENT_AUTHOR_YOU = 0;
   COMMENT_AUTHOR_AGENT = 1;
+  // A reviewer on GitHub, named by login.
+  COMMENT_AUTHOR_GITHUB = 2;
 }
 
 message ReviewComment {
@@ -1116,6 +1136,8 @@ message ReviewComment {
   int64 time_unix_ms = 5;
   // The agent's: the turn it answered in, whose changes are its fix.
   uint32 turn = 6;
+  // A GitHub reviewer's login.
+  string login = 7;
 }
 
 message SessionForked {
@@ -1985,3 +2007,133 @@ message SearchResults {
   int64 since_unix_ms = 3;
   int64 until_unix_ms = 4;
 }
+
+message LandSession {
+  string session_id = 1;
+  // The branch to commit on, as "humata/fix-the-migrations".
+  string branch = 2;
+  string message = 3;
+  // Push each landed branch to its repository's origin.
+  bool push = 4;
+  // For the Mac: push, then open a pull request in each repository, or
+  // find the one open for the branch.
+  bool open_pull_requests = 5;
+}
+
+message LandedRepository {
+  string name = 1;
+  string branch = 2;
+  // The commit made of its changes; empty if it had none since it last
+  // landed.
+  string commit = 3;
+  // The branch its work goes into.
+  string base = 4;
+  // Its origin remote, empty if it has none.
+  string origin_url = 5;
+  bool pushed = 6;
+}
+
+message SessionLanded {
+  repeated LandedRepository repositories = 1;
+  repeated PullRequest pull_requests = 2;
+}
+
+enum PullRequestState {
+  PULL_REQUEST_STATE_OPEN = 0;
+  PULL_REQUEST_STATE_MERGED = 1;
+  PULL_REQUEST_STATE_CLOSED = 2;
+}
+
+// Where the reviewers stand, each by their last review.
+enum ReviewStanding {
+  REVIEW_STANDING_NONE = 0;
+  REVIEW_STANDING_CHANGES_REQUESTED = 1;
+  REVIEW_STANDING_COMMENTED = 2;
+  REVIEW_STANDING_APPROVED = 3;
+}
+
+enum ChecksState {
+  CHECKS_STATE_NONE = 0;
+  CHECKS_STATE_PENDING = 1;
+  CHECKS_STATE_PASSING = 2;
+  CHECKS_STATE_FAILING = 3;
+}
+
+message PullRequest {
+  string session_id = 1;
+  // The session's task, if it has one.
+  string item_id = 2;
+  // The session's name for the repository.
+  string repository = 3;
+  // On GitHub, as "owner/name".
+  string github_repository = 4;
+  uint64 number = 5;
+  string url = 6;
+  string title = 7;
+  string branch = 8;
+  string base = 9;
+  PullRequestState state = 10;
+  ReviewStanding review = 11;
+  ChecksState checks = 12;
+  // When it was last read from GitHub.
+  int64 read_unix_ms = 13;
+}
+
+message ListPullRequests {
+  // One of them.
+  string session_id = 1;
+  string item_id = 2;
+  // Read them from GitHub first, not only as last read.
+  bool refresh = 3;
+}
+
+message PullRequests {
+  repeated PullRequest pull_requests = 1;
+}
+
+message UpdateFromBase {
+  string session_id = 1;
+}
+
+enum MergeOutcome {
+  MERGE_OUTCOME_UP_TO_DATE = 0;
+  MERGE_OUTCOME_MERGED = 1;
+  MERGE_OUTCOME_CONFLICTS = 2;
+}
+
+message MergedRepository {
+  string name = 1;
+  // What was merged in, as "origin/main".
+  string upstream = 2;
+  MergeOutcome outcome = 3;
+  repeated string conflicts = 4;
+}
+
+message BaseUpdated {
+  repeated MergedRepository repositories = 1;
+  // The conflicts were sent to the agent to resolve.
+  bool sent_to_agent = 2;
+}
+
+message ImportIssues {
+  string project_id = 1;
+}
+
+message IssuesImported {
+  // The tasks made.
+  repeated Item items = 1;
+  // Issues imported before, left as they are.
+  uint32 skipped = 2;
+}
+
+message LandedBranch {
+  string repository = 1;
+  string branch = 2;
+}
+
+message DeleteBranches {
+  string session_id = 1;
+  repeated LandedBranch branches = 2;
+}
+
+message BranchesDeleted {}

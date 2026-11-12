@@ -18,7 +18,10 @@ use tokio::task::JoinHandle;
 
 use crate::backup::{BackendFile, Backup};
 use crate::error::AgentError;
-use humata_workspace::{Changes, Edit, Query, Repository, Snapshot, WorkspaceError, Workspaces};
+use humata_workspace::{
+    Changes, Checkout, Edit, Landed, Merged, Query, Repository, Snapshot, WorkspaceError,
+    Workspaces,
+};
 
 use crate::event::{
     ApprovalMode, Event, EventKind, ForkOptions, Parent, PermissionKind, SendMode, SessionId,
@@ -974,6 +977,85 @@ impl<R: Runner> Agent for LocalAgent<R> {
             .await
             .map_err(workspace_failed(id))
     }
+
+    async fn land(
+        &self,
+        id: &SessionId,
+        branch: &str,
+        message: &str,
+    ) -> Result<Vec<Landed>, AgentError> {
+        let session = self.session(id)?;
+        let _capturing = session.capturing.lock().await;
+        let owned = between_turns(
+            &session,
+            AgentError::LandWhileWorking {
+                session: id.clone(),
+            },
+        )?;
+        let landed = humata_workspace::land(&owned, branch, message)
+            .await
+            .map_err(workspace_failed(id))?;
+        let mut control = session.lock();
+        let mut record = control.record.clone();
+        for checkout in &mut record.checkouts {
+            if let Some(moved) = landed
+                .iter()
+                .find(|landed| landed.checkout.path == checkout.path)
+            {
+                checkout.branch = moved.checkout.branch.clone();
+            }
+        }
+        save(&session.dir, &record)?;
+        control.record = record;
+        Ok(landed)
+    }
+
+    async fn update_from_base(
+        &self,
+        id: &SessionId,
+    ) -> Result<Vec<(Checkout, String, Merged)>, AgentError> {
+        let session = self.session(id)?;
+        let _capturing = session.capturing.lock().await;
+        let owned = between_turns(
+            &session,
+            AgentError::UpdateWhileWorking {
+                session: id.clone(),
+            },
+        )?;
+        let mut merged = Vec::with_capacity(owned.len());
+        for checkout in owned {
+            let upstream = humata_workspace::upstream(&checkout)
+                .await
+                .map_err(workspace_failed(id))?;
+            let outcome = humata_workspace::merge(&checkout, &upstream)
+                .await
+                .map_err(workspace_failed(id))?;
+            merged.push((checkout, upstream, outcome));
+        }
+        Ok(merged)
+    }
+}
+
+/// The checkouts `session` made, refusing with `working` while a turn runs
+/// and when it has no copy of its code.
+fn between_turns(session: &Session, working: AgentError) -> Result<Vec<Checkout>, AgentError> {
+    let control = session.lock();
+    if control.running.is_some() {
+        return Err(working);
+    }
+    let owned: Vec<Checkout> = control
+        .record
+        .checkouts
+        .iter()
+        .filter(|checkout| checkout.owner == session.id.as_str())
+        .cloned()
+        .collect();
+    if owned.is_empty() {
+        return Err(AgentError::NoCodeToLand {
+            session: session.id.clone(),
+        });
+    }
+    Ok(owned)
 }
 
 fn workspace_failed(session: &SessionId) -> impl FnOnce(WorkspaceError) -> AgentError + '_ {

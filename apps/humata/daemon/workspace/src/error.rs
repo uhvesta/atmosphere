@@ -73,4 +73,24 @@ pub enum WorkspaceError {
 
     #[error("{repository} has no file {path} at the end of these changes")]
     NoSuchFile { path: String, repository: String },
+
+    #[error(
+        "{branch:?} can't be a branch name. Pick another: no spaces, no `..`, and not starting with `-` or ending in `.lock`"
+    )]
+    BadBranch { branch: String },
+
+    #[error(
+        "{repository} already has a branch {branch:?} that isn't this session's. Pick another name, or delete that branch with `git branch -D {branch}` there if you're sure it holds nothing you want"
+    )]
+    BranchTaken { branch: String, repository: String },
+
+    #[error(
+        "couldn't tell which branch {repository}'s work goes into: it has no origin/HEAD and its own folder isn't on a branch. Run `git remote set-head origin --auto` in it, or check out its main branch there"
+    )]
+    NoBase { repository: String },
+
+    #[error(
+        "git doesn't know who you are in {directory}, so it can't commit there as you. Set your name and email with `git config --global user.name \"Your Name\"` and `git config --global user.email you@example.com` on that machine"
+    )]
+    NoIdentity { directory: std::path::PathBuf },
 }

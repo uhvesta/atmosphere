@@ -20,6 +20,8 @@ package struct BoardFeature {
         @Presents package var destination: Destination.State?
         /// The item to open once the board is read, as when a search found it.
         package var opening: Item.ID?
+        /// Its repositories' issues are being made tasks.
+        package var importing = false
 
         package init(project: Project, opening: Item.ID? = nil) {
             self.project = project
@@ -49,6 +51,7 @@ package struct BoardFeature {
         case item(ItemFeature)
         case newItem(NewItemFeature)
         case log(BoardLogFeature)
+        case alert(AlertState<Never>)
     }
 
     package enum Action {
@@ -64,6 +67,10 @@ package struct BoardFeature {
         case dropped(Item.ID, on: ItemStatus)
         case moved(Item)
         case logTapped
+        /// Makes a task of each open GitHub issue of the project's
+        /// repositories not imported before.
+        case importIssuesTapped
+        case imported(ImportedIssues)
         case destination(PresentationAction<Destination.Action>)
         case delegate(Delegate)
 
@@ -118,8 +125,35 @@ package struct BoardFeature {
                 return .none
 
             case .failed(let message):
+                state.importing = false
                 state.failure = message
                 return .none
+
+            case .importIssuesTapped:
+                guard !state.importing else { return .none }
+                state.importing = true
+                let project = state.project.id
+                return .run { send in
+                    await send(.imported(try await daemon.importIssues(project)))
+                } catch: { error, send in
+                    await send(.failed(error.localizedDescription))
+                }
+
+            case .imported(let imported):
+                state.importing = false
+                let made = imported.items.count
+                let before = imported.skipped == 0 ? "" : " \(imported.skipped) were imported before."
+                state.destination = .alert(
+                    AlertState {
+                        TextState(
+                            made == 0 ? "No New Issues" : made == 1 ? "Imported 1 Issue" : "Imported \(made) Issues")
+                    } message: {
+                        TextState(
+                            (made == 0
+                                ? "Every open issue of the project's repositories on GitHub is a task already."
+                                : "Each is a task in To Do, its spec the issue's text.") + before)
+                    })
+                return made == 0 ? .none : .send(.refresh)
 
             case .addTapped(let parent):
                 state.destination = .newItem(
@@ -198,6 +232,9 @@ package struct ItemFeature {
         package var sessions: [Session]
         /// How many files each session changed, by session id, once read.
         package var changedFiles: [Session.ID: Int] = [:]
+        /// Its sessions' pull requests, as last read.
+        package var pullRequests: [PullRequest] = []
+        package var readingPullRequests = false
         /// The title and spec being edited; nil while they're only shown.
         package var draft: Draft?
         package var saving = false
@@ -240,6 +277,9 @@ package struct ItemFeature {
         /// The page appeared: reads what each session changed.
         case task
         case changesRead(Session.ID, files: Int)
+        case pullRequestsRead([PullRequest])
+        /// Reads its pull requests again from GitHub.
+        case refreshPullRequestsTapped
         case editTapped
         case cancelEditTapped
         case saveTapped
@@ -276,7 +316,13 @@ package struct ItemFeature {
 
             case .task:
                 let sessions = state.sessions.map(\.id)
+                let item = state.item.id
                 return .run { send in
+                    // A task that never landed has none; GitHub is read on
+                    // asking, not every time the page opens.
+                    if let pulls = try? await daemon.pullRequests(.item(item), false) {
+                        await send(.pullRequestsRead(pulls))
+                    }
                     for session in sessions {
                         // A session whose copy is gone, or whose host is away,
                         // just shows no count.
@@ -284,6 +330,22 @@ package struct ItemFeature {
                         await send(.changesRead(session, files: changes.map(\.files.count).reduce(0, +)))
                     }
                 }
+
+            case .refreshPullRequestsTapped:
+                guard !state.readingPullRequests else { return .none }
+                state.readingPullRequests = true
+                let item = state.item.id
+                return .run { send in
+                    await send(.pullRequestsRead(try await daemon.pullRequests(.item(item), true)))
+                    await send(.delegate(.changed))
+                } catch: { error, send in
+                    await send(.failed(error.localizedDescription))
+                }
+
+            case .pullRequestsRead(let pulls):
+                state.readingPullRequests = false
+                state.pullRequests = pulls
+                return .none
 
             case .changesRead(let session, let files):
                 state.changedFiles[session] = files
@@ -323,6 +385,7 @@ package struct ItemFeature {
 
             case .failed(let message):
                 state.saving = false
+                state.readingPullRequests = false
                 state.destination = .alert(
                     AlertState {
                         TextState("Couldn't change \(state.item.title)")

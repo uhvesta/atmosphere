@@ -30,6 +30,7 @@ extension ErrorCode {
             case .unknownConnection: .unknownConnection
             case .unknownForward: .unknownForward
             case .unknownProposal: .unknownProposal
+            case .github: .github
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -500,7 +501,7 @@ extension ReviewComment {
     init(_ comment: Humata_V1_ReviewComment) {
         self.init(
             id: comment.id,
-            author: comment.author == .agent ? .agent : .you,
+            author: comment.author == .agent ? .agent : comment.author == .github ? .github(comment.login) : .you,
             text: comment.text,
             sent: comment.sent,
             time: date(comment.timeUnixMs),
@@ -636,5 +637,65 @@ extension SearchResults {
                     snippet: SearchHit.runs(hit.snippet), related: hit.related)
             },
             words: results.words, since: time(results.sinceUnixMs), until: time(results.untilUnixMs))
+    }
+}
+
+extension PullRequest {
+    init(_ pull: Humata_V1_PullRequest) {
+        let state: State =
+            switch pull.state {
+            case .merged: .merged
+            case .closed: .closed
+            default: .open
+            }
+        let review: Review =
+            switch pull.review {
+            case .changesRequested: .changesRequested
+            case .commented: .commented
+            case .approved: .approved
+            default: .none
+            }
+        let checks: Checks =
+            switch pull.checks {
+            case .pending: .pending
+            case .passing: .passing
+            case .failing: .failing
+            default: .none
+            }
+        self.init(
+            sessionID: pull.sessionID, itemID: pull.itemID.isEmpty ? nil : pull.itemID, repository: pull.repository,
+            githubRepository: pull.githubRepository, number: pull.number, url: pull.url, title: pull.title,
+            branch: pull.branch, base: pull.base, state: state, review: review, checks: checks,
+            read: date(pull.readUnixMs))
+    }
+}
+
+extension Landed {
+    init(_ landed: Humata_V1_SessionLanded) {
+        self.init(
+            repositories: landed.repositories.map {
+                LandedRepository(
+                    name: $0.name, branch: $0.branch, commit: $0.commit, base: $0.base, originURL: $0.originURL,
+                    pushed: $0.pushed)
+            },
+            pullRequests: landed.pullRequests.map(PullRequest.init))
+    }
+}
+
+extension BaseUpdate {
+    init(_ updated: Humata_V1_BaseUpdated) {
+        self.init(
+            repositories: updated.repositories.map { repository in
+                let outcome: MergedRepository.Outcome =
+                    switch repository.outcome {
+                    case .merged: .merged
+                    case .conflicts: .conflicts
+                    default: .upToDate
+                    }
+                return MergedRepository(
+                    name: repository.name, upstream: repository.upstream, outcome: outcome,
+                    conflicts: repository.conflicts)
+            },
+            sentToAgent: updated.sentToAgent)
     }
 }

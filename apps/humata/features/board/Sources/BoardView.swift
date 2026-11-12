@@ -3,6 +3,7 @@ import ChatUI
 import ComposableArchitecture
 import HumataDaemonClient
 import HumataProjects
+import HumataReview
 import SwiftUI
 
 extension Priority {
@@ -51,9 +52,15 @@ package struct BoardView: View {
                     .help("See and revert the board's changes")
             }
             ToolbarItem {
+                Button("Import Issues", systemImage: "square.and.arrow.down") { store.send(.importIssuesTapped) }
+                    .disabled(store.importing)
+                    .help("Make a task of each open GitHub issue of the project's repositories not imported yet")
+            }
+            ToolbarItem {
                 Button("Add Task", systemImage: "plus") { store.send(.addTapped(parent: nil)) }
             }
         }
+        .alert($store.scope(state: \.destination?.alert, action: \.destination.alert))
         .task { await store.send(.task).finish() }
         .sheet(item: $store.scope(state: \.destination?.item, action: \.destination.item)) {
             ItemView(store: $0)
@@ -263,6 +270,23 @@ struct ItemView: View {
                     }
                     Button("Add Subtask…", systemImage: "plus") { store.send(.addSubtaskTapped) }
                         .buttonStyle(.borderless)
+                }
+            }
+            if !store.pullRequests.isEmpty {
+                Section {
+                    ForEach(store.pullRequests) { pull in
+                        PullRequestRow(pull: pull)
+                    }
+                } header: {
+                    HStack {
+                        Text("Pull Requests")
+                        Spacer()
+                        Button("Refresh", systemImage: "arrow.clockwise") { store.send(.refreshPullRequestsTapped) }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.borderless)
+                            .disabled(store.readingPullRequests)
+                            .help("Read them again from GitHub; Humata also does every few minutes")
+                    }
                 }
             }
             Section("Sessions") {

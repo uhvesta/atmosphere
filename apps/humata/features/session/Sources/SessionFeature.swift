@@ -48,6 +48,10 @@ package struct SessionFeature {
         /// The edited message's text.
         package var edited = ""
         @Presents package var alert: AlertState<Never>?
+        /// Landing the session, as a sheet.
+        @Presents package var land: LandFeature.State?
+        /// Merging the base in is under way.
+        package var updating = false
         /// The event a search found, shown highlighted with a way to fork
         /// from it; nil when none is.
         package var highlighted: String?
@@ -111,6 +115,12 @@ package struct SessionFeature {
             var tabs: [Tab] = session.projectID == nil ? [.chat, .files] : [.chat, .review, .files]
             if !session.archived { tabs.append(.terminal) }
             return tabs
+        }
+
+        /// Whether it has code of a project's to land or update: not a
+        /// planning session, and not archived.
+        package var ships: Bool {
+            session.projectID != nil && !session.planning && !session.archived
         }
 
         /// Whether a turn has started and not yet ended.
@@ -214,6 +224,13 @@ package struct SessionFeature {
         case newTerminalTapped
         case terminals(TerminalsFeature.Action)
         case proposals(ProposalsFeature.Action)
+        /// Opens the sheet to land the session on a branch, or as pull
+        /// requests.
+        case landTapped
+        case land(PresentationAction<LandFeature.Action>)
+        /// Merges each repository's base branch into the session's copy.
+        case updateFromBaseTapped
+        case updatedFromBase(BaseUpdate)
 
         @CasePathable
         package enum Delegate: Equatable {
@@ -255,8 +272,28 @@ package struct SessionFeature {
             case .proposals(.delegate(.openSession(let session))):
                 return .send(.delegate(.openSession(session)))
 
-            case .binding, .delegate, .alert, .review, .docs, .terminals, .proposals:
+            case .binding, .delegate, .alert, .review, .docs, .terminals, .proposals, .land:
                 return .none
+
+            case .landTapped:
+                guard state.ships else { return .none }
+                state.land = LandFeature.State(sessionID: state.session.id, title: state.session.name)
+                return .none
+
+            case .updateFromBaseTapped:
+                guard state.ships, !state.updating else { return .none }
+                state.updating = true
+                let session = state.session.id
+                return .run { send in
+                    await send(.updatedFromBase(try await daemon.updateFromBase(session)))
+                } catch: { error, send in
+                    await send(.failed(error.localizedDescription))
+                }
+
+            case .updatedFromBase(let update):
+                state.updating = false
+                state.alert = Self.updated(update)
+                return update.repositories.contains { $0.outcome == .merged } ? .send(.review(.refresh)) : .none
 
             case .newTerminalTapped:
                 guard state.tabs.contains(.terminal) else { return .none }
@@ -434,11 +471,35 @@ package struct SessionFeature {
                 return .send(.delegate(.openSession(fork)))
 
             case .failed(let message):
+                state.updating = false
                 state.alert = Self.alert(message)
                 return .none
             }
         }
         .ifLet(\.$alert, action: \.alert)
+        .ifLet(\.$land, action: \.land) {
+            LandFeature()
+        }
+    }
+
+    /// How merging the base in went, repository by repository.
+    private static func updated(_ update: BaseUpdate) -> AlertState<Never> {
+        let lines = update.repositories.map { repository in
+            switch repository.outcome {
+            case .upToDate: "\(repository.name): already up to date with \(repository.upstream)."
+            case .merged: "\(repository.name): merged \(repository.upstream) in."
+            case .conflicts:
+                "\(repository.name): conflicts with \(repository.upstream) in "
+                    + repository.conflicts.joined(separator: ", ") + "."
+            }
+        }
+        let asked = update.sentToAgent ? ["The agent was asked to resolve the conflicts."] : []
+        let conflicted = update.repositories.contains { $0.outcome == .conflicts }
+        return AlertState {
+            TextState(conflicted ? "Merged with Conflicts" : "Updated from the Base Branch")
+        } message: {
+            TextState((lines + asked).joined(separator: "\n"))
+        }
     }
 
     private static func alert(_ message: String) -> AlertState<Never> {

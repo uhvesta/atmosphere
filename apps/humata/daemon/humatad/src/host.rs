@@ -7,11 +7,11 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use humata_agent::{
-    Agent, AgentError, ApprovalMode, BackendFile, Backup, ClaudeOptions, ClaudeRunner,
+    Agent, AgentError, ApprovalMode, BackendFile, Backup, Checkout, ClaudeOptions, ClaudeRunner,
     CopilotOptions, CopilotProvider, CopilotRunner, Edit, Env, Event, EventId, ForkOptions,
-    Importable, LocalAgent, LocalModelConfig, LocalModelRunner, McpServer, Query, Repository,
-    Script, ScriptedRunner, SendMode, SessionId, SessionRecord, SessionUpdate, StartOptions, Watch,
-    Workspaces, bundle,
+    Importable, Landed, LocalAgent, LocalModelConfig, LocalModelRunner, McpServer, Merged, Query,
+    Repository, Script, ScriptedRunner, SendMode, SessionId, SessionRecord, SessionUpdate,
+    StartOptions, Watch, Workspaces, bundle,
 };
 use humata_wire::{Reply, Service, ServiceFuture, describe, error, pb};
 use tokio::sync::{broadcast, mpsc};
@@ -66,6 +66,16 @@ trait Backend: Send + Sync {
         query: &'a Query,
     ) -> BoxFuture<'a, Vec<humata_agent::Changes>>;
     fn edit_changes<'a>(&'a self, session: &'a SessionId, edit: &'a Edit) -> BoxFuture<'a, ()>;
+    fn land<'a>(
+        &'a self,
+        session: &'a SessionId,
+        branch: &'a str,
+        message: &'a str,
+    ) -> BoxFuture<'a, Vec<Landed>>;
+    fn update_from_base<'a>(
+        &'a self,
+        session: &'a SessionId,
+    ) -> BoxFuture<'a, Vec<(Checkout, String, Merged)>>;
     fn importable(&self) -> BoxFuture<'_, Vec<Importable>>;
     fn skipped(&self) -> BoxFuture<'_, Vec<humata_agent::Skipped>>;
     fn remove_skipped<'a>(&'a self, id: &'a str) -> BoxFuture<'a, ()>;
@@ -181,6 +191,28 @@ where
     fn edit_changes<'a>(&'a self, session: &'a SessionId, edit: &'a Edit) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             Agent::edit_changes(self, session, edit)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn land<'a>(
+        &'a self,
+        session: &'a SessionId,
+        branch: &'a str,
+        message: &'a str,
+    ) -> BoxFuture<'a, Vec<Landed>> {
+        Box::pin(async move {
+            Agent::land(self, session, branch, message)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn update_from_base<'a>(
+        &'a self,
+        session: &'a SessionId,
+    ) -> BoxFuture<'a, Vec<(Checkout, String, Merged)>> {
+        Box::pin(async move {
+            Agent::update_from_base(self, session)
                 .await
                 .map_err(Into::into)
         })
@@ -644,7 +676,9 @@ impl Host {
             | Request::UpdateProject(_)
             | Request::ReadSpec(_)
             | Request::LinkCommands(_)
-            | Request::Search(_) => {
+            | Request::Search(_)
+            | Request::ListPullRequests(_)
+            | Request::ImportIssues(_) => {
                 return Err(HostError::NotForHosts);
             }
             Request::SetSpecs(set) => {
@@ -794,6 +828,104 @@ impl Host {
                 Response::Changes(pb::Changes {
                     repositories: changes.iter().map(convert::changes).collect(),
                 })
+            }
+            Request::LandSession(land) => {
+                let session = SessionId::new(land.session_id);
+                let agent = self.owner(&session)?.1;
+                let landed = agent.land(&session, &land.branch, &land.message).await?;
+                let mut repositories = Vec::with_capacity(landed.len());
+                for landed in landed {
+                    let checkout = landed.checkout;
+                    let push = land.push || land.open_pull_requests;
+                    if push {
+                        self.machine
+                            .push(&checkout.path, &checkout.name, &checkout.branch)
+                            .await?;
+                    }
+                    repositories.push(pb::LandedRepository {
+                        origin_url: crate::machine::origin(&checkout.path).await,
+                        name: checkout.name,
+                        branch: checkout.branch,
+                        commit: landed.commit.unwrap_or_default(),
+                        base: landed.base,
+                        pushed: push,
+                    });
+                }
+                Response::SessionLanded(pb::SessionLanded {
+                    repositories,
+                    pull_requests: Vec::new(),
+                })
+            }
+            Request::UpdateFromBase(update) => {
+                let session = SessionId::new(update.session_id);
+                let agent = self.owner(&session)?.1;
+                for checkout in record(agent.as_ref(), &session).await?.checkouts {
+                    self.machine.fetch(&checkout.path, &checkout.name).await?;
+                }
+                let merged = agent.update_from_base(&session).await?;
+                let conflicting: Vec<String> = merged
+                    .iter()
+                    .flat_map(|(checkout, _, merged)| match merged {
+                        Merged::Conflicts(files) => files
+                            .iter()
+                            .map(|file| format!("{}/{file}", checkout.name))
+                            .collect(),
+                        Merged::UpToDate | Merged::Merged => Vec::new(),
+                    })
+                    .collect();
+                let sent_to_agent = !conflicting.is_empty();
+                if sent_to_agent {
+                    let text = format!(
+                        "I merged the base branch into your copy and these files conflict:\n\n{}\n\n\
+                         Resolve the conflicts in each, keeping what both sides meant, then commit \
+                         the merge with git commit --no-edit.",
+                        conflicting
+                            .iter()
+                            .map(|file| format!("- {file}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    );
+                    agent.send(&session, text, SendMode::Enqueue).await?;
+                }
+                Response::BaseUpdated(pb::BaseUpdated {
+                    repositories: merged
+                        .into_iter()
+                        .map(|(checkout, upstream, merged)| {
+                            let (outcome, conflicts) = match merged {
+                                Merged::UpToDate => (pb::MergeOutcome::UpToDate, Vec::new()),
+                                Merged::Merged => (pb::MergeOutcome::Merged, Vec::new()),
+                                Merged::Conflicts(files) => (pb::MergeOutcome::Conflicts, files),
+                            };
+                            pb::MergedRepository {
+                                name: checkout.name,
+                                upstream,
+                                outcome: outcome.into(),
+                                conflicts,
+                            }
+                        })
+                        .collect(),
+                    sent_to_agent,
+                })
+            }
+            Request::DeleteBranches(delete) => {
+                let session = SessionId::new(delete.session_id);
+                let record = record(self.owner(&session)?.1.as_ref(), &session).await?;
+                for branch in delete.branches {
+                    let Some(repository) = record
+                        .repositories
+                        .iter()
+                        .find(|repository| repository.name == branch.repository)
+                    else {
+                        continue;
+                    };
+                    humata_agent::delete_branch(&repository.path, &branch.branch)
+                        .await
+                        .map_err(|source| AgentError::Workspace {
+                            session: session.clone(),
+                            source,
+                        })?;
+                }
+                Response::BranchesDeleted(pb::BranchesDeleted {})
             }
             Request::EditChanges(edit) => {
                 let session = SessionId::new(edit.session_id.clone());
@@ -1063,4 +1195,19 @@ fn program(variable: &str, name: &str) -> PathBuf {
         .map(|dir| dir.join(name))
         .find(|program| program.is_file())
         .unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// The record of `session`, which `agent` runs.
+async fn record(agent: &dyn Backend, session: &SessionId) -> Result<SessionRecord, HostError> {
+    agent
+        .sessions()
+        .await?
+        .into_iter()
+        .find(|record| &record.id == session)
+        .ok_or_else(|| {
+            AgentError::UnknownSession {
+                session: session.clone(),
+            }
+            .into()
+        })
 }

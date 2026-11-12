@@ -692,6 +692,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         let store = Store(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
+            $0.uuid = .incrementing
             $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
             $0.daemonService = .previewValue
@@ -738,6 +739,62 @@ final class MacFlowSnapshotTests: XCTestCase {
         comments(.binding(.set(\.comment, "And lock the account after five tries?")))
         try await until { store.board?.destination?.item?.comments.drafts.count == 1 }
         await flow.step("spec comments")
+        flow.finish()
+    }
+
+    /// A task's session lands as a pull request; when it merges, the task
+    /// is done; and GitHub's open issues come in as tasks.
+    func testShippingAsPullRequests() async throws {
+        let daemon = InMemoryDaemon { _ in
+            [
+                .write(path: "/code/humata/LoginForm.swift", contents: "struct LoginForm {}"),
+                .say("Added the form."),
+            ]
+        }
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "Sign in", priority: .high))
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "Sign in", approvalMode: .allowEverything, itemID: task.id))
+        try await daemon.client.send(session.id, "Build the form", .enqueue)
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("shipping", AppView(store: store))
+
+        try await until { store.daemon == .running && store.sidebar.projects.count == 1 }
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { store.session?.isWorking == false }
+        store.send(.session(.presented(.landTapped)))
+        try await until { store.session?.land != nil }
+        await flow.step("land")
+
+        store.send(.session(.presented(.land(.presented(.landTapped)))))
+        try await until { store.session?.land?.landed != nil }
+        await flow.step("landed")
+        store.send(.session(.presented(.land(.dismiss))))
+
+        try daemon.mergePullRequests(of: session.id)
+        store.send(.sidebar(.selected(.board(project.id))))
+        try await until { store.board?.items.count == 1 }
+        store.send(.board(.presented(.cardTapped(task.id))))
+        try await until { store.board?.destination?.item?.pullRequests.first?.state == .merged }
+        await flow.step("merged")
+        store.send(.board(.presented(.destination(.dismiss))))
+
+        daemon.openIssues(
+            [
+                InMemoryDaemon.Issue(number: 31, title: "Crash when the password is empty"),
+                InMemoryDaemon.Issue(number: 34, title: "Remember the last email used"),
+            ], in: project.id)
+        store.send(.board(.presented(.importIssuesTapped)))
+        try await until { store.board?.items.count == 3 && store.board?.destination?.alert != nil }
+        await flow.step("imported issues")
         flow.finish()
     }
 

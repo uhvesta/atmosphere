@@ -78,6 +78,11 @@ package final class InMemoryDaemon: Sendable {
         /// The contents each session marked viewed, by file.
         var viewed: [String: [FileRef: String]] = [:]
         var threads: [Thread] = []
+        var pullRequests: [PullRequest] = []
+        /// Each project's open issues on GitHub, by project.
+        var issues: [String: [Issue]] = [:]
+        /// The issues made tasks, as `project#number`.
+        var importedIssues: Set<String> = []
         /// The sessions started outside Humata, by host; "" for this Mac.
         var importable: [String: [ImportableSession]] = [:]
         var skipped: [String: [SkippedSession]] = [:]
@@ -498,6 +503,10 @@ package final class InMemoryDaemon: Sendable {
             forwards: { self.state.value.forwards },
             stopForward: { id in try self.stopForward(id) },
             search: { query in try self.search(query) },
+            land: { session, request in try self.land(session, request) },
+            pullRequests: { of, _ in self.pullRequests(of) },
+            updateFromBase: { session in try self.updateFromBase(session) },
+            importIssues: { project in try self.importIssues(project) },
             watch: { session in self.watch(session) }
         )
     }

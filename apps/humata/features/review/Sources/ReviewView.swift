@@ -591,23 +591,30 @@ private struct CommentRow: View {
     let store: StoreOf<ReviewFeature>
     let comment: ReviewComment
 
+    private var author: (name: String, symbol: String) {
+        switch comment.author {
+        case .you: ("You", "person.fill")
+        case .agent: ("Agent", "sparkles")
+        case .github(let login): ("@\(login) on GitHub", "person.2")
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
-                Label(
-                    comment.author == .you ? "You" : "Agent",
-                    systemImage: comment.author == .you ? "person.fill" : "sparkles"
-                )
-                .font(.caption.bold())
+                Label(author.name, systemImage: author.symbol)
+                    .font(.caption.bold())
                 if let turn = comment.turn {
                     Text("turn \(turn)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                if comment.author == .you, !comment.sent {
+                if comment.author != .agent, !comment.sent {
                     Text("Not sent")
                         .font(.caption2)
                         .foregroundStyle(.orange)
+                }
+                if comment.author == .you, !comment.sent {
                     Button("Delete") { store.send(.deleteTapped(comment.id)) }
                         .buttonStyle(.borderless)
                         .controlSize(.small)

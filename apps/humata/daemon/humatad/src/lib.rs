@@ -8,6 +8,7 @@ mod convert;
 mod daemon;
 mod error;
 mod files;
+mod github;
 mod host;
 mod hosts;
 mod login_env;

@@ -38,8 +38,9 @@ pub use event::{
 };
 pub use humata_workspace::bundle;
 pub use humata_workspace::{
-    Action, Changes, Checkout, Edit, FileDiff, FileRef, FileStatus, Hunk, HunkAt, Line, LineKind,
-    Query, Range, Repository, Snapshot, WorkspaceError, Workspaces,
+    Action, Changes, Checkout, Edit, FileDiff, FileRef, FileStatus, Hunk, HunkAt, Landed, Line,
+    LineKind, Merged, Query, Range, Repository, Snapshot, WorkspaceError, Workspaces,
+    delete_branch,
 };
 pub use import::{Importable, Imported};
 pub use local_model::{DEFAULT_BASE_URL, LocalModelConfig, LocalModelError, LocalModelRunner};
@@ -192,4 +193,21 @@ pub trait Agent: Send + Sync {
         session: &SessionId,
         edit: &Edit,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Commits what the session changed in each repository on `branch`,
+    /// with `message`, between turns. Repositories it didn't change are
+    /// left out.
+    fn land(
+        &self,
+        session: &SessionId,
+        branch: &str,
+        message: &str,
+    ) -> impl Future<Output = Result<Vec<Landed>, Self::Error>> + Send;
+
+    /// Merges each repository's base branch, as last fetched, into the
+    /// session's copy of it, between turns.
+    fn update_from_base(
+        &self,
+        session: &SessionId,
+    ) -> impl Future<Output = Result<Vec<(Checkout, String, Merged)>, Self::Error>> + Send;
 }

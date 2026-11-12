@@ -205,4 +205,52 @@ final class BoardFeatureTests: XCTestCase {
         XCTAssertEqual(page.item.id, board.subtask.id)
         XCTAssertNil(store.state.opening)
     }
+
+    func testIssuesAreImportedAsTasksOnce() async throws {
+        let board = try await board()
+        board.daemon.openIssues(
+            [.init(number: 3, title: "Crash on launch", body: "It crashes.")], in: board.project.id)
+        let store = store(board)
+
+        await store.send(.importIssuesTapped)
+        await store.receive(\.imported)
+        await store.receive(\.loaded)
+        XCTAssertEqual(titles(store.state.cards(in: .todo)).filter { $0 == "Crash on launch" }.count, 1)
+
+        await store.send(.importIssuesTapped)
+        await store.receive(\.imported)
+        XCTAssertEqual(store.state.importing, false)
+        let items = try await board.daemon.client.items(board.project.id)
+        XCTAssertEqual(items.filter { $0.title == "Crash on launch" }.count, 1)
+    }
+
+    func testATaskPageShowsItsPullRequestsAndTheirMerge() async throws {
+        let board = try await board()
+        let session = try await board.daemon.client.start(StartRequest(backend: .scripted, itemID: board.task.id))
+        _ = try await board.daemon.client.land(
+            session.id, LandRequest(branch: "login", message: "Log in", openPullRequests: true))
+        let items = try await board.daemon.client.items(board.project.id)
+        let item = try XCTUnwrap(items.first { $0.id == board.task.id })
+        let store = TestStore(
+            initialState: ItemFeature.State(
+                project: board.project, item: item, parent: nil, subtasks: [], sessions: [session])
+        ) {
+            ItemFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.pullRequestsRead)
+        XCTAssertEqual(store.state.pullRequests.map(\.state), [.open])
+
+        try board.daemon.mergePullRequests(of: session.id)
+        await store.send(.refreshPullRequestsTapped)
+        await store.receive(\.pullRequestsRead)
+        XCTAssertEqual(store.state.pullRequests.map(\.state), [.merged])
+        let merged = try await board.daemon.client.items(board.project.id).first { $0.id == board.task.id }
+        XCTAssertEqual(merged?.status, .done)
+        await store.finish()
+    }
 }

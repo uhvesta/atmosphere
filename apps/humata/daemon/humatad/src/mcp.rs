@@ -489,8 +489,9 @@ fn describe_thread(thread: &pb::ReviewThread) -> String {
     }
     for comment in &thread.comments {
         let who = match comment.author() {
-            pb::CommentAuthor::You => "The person",
-            pb::CommentAuthor::Agent => "You",
+            pb::CommentAuthor::You => "The person".to_owned(),
+            pb::CommentAuthor::Agent => "You".to_owned(),
+            pb::CommentAuthor::Github => format!("@{} on GitHub", comment.login),
         };
         text.push_str(&format!("{who}: {}\n", comment.text.trim()));
     }

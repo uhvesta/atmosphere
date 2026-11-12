@@ -10,6 +10,7 @@
 
 pub mod bundle;
 mod error;
+mod land;
 mod review;
 
 use std::path::{Path, PathBuf};
@@ -20,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 pub use error::WorkspaceError;
+pub use land::{Landed, Merged, base, delete_branch, land, merge, upstream};
 pub use review::{
     Action, Changes, Edit, FileDiff, FileRef, FileStatus, Hunk, HunkAt, Line, LineKind, Query,
     Range,
@@ -343,6 +345,21 @@ async fn run_with(
     arguments: &[&str],
     input: Option<&str>,
 ) -> Result<String, WorkspaceError> {
+    spawn(directory, index, arguments, input, true).await
+}
+
+/// Runs git as the person it is set up for, for commits that are shared.
+async fn git_as_person(directory: &Path, arguments: &[&str]) -> Result<String, WorkspaceError> {
+    spawn(directory, None, arguments, None, false).await
+}
+
+async fn spawn(
+    directory: &Path,
+    index: Option<&Path>,
+    arguments: &[&str],
+    input: Option<&str>,
+    as_humata: bool,
+) -> Result<String, WorkspaceError> {
     let mut command = Command::new("git");
     command
         .arg("-C")
@@ -358,12 +375,15 @@ async fn run_with(
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
-        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    if as_humata {
         // Snapshots are on no branch; they needn't be the person's.
-        .env("GIT_AUTHOR_NAME", "Humata")
-        .env("GIT_AUTHOR_EMAIL", "humata@localhost")
-        .env("GIT_COMMITTER_NAME", "Humata")
-        .env("GIT_COMMITTER_EMAIL", "humata@localhost");
+        command
+            .env("GIT_AUTHOR_NAME", "Humata")
+            .env("GIT_AUTHOR_EMAIL", "humata@localhost")
+            .env("GIT_COMMITTER_NAME", "Humata")
+            .env("GIT_COMMITTER_EMAIL", "humata@localhost");
+    }
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
     }

@@ -24,6 +24,7 @@ const REWATCH_LONGEST_WAIT: std::time::Duration = std::time::Duration::from_secs
 
 mod forwards;
 mod planning;
+mod pulls;
 mod recovery;
 mod repositories;
 mod review;
@@ -102,6 +103,7 @@ impl Daemon {
             indexing: tokio::sync::Mutex::new(()),
         });
         tokio::spawn(answer_tool_calls(Arc::downgrade(&daemon), calls));
+        tokio::spawn(pulls::follow(Arc::downgrade(&daemon)));
         daemon
     }
 
@@ -1257,7 +1259,8 @@ impl Daemon {
             | Request::ConnectPort(_)
             | Request::WritePort(_)
             | Request::ClosePort(_)
-            | Request::SetSpecs(_) => {
+            | Request::SetSpecs(_)
+            | Request::DeleteBranches(_) => {
                 return Err(DaemonError::ForHostsOnly);
             }
             Request::ForwardPort(forward) => {
@@ -1303,6 +1306,16 @@ impl Daemon {
                 return self.read_changes(&host, std::mem::take(read)).await;
             }
             Request::EditChanges(edit) => self.host_of(&edit.session_id).await?,
+            Request::LandSession(land) => return self.land(std::mem::take(land)).await,
+            Request::UpdateFromBase(update) => self.host_of(&update.session_id).await?,
+            Request::ListPullRequests(list) => {
+                let pulls = self.list_pulls(list).await?;
+                return Ok(Reply::Response(Response::PullRequests(pulls)));
+            }
+            Request::ImportIssues(import) => {
+                let imported = self.import_issues(&import.project_id).await?;
+                return Ok(Reply::Response(Response::IssuesImported(imported)));
+            }
             Request::OpenTerminal(open) => {
                 let host = if open.session_id.is_empty() {
                     open.host.clone()

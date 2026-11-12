@@ -301,6 +301,7 @@ async fn a_folder_without_git_or_without_commits_is_refused() {
     );
 }
 
+mod land;
 mod review;
 
 #[tokio::test]

@@ -88,4 +88,10 @@ pub enum CliError {
 
     #[error("host {host:?} can't be reached; see the problem above")]
     Unreachable { host: String },
+
+    #[error("lost the outside agent's connection; it starts `humata mcp` again when it needs it")]
+    Pipe {
+        #[source]
+        source: std::io::Error,
+    },
 }
