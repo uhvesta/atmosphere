@@ -27,9 +27,14 @@ package struct RootView: View {
     @Bindable package var store: StoreOf<RootFeature>
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOver
+    @Environment(\.accessibilitySwitchControlEnabled) private var switchControl
     /// How tall the bar along the bottom of the screen is, such as the bulk
     /// bar while picking tasks, so banners sit above it.
     @State private var bottomBar: CGFloat = 0
+    /// How tall the toasts and banners at the bottom are, so scrolling
+    /// content can be moved clear of them.
+    @State private var bannersHeight: CGFloat = 0
 
     package init(store: StoreOf<RootFeature>) {
         self.store = store
@@ -110,6 +115,10 @@ package struct RootView: View {
             }
         }
         .environment(\.reportBottomBar) { bottomBar = $0 }
+        // The last rows scroll up clear of a toast or banner at the bottom.
+        .contentMargins(
+            .bottom, bannersAtBottom && bannersHeight > 0 ? bannersHeight + 16 : 0, for: .scrollContent
+        )
         .overlay(alignment: bannerAlignment) {
             // On iPhone above the tab bar, clear of every screen's own
             // controls, but under the title while a chat is open, whose
@@ -120,11 +129,24 @@ package struct RootView: View {
                     RecordingBar { store.send(.stopRecordingTapped) }
                 }
                 if let toast = store.toast {
-                    UndoToast(message: toast.message) { store.send(.undoTapped(toast.id)) }
-                        // A new change starts its own countdown.
-                        .id(toast.id)
-                        .task(id: toast.id) { await store.send(.toastShown(toast.id)).finish() }
-                        .transition(edgeTransition)
+                    // With VoiceOver or Switch Control, it stays until the
+                    // next change or until it's dismissed, so Undo can be
+                    // reached.
+                    let stays = voiceOver || switchControl
+                    UndoToast(
+                        message: toast.message, countsDown: !stays,
+                        undo: { store.send(.undoTapped(toast.id)) },
+                        dismiss: { store.send(.toastExpired(toast.id)) })
+                    // A new change starts its own countdown.
+                    .id(toast.id)
+                    .task(id: toast.id) {
+                        AccessibilityNotification.Announcement(
+                            String(localized: "\(toast.message) Undo available.")
+                        ).post()
+                        guard !stays else { return }
+                        await store.send(.toastShown(toast.id)).finish()
+                    }
+                    .transition(edgeTransition)
                 }
                 if let banner = store.syncBanner {
                     SyncBannerView(
@@ -135,6 +157,7 @@ package struct RootView: View {
                 }
             }
             .frame(maxWidth: store.platform == .phone ? .infinity : 440)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { bannersHeight = $0 }
             .padding(bannersAtBottom ? .bottom : .top, bannerInset)
             .padding(.trailing, bannerAlignment == .topTrailing ? 24 : 0)
             .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring, value: store.toast?.id)
@@ -749,7 +772,12 @@ private struct SyncBannerView: View {
 /// The last change with Undo, for a few seconds after it's made.
 private struct UndoToast: View {
     var message: String
+    /// Whether it goes after a few seconds, with a line that shows how
+    /// long is left.
+    var countsDown: Bool
     var undo: () -> Void
+    /// Puts it away early: a swipe down, or VoiceOver's Escape.
+    var dismiss: () -> Void
     /// How much of the time to undo is left, drawn as a line that runs down.
     @State private var remaining = 1.0
 
@@ -767,6 +795,7 @@ private struct UndoToast: View {
                     .fill(.secondary.opacity(0.5))
                     .frame(width: proxy.size.width * remaining, height: 2)
             }
+            .opacity(countsDown ? 1 : 0)
             .frame(height: 2)
             .padding(.horizontal, 12)
             .padding(.bottom, 5)
@@ -774,7 +803,15 @@ private struct UndoToast: View {
         }
         .background(.thinMaterial, in: .rect(cornerRadius: 12))
         .padding(.horizontal)
+        .gesture(
+            DragGesture(minimumDistance: 12).onEnded { drag in
+                if drag.translation.height > 24 { dismiss() }
+            }
+        )
+        .accessibilityAction(.escape, dismiss)
+        .accessibilityAction(named: "Dismiss", dismiss)
         .onAppear {
+            guard countsDown else { return }
             withAnimation(.linear(duration: RootFeature.toastDuration / .seconds(1))) { remaining = 0 }
         }
     }
