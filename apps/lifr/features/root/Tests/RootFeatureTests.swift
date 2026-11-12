@@ -1270,6 +1270,22 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertEqual(some.message, all.message)
     }
 
+    func testAChangeMadeInAChatRaisesNoToastButStaysUndoable() async throws {
+        let run = records.task("Run", in: health)
+        let store = StoreClient.inMemory(records.workspace)
+        var saved = try await withDependencies {
+            $0.uuid = .incrementing
+            $0.date.now = now
+        } operation: {
+            try await store.apply(.status(.done), to: [run.id], cascade: false)
+        }
+        XCTAssertEqual(LastChange(saved, id: UUID())?.showsToast, true)
+
+        saved.change.conversation = UUID()
+        let fromChat = try XCTUnwrap(LastChange(saved, id: UUID()))
+        XCTAssertFalse(fromChat.showsToast)
+    }
+
     func testMovingATaskToAnotherAvenueNamesItsNewCode() async throws {
         let run = records.task("Run", in: health)
         let work = records.avenue("WORK", "Work")

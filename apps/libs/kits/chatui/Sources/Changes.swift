@@ -79,7 +79,8 @@ public struct FieldLine: View {
 
 /// What a reply asks to change, field by field, before → after, with
 /// Apply, Edit and Decline until the person decides; then what they
-/// decided, with Undo while what was applied can be.
+/// decided, with Undo while what was applied can be, and Propose Again
+/// once it's declined or undone.
 public struct ProposalCard: View {
     let summary: String
     let changes: [ChangedField]
@@ -90,11 +91,12 @@ public struct ProposalCard: View {
     let edit: () -> Void
     let decline: () -> Void
     let undo: () -> Void
+    let proposeAgain: (() -> Void)?
 
     public init(
         summary: String, changes: [ChangedField], decision: ProposalDecision?, canUndo: Bool, isBusy: Bool,
         apply: @escaping () -> Void, edit: @escaping () -> Void, decline: @escaping () -> Void,
-        undo: @escaping () -> Void
+        undo: @escaping () -> Void, proposeAgain: (() -> Void)? = nil
     ) {
         self.summary = summary
         self.changes = changes
@@ -105,6 +107,7 @@ public struct ProposalCard: View {
         self.edit = edit
         self.decline = decline
         self.undo = undo
+        self.proposeAgain = proposeAgain
     }
 
     public var body: some View {
@@ -139,6 +142,10 @@ public struct ProposalCard: View {
                     if decision == .applied, canUndo {
                         Spacer()
                         Button("Undo", action: undo)
+                    } else if let proposeAgain {
+                        Spacer()
+                        Button("Propose Again", action: proposeAgain)
+                            .disabled(isBusy)
                     }
                 }
                 .font(.caption)

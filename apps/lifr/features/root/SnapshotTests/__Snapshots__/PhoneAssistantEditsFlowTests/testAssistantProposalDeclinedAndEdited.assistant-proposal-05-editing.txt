@@ -19,6 +19,7 @@
 [text] "Done"
 [image] "to"
 [text] "Declined"
+[button] "Propose Again"
 [element] "Due" value: "Such as tomorrow, or none"
 [element] "Skill: change"
 [text] "Mark “Call the plumber” done"

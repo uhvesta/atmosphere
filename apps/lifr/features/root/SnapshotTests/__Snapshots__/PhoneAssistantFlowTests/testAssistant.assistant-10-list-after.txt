@@ -3,8 +3,6 @@
 [header] "Conversations"
 [searchField] "Search conversations" value: "Search conversations"
 [button] "Tidy my weekend, Nov 3 at 10:00 AM, Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add."
-[text] "Added 2 tasks to Home"
-[button] "Undo"
 [button] "Search"
 [button] "Today"
 [button] "Upcoming"

@@ -12,6 +12,7 @@
 [text] "Done"
 [image] "to"
 [text] "Declined"
+[button] "Propose Again"
 [button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"
 [button] "Speak" hint: "Read this reply aloud"

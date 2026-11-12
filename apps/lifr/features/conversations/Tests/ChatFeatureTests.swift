@@ -381,6 +381,26 @@ final class ChatFeatureTests: XCTestCase {
             store.state.workspace.journal.first { $0.id == entry }?.conversation, conversationID)
     }
 
+    func testTheAddedNoticeUndoesTheAddUntilTheNextMessage() async throws {
+        let (workspace, _) = home()
+        let plan = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])
+        let store = chat(workspace) { _ in AssistantReply(text: "Here's a plan.", plan: plan, isComplete: true) }
+        await send("Plan repotting", in: store)
+        await store.send(.addTapped)
+        await store.skipReceivedActions()
+        XCTAssertNotNil(store.state.justAdded)
+
+        await store.send(.undoAddTapped)
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.conversation.draft, plan)
+        XCTAssertFalse(store.state.workspace.tasks.values.contains { $0.title == "Buy soil" && $0.deletedAt == nil })
+
+        await store.send(.addTapped)
+        await store.skipReceivedActions()
+        await send("Thanks", in: store)
+        XCTAssertNil(store.state.justAdded)
+    }
+
     func testUndoingAnAddedDraftPutsTheDraftBack() async throws {
         let (workspace, _) = home()
         let plan = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])
@@ -746,6 +766,39 @@ final class ChatFeatureTests: XCTestCase {
         let saved = try await store.dependencies.store.load()
         XCTAssertEqual(saved.journal, [])
         XCTAssertEqual(saved.tasks[rent.id]?.status, .todo)
+    }
+
+    func testADeclinedProposalCanBeProposedAgainAndApplied() async throws {
+        let (workspace, rent) = home()
+        let code = workspace.displayCode(of: rent)
+        let store = chat(workspace) { request in
+            await Self.proposing([TaskChange(code: code, status: "done")], in: request)
+        }
+        await send("I paid the rent", in: store)
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+        await store.send(.declineTapped(messageID: reply.id))
+
+        await store.send(.proposeAgainTapped(messageID: reply.id))
+        XCTAssertNil(store.state.proposal(of: reply.id)?.decision)
+        try await applyLast(in: store)
+
+        XCTAssertEqual(store.state.proposal(of: reply.id)?.decision, .applied)
+        let saved = try await store.dependencies.store.load()
+        XCTAssertEqual(saved.tasks[rent.id]?.status, .done)
+    }
+
+    func testAnAppliedProposalStillUndoableIsNotProposedAgain() async throws {
+        let (workspace, rent) = home()
+        let code = workspace.displayCode(of: rent)
+        let store = chat(workspace) { request in
+            await Self.proposing([TaskChange(code: code, status: "done")], in: request)
+        }
+        await send("I paid the rent", in: store)
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+        try await applyLast(in: store)
+
+        await store.send(.proposeAgainTapped(messageID: reply.id))
+        XCTAssertEqual(store.state.proposal(of: reply.id)?.decision, .applied)
     }
 
     func testAnEditedProposalIsCheckedAgainAndAppliesAsEdited() async throws {

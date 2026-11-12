@@ -1,6 +1,4 @@
 [Window/StandardWindow] "Conversations"
-  [StaticText] "" value: "Added 4 tasks"
-  [Button] "Undo"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""
       [StaticText] "Today" value: "4"
@@ -54,6 +52,8 @@
   [Button] "Retry" help: "Write this reply again"
   [Button] "Copy" help: "Copy this reply"
   [Button] "Speak" help: "Read this reply aloud"
+  [StaticText] "" value: "Draft added."
+  [Button] "Undo"
   [TextField] ""
   [Button] "Add" help: "Add photos or files" id: plus
   [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"

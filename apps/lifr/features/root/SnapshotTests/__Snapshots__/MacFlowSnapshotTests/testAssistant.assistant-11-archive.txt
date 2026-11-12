@@ -1,6 +1,4 @@
 [Window/StandardWindow] "Archived"
-  [StaticText] "" value: "Added 2 tasks to Home"
-  [Button] "Undo"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""
       [StaticText] "Today" value: "5"

@@ -6,8 +6,6 @@
 [button] "More"
 [text] "On this device"
 [header] "Edit Draft"
-[text] "Added “Fitness”"
-[button] "Undo"
 [element] "Avenue name" value: "Reading"
 [element] "Key" value: "READ"
 [button] "Remove Reading"

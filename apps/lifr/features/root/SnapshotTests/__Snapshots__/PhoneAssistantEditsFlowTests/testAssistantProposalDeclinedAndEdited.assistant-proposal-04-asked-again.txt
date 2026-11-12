@@ -12,6 +12,7 @@
 [text] "Done"
 [image] "to"
 [text] "Declined"
+[button] "Propose Again"
 [element] "Skill: change"
 [text] "Mark “Call the plumber” done"
 [text] "I'd mark it done."

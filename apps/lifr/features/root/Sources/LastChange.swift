@@ -18,7 +18,8 @@ package struct LastChange: Equatable, Sendable {
     /// them has changed again, rather than overwrite that change.
     package var after: [RecordID: RecordValue?]
     /// Whether the toast offers Undo. Lists already offer it for a reopened
-    /// parent, in their own banner.
+    /// parent, in their own banner, and a chat for what it added or
+    /// applied, under its reply.
     package var showsToast: Bool
     /// Where its save comes among the store's saves, so an earlier save
     /// that replies after it doesn't take its place.
@@ -50,7 +51,7 @@ package struct LastChange: Equatable, Sendable {
         self.id = id
         self.change = change
         number = saved.number
-        showsToast = change.reopenedParent == nil
+        showsToast = change.reopenedParent == nil && change.conversation == nil
         if let place, let entry = change.entry {
             self.entry = entry
             after = Dictionary(steps.map { ($0.record, workspace.value(of: $0.record)) }) { first, _ in first }

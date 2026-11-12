@@ -172,7 +172,8 @@ private struct LifrParts: ChatThreadParts {
                 apply: { store.send(.applyTapped(messageID: message.id)) },
                 edit: { store.send(.editProposalTapped(messageID: message.id)) },
                 decline: { store.send(.declineTapped(messageID: message.id)) },
-                undo: { store.send(.undoTapped(messageID: message.id)) })
+                undo: { store.send(.undoTapped(messageID: message.id)) },
+                proposeAgain: { store.send(.proposeAgainTapped(messageID: message.id)) })
         }
     }
 
@@ -199,6 +200,10 @@ private struct LifrParts: ChatThreadParts {
         } else if store.discardedDraft != nil {
             ChatNotice("Draft discarded.", systemImage: "trash", action: "Undo") {
                 store.send(.undoDiscardTapped)
+            }
+        } else if let entry = store.justAdded, store.addedDrafts[entry] != nil {
+            ChatNotice("Draft added.", systemImage: "checkmark.circle", action: "Undo") {
+                store.send(.undoAddTapped)
             }
         }
     }

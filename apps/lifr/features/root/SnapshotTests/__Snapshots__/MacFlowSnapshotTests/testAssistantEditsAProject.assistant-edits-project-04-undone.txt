@@ -51,6 +51,7 @@
   [StaticText] "" value: "Due date:"
   [StaticText] "" value: "Sun, Dec 6"
   [StaticText] "" value: "Applied, then undone"
+  [Button] "Propose Again"
   [Button] "Retry" help: "Write this reply again"
   [Button] "Copy" help: "Copy this reply"
   [Button] "Speak" help: "Read this reply aloud"

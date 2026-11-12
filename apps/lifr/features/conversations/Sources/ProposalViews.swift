@@ -12,14 +12,15 @@ extension AssistantKit.Proposal where Action == AssistantAction, Step == Journal
     /// What it would change, in words, for its card.
     func card(
         in workspace: Workspace, canUndo: Bool, isBusy: Bool, apply: @escaping () -> Void,
-        edit: @escaping () -> Void, decline: @escaping () -> Void, undo: @escaping () -> Void
+        edit: @escaping () -> Void, decline: @escaping () -> Void, undo: @escaping () -> Void,
+        proposeAgain: @escaping () -> Void
     ) -> ProposalCard {
         let words = JournalWords(workspace) { _ in "" }
         return ProposalCard(
             // Until it's applied, what it would do.
             summary: words.summary(of: steps, reverts: reverts, proposed: decision != .applied),
             changes: words.fields(of: steps, hiding: Self.bookkeeping), decision: decision, canUndo: canUndo,
-            isBusy: isBusy, apply: apply, edit: edit, decline: decline, undo: undo)
+            isBusy: isBusy, apply: apply, edit: edit, decline: decline, undo: undo, proposeAgain: proposeAgain)
     }
 }
 

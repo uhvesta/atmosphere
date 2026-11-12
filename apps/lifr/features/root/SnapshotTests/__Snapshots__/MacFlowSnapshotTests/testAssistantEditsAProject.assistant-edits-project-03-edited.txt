@@ -1,6 +1,4 @@
 [Window/StandardWindow] "Conversations"
-  [StaticText] "" value: "Changed “Spring half marathon”"
-  [Button] "Undo"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""
       [StaticText] "Today" value: "5"

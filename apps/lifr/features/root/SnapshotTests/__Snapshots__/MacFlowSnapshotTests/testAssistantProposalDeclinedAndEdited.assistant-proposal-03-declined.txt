@@ -49,6 +49,7 @@
   [Image] "to" id: arrow.right
   [StaticText] "" value: "Done"
   [StaticText] "" value: "Declined"
+  [Button] "Propose Again"
   [Button] "Retry" help: "Write this reply again"
   [Button] "Copy" help: "Copy this reply"
   [Button] "Speak" help: "Read this reply aloud"

@@ -9,8 +9,6 @@
 [button] "Undo"
 [element] "Skill: add"
 [text] "Make a Garden Avenue with a task to plant tomatoes: buy seedlings, dig the bed"
-[text] "Added “Plant tomatoes” to Garden"
-[button] "Undo"
 [text] "Here's a Garden Avenue with a task to plant tomatoes."
 [button] "Undo"
 [element] "Skill: add"

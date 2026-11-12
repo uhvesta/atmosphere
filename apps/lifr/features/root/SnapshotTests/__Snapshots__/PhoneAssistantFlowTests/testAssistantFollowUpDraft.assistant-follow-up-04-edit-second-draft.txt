@@ -7,8 +7,6 @@
 [text] "On this device"
 [header, text] "Tuesday, November 3 at 10:00 AM"
 [header] "Edit Draft"
-[text] "Added “Fitness”"
-[button] "Undo"
 [text] "Add a Fitness Avenue"
 [text] "Here's a Fitness Avenue. Tap Add to make it."
 [element] "Avenue name" value: "Reading"

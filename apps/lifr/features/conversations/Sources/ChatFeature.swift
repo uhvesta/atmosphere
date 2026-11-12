@@ -69,6 +69,9 @@ package struct ChatFeature {
         /// The drafts this chat added, by the journal entry that added
         /// them: undone, the draft is back to add again.
         package var addedDrafts: [UUID: Plan] = [:]
+        /// The entry that added the draft last, said where the card was
+        /// with Undo until the next message is sent.
+        package var justAdded: UUID?
         /// The proposal being edited, before it's checked again.
         package var editingProposal: ProposalEdit?
         /// The reply whose proposal is being applied or checked again.
@@ -348,6 +351,9 @@ package struct ChatFeature {
         /// made: here it is made again on them, for the person to check.
         case changedSince(messageID: UUID, Proposal)
         case declineTapped(messageID: UUID)
+        /// Brings back Apply, Edit and Decline on a declined proposal, or
+        /// one applied then undone.
+        case proposeAgainTapped(messageID: UUID)
         case editProposalTapped(messageID: UUID)
         /// Checks the edited proposal against the records, and keeps it
         /// in place of the reply's when it can be made.
@@ -355,6 +361,9 @@ package struct ChatFeature {
         case reproposed(messageID: UUID, Result<Proposal, any Error>)
         case discardDraftTapped
         case undoDiscardTapped
+        /// Undoes adding the draft said to be added, putting it back on
+        /// the card.
+        case undoAddTapped
         case addTapped
         case saved(Result<Saved, any Error>)
         /// Changes of replies were undone, or couldn't be.
@@ -949,6 +958,17 @@ package struct ChatFeature {
                 state.decide(id, .declined)
                 return .none
 
+            case .proposeAgainTapped(let id):
+                guard var proposal = state.proposal(of: id), state.applying == nil else { return .none }
+                switch proposal.decision {
+                case .declined?: break
+                case .applied? where state.conversation.changes[id] == nil: break
+                default: return .none
+                }
+                proposal.decision = nil
+                state.setProposal(proposal, of: id)
+                return .none
+
             case .editProposalTapped(let id):
                 guard let proposal = state.proposal(of: id), proposal.decision == nil else { return .none }
                 state.editingProposal = ProposalEdit(id: id, actions: proposal.actions)
@@ -1003,6 +1023,13 @@ package struct ChatFeature {
                 check(&state)
                 return .none
 
+            case .undoAddTapped:
+                guard let entry = state.justAdded, state.addedDrafts[entry] != nil else { return .none }
+                state.justAdded = nil
+                return .run { [store] send in
+                    await send(.undone(Result { try await store.revert(entries: [entry]) }))
+                }
+
             case .core(.binding(let binding)) where binding.keyPath == \Core.State.input:
                 let effect = core(.binding(binding), &state)
                 if !state.warmed, !state.input.isEmpty, state.availability == .available {
@@ -1053,6 +1080,7 @@ package struct ChatFeature {
                 }
                 if let entry = saved.change.entry, let draft = state.conversation.draft {
                     state.addedDrafts[entry] = draft
+                    state.justAdded = entry
                 }
                 state.conversation.draft = nil
                 state.editsDraft = false
@@ -1187,6 +1215,7 @@ package struct ChatFeature {
             state.skillBeforeEditing = nil
             state.recordings = []
             state.discardedDraft = nil
+            state.justAdded = nil
         }
         return effect
     }

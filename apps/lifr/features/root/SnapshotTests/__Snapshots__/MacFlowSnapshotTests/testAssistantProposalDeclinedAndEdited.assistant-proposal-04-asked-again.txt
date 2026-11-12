@@ -49,6 +49,7 @@
   [Image] "to" id: arrow.right
   [StaticText] "" value: "Done"
   [StaticText] "" value: "Declined"
+  [Button] "Propose Again"
   [Unknown] "Skill: change"
   [StaticText] "" value: "Mark “Call the plumber” done"
   [StaticText] "" value: "I'd mark it done."

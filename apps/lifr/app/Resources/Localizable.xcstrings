@@ -1412,6 +1412,9 @@
     "Draft" : {
 
     },
+    "Draft added." : {
+
+    },
     "Draft discarded." : {
 
     },
@@ -2690,6 +2693,9 @@
 
     },
     "Prompt Copied" : {
+
+    },
+    "Propose Again" : {
 
     },
     "Put back recent changes." : {

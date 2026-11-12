@@ -6,8 +6,6 @@
 [button] "Context Window" value: "4% used, 1,291 of 32,768 tokens" hint: "4% used, 1,291 of 32,768 tokens"
 [text] "On this device"
 [text] "I added Stretch after every run to your Half marathon project."
-[text] "Added “Stretch after every run” to Half marathon"
-[button] "Undo"
 [button] "Undo"
 [element] "Skill: add"
 [text] "Make a Garden Avenue with a task to plant tomatoes: buy seedlings, dig the bed"
