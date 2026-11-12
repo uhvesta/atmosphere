@@ -857,6 +857,58 @@ package enum ErrorCode: Hashable, Sendable {
     case unknown
 }
 
+/// The Mac's copy of a session on a host, kept after each turn, to set it
+/// up again if its host loses it, or on another host.
+package struct Recovery: Equatable, Identifiable, Sendable {
+    /// The session's id.
+    package var id: String
+    package var name: String
+    package var host: String
+    /// The turns the copy has, of the session's `turns`.
+    package var backedUpTurns: Int
+    package var turns: Int
+    package var backedUp: Date
+    /// Whether its host still has the session; if not, restoring it sets
+    /// it up there again.
+    package var onHost: Bool
+
+    package init(
+        id: String, name: String, host: String, backedUpTurns: Int, turns: Int, backedUp: Date, onHost: Bool
+    ) {
+        self.id = id
+        self.name = name
+        self.host = host
+        self.backedUpTurns = backedUpTurns
+        self.turns = turns
+        self.backedUp = backedUp
+        self.onHost = onHost
+    }
+}
+
+/// What restoring a host's lost sessions did: those set up again, and why
+/// each other one wasn't.
+package struct HostRestore: Equatable, Sendable {
+    package var restored: [Session]
+    package var failed: [RestoreFailure]
+
+    package init(restored: [Session], failed: [RestoreFailure]) {
+        self.restored = restored
+        self.failed = failed
+    }
+}
+
+package struct RestoreFailure: Equatable, Identifiable, Sendable {
+    /// The session's id.
+    package var id: String
+    /// What went wrong, and how to fix it.
+    package var message: String
+
+    package init(id: String, message: String) {
+        self.id = id
+        self.message = message
+    }
+}
+
 /// A session a backend ran on a host outside Humata, which can be imported
 /// with its history and carried on.
 package struct ImportableSession: Equatable, Identifiable, Sendable {

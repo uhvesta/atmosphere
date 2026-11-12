@@ -79,6 +79,12 @@ package struct HostsView: View {
                     host: host, health: store.health[host.id],
                     check: { store.send(.checkTapped(host.id)) },
                     install: { store.send(.installTapped(host.id)) })
+                RecoverySection(
+                    recoveries: store.recoveries, restoring: store.restoring,
+                    others: store.hosts.ids.filter { $0 != host.id },
+                    restore: { store.send(.restoreTapped($0)) },
+                    restoreAll: { store.send(.restoreAllTapped) },
+                    move: { store.send(.moveTapped($0, to: $1)) })
                 HostEditorSections(store: editor)
                 SkippedSection(skipped: store.skipped) { store.send(.removeSkippedTapped($0)) }
                 Section {
@@ -88,6 +94,74 @@ package struct HostsView: View {
             .formStyle(.grouped)
             .id(host.id)
         }
+    }
+}
+
+/// The Mac's copies of the host's sessions: how far each is backed up, and
+/// for those the host lost, a Restore button; any can move to another host
+/// or this Mac. None shows nothing.
+private struct RecoverySection: View {
+    let recoveries: IdentifiedArrayOf<Recovery>
+    let restoring: Set<Recovery.ID>
+    /// The other hosts, to move a session to.
+    let others: [RemoteHost.ID]
+    let restore: (Recovery.ID) -> Void
+    let restoreAll: () -> Void
+    let move: (Recovery.ID, RemoteHost.ID?) -> Void
+
+    var body: some View {
+        if !recoveries.isEmpty {
+            Section {
+                ForEach(recoveries) { recovery in
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(recovery.name.isEmpty ? recovery.id : recovery.name)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text(status(of: recovery))
+                                .font(.caption)
+                                .foregroundStyle(recovery.onHost ? Color.secondary : Color.orange)
+                        }
+                        Spacer()
+                        if restoring.contains(recovery.id) {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            if !recovery.onHost {
+                                Button("Restore") { restore(recovery.id) }
+                            }
+                            Menu("Move") {
+                                Button("This Mac") { move(recovery.id, nil) }
+                                ForEach(others, id: \.self) { host in
+                                    Button(host) { move(recovery.id, host) }
+                                }
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                            .accessibilityLabel("Move \(recovery.name.isEmpty ? recovery.id : recovery.name)")
+                        }
+                    }
+                }
+                if recoveries.filter({ !$0.onHost }).count > 1 {
+                    Button("Restore All Lost Sessions") { restoreAll() }
+                        .disabled(recoveries.allSatisfy { $0.onHost || restoring.contains($0.id) })
+                }
+            } header: {
+                Text("Recovery Copies")
+            } footer: {
+                Text(
+                    "After each turn this Mac keeps a copy of every session here: its history, the agent's own "
+                        + "state and its code. If the host loses a session, restore it. Moving one carries it on "
+                        + "elsewhere from its copy; turns the host ran since the copy aren't brought along.")
+            }
+        }
+    }
+
+    private func status(of recovery: Recovery) -> String {
+        let copy =
+            recovery.backedUpTurns == recovery.turns
+            ? "Backed up after every turn"
+            : "Backed up after \(recovery.backedUpTurns) of \(recovery.turns) turns"
+        return recovery.onHost ? copy : "Lost by the host · \(copy.lowercased())"
     }
 }
 

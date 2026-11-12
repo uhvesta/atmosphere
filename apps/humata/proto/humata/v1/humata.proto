@@ -123,6 +123,14 @@ message Request {
     ListSkipped list_skipped = 51;
     RemoveSkipped remove_skipped = 52;
     StopHost stop_host = 53;
+    // From the daemon to a host: a session's recovery copy, and setting a
+    // session up again from one. A daemon refuses both.
+    BackupSession backup_session = 54;
+    RestoreBackup restore_backup = 55;
+    // From a client: the Mac's recovery copies, and restoring from them.
+    ListRecoveries list_recoveries = 56;
+    RestoreSession restore_session = 57;
+    RestoreHost restore_host = 58;
   }
 }
 
@@ -178,6 +186,10 @@ message Response {
     Skipped skipped = 47;
     SkippedRemoved skipped_removed = 48;
     HostStopping host_stopping = 49;
+    SessionBackup session_backup = 50;
+    SessionRestored session_restored = 51;
+    Recoveries recoveries = 52;
+    HostRestored host_restored = 53;
   }
 }
 
@@ -386,6 +398,108 @@ message SkippedRemoved {}
 message StopHost {}
 
 message HostStopping {}
+
+// A session's recovery copy, from the host it runs on. Daemon to host only.
+message BackupSession {
+  string session_id = 1;
+  // What the daemon's copy of each repository has already, so the bundles
+  // leave out what is reachable from it.
+  repeated RepositoryCommits haves = 2;
+}
+
+// Commits in one of a session's repositories, by the name the session
+// gives it.
+message RepositoryCommits {
+  string name = 1;
+  repeated string commits = 2;
+}
+
+// What sets a session up again on a host that lost it, or on another one.
+message SessionBackup {
+  Backend backend = 1;
+  // The session's record as its host keeps it, as JSON.
+  bytes record = 2;
+  // Its history as its host keeps it, as a JSON array of events.
+  bytes events = 3;
+  // The backend's own state of it, such as Claude Code's transcript.
+  repeated BackendFile backend_files = 4;
+  // Its snapshots' commits in each repository that the haves didn't
+  // have; a repository with nothing new isn't listed.
+  repeated RepositoryBundle bundles = 5;
+  // How many turns it had finished.
+  uint32 turns = 6;
+}
+
+message BackendFile {
+  string name = 1;
+  bytes contents = 2;
+}
+
+// A git bundle of a session's snapshot refs in one repository.
+message RepositoryBundle {
+  string name = 1;
+  bytes bundle = 2;
+}
+
+// Sets a session up again on this host from its recovery copy, at its last
+// snapshot. Refused if the host has the session already. Daemon to host
+// only.
+message RestoreBackup {
+  SessionBackup backup = 1;
+  // The clones on this host it works in, by the names its record gives.
+  repeated Repository repositories = 2;
+}
+
+message SessionRestored {
+  SessionInfo session = 1;
+}
+
+// The daemon's recovery copies of sessions on other machines.
+message ListRecoveries {}
+
+message Recoveries {
+  repeated Recovery recoveries = 1;
+}
+
+message Recovery {
+  string session_id = 1;
+  string name = 2;
+  // The host it was backed up from.
+  string host = 3;
+  // Turns finished when it was last backed up, and as its host last said.
+  // The copy is behind while the first is less.
+  uint32 backed_up_turns = 4;
+  uint32 turns = 5;
+  int64 backed_up_unix_ms = 6;
+  // Its host is reachable and has it, so there is nothing to restore
+  // there.
+  bool on_host = 7;
+}
+
+// Sets a session up again from the Mac's recovery copy on `host`, empty for
+// This Mac. Onto a host other than its own, it moves: its host changes and
+// its id, tree and task stay.
+message RestoreSession {
+  string session_id = 1;
+  string host = 2;
+}
+
+// Restores every session the Mac has a copy of from `host` that the host
+// doesn't have, such as after it was reinstalled.
+message RestoreHost {
+  string host = 1;
+}
+
+message HostRestored {
+  repeated SessionInfo restored = 1;
+  // Sessions that couldn't be restored, with why.
+  repeated RestoreFailure failed = 2;
+}
+
+message RestoreFailure {
+  string session_id = 1;
+  string message = 2;
+}
 
 message Models {
   repeated ModelChoice models = 1;
@@ -1361,4 +1475,7 @@ message CloneRepositories {
 message RepositoriesCloned {
   // Each clone's folder on the host.
   repeated Repository repositories = 1;
+  // The commits each clone's refs point at, by name, so what is sent to it
+  // can leave out what it has.
+  repeated RepositoryCommits tips = 2;
 }

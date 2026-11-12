@@ -466,6 +466,7 @@ async fn daemon_itself(state: &Path, hosts: Hosts) -> Arc<Daemon> {
             store,
             hosts,
             state.join("hosts.json"),
+            state.join("recovery"),
             "test".to_owned(),
         ),
         Err(error) => panic!("couldn't open the host: {error}"),
@@ -1602,4 +1603,158 @@ async fn the_coordinators_variables_are_kept_and_only_their_names_come_back() {
         .await
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(coordinator(listed), ["GH_TOKEN"]);
+}
+
+const WRITER: &str = r#"{"rules": [
+    {"when": "write", "steps": [{"step": "write_file", "path": "notes.txt", "contents": "kept"}]},
+    {"when": "", "steps": [{"step": "say", "text": "carried on"}]}
+]}"#;
+
+fn git(path: &Path, arguments: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(arguments)
+        .status()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(status.success(), "git {arguments:?}");
+}
+
+#[tokio::test]
+async fn a_session_backed_up_from_one_host_carries_on_on_another_with_its_code() {
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let first = host(&dir.path().join("first")).await;
+    let start = pb::request::Kind::StartSession(pb::StartSession {
+        backend: pb::Backend::Scripted.into(),
+        name: "test".to_owned(),
+        backend_config: WRITER.to_owned(),
+        approval_mode: pb::ApprovalMode::AllowEverything.into(),
+        repositories: vec![pb::Repository {
+            name: "code".to_owned(),
+            path: repository.path().display().to_string(),
+        }],
+        ..Default::default()
+    });
+    let session = started(&first, start).await;
+    send(&first, &session.id, "write").await;
+    let history = after_turns(&first, &session.id, 1).await;
+    let backed_up = first
+        .call(pb::request::Kind::BackupSession(pb::BackupSession {
+            session_id: session.id.clone(),
+            haves: Vec::new(),
+        }))
+        .await;
+    let Ok(pb::response::Kind::SessionBackup(backup)) = backed_up else {
+        panic!("{backed_up:?}")
+    };
+    assert_eq!(backup.turns, 1);
+
+    // Another machine, with its own clone that has none of the snapshots.
+    let second = host(&dir.path().join("second")).await;
+    let clone = dir.path().join("clone");
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "--quiet",
+            &repository.path().display().to_string(),
+            &clone.display().to_string(),
+        ],
+    );
+    let restore = |backup: pb::SessionBackup| {
+        pb::request::Kind::RestoreBackup(pb::RestoreBackup {
+            backup: Some(backup),
+            repositories: vec![pb::Repository {
+                name: "code".to_owned(),
+                path: clone.display().to_string(),
+            }],
+        })
+    };
+    let restored = second.call(restore(backup.clone())).await;
+    let Ok(pb::response::Kind::SessionRestored(pb::SessionRestored {
+        session: Some(restored),
+    })) = restored
+    else {
+        panic!("{restored:?}")
+    };
+    assert_eq!(restored.id, session.id);
+    let copy = PathBuf::from(&restored.working_directory);
+    assert!(copy.starts_with(dir.path().join("second")), "{copy:?}");
+    assert_eq!(
+        std::fs::read_to_string(copy.join("notes.txt"))
+            .ok()
+            .as_deref(),
+        Some("kept")
+    );
+    // Restoring a session the host has is refused.
+    let again = second.call(restore(backup)).await;
+    assert!(
+        refused_with(&again, pb::ErrorCode::InvalidRequest),
+        "{again:?}"
+    );
+
+    send(&second, &session.id, "and now?").await;
+    let events = after_turns(&second, &session.id, 2).await;
+    let said_before = said(&history);
+    assert_eq!(said(&events)[..said_before.len()], said_before[..]);
+    assert_eq!(
+        said(&events)[said_before.len()..],
+        ["user: and now?", "agent: carried on"]
+    );
+}
+
+#[tokio::test]
+async fn a_backup_leaves_out_the_commits_the_mac_has() {
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let first = host(&dir.path().join("first")).await;
+    let start = pb::request::Kind::StartSession(pb::StartSession {
+        backend: pb::Backend::Scripted.into(),
+        name: "test".to_owned(),
+        backend_config: WRITER.to_owned(),
+        approval_mode: pb::ApprovalMode::AllowEverything.into(),
+        repositories: vec![pb::Repository {
+            name: "code".to_owned(),
+            path: repository.path().display().to_string(),
+        }],
+        ..Default::default()
+    });
+    let session = started(&first, start).await;
+    send(&first, &session.id, "write").await;
+    after_turns(&first, &session.id, 1).await;
+    let backup = |haves: Vec<pb::RepositoryCommits>| {
+        let first = &first;
+        let session = session.id.clone();
+        async move {
+            match first
+                .call(pb::request::Kind::BackupSession(pb::BackupSession {
+                    session_id: session,
+                    haves,
+                }))
+                .await
+            {
+                Ok(pb::response::Kind::SessionBackup(backup)) => backup,
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+    let full = backup(Vec::new()).await;
+    assert_eq!(full.bundles.len(), 1);
+    let mirror = dir.path().join("mirror.git");
+    humata_agent::bundle::mirror(&mirror)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    humata_agent::bundle::apply(&mirror, &full.bundles[0].bundle)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let commits = humata_agent::bundle::tips(&mirror)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let known = backup(vec![pb::RepositoryCommits {
+        name: "code".to_owned(),
+        commits,
+    }])
+    .await;
+    assert!(known.bundles.is_empty(), "{:?}", known.bundles.len());
 }

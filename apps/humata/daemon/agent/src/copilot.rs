@@ -23,11 +23,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 
+use crate::backup::{self, BackendFile};
 use crate::claude::McpServer;
 use crate::env::Env;
 use crate::error::AgentError;
-use crate::event::SessionId;
 use crate::event::{EventKind, PermissionKind};
+use crate::event::{SessionId, SessionRecord};
 use crate::import::{self, Importable, Imported};
 use crate::links::{Cut, Links};
 use crate::runtime::{Runner, Turn};
@@ -140,6 +141,9 @@ pub enum CopilotError {
     #[error(transparent)]
     Agent(#[from] AgentError),
 }
+
+/// Where a backup keeps Copilot's session folders.
+const SESSION_STATE: &str = "session-state";
 
 /// Plays turns on the Copilot CLI, started when first needed and again if it
 /// stops.
@@ -401,6 +405,37 @@ impl Runner for CopilotRunner {
             return Ok(Vec::new());
         };
         import::not_imported(&self.options.state, import::copilot_importable(&sessions)?)
+    }
+
+    fn backup(&self, record: &SessionRecord) -> Result<Vec<BackendFile>, AgentError> {
+        let Some(links) = backup::links_file(&self.options.state, record.id.as_str())? else {
+            return Ok(Vec::new());
+        };
+        let mut files = vec![links];
+        let Some(sessions) = self.session_state() else {
+            return Ok(files);
+        };
+        for session in backup::linked(&files)? {
+            if import::is_session_id(&session) {
+                let prefix = format!("{SESSION_STATE}/{session}");
+                files.extend(backup::read_tree(&sessions.join(&session), &prefix)?);
+            }
+        }
+        Ok(files)
+    }
+
+    fn restore(&self, record: &SessionRecord, files: &[BackendFile]) -> Result<(), AgentError> {
+        for file in files {
+            if file.name == backup::LINKS {
+                backup::write_links(&self.options.state, record.id.as_str(), &file.contents)?;
+            } else if let Some(name) = file.name.strip_prefix(&format!("{SESSION_STATE}/")) {
+                let Some(sessions) = self.session_state() else {
+                    continue;
+                };
+                backup::write_under(&sessions, name, &file.contents)?;
+            }
+        }
+        Ok(())
     }
 
     fn import(&self, external: &str, session: &SessionId) -> Result<Imported, AgentError> {

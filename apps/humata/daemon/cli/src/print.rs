@@ -294,6 +294,20 @@ pub fn inbox_entry(entry: &pb::InboxEntry) -> String {
     ) + &asked
 }
 
+/// A recovery copy: its session, name, host, the turns it has of the
+/// session's, and whether its host lost the session.
+pub fn recovery(recovery: &pb::Recovery) -> String {
+    let state = if recovery.on_host { "on host" } else { "lost" };
+    format!(
+        "{}\t{}\t{}\t{}/{} turns\t{state}",
+        recovery.session_id,
+        or_dash(&recovery.name),
+        or_dash(&recovery.host),
+        recovery.backed_up_turns,
+        recovery.turns
+    )
+}
+
 pub fn host(host: &pb::HostInfo) -> String {
     let env = if host.env_names.is_empty() {
         "-".to_owned()

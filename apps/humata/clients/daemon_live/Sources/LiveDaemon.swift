@@ -419,6 +419,32 @@ extension DaemonClient {
                 }
                 return hosts.names
             },
+            recoveries: {
+                guard case .recoveries(let found) = try await daemon.call(.listRecoveries(Humata_V1_ListRecoveries()))
+                else {
+                    throw DaemonError.unexpected("something other than the recovery copies")
+                }
+                return found.recoveries.map(Recovery.init)
+            },
+            restoreSession: { session, host in
+                var restore = Humata_V1_RestoreSession()
+                restore.sessionID = session
+                restore.host = host ?? ""
+                guard case .sessionRestored(let restored) = try await daemon.call(.restoreSession(restore)) else {
+                    throw DaemonError.unexpected("something other than the restored session")
+                }
+                return try Session(restored.session)
+            },
+            restoreHost: { host in
+                var restore = Humata_V1_RestoreHost()
+                restore.host = host
+                guard case .hostRestored(let restored) = try await daemon.call(.restoreHost(restore)) else {
+                    throw DaemonError.unexpected("something other than the restored sessions")
+                }
+                return HostRestore(
+                    restored: try restored.restored.map(Session.init),
+                    failed: restored.failed.map { RestoreFailure(id: $0.sessionID, message: $0.message) })
+            },
             watch: { session in
                 AsyncThrowingStream { continuation in
                     let task = Task {

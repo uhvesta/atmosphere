@@ -264,6 +264,18 @@ impl Setup {
         LocalAgent::open(self.state.path().join("sessions"), runner).expect("open the sessions")
     }
 
+    /// Another host's setup, on the same model server.
+    fn elsewhere(&self) -> Self {
+        let dir = || tempfile::tempdir().expect("a temporary folder");
+        Self {
+            model: self.model.clone(),
+            base_url: self.base_url.clone(),
+            home: dir(),
+            state: dir(),
+            work: dir(),
+        }
+    }
+
     fn start_options(&self) -> StartOptions {
         StartOptions {
             name: "test".into(),
@@ -454,6 +466,32 @@ async fn a_fork_forgets_what_came_after_its_event() {
     let seen = setup.model.last_request();
     assert!(seen.contains("banana") && seen.contains("damson"));
     assert!(!seen.contains("cherry"));
+}
+
+#[tokio::test]
+async fn a_session_restored_on_another_host_carries_on_with_its_context() {
+    let setup = Setup::new(Vec::new()).await;
+    let agent = setup.agent();
+    let session = agent.start(setup.start_options()).await.expect("start");
+    agent
+        .send(&session.id, "apricot".into(), SendMode::Enqueue)
+        .await
+        .expect("send");
+    wait_for(&agent, &session.id, idle_turns(1)).await;
+    let backup = agent.backup(&session.id).await.expect("backed up");
+    drop(agent);
+
+    let elsewhere = setup.elsewhere();
+    let agent = elsewhere.agent();
+    agent.restore(backup, Vec::new()).await.expect("restored");
+    agent
+        .send(&session.id, "banana".into(), SendMode::Enqueue)
+        .await
+        .expect("send");
+    let events = wait_for(&agent, &session.id, idle_turns(2)).await;
+    assert_eq!(failures(&events), Vec::<String>::new());
+    let seen = setup.model.last_request();
+    assert!(seen.contains("apricot") && seen.contains("banana"));
 }
 
 #[tokio::test]

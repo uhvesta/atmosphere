@@ -10,6 +10,21 @@ pub enum AgentError {
     UnknownSession { session: SessionId },
 
     #[error(
+        "session {session} is on this host already, so it can't be restored here; it may have come back on its own. List the sessions to check, or restore onto another host"
+    )]
+    SessionExists { session: SessionId },
+
+    #[error(
+        "session {session} works in the repository {name}, which the restore wasn't given a copy of; clone the project's repositories on the host and restore again"
+    )]
+    MissingRepository { session: SessionId, name: String },
+
+    #[error(
+        "a backup names the backend file {name}, which would be written outside the backend's folder; the backup is damaged or wasn't made by Humata, so it wasn't restored"
+    )]
+    BadBackendFile { name: String },
+
+    #[error(
         "session {session} has no event {event} to fork before; read the session's history for the ids it has"
     )]
     UnknownEvent { session: SessionId, event: EventId },

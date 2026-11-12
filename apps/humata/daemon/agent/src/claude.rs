@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, Command};
 
+use crate::backup::{self, BackendFile};
 use crate::env::Env;
 use crate::error::AgentError;
 use crate::event::{EventKind, PermissionKind, SessionId, SessionRecord};
@@ -101,6 +102,9 @@ pub enum ClaudeError {
     #[error(transparent)]
     Agent(#[from] AgentError),
 }
+
+/// Where a backup keeps Claude Code's transcripts.
+const TRANSCRIPTS: &str = "transcripts";
 
 /// Plays turns on Claude Code, one `claude -p` per turn.
 pub struct ClaudeRunner {
@@ -230,6 +234,52 @@ impl Runner for ClaudeRunner {
             return Ok(Vec::new());
         };
         import::not_imported(&self.options.state, import::claude_importable(&projects)?)
+    }
+
+    fn backup(&self, record: &SessionRecord) -> Result<Vec<BackendFile>, AgentError> {
+        let Some(links) = backup::links_file(&self.options.state, record.id.as_str())? else {
+            return Ok(Vec::new());
+        };
+        let mut files = vec![links];
+        let Some(projects) = self.transcripts() else {
+            return Ok(files);
+        };
+        for session in backup::linked(&files)? {
+            // A transcript that is gone is the backend's loss; the session
+            // still comes back with its own history.
+            let Ok(path) = import::claude_transcript(&projects, &session) else {
+                continue;
+            };
+            if let Some(contents) = backup::read_optional(&path)? {
+                files.push(BackendFile {
+                    name: format!("{TRANSCRIPTS}/{session}.jsonl"),
+                    contents,
+                });
+            }
+        }
+        Ok(files)
+    }
+
+    fn restore(&self, record: &SessionRecord, files: &[BackendFile]) -> Result<(), AgentError> {
+        // Claude Code finds a session's transcript in its working
+        // directory's project folder, which is the restored one's.
+        let project: String = record
+            .working_directory
+            .to_string_lossy()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        for file in files {
+            if file.name == backup::LINKS {
+                backup::write_links(&self.options.state, record.id.as_str(), &file.contents)?;
+            } else if let Some(transcript) = file.name.strip_prefix(&format!("{TRANSCRIPTS}/")) {
+                let Some(projects) = self.transcripts() else {
+                    continue;
+                };
+                backup::write_under(&projects.join(&project), transcript, &file.contents)?;
+            }
+        }
+        Ok(())
     }
 
     fn import(&self, external: &str, session: &SessionId) -> Result<Imported, AgentError> {

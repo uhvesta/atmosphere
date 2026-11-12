@@ -1,7 +1,8 @@
 //! A host Humata manages over SSH, as a person sets one up: added by its SSH
 //! destination, humatad installed and set up there, a project's repository
 //! cloned there for a session, a connection dropped mid-turn, the host
-//! stopping mid-turn, and the host going away.
+//! stopping mid-turn, the host losing its sessions and getting them back,
+//! and the host going away, its sessions moved to this Mac.
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -273,6 +274,39 @@ fn a_managed_host_is_installed_set_up_and_survives_dropped_connections() {
         pairs(&[("user", "hello again"), ("assistant", "hi there")])
     );
 
+    // A host that loses its sessions, as a machine wiped or replaced does,
+    // gets them back from the Mac's copy of each, with their code and
+    // history, and they carry on.
+    eventually("the recovery copy up to date", || {
+        recovery_line(&humata, session).is_some_and(|line| {
+            let turns = line.split('\t').nth(3).unwrap_or_default();
+            turns
+                .trim_end_matches(" turns")
+                .split_once('/')
+                .is_some_and(|(kept, all)| kept == all && kept != "0")
+        })
+    });
+    let before = humata.said(&["history", session]);
+    assert!(stop_host(&folder), "no host was running on its socket");
+    let _ = cut_ssh(&folder);
+    for lost in ["state", "cache"] {
+        std::fs::remove_dir_all(folder.join(lost)).unwrap_or_else(|error| panic!("{error}"));
+    }
+    eventually("the session lost", || {
+        recovery_line(&humata, session).is_some_and(|line| line.ends_with("\tlost"))
+    });
+    humata.run(&["recover", "host", "far"]);
+    assert!(session_line(&humata, session).contains("\tfar\t"));
+    assert!(humata.working_directory(session).join("go").is_file());
+    assert_eq!(humata.said(&["history", session]), before);
+    assert_eq!(
+        humata.said(&["send", session, "hello", "--wait"]),
+        pairs(&[("user", "hello"), ("assistant", "hi there")])
+    );
+    eventually("the recovery copy of the restored session", || {
+        recovery_line(&humata, session).is_some_and(|line| line.ends_with("\ton host"))
+    });
+
     // With the host gone, its sessions still show, as they last were, and
     // watching one plays its history and ends.
     drop(sshd);
@@ -285,4 +319,33 @@ fn a_managed_host_is_installed_set_up_and_survives_dropped_connections() {
     assert!(offline.starts_with(&history), "{offline}");
     assert!(offline.contains("hello again"), "{offline}");
     assert_eq!(humata.run(&["watch", session]), offline);
+
+    // Moved to this Mac from its copy, it carries on here, and isn't shown
+    // on the host it left.
+    let moved = humata.run(&["recover", "session", session, "--host", ""]);
+    assert!(moved.starts_with(session), "{moved}");
+    let line = session_line(&humata, session);
+    assert!(!line.contains("far") && !line.contains("offline"), "{line}");
+    assert!(humata.working_directory(session).join("go").is_file());
+    assert_eq!(
+        humata.said(&["send", session, "hello", "--wait"]),
+        pairs(&[("user", "hello"), ("assistant", "hi there")])
+    );
+    assert_eq!(
+        humata
+            .run(&["sessions"])
+            .lines()
+            .filter(|line| line.starts_with(session))
+            .count(),
+        1
+    );
+}
+
+/// The line `humata recover list` prints for `session`'s copy.
+fn recovery_line(humata: &Humata, session: &str) -> Option<String> {
+    humata
+        .run(&["recover", "list"])
+        .lines()
+        .find(|line| line.starts_with(session))
+        .map(str::to_owned)
 }

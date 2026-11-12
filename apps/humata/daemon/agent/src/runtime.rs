@@ -15,8 +15,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+use crate::backup::{BackendFile, Backup};
 use crate::error::AgentError;
-use humata_workspace::{Changes, Edit, Query, Snapshot, WorkspaceError, Workspaces};
+use humata_workspace::{Changes, Edit, Query, Repository, Snapshot, WorkspaceError, Workspaces};
 
 use crate::event::{
     ApprovalMode, Event, EventKind, ForkOptions, Parent, PermissionKind, SendMode, SessionId,
@@ -69,6 +70,20 @@ pub trait Runner: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Vec<Model>, AgentError>> + Send {
         let _ = config;
         async { Ok(Vec::new()) }
+    }
+
+    /// The backend's own state of the session, such as its transcript, for
+    /// [`Runner::restore`] to put back. None for a backend that keeps none.
+    fn backup(&self, record: &SessionRecord) -> Result<Vec<BackendFile>, AgentError> {
+        let _ = record;
+        Ok(Vec::new())
+    }
+
+    /// Puts back what [`Runner::backup`] returned, for `record` as it is on
+    /// this host now.
+    fn restore(&self, record: &SessionRecord, files: &[BackendFile]) -> Result<(), AgentError> {
+        let _ = (record, files);
+        Ok(())
     }
 
     /// Reads the backend's session `external` as our history, and links it
@@ -793,6 +808,56 @@ impl<R: Runner> Agent for LocalAgent<R> {
             keeper: false,
         };
         self.create(record.clone(), imported.events)?;
+        Ok(record)
+    }
+
+    async fn backup(&self, id: &SessionId) -> Result<Backup, AgentError> {
+        let session = self.session(id)?;
+        let record = session.lock().record.clone();
+        let backend = self.runner.backup(&record)?;
+        Ok(Backup {
+            record,
+            events: session.log.events(),
+            backend,
+        })
+    }
+
+    async fn restore(
+        &self,
+        backup: Backup,
+        repositories: Vec<Repository>,
+    ) -> Result<SessionRecord, AgentError> {
+        let mut record = backup.record;
+        let id = record.id.clone();
+        let folder = self.root.join("sessions").join(id.as_str());
+        if self.lock().contains_key(&id) || folder.exists() {
+            return Err(AgentError::SessionExists { session: id });
+        }
+        if !record.repositories.is_empty() {
+            let mut here = Vec::with_capacity(record.repositories.len());
+            for wanted in &record.repositories {
+                let found = repositories
+                    .iter()
+                    .find(|repository| repository.name == wanted.name)
+                    .ok_or_else(|| AgentError::MissingRepository {
+                        session: id.clone(),
+                        name: wanted.name.clone(),
+                    })?;
+                here.push(found.clone());
+            }
+            record.working_directory = self.workspaces(&id)?.working_directory(id.as_str(), &here);
+            record.repositories = here;
+        }
+        // Its worktrees are made again from its last snapshot.
+        record.checkouts = Vec::new();
+        let mut events = backup.events;
+        events.extend(closing(&events).into_iter().map(Event::now));
+        self.runner.restore(&record, &backup.backend)?;
+        let session = self.create(record, events)?;
+        if !session.lock().record.archived {
+            prepare(&session, self.workspaces.as_deref()).await?;
+        }
+        let record = session.lock().record.clone();
         Ok(record)
     }
 

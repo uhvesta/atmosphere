@@ -477,6 +477,16 @@ extension PermissionKind {
     }
 }
 
+extension Recovery {
+    init(_ recovery: Humata_V1_Recovery) {
+        self.init(
+            id: recovery.sessionID, name: recovery.name, host: recovery.host,
+            backedUpTurns: Int(recovery.backedUpTurns), turns: Int(recovery.turns),
+            backedUp: Date(timeIntervalSince1970: Double(recovery.backedUpUnixMs) / 1000),
+            onHost: recovery.onHost)
+    }
+}
+
 extension SkippedSession {
     init(_ session: Humata_V1_SkippedSession) throws {
         guard let backend = Backend(session.backend) else {

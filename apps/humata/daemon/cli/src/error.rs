@@ -8,6 +8,11 @@ pub enum CliError {
     NoAnswer,
 
     #[error(
+        "{failed} sessions couldn't be restored, each printed with why; fix what it says and run the restore again, which leaves the restored ones alone"
+    )]
+    NotAllRestored { failed: usize },
+
+    #[error(
         "there is no home folder to find humatad's socket in; set HOME, or pass --socket or set HUMATA_SOCKET"
     )]
     NoSocket,

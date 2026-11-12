@@ -7,10 +7,11 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use humata_agent::{
-    Agent, AgentError, ApprovalMode, ClaudeOptions, ClaudeRunner, CopilotOptions, CopilotProvider,
-    CopilotRunner, Edit, Env, Event, EventId, ForkOptions, Importable, LocalAgent,
-    LocalModelConfig, LocalModelRunner, McpServer, Query, Script, ScriptedRunner, SendMode,
-    SessionId, SessionRecord, SessionUpdate, StartOptions, Watch, Workspaces,
+    Agent, AgentError, ApprovalMode, BackendFile, Backup, ClaudeOptions, ClaudeRunner,
+    CopilotOptions, CopilotProvider, CopilotRunner, Edit, Env, Event, EventId, ForkOptions,
+    Importable, LocalAgent, LocalModelConfig, LocalModelRunner, McpServer, Query, Repository,
+    Script, ScriptedRunner, SendMode, SessionId, SessionRecord, SessionUpdate, StartOptions, Watch,
+    Workspaces, bundle,
 };
 use humata_wire::{Reply, Service, ServiceFuture, describe, error, pb};
 use tokio::sync::{broadcast, mpsc};
@@ -72,6 +73,12 @@ trait Backend: Send + Sync {
         external: &'a str,
         name: Option<String>,
     ) -> BoxFuture<'a, SessionRecord>;
+    fn backup<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Backup>;
+    fn restore(
+        &self,
+        backup: Backup,
+        repositories: Vec<Repository>,
+    ) -> BoxFuture<'_, SessionRecord>;
 }
 
 impl<A> Backend for A
@@ -199,6 +206,20 @@ where
     ) -> BoxFuture<'a, SessionRecord> {
         Box::pin(async move {
             Agent::import(self, external, name)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn backup<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Backup> {
+        Box::pin(async move { Agent::backup(self, session).await.map_err(Into::into) })
+    }
+    fn restore(
+        &self,
+        backup: Backup,
+        repositories: Vec<Repository>,
+    ) -> BoxFuture<'_, SessionRecord> {
+        Box::pin(async move {
+            Agent::restore(self, backup, repositories)
                 .await
                 .map_err(Into::into)
         })
@@ -381,6 +402,111 @@ impl Host {
         Ok(convert::session(record, backend, &history))
     }
 
+    /// The session's recovery copy, with its snapshots' commits in each
+    /// repository that `haves` doesn't have.
+    async fn back_up(&self, request: pb::BackupSession) -> Result<pb::SessionBackup, HostError> {
+        let session = SessionId::new(request.session_id);
+        let (backend, agent) = self.owner(&session)?;
+        let backup = agent.backup(&session).await?;
+        let mut bundles = Vec::new();
+        for repository in &backup.record.repositories {
+            let haves = request
+                .haves
+                .iter()
+                .find(|haves| haves.name == repository.name)
+                .map(|haves| haves.commits.as_slice())
+                .unwrap_or_default();
+            let made = bundle::create(&repository.path, session.as_str(), haves).await;
+            let made = made.map_err(|source| HostError::Snapshots {
+                name: repository.name.clone(),
+                source,
+            })?;
+            if let Some(bundle) = made {
+                bundles.push(pb::RepositoryBundle {
+                    name: repository.name.clone(),
+                    bundle,
+                });
+            }
+        }
+        let turns = backup
+            .events
+            .iter()
+            .filter(|event| matches!(event.kind, humata_agent::EventKind::TurnEnded { .. }))
+            .count();
+        let encode = |source| HostError::EncodeBackup { source };
+        Ok(pb::SessionBackup {
+            backend: backend.into(),
+            record: serde_json::to_vec(&backup.record).map_err(encode)?,
+            events: serde_json::to_vec(&backup.events).map_err(encode)?,
+            backend_files: backup
+                .backend
+                .into_iter()
+                .map(|file| pb::BackendFile {
+                    name: file.name,
+                    contents: file.contents,
+                })
+                .collect(),
+            bundles,
+            turns: u32::try_from(turns).unwrap_or(u32::MAX),
+        })
+    }
+
+    /// Sets a session up again here from its recovery copy.
+    async fn restore(&self, request: pb::RestoreBackup) -> Result<pb::SessionRestored, HostError> {
+        let backup = request.backup.unwrap_or_default();
+        let backend = backup.backend();
+        let agent = self.backend(backend)?;
+        let record: SessionRecord =
+            serde_json::from_slice(&backup.record).map_err(|source| HostError::BadBackup {
+                part: "session record",
+                source,
+            })?;
+        let events: Vec<Event> =
+            serde_json::from_slice(&backup.events).map_err(|source| HostError::BadBackup {
+                part: "history",
+                source,
+            })?;
+        let repositories: Vec<Repository> = request
+            .repositories
+            .into_iter()
+            .map(convert::repository)
+            .collect();
+        for bundle in &backup.bundles {
+            let clone = repositories
+                .iter()
+                .find(|repository| repository.name == bundle.name)
+                .ok_or_else(|| HostError::NoClone {
+                    name: bundle.name.clone(),
+                })?;
+            bundle::apply(&clone.path, &bundle.bundle)
+                .await
+                .map_err(|source| HostError::Snapshots {
+                    name: bundle.name.clone(),
+                    source,
+                })?;
+        }
+        let backup = Backup {
+            record,
+            events,
+            backend: backup
+                .backend_files
+                .into_iter()
+                .map(|file| BackendFile {
+                    name: file.name,
+                    contents: file.contents,
+                })
+                .collect(),
+        };
+        let record = agent.restore(backup, repositories).await?;
+        self.owners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(record.id.clone(), backend);
+        Ok(pb::SessionRestored {
+            session: Some(self.info(backend, agent.as_ref(), &record).await?),
+        })
+    }
+
     async fn answer(&self, request: pb::request::Kind) -> Result<Reply, HostError> {
         use pb::request::Kind as Request;
         use pb::response::Kind as Response;
@@ -465,6 +591,9 @@ impl Host {
             | Request::RequestMove(_)
             | Request::AnswerRequest(_)
             | Request::ListHosts(_)
+            | Request::ListRecoveries(_)
+            | Request::RestoreSession(_)
+            | Request::RestoreHost(_)
             | Request::AddHost(_)
             | Request::UpdateHost(_)
             | Request::RemoveHost(_)
@@ -488,9 +617,7 @@ impl Host {
                 Response::HostStatus(self.machine.status(self.program_version.clone()).await)
             }
             Request::CloneRepositories(clone) => {
-                Response::RepositoriesCloned(pb::RepositoriesCloned {
-                    repositories: self.machine.clone(clone).await?,
-                })
+                Response::RepositoriesCloned(self.machine.clone(clone).await?)
             }
             Request::Unqueue(unqueue) => {
                 let session = SessionId::new(unqueue.session_id);
@@ -564,6 +691,10 @@ impl Host {
                         })
                         .collect(),
                 })
+            }
+            Request::BackupSession(backup) => Response::SessionBackup(self.back_up(backup).await?),
+            Request::RestoreBackup(restore) => {
+                Response::SessionRestored(self.restore(restore).await?)
             }
             Request::ImportSession(import) => {
                 let backend = import.backend();

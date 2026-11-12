@@ -8,6 +8,7 @@
 //! commit stays the person's call. A fork starts a new worktree at the
 //! snapshot's HEAD and puts the snapshot's files in it.
 
+pub mod bundle;
 mod error;
 mod review;
 

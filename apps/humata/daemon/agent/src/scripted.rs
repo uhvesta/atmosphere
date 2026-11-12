@@ -1048,6 +1048,89 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn a_restored_session_has_its_code_and_history_and_carries_on() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            let history = fixture.turn(&id, "one", 1).await;
+            let backup = fixture.agent.backup(&id).await.expect("backed up");
+
+            let elsewhere = tempfile::tempdir().expect("a temporary folder");
+            let rules = vec![rule("two", vec![write_file("a.txt", "two")])];
+            let agent = LocalAgent::open(
+                elsewhere.path().join("state"),
+                ScriptedRunner::new(Script { rules }),
+            )
+            .expect("the agent opens")
+            .with_workspaces(Workspaces::new(elsewhere.path().join("worktrees")));
+            // Another host's clone, with the snapshots fetched into it.
+            let clone = elsewhere.path().join("app");
+            let original = fixture.repository.path.to_string_lossy().into_owned();
+            let status = std::process::Command::new("git")
+                .args(["clone", "--quiet", &original])
+                .arg(&clone)
+                .status()
+                .expect("git runs");
+            assert!(status.success());
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&clone)
+                .args(["fetch", "--quiet", &original, "refs/humata/*:refs/humata/*"])
+                .status()
+                .expect("git runs");
+            assert!(status.success());
+            let repositories = vec![Repository {
+                name: "app".into(),
+                path: clone,
+            }];
+            let restored = agent
+                .restore(backup.clone(), repositories.clone())
+                .await
+                .expect("restored");
+            assert_eq!(restored.id, id);
+            assert!(restored.working_directory.starts_with(elsewhere.path()));
+            assert_eq!(
+                read(&restored.working_directory.join("a.txt")).as_deref(),
+                Some("one")
+            );
+            let restored_history = agent.history(&id).await.expect("history");
+            assert_eq!(restored_history[..history.len()], history[..]);
+            assert!(matches!(
+                agent.restore(backup, repositories).await,
+                Err(AgentError::SessionExists { .. })
+            ));
+
+            agent
+                .send(&id, "two".into(), SendMode::Enqueue)
+                .await
+                .expect("sent");
+            let events = wait_for(&agent, &id, idle_turns(2)).await;
+            assert_eq!(failed(&events), Vec::<String>::new());
+            assert_eq!(
+                read(&restored.working_directory.join("a.txt")).as_deref(),
+                Some("two")
+            );
+        }
+
+        #[tokio::test]
+        async fn a_restore_without_a_repository_the_session_works_in_is_refused() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let backup = fixture.agent.backup(&id).await.expect("backed up");
+            let elsewhere = tempfile::tempdir().expect("a temporary folder");
+            let agent = LocalAgent::open(
+                elsewhere.path().join("state"),
+                ScriptedRunner::new(Script { rules: Vec::new() }),
+            )
+            .expect("the agent opens")
+            .with_workspaces(Workspaces::new(elsewhere.path().join("worktrees")));
+            assert!(matches!(
+                agent.restore(backup, Vec::new()).await,
+                Err(AgentError::MissingRepository { .. })
+            ));
+        }
+
+        #[tokio::test]
         async fn an_archived_session_takes_no_messages_and_gets_its_code_back_when_unarchived() {
             let fixture = fixture();
             let id = fixture.start().await;

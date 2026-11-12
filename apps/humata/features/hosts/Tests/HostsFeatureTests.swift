@@ -205,6 +205,94 @@ final class HostsFeatureTests: XCTestCase {
         XCTAssertEqual(left, [])
     }
 
+    func testSessionsAHostLostAreRestoredFromTheirCopies() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        _ = try await daemon.client.installHost("far")
+        let first = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/work", host: "far"))
+        let second = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/work", host: "far"))
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.recoveriesLoaded)
+        XCTAssertEqual(Set(store.state.recoveries.ids), [first.id, second.id])
+        XCTAssertTrue(store.state.recoveries.allSatisfy(\.onHost))
+
+        daemon.lose(host: "far")
+        await store.send(.selected("far"))
+        await store.receive(\.recoveriesLoaded)
+        XCTAssertTrue(store.state.recoveries.allSatisfy { !$0.onHost })
+
+        await store.send(.restoreTapped(first.id))
+        XCTAssertEqual(store.state.restoring, [first.id])
+        await store.receive(\.restored)
+        await store.receive(\.recoveriesLoaded)
+        XCTAssertEqual(store.state.restoring, [])
+        XCTAssertEqual(store.state.recoveries[id: first.id]?.onHost, true)
+        XCTAssertEqual(store.state.recoveries[id: second.id]?.onHost, false)
+
+        await store.send(.restoreAllTapped)
+        await store.receive(\.restored)
+        await store.receive(\.recoveriesLoaded)
+        XCTAssertTrue(store.state.recoveries.allSatisfy(\.onHost))
+        let sessions = try await daemon.client.sessions(nil)
+        XCTAssertEqual(sessions.filter { $0.host == "far" }.count, 2)
+    }
+
+    func testASessionMovedToThisMacLeavesItsHostsCopies() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        _ = try await daemon.client.installHost("far")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/work", host: "far"))
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.recoveriesLoaded)
+        await store.send(.moveTapped(session.id, to: nil))
+        await store.receive(\.restored)
+        await store.receive(\.recoveriesLoaded)
+        XCTAssertEqual(store.state.recoveries, [])
+        let sessions = try await daemon.client.sessions(nil)
+        XCTAssertNil(sessions.first { $0.id == session.id }?.host)
+    }
+
+    func testARestoreOntoAnUnreachableHostSaysWhy() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        _ = try await daemon.client.installHost("far")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, workingDirectory: "/work", host: "far"))
+        daemon.lose(host: "far")
+        daemon.setOffline("far", true)
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.recoveriesLoaded)
+        await store.send(.restoreTapped(session.id))
+        await store.receive(\.restoreFailed)
+        XCTAssertNotNil(store.state.destination?.alert)
+        XCTAssertEqual(store.state.restoring, [])
+        XCTAssertEqual(store.state.recoveries[id: session.id]?.onHost, false)
+    }
+
     func testARefusedHostSaysWhy() async {
         let store = TestStore(initialState: AddHostFeature.State()) {
             AddHostFeature()

@@ -76,6 +76,8 @@ package final class InMemoryDaemon: Sendable {
         /// The sessions started outside Humata, by host; "" for this Mac.
         var importable: [String: [ImportableSession]] = [:]
         var skipped: [String: [SkippedSession]] = [:]
+        /// The sessions their hosts lost, still in `sessions` for their copies.
+        var lost: Set<String> = []
         /// What each backend offers; a backend missing here can't list them.
         var models: [Backend: [ModelChoice]] = [
             .claude: [
@@ -156,6 +158,65 @@ package final class InMemoryDaemon: Sendable {
         state.withValue { $0.skipped[host ?? "", default: []].append(session) }
     }
 
+    /// Has `host` lose its sessions, as a machine wiped or replaced does; the
+    /// Mac keeps its copies of them.
+    package func lose(host: String) {
+        state.withValue { state in
+            for session in state.sessions where session.host == host {
+                state.lost.insert(session.id)
+            }
+        }
+    }
+
+    /// Has the session's host lose it; the Mac keeps its copy.
+    package func lose(session id: String) {
+        state.withValue { _ = $0.lost.insert(id) }
+    }
+
+    /// Every session on a host has a copy as of its last turn.
+    private func recoveries() -> [Recovery] {
+        state.withValue { state in
+            state.sessions.compactMap { session in
+                guard let host = session.host else { return nil }
+                return Recovery(
+                    id: session.id, name: session.name, host: host, backedUpTurns: session.turns,
+                    turns: session.turns, backedUp: start, onHost: !state.lost.contains(session.id))
+            }
+            .sorted { ($0.host, $0.name, $0.id) < ($1.host, $1.name, $1.id) }
+        }
+    }
+
+    private func restoreSession(_ id: String, onto host: String?) throws -> Session {
+        try state.withValue { state in
+            guard let index = state.sessions.firstIndex(where: { $0.id == id && $0.host != nil }) else {
+                throw DaemonError.refused(
+                    .invalidRequest,
+                    message: "There is no recovery copy of session \(id); one is kept after each turn on a host.")
+            }
+            if let host, state.offline.contains(host) {
+                throw DaemonError.refused(
+                    .hostUnavailable, message: "Couldn't reach \(host). Check that it is up, then restore again.")
+            }
+            state.lost.remove(id)
+            state.sessions[index].host = host
+            return state.sessions[index]
+        }
+    }
+
+    private func restoreHost(_ host: String) -> HostRestore {
+        let lost = recoveries().filter { $0.host == host && !$0.onHost }
+        var restored: [Session] = []
+        var failed: [RestoreFailure] = []
+        for recovery in lost {
+            do {
+                restored.append(try restoreSession(recovery.id, onto: host))
+            } catch {
+                failed.append(RestoreFailure(id: recovery.id, message: error.localizedDescription))
+            }
+        }
+        return HostRestore(restored: restored, failed: failed)
+    }
+
     /// Sets what `backend` offers; nil makes listing them fail, as on a
     /// Copilot account without the feature.
     package func setModels(_ models: [ModelChoice]?, for backend: Backend) {
@@ -200,7 +261,9 @@ package final class InMemoryDaemon: Sendable {
             deleteProject: { project in try self.deleteProject(project) },
             sessions: { project in
                 self.state.withValue { state in
-                    state.sessions.filter { project == nil || $0.projectID == project }.map { session in
+                    state.sessions.filter {
+                        (project == nil || $0.projectID == project) && !state.lost.contains($0.id)
+                    }.map { session in
                         var session = session
                         session.hostOffline = session.host.map(state.offline.contains) ?? false
                         return session
@@ -297,6 +360,9 @@ package final class InMemoryDaemon: Sendable {
             checkHost: { host in try self.checkHost(host) },
             installHost: { host in try self.installHost(host) },
             sshHosts: { self.sshConfigHosts },
+            recoveries: { self.recoveries() },
+            restoreSession: { session, host in try self.restoreSession(session, onto: host) },
+            restoreHost: { host in self.restoreHost(host) },
             watch: { session in self.watch(session) }
         )
     }

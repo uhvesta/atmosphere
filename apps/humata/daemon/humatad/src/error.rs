@@ -107,6 +107,37 @@ pub enum HostError {
 
     #[error("{name:?} isn't a plain folder name; give a name without slashes or ..")]
     NotAName { name: String },
+
+    #[error(
+        "couldn't read the {part} in a session's recovery copy; it is damaged, or was made by a newer humatad. Update humatad on this host and restore again"
+    )]
+    BadBackup {
+        part: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    #[error(
+        "couldn't encode a session's recovery copy as JSON, which is a bug in humatad; report it with the host's log"
+    )]
+    EncodeBackup {
+        #[source]
+        source: serde_json::Error,
+    },
+
+    #[error(
+        "the recovery copy has snapshots of the repository {name}, but the restore wasn't given a clone of it on this host. Clone the project's repositories here and restore again"
+    )]
+    NoClone { name: String },
+
+    #[error(
+        "couldn't move the snapshots of the repository {name} on this host. Check that git works there and the disk has room, then try again"
+    )]
+    Snapshots {
+        name: String,
+        #[source]
+        source: WorkspaceError,
+    },
 }
 
 impl HostError {
@@ -130,7 +161,12 @@ impl HostError {
                 pb::ErrorCode::InvalidRequest
             }
             Self::Agent(AgentError::ArchiveWhileWorking { .. }) => pb::ErrorCode::Busy,
-            Self::Agent(AgentError::NoWorkspaces { .. }) => pb::ErrorCode::InvalidRequest,
+            Self::Agent(
+                AgentError::NoWorkspaces { .. }
+                | AgentError::SessionExists { .. }
+                | AgentError::MissingRepository { .. }
+                | AgentError::BadBackendFile { .. },
+            ) => pb::ErrorCode::InvalidRequest,
             Self::Agent(AgentError::Workspace {
                 source: WorkspaceError::ChangeGone { .. },
                 ..
@@ -155,13 +191,17 @@ impl HostError {
             | Self::NotInFolder { .. }
             | Self::FileTooLarge { .. }
             | Self::NotAName { .. }
+            | Self::BadBackup { .. }
+            | Self::NoClone { .. }
             | Self::NoFile
             | Self::NoAction
             | Self::NoBranch
             | Self::NoTurn => pb::ErrorCode::InvalidRequest,
-            Self::FellBehind { .. } | Self::RunGit { .. } | Self::Clone { .. } => {
-                pb::ErrorCode::BackendFailed
-            }
+            Self::FellBehind { .. }
+            | Self::RunGit { .. }
+            | Self::Clone { .. }
+            | Self::Snapshots { .. } => pb::ErrorCode::BackendFailed,
+            Self::EncodeBackup { .. } => pb::ErrorCode::StorageFailed,
             Self::SaveSetup { .. }
             | Self::CreateFolder { .. }
             | Self::CreateChatFolder { .. }
@@ -461,6 +501,26 @@ pub enum DaemonError {
         source: Option<std::io::Error>,
     },
 
+    #[error(
+        "couldn't keep session {session}'s code in its recovery copy at {path}; check that the disk has room and the folder is writable. Deleting the folder loses the code a restore needs"
+    )]
+    Mirror {
+        session: String,
+        path: PathBuf,
+        #[source]
+        source: humata_agent::WorkspaceError,
+    },
+
+    #[error(
+        "host {host:?} named a repository {name:?}, which can't name a folder; the host may run another build of humatad, so install this one on it"
+    )]
+    BadRepositoryName { host: String, name: String },
+
+    #[error(
+        "there is no recovery copy of session {session}: one is kept after each turn while its host is reachable, so a session that never finished a turn while it was has none"
+    )]
+    NoRecovery { session: String },
+
     #[error("host {host:?} didn't answer")]
     Host {
         host: String,
@@ -509,7 +569,10 @@ impl DaemonError {
             | Self::NothingToApprove
             | Self::NoReply => pb::ErrorCode::InvalidRequest,
             Self::UnknownHost { .. } => pb::ErrorCode::UnknownHost,
-            Self::SaveHosts { .. } => pb::ErrorCode::StorageFailed,
+            Self::SaveHosts { .. } | Self::Mirror { .. } => pb::ErrorCode::StorageFailed,
+            Self::BadRepositoryName { .. } | Self::NoRecovery { .. } => {
+                pb::ErrorCode::InvalidRequest
+            }
             Self::HostExists { .. }
             | Self::BadHostName { .. }
             | Self::NoDestination

@@ -306,6 +306,7 @@ pub async fn daemon(
         store,
         Hosts::load(hosts)?,
         hosts.to_owned(),
+        state.join("recovery"),
         build.to_string(),
     );
     let listener = socket::listen(socket).await?;

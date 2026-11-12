@@ -302,3 +302,81 @@ async fn a_folder_without_git_or_without_commits_is_refused() {
 }
 
 mod review;
+
+#[tokio::test]
+async fn snapshots_go_to_a_mirror_and_on_to_a_fresh_clone_a_session_starts_from() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let repository = repository(dir.path(), "app");
+    let repositories = std::slice::from_ref(&repository);
+    let workspaces = Workspaces::new(dir.path().join("worktrees"));
+    let checkouts = workspaces
+        .create("one", repositories, &[])
+        .await
+        .expect("created");
+    let path = &checkouts[0].path;
+    let mirror = dir.path().join("mirror.git");
+    bundle::mirror(&mirror).await.expect("mirror made");
+    assert_eq!(
+        bundle::create(&repository.path, "one", &[]).await.ok(),
+        Some(None)
+    );
+
+    std::fs::write(path.join("a.txt"), "first\n").expect("wrote");
+    workspaces
+        .snapshot("one", 0, &checkouts)
+        .await
+        .expect("snapshot");
+    let haves = bundle::tips(&mirror).await.expect("tips");
+    let first = bundle::create(&repository.path, "one", &haves)
+        .await
+        .expect("bundled")
+        .expect("something new");
+    bundle::apply(&mirror, &first).await.expect("applied");
+    let haves = bundle::tips(&mirror).await.expect("tips");
+    assert_eq!(
+        bundle::create(&repository.path, "one", &haves).await.ok(),
+        Some(None)
+    );
+
+    std::fs::write(path.join("a.txt"), "second\n").expect("wrote");
+    let last = workspaces
+        .snapshot("one", 1, &checkouts)
+        .await
+        .expect("snapshot");
+    let second = bundle::create(&repository.path, "one", &haves)
+        .await
+        .expect("bundled")
+        .expect("something new");
+    assert!(second.len() < first.len());
+    bundle::apply(&mirror, &second).await.expect("applied");
+
+    // A fresh clone elsewhere takes the snapshots from the mirror, and a
+    // session there starts from the last one.
+    let clone = dir.path().join("elsewhere");
+    let status = std::process::Command::new("git")
+        .args(["clone", "--quiet"])
+        .arg(&repository.path)
+        .arg(&clone)
+        .status()
+        .expect("git runs");
+    assert!(status.success());
+    let haves = bundle::tips(&clone).await.expect("tips");
+    let restoring = bundle::create(&mirror, "one", &haves)
+        .await
+        .expect("bundled")
+        .expect("something new");
+    bundle::apply(&clone, &restoring).await.expect("applied");
+    let elsewhere = Workspaces::new(dir.path().join("elsewhere-worktrees"));
+    let moved = Repository {
+        name: "app".into(),
+        path: clone,
+    };
+    let checkouts = elsewhere
+        .create("one", &[moved], &last)
+        .await
+        .expect("created from the snapshot");
+    assert_eq!(
+        read(&checkouts[0].path.join("a.txt")).as_deref(),
+        Some("second\n")
+    );
+}

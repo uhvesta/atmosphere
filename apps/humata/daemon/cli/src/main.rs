@@ -347,6 +347,23 @@ enum HostCommand {
 }
 
 #[derive(Subcommand)]
+enum RecoverCommand {
+    /// List the Mac's recovery copies of sessions on hosts, and which ones
+    /// their host lost.
+    List,
+    /// Set a session up again from its recovery copy: on its host, or with
+    /// --host on another, which it runs on from then on.
+    Session {
+        session: String,
+        /// The host to restore it on; "" for this Mac.
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// Set up again every session a host lost.
+    Host { name: String },
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// List or import the Claude Code and Copilot sessions on a host that
     /// were started outside Humata.
@@ -355,6 +372,10 @@ enum Command {
     /// Add, check, set up or list the machines sessions run on.
     #[command(subcommand)]
     Host(HostCommand),
+    /// Restore sessions a host lost, or move them to another, from the
+    /// copies the Mac keeps.
+    #[command(subcommand)]
+    Recover(RecoverCommand),
     /// Add or list projects.
     #[command(subcommand)]
     Project(ProjectCommand),
@@ -680,6 +701,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             )?;
         }
         Command::Host(command) => host(&client, command).await?,
+        Command::Recover(command) => recover(&client, command).await?,
         Command::Stage(edit) => edit_changes(&client, edit, pb::ChangeAction::Stage).await?,
         Command::Unstage(edit) => edit_changes(&client, edit, pb::ChangeAction::Unstage).await?,
         Command::Revert(edit) => edit_changes(&client, edit, pb::ChangeAction::Revert).await?,
@@ -1073,6 +1095,80 @@ async fn items(client: &Client, project: String) -> Result<Vec<pb::Item>, CliErr
 }
 
 /// A spec from `path`, or from stdin for `-`.
+async fn recover(client: &Client, command: RecoverCommand) -> Result<(), CliError> {
+    use pb::request::Kind as Request;
+    use pb::response::Kind as Response;
+    match command {
+        RecoverCommand::List => {
+            match client
+                .call(Request::ListRecoveries(pb::ListRecoveries {}))
+                .await?
+            {
+                Response::Recoveries(recoveries) => {
+                    for recovery in &recoveries.recoveries {
+                        println!("{}", print::recovery(recovery));
+                    }
+                }
+                other => return Err(unexpected("the recovery copies", &other)),
+            }
+        }
+        RecoverCommand::Session { session, host } => {
+            let host = match host {
+                Some(host) => host,
+                None => recovery_host(client, &session).await?,
+            };
+            let request = Request::RestoreSession(pb::RestoreSession {
+                session_id: session,
+                host,
+            });
+            match client.call(request).await? {
+                Response::SessionRestored(pb::SessionRestored {
+                    session: Some(session),
+                }) => println!("{}", print::session(&session)),
+                other => return Err(unexpected("the session restored", &other)),
+            }
+        }
+        RecoverCommand::Host { name } => {
+            let request = Request::RestoreHost(pb::RestoreHost { host: name });
+            match client.call(request).await? {
+                Response::HostRestored(restored) => {
+                    for session in &restored.restored {
+                        println!("{}", print::session(session));
+                    }
+                    for failure in &restored.failed {
+                        eprintln!("{}\t{}", failure.session_id, failure.message);
+                    }
+                    if !restored.failed.is_empty() {
+                        return Err(CliError::NotAllRestored {
+                            failed: restored.failed.len(),
+                        });
+                    }
+                }
+                other => return Err(unexpected("the sessions restored", &other)),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The host `session`'s recovery copy is of, to restore it there.
+async fn recovery_host(client: &Client, session: &str) -> Result<String, CliError> {
+    use pb::request::Kind as Request;
+    use pb::response::Kind as Response;
+    match client
+        .call(Request::ListRecoveries(pb::ListRecoveries {}))
+        .await?
+    {
+        Response::Recoveries(recoveries) => Ok(recoveries
+            .recoveries
+            .into_iter()
+            .find(|recovery| recovery.session_id == session)
+            .map(|recovery| recovery.host)
+            .unwrap_or_default()),
+        other => Err(unexpected("the recovery copies", &other)),
+    }
+}
+
 async fn host(client: &Client, command: HostCommand) -> Result<(), CliError> {
     use pb::request::Kind as Request;
     use pb::response::Kind as Response;

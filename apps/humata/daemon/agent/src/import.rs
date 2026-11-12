@@ -240,7 +240,7 @@ pub(crate) fn import_into(
 
 /// Whether `id` can be a backend's session id: letters, digits and dashes,
 /// so it names a file or folder and nothing outside it.
-fn is_session_id(id: &str) -> bool {
+pub(crate) fn is_session_id(id: &str) -> bool {
     !id.is_empty()
         && id
             .chars()

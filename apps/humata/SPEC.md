@@ -272,18 +272,20 @@ Structure:
   then connects. Sessions no longer die with the SSH connection, and a
   reconnect re-watches each session from the last event the Mac has.
 - **A recovery copy on the Mac.** For every remote session the daemon keeps,
-  under its state folder: the full event history, each turn's snapshot refs
-  fetched into a bare mirror per repository (`git fetch` over the same SSH),
-  and the backend's own state (Claude's transcript, Copilot's session folder),
-  copied after each turn with zstd.
+  under its state folder: the full event history, each turn's snapshot
+  commits in a bare mirror per repository (git bundles sent over the host's
+  connection, holding only the commits the mirror lacks), and the backend's
+  own state (Claude's transcript, Copilot's session folder), copied after each
+  turn and kept with zstd.
 - **Restoring.**
   - *The machine comes back:* sessions reopen; a turn that was cut off is
     marked aborted, so the session takes messages again.
-  - *The machine is gone:* "Restore session" installs the host program, runs
-    the host's setup again, clones the project's repositories, pushes the
-    snapshot refs from the mirror, recreates the worktrees at the last
-    snapshot, and puts back the history and the backend's state, so the agent
-    resumes with its context.
+  - *The machine is gone:* once the host is installed and set up again
+    (`humata host install`, which reruns its setup), "Restore" clones the
+    project's repositories, sends the snapshot commits the clone lacks from
+    the mirror as a bundle, recreates the worktrees at the last snapshot, and
+    puts back the history and the backend's state, so the agent resumes with
+    its context.
   - *Restoring on another host* is the same steps against a different machine,
     which makes it a move. The session's host changes; its id, tree and item
     stay.
@@ -294,13 +296,13 @@ Work:
 
 - [x] `humatad host` as a detached process with its socket, and `humatad relay` used by SSH
 - [x] Reconnect re-watches from the last event, and a cut turn is marked aborted on restart
-- [ ] Snapshot refs fetched into a mirror on the Mac after each turn
-- [ ] Backend state (Claude transcript, Copilot session folder) copied to the Mac after each turn
-- [ ] Restore a session onto a set-up host: clone, push refs, worktrees, history, backend state
-- [ ] Restore a whole host: every session it had, after reinstalling and rerunning setup
-- [ ] Restore onto another host as a move
+- [x] Snapshot commits bundled into a mirror on the Mac after each turn
+- [x] Backend state (Claude transcript, Copilot session folder) copied to the Mac after each turn
+- [x] Restore a session onto a set-up host: clone, bundle in the snapshots, worktrees, history, backend state (`humata recover session`)
+- [x] Restore a whole host: every session it lost (`humata recover host`, after `humata host install`)
+- [x] Restore onto another host, or this Mac, as a move
 - [ ] Mid-turn snapshots after each write tool
-- [ ] The Hosts view shows each host's sessions' recovery state and a Restore button
+- [x] The Hosts view shows each host's sessions' recovery copies, Restore, Restore All and Move
 
 **Done when:** an end-to-end test runs a turn on an SSH host, kills the host
 process and deletes its state and worktrees, restores the session, and finds
@@ -406,6 +408,7 @@ the worktree gone.
 | --- | --- | --- |
 | Sessions that share a working copy can collide. | One turn at a time in a shared copy; queue the rest. | Settled in 2 |
 | A host killed mid-turn leaves a half-written turn. | Mid-turn snapshots after each write tool, and a cut turn is marked aborted on restart. | D |
+| A first backup of a repository with a long history may not fit in one 64 MiB frame. | Split bundles across frames, or send the first one by `git fetch` over SSH. | D, if it happens |
 | The recovery copy grows without bound. | Keep every snapshot ref (they're deltas), compress backend state, and prune archived sessions' copies after a set time. | D |
 | A backend's state may not resume on another machine (paths inside transcripts). | Restore into the same paths under the cache folder; where a backend refuses, resume with the history summarized as the first message and say so. | D |
 | A PTY over the protocol may be slow over SSH. | Send output in batches with the fast zstd level, and limit replay to the last 256 KiB. | E |

@@ -104,6 +104,14 @@ package struct DaemonClient: Sendable {
     package var installHost: @Sendable (_ host: String) async throws -> String
     /// The hosts named in ~/.ssh/config, to add one by.
     package var sshHosts: @Sendable () async throws -> [String]
+    /// The Mac's copies of the sessions on hosts, kept after each turn.
+    package var recoveries: @Sendable () async throws -> [Recovery]
+    /// Sets the session up again from its copy on `host`, or this Mac if
+    /// nil: its own host if that lost it, or another, which it runs on
+    /// from then on.
+    package var restoreSession: @Sendable (_ session: String, _ host: String?) async throws -> Session
+    /// Sets up again every session the host lost.
+    package var restoreHost: @Sendable (_ host: String) async throws -> HostRestore
     /// The session's history, then each new event. Ends when the calling task
     /// is cancelled; throws if the connection drops.
     package var watch: @Sendable (_ session: String) async -> AsyncThrowingStream<SessionEvent, any Error> = { _ in

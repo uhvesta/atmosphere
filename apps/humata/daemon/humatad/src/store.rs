@@ -14,6 +14,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use crate::board::{Change, Item, ItemFields, ItemPatch, Priority, Status};
 use crate::error::StoreError;
 
+mod recoveries;
 mod requests;
 mod review;
 
@@ -153,6 +154,24 @@ const MIGRATIONS: &[&str] = &["
         answered_unix_ms INTEGER
     );
     CREATE INDEX open_agent_requests ON agent_requests (answered_unix_ms, created_unix_ms);
+", "
+    -- The recovery copy of each session on another machine, kept after its
+    -- host stops listing it: a compressed SessionBackup without bundles,
+    -- whose snapshots are in the mirrors under the state folder.
+    CREATE TABLE recoveries (
+        session_id TEXT PRIMARY KEY,
+        host TEXT NOT NULL,
+        name TEXT NOT NULL,
+        turns INTEGER NOT NULL,
+        backup BLOB NOT NULL,
+        backed_up_unix_ms INTEGER NOT NULL
+    );
+    -- Hosts a session was moved away from, whose copy of it is left out.
+    CREATE TABLE moved_sessions (
+        session_id TEXT NOT NULL,
+        host TEXT NOT NULL,
+        PRIMARY KEY (session_id, host)
+    );
 "];
 
 #[derive(Clone, Debug, PartialEq, Eq)]

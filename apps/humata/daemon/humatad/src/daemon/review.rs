@@ -18,7 +18,7 @@ const BEFORE: usize = 3;
 impl Daemon {
     /// Sends `request` to `host` and returns its answer, or what it refused
     /// with.
-    async fn ask(
+    pub(super) async fn ask(
         &self,
         host: &str,
         request: pb::request::Kind,

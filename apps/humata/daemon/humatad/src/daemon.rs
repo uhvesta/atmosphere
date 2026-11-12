@@ -23,6 +23,7 @@ use humata_agent::Repository;
 const REWATCH_FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 const REWATCH_LONGEST_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
+mod recovery;
 mod review;
 
 /// Answers clients: sessions on this Mac go to the local host, others to the
@@ -43,6 +44,11 @@ pub struct Daemon {
     tool_calls: mpsc::UnboundedSender<ToolCall>,
     /// This daemon, for work that outlives the request that started it.
     me: Weak<Daemon>,
+    /// Where recovery copies' code is kept, a mirror per repository.
+    recovery: PathBuf,
+    /// The sessions being backed up, each with whether to back it up again
+    /// once done.
+    backing_up: std::sync::Mutex<HashMap<String, bool>>,
 }
 
 impl Daemon {
@@ -52,6 +58,7 @@ impl Daemon {
         store: Store,
         hosts: Hosts,
         hosts_file: PathBuf,
+        recovery: PathBuf,
         build: String,
     ) -> Arc<Self> {
         let (tool_calls, calls) = mpsc::unbounded_channel();
@@ -75,6 +82,8 @@ impl Daemon {
             store: Arc::new(store),
             build,
             tool_calls,
+            recovery,
+            backing_up: std::sync::Mutex::default(),
         });
         tokio::spawn(answer_tool_calls(Arc::downgrade(&daemon), calls));
         daemon
@@ -302,7 +311,7 @@ impl Daemon {
         &self,
         host: &str,
         project: &crate::store::Project,
-    ) -> Result<Vec<pb::Repository>, DaemonError> {
+    ) -> Result<pb::RepositoriesCloned, DaemonError> {
         let mut repositories = Vec::new();
         for repository in &project.repositories {
             repositories.push(pb::RemoteRepository {
@@ -317,7 +326,7 @@ impl Daemon {
         let remote = self.remote(host)?;
         let client = remote.client(&self.hosts_file, &self.build).await?;
         match remote.call(&client, request).await? {
-            pb::response::Kind::RepositoriesCloned(cloned) => Ok(cloned.repositories),
+            pb::response::Kind::RepositoriesCloned(cloned) => Ok(cloned),
             _ => Err(DaemonError::Host {
                 host: host.to_owned(),
                 source: ClientError::Unexpected {
@@ -694,6 +703,12 @@ impl Daemon {
                 }
             };
             for mut session in sessions {
+                if !host.is_empty() && self.store.moved_away(&session.id, &host)? {
+                    continue;
+                }
+                if !host.is_empty() && !session.host_offline {
+                    self.back_up_soon(&host, &session.id, Some(session.turns));
+                }
                 self.own(&mut session, &host, None, None)?;
                 if project.is_empty() || session.project_id == project {
                     all.push(session);
@@ -797,7 +812,7 @@ impl Daemon {
                     .map(convert::wire_repository)
                     .collect()
             } else {
-                self.clone_on(&start.host, &project).await?
+                self.clone_on(&start.host, &project).await?.repositories
             };
         }
         if start.instructions.is_empty() {
@@ -907,6 +922,21 @@ impl Daemon {
                             | Some(pb::session_event::Kind::Checkpoint(_))
                     ) {
                         keep(&events);
+                    }
+                    if matches!(event.kind, Some(pb::session_event::Kind::Idle(_))) {
+                        if let Some(daemon) = daemon.upgrade() {
+                            let turns = events
+                                .iter()
+                                .filter(|event| {
+                                    matches!(
+                                        event.kind,
+                                        Some(pb::session_event::Kind::TurnEnded(_))
+                                    )
+                                })
+                                .count();
+                            let turns = u32::try_from(turns).unwrap_or(u32::MAX);
+                            daemon.back_up_soon(&host, &session, Some(turns));
+                        }
                     }
                 }
                 if items.send(item).await.is_err() {
@@ -1114,6 +1144,24 @@ impl Daemon {
                 let installed = self.install_host(std::mem::take(install)).await?;
                 return Ok(Reply::Response(Response::HostInstalled(installed)));
             }
+            Request::ListRecoveries(_) => {
+                let recoveries = self.recoveries().await?;
+                return Ok(Reply::Response(Response::Recoveries(recoveries)));
+            }
+            Request::RestoreSession(restore) => {
+                let session = self
+                    .restore_session(&restore.session_id, &restore.host)
+                    .await?;
+                return Ok(Reply::Response(Response::SessionRestored(
+                    pb::SessionRestored {
+                        session: Some(session),
+                    },
+                )));
+            }
+            Request::RestoreHost(restore) => {
+                let restored = self.restore_host(&restore.host).await?;
+                return Ok(Reply::Response(Response::HostRestored(restored)));
+            }
             Request::ListSshHosts(_) => {
                 return Ok(Reply::Response(Response::SshHosts(pb::SshHosts {
                     names: ssh_config_hosts(),
@@ -1124,7 +1172,9 @@ impl Daemon {
             | Request::CloneRepositories(_)
             | Request::WatchToolCalls(_)
             | Request::AnswerToolCall(_)
-            | Request::StopHost(_) => {
+            | Request::StopHost(_)
+            | Request::BackupSession(_)
+            | Request::RestoreBackup(_) => {
                 return Err(DaemonError::ForHostsOnly);
             }
             Request::WatchSession(watch) => {

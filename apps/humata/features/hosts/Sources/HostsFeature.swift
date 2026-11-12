@@ -5,7 +5,8 @@ import HumataDaemonClient
 /// The machines sessions run on over SSH: each one's health, checked when
 /// the list shows and on request; adding one from ~/.ssh/config; installing
 /// Humata's program on one; its agents' variables and setup script; the
-/// sessions on it that couldn't be opened; and removing one.
+/// sessions on it that couldn't be opened; the Mac's copies of its sessions,
+/// to restore those it lost or move them elsewhere; and removing one.
 @Reducer
 package struct HostsFeature {
     @ObservableState
@@ -19,6 +20,10 @@ package struct HostsFeature {
         package var editor: HostEditorFeature.State?
         /// The selected host's sessions whose files couldn't be read.
         package var skipped: IdentifiedArrayOf<SkippedSession> = []
+        /// The Mac's copies of the selected host's sessions.
+        package var recoveries: IdentifiedArrayOf<Recovery> = []
+        /// The sessions being restored or moved.
+        package var restoring: Set<Recovery.ID> = []
         /// Why the hosts couldn't be read, and what to do about it.
         package var failure: String?
         @Presents package var destination: Destination.State?
@@ -64,6 +69,15 @@ package struct HostsFeature {
         case skippedLoaded(RemoteHost.ID, [SkippedSession])
         case removeSkippedTapped(SkippedSession.ID)
         case skippedRemoved(RemoteHost.ID, SkippedSession.ID)
+        case recoveriesLoaded(RemoteHost.ID, [Recovery])
+        /// Restores the session on the selected host, if that lost it.
+        case restoreTapped(Recovery.ID)
+        /// Restores every session the selected host lost.
+        case restoreAllTapped
+        /// Moves the session to `host`, or this Mac if nil, from its copy.
+        case moveTapped(Recovery.ID, to: RemoteHost.ID?)
+        case restored(RemoteHost.ID, [Recovery.ID])
+        case restoreFailed(RemoteHost.ID, [Recovery.ID], title: String, message: String)
         case failed(title: String, message: String)
         case editor(HostEditorFeature.Action)
         case destination(PresentationAction<Destination.Action>)
@@ -117,6 +131,74 @@ package struct HostsFeature {
                 // Reachable now, it can say what it skipped.
                 guard id == state.selection, case .reachable = health else { return .none }
                 return loadSkipped(id)
+
+            case .recoveriesLoaded(let id, let recoveries):
+                guard id == state.selection else { return .none }
+                state.recoveries = IdentifiedArray(
+                    recoveries.filter { $0.host == id }, uniquingIDsWith: { _, last in last })
+                return .none
+
+            case .restoreTapped(let id):
+                guard let host = state.selection, !state.restoring.contains(id) else { return .none }
+                state.restoring.insert(id)
+                return .run { send in
+                    _ = try await daemon.restoreSession(id, host)
+                    await send(.restored(host, [id]))
+                } catch: { error, send in
+                    await send(
+                        .restoreFailed(
+                            host, [id], title: "Couldn't restore the session", message: error.localizedDescription))
+                }
+
+            case .restoreAllTapped:
+                guard let host = state.selection else { return .none }
+                let lost = state.recoveries.filter { !$0.onHost && !state.restoring.contains($0.id) }.map(\.id)
+                guard !lost.isEmpty else { return .none }
+                state.restoring.formUnion(lost)
+                return .run { send in
+                    let restore = try await daemon.restoreHost(host)
+                    if restore.failed.isEmpty {
+                        await send(.restored(host, lost))
+                    } else {
+                        let message = restore.failed.map { "\($0.id): \($0.message)" }.joined(separator: "\n\n")
+                        let title =
+                            restore.failed.count == 1
+                            ? "Couldn't restore 1 session" : "Couldn't restore \(restore.failed.count) sessions"
+                        await send(.restoreFailed(host, lost, title: title, message: message))
+                    }
+                } catch: { error, send in
+                    await send(
+                        .restoreFailed(
+                            host, lost, title: "Couldn't restore the sessions", message: error.localizedDescription))
+                }
+
+            case .moveTapped(let id, let target):
+                guard let host = state.selection, !state.restoring.contains(id) else { return .none }
+                state.restoring.insert(id)
+                return .run { send in
+                    _ = try await daemon.restoreSession(id, target)
+                    await send(.restored(host, [id]))
+                } catch: { error, send in
+                    await send(
+                        .restoreFailed(
+                            host, [id], title: "Couldn't move the session", message: error.localizedDescription))
+                }
+
+            case .restored(let host, let ids):
+                state.restoring.subtract(ids)
+                guard host == state.selection else { return .none }
+                return loadRecoveries(host)
+
+            case .restoreFailed(let host, let ids, let title, let message):
+                state.restoring.subtract(ids)
+                state.destination = .alert(
+                    AlertState {
+                        TextState(title)
+                    } message: {
+                        TextState(message)
+                    })
+                guard host == state.selection else { return .none }
+                return loadRecoveries(host)
 
             case .skippedLoaded(let id, let skipped):
                 guard id == state.selection else { return .none }
@@ -223,8 +305,19 @@ package struct HostsFeature {
         state.selection = id
         state.editor = state.selected.map(HostEditorFeature.State.init)
         state.skipped = []
+        state.recoveries = []
         guard let id else { return .none }
-        return loadSkipped(id)
+        guard !id.isEmpty else { return loadSkipped(id) }
+        return .merge(loadSkipped(id), loadRecoveries(id))
+    }
+
+    /// Copies are kept on this Mac, so they list even while the host is
+    /// unreachable.
+    private func loadRecoveries(_ id: RemoteHost.ID) -> Effect<Action> {
+        .run { send in
+            await send(.recoveriesLoaded(id, (try? await daemon.recoveries()) ?? []))
+        }
+        .cancellable(id: RecoveriesLoad.id, cancelInFlight: true)
     }
 
     /// One that can't be reached has none to list until it can be.
@@ -246,6 +339,7 @@ package struct HostsFeature {
 }
 
 private enum SkippedLoad: Hashable { case id }
+private enum RecoveriesLoad: Hashable { case id }
 
 extension HostsFeature.Destination.State: Equatable {}
 

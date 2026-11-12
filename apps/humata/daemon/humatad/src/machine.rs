@@ -222,7 +222,7 @@ impl Machine {
     pub async fn clone(
         &self,
         clone: pb::CloneRepositories,
-    ) -> Result<Vec<pb::Repository>, HostError> {
+    ) -> Result<pb::RepositoriesCloned, HostError> {
         let folder = self.state.join("repos").join(plain(&clone.folder)?);
         let mut cloned = Vec::new();
         for repository in clone.repositories {
@@ -256,7 +256,19 @@ impl Machine {
                 path: path.display().to_string(),
             });
         }
-        Ok(cloned)
+        let mut tips = Vec::with_capacity(cloned.len());
+        for repository in &cloned {
+            let commits = humata_agent::bundle::tips(Path::new(&repository.path)).await;
+            tips.push(pb::RepositoryCommits {
+                name: repository.name.clone(),
+                // Without them, what is sent is only larger.
+                commits: commits.unwrap_or_default(),
+            });
+        }
+        Ok(pb::RepositoriesCloned {
+            repositories: cloned,
+            tips,
+        })
     }
 }
 
@@ -458,7 +470,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("{error}"));
 
         assert_eq!(first, second);
-        assert!(Path::new(&first[0].path).join(".git").exists());
+        assert!(Path::new(&first.repositories[0].path).join(".git").exists());
         assert!(matches!(
             machine.clone(request("../escape")).await,
             Err(HostError::NotAName { .. })

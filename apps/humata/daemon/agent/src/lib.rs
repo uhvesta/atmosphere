@@ -9,6 +9,7 @@
 //! to play one turn. It keeps each session's history as JSON lines on disk,
 //! queues and steers turns, holds approvals and forks.
 
+mod backup;
 mod claude;
 mod copilot;
 mod env;
@@ -26,6 +27,7 @@ use std::future::Future;
 
 use tokio::sync::broadcast;
 
+pub use backup::{BackendFile, Backup};
 pub use claude::{CLAUDE_VERSION, ClaudeError, ClaudeOptions, ClaudeRunner, McpServer};
 pub use copilot::{COPILOT_VERSION, CopilotError, CopilotOptions, CopilotProvider, CopilotRunner};
 pub use env::Env;
@@ -34,6 +36,7 @@ pub use event::{
     ApprovalMode, Event, EventId, EventKind, ForkOptions, Parent, PermissionKind, SendMode,
     SessionId, SessionRecord, SessionState, SessionUpdate, StartOptions,
 };
+pub use humata_workspace::bundle;
 pub use humata_workspace::{
     Action, Changes, Checkout, Edit, FileDiff, FileRef, FileStatus, Hunk, HunkAt, Line, LineKind,
     Query, Range, Repository, Snapshot, WorkspaceError, Workspaces,
@@ -148,6 +151,23 @@ pub trait Agent: Send + Sync {
         &self,
         external: &str,
         name: Option<String>,
+    ) -> impl Future<Output = Result<SessionRecord, Self::Error>> + Send;
+
+    /// What sets the session up again elsewhere: its record, history and
+    /// the backend's state of it.
+    fn backup(
+        &self,
+        session: &SessionId,
+    ) -> impl Future<Output = Result<Backup, Self::Error>> + Send;
+
+    /// Sets up `backup`'s session on this host, working in `repositories`
+    /// (by name, those of its record as cloned here) at its last snapshot,
+    /// which they must hold. A turn the backup was taken during is closed
+    /// as aborted. Refused if the session is here already.
+    fn restore(
+        &self,
+        backup: Backup,
+        repositories: Vec<Repository>,
     ) -> impl Future<Output = Result<SessionRecord, Self::Error>> + Send;
 
     /// Renames, archives or unarchives the session, or marks it as the

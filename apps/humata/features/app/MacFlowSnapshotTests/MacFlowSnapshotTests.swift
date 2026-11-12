@@ -365,8 +365,8 @@ final class MacFlowSnapshotTests: XCTestCase {
     }
 
     /// Two hosts: one set up and working, one Humata isn't installed on
-    /// yet; adding a third from the SSH config; and a session whose host
-    /// went offline.
+    /// yet; adding a third from the SSH config; the Mac's copies of a host's
+    /// sessions, one of which it lost; and a session whose host went offline.
     func testHosts() async throws {
         let daemon = InMemoryDaemon(sshHosts: ["build-box", "gpu", "mini"])
         _ = try await daemon.client.addHost("build-box", "build-box")
@@ -429,6 +429,15 @@ final class MacFlowSnapshotTests: XCTestCase {
         await flow.step("add host")
 
         store.send(.hosts(.presented(.destination(.dismiss))))
+        let lost = try await daemon.client.start(
+            StartRequest(backend: .claude, name: "Bump the tokio version", host: "build-box", projectID: project.id))
+        daemon.lose(session: lost.id)
+        store.send(.hosts(.presented(.selected("build-box"))))
+        try await until { store.hosts?.recoveries.count == 2 }
+        await flow.step("recovery copies")
+
+        store.send(.hosts(.presented(.restoreTapped(lost.id))))
+        try await until { store.hosts?.recoveries.allSatisfy(\.onHost) == true }
         daemon.setOffline("build-box", true)
         store.send(.sidebar(.selected(.session(session.id))))
         store.send(.sidebar(.refresh))
