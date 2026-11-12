@@ -145,6 +145,7 @@ package final class InMemoryDaemon: Sendable {
             createProject: { name, repositories, instructions in
                 try self.createProject(name: name, repositories: repositories, instructions: instructions)
             },
+            deleteProject: { project in try self.deleteProject(project) },
             sessions: { project in
                 self.state.withValue { state in
                     state.sessions.filter { project == nil || $0.projectID == project }.map { session in
@@ -222,6 +223,23 @@ package final class InMemoryDaemon: Sendable {
 
     func known(_ session: String) throws {
         guard state.value.histories[session] != nil else { throw Self.unknown(session) }
+    }
+
+    private func deleteProject(_ project: String) throws {
+        try state.withValue { state in
+            guard let index = state.projects.firstIndex(where: { $0.id == project }) else {
+                throw DaemonError.refused(.unknownProject, message: "There is no project \(project).")
+            }
+            guard !state.sessions.contains(where: { $0.projectID == project && !$0.archived }) else {
+                throw DaemonError.refused(
+                    .busy, message: "The project still has sessions working in it; archive them first.")
+            }
+            state.projects.remove(at: index)
+            for session in state.sessions.indices where state.sessions[session].projectID == project {
+                state.sessions[session].projectID = nil
+                state.sessions[session].itemID = nil
+            }
+        }
     }
 
     private func createProject(name: String, repositories: [Repository], instructions: String) throws -> Project {
@@ -478,6 +496,7 @@ package final class InMemoryDaemon: Sendable {
             state.histories[session, default: []].append(event)
             if let index = state.sessions.firstIndex(where: { $0.id == session }) {
                 state.sessions[index].state = Self.state(after: kind, waiting: state.paused[session] != nil)
+                state.sessions[index].lastActive = event.time
                 if kind.endsTurn { state.sessions[index].turns += 1 }
                 switch kind {
                 case .turnStarted, .turnEnded: state.sessions[index].pending = []

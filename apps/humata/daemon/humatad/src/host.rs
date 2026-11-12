@@ -376,6 +376,7 @@ impl Host {
             }
             Request::CreateProject(_)
             | Request::ListProjects(_)
+            | Request::DeleteProject(_)
             | Request::CreateItem(_)
             | Request::UpdateItem(_)
             | Request::ListItems(_)

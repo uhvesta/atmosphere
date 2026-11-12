@@ -75,6 +75,9 @@ enum ProjectCommand {
     },
     /// List the projects.
     List,
+    /// Delete a project and its board. Archive its sessions first; they are
+    /// kept, in no project.
+    Delete { project: String },
 }
 
 /// Where an item is on the board.
@@ -555,6 +558,16 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 }
                 other => return Err(unexpected("the projects", &other)),
             }
+        }
+        Command::Project(ProjectCommand::Delete { project }) => {
+            let request = Request::DeleteProject(pb::DeleteProject {
+                project_id: project,
+            });
+            expect_ok(
+                client.call(request).await?,
+                |response| matches!(response, Response::ProjectDeleted(_)),
+                "ProjectDeleted",
+            )?;
         }
         Command::Item(command) => item(&client, command).await?,
         Command::Board(BoardCommand::Log { project }) => {

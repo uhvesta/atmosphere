@@ -308,6 +308,11 @@ pub enum DaemonError {
     ForHostsOnly,
 
     #[error(
+        "{name} still has {working} sessions that aren't archived; archive them first. Its archived sessions are kept, under Archived"
+    )]
+    ProjectInUse { name: String, working: usize },
+
+    #[error(
         "there is no host named {host:?}; add it with `humata host add` (it is kept in {hosts}), or leave the host empty for this Mac"
     )]
     UnknownHost { host: String, hosts: PathBuf },
@@ -445,6 +450,7 @@ impl DaemonError {
             ) => pb::ErrorCode::InvalidRequest,
             Self::Store(_) => pb::ErrorCode::StorageFailed,
             Self::Refused { code, .. } => *code,
+            Self::ProjectInUse { .. } => pb::ErrorCode::Busy,
             Self::NoFile | Self::NoComment | Self::LinesOutside { .. } | Self::NothingToReview => {
                 pb::ErrorCode::InvalidRequest
             }

@@ -22,9 +22,45 @@ package struct ProjectsFeature {
         /// Why the list couldn't be read, and what to do about it; nil once
         /// it was.
         package var failure: String?
+        /// The names to look for; empty to show every project.
+        package var search = ""
+        /// When the list was last read, for how long ago each session was
+        /// active.
+        package var now: Date?
         @Presents package var destination: Destination.State?
 
         package init() {}
+
+        /// The projects, the most recently active first. One with nothing in
+        /// it yet is new, so it comes first.
+        package var sortedProjects: [Project] {
+            let active = Dictionary(grouping: sessions.filter { $0.projectID != nil }) { $0.projectID ?? "" }
+                .mapValues { $0.map(Self.activity).max() ?? .distantFuture }
+            return newestFirst(Array(projects)) { active[$0.id] ?? .distantFuture }
+        }
+
+        /// What matches the search: the projects and the sessions, archived
+        /// or not, whose names contain it; nil when nothing is searched for.
+        package var matches: (projects: [Project], sessions: [Session])? {
+            let text = search.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            return (
+                sortedProjects.filter { $0.name.localizedStandardContains(text) },
+                Self.sorted(sessions.filter { $0.title.localizedStandardContains(text) })
+            )
+        }
+
+        /// When anything last happened in `session`; one where nothing has
+        /// yet was just started.
+        static func activity(_ session: Session) -> Date {
+            session.lastActive ?? .distantFuture
+        }
+
+        /// `sessions`, the most recently active first, in the order given
+        /// when as recent.
+        static func sorted(_ sessions: [Session]) -> [Session] {
+            newestFirst(sessions, by: activity)
+        }
 
         package func sessions(in project: Project.ID) -> [Session] {
             sessions.filter { $0.projectID == project }
@@ -45,10 +81,15 @@ package struct ProjectsFeature {
                 $0.parentID ?? ""
             }
             func node(_ session: Session) -> SessionNode {
-                let under = (children[session.id] ?? []).map(node)
+                let under = Self.sortedNodes((children[session.id] ?? []).map(node))
                 return SessionNode(session: session, children: under.isEmpty ? nil : under)
             }
-            return shown.filter { $0.parentID.map(ids.contains) != true }.map(node)
+            return Self.sortedNodes(shown.filter { $0.parentID.map(ids.contains) != true }.map(node))
+        }
+
+        /// `nodes`, the one whose tree was most recently active first.
+        static func sortedNodes(_ nodes: [SessionNode]) -> [SessionNode] {
+            newestFirst(nodes, by: \.activity)
         }
 
         /// Archived sessions in every project.
@@ -71,7 +112,11 @@ package struct ProjectsFeature {
         case rename(RenameSessionFeature)
         case move(MoveSessionFeature)
         case compare(CompareFeature)
-        case alert(AlertState<Never>)
+        case alert(AlertState<Alert>)
+
+        package enum Alert: Equatable {
+            case deleteProject(Project.ID)
+        }
     }
 
     package enum Action {
@@ -86,6 +131,11 @@ package struct ProjectsFeature {
         case newSessionTapped(projectID: Project.ID)
         /// A session in no project: a chat, in a folder or its own.
         case newChatTapped
+        case searchChanged(String)
+        /// Asks before deleting the project, or says what to do first.
+        case deleteProjectTapped(Project.ID)
+        case projectDeleted(Project.ID)
+        case deleteFailed(String)
         case selected(SidebarItem?)
         case renameTapped(Session.ID)
         case moveTapped(Session.ID)
@@ -117,6 +167,7 @@ package struct ProjectsFeature {
     @Dependency(\.daemon) var daemon
     @Dependency(\.continuousClock) var clock
     @Dependency(\.notifications) var notifications
+    @Dependency(\.date) var date
 
     private enum CancelID { case refresh, clicks }
 
@@ -150,6 +201,7 @@ package struct ProjectsFeature {
                 state.failure = nil
                 let notices = state.loadedOnce ? Self.notices(new: inbox, old: state.inbox, open: state.selection) : []
                 state.loadedOnce = true
+                state.now = date.now
                 state.inbox = inbox
                 state.projects = IdentifiedArray(uniqueElements: projects)
                 state.sessions = IdentifiedArray(sessions, uniquingIDsWith: { _, last in last })
@@ -176,6 +228,70 @@ package struct ProjectsFeature {
 
             case .newChatTapped:
                 state.destination = .newSession(NewSessionFeature.State(project: nil))
+                return .none
+
+            case .searchChanged(let text):
+                state.search = text
+                return .none
+
+            case .deleteProjectTapped(let id):
+                guard let project = state.projects[id: id] else { return .none }
+                let working = state.sessions(in: id).filter { !$0.archived }.count
+                guard working == 0 else {
+                    state.destination = .alert(
+                        AlertState {
+                            TextState("Archive \(project.name)'s Sessions First")
+                        } message: {
+                            TextState(
+                                working == 1
+                                    ? "A session still works in \(project.name). Archive it, then delete the project."
+                                    : "\(working) sessions still work in \(project.name). Archive them, then delete "
+                                        + "the project.")
+                        })
+                    return .none
+                }
+                state.destination = .alert(
+                    AlertState {
+                        TextState("Delete \(project.name)?")
+                    } actions: {
+                        ButtonState(role: .destructive, action: .deleteProject(id)) {
+                            TextState("Delete Project")
+                        }
+                        ButtonState(role: .cancel) {
+                            TextState("Cancel")
+                        }
+                    } message: {
+                        TextState(
+                            "Its board and specs are deleted, and can't be brought back. Its archived sessions are "
+                                + "kept, under Archived, and its repositories are left as they are.")
+                    })
+                return .none
+
+            case .destination(.presented(.alert(.deleteProject(let id)))):
+                return .run { send in
+                    try await daemon.deleteProject(id)
+                    await send(.projectDeleted(id))
+                    await send(await load())
+                } catch: { error, send in
+                    await send(.deleteFailed(error.localizedDescription))
+                }
+
+            case .projectDeleted(let id):
+                state.projects.remove(id: id)
+                for session in state.sessions where session.projectID == id {
+                    state.sessions[id: session.id]?.projectID = nil
+                    state.sessions[id: session.id]?.itemID = nil
+                }
+                if state.selection == .board(id) { state.selection = nil }
+                return .none
+
+            case .deleteFailed(let message):
+                state.destination = .alert(
+                    AlertState {
+                        TextState("Couldn't delete the project")
+                    } message: {
+                        TextState(message)
+                    })
                 return .none
 
             case .selected(let item):
@@ -305,6 +421,15 @@ package struct ProjectsFeature {
 
 extension ProjectsFeature.Destination.State: Equatable {}
 
+/// `items`, the latest by `time` first, in the order given when as recent.
+private func newestFirst<Item>(_ items: [Item], by time: (Item) -> Date) -> [Item] {
+    items.enumerated().sorted { left, right in
+        let (earlier, later) = (time(left.element), time(right.element))
+        return earlier == later ? left.offset < right.offset : earlier > later
+    }
+    .map(\.element)
+}
+
 /// A row of the sidebar to open.
 package enum SidebarItem: Hashable, Sendable {
     case inbox
@@ -320,6 +445,11 @@ package struct SessionNode: Identifiable, Hashable, Sendable {
     package var children: [SessionNode]?
 
     package var id: Session.ID { session.id }
+
+    /// When anything last happened in it or a fork of it.
+    var activity: Date {
+        ([ProjectsFeature.State.activity(session)] + (children ?? []).map(\.activity)).max() ?? .distantFuture
+    }
 }
 
 /// A new project: its name, its repositories' folders on this Mac and

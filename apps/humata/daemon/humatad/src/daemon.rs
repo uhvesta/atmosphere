@@ -420,6 +420,24 @@ impl Daemon {
     /// Every host's sessions, or only `project`'s if it isn't empty. A host
     /// that can't be reached shows what it last had, marked offline, so one
     /// machine being off doesn't hide the rest.
+    async fn delete_project(&self, id: &str) -> Result<(), DaemonError> {
+        let project = self.store.project(id)?;
+        let working = self
+            .list(id)
+            .await?
+            .sessions
+            .iter()
+            .filter(|session| !session.archived)
+            .count();
+        if working > 0 {
+            return Err(DaemonError::ProjectInUse {
+                name: project.name,
+                working,
+            });
+        }
+        Ok(self.store.delete_project(id)?)
+    }
+
     async fn list(&self, project: &str) -> Result<pb::Sessions, DaemonError> {
         let mut all = Vec::new();
         // Every host at once, so a slow one costs its own time only.
@@ -691,6 +709,12 @@ impl Daemon {
                     pb::ProjectCreated {
                         project: Some(project),
                     },
+                )));
+            }
+            Request::DeleteProject(delete) => {
+                self.delete_project(&delete.project_id).await?;
+                return Ok(Reply::Response(Response::ProjectDeleted(
+                    pb::ProjectDeleted {},
                 )));
             }
             Request::ListProjects(_) => {

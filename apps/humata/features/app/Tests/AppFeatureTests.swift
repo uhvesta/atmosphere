@@ -14,6 +14,7 @@ final class AppFeatureTests: XCTestCase {
         let store = TestStore(initialState: state) {
             AppFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
         }
         store.exhaustivity = .off
@@ -49,6 +50,7 @@ final class AppFeatureTests: XCTestCase {
         let store = TestStore(initialState: state) {
             AppFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
         }
         store.exhaustivity = .off
@@ -70,6 +72,7 @@ final class AppFeatureTests: XCTestCase {
         let store = TestStore(initialState: state) {
             AppFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = InMemoryDaemon().client
         }
         store.exhaustivity = .off
@@ -94,6 +97,7 @@ final class AppFeatureTests: XCTestCase {
         let store = TestStore(initialState: state) {
             AppFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
         }
         store.exhaustivity = .off

@@ -19,6 +19,7 @@ final class DaemonLifecycleTests: XCTestCase {
         let store = TestStore(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemonService = service(current: true, restarts: restarts)
             $0.daemon = InMemoryDaemon().client
         }
@@ -35,6 +36,7 @@ final class DaemonLifecycleTests: XCTestCase {
         let store = TestStore(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemonService = service(current: false, restarts: restarts)
             $0.daemon = InMemoryDaemon().client
         }
@@ -52,6 +54,7 @@ final class DaemonLifecycleTests: XCTestCase {
         let store = TestStore(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemonService = service(current: false, restarts: restarts)
             $0.daemon.sessions = { _ in sessions.value }
             $0.daemon.projects = { [] }
@@ -82,6 +85,7 @@ final class DaemonLifecycleTests: XCTestCase {
         let store = TestStore(initialState: state) {
             AppFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemonService = service(current: false, restarts: restarts)
             $0.daemon = InMemoryDaemon().client
         }
@@ -98,6 +102,7 @@ final class DaemonLifecycleTests: XCTestCase {
         let store = TestStore(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemonService = DaemonService(
                 start: { if !approved.value { throw DaemonServiceError.needsApproval } }, isCurrent: { true },
                 restart: {}, openLoginItems: { opened.setValue(true) })

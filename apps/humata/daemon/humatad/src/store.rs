@@ -294,6 +294,31 @@ impl Store {
         found.ok_or_else(|| StoreError::UnknownProject { id: id.to_owned() })
     }
 
+    /// Removes `id`, its repositories and its board. Its sessions are kept,
+    /// in no project and on no item.
+    pub fn delete_project(&self, id: &str) -> Result<(), StoreError> {
+        self.project(id)?;
+        let mut connection = self.lock();
+        let transaction = connection.transaction().map_err(self.failed())?;
+        let deleted = (|| {
+            transaction.execute(
+                "UPDATE sessions SET project_id = NULL, item_id = NULL WHERE project_id = ?1",
+                [id],
+            )?;
+            transaction.execute("DELETE FROM board_changes WHERE project_id = ?1", [id])?;
+            transaction.execute("DELETE FROM items WHERE project_id = ?1", [id])?;
+            transaction.execute(
+                "DELETE FROM project_repositories WHERE project_id = ?1",
+                [id],
+            )?;
+            transaction.execute("DELETE FROM projects WHERE id = ?1", [id])?;
+            Ok(())
+        })();
+        deleted
+            .and_then(|()| transaction.commit())
+            .map_err(self.failed())
+    }
+
     /// Records that `session` runs on `host`, and, if given, belongs to
     /// `project` and works on `item`. A session's project and item, once
     /// set, are kept; [`Store::move_session`] changes its item.

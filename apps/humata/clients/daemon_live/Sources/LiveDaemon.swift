@@ -46,6 +46,13 @@ extension DaemonClient {
                 }
                 return Project(created.project)
             },
+            deleteProject: { project in
+                var delete = Humata_V1_DeleteProject()
+                delete.projectID = project
+                guard case .projectDeleted = try await daemon.call(.deleteProject(delete)) else {
+                    throw DaemonError.unexpected("something other than the deleted project")
+                }
+            },
             sessions: { project in
                 var list = Humata_V1_ListSessions()
                 list.projectID = project ?? ""

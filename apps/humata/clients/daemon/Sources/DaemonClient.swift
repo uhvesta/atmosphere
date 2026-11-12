@@ -8,6 +8,9 @@ package struct DaemonClient: Sendable {
     /// Adds a project that works in `repositories`, folders on this Mac.
     package var createProject:
         @Sendable (_ name: String, _ repositories: [Repository], _ instructions: String) async throws -> Project
+    /// Removes a project once every session in it is archived; its sessions
+    /// are kept, in no project.
+    package var deleteProject: @Sendable (_ project: String) async throws -> Void
     /// Every host's sessions, or only the project's.
     package var sessions: @Sendable (_ project: String?) async throws -> [Session]
     /// Starts a session, idle until the first message.

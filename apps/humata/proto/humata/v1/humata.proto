@@ -104,6 +104,8 @@ message Request {
     // Seen state is the daemon's; a host refuses it.
     MarkSeen mark_seen = 40;
     Unqueue unqueue = 41;
+    // Refused while any of its sessions isn't archived.
+    DeleteProject delete_project = 42;
   }
 }
 
@@ -149,6 +151,7 @@ message Response {
     FileContents file_contents = 37;
     Seen seen = 38;
     Unqueued unqueued = 39;
+    ProjectDeleted project_deleted = 40;
   }
 }
 
@@ -285,6 +288,14 @@ message CreateProject {
 message ProjectCreated {
   Project project = 1;
 }
+
+// Removes a project and its board from the daemon. Its archived sessions
+// stay on their hosts, with no project, so their code and history are kept.
+message DeleteProject {
+  string project_id = 1;
+}
+
+message ProjectDeleted {}
 
 message ListProjects {}
 
@@ -711,6 +722,8 @@ message SessionInfo {
   // The requests for permission the running turn waits on, oldest first,
   // so they can be answered without opening the session.
   repeated PermissionRequested pending = 19;
+  // When its last event happened; 0 before it has any.
+  int64 last_active_unix_ms = 20;
 }
 
 // A session's git worktree of one repository.

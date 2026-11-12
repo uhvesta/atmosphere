@@ -98,13 +98,15 @@ package struct Session: Identifiable, Hashable, Sendable {
     package var pending: [PendingPermission]
     /// Its host can't be reached, so this is as it last was.
     package var hostOffline: Bool
+    /// When anything last happened in it; nil when nothing has yet.
+    package var lastActive: Date?
 
     package init(
         id: String, name: String, backend: Backend, workingDirectory: String, model: String? = nil,
         state: SessionState = .idle, parentID: String? = nil, forkedBeforeEventID: String? = nil, host: String? = nil,
         approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil, archived: Bool = false,
         keeper: Bool = false, itemID: String? = nil, turns: Int = 0, seenTurns: Int = 0,
-        pending: [PendingPermission] = [], hostOffline: Bool = false
+        pending: [PendingPermission] = [], hostOffline: Bool = false, lastActive: Date? = nil
     ) {
         self.id = id
         self.name = name
@@ -124,6 +126,7 @@ package struct Session: Identifiable, Hashable, Sendable {
         self.seenTurns = seenTurns
         self.pending = pending
         self.hostOffline = hostOffline
+        self.lastActive = lastActive
     }
 }
 

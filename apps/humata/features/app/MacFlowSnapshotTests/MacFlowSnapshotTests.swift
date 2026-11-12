@@ -34,6 +34,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         let store = Store(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
             $0.daemonService = .previewValue
             $0.notifications = .previewValue
@@ -82,6 +83,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         let store = Store(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
             $0.daemonService = .previewValue
             $0.notifications = .previewValue
@@ -138,6 +140,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         let store = Store(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
             $0.daemonService = .previewValue
             $0.notifications = .previewValue
@@ -218,6 +221,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         let store = Store(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
             $0.daemonService = .previewValue
             $0.notifications = .previewValue
@@ -296,6 +300,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         let store = Store(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
             $0.daemonService = .previewValue
             $0.notifications = .previewValue
@@ -348,6 +353,7 @@ final class MacFlowSnapshotTests: XCTestCase {
         let store = Store(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
             $0.daemonService = .previewValue
             $0.notifications = .previewValue

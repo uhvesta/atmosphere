@@ -693,6 +693,87 @@ async fn an_archived_session_is_put_away_and_refuses_messages() {
 }
 
 #[tokio::test]
+async fn a_project_is_deleted_once_its_sessions_are_archived_and_they_are_kept() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let task = item(&client, &project.id, "", "a task").await;
+    let session = started(&client, start_in(&project.id)).await;
+    let delete = || {
+        client.call(pb::request::Kind::DeleteProject(pb::DeleteProject {
+            project_id: project.id.clone(),
+        }))
+    };
+
+    let refused = delete().await;
+    assert!(
+        matches!(
+            refused,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::Busy,
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+
+    update(
+        &client,
+        pb::UpdateSession {
+            session_id: session.id.clone(),
+            archived: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{error}"));
+    let deleted = delete().await;
+    assert!(
+        matches!(deleted, Ok(pb::response::Kind::ProjectDeleted(_))),
+        "{deleted:?}"
+    );
+
+    let projects = client
+        .call(pb::request::Kind::ListProjects(pb::ListProjects {}))
+        .await;
+    let Ok(pb::response::Kind::Projects(projects)) = projects else {
+        panic!("{projects:?}")
+    };
+    assert!(projects.projects.is_empty());
+    let listed = client
+        .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+        .await;
+    let Ok(pb::response::Kind::Sessions(sessions)) = listed else {
+        panic!("{listed:?}")
+    };
+    let kept = sessions
+        .sessions
+        .iter()
+        .find(|listed| listed.id == session.id)
+        .unwrap_or_else(|| panic!("the session is gone: {sessions:?}"));
+    assert!(kept.archived);
+    assert_eq!(kept.project_id, "");
+    assert_eq!(kept.item_id, "");
+    let items = client
+        .call(pb::request::Kind::ListItems(pb::ListItems {
+            project_id: project.id.clone(),
+        }))
+        .await;
+    assert!(
+        !matches!(&items, Ok(pb::response::Kind::Items(items)) if items.items.iter().any(|item| item.id == task.id)),
+        "{items:?}"
+    );
+    assert!(matches!(
+        delete().await,
+        Err(ClientError::Refused {
+            code: pb::ErrorCode::UnknownProject,
+            ..
+        })
+    ),);
+}
+
+#[tokio::test]
 async fn a_project_of_several_repositories_names_each_folder_apart() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let (one, two) = (git_repository(), git_repository());

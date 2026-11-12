@@ -62,7 +62,45 @@ package struct ProjectsView: View {
                         ? Text("Inbox, 1 session waiting") : Text("Inbox, \(store.inbox.count) sessions waiting"))
             Label("Hosts", systemImage: "server.rack")
                 .tag(SidebarItem.hosts)
-            ForEach(store.projects) { project in
+            if let matches = store.state.matches {
+                results(matches)
+            } else {
+                everything
+            }
+        }
+        .listStyle(.sidebar)
+        .searchable(text: $store.search.sending(\.searchChanged), placement: .sidebar, prompt: "Search names")
+    }
+
+    /// What the search found, or that it found nothing.
+    @ViewBuilder
+    private func results(_ matches: (projects: [Project], sessions: [Session])) -> some View {
+        if matches.projects.isEmpty, matches.sessions.isEmpty {
+            Text("No project or session is named like that.")
+                .foregroundStyle(.secondary)
+        }
+        if !matches.projects.isEmpty {
+            Section("Projects") {
+                ForEach(matches.projects) { project in
+                    Label(project.name, systemImage: "rectangle.split.3x1")
+                        .tag(SidebarItem.board(project.id))
+                }
+            }
+        }
+        if !matches.sessions.isEmpty {
+            Section("Sessions") {
+                ForEach(matches.sessions) { session in
+                    row(session)
+                }
+            }
+        }
+    }
+
+    /// Every project, then the chats, then what's archived.
+    @ViewBuilder
+    private var everything: some View {
+        Group {
+            ForEach(store.state.sortedProjects) { project in
                 Section {
                     Label("Board", systemImage: "rectangle.split.3x1")
                         .tag(SidebarItem.board(project.id))
@@ -79,6 +117,11 @@ package struct ProjectsView: View {
                         }
                         .buttonStyle(.borderless)
                         .help("Start a session in \(project.name)")
+                    }
+                    .contextMenu {
+                        Button("Delete Project…", role: .destructive) {
+                            store.send(.deleteProjectTapped(project.id))
+                        }
                     }
                 }
             }
@@ -101,13 +144,12 @@ package struct ProjectsView: View {
             }
             if !store.state.archived.isEmpty {
                 Section("Archived") {
-                    ForEach(store.state.archived) { session in
+                    ForEach(ProjectsFeature.State.sorted(store.state.archived)) { session in
                         row(session)
                     }
                 }
             }
         }
-        .listStyle(.sidebar)
     }
 
     /// Every session in `nodes`, each indented under the one it was forked
@@ -126,7 +168,7 @@ package struct ProjectsView: View {
     }
 
     private func row(_ session: Session) -> some View {
-        SessionRow(session: session)
+        SessionRow(session: session, now: store.now)
             .tag(SidebarItem.session(session.id))
             .contextMenu {
                 Button("Rename…") { store.send(.renameTapped(session.id)) }
@@ -164,9 +206,18 @@ extension Session {
 /// keeper, and what it is doing.
 struct SessionRow: View {
     let session: Session
+    /// When the list was read, for how long ago it was active.
+    var now: Date?
 
     var body: some View {
         HStack(spacing: 6) {
+            if session.turns > session.seenTurns {
+                Circle()
+                    .fill(.tint)
+                    .frame(width: 7, height: 7)
+                    .accessibilityLabel("Unread")
+                    .help("It finished a turn you haven't read yet")
+            }
             Label(session.title, systemImage: icon)
                 .lineLimit(1)
             if session.keeper {
@@ -194,6 +245,14 @@ struct SessionRow: View {
                     session.hostOffline
                         ? "Can't reach \(host); this is the session as it last was" : "Runs on \(host)")
             }
+            if let since = since {
+                Text(since)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .accessibilityLabel("Active \(since)")
+            }
             switch session.state {
             case .working:
                 ProgressView().controlSize(.small)
@@ -211,6 +270,15 @@ struct SessionRow: View {
                 EmptyView()
             }
         }
+    }
+
+    /// How long ago it was last active, as "5 min ago"; nil before anything
+    /// happened in it.
+    private var since: String? {
+        guard let active = session.lastActive, let now else { return nil }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: min(active, now), relativeTo: now)
     }
 
     private var icon: String {

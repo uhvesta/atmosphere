@@ -164,6 +164,7 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, history: &[Event]) 
         .unwrap_or(u32::MAX),
         seen_turns: 0,
         pending: pending(history),
+        last_active_unix_ms: history.last().map_or(0, |event| event.time_unix_ms),
     }
 }
 

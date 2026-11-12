@@ -10,6 +10,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: ProjectsFeature.State()) {
             ProjectsFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
         }
         store.exhaustivity = .off
@@ -43,6 +44,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: ProjectsFeature.State()) {
             ProjectsFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
         }
         store.exhaustivity = .off
@@ -87,6 +89,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: NewProjectFeature.State()) {
             NewProjectFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
         }
         store.exhaustivity = .off
@@ -111,6 +114,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: state) {
             NewProjectFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon.createProject = { _, _, _ in throw refusal }
         }
         await store.send(.createTapped) {
@@ -133,6 +137,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: ProjectsFeature.State()) {
             ProjectsFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
             $0.continuousClock = clock
             $0.notifications = .previewValue
@@ -154,6 +159,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: ProjectsFeature.State()) {
             ProjectsFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon.projects = { throw DaemonError.notRunning(socket: "/tmp/k.sock", reason: "refused") }
             $0.daemon.sessions = { _ in [] }
             $0.daemon.inbox = { [] }
@@ -168,6 +174,7 @@ final class ProjectsFeatureTests: XCTestCase {
         await store.receive(\.loaded) {
             $0.failure = nil
             $0.loadedOnce = true
+            $0.now = Date(timeIntervalSince1970: 1_794_000_600)
         }
     }
 
@@ -200,6 +207,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: state) {
             ProjectsFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
         }
         store.exhaustivity = .off
@@ -224,6 +232,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: state) {
             ProjectsFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
         }
         store.exhaustivity = .off
@@ -243,6 +252,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: state) {
             ProjectsFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
         }
         store.exhaustivity = .off
@@ -272,6 +282,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: state) {
             ProjectsFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
         }
         store.exhaustivity = .off
@@ -316,6 +327,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: ProjectsFeature.State()) {
             ProjectsFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
             $0.continuousClock = clock
             $0.notifications = NotificationClient(
@@ -370,6 +382,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: NewSessionFeature.State(project: project)) {
             NewSessionFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
         }
         store.exhaustivity = .off
@@ -389,6 +402,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: NewSessionFeature.State(project: project)) {
             NewSessionFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
         }
         store.exhaustivity = .off
@@ -432,6 +446,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: ProjectsFeature.State()) {
             ProjectsFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
             $0.notifications.post = { _ in }
         }
@@ -463,6 +478,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: ProjectsFeature.State()) {
             ProjectsFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
         }
         store.exhaustivity = .off
@@ -496,6 +512,7 @@ final class ProjectsFeatureTests: XCTestCase {
         let store = TestStore(initialState: ProjectsFeature.State()) {
             ProjectsFeature()
         } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
             $0.daemon = daemon.client
         }
         store.exhaustivity = .off
@@ -503,5 +520,112 @@ final class ProjectsFeatureTests: XCTestCase {
         await store.send(.refresh)
         await store.receive(\.loaded)
         XCTAssertEqual(store.state.sessions[id: session.id]?.hostOffline, true)
+    }
+
+    private static func at(_ minutes: Double) -> Date {
+        Date(timeIntervalSince1970: 1_794_000_000 + minutes * 60)
+    }
+
+    func testProjectsAndSessionsComeMostRecentlyActiveFirst() {
+        let old = Project(id: "p1", name: "old", repositories: [], created: Self.at(0))
+        let busy = Project(id: "p2", name: "busy", repositories: [], created: Self.at(0))
+        let empty = Project(id: "p3", name: "empty", repositories: [], created: Self.at(0))
+        var state = ProjectsFeature.State()
+        state.projects = [old, busy, empty]
+        state.sessions = [
+            Session(
+                id: "a", name: "a", backend: .scripted, workingDirectory: "/", projectID: "p1", lastActive: Self.at(1)),
+            Session(
+                id: "b", name: "b", backend: .scripted, workingDirectory: "/", projectID: "p2", lastActive: Self.at(2)),
+            Session(
+                id: "c", name: "c", backend: .scripted, workingDirectory: "/", parentID: "b", projectID: "p2",
+                lastActive: Self.at(9)),
+            Session(
+                id: "d", name: "d", backend: .scripted, workingDirectory: "/", projectID: "p2", lastActive: Self.at(5)),
+            Session(id: "e", name: "e", backend: .scripted, workingDirectory: "/", projectID: "p2"),
+        ]
+
+        // p2's session e has done nothing yet, so p2 is as new as the empty
+        // p3, and stays before it.
+        XCTAssertEqual(state.sortedProjects.map(\.id), ["p2", "p3", "p1"])
+        // e has done nothing yet, so it was just started; b's fork c is the
+        // latest of the rest.
+        XCTAssertEqual(state.tree(in: "p2").map(\.id), ["e", "b", "d"])
+    }
+
+    func testSearchFindsProjectsAndSessionsByName() {
+        var state = ProjectsFeature.State()
+        state.projects = [
+            Project(id: "p1", name: "Humata", repositories: [], created: Self.at(0)),
+            Project(id: "p2", name: "Notes", repositories: [], created: Self.at(0)),
+        ]
+        state.sessions = [
+            Session(id: "a", name: "Release notes", backend: .scripted, workingDirectory: "/", projectID: "p1"),
+            Session(id: "b", name: "Fix login", backend: .scripted, workingDirectory: "/", archived: true),
+        ]
+        XCTAssertNil(state.matches)
+
+        state.search = "notes"
+        XCTAssertEqual(state.matches?.projects.map(\.id), ["p2"])
+        XCTAssertEqual(state.matches?.sessions.map(\.id), ["a"])
+
+        state.search = "LOGIN"
+        XCTAssertEqual(state.matches?.projects.map(\.id), [])
+        XCTAssertEqual(state.matches?.sessions.map(\.id), ["b"])
+    }
+
+    func testAProjectWithSessionsWorkingInItIsNotDeleted() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, projectID: project.id))
+        var state = ProjectsFeature.State()
+        state.projects = [project]
+        state.sessions = [session]
+        let store = TestStore(initialState: state) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.deleteProjectTapped(project.id))
+        XCTAssertNotNil(store.state.destination?.alert)
+        do {
+            try await daemon.client.deleteProject(project.id)
+            XCTFail("a project with a session working in it was deleted")
+        } catch DaemonError.refused(let code, _) {
+            XCTAssertEqual(code, .busy)
+        }
+        let projects = try await daemon.client.projects()
+        XCTAssertEqual(projects.map(\.id), [project.id])
+    }
+
+    func testADeletedProjectKeepsItsArchivedSessions() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        var session = try await daemon.client.start(StartRequest(backend: .scripted, projectID: project.id))
+        session = try await daemon.client.update(session.id, SessionUpdate(archived: true))
+        var state = ProjectsFeature.State()
+        state.projects = [project]
+        state.sessions = [session]
+        state.selection = .board(project.id)
+        let store = TestStore(initialState: state) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Self.at(10))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.deleteProjectTapped(project.id))
+        await store.send(.destination(.presented(.alert(.deleteProject(project.id)))))
+        await store.receive(\.projectDeleted)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.projects, [])
+        XCTAssertNil(store.state.selection)
+        XCTAssertEqual(store.state.archived.map(\.id), [session.id])
+        XCTAssertNil(store.state.sessions[id: session.id]?.projectID)
+        let projects = try await daemon.client.projects()
+        XCTAssertEqual(projects, [])
     }
 }

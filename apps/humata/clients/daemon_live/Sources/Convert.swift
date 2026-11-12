@@ -116,7 +116,8 @@ extension Session {
             pending: info.pending.map {
                 PendingPermission(requestID: $0.requestID, kind: PermissionKind($0.kind), summary: $0.summary)
             },
-            hostOffline: info.hostOffline)
+            hostOffline: info.hostOffline,
+            lastActive: info.lastActiveUnixMs == 0 ? nil : date(info.lastActiveUnixMs))
     }
 }
 
