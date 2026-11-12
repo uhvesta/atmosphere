@@ -730,6 +730,8 @@ message Proposal {
   // The turn it was proposed in, from 1.
   uint32 turn = 11;
   int64 time_unix_ms = 12;
+  // For a pending spec edit, the item's spec as it is now, to compare.
+  string current_spec = 13;
 }
 
 enum ProposalKind {

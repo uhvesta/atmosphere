@@ -1,7 +1,7 @@
 [Window/StandardWindow] "Fix the login redirect after the session times out"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""
-      [StaticText] "" value: "Inbox, 0 sessions waiting"
+      [StaticText] "" value: "Inbox, 0 blocked on you, 0 in all"
     [Row/OutlineRow] ""
       [StaticText] "" value: "Hosts"
     [Row/OutlineRow] ""

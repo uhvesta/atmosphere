@@ -42,7 +42,6 @@ package struct ProjectsView: View {
                     } label: {
                         Label("Add Project", systemImage: "folder.badge.plus")
                     }
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
                     .help("Add a project for a repository on this Mac (⇧⌘N)")
                 }
             }
@@ -52,22 +51,14 @@ package struct ProjectsView: View {
     private var list: some View {
         List(selection: $store.selection.sending(\.selected)) {
             Label("Inbox", systemImage: "tray")
-                .badge(store.inbox.count)
+                .badge(store.blockedCount)
                 .tag(SidebarItem.inbox)
                 .accessibilityLabel(
-                    store.inbox.count == 1
-                        ? Text("Inbox, 1 session waiting") : Text("Inbox, \(store.inbox.count) sessions waiting"))
+                    Text("Inbox, \(store.blockedCount) blocked on you, \(store.inbox.count) in all"))
             Label("Hosts", systemImage: "server.rack")
                 .tag(SidebarItem.hosts)
             Label("Search Sessions", systemImage: "text.magnifyingglass")
                 .tag(SidebarItem.search)
-                .background {
-                    // ⌘⇧F opens it from anywhere in the window.
-                    Button("Search Sessions") { store.send(.selected(.search)) }
-                        .keyboardShortcut("f", modifiers: [.command, .shift])
-                        .opacity(0)
-                        .accessibilityHidden(true)
-                }
             if let matches = store.state.matches {
                 results(matches)
             } else {
@@ -156,7 +147,6 @@ package struct ProjectsView: View {
                             .labelStyle(.iconOnly)
                     }
                     .buttonStyle(.borderless)
-                    .keyboardShortcut("n", modifiers: .command)
                     .help("Start a chat in no project, in a folder you pick or one of its own (⌘N)")
                 }
             }
@@ -277,58 +267,7 @@ struct SessionRow: View {
                     .lineLimit(1)
                     .accessibilityLabel("Active \(since)")
             }
-            if session.hostOffline {
-                lastState
-            } else {
-                state
-            }
-        }
-    }
-
-    @ViewBuilder private var state: some View {
-        switch session.state {
-        case .working:
-            ProgressView().controlSize(.small)
-                .accessibilityLabel("Working")
-        case .waitingForApproval:
-            Image(systemName: "hand.raised.fill")
-                .foregroundStyle(.orange)
-                .accessibilityLabel("Waiting for you")
-                .help("Waiting for you to answer a request")
-        case .failed:
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.red)
-                .accessibilityLabel("Failed")
-        case .idle where session.asking:
-            Image(systemName: "hand.raised.fill")
-                .foregroundStyle(.orange)
-                .accessibilityLabel("Waiting for you")
-                .help("Asks you something, or to move its task")
-        case .idle:
-            EmptyView()
-        }
-    }
-
-    /// The state it was in when its host last answered, greyed, since it
-    /// may have changed since.
-    @ViewBuilder private var lastState: some View {
-        switch session.state {
-        case .working:
-            Image(systemName: "ellipsis.circle")
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("Was working")
-                .help("Was working when its host last answered")
-        case .waitingForApproval:
-            Image(systemName: "hand.raised")
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("Was waiting for you")
-                .help("Was waiting for you when its host last answered")
-        case .failed:
-            Image(systemName: "exclamationmark.triangle")
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("Had failed")
-        case .idle:
-            EmptyView()
+            SessionStateIcon(session: session)
         }
     }
 
@@ -407,8 +346,13 @@ struct NewProjectView: View {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
             }
+            if store.creating {
+                ToolbarItem(placement: .status) {
+                    ProgressView().controlSize(.small)
+                }
+            }
             ToolbarItem(placement: .confirmationAction) {
-                Button("Add Project") { store.send(.createTapped) }
+                Button(store.creating ? "Adding…" : "Add Project") { store.send(.createTapped) }
                     .disabled(!store.canCreate)
             }
         }
@@ -571,8 +515,13 @@ package struct NewSessionView: View {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { dismiss() }
             }
+            if store.starting {
+                ToolbarItem(placement: .status) {
+                    ProgressView().controlSize(.small)
+                }
+            }
             ToolbarItem(placement: .confirmationAction) {
-                Button("Start") { store.send(.startTapped) }
+                Button(store.starting ? "Starting…" : "Start") { store.send(.startTapped) }
                     .disabled(!store.canStart)
             }
         }
@@ -819,5 +768,70 @@ struct PatchView: View {
         if line.hasPrefix("-") { return .red }
         if line.hasPrefix("@@") { return .purple }
         return .primary
+    }
+}
+
+/// What a session is doing, as an icon: working, waiting on you or failed;
+/// greyed as it last was while its host is offline, and nothing when idle.
+package struct SessionStateIcon: View {
+    var session: Session
+
+    package init(session: Session) {
+        self.session = session
+    }
+
+    package var body: some View {
+        if session.hostOffline {
+            lastState
+        } else {
+            state
+        }
+    }
+
+    @ViewBuilder private var state: some View {
+        switch session.state {
+        case .working:
+            ProgressView().controlSize(.small)
+                .accessibilityLabel("Working")
+        case .waitingForApproval:
+            Image(systemName: "hand.raised.fill")
+                .foregroundStyle(.orange)
+                .accessibilityLabel("Waiting for you")
+                .help("Waiting for you to answer a request")
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+                .accessibilityLabel("Failed")
+        case .idle where session.asking:
+            Image(systemName: "hand.raised.fill")
+                .foregroundStyle(.orange)
+                .accessibilityLabel("Waiting for you")
+                .help("Asks you something, or to move its task")
+        case .idle:
+            EmptyView()
+        }
+    }
+
+    /// The state it was in when its host last answered, greyed, since it
+    /// may have changed since.
+    @ViewBuilder private var lastState: some View {
+        switch session.state {
+        case .working:
+            Image(systemName: "ellipsis.circle")
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Was working")
+                .help("Was working when its host last answered")
+        case .waitingForApproval:
+            Image(systemName: "hand.raised")
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Was waiting for you")
+                .help("Was waiting for you when its host last answered")
+        case .failed:
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Had failed")
+        case .idle:
+            EmptyView()
+        }
     }
 }

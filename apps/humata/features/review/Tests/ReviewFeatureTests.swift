@@ -92,6 +92,21 @@ final class ReviewFeatureTests: XCTestCase {
         XCTAssertNil(store.state.commenting)
     }
 
+    func testLeavingATurnForEverythingKeepsTheFileAndLetsLinesBeCommentedOn() async throws {
+        let (daemon, session) = try await session()
+        let store = store(daemon, session)
+        await store.send(.rangePicked(.turn))
+        await store.receive(\.loaded)
+        XCTAssertFalse(store.state.canComment)
+
+        await store.send(.rangePicked(.session))
+        await store.receive(\.loaded)
+        XCTAssertTrue(store.state.canComment)
+        XCTAssertEqual(store.state.selected, sum)
+        await store.send(.lineTapped(1, extending: false))
+        XCTAssertNotNil(store.state.commenting)
+    }
+
     func testRevertingAsksFirstThenThrowsTheChangeAway() async throws {
         let (daemon, session) = try await session()
         let store = store(daemon, session)

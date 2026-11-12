@@ -38,12 +38,17 @@ impl Daemon {
                 }
                 None => proposal.state = pb::ProposalState::Pending.into(),
             }
-            // A spec edit that proposes no new title shows the item's.
+            // A spec edit shows the item's title when it proposes none, and
+            // while pending the spec it would replace.
             if proposal.kind() == pb::ProposalKind::SpecEdit
-                && proposal.title.is_empty()
                 && let Ok(item) = self.store.item(&proposal.item_id)
             {
-                proposal.title = item.fields.title;
+                if proposal.state() == pb::ProposalState::Pending {
+                    proposal.current_spec.clone_from(&item.fields.spec);
+                }
+                if proposal.title.is_empty() {
+                    proposal.title = item.fields.title;
+                }
             }
         }
         Ok(proposals)

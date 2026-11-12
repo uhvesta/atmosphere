@@ -76,6 +76,93 @@ final class BoardFeatureTests: XCTestCase {
         XCTAssertNil(store.state.destination)
     }
 
+    func testTappingStartWorkTwiceStartsOneSession() async throws {
+        let board = try await board()
+        let store = try store(board, lastBackend: .scripted)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.startWorkTapped(board.task.id))
+        XCTAssertTrue(store.state.starting.contains(board.task.id))
+        await store.receive(\.startFinished)
+        await store.receive(\.loaded)
+        XCTAssertTrue(store.state.starting.isEmpty)
+        XCTAssertEqual(board.daemon.sessions.count, 1)
+
+        // A tap while it's still starting does nothing.
+        var starting = store.state
+        starting.starting = [board.task.id]
+        let again = TestStore(initialState: starting) {
+            BoardFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+        }
+        again.exhaustivity = .off
+        await again.send(.startWorkTapped(board.task.id))
+        await again.finish()
+        XCTAssertEqual(board.daemon.sessions.count, 1)
+    }
+
+    func testAFailedChangeStaysShownThroughAReadUntilClosed() async throws {
+        let board = try await board()
+        let store = store(board)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.deleteTapped(board.task.id))
+        await store.send(.destination(.presented(.alert(.delete(board.task.id)))))
+        await store.receive(\.actionFailed)
+        XCTAssertNotNil(store.state.actionFailure)
+
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        XCTAssertNotNil(store.state.actionFailure)
+
+        await store.send(.actionFailureDismissed)
+        XCTAssertNil(store.state.actionFailure)
+    }
+
+    func testCancellingAChangedSpecAsksAndAnUnchangedOneClosesAtOnce() async throws {
+        let board = try await board()
+        let store = TestStore(
+            initialState: ItemFeature.State(
+                project: board.project, item: board.task, parent: nil, subtasks: [], sessions: [])
+        ) {
+            ItemFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.editTapped)
+        await store.send(.cancelEditTapped)
+        XCTAssertNil(store.state.draft)
+        XCTAssertNil(store.state.destination)
+
+        await store.send(.editTapped)
+        await store.send(\.binding.draft, ItemFeature.Draft(title: "login", spec: "# Steps"))
+        await store.send(.cancelEditTapped)
+        XCTAssertNotNil(store.state.draft, "kept until the discard is confirmed")
+        XCTAssertNotNil(store.state.destination?.alert)
+
+        await store.send(.destination(.presented(.alert(.discard))))
+        XCTAssertNil(store.state.draft)
+    }
+
+    func testAnItemsSessionsListThoseWaitingFirstAndArchivedLast() async throws {
+        let board = try await board()
+        func session(_ id: String, _ state: SessionState = .idle, archived: Bool = false) -> Session {
+            Session(id: id, name: id, backend: .scripted, workingDirectory: "/work", state: state, archived: archived)
+        }
+        let page = ItemFeature.State(
+            project: board.project, item: board.task, parent: nil, subtasks: [],
+            sessions: [
+                session("old", archived: true), session("idle"), session("busy", .working),
+                session("blocked", .waitingForApproval), session("failed", .failed),
+            ])
+        XCTAssertEqual(page.sortedSessions.map(\.id), ["blocked", "failed", "busy", "idle", "old"])
+    }
+
     func testStartWorkAsksForAModelWhenTheLastAgentWasALocalOneWithNone() async throws {
         let board = try await board()
         let store = try store(board, lastBackend: .local)
@@ -169,7 +256,7 @@ final class BoardFeatureTests: XCTestCase {
 
         await store.send(.deleteTapped(board.task.id))
         await store.send(.destination(.presented(.alert(.delete(board.task.id)))))
-        await store.receive(\.failed)
+        await store.receive(\.actionFailed)
         XCTAssertNotNil(store.state.items[id: board.task.id])
 
         await store.send(.deleteTapped(board.other.id))

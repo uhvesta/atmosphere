@@ -12,6 +12,9 @@ struct ProposalCard: View {
     /// planning session.
     let canStartWork: Bool
     let send: (ProposalsFeature.Action) -> Void
+    @State private var showsAll = false
+    /// Lines of the spec shown until the person asks for all of them.
+    private static let shownLines = 8
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -25,12 +28,19 @@ struct ProposalCard: View {
             Text(proposal.title)
                 .font(.headline)
                 .textSelection(.enabled)
-            if !proposal.spec.isEmpty {
+            if let current = proposal.currentSpec, !proposal.spec.isEmpty {
+                ChangeView(change: .between(current, proposal.spec))
+            } else if !proposal.spec.isEmpty {
                 Text(proposal.spec)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .lineLimit(8)
+                    .lineLimit(showsAll ? nil : Self.shownLines)
                     .textSelection(.enabled)
+                if proposal.spec.components(separatedBy: "\n").count > Self.shownLines {
+                    Button(showsAll ? "Show Less" : "Show All") { showsAll.toggle() }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                }
             }
             if !proposal.note.isEmpty {
                 Text(proposal.note)

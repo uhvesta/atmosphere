@@ -29,8 +29,25 @@ package struct AppFeature {
         package var opening: HumataLink?
         /// Settings > Environments.
         package var settings = EnvironmentsFeature.State()
+        /// What each session looked away from was showing, put back when
+        /// it opens again while Humata runs.
+        var left: [Session.ID: SessionFeature.State.Left] = [:]
 
         package init() {}
+
+        /// Opens `next` in place of the open session, keeping what the one
+        /// closed was showing; nil closes it.
+        mutating func show(_ next: SessionFeature.State?) {
+            if let open = session, open.session.id != next?.session.id {
+                left[open.session.id] = open.left
+            }
+            var next = next
+            if let id = next?.session.id, let kept = left.removeValue(forKey: id) {
+                // A search hit opens on the chat, at what was found.
+                if next?.highlighted == nil { next?.left = kept } else { next?.docs.drafts = kept.drafts }
+            }
+            session = next
+        }
     }
 
     package enum DaemonStatus: Equatable {
@@ -114,9 +131,12 @@ package struct AppFeature {
             case .openLoginItemsTapped:
                 return .run { _ in service.openLoginItems() }
 
-            case .sidebar(.loaded(_, let sessions, _)):
-                if let open = state.session?.session.id, let listed = sessions.first(where: { $0.id == open }) {
-                    state.session?.session.hostOffline = listed.hostOffline
+            case .sidebar(.loaded(_, let sessions, let inbox)):
+                if let open = state.session?.session.id {
+                    if let listed = sessions.first(where: { $0.id == open }) {
+                        state.session?.session.hostOffline = listed.hostOffline
+                    }
+                    state.session?.request = Self.request(of: open, in: inbox)
                 }
                 let shown = show(&state)
                 guard state.daemon == .updatePending, !Self.anyBusy(sessions) else { return shown }
@@ -133,18 +153,20 @@ package struct AppFeature {
                 state.hosts = nil
                 state.search = nil
                 guard state.session?.session.id != session.id else { return .none }
-                state.session = SessionFeature.State(session: session)
+                var open = SessionFeature.State(session: session)
+                open.request = Self.request(of: session.id, in: state.sidebar.inbox)
+                state.show(open)
                 return .none
 
             case .sidebar(.delegate(.openChanges(let session))):
                 state.board = nil
                 state.hosts = nil
                 state.search = nil
-                if state.session?.session.id != session.id { state.session = SessionFeature.State(session: session) }
+                if state.session?.session.id != session.id { state.show(SessionFeature.State(session: session)) }
                 return .send(.session(.presented(.tabPicked(.review))))
 
             case .sidebar(.delegate(.openBoard(let project))):
-                state.session = nil
+                state.show(nil)
                 state.hosts = nil
                 state.search = nil
                 guard state.board?.project.id != project.id else { return .none }
@@ -152,14 +174,14 @@ package struct AppFeature {
                 return .none
 
             case .sidebar(.delegate(.openInbox)):
-                state.session = nil
+                state.show(nil)
                 state.board = nil
                 state.hosts = nil
                 state.search = nil
                 return .none
 
             case .sidebar(.delegate(.openSearch)):
-                state.session = nil
+                state.show(nil)
                 state.board = nil
                 state.hosts = nil
                 if state.search == nil {
@@ -171,7 +193,7 @@ package struct AppFeature {
                 guard let session = state.sidebar.sessions[id: id] else { return .none }
                 state.sidebar.selection = .session(id)
                 state.search = nil
-                state.session = SessionFeature.State(session: session, highlighted: event)
+                state.show(SessionFeature.State(session: session, highlighted: event))
                 return .none
 
             case .search(.presented(.delegate(.openItem(let projectID, let itemID)))),
@@ -179,7 +201,7 @@ package struct AppFeature {
                 guard let project = state.sidebar.projects[id: projectID] else { return .none }
                 state.sidebar.selection = .board(projectID)
                 state.search = nil
-                state.session = nil
+                state.show(nil)
                 state.board = BoardFeature.State(project: project, opening: itemID)
                 return .none
 
@@ -189,7 +211,7 @@ package struct AppFeature {
                 return .send(.sidebar(.refresh))
 
             case .sidebar(.delegate(.openHosts)):
-                state.session = nil
+                state.show(nil)
                 state.board = nil
                 state.search = nil
                 if state.hosts == nil { state.hosts = HostsFeature.State() }
@@ -206,8 +228,11 @@ package struct AppFeature {
                 state.board = nil
                 state.hosts = nil
                 state.search = nil
-                state.session = SessionFeature.State(session: session)
+                state.show(SessionFeature.State(session: session))
                 return .send(.sidebar(.refresh))
+
+            case .session(.presented(.delegate(.answerRequest(let id, let answer)))):
+                return .send(.sidebar(.requestAnswered(id, answer)))
 
             case .sidebar, .session, .board, .hosts, .search, .settings:
                 return .none
@@ -217,6 +242,11 @@ package struct AppFeature {
         .ifLet(\.$board, action: \.board) { BoardFeature() }
         .ifLet(\.$hosts, action: \.hosts) { HostsFeature() }
         .ifLet(\.$search, action: \.search) { SearchFeature() }
+    }
+
+    /// What `session` asked and waits on, from the inbox.
+    private static func request(of session: Session.ID, in inbox: [InboxEntry]) -> AgentRequest? {
+        inbox.lazy.compactMap(\.request).first { $0.sessionID == session }
     }
 
     /// Shows the link opened from outside, once the sidebar has read it.
@@ -233,7 +263,7 @@ package struct AppFeature {
         case .task(let projectID, let itemID):
             guard let project = state.sidebar.projects[id: projectID] else { return .none }
             state.sidebar.selection = .board(projectID)
-            state.session = nil
+            state.show(nil)
             state.hosts = nil
             state.search = nil
             state.board = BoardFeature.State(project: project, opening: itemID)

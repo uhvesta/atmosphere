@@ -215,7 +215,8 @@ package struct DocsFeature {
                 let text = state.comment.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard var picked = state.picked, !text.isEmpty else { return .none }
                 picked.quote = picked.quote.trimmingCharacters(in: .whitespacesAndNewlines)
-                state.drafts.append(Draft(id: uuid(), picked: picked, text: text))
+                let draft = Draft(id: uuid(), picked: picked, text: text)
+                state.drafts.append(draft)
                 state.picked = nil
                 state.comment = ""
                 return .none

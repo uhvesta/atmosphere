@@ -1,7 +1,7 @@
 [Window/StandardWindow] "Release notes"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""
-      [StaticText] "Inbox, 1 session waiting" value: "1"
+      [StaticText] "Inbox, 1 blocked on you, 1 in all" value: "1"
     [Row/OutlineRow] ""
       [StaticText] "" value: "Hosts"
     [Row/OutlineRow] ""
@@ -34,9 +34,15 @@
     [StaticText] "" value: "Write the release notes for M1"
     [Button] "Thoughts" help: "Shows the thinking"
     [Button, disabled] "/code/humata/NOTES.md"
+    [Image] "Block" id: hand.raised
     [StaticText] "" value: "Write /code/humata/NOTES.md"
     [Button] "Deny"
     [Button] "Approve"
+  [Image] "Block" id: hand.raised
+  [StaticText] "" value: "Write /code/humata/NOTES.md"
+  [Button] "Deny" help: "Deny (⇧⌘D)"
+  [Button] "Approve" help: "Approve (⇧⌘A)"
+  [MenuButton] "Go Down" help: "Stop asking in this session"
   [TextField] ""
   [Button] "Stop" help: "Stop the reply, keeping what it has written" id: stop.fill
   [Toolbar] ""

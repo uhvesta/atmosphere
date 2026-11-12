@@ -25,6 +25,66 @@ final class AppFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.session?.session, session)
     }
 
+    func testADocCommentAndTheTabSurviveLookingAtTheInbox() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        var state = AppFeature.State()
+        state.sidebar.sessions = [session]
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.selected, .session(session.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        await store.send(\.session.tabPicked, .files)
+        await store.send(\.session.docs.fileSelected, "plan.md")
+        await store.send(\.session.docs.blockTapped, (startLine: 1, endLine: 1, quote: "Ship it."))
+        await store.send(\.session.docs.binding.comment, "Not yet.")
+        await store.send(\.session.docs.commentSaved)
+        XCTAssertEqual(store.state.session?.docs.drafts.count, 1)
+
+        await store.send(\.sidebar.selected, .inbox)
+        await store.send(\.sidebar.selected, .session(session.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.tab, .files)
+        XCTAssertEqual(store.state.session?.docs.drafts.map(\.text), ["Not yet."])
+    }
+
+    func testAnOpenSessionShowsItsMoveRequestUntilItIsAnswered() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, projectID: project.id, itemID: task.id))
+        let move = daemon.addRequest(session.id, .move(item: task.id, status: .inReview), "Login works.")
+        let store = TestStore(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.refresh)
+        await store.receive(\.sidebar.loaded)
+        await store.send(\.sidebar.selected, .session(session.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.session?.request?.id, move.id)
+
+        await store.send(\.session.moveApproved)
+        await store.receive(\.sidebar.requestAnswered)
+        await store.receive(\.sidebar.loaded)
+        XCTAssertNil(store.state.session?.request)
+        let status = try await daemon.client.items(project.id).first?.status
+        XCTAssertEqual(status, .inReview)
+    }
+
     func testPickingTheOpenSessionAgainKeepsItsChat() async throws {
         let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
         var state = AppFeature.State()

@@ -21,6 +21,7 @@ package struct SessionFeature {
     @ObservableState
     package struct State: Equatable {
         package var session: Session
+        /// The view showing.
         package var tab = Tab.chat
         package var review: ReviewFeature.State
         package var docs: DocsFeature.State
@@ -55,6 +56,11 @@ package struct SessionFeature {
         /// The event a search found, shown highlighted with a way to fork
         /// from it; nil when none is.
         package var highlighted: String?
+        /// The question or move the agent asked for and is waiting on, from
+        /// the inbox.
+        package var request: AgentRequest?
+        /// The chat row to scroll to once, such as the first proposal waiting.
+        package var scrollTarget: String?
 
         package init(session: Session, highlighted: String? = nil) {
             self.session = session
@@ -143,6 +149,46 @@ package struct SessionFeature {
         /// Whether the agent is waiting on the person to answer a request.
         package var isWaiting: Bool { !pendingPermissions.isEmpty }
 
+        /// The proposals not decided yet, oldest first.
+        package var pendingProposals: [Proposal] {
+            proposals.proposals.filter { $0.state == .pending }
+        }
+
+        /// The person's last message, to send again after a failed turn.
+        package var lastMessage: String? {
+            for event in events.reversed() {
+                if case .userMessage(let text) = event.kind { return text }
+            }
+            return nil
+        }
+
+        /// Whether the last turn failed and nothing has started since.
+        package var lastTurnFailed: Bool {
+            for event in events.reversed() {
+                switch event.kind {
+                case .failed: return true
+                case .turnStarted, .userMessage: return false
+                default: continue
+                }
+            }
+            return false
+        }
+
+        /// What's kept of a session looked away from while Humata runs:
+        /// the view it showed and the file comments not sent yet.
+        package struct Left: Equatable, Sendable {
+            package var tab: Tab
+            package var drafts: IdentifiedArrayOf<DocsFeature.Draft>
+        }
+
+        package var left: Left {
+            get { Left(tab: tab, drafts: docs.drafts) }
+            set {
+                tab = newValue.tab
+                docs.drafts = newValue.drafts
+            }
+        }
+
         /// Why the turn can't go on yet, such as the model server being
         /// down, until it goes on.
         package var waitReason: String? {
@@ -204,6 +250,14 @@ package struct SessionFeature {
         case abortTapped
         /// Takes the queued message out before its turn starts.
         case unqueueTapped(String)
+        /// Sends the person's last message again, after a failed turn.
+        case retryTapped
+        /// Makes the move the agent asked for, from the strip over the box.
+        case moveApproved
+        /// Scrolls the chat to the first proposal waiting to be decided.
+        case showProposalsTapped
+        /// The chat scrolled to the target.
+        case scrolled
         case answerPermission(requestID: String, approved: Bool)
         case approvalModePicked(ApprovalMode)
         /// The daemon refused the new mode, so the session keeps `previous`.
@@ -249,6 +303,8 @@ package struct SessionFeature {
             case openSession(Session)
             /// Open the board at the task it works on.
             case openItem(projectID: Project.ID, itemID: Item.ID)
+            /// Answer the agent's request, as the inbox does.
+            case answerRequest(AgentRequest.ID, RequestAnswer)
         }
     }
 
@@ -422,6 +478,27 @@ package struct SessionFeature {
                 } catch: { error, send in
                     await send(.failed(error.localizedDescription))
                 }
+
+            case .retryTapped:
+                guard let text = state.lastMessage, !state.isWorking else { return .none }
+                let session = state.session.id
+                return .run { _ in
+                    try await daemon.send(session, text, .enqueue)
+                } catch: { error, send in
+                    await send(.failed(error.localizedDescription))
+                }
+
+            case .moveApproved:
+                guard let request = state.request, case .move = request.kind else { return .none }
+                return .send(.delegate(.answerRequest(request.id, .approve)))
+
+            case .showProposalsTapped:
+                state.scrollTarget = state.pendingProposals.first?.id
+                return .none
+
+            case .scrolled:
+                state.scrollTarget = nil
+                return .none
 
             case .unqueueTapped(let queued):
                 let session = state.session.id

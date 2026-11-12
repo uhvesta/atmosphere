@@ -37,12 +37,28 @@ package struct BoardView: View {
             .padding()
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if let failure = store.failure {
-                Label(failure, systemImage: "exclamationmark.triangle.fill")
+            VStack(spacing: 0) {
+                if let failure = store.actionFailure {
+                    HStack {
+                        Label(failure, systemImage: "exclamationmark.triangle.fill")
+                            .textSelection(.enabled)
+                        Spacer()
+                        Button("Close", systemImage: "xmark") { store.send(.actionFailureDismissed) }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.borderless)
+                            .help("Close this message")
+                    }
                     .font(.callout)
                     .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.bar)
+                }
+                if let failure = store.failure {
+                    Label(failure, systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.bar)
+                }
             }
         }
         .overlay(alignment: .bottom) {
@@ -115,13 +131,16 @@ package struct BoardView: View {
 
     private func card(_ item: Item) -> some View {
         BoardCard(id: item.id) {
-            ItemCard(item: item, parent: store.state.parent(of: item), sessions: store.state.sessions(on: item))
+            ItemCard(
+                item: item, parent: store.state.parent(of: item), sessions: store.state.sessions(on: item),
+                starting: store.starting.contains(item.id))
         } menu: {
             ForEach(ItemStatus.allCases.filter { $0 != item.status }, id: \.self) { status in
                 Button("Move to \(status.title)") { store.send(.dropped(item.id, on: status)) }
             }
             Divider()
             Button("Start Work") { store.send(.startWorkTapped(item.id)) }
+                .disabled(store.starting.contains(item.id))
                 .help("Start a session on it with your last New Session settings, told to do what its spec says")
             if item.parentID == nil {
                 Button("Add Subtask…") { store.send(.addTapped(parent: item.id)) }
@@ -140,6 +159,7 @@ private struct ItemCard: View {
     var item: Item
     var parent: Item?
     var sessions: [Session]
+    var starting = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -158,7 +178,14 @@ private struct ItemCard: View {
                 }
             }
             let open = sessions.filter { !$0.archived }
-            if !open.isEmpty {
+            if starting {
+                HStack(spacing: 4) {
+                    ProgressView().controlSize(.mini)
+                    Text("Starting…")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            } else if !open.isEmpty {
                 HStack(spacing: 4) {
                     Image(systemName: "bubble.left.and.text.bubble.right")
                     Text(open.count == 1 ? "1 session" : "\(open.count) sessions")
@@ -236,6 +263,10 @@ struct ItemView: View {
     @Bindable var store: StoreOf<ItemFeature>
     @Environment(\.dismiss) private var dismiss
 
+    /// The title and spec are being edited, so what would leave the page
+    /// is off until they're saved or cancelled.
+    private var editing: Bool { store.draft != nil }
+
     var body: some View {
         Form {
             Section {
@@ -243,6 +274,7 @@ struct ItemView: View {
                     LabeledContent("Task") {
                         Button(parent.title) { store.send(.itemTapped(parent.id)) }
                             .buttonStyle(.link)
+                            .disabled(editing)
                             .help("Open \(parent.title)")
                     }
                 }
@@ -299,6 +331,7 @@ struct ItemView: View {
                     Button("Add Subtask…", systemImage: "plus") { store.send(.addSubtaskTapped) }
                         .buttonStyle(.borderless)
                 }
+                .disabled(editing)
             }
             if !store.pullRequests.isEmpty {
                 Section {
@@ -318,13 +351,20 @@ struct ItemView: View {
                 }
             }
             Section("Sessions") {
-                ForEach(store.sessions) { session in
+                ForEach(store.sortedSessions) { session in
                     Button {
                         store.send(.sessionTapped(session.id))
                     } label: {
                         HStack {
                             Text(session.name.isEmpty ? "Session" : session.name)
+                                .foregroundStyle(session.archived ? .secondary : .primary)
+                            if session.archived {
+                                Text("Archived")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                             Spacer()
+                            SessionStateIcon(session: session)
                             if let files = store.changedFiles[session.id] {
                                 Text(files == 1 ? "1 file changed" : "\(files) files changed")
                                     .foregroundStyle(.secondary)
@@ -335,12 +375,21 @@ struct ItemView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                Button("Start Work", systemImage: "play.fill") { store.send(.startWorkTapped) }
+                HStack {
+                    Button(store.startingWork ? "Starting…" : "Start Work", systemImage: "play.fill") {
+                        store.send(.startWorkTapped)
+                    }
                     .help("Start a session with your last New Session settings, told to do what the spec says")
                     .buttonStyle(.borderless)
+                    .disabled(store.startingWork)
+                    if store.startingWork {
+                        ProgressView().controlSize(.small)
+                    }
+                }
                 Button("Start Session…", systemImage: "play") { store.send(.startSessionTapped) }
                     .buttonStyle(.borderless)
             }
+            .disabled(editing)
         }
         .formStyle(.grouped)
         .frame(minWidth: 520, minHeight: 560)

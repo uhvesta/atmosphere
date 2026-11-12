@@ -123,7 +123,8 @@ extension Proposal {
         self.init(
             id: proposal.id, kind: proposal.kind == .specEdit ? .specEdit : .task, title: proposal.title,
             spec: proposal.spec, parentID: optional(proposal.parentID), itemID: optional(proposal.itemID),
-            note: proposal.note, state: state)
+            note: proposal.note, state: state,
+            currentSpec: proposal.kind == .specEdit && state == .pending ? proposal.currentSpec : nil)
     }
 }
 

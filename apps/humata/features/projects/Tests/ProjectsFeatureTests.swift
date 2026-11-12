@@ -564,6 +564,7 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.inbox.count, 4)
         XCTAssertEqual(store.state.inbox.first?.reason, .approval)
         XCTAssertEqual(store.state.inbox.last?.session.lastMessage, "Done.")
+        XCTAssertEqual(store.state.blockedCount, 1, "replies wait on nobody")
         await store.finish()
         XCTAssertEqual(badges.value, [1])
     }
@@ -803,6 +804,76 @@ final class ProjectsFeatureTests: XCTestCase {
             })
         XCTAssertFalse(
             store.state.inbox.contains { $0.id == session.id && $0.session.pending.contains(request) })
+    }
+
+    private func inboxStore(_ daemon: InMemoryDaemon) -> TestStoreOf<ProjectsFeature> {
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    func testAllowingEverythingFromTheInboxLetsTheWaitingCommandRun() async throws {
+        let daemon = InMemoryDaemon { _ in [.run(command: "make", output: ""), .say("Built.")] }
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        try await daemon.client.send(session.id, "hi", .enqueue)
+        let store = inboxStore(daemon)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.inbox.first?.reason, .approval)
+
+        await store.send(.inboxModeWidened(session.id, .allowEverything))
+        await store.receive(\.loaded)
+        XCTAssertFalse(store.state.inbox.contains { $0.reason == .approval })
+        let sessions = try await daemon.client.sessions(nil)
+        XCTAssertEqual(sessions.first?.approvalMode, .allowEverything)
+    }
+
+    func testTryingAgainFromTheInboxSendsTheLastMessageAgain() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        try await daemon.client.send(session.id, "first", .enqueue)
+        try await daemon.client.send(session.id, "build it", .enqueue)
+        let store = inboxStore(daemon)
+
+        await store.send(.inboxRetryTapped(session.id))
+        await store.receive(\.loaded)
+        let sent = try await daemon.client.history(session.id).compactMap { event -> String? in
+            if case .userMessage(let text) = event.kind { text } else { nil }
+        }
+        XCTAssertEqual(sent, ["first", "build it", "build it"])
+    }
+
+    func testNextWaitingGoesThroughTheBlockedSessionsAndWraps() async throws {
+        let daemon = InMemoryDaemon { _ in [.run(command: "make", output: ""), .say("Built.")] }
+        for name in ["a", "b"] {
+            let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/\(name)"))
+            try await daemon.client.send(session.id, "hi", .enqueue)
+        }
+        let store = inboxStore(daemon)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        var visited: [SidebarItem?] = []
+        for _ in 0..<3 {
+            await store.send(.nextWaitingTapped)
+            await store.receive(\.selected)
+            visited.append(store.state.selection)
+        }
+        XCTAssertNotEqual(visited[0], visited[1])
+        XCTAssertEqual(visited[0], visited[2])
+    }
+
+    func testNextWaitingWithNothingBlockedOpensTheInbox() async {
+        let store = inboxStore(InMemoryDaemon())
+        await store.send(.nextWaitingTapped)
+        await store.receive(\.selected)
+        XCTAssertEqual(store.state.selection, .inbox)
     }
 
     func testAnAgentsQuestionIsRepliedToAndItsMoveApprovedFromTheInbox() async throws {

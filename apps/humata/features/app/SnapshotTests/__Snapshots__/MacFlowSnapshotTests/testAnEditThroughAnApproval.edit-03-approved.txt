@@ -1,7 +1,7 @@
 [Window/StandardWindow] "Release notes"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""
-      [StaticText] "Inbox, 1 session waiting" value: "1"
+      [StaticText] "Inbox, 1 blocked on you, 1 in all" value: "1"
     [Row/OutlineRow] ""
       [StaticText] "" value: "Hosts"
     [Row/OutlineRow] ""
@@ -35,10 +35,56 @@
     [Button] "Thoughts" help: "Shows the thinking"
     [Button, selected] "/code/humata/NOTES.md"
     [StaticText] "" value: "Approved"
-    [Button, disabled] "git status"
-    [StaticText] "" value: "Run `git status`"
+    [Button, disabled] "cat > CHANGELOG.md <<'EOF'
+# Changelog
+
+- M1: shipped
+- M2: shipped
+- M3: shipped
+- M4: shipped
+- M5: shipped
+- M6: shipped
+- M7: shipped
+- M8: shipped
+- M9: shipped
+- M10: shipped
+- M11: shipped
+- M1"
+    [Image] "Block" id: hand.raised
+    [StaticText] "" value: "Run `cat > CHANGELOG.md <<'EOF'
+# Changelog
+
+- M1: shipped
+- M2: shipped
+- M3: shipped
+- M4: shipped
+- M5: shipped
+- M6: shipped
+- M7: shipped
+- M8: shipped
+- M9: shipped
+- M10: shipped
+- M11: shipped"
     [Button] "Deny"
     [Button] "Approve"
+  [Image] "Block" id: hand.raised
+  [StaticText] "" value: "Run `cat > CHANGELOG.md <<'EOF'
+# Changelog
+
+- M1: shipped
+- M2: shipped
+- M3: shipped
+- M4: shipped
+- M5: shipped
+- M6: shipped
+- M7: shipped
+- M8: shipped
+- M9: shipped
+- M10: shipped
+- M11: shipped"
+  [Button] "Deny" help: "Deny (⇧⌘D)"
+  [Button] "Approve" help: "Approve (⇧⌘A)"
+  [MenuButton] "Go Down" help: "Stop asking in this session"
   [TextField] ""
   [Button] "Stop" help: "Stop the reply, keeping what it has written" id: stop.fill
   [Toolbar] ""

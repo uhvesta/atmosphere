@@ -141,10 +141,12 @@ package struct Proposal: Identifiable, Hashable, Sendable {
     /// Why, in the agent's words.
     package var note: String
     package var state: State
+    /// For a pending spec edit, the item's spec as it is now.
+    package var currentSpec: String?
 
     package init(
         id: String, kind: Kind = .task, title: String, spec: String = "", parentID: String? = nil,
-        itemID: String? = nil, note: String = "", state: State = .pending
+        itemID: String? = nil, note: String = "", state: State = .pending, currentSpec: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -154,6 +156,7 @@ package struct Proposal: Identifiable, Hashable, Sendable {
         self.itemID = itemID
         self.note = note
         self.state = state
+        self.currentSpec = currentSpec
     }
 }
 
@@ -277,6 +280,20 @@ package enum ItemStatus: String, CaseIterable, Hashable, Sendable {
 
     /// Done and Won't do: set by hand, and sessions don't move an item out.
     package var closed: Bool { self == .done || self == .wontDo }
+}
+
+extension ItemStatus {
+    /// The board column's name.
+    package var title: String {
+        switch self {
+        case .todo: String(localized: "To Do")
+        case .inProgress: String(localized: "In Progress")
+        case .waitingOnYou: String(localized: "Waiting on You")
+        case .inReview: String(localized: "In Review")
+        case .done: String(localized: "Done")
+        case .wontDo: String(localized: "Won't Do")
+        }
+    }
 }
 
 package enum Priority: Int, CaseIterable, Comparable, Hashable, Sendable {

@@ -8,9 +8,27 @@ package enum BoardAlert: Equatable {
     case stopAndArchive(Item.ID, ItemStatus)
     case keep(Item.ID, ItemStatus)
     case delete(Item.ID)
+    /// Throws away the changes being made to the item's title and spec.
+    case discard
 }
 
 extension AlertState where Action == BoardAlert {
+    /// Asks before throwing away what was written in `item`'s title or spec.
+    static func discarding(_ item: Item) -> Self {
+        AlertState {
+            TextState("Discard your changes to \(item.title)?")
+        } actions: {
+            ButtonState(role: .destructive, action: .discard) {
+                TextState("Discard Changes")
+            }
+            ButtonState(role: .cancel) {
+                TextState("Keep Editing")
+            }
+        } message: {
+            TextState("What you changed in its title and spec is lost.")
+        }
+    }
+
     /// Asks whether to stop and archive the `sessions` unarchived sessions on
     /// `item` as it moves to `status`, a closed one.
     static func closing(_ item: Item, to status: ItemStatus, sessions: Int) -> Self {

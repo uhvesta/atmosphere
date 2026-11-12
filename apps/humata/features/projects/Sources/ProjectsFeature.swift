@@ -38,6 +38,10 @@ package struct ProjectsFeature {
 
         package init() {}
 
+        /// The sessions in the inbox that can't go on without the person,
+        /// as the Dock counts them.
+        package var blockedCount: Int { inbox.count(where: \.reason.blocks) }
+
         /// The projects, the most recently active first. One with nothing in
         /// it yet is new, so it comes first.
         package var sortedProjects: [Project] {
@@ -197,6 +201,14 @@ package struct ProjectsFeature {
         case updateFailed(String)
         /// The person allowed or denied a request from the inbox.
         case inboxAnswered(Session.ID, request: String, approved: Bool)
+        /// The person let the session do more without asking, from the
+        /// inbox, which releases the requests the new mode allows.
+        case inboxModeWidened(Session.ID, ApprovalMode)
+        /// Sends a failed session's last message again, from the inbox.
+        case inboxRetryTapped(Session.ID)
+        /// Opens the next session blocked on the person after the one open,
+        /// or the inbox if none is.
+        case nextWaitingTapped
         /// The person answered an agent's question or move from the inbox.
         case requestAnswered(AgentRequest.ID, RequestAnswer)
         /// The answer reached the agent, so its draft can go.
@@ -270,7 +282,7 @@ package struct ProjectsFeature {
                 // The Dock counts only the sessions that can't go on without
                 // the person.
                 let blocked = inbox.count(where: \.reason.blocks)
-                let badge = !state.loadedOnce || blocked != state.inbox.count(where: \.reason.blocks) ? blocked : nil
+                let badge = !state.loadedOnce || blocked != state.blockedCount ? blocked : nil
                 state.loadedOnce = true
                 state.now = date.now
                 state.inbox = inbox
@@ -564,6 +576,41 @@ package struct ProjectsFeature {
                     await send(.answerFailed(error.localizedDescription))
                     await send(await load())
                 }
+
+            case .inboxModeWidened(let id, let mode):
+                return .run { send in
+                    try await daemon.setApprovalMode(id, mode)
+                    await send(await load())
+                } catch: { error, send in
+                    await send(.answerFailed(error.localizedDescription))
+                    await send(await load())
+                }
+
+            case .inboxRetryTapped(let id):
+                return .run { send in
+                    let history = try await daemon.history(id)
+                    let last = history.reversed().lazy.compactMap { event -> String? in
+                        guard case .userMessage(let text) = event.kind else { return nil }
+                        return text
+                    }.first
+                    if let last { try await daemon.send(id, last, .enqueue) }
+                    await send(await load())
+                } catch: { error, send in
+                    await send(.answerFailed(error.localizedDescription))
+                    await send(await load())
+                }
+
+            case .nextWaitingTapped:
+                var blocked: [Session.ID] = []
+                for entry in state.inbox where entry.reason.blocks && !blocked.contains(entry.session.id) {
+                    blocked.append(entry.session.id)
+                }
+                guard !blocked.isEmpty else { return .send(.selected(.inbox)) }
+                var next = blocked[0]
+                if case .session(let open)? = state.selection, let index = blocked.firstIndex(of: open) {
+                    next = blocked[(index + 1) % blocked.count]
+                }
+                return .send(.selected(.session(next)))
 
             case .requestAnswered(let id, let answer):
                 let live = state.closing(id, with: answer)

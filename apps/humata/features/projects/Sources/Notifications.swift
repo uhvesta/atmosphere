@@ -63,17 +63,3 @@ extension AgentRequest.Kind {
         return status.title
     }
 }
-
-extension ItemStatus {
-    /// The board column's name.
-    package var title: String {
-        switch self {
-        case .todo: String(localized: "To Do")
-        case .inProgress: String(localized: "In Progress")
-        case .waitingOnYou: String(localized: "Waiting on You")
-        case .inReview: String(localized: "In Review")
-        case .done: String(localized: "Done")
-        case .wontDo: String(localized: "Won't Do")
-        }
-    }
-}

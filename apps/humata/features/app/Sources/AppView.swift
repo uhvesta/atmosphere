@@ -28,7 +28,7 @@ package struct AppView: View {
             .navigationSplitViewColumnWidth(min: 220, ideal: 260)
         } detail: {
             if store.sidebar.selection == .inbox {
-                InboxView(entries: store.sidebar.inbox, drafts: store.sidebar.drafts) {
+                InboxView(entries: store.sidebar.inbox, drafts: store.sidebar.drafts, now: store.sidebar.now) {
                     store.send(.sidebar(.selected(.session($0))))
                 } openChanges: {
                     store.send(.sidebar(.changesTapped($0)))
@@ -40,6 +40,10 @@ package struct AppView: View {
                     store.send(.sidebar(.draftChanged(request, text)))
                 } markRead: {
                     store.send(.sidebar(.markReadTapped($0)))
+                } widen: { session, mode in
+                    store.send(.sidebar(.inboxModeWidened(session, mode)))
+                } retry: {
+                    store.send(.sidebar(.inboxRetryTapped($0)))
                 }
             } else if let search = store.scope(state: \.search, action: \.search.presented) {
                 SearchView(store: search)

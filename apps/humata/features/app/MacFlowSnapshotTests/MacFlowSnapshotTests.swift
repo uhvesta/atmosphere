@@ -27,7 +27,7 @@ final class MacFlowSnapshotTests: XCTestCase {
             [
                 .think("The notes go in the repository."),
                 .write(path: "/code/humata/NOTES.md", contents: "Ship M1."),
-                .run(command: "git status", output: "nothing to commit, working tree clean"),
+                .run(command: Self.heredoc, output: "nothing to commit, working tree clean"),
                 .say("Wrote the notes and checked the tree is clean."),
             ]
         }
@@ -72,6 +72,11 @@ final class MacFlowSnapshotTests: XCTestCase {
         await flow.step("done")
         flow.finish()
     }
+
+    /// A command long enough that it must show whole before it's allowed.
+    private static let heredoc =
+        (["cat > CHANGELOG.md <<'EOF'", "# Changelog", ""]
+        + (1...16).map { "- M\($0): shipped" } + ["EOF", "git status"]).joined(separator: "\n")
 
     /// A session is forked before its second turn: the fork shows under it
     /// in the sidebar with the chat up to there, and goes its own way.
@@ -322,6 +327,10 @@ final class MacFlowSnapshotTests: XCTestCase {
             StartRequest(backend: .scripted, name: "Login form", itemID: form.id))
         try await daemon.client.send(session.id, "Build the form", .enqueue)
         try await until { daemon.sessions.first?.state == .waitingForApproval }
+        let earlier = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "First try", itemID: task.id))
+        _ = try await daemon.client.update(earlier.id, SessionUpdate(archived: true))
+        _ = try await daemon.client.start(StartRequest(backend: .scripted, name: "Sign in copy", itemID: task.id))
         store.send(.board(.presented(.refresh)))
         try await until { store.board?.items[id: task.id]?.status == .waitingOnYou }
         await flow.step("waiting on you")
@@ -706,6 +715,10 @@ final class MacFlowSnapshotTests: XCTestCase {
         try await until { store.sidebar.inbox.count == 1 && store.sidebar.inbox.first?.reason == .move }
         await flow.step("replied")
 
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { store.session?.request != nil }
+        await flow.step("move in session")
+
         store.send(.sidebar(.changesTapped(session.id)))
         try await until { store.session?.tab == .review && store.session?.review.files.isEmpty == false }
         await flow.step("changes")
@@ -724,8 +737,17 @@ final class MacFlowSnapshotTests: XCTestCase {
     /// declined in its chat; a project's skills; and comments on a task's
     /// spec sent to its session.
     func testPlanningWithAnAgent() async throws {
-        let daemon = InMemoryDaemon { _ in
-            [
+        let edited = LockIsolated<String?>(nil)
+        let daemon = InMemoryDaemon { text in
+            if text.contains("Tighten"), let item = edited.value {
+                return [
+                    .proposeSpecEdit(
+                        itemID: item,
+                        spec: "Email and password, with the field and why in the error.\nLock after five tries."),
+                    .say("Here's a tighter spec."),
+                ]
+            }
+            return [
                 .say("Here's the work as I'd split it."),
                 .propose(title: "Login form", spec: "Email and password, with an error under the wrong field."),
                 .propose(title: "Dark mode", spec: "Follow the system's appearance."),
@@ -793,6 +815,18 @@ final class MacFlowSnapshotTests: XCTestCase {
         comments(.binding(.set(\.comment, "And lock the account after five tries?")))
         try await until { store.board?.destination?.item?.comments.drafts.count == 1 }
         await flow.step("spec comments")
+
+        edited.setValue(login.id)
+        store.send(.board(.presented(.destination(.dismiss))))
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { store.session?.session.id == session.id }
+        store.send(.session(.presented(.binding(.set(\.draft, "Tighten the login spec")))))
+        store.send(.session(.presented(.sendTapped(.enqueue))))
+        try await until {
+            store.session?.isWorking == false
+                && store.session?.proposals.proposals.contains { $0.currentSpec != nil } == true
+        }
+        await flow.step("spec edit")
         flow.finish()
     }
 

@@ -143,7 +143,7 @@ original spec; lettered ones were added since.
 | The demo | Done |
 | R Review pass | Done (9e2ac82e) |
 | J Agents ask, and a board journal | Done |
-| V Second review pass | In progress |
+| V Second review pass | Done |
 | K Signed releases | In progress |
 
 ## Done milestones
@@ -837,22 +837,22 @@ on controls that are off during a turn. In build order:
 - [x] Deleting a session forgets it before cleaning its mirrors
 - [x] A backup that fails backs off and says why in Recovery Copies
 - [x] Reverting a task's deletion re-attaches its sessions
-- [ ] The session shows what waits on you above the composer: its question,
+- [x] The session shows what waits on you above the composer: its question,
   move request, approvals and pending proposals
-- [ ] A command waiting for approval shows in full
-- [ ] Allow, and stop asking for edits (or everything) in this session
-- [ ] Try Again on a failed turn, in the chat and the Inbox
-- [ ] The Inbox badge counts what blocks; rows say how long they've waited
-- [ ] Shortcuts live in the menu bar, with a Go menu: Inbox, Next Waiting
+- [x] A command waiting for approval shows in full
+- [x] Allow, and stop asking for edits (or everything) in this session
+- [x] Try Again on a failed turn, in the chat and the Inbox
+- [x] The Inbox badge counts what blocks; rows say how long they've waited
+- [x] Shortcuts live in the menu bar, with a Go menu: Inbox, Next Waiting
   Session, Search, Hosts
-- [ ] Files-tab comments and the open tab survive looking elsewhere
-- [ ] Board action errors stay until dismissed
-- [ ] Start Work can't start twice, and starting shows progress
-- [ ] Cancelling a changed task asks first; links are off while editing
-- [ ] A task's sessions show their state, waiting first, archived last
-- [ ] A proposed spec edit shows what it changes, and any proposal shows in
+- [x] Files-tab comments and the open tab survive looking elsewhere
+- [x] Board action errors stay until dismissed
+- [x] Start Work can't start twice, and starting shows progress
+- [x] Cancelling a changed task asks first; links are off while editing
+- [x] A task's sessions show their state, waiting first, archived last
+- [x] A proposed spec edit shows what it changes, and any proposal shows in
   full on request
-- [ ] Read-only review ranges say where comments go, with a button to get
+- [x] Read-only review ranges say where comments go, with a button to get
   there
 
 ### Milestone K: signed releases

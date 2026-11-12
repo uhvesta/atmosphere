@@ -1,7 +1,7 @@
 [Window/StandardWindow] "Release notes"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""
-      [StaticText] "Inbox, 1 session waiting" value: "1"
+      [StaticText] "" value: "Inbox, 0 blocked on you, 1 in all"
     [Row/OutlineRow] ""
       [StaticText] "" value: "Hosts"
     [Row/OutlineRow] ""
@@ -35,7 +35,21 @@
     [Button] "Thoughts" help: "Shows the thinking"
     [Button, selected] "/code/humata/NOTES.md"
     [StaticText] "" value: "Approved"
-    [Button, selected] "git status"
+    [Button, selected] "cat > CHANGELOG.md <<'EOF'
+# Changelog
+
+- M1: shipped
+- M2: shipped
+- M3: shipped
+- M4: shipped
+- M5: shipped
+- M6: shipped
+- M7: shipped
+- M8: shipped
+- M9: shipped
+- M10: shipped
+- M11: shipped
+- M1"
     [StaticText] "" value: "Allowed by the approval mode"
     [StaticText] "" value: "Wrote the notes and checked the tree is clean."
   [TextField] ""

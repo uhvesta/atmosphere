@@ -46,11 +46,11 @@ extension InMemoryDaemon {
                     var proposal = Self.proposal(call: call, tool: tool, argumentsJSON: json)
                 else { return nil }
                 proposal.state = decided[call] ?? .pending
-                // A spec edit that proposes no new title shows the item's.
-                if proposal.kind == .specEdit, proposal.title.isEmpty,
-                    let item = state.items.first(where: { $0.id == proposal.itemID })
-                {
-                    proposal.title = item.title
+                // A spec edit shows the item's title when it proposes none,
+                // and while pending the spec it would replace.
+                if proposal.kind == .specEdit, let item = state.items.first(where: { $0.id == proposal.itemID }) {
+                    if proposal.title.isEmpty { proposal.title = item.title }
+                    if proposal.state == .pending { proposal.currentSpec = item.spec }
                 }
                 return proposal
             }

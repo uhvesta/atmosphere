@@ -14,9 +14,14 @@ package struct BoardFeature {
         package var items: IdentifiedArrayOf<Item> = []
         /// The project's sessions.
         package var sessions: IdentifiedArrayOf<Session> = []
-        /// Why the board couldn't be read or changed, and what to do; nil
-        /// once it was.
+        /// Why the board couldn't be read, and what to do; nil once it was.
         package var failure: String?
+        /// Why a change made here failed, kept until the person closes it,
+        /// as reading the board again doesn't make it right.
+        package var actionFailure: String?
+        /// The items work is starting on, so a second tap starts no second
+        /// session.
+        package var starting: Set<Item.ID> = []
         @Presents package var destination: Destination.State?
         /// The item to open once the board is read, as when a search found it.
         package var opening: Item.ID?
@@ -65,7 +70,13 @@ package struct BoardFeature {
         case task
         case refresh
         case loaded(items: [Item], sessions: [Session])
+        /// The board couldn't be read.
         case failed(String)
+        /// A change made here failed.
+        case actionFailed(String)
+        case actionFailureDismissed
+        /// Work started on the item, or failed to.
+        case startFinished(Item.ID)
         /// Adds a task, or a subtask under `parent`.
         case addTapped(parent: Item.ID?)
         case cardTapped(Item.ID)
@@ -172,7 +183,7 @@ package struct BoardFeature {
                         }
                         await send(.undone(try await daemon.revert(change.id)))
                     } catch: { error, send in
-                        await send(.failed("Couldn't undo: \(error.localizedDescription)"))
+                        await send(.actionFailed("Couldn't undo: \(error.localizedDescription)"))
                     })
 
             case .undone(let reverted):
@@ -203,8 +214,20 @@ package struct BoardFeature {
                 return .none
 
             case .failed(let message):
-                state.importing = false
                 state.failure = message
+                return .none
+
+            case .actionFailed(let message):
+                state.importing = false
+                state.actionFailure = message
+                return .none
+
+            case .actionFailureDismissed:
+                state.actionFailure = nil
+                return .none
+
+            case .startFinished(let id):
+                state.starting.remove(id)
                 return .none
 
             case .importIssuesTapped:
@@ -214,7 +237,7 @@ package struct BoardFeature {
                 return .run { send in
                     await send(.imported(try await daemon.importIssues(project)))
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.actionFailed(error.localizedDescription))
                 }
 
             case .imported(let imported):
@@ -247,7 +270,7 @@ package struct BoardFeature {
                 return .none
 
             case .startWorkTapped(let id):
-                guard let item = state.items[id: id] else { return .none }
+                guard let item = state.items[id: id], !state.starting.contains(id) else { return .none }
                 let settings = NewSessionFeature.State(project: state.project, item: item)
                 guard !settings.needsModel else {
                     // A local model must be picked; the item's page asks.
@@ -259,11 +282,14 @@ package struct BoardFeature {
                     return .none
                 }
                 let project = state.project.id
+                state.starting.insert(id)
                 return .run { send in
                     _ = try await daemon.startWork(settings.request)
+                    await send(.startFinished(id))
                     await send(await load(project))
                 } catch: { error, send in
-                    await send(.failed("Couldn't start work on \(item.title): \(error.localizedDescription)"))
+                    await send(.startFinished(id))
+                    await send(.actionFailed("Couldn't start work on \(item.title): \(error.localizedDescription)"))
                 }
 
             case .dropped(let id, let status):
@@ -298,7 +324,7 @@ package struct BoardFeature {
                     await send(.refresh)
                     await send(.changedHere)
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.actionFailed(error.localizedDescription))
                 }
 
             case .destination(.presented(.item(.delegate(.deleted)))):
@@ -359,7 +385,7 @@ package struct BoardFeature {
             try await stopAndArchive(sessions, with: daemon)
             await send(.moved(try await daemon.updateItem(id, ItemUpdate(status: status))))
         } catch: { error, send in
-            await send(.failed(error.localizedDescription))
+            await send(.actionFailed(error.localizedDescription))
         }
     }
 }
@@ -387,6 +413,8 @@ package struct ItemFeature {
         /// The title and spec being edited; nil while they're only shown.
         package var draft: Draft?
         package var saving = false
+        /// Work is starting on it, so a second tap starts no second session.
+        package var startingWork = false
         /// Comments on the spec's blocks, to send to one of its sessions.
         package var comments: SpecCommentsFeature.State
         @Presents package var destination: Destination.State?
@@ -402,6 +430,29 @@ package struct ItemFeature {
 
         /// The sessions spec comments can go to: archived ones don't work.
         package var commentTargets: [Session] { sessions.filter { !$0.archived } }
+
+        /// Its sessions, those waiting on the person first, then those
+        /// working, then the rest, and archived ones last.
+        package var sortedSessions: [Session] {
+            func rank(_ session: Session) -> Int {
+                if session.archived { return 3 }
+                if session.asking { return 0 }
+                switch session.state {
+                case .waitingForApproval, .failed: return 0
+                case .working: return 1
+                case .idle: return 2
+                }
+            }
+            return sessions.enumerated()
+                .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }
+                .map(\.element)
+        }
+
+        /// Whether the draft differs from the item, so cancelling loses work.
+        var draftChanged: Bool {
+            guard let draft else { return false }
+            return draft.title != item.title || draft.spec != item.spec
+        }
     }
 
     package struct Draft: Equatable {
@@ -444,6 +495,7 @@ package struct ItemFeature {
         /// Starts a session on the item with the last New Session settings,
         /// and has it start, staying on the page.
         case startWorkTapped
+        case workStarted
         case startWorkFailed(String)
         case addSubtaskTapped
         case deleteTapped
@@ -522,6 +574,14 @@ package struct ItemFeature {
                 return .none
 
             case .cancelEditTapped:
+                guard state.draftChanged else {
+                    state.draft = nil
+                    return .none
+                }
+                state.destination = .alert(.discarding(state.item))
+                return .none
+
+            case .destination(.presented(.alert(.discard))):
                 state.draft = nil
                 return .none
 
@@ -605,19 +665,27 @@ package struct ItemFeature {
                 return .none
 
             case .startWorkTapped:
+                guard !state.startingWork else { return .none }
                 let settings = NewSessionFeature.State(project: state.project, item: state.item)
                 guard !settings.needsModel else {
                     state.destination = .newSession(settings)
                     return .none
                 }
+                state.startingWork = true
                 return .run { send in
                     _ = try await daemon.startWork(settings.request)
+                    await send(.workStarted)
                     await send(.delegate(.changed))
                 } catch: { error, send in
                     await send(.startWorkFailed(error.localizedDescription))
                 }
 
+            case .workStarted:
+                state.startingWork = false
+                return .none
+
             case .startWorkFailed(let message):
+                state.startingWork = false
                 state.destination = .alert(
                     AlertState {
                         TextState("Couldn't start work on \(state.item.title)")

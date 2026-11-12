@@ -592,6 +592,71 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertEqual(state.highlightedItem, "c1")
         XCTAssertNil(state.forkPointAfterHighlight)
     }
+
+    private func store(_ state: SessionFeature.State) -> TestStoreOf<SessionFeature> {
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.markSeen = { _, _ in }
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    func testApprovingAMoveFromTheSessionAnswersItsRequest() async {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = SessionFeature.State(session: session)
+        state.request = AgentRequest(
+            id: "r1", sessionID: "s1", kind: .move(item: "i1", status: .inReview), text: "Done",
+            created: Date(timeIntervalSince1970: 0))
+        let store = store(state)
+        await store.send(.moveApproved)
+        await store.receive(\.delegate.answerRequest)
+    }
+
+    func testShowingProposalsScrollsToTheFirstOneWaiting() async {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = SessionFeature.State(session: session)
+        state.proposals.proposals = [
+            Proposal(id: "p1", title: "Done", state: .declined),
+            Proposal(id: "p2", title: "Log in"),
+            Proposal(id: "p3", title: "Log out"),
+        ]
+        let store = store(state)
+        await store.send(.showProposalsTapped) {
+            $0.scrollTarget = "p2"
+        }
+        await store.send(.scrolled) {
+            $0.scrollTarget = nil
+        }
+    }
+
+    func testTryingAgainAfterAFailedTurnSendsTheLastMessageAgain() async {
+        let sent = LockIsolated<[String]>([])
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.send = { _, text, _ in sent.withValue { $0.append(text) } }
+            $0.daemon.markSeen = { _, _ in }
+        }
+        store.exhaustivity = .off
+        await store.send(.received(event("e1", .userMessage("first try"))))
+        await store.send(.received(event("e2", .userMessage("Fix the login"))))
+        await store.send(.received(event("e3", .turnStarted)))
+        await store.send(.received(event("e4", .failed("The model went away"))))
+        await store.send(.received(event("e5", .turnEnded(aborted: false))))
+        XCTAssertTrue(store.state.lastTurnFailed)
+
+        await store.send(.retryTapped)
+        await store.finish()
+        XCTAssertEqual(sent.value, ["Fix the login"])
+    }
+
+    func testReplacingOneLineOfASpecTakesOneOutAndPutsOneIn() {
+        let change = ToolCall.Change.between("# Log in\nWith email.\nFast.", "# Log in\nWith a passkey.\nFast.")
+        XCTAssertEqual(change, ToolCall.Change(removed: ["With email."], added: ["With a passkey."]))
+    }
 }
 
 extension ChatItem {

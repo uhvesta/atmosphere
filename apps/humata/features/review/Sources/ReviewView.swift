@@ -271,6 +271,19 @@ private struct DiffLines: View {
         let elsewhere = threads.filter { thread in !inline.contains { $0.id == thread.id } }
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
+                if !store.canComment {
+                    HStack {
+                        Text("Comments go on Everything, Unstaged or Against a Branch.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Show Everything") { store.send(.rangePicked(.session)) }
+                            .buttonStyle(.link)
+                            .controlSize(.small)
+                            .help("Show every change this session made, where lines can be commented on")
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 6)
+                }
                 if !elsewhere.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(store.canComment ? "On lines not shown here" : "Threads on this file")
@@ -289,7 +302,7 @@ private struct DiffLines: View {
                         hunkHeader(hunk)
                         ForEach(Array(hunk.lines.enumerated()), id: \.offset) { _, line in
                             LineRow(
-                                line: line, highlighter: highlighter,
+                                line: line, highlighter: highlighter, commentable: store.canComment,
                                 picked: line.new.map { store.commenting?.covers($0, in: ref) ?? false } ?? false
                             )
                             .onTapGesture {
@@ -348,6 +361,7 @@ private struct DiffLines: View {
 private struct LineRow: View {
     let line: DiffLine
     let highlighter: Highlighter?
+    let commentable: Bool
     let picked: Bool
 
     var body: some View {
@@ -369,7 +383,7 @@ private struct LineRow: View {
         .padding(.vertical, 1)
         .background(background)
         .contentShape(Rectangle())
-        .help(line.new == nil ? "" : "Click to comment on this line; Shift-click to comment on several")
+        .help(line.new == nil || !commentable ? "" : "Click to comment on this line; Shift-click to comment on several")
     }
 
     private var marker: String {

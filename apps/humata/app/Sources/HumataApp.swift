@@ -45,8 +45,24 @@ struct HumataApp: App {
             SettingsView(store: store)
         }
         .commands {
-            // One window over one store; ⌘N starts a chat in it instead.
-            CommandGroup(replacing: .newItem) {}
+            // One window over one store, so New makes a chat or a project in
+            // it rather than another window.
+            CommandGroup(replacing: .newItem) {
+                Button("New Chat") { store.send(.sidebar(.newChatTapped)) }
+                    .keyboardShortcut("n", modifiers: .command)
+                Button("Add Project…") { store.send(.sidebar(.addProjectTapped)) }
+                    .keyboardShortcut("n", modifiers: [.command, .shift])
+            }
+            CommandMenu("Go") {
+                Button("Inbox") { store.send(.sidebar(.selected(.inbox))) }
+                    .keyboardShortcut("0", modifiers: .command)
+                Button("Next Waiting Session") { store.send(.sidebar(.nextWaitingTapped)) }
+                    .keyboardShortcut("]", modifiers: .command)
+                Divider()
+                Button("Search Sessions") { store.send(.sidebar(.selected(.search))) }
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
+                Button("Hosts") { store.send(.sidebar(.selected(.hosts))) }
+            }
         }
     }
 }

@@ -64,6 +64,20 @@ package struct ToolCall: Hashable, Sendable {
             self.removed = removed
             self.added = added
         }
+
+        /// The lines going from `old` to `new` takes out and puts in.
+        package static func between(_ old: String, _ new: String) -> Change {
+            let old = old.isEmpty ? [] : old.components(separatedBy: "\n")
+            let new = new.isEmpty ? [] : new.components(separatedBy: "\n")
+            var change = Change(removed: [], added: [])
+            for step in new.difference(from: old) {
+                switch step {
+                case .remove(_, let line, _): change.removed.append(line)
+                case .insert(_, let line, _): change.added.append(line)
+                }
+            }
+            return change
+        }
     }
 
     /// Reads a write's change from its arguments: a replacement (Claude's

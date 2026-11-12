@@ -261,11 +261,22 @@ package struct SessionView: View {
                 guard let item else { return }
                 reader.scrollTo(item, anchor: .center)
             }
+            .onChange(of: store.scrollTarget) { _, item in
+                guard let item else { return }
+                withAnimation { reader.scrollTo(item, anchor: .top) }
+                store.send(.scrolled)
+            }
         }
         .safeAreaInset(edge: .top) {
             if store.highlighted != nil {
                 highlightBanner
             }
+        }
+        // An inset, not a row over the box: in the stack beside the chat it
+        // changed the chat's frame, and the chat, kept at its bottom, laid
+        // itself out again without end.
+        .safeAreaInset(edge: .bottom) {
+            WaitingStrip(store: store)
         }
     }
 
@@ -340,11 +351,27 @@ package struct SessionView: View {
             Label("Stopped", systemImage: "stop.circle")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
-        case .failure(_, let message):
-            Label(message, systemImage: "exclamationmark.triangle")
-                .font(.footnote)
-                .foregroundStyle(.red)
+        case .failure(let id, let message):
+            HStack(alignment: .firstTextBaseline) {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                if store.lastTurnFailed, !store.isWorking, store.lastMessage != nil, id == lastFailure {
+                    Spacer()
+                    Button("Try Again") { store.send(.retryTapped) }
+                        .help("Send your last message again")
+                }
+            }
         }
+    }
+
+    /// The newest failure in the chat, the one Try Again is on.
+    private var lastFailure: String? {
+        for item in store.items.reversed() {
+            if case .failure(let id, _) = item { return id }
+        }
+        return nil
     }
 
     /// The person's earlier message, open to change. Sending it forks, so
@@ -530,11 +557,9 @@ struct PermissionCard: View {
     var body: some View {
         switch permission.answer {
         case nil:
-            HStack(spacing: 8) {
-                Label(permission.summary, systemImage: "hand.raised")
-                    .font(.callout)
-                    .lineLimit(2)
-                Spacer()
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "hand.raised")
+                FullCommand(text: permission.summary)
                 Button("Deny") { answer(permission.requestID, false) }
                 Button("Approve") { answer(permission.requestID, true) }
                     .buttonStyle(.borderedProminent)
@@ -589,5 +614,126 @@ private struct QueuedRow: View {
         .background(.fill.quaternary, in: .rect(cornerRadius: 6))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Queued: \(queued.text)")
+    }
+}
+
+/// What a request for permission would run or write, whole: monospaced,
+/// selectable, and scrolling past about twelve lines, so it can be read
+/// before it's allowed.
+struct FullCommand: View {
+    let text: String
+
+    var body: some View {
+        ScrollView {
+            Text(text)
+                .font(.callout.monospaced())
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxHeight: 12 * 17)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// Over the box, what the session waits on you for, so it isn't missed up
+/// the chat: its question, the move it asks for, the first permission it
+/// waits on, and the proposals not decided yet.
+private struct WaitingStrip: View {
+    let store: StoreOf<SessionFeature>
+
+    var body: some View {
+        let permissions = store.pendingPermissions
+        let proposals = store.pendingProposals.count
+        if store.request != nil || !permissions.isEmpty || proposals > 0 {
+            VStack(alignment: .leading, spacing: 8) {
+                if let request = store.request {
+                    requestRow(request)
+                }
+                if let first = permissions.first,
+                    case .permissionRequested(let id, let kind, let summary) = first.kind
+                {
+                    permissionRow(id: id, kind: kind, summary: summary, more: permissions.count - 1)
+                }
+                if proposals > 0 {
+                    HStack {
+                        Label(
+                            proposals == 1 ? "1 proposal waits for you" : "\(proposals) proposals wait for you",
+                            systemImage: "checklist")
+                        Spacer()
+                        Button("Show") { store.send(.showProposalsTapped) }
+                            .help("Scroll to the first proposal not decided yet")
+                    }
+                }
+            }
+            .font(.callout)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.orange.opacity(0.1), in: .rect(cornerRadius: 10))
+            .padding(.horizontal)
+            .padding(.bottom, 6)
+        }
+    }
+
+    @ViewBuilder
+    private func requestRow(_ request: AgentRequest) -> some View {
+        switch request.kind {
+        case .question:
+            VStack(alignment: .leading, spacing: 2) {
+                Label(LocalizedStringKey(request.text), systemImage: "questionmark.bubble")
+                    .textSelection(.enabled)
+                Text("Your next message answers it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .move(_, let status):
+            HStack(alignment: .firstTextBaseline) {
+                Label(LocalizedStringKey(request.text), systemImage: "checkmark.seal")
+                    .textSelection(.enabled)
+                Spacer()
+                Button("Open Changes") { store.send(.tabPicked(.review)) }
+                Button("Move to \(status.title)") { store.send(.moveApproved) }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
+    private func permissionRow(id: String, kind: PermissionKind, summary: String, more: Int) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top) {
+                Image(systemName: "hand.raised")
+                // A few lines only: the card in the chat shows it whole. A
+                // scroll view here, under a chat kept at its bottom, makes
+                // the two lay each other out without end.
+                Text(summary)
+                    .font(.callout.monospaced())
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button("Deny") { store.send(.answerPermission(requestID: id, approved: false)) }
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
+                    .help("Deny (⇧⌘D)")
+                Button("Approve") { store.send(.answerPermission(requestID: id, approved: true)) }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut("a", modifiers: [.command, .shift])
+                    .help("Approve (⇧⌘A)")
+                Menu {
+                    let widened: ApprovalMode = kind == .write ? .allowEdits : .allowEverything
+                    Button(kind == .write ? "Allow Edits from Now On" : "Allow Everything from Now On") {
+                        store.send(.approvalModePicked(widened))
+                    }
+                } label: {
+                    Image(systemName: "chevron.down")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Stop asking in this session")
+            }
+            if more > 0 {
+                Text("and \(more) more")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }

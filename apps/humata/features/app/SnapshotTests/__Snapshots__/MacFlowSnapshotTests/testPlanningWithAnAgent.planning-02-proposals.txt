@@ -1,7 +1,7 @@
 [Window/StandardWindow] "Plan"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""
-      [StaticText] "" value: "Inbox, 0 sessions waiting"
+      [StaticText] "" value: "Inbox, 0 blocked on you, 0 in all"
     [Row/OutlineRow] ""
       [StaticText] "" value: "Hosts"
     [Row/OutlineRow] ""
@@ -52,6 +52,8 @@
     [Button] "Edit…"
     [Button] "Apply"
     [StaticText] "" value: "Three tasks. The confetti is optional."
+  [StaticText] "" value: "3 proposals wait for you"
+  [Button] "Show" help: "Scroll to the first proposal not decided yet"
   [TextField] ""
   [Button, disabled] "Send" id: arrow.up
   [Toolbar] ""

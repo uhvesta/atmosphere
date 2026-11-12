@@ -3322,3 +3322,33 @@ async fn a_delete_that_cant_clean_up_still_forgets_the_session() {
             .all(|recovery| recovery.session_id != session.id)
     );
 }
+
+#[tokio::test]
+async fn a_pending_spec_edit_carries_the_spec_it_would_replace() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let item = create_item(&client, &project.id, "", "Log in")
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let mut request = start_in(&project.id);
+    if let pb::request::Kind::StartSession(start) = &mut request {
+        start.backend_config = format!(
+            r#"{{"rules": [{{"when": "", "steps": [
+                {{"step": "tool", "tool": "propose_spec_edit",
+                  "arguments": {{"item_id": "{}", "spec": "With a passkey."}}}}
+            ]}}]}}"#,
+            item.id
+        );
+    }
+    let session = started(&client, request).await;
+    send(&client, &session.id, "plan").await;
+    after_turns(&client, &session.id, 1).await;
+    let [proposal] = proposals_of(&client, &session.id)
+        .await
+        .try_into()
+        .unwrap_or_else(|proposals: Vec<pb::Proposal>| panic!("one proposal: {proposals:?}"));
+    assert_eq!(proposal.spec, "With a passkey.");
+    assert_eq!(proposal.current_spec, item.spec);
+}
