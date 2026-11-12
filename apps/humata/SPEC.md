@@ -137,8 +137,8 @@ original spec; lettered ones were added since.
 | F Any host, any repository | Done |
 | 7 Search across sessions | Done |
 | 8 Ship as pull requests | Done |
-| G Drive Humata from outside | In progress |
-| S Settings and environments | After G |
+| G Drive Humata from outside | Done |
+| S Settings and environments | In progress |
 | H Humata's own model server | After S |
 | The demo | After H |
 | R Review pass | After the demo |
@@ -510,7 +510,7 @@ Structure:
 server standing in for GitHub, marks it merged, and finds the task Done and
 the worktree gone.
 
-### Milestone G: drive Humata from outside
+### Milestone G: drive Humata from outside — done
 
 **Outcome:** an agent outside Humata (Claude Code in a terminal, say) can
 set Humata up and use it as you would: add projects, start chats and
@@ -539,10 +539,10 @@ Structure:
 - **Safety.** Destructive tools (archive, remove a project, delete a host)
   say so in their descriptions and are marked destructive in MCP, so the
   outside agent's client asks you before calling them.
-- [ ] `humata mcp` serves the daemon over stdio MCP
-- [ ] Tools for projects, hosts, sessions, the inbox, the board, specs, history and search
-- [ ] A `show` tool and a `humata://` URL scheme in the app
-- [ ] Destructive tools marked so
+- [x] `humata mcp` serves the daemon over stdio MCP
+- [x] Tools for projects, hosts, sessions, the inbox, the board, specs, history and search
+- [x] A `show` tool and a `humata://` URL scheme in the app
+- [x] Destructive tools marked so
 
 **Done when:** an end-to-end test starts `humata mcp` against a test daemon,
 creates a project, starts a scripted chat, sends it a message, approves its
@@ -639,6 +639,77 @@ Once the demo is in:
 Only strict improvements count: additions to the UX that simplify without
 losing behaviour, or that add behaviour badly needed. No redesigns or
 rethinks.
+
+#### An earlier outside review, as input
+
+A separate read-only review (three Fable 5.2 agents) already reported the
+findings below. It agreed with the vision, with two caveats: "a finished
+turn means In Review" claims too much once many agents run, and
+"ephemeral" was built as "recoverable", so nothing is ever deleted. Its
+findings go to step 4's judge with ours. Each is checked against the code
+as it is then, since the code may have moved, and is built only if it holds
+up.
+
+- **P0 correctness:**
+  - saving a spec wakes every session on the item, even with no change;
+    only notify when the text changed, and only sessions working or waiting
+  - a driver panic leaves its session Working forever; catch it and mark it
+    Failed
+  - one dead host freezes every list; give each host a short timeout, then
+    show the cached list
+  - offline sessions look live; draw them stale, "Host offline since …"
+  - waiting on you shows as In Review; pending asks and approvals count as
+    Waiting on You
+  - `ask_person` and `request_move` fail while the Mac is away; record them
+    in history, as proposals already are
+- **P0 workflow:**
+  - Start Work on a card, and Start Work on All, each staying on the board
+    and seeding the task as the first message
+  - closing an item offers to stop and archive its sessions
+  - the inbox split into Blocked on You and To Look Over, with the badge and
+    sound only for the first, and one notice for a burst
+  - Replied and Failed inbox rows show their text, with Reply, Mark as Read
+    and Try Again
+  - a real Delete for archived sessions, freeing folders, branches and
+    copies
+- **P1 data safety:**
+  - archive confirms first, listing the ignored and uncommitted files it
+    would remove
+  - a failed archive can be tried again
+  - a torn last line in `events.jsonl` is cut off on open, not fatal
+  - the relay asks the daemon for a spec before using its copy
+  - moving a session stops the source and allows moving back
+  - an app update waits for hosts to be idle
+  - the badge loop lives for the app's lifetime, not the sidebar view's
+  - offline hosts' sessions can be archived later and messages to them are
+    held
+- **P1 supervision:**
+  - turn time and usage in the sidebar
+  - bulk Stop, Archive and approval mode; Allow All; Next Waiting
+  - the inbox ordered by priority, then longest wait
+  - session state and subtask progress on cards, and a sidebar state filter
+  - a per-host limit on turns at once, with queued messages kept across
+    restarts
+  - pull request state on cards and in the inbox
+- **P2 naming and layout:**
+  - one word each for Approve/Allow, Delete/Remove and Move To
+  - "Humata not installed", with Install, instead of "Unreachable"
+  - drop the duplicate title in the session header
+  - one shared relative-time formatter
+  - Apply is disabled for a proposal with no title
+  - spec comments don't default to an archived session
+  - subtask rows open
+  - an inbox reply that fails to send is kept
+  - sidebar names keep their host tag visible
+  - a cue that the Done columns are off-screen
+  - a single status plus caption on the task page
+  - ListSessions keeps a summary instead of cloning histories
+
+**Owner's call:** the session MCP's `update_item` and `add_subtask` apply
+directly, without the person's approval. That goes against "agents propose,
+the person applies" above, and duplicates `propose_spec_edit` and
+`propose_task`. The review recommends dropping the direct paths. This is
+asked before it's changed.
 
 ## Later
 

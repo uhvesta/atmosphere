@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import Foundation
 import HumataBoard
 import HumataDaemonClient
 import HumataHosts
@@ -23,6 +24,9 @@ package struct AppFeature {
         @Presents package var hosts: HostsFeature.State?
         /// Searching every session; nil unless it's open.
         @Presents package var search: SearchFeature.State?
+        /// A link opened from outside, shown once the sidebar has read
+        /// what it names, which may be new.
+        package var opening: HumataLink?
 
         package init() {}
     }
@@ -53,6 +57,8 @@ package struct AppFeature {
         case board(PresentationAction<BoardFeature.Action>)
         case hosts(PresentationAction<HostsFeature.Action>)
         case search(PresentationAction<SearchFeature.Action>)
+        /// A `humata://` URL was opened, as by `humata mcp`'s show tool.
+        case opened(URL)
     }
 
     @Dependency(\.daemon) var daemon
@@ -107,8 +113,9 @@ package struct AppFeature {
                 if let open = state.session?.session.id, let listed = sessions.first(where: { $0.id == open }) {
                     state.session?.session.hostOffline = listed.hostOffline
                 }
-                guard state.daemon == .updatePending, !Self.anyBusy(sessions) else { return .none }
-                return restart(&state)
+                let shown = show(&state)
+                guard state.daemon == .updatePending, !Self.anyBusy(sessions) else { return shown }
+                return .merge(shown, restart(&state))
 
             case .sidebar(.updated(let session)),
                 .sidebar(.destination(.presented(.rename(.delegate(.renamed(let session)))))),
@@ -169,6 +176,11 @@ package struct AppFeature {
                 state.board = BoardFeature.State(project: project, opening: itemID)
                 return .none
 
+            case .opened(let url):
+                guard let link = HumataLink(url) else { return .none }
+                state.opening = link
+                return .send(.sidebar(.refresh))
+
             case .sidebar(.delegate(.openHosts)):
                 state.session = nil
                 state.board = nil
@@ -198,6 +210,28 @@ package struct AppFeature {
         .ifLet(\.$board, action: \.board) { BoardFeature() }
         .ifLet(\.$hosts, action: \.hosts) { HostsFeature() }
         .ifLet(\.$search, action: \.search) { SearchFeature() }
+    }
+
+    /// Shows the link opened from outside, once the sidebar has read it.
+    private func show(_ state: inout State) -> Effect<Action> {
+        guard let link = state.opening else { return .none }
+        state.opening = nil
+        switch link {
+        case .session(let id):
+            guard state.sidebar.sessions[id: id] != nil else { return .none }
+            return .send(.sidebar(.selected(.session(id))))
+        case .board(let id):
+            guard state.sidebar.projects[id: id] != nil else { return .none }
+            return .send(.sidebar(.selected(.board(id))))
+        case .task(let projectID, let itemID):
+            guard let project = state.sidebar.projects[id: projectID] else { return .none }
+            state.sidebar.selection = .board(projectID)
+            state.session = nil
+            state.hosts = nil
+            state.search = nil
+            state.board = BoardFeature.State(project: project, opening: itemID)
+            return .none
+        }
     }
 
     private func restart(_ state: inout State) -> Effect<Action> {

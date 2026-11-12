@@ -156,4 +156,49 @@ final class AppFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.board?.project.id, project.id)
         XCTAssertEqual(store.state.board?.opening, item.id)
     }
+
+    func testALinkOpensASessionTheSidebarHasNotReadYet() async throws {
+        let daemon = InMemoryDaemon()
+        let store = TestStore(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        let url = try XCTUnwrap(URL(string: "humata://session/\(session.id)"))
+
+        await store.send(.opened(url))
+        await store.receive(\.sidebar.loaded)
+        await store.receive(\.sidebar.delegate.openSession)
+        XCTAssertEqual(store.state.sidebar.selection, .session(session.id))
+        XCTAssertEqual(store.state.session?.session.id, session.id)
+    }
+
+    func testALinkToATaskOpensItsBoardAtTheTask() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let store = TestStore(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+        let url = try XCTUnwrap(URL(string: "humata://task/\(project.id)/item-7"))
+
+        await store.send(.opened(url))
+        await store.receive(\.sidebar.loaded)
+        XCTAssertEqual(store.state.sidebar.selection, .board(project.id))
+        XCTAssertEqual(store.state.board?.project.id, project.id)
+        XCTAssertEqual(store.state.board?.opening, "item-7")
+    }
+
+    func testLinksThatNameNothingAreIgnored() throws {
+        for text in ["humata://session", "humata://elsewhere/x", "https://session/x", "humata://task/only-a-project"] {
+            XCTAssertNil(HumataLink(try XCTUnwrap(URL(string: text))), text)
+        }
+        XCTAssertEqual(HumataLink(try XCTUnwrap(URL(string: "humata://board/p1"))), .board("p1"))
+    }
 }
