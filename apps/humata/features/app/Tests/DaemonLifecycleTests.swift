@@ -97,6 +97,28 @@ final class DaemonLifecycleTests: XCTestCase {
         XCTAssertEqual(restarts.value, 1)
     }
 
+    func testAnOlderDaemonIsReplacedWhileOnlyHostsSessionsWork() async {
+        // A host's sessions run in its own daemon, which outlives this one.
+        var remote = working
+        remote.host = "far"
+        let restarts = LockIsolated(0)
+        let store = TestStore(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemonService = service(current: false, restarts: restarts)
+            $0.daemon.sessions = { _ in [remote] }
+            $0.daemon.projects = { [] }
+            $0.daemon.inbox = { Inbox() }
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.receive(\.daemonChecked)
+        await store.receive(\.restarted)
+        XCTAssertEqual(store.state.daemon, .running)
+        XCTAssertEqual(restarts.value, 1)
+    }
+
     func testThePersonCanReplaceItMidTurn() async {
         let restarts = LockIsolated(0)
         var state = AppFeature.State()

@@ -193,6 +193,7 @@ impl Machine {
             claude_version,
             claude_problem,
             anthropic_key,
+            environment_problem: crate::login_env::problem(),
         }
     }
 

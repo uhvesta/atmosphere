@@ -93,6 +93,7 @@ fn link(
         folder: folder.display().to_string(),
         links,
         on_path: std::env::split_paths(path).any(|entry| entry == folder),
+        environment_problem: crate::login_env::problem(),
     })
 }
 

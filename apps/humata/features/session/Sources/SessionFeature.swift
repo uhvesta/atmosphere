@@ -59,9 +59,9 @@ package struct SessionFeature {
         package var expandedThinking: Set<String> = []
         /// Whether the daemon stopped sending events; watching again resumes.
         package var disconnected = false
-        /// Times in a row watching has ended without an event, which spaces
+        /// Times in a row watching has ended without a new event, which spaces
         /// out the next try.
-        var watchRetries = 0
+        package var watchRetries = 0
         /// The person's message being edited, by event id; nil when none is.
         package var editing: String?
         /// The edited message's text.
@@ -444,8 +444,13 @@ package struct SessionFeature {
                 return markSeen(state)
 
             case .received(let event):
-                state.watchRetries = 0
+                // A watch sends the history first. Only something new shows
+                // the session is live: an offline host's cached history ends
+                // its watch at once, and must not be fetched every second.
+                let new = state.events[id: event.id] == nil
+                if new, event.kind.isLive { state.watchRetries = 0 }
                 state.receive(event)
+                guard new else { return .none }
                 if case .toolCompleted(let call, true, _) = event.kind, state.proposes(call) {
                     return .send(.proposals(.refresh))
                 }
@@ -640,5 +645,13 @@ package struct SessionFeature {
         } message: {
             TextState(message)
         }
+    }
+}
+
+extension SessionEvent.Kind {
+    /// Whether it shows the session is live when it's new: a streamed delta
+    /// isn't kept, so it's new on every watch, a replayed one too.
+    fileprivate var isLive: Bool {
+        if case .assistantDelta = self { false } else { true }
     }
 }

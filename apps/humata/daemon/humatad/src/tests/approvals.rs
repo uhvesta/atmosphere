@@ -310,3 +310,42 @@ async fn reading_needs_no_approval() {
         ["Ship it"]
     );
 }
+
+#[tokio::test]
+async fn an_action_cut_short_by_a_restart_is_reported_so_and_not_run_again() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    // Approved, then the daemon stopped before it answered.
+    let approval = pb::Approval {
+        id: "a1".to_owned(),
+        state: pb::ApprovalState::Approved.into(),
+        ..Default::default()
+    };
+    {
+        let store = crate::store::Store::open(&state.path().join("humata.sqlite3"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        let request = pb::Request {
+            kind: Some(add("p1", "Ship it")),
+        };
+        store
+            .add_approval(&approval, &request)
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    let daemon: Arc<Daemon> = daemon_itself(state.path(), Hosts::default()).await;
+    let app = client_of(Connection::new(daemon, Peer::App)).await;
+    let waited = app
+        .call(pb::request::Kind::WaitForApproval(pb::WaitForApproval {
+            id: "a1".to_owned(),
+            wait_seconds: 5,
+        }))
+        .await;
+    let Ok(pb::response::Kind::ApprovalStatus(status)) = waited else {
+        panic!("{waited:?}")
+    };
+    let status = status.approval.unwrap_or_else(|| panic!("no approval"));
+    assert_eq!(status.state(), pb::ApprovalState::Approved);
+    assert!(matches!(
+        status.result.and_then(|result| result.kind),
+        Some(pb::response::Kind::Error(_))
+    ));
+}

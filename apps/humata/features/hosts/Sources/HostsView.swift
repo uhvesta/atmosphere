@@ -143,6 +143,10 @@ private struct CommandsSection: View {
 
     var body: some View {
         Section {
+            if let problem = links.environmentProblem {
+                Label(HostStatus.environment(problem), systemImage: "exclamationmark.triangle.fill")
+                    .symbolRenderingMode(.multicolor)
+            }
             ForEach(links.links, id: \.name) { command in
                 LabeledContent {
                     Text(Self.describe(command.state))
@@ -346,6 +350,7 @@ extension HostStatus {
     /// What keeps its sessions from working, for the person to fix.
     var problems: [String] {
         var problems: [String] = []
+        if let environmentProblem { problems.append(Self.environment(environmentProblem)) }
         if case .failure(let problem) = copilot {
             problems.append("Copilot can't run there: \(problem.message)")
         } else if !githubToken {
@@ -354,6 +359,12 @@ extension HostStatus {
         }
         if let setup, !setup.succeeded { problems.append("Its setup script failed; it runs again on the next check.") }
         return problems
+    }
+
+    /// What it means that the login shell's variables weren't read.
+    static func environment(_ problem: String) -> String {
+        "Agents run without your shell's PATH and exports, so they may not find programs or keys: \(problem). "
+            + "Fix it, then update or restart the daemon."
     }
 }
 

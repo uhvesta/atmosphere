@@ -432,7 +432,8 @@ extension HostHealth {
                 githubToken: status.githubToken, setup: status.hasSetup ? SetupResult(status.setup) : nil,
                 claude: status.claudeVersion.isEmpty
                     ? .failure(ProgramProblem(status.claudeProblem)) : .success(status.claudeVersion),
-                anthropicKey: status.anthropicKey))
+                anthropicKey: status.anthropicKey,
+                environmentProblem: status.environmentProblem.isEmpty ? nil : status.environmentProblem))
     }
 }
 
@@ -450,7 +451,8 @@ extension CommandLinks {
                     }
                 return Link(name: link.name, state: state)
             },
-            onPath: linked.onPath)
+            onPath: linked.onPath,
+            environmentProblem: linked.environmentProblem.isEmpty ? nil : linked.environmentProblem)
     }
 }
 

@@ -1996,6 +1996,9 @@ message HostStatus {
   // Whether its agents have ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN.
   // Without one, Claude Code needs `claude` signed in there.
   bool anthropic_key = 10;
+  // Empty, or why its login shell's variables couldn't be read when it
+  // started, so its agents run without them.
+  string environment_problem = 11;
 }
 
 message RemoteRepository {
@@ -2204,6 +2207,9 @@ message CommandsLinked {
   // Whether the login shell's PATH has the folder, so a terminal finds
   // what's linked there.
   bool on_path = 3;
+  // Empty, or why the login shell's variables couldn't be read when the
+  // daemon started, so agents here run without them.
+  string environment_problem = 4;
 }
 
 // Search across every session's messages, replies, tool calls and their

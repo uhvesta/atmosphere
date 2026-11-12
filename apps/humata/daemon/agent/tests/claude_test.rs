@@ -598,3 +598,34 @@ async fn a_message_sent_during_a_turn_steers_it() {
     assert_eq!(failures(&events), Vec::<String>::new());
     assert!(setup.model.last_request().contains("elderberry"));
 }
+
+#[tokio::test]
+async fn a_session_whose_conversation_claude_code_lost_fails_without_running_it() {
+    let setup = Setup::new(vec![Reply::Text("First.")]).await;
+    let agent = setup.agent();
+    let session = agent.start(setup.start_options()).await.expect("start");
+    agent
+        .send(&session.id, "one".into(), SendMode::Enqueue)
+        .await
+        .expect("send");
+    wait_for(&agent, &session.id, idle_turns(1)).await;
+    let asked = setup.model.requests().len();
+
+    // As Claude Code's clean-up of old sessions would.
+    let projects = setup.home.path().join("claude/projects");
+    for project in std::fs::read_dir(&projects).expect("projects") {
+        std::fs::remove_dir_all(project.expect("a project").path()).expect("removed");
+    }
+    agent
+        .send(&session.id, "two".into(), SendMode::Enqueue)
+        .await
+        .expect("send");
+    let events = wait_for(&agent, &session.id, idle_turns(2)).await;
+
+    assert_eq!(failures(&events).len(), 1);
+    assert_eq!(
+        setup.model.requests().len(),
+        asked,
+        "Claude Code wasn't run"
+    );
+}

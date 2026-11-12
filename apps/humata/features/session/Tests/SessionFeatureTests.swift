@@ -183,6 +183,45 @@ final class SessionFeatureTests: XCTestCase {
         await store.skipInFlightEffects()
     }
 
+    func testAnOfflineHostsHistoryIsWatchedAgainLessOftenEachTime() async throws {
+        // The daemon sends what it has kept and ends the watch at once.
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let kept = [
+            SessionEvent(id: "e1", time: Date(timeIntervalSince1970: 0), kind: .userMessage("hi")),
+            SessionEvent(id: "e2", time: Date(timeIntervalSince1970: 1), kind: .turnEnded(aborted: false)),
+        ]
+        let clock = TestClock()
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.watch = { _ in
+                AsyncThrowingStream { continuation in
+                    for event in kept { continuation.yield(event) }
+                    continuation.finish()
+                }
+            }
+            $0.daemon.markSeen = { _, _ in }
+            $0.continuousClock = clock
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.watchEnded)
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.task)
+        await store.receive(\.watchEnded)
+        XCTAssertEqual(store.state.watchRetries, 2)
+
+        // Not after another second: the history it sent again was nothing new.
+        await clock.advance(by: .seconds(1))
+        await clock.advance(by: .seconds(1))
+        await store.receive(\.task)
+        await store.receive(\.watchEnded)
+        XCTAssertEqual(store.state.watchRetries, 3)
+        XCTAssertEqual(store.state.events.count, 2)
+        await store.skipInFlightEffects()
+    }
+
     func testAMessageThatWasntSentGoesBackInTheBox() async {
         let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
         let store = TestStore(initialState: SessionFeature.State(session: session)) {

@@ -11,6 +11,16 @@ use humata_wire::pb;
 use sha2::{Digest as _, Sha256};
 
 use super::{Daemon, folder_name};
+
+/// Where the Mac's clones of repositories added by their URLs are kept.
+pub struct Clones {
+    /// Where new ones go: not a cache, since they hold the sessions'
+    /// branches and snapshots.
+    pub dir: PathBuf,
+    /// Where an older daemon put them, in the cache folder; one found there
+    /// is used where it is, as projects and sessions name its path.
+    pub old: Option<PathBuf>,
+}
 use crate::error::DaemonError;
 use crate::store::Project;
 
@@ -55,12 +65,19 @@ impl Daemon {
 
     /// The Mac's clone of `url`, cloned now if there's none yet.
     async fn clone_of(&self, url: &str) -> Result<PathBuf, DaemonError> {
-        let path = self.clones.join(clone_name(url));
+        let name = clone_name(url);
+        let path = self.clones.dir.join(&name);
         if path.join(".git").exists() {
             return Ok(path);
         }
-        std::fs::create_dir_all(&self.clones).map_err(|source| DaemonError::CreateClones {
-            path: self.clones.clone(),
+        if let Some(old) = &self.clones.old {
+            let kept = old.join(&name);
+            if kept.join(".git").exists() {
+                return Ok(kept);
+            }
+        }
+        std::fs::create_dir_all(&self.clones.dir).map_err(|source| DaemonError::CreateClones {
+            path: self.clones.dir.clone(),
             source,
         })?;
         // Cloned beside it then moved, so a clone cut short is never taken

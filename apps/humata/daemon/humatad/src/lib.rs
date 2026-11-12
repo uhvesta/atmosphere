@@ -29,7 +29,7 @@ pub use error::StartError;
 pub use login_env::{LoginEnvError, login_environment};
 pub use mcp::{McpError, mcp_stdio};
 
-use daemon::Daemon;
+use daemon::{Clones, Daemon};
 use host::Host;
 use hosts::Hosts;
 use humata_agent::McpServer;
@@ -294,8 +294,9 @@ fn mcp_server(socket: &Path) -> Option<McpServer> {
 
 /// Serves the daemon on `socket` until stopped. Projects are kept in
 /// `<state>/humata.sqlite3` and sessions on this Mac under `<state>/host`,
-/// their copies of the code under `<cache>/worktrees`; other hosts are read
-/// from `hosts`.
+/// their copies of the code under `<cache>/worktrees`, and clones of
+/// repositories added by URL under `<state>/repositories`; other hosts are
+/// read from `hosts`.
 pub async fn daemon(
     state: &Path,
     cache: &Path,
@@ -314,7 +315,10 @@ pub async fn daemon(
         Hosts::load(hosts)?,
         hosts.to_owned(),
         state.join("recovery"),
-        cache.join("repositories"),
+        Clones {
+            dir: state.join("repositories"),
+            old: Some(cache.join("repositories")),
+        },
         build.to_string(),
     );
     let listener = socket::listen(socket).await?;

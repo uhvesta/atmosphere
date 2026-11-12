@@ -31,6 +31,7 @@ mod planning;
 mod pulls;
 mod recovery;
 mod repositories;
+pub use repositories::Clones;
 mod review;
 mod search;
 
@@ -54,8 +55,9 @@ pub struct Daemon {
     me: Weak<Daemon>,
     /// Where recovery copies' code is kept, a mirror per repository.
     recovery: PathBuf,
-    /// The Mac's clones of repositories added by their URLs.
-    clones: PathBuf,
+    /// Where the Mac's clones of repositories added by their URLs go, and
+    /// where older daemons put them, which are still used.
+    clones: Clones,
     /// The sessions being backed up, each with whether to back it up again
     /// once done.
     backing_up: std::sync::Mutex<HashMap<String, bool>>,
@@ -79,7 +81,7 @@ impl Daemon {
         hosts: Hosts,
         hosts_file: PathBuf,
         recovery: PathBuf,
-        clones: PathBuf,
+        clones: Clones,
         build: String,
     ) -> Arc<Self> {
         let (tool_calls, calls) = mpsc::unbounded_channel();
@@ -118,6 +120,12 @@ impl Daemon {
             indexing: tokio::sync::Mutex::new(()),
             approvals_changed: tokio::sync::Notify::new(),
         });
+        if let Err(error) = daemon.interrupt_unfinished_approvals() {
+            eprintln!(
+                "humatad: couldn't mark the admin actions cut short when it last stopped: {}",
+                describe(&error)
+            );
+        }
         tokio::spawn(answer_tool_calls(Arc::downgrade(&daemon), calls));
         tokio::spawn(pulls::follow(Arc::downgrade(&daemon)));
         daemon
@@ -1045,6 +1053,10 @@ impl Daemon {
             .store
             .cached_history(&session)?
             .map_or(0, |history| history.events.len());
+        // The events the host sends first that this Mac already has: their
+        // saves and turns were backed up when they happened, so replaying
+        // them must not send the whole session over again.
+        let known = kept;
         let (items, receiver) = mpsc::channel(64);
         let (daemon, host) = (self.me.clone(), host.to_owned());
         tokio::spawn(async move {
@@ -1102,12 +1114,13 @@ impl Daemon {
                     ) {
                         keep(&events);
                     }
-                    if matches!(event.kind, Some(pb::session_event::Kind::Saved(_))) {
+                    let replayed = events.len() <= known;
+                    if !replayed && matches!(event.kind, Some(pb::session_event::Kind::Saved(_))) {
                         if let Some(daemon) = daemon.upgrade() {
                             daemon.back_up_soon(&host, &session, None);
                         }
                     }
-                    if matches!(event.kind, Some(pb::session_event::Kind::Idle(_))) {
+                    if !replayed && matches!(event.kind, Some(pb::session_event::Kind::Idle(_))) {
                         if let Some(daemon) = daemon.upgrade() {
                             let turns = events
                                 .iter()

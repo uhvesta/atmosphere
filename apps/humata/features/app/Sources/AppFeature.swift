@@ -299,9 +299,14 @@ package struct AppFeature {
         }
     }
 
-    /// Whether any session is in a turn, which replacing the daemon would end.
+    /// Whether any session on this Mac is in a turn, which replacing the
+    /// daemon would end. Hosts' sessions run in their own daemons and outlive
+    /// this one, and an offline host's state is only what was last heard.
     private static func anyBusy(_ sessions: [Session]) -> Bool {
-        sessions.contains { $0.state == .working || $0.state == .waitingForApproval }
+        sessions.contains { session in
+            (session.host ?? "").isEmpty && !session.hostOffline
+                && (session.state == .working || session.state == .waitingForApproval)
+        }
     }
 
     private static func failed(_ error: any Error) -> Action {

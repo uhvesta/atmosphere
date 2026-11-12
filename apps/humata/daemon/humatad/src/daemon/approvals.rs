@@ -151,11 +151,15 @@ impl Daemon {
         let grant = self.grant_for(scope)?;
         if let Some(grant) = grant {
             approval.grant_id = grant.id.clone();
-            let result = self.run_approved(&approval, request.kind.clone()).await;
             approval.state = pb::ApprovalState::Approved.into();
             approval.decided_unix_ms = now_unix_ms();
-            approval.result = Some(Box::new(result));
+            // Kept before it runs, so a crash while it does is known, not
+            // lost, and isn't taken for never having been asked.
             self.store.add_approval(&approval, &request)?;
+            let result = self.run_approved(&approval, request.kind.clone()).await;
+            approval.result = Some(Box::new(result));
+            self.store.record_result(&approval)?;
+            self.approvals_changed.notify_waiters();
             return Ok(approval);
         }
         self.store.add_approval(&approval, &request)?;
@@ -389,9 +393,13 @@ impl Daemon {
                 .store
                 .approval(id)?
                 .ok_or_else(|| DaemonError::UnknownApproval { id: id.to_owned() })?;
-            if approval.state() != pb::ApprovalState::Pending
-                || tokio::time::timeout_at(until, changed).await.is_err()
-            {
+            // Approved but not yet answered is still running.
+            let settled = match approval.state() {
+                pb::ApprovalState::Pending => false,
+                pb::ApprovalState::Approved => approval.result.is_some(),
+                _ => true,
+            };
+            if settled || tokio::time::timeout_at(until, changed).await.is_err() {
                 return Ok(approval);
             }
         }
@@ -452,6 +460,25 @@ impl Daemon {
             approvals: decided,
             grant,
         })
+    }
+
+    /// Marks the approved actions that were running when the daemon
+    /// stopped, which never answered, as cut short: whoever waits on one is
+    /// told to look before asking again, which could run it twice.
+    pub(super) fn interrupt_unfinished_approvals(&self) -> Result<(), DaemonError> {
+        for mut approval in self.store.approvals(false)? {
+            if approval.state() != pb::ApprovalState::Approved || approval.result.is_some() {
+                continue;
+            }
+            approval.result = Some(Box::new(pb::Response {
+                kind: Some(error(
+                    pb::ErrorCode::BackendFailed,
+                    "Humata stopped while this ran, so it may or may not have taken effect; check the board and its history before asking for it again",
+                )),
+            }));
+            self.store.record_result(&approval)?;
+        }
+        Ok(())
     }
 
     /// The approvals kept, newest first, and the grants still in force.

@@ -1,6 +1,7 @@
 //! The host role: runs sessions on this machine, on whichever backends it has.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -548,11 +549,21 @@ impl Host {
         let backup = request.backup.unwrap_or_default();
         let backend = backup.backend();
         let agent = self.backend(backend)?;
-        let record: SessionRecord =
+        let mut record: SessionRecord =
             serde_json::from_slice(&backup.record).map_err(|source| HostError::BadBackup {
                 part: "session record",
                 source,
             })?;
+        // A chat in no folder of the person's had an empty one of its own
+        // where it was; it gets one here, as when it started, or it couldn't
+        // run.
+        if record.repositories.is_empty()
+            && !record.working_directory.starts_with(&self.chats)
+            && record.working_directory.parent().and_then(Path::file_name)
+                == Some(OsStr::new("chats"))
+        {
+            record.working_directory = self.chat_folder()?;
+        }
         let events: Vec<Event> =
             serde_json::from_slice(&backup.events).map_err(|source| HostError::BadBackup {
                 part: "history",

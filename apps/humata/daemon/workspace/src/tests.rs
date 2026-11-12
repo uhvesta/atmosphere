@@ -381,3 +381,58 @@ async fn snapshots_go_to_a_mirror_and_on_to_a_fresh_clone_a_session_starts_from(
         Some("second\n")
     );
 }
+
+#[tokio::test]
+async fn a_copy_whose_folder_was_deleted_comes_back_from_its_snapshot() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let repository = repository(dir.path(), "app");
+    let repositories = std::slice::from_ref(&repository);
+    let workspaces = Workspaces::new(dir.path().join("worktrees"));
+    let made = workspaces
+        .create("s", repositories, &[])
+        .await
+        .expect("created");
+    std::fs::write(made[0].path.join("README.md"), "saved\n").expect("wrote");
+    let saved = workspaces
+        .snapshot("s", 1, &made)
+        .await
+        .expect("snapshotted");
+
+    // As when the cache folder is cleared: git still lists the worktree.
+    std::fs::remove_dir_all(dir.path().join("worktrees")).expect("removed");
+    let again = workspaces
+        .create("s", repositories, &saved)
+        .await
+        .expect("created again");
+    assert_eq!(
+        read(&again[0].path.join("README.md")).as_deref(),
+        Some("saved\n")
+    );
+}
+
+#[tokio::test]
+async fn making_a_missing_copy_again_keeps_the_edits_in_the_others() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let repositories = [repository(dir.path(), "app"), repository(dir.path(), "api")];
+    let workspaces = Workspaces::new(dir.path().join("worktrees"));
+    let made = workspaces
+        .create("s", &repositories, &[])
+        .await
+        .expect("created");
+    let saved = workspaces
+        .snapshot("s", 1, &made)
+        .await
+        .expect("snapshotted");
+    std::fs::write(made[0].path.join("README.md"), "since the snapshot\n").expect("wrote");
+
+    std::fs::remove_dir_all(&made[1].path).expect("removed");
+    let again = workspaces
+        .create("s", &repositories, &saved)
+        .await
+        .expect("created again");
+    assert_eq!(
+        read(&again[0].path.join("README.md")).as_deref(),
+        Some("since the snapshot\n")
+    );
+    assert!(again[1].path.join("README.md").is_file());
+}

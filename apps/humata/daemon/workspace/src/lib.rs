@@ -280,38 +280,55 @@ async fn check_out(
         },
     };
     let target = path.to_string_lossy();
-    if path.exists() {
+    let made = !path.exists();
+    if !made {
         if !is_worktree_at(&path).await {
             return Err(WorkspaceError::InTheWay {
                 path: path.clone(),
                 repository: repository.name.clone(),
             });
         }
-    } else if git(
-        &repository.path,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("refs/heads/{branch}"),
-        ],
-    )
-    .await
-    .is_ok()
-    {
-        git(&repository.path, &["worktree", "add", &target, &branch]).await?;
     } else {
-        git(
+        // A worktree whose folder was deleted (a cleared cache, say) stays
+        // registered, and git won't add another at its path until it's
+        // pruned.
+        git(&repository.path, &["worktree", "prune"]).await?;
+        let reference = format!("refs/heads/{branch}");
+        let branched = git(
             &repository.path,
-            &["worktree", "add", "-b", &branch, &target, &start],
+            &["rev-parse", "--verify", "--quiet", &reference],
         )
-        .await?;
+        .await
+        .is_ok();
+        if branched {
+            git(&repository.path, &["worktree", "add", &target, &branch]).await?;
+        } else {
+            git(
+                &repository.path,
+                &["worktree", "add", "-b", &branch, &target, &start],
+            )
+            .await?;
+        }
     }
-    if let Some(snapshot) = snapshot {
+    // A worktree that was already there keeps what's in it: its edits may
+    // be newer than the snapshot.
+    if let Some(snapshot) = snapshot.filter(|_| made) {
         // The snapshot's files, with the index left at HEAD, so what the
         // session had changed is still unstaged.
-        git(&path, &["read-tree", "-u", "--reset", &snapshot.commit]).await?;
-        git(&path, &["reset", "--quiet"]).await?;
+        let applied = async {
+            git(&path, &["read-tree", "-u", "--reset", &snapshot.commit]).await?;
+            git(&path, &["reset", "--quiet"]).await
+        }
+        .await;
+        if let Err(error) = applied {
+            // Not left half made, so trying again applies the snapshot.
+            let _ = git(
+                &repository.path,
+                &["worktree", "remove", "--force", &target],
+            )
+            .await;
+            return Err(error);
+        }
     }
     Ok(Checkout {
         name: repository.name.clone(),

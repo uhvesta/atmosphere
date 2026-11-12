@@ -99,6 +99,11 @@ pub enum ClaudeError {
     )]
     Turn { message: String },
 
+    #[error(
+        "Claude Code no longer has this session's conversation ({session}.jsonl isn't under {}), so it can't go on with it; something removed it, such as Claude Code's own clean-up of old sessions. Sending again or forking won't help, as both need it: start a new session, and copy what it needs from this one's history, which Humata keeps", projects.display()
+    )]
+    Gone { session: String, projects: PathBuf },
+
     #[error(transparent)]
     Agent(#[from] AgentError),
 }
@@ -310,6 +315,16 @@ impl Runner for ClaudeRunner {
         let record = turn.record();
         let path = Links::path(&self.options.state, record.id.as_str());
         let mut links = Links::load(&path)?;
+        // Resumed, Claude Code would fail on every turn without saying why.
+        if let (Some(session), Some(projects)) = (&links.session, self.transcripts())
+            && projects.is_dir()
+            && import::claude_transcript(&projects, session).is_err()
+        {
+            return Err(ClaudeError::Gone {
+                session: session.clone(),
+                projects,
+            });
+        }
         let (mut command, session) = self.command(&record, &mut links);
         let mut child = command.spawn().map_err(|source| ClaudeError::Start {
             program: self.options.program.clone(),

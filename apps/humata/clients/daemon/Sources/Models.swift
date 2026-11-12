@@ -1110,12 +1110,17 @@ package struct HostStatus: Hashable, Sendable {
     /// Whether its agents have ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN;
     /// without one, Claude Code needs `claude` signed in there.
     package var anthropicKey: Bool
+    /// Why its login shell's variables couldn't be read when it started, so
+    /// its agents run without them; nil when they were.
+    package var environmentProblem: String?
 
     package init(
         programVersion: String, platform: String, freeDiskBytes: UInt64, copilot: Result<String, ProgramProblem>,
         githubToken: Bool, setup: SetupResult? = nil,
-        claude: Result<String, ProgramProblem> = .failure(ProgramProblem("Not checked")), anthropicKey: Bool = false
+        claude: Result<String, ProgramProblem> = .failure(ProgramProblem("Not checked")), anthropicKey: Bool = false,
+        environmentProblem: String? = nil
     ) {
+        self.environmentProblem = environmentProblem
         self.programVersion = programVersion
         self.platform = platform
         self.freeDiskBytes = freeDiskBytes
@@ -1170,11 +1175,15 @@ package struct CommandLinks: Hashable, Sendable {
     package var links: [Link]
     /// Whether the login shell's PATH has `folder`.
     package var onPath: Bool
+    /// Why the login shell's variables couldn't be read when the daemon
+    /// started, so agents here run without them; nil when they were.
+    package var environmentProblem: String?
 
-    package init(folder: String, links: [Link], onPath: Bool) {
+    package init(folder: String, links: [Link], onPath: Bool, environmentProblem: String? = nil) {
         self.folder = folder
         self.links = links
         self.onPath = onPath
+        self.environmentProblem = environmentProblem
     }
 
     /// Whether linking would change anything.

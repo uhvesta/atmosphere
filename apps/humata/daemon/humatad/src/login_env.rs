@@ -6,6 +6,7 @@
 
 use std::io::Read;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 /// How long the person's shell gets to start and print its variables.
@@ -42,6 +43,10 @@ pub enum LoginEnvError {
     NoOutput { shell: String },
 }
 
+/// Why the login shell's variables couldn't be read at start, if they
+/// couldn't, for the person to see in Hosts.
+static PROBLEM: OnceLock<String> = OnceLock::new();
+
 /// The variables to set for this process: the login shell's that aren't set
 /// here, and its PATH.
 pub fn login_environment() -> Result<Vec<(String, String)>, LoginEnvError> {
@@ -49,8 +54,15 @@ pub fn login_environment() -> Result<Vec<(String, String)>, LoginEnvError> {
         .ok()
         .filter(|shell| !shell.is_empty())
         .unwrap_or_else(|| "/bin/sh".to_owned());
-    let printed = read(&shell)?;
+    let printed = read(&shell).inspect_err(|error| {
+        let _ = PROBLEM.set(humata_wire::describe(error));
+    })?;
     Ok(merge(&printed, |name| std::env::var_os(name).is_some()))
+}
+
+/// Empty, or why the login shell's variables couldn't be read at start.
+pub(crate) fn problem() -> String {
+    PROBLEM.get().cloned().unwrap_or_default()
 }
 
 fn read(shell: &str) -> Result<String, LoginEnvError> {

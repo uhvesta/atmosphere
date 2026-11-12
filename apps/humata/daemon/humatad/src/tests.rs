@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use humata_wire::{Client, ClientError, Service, pb};
 
-use crate::daemon::Daemon;
+use crate::daemon::{Clones, Daemon};
 use crate::host::Host;
 use crate::hosts::{HostConfig, Hosts};
 use crate::store::Store;
@@ -533,7 +533,10 @@ async fn daemon_itself(state: &Path, hosts: Hosts) -> Arc<Daemon> {
             hosts,
             state.join("hosts.json"),
             state.join("recovery"),
-            state.join("repositories"),
+            Clones {
+                dir: state.join("repositories"),
+                old: None,
+            },
             "test".to_owned(),
         ),
         Err(error) => panic!("couldn't open the host: {error}"),
@@ -3353,4 +3356,42 @@ async fn a_pending_spec_edit_carries_the_spec_it_would_replace() {
         .unwrap_or_else(|proposals: Vec<pb::Proposal>| panic!("one proposal: {proposals:?}"));
     assert_eq!(proposal.spec, "With a passkey.");
     assert_eq!(proposal.current_spec, item.spec);
+}
+
+#[tokio::test]
+async fn a_chat_in_no_folder_gets_a_folder_of_its_own_on_the_host_it_moves_to() {
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let first = host(&dir.path().join("first")).await;
+    let start = pb::request::Kind::StartSession(pb::StartSession {
+        backend: pb::Backend::Scripted.into(),
+        name: "chat".to_owned(),
+        ..Default::default()
+    });
+    let session = started(&first, start).await;
+    let backed_up = first
+        .call(pb::request::Kind::BackupSession(pb::BackupSession {
+            session_id: session.id.clone(),
+            haves: Vec::new(),
+        }))
+        .await;
+    let Ok(pb::response::Kind::SessionBackup(backup)) = backed_up else {
+        panic!("{backed_up:?}")
+    };
+
+    let second = host(&dir.path().join("second")).await;
+    let restored = second
+        .call(pb::request::Kind::RestoreBackup(pb::RestoreBackup {
+            backup: Some(backup),
+            repositories: Vec::new(),
+        }))
+        .await;
+    let Ok(pb::response::Kind::SessionRestored(pb::SessionRestored {
+        session: Some(restored),
+    })) = restored
+    else {
+        panic!("{restored:?}")
+    };
+    let folder = PathBuf::from(&restored.working_directory);
+    assert!(folder.starts_with(dir.path().join("second")), "{folder:?}");
+    assert!(folder.is_dir(), "{folder:?}");
 }
