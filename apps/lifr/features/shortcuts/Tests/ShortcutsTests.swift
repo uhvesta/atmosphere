@@ -42,6 +42,22 @@ final class ShortcutsTests: XCTestCase {
         XCTAssertEqual(reminders.map(\.taskID), [run.id])
     }
 
+    func testAStoreThatCantSaveGivesAReasonSiriCanSay() async throws {
+        struct DiskFull: Error {}
+        var (_, store) = shortcuts()
+        store.save = { _ in throw DiskFull() }
+        let loaded = try await store.load()
+        let run = try XCTUnwrap(loaded.tasks.values.first { $0.title == "Long run" })
+        let shortcuts = Shortcuts(store: store, locksApp: { false }, now: { [now] in now }, timeZone: .gmt)
+
+        do {
+            _ = try await shortcuts.setStatus(.done, of: run.id)
+            XCTFail("A failed save should be reported")
+        } catch let error as ShortcutError {
+            guard case .storeFailed = error else { return XCTFail("Expected storeFailed, got \(error)") }
+        }
+    }
+
     func testThePlanPromptNamesTheGoalAndAvenuesButNoTask() async throws {
         let (shortcuts, _) = shortcuts()
 

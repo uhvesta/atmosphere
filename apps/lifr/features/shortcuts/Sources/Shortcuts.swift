@@ -62,6 +62,10 @@ package struct Shortcuts: Sendable {
 
     /// Adds a task called `title`, in `avenue` or the Inbox.
     package func add(_ title: String, avenue: UUID?, due: Due) async throws -> Item {
+        try await reported { try await adding(title, avenue: avenue, due: due) }
+    }
+
+    private func adding(_ title: String, avenue: UUID?, due: Due) async throws -> Item {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw ShortcutError.noTitle }
         let today = CalendarDate(now(), in: timeZone)
@@ -279,7 +283,7 @@ package struct Shortcuts: Sendable {
         guard let task = try await store.load().tasks[id], task.deletedAt == nil else { throw ShortcutError.noTask }
         let saved: Saved
         do {
-            saved = try await save()
+            saved = try await reported(save)
         } catch LifrError.notFound {
             throw ShortcutError.noTask
         }
@@ -290,9 +294,23 @@ package struct Shortcuts: Sendable {
     /// date stays. Allowed while locked, since it shows nothing.
     package func snooze(_ id: UUID, until date: Date) async throws {
         do {
-            _ = try await store.addReminder(.at(date), to: id)
+            _ = try await reported { try await store.addReminder(.at(date), to: id) }
         } catch LifrError.notFound {
             throw ShortcutError.noTask
+        }
+    }
+
+    /// What `work` gives, with any error Siri can't say turned into one it
+    /// can.
+    private func reported<Value>(_ work: () async throws -> Value) async throws -> Value {
+        do {
+            return try await work()
+        } catch let error as ShortcutError {
+            throw error
+        } catch let error as LifrError {
+            throw error
+        } catch {
+            throw ShortcutError.storeFailed(String(describing: error))
         }
     }
 
@@ -322,6 +340,8 @@ package enum ShortcutError: Error, Hashable, Sendable, CustomStringConvertible {
     case noTitle
     /// The store saved, but the new task wasn't in what it returned.
     case notSaved
+    /// The records couldn't be read or saved, for this reason.
+    case storeFailed(String)
 
     package var description: String {
         switch self {
@@ -336,6 +356,8 @@ package enum ShortcutError: Error, Hashable, Sendable, CustomStringConvertible {
         case .notSaved:
             String(
                 localized: "Lifr couldn't confirm the task was added. Open Lifr to check Today before adding it again.")
+        case .storeFailed(let reason):
+            String(localized: "Lifr couldn't save the change: \(reason) Open Lifr to check, then try again.")
         }
     }
 }
