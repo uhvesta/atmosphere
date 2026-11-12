@@ -54,6 +54,8 @@
         private var listeners: [UUID: AsyncStream<SessionEvent>.Continuation] = [:]
         private var listener: SocketListener?
         private var started = false
+        /// Whether `grants` holds what the Keychain keeps.
+        private var grantsLoaded = false
 
         init(_ environment: Environment) {
             self.environment = environment
@@ -85,9 +87,9 @@
         package func start() {
             guard !started else { return }
             started = true
-            // A Keychain that won't open leaves no grants: every app asks again.
-            grants = Dictionary(
-                ((try? environment.grants.load()) ?? []).map { ($0.identity, $0) }, uniquingKeysWith: { $1 })
+            // A Keychain that won't open leaves no grants: every app asks
+            // again, and saving reads it first so no grant is overwritten.
+            grantsLoaded = (try? loadGrants()) != nil
             environment.log.prune(now: environment.now())
             if isAPIEnabled { try? listen() }
         }
@@ -500,7 +502,19 @@
         }
 
         private func persist() throws(SessionError) {
+            if !grantsLoaded {
+                // Kept grants this run hasn't seen yet, under the changes
+                // made since.
+                let changed = grants
+                try loadGrants()
+                grants.merge(changed) { $1 }
+                grantsLoaded = true
+            }
             try environment.grants.save(grants.values.sorted { $0.identity < $1.identity })
+        }
+
+        private func loadGrants() throws(SessionError) {
+            grants = Dictionary(try environment.grants.load().map { ($0.identity, $0) }, uniquingKeysWith: { $1 })
         }
 
         // MARK: - Events

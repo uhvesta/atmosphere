@@ -262,6 +262,29 @@ final class LiveStoreTests: XCTestCase {
         XCTAssertEqual(fix.reason, .reconciledClosedParent)
     }
 
+    func testEditingATaskKeepsADateAndRepeatItCantRead() async throws {
+        let container = try LiveStore.inMemory()
+        let store = LiveStore(modelContainer: container)
+        try await store.insert(.sample(now: now, timeZone: .gmt))
+        let review = try task("Review Q4 roadmap", in: try await store.load())
+        // Written by a newer version in a form this one can't read.
+        let imported = ModelContext(container)
+        let stored = try XCTUnwrap(try imported.fetch(FetchDescriptor<StoredTask>()).first { $0.id == review.id })
+        stored.dueDate = "next blue moon"
+        stored.recurrence = Data("{\"lunar\":1}".utf8)
+        try imported.save()
+
+        _ = try await store.save(in: context()) { (workspace, context) throws(LifrError) in
+            try workspace.edit(review.id, Workspace.TaskEdit(title: "Review the roadmap"), in: context)
+        }
+
+        let after = ModelContext(container)
+        let kept = try XCTUnwrap(try after.fetch(FetchDescriptor<StoredTask>()).first { $0.id == review.id })
+        XCTAssertEqual(kept.title, "Review the roadmap")
+        XCTAssertEqual(kept.dueDate, "next blue moon")
+        XCTAssertEqual(kept.recurrence, Data("{\"lunar\":1}".utf8))
+    }
+
     func testReconcilingAgainChangesNothing() async throws {
         let store = LiveStore(modelContainer: try LiveStore.inMemory())
         try await store.insert(.sample(now: now, timeZone: .gmt))

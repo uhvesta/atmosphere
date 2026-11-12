@@ -28,7 +28,10 @@ final class Harness: Sendable {
     static let terminal = Peer(
         launcher: Launcher(identity: "com.apple.Terminal", team: nil, name: "Terminal", isTerminal: true), tty: 5)
 
-    init(peer: Peer = Harness.claude, grants: [StoredGrant] = [], peers: PeerCheck? = nil) async throws {
+    init(
+        peer: Peer = Harness.claude, grants: [StoredGrant] = [], peers: PeerCheck? = nil,
+        storage: GrantStorage? = nil
+    ) async throws {
         // Unix socket paths are short, so not the long temporary folder.
         folder = URL(fileURLWithPath: "/tmp/lifr-\(UUID().uuidString.prefix(8))", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -50,7 +53,7 @@ final class Harness: Sendable {
             updates: inner.updates, importSynced: inner.importSynced, archiveJournal: inner.archiveJournal,
             archivedJournal: inner.archivedJournal)
         _ = try await store.createAvenue(key: "HEALTH", name: "Health")
-        self.grants = .inMemory(grants)
+        self.grants = storage ?? .inMemory(grants)
         let peer = OSAllocatedUnfairLock<Result<Peer, APIError>>(initialState: .success(peer))
         self.peer = peer
         let touchID = OSAllocatedUnfairLock(initialState: (answer: true, reasons: [String]()))

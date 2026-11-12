@@ -97,9 +97,11 @@ extension StoredTask {
         details = task.details
         status = task.status.rawValue
         priority = task.priority.rawValue
-        startDate = task.startDate?.description
-        dueDate = task.dueDate?.description
-        dueTime = task.dueTime?.description
+        // A value this version can't read, perhaps written by a newer one,
+        // stays unless the task now has one: the edit didn't show it.
+        startDate = Self.kept(startDate, task.startDate?.description) { try? CalendarDate($0) }
+        dueDate = Self.kept(dueDate, task.dueDate?.description) { try? CalendarDate($0) }
+        dueTime = Self.kept(dueTime, task.dueTime?.description) { try? TimeOfDay($0) }
         avenue = index.avenues[task.avenueID]
         project = task.projectID.flatMap { index.projects[$0] }
         labels = task.labelIDs.compactMap { index.labels[$0] }
@@ -109,7 +111,15 @@ extension StoredTask {
         lastActivityAt = task.lastActivityAt
         closedAt = task.closedAt
         deletedAt = task.deletedAt
-        recurrence = task.recurrence.flatMap { try? JSONEncoder().encode($0) }
+        recurrence = Self.kept(recurrence, task.recurrence.flatMap { try? JSONEncoder().encode($0) }) {
+            try? JSONDecoder().decode(Recurrence.self, from: $0)
+        }
+    }
+
+    /// `new`, or `stored` when that can't be read and `new` is nil.
+    private static func kept<Value, Read>(_ stored: Value?, _ new: Value?, read: (Value) -> Read?) -> Value? {
+        if new == nil, let stored, read(stored) == nil { return stored }
+        return new
     }
 
     func writeParent(_ task: LifrTask, in index: Index) {

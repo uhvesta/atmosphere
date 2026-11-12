@@ -595,14 +595,20 @@ package struct RootFeature {
                 var effects: [Effect<Action>] = [
                     // Changes too old to undo are packed, tasks trashed too
                     // long ago deleted, and the Inbox added, before loading.
+                    // Each runs even when one before it fails.
                     .run { [store, now] send in
-                        do {
-                            try await store.archiveJournal(now.addingTimeInterval(-JournalEntry.undoWindow))
-                            try await store.purgeTrash(now: now)
-                            try await store.ensureInbox()
-                        } catch {
-                            Logger(subsystem: "lifr", category: "store").error(
-                                "\(String(describing: error), privacy: .public)")
+                        let steps: [@Sendable () async throws -> Void] = [
+                            { try await store.archiveJournal(now.addingTimeInterval(-JournalEntry.undoWindow)) },
+                            { try await store.purgeTrash(now: now) },
+                            { try await store.ensureInbox() },
+                        ]
+                        for step in steps {
+                            do {
+                                try await step()
+                            } catch {
+                                Logger(subsystem: "lifr", category: "store").error(
+                                    "\(String(describing: error), privacy: .public)")
+                            }
                         }
                         await send(.loaded(Result { try await store.snapshot() }))
                     },

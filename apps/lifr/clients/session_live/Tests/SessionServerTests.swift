@@ -3,6 +3,7 @@ import LifrAPI
 import LifrCore
 import LifrSessionClient
 import XCTest
+import os
 
 @testable import LifrSessionLive
 
@@ -80,6 +81,43 @@ final class SessionServerTests: XCTestCase {
         let response = try await answer
         XCTAssertEqual(response.error?.data.code, .notAuthorized)
         XCTAssertEqual(try harness.grants.load(), [])
+    }
+
+    func testAKeychainThatWouldntOpenAtLaunchKeepsItsGrantsWhenAnAppIsApproved() async throws {
+        let kept = StoredGrant(
+            identity: "com.example.agent", team: nil,
+            grant: Grant(client: "Agent", scopes: [.read], expiresAt: Date(timeIntervalSince1970: 1_900_000_000)))
+        let locked = OSAllocatedUnfairLock(initialState: (isLocked: true, grants: [kept]))
+        let storage = GrantStorage(
+            load: { () throws(SessionError) in
+                let (isLocked, grants) = locked.withLock { ($0.isLocked, $0.grants) }
+                if isLocked { throw .grantsNotSaved(reason: "locked") }
+                return grants
+            },
+            save: { grants in locked.withLock { $0.grants = grants } })
+        let harness = try await Harness(storage: storage)
+        let events = await harness.server.client.events()
+        let client = try harness.connect()
+        async let answer = background { try client.call(.listAvenues) }
+        let request = try await next(events) {
+            if case .approvalRequested(let request) = $0 { request } else { nil }
+        }
+        let grant = Grant(client: "Claude Code", scopes: [.read], expiresAt: harness.now + 86_400)
+
+        // Still locked: nothing is saved over the kept grants.
+        do {
+            try await harness.server.client.approve(request.id, grant)
+            XCTFail("Saved over grants it couldn't read.")
+        } catch {
+            XCTAssertNotNil(error as? SessionError)
+        }
+        XCTAssertEqual(locked.withLock { $0.grants }, [kept])
+
+        locked.withLock { $0.isLocked = false }
+        try await harness.server.client.approve(request.id, grant)
+        _ = try await answer
+        XCTAssertEqual(
+            Set(locked.withLock { $0.grants }.map(\.identity)), ["com.example.agent", "com.anthropic.claude-code"])
     }
 
     func testACLIThatStopsWaitingWithdrawsItsRequest() async throws {
