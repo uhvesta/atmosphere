@@ -828,6 +828,43 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.workspace.tasks[rent.id]?.status, .inProgress)
     }
 
+    func testADayTypedInAnEditedProposalIsKeptAsTheDateItMeantWhenDone() async throws {
+        let (workspace, rent) = home()
+        let code = workspace.displayCode(of: rent)
+        let store = chat(workspace) { request in
+            await Self.proposing([TaskChange(code: code, status: "done")], in: request)
+        }
+        await send("I paid the rent", in: store)
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+
+        await store.send(.editProposalTapped(messageID: reply.id))
+        var edit = try XCTUnwrap(store.state.editingProposal)
+        edit.actions = [.task(TaskChange(code: code, due: "tomorrow"))]
+        await store.send(.binding(.set(\.editingProposal, edit)))
+        await store.send(.editProposalDone)
+        await store.skipReceivedActions(strict: false)
+
+        let tomorrow = CalendarDate(now.addingTimeInterval(86_400), in: .gmt).description
+        guard case .task(let change) = store.state.proposal(of: reply.id)?.actions.first else {
+            return XCTFail("the edited change is proposed")
+        }
+        XCTAssertEqual(change.due, tomorrow)
+    }
+
+    func testADayTypedInTheDraftIsKeptAsTheDateItMeantWhenDone() async throws {
+        let (workspace, _) = home()
+        let plan = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])
+        let store = chat(workspace) { _ in AssistantReply(text: "Here's a plan.", plan: plan, isComplete: true) }
+        await send("Plan repotting", in: store)
+        await store.send(.editDraftTapped)
+        await edit(Plan(tasks: [Plan.TaskDraft(title: "Buy soil", due: "tomorrow", place: "HOME")]), in: store)
+
+        await store.send(.binding(.set(\.editsDraft, false)))
+
+        let tomorrow = CalendarDate(now.addingTimeInterval(86_400), in: .gmt).description
+        XCTAssertEqual(store.state.conversation.draft?.tasks.first?.due, tomorrow)
+    }
+
     func testLeavingOutEveryChangeDeclinesTheProposal() async throws {
         let (workspace, rent) = home()
         let code = workspace.displayCode(of: rent)

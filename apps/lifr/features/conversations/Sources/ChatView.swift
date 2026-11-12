@@ -30,6 +30,10 @@ package struct ChatView: View {
                 store: store.scope(state: \.core, action: \.core), parts: LifrParts(store: store, meanings: meanings))
         }
         .quickLookPreview($store.playing)
+        // Open past midnight, "tomorrow" in the draft means the new day's.
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged).receive(on: RunLoop.main)) { _ in
+            store.send(.dayChanged)
+        }
         .sheet(isPresented: $store.showsCheckpoints) {
             NavigationStack {
                 CheckpointList(

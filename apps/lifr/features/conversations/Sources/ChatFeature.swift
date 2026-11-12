@@ -306,6 +306,8 @@ package struct ChatFeature {
         /// A suggestion in an empty chat: sent as the person's message.
         case suggestionTapped(String)
         case editDraftTapped
+        /// A new day began while the chat is open.
+        case dayChanged
         /// Closes the draft's editor, putting back the draft it opened on.
         case cancelEditDraftTapped
         case cancelRecordingTapped
@@ -612,6 +614,10 @@ package struct ChatFeature {
                 guard state.conversation.messages.isEmpty else { return .none }
                 state.input = text
                 return .send(.core(.sendTapped))
+
+            case .dayChanged:
+                state.today = CalendarDate(now, in: timeZone)
+                return .none
 
             case .editDraftTapped:
                 guard state.canChangeDraft else { return .none }
@@ -976,7 +982,10 @@ package struct ChatFeature {
 
             case .editProposalDone:
                 guard let edit = state.editingProposal, state.applying == nil else { return .none }
-                let actions = edit.chosen
+                // Days typed as words are kept as the dates they mean
+                // today, so a later Apply saves what was shown.
+                let today = CalendarDate(now, in: timeZone)
+                let actions = edit.chosen.map { $0.pinned(today: today) }
                 guard !actions.isEmpty else {
                     // Every change left out: nothing to apply.
                     state.editingProposal = nil
@@ -1042,6 +1051,18 @@ package struct ChatFeature {
                     return .merge(effect, run(typed.command, details: typed.details, in: &state))
                 }
                 return effect
+
+            case .binding(\.editsDraft):
+                // Done: days typed as words, such as tomorrow, are kept as
+                // the dates they mean today, so a later Add adds what was
+                // shown.
+                guard !state.editsDraft else { return .none }
+                state.draftBeforeEdit = nil
+                if let draft = state.conversation.draft {
+                    state.conversation.draft = draft.pinned(today: CalendarDate(now, in: timeZone))
+                }
+                check(&state)
+                return .none
 
             case .binding(\.conversation.draft), .binding(\.conversation):
                 // The editor's fields change the conversation they're in.

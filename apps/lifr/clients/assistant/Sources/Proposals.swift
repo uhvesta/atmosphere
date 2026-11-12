@@ -77,3 +77,20 @@ package enum ActionError: Error, Hashable, Sendable, CustomStringConvertible {
 extension ActionError: LocalizedError {
     package var errorDescription: String? { description }
 }
+
+extension AssistantAction {
+    /// The change with each due date written as a day relative to today,
+    /// such as tomorrow, written as the date it means on `today`.
+    package func pinned(today: CalendarDate) -> Self {
+        switch self {
+        case .task(var change):
+            change.due = change.due.map { CalendarDate.pinned($0, today: today) }
+            return .task(change)
+        case .project(var change):
+            change.due = change.due.map { CalendarDate.pinned($0, today: today) }
+            return .project(change)
+        case .comment, .revert:
+            return self
+        }
+    }
+}
