@@ -9,13 +9,24 @@ import SwiftUI
 /// Humata: a window for directing coding agents, over humatad.
 @main
 struct HumataApp: App {
-    @State private var store = Store(initialState: AppFeature.State()) {
+    @State private var store = Store(initialState: Self.initialState) {
         AppFeature()
     } withDependencies: {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+        let version = Self.version
         $0.daemon = .live(programVersion: version)
         $0.daemonService = .live(socket: DaemonClient.defaultSocket, programVersion: version)
         $0.notifications = .live()
+    }
+
+    private static var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+    }
+
+    private static var initialState: AppFeature.State {
+        var state = AppFeature.State()
+        // The build of humatad this app installs on hosts.
+        state.settings.bundledVersion = version
+        return state
     }
 
     var body: some Scene {
@@ -27,6 +38,10 @@ struct HumataApp: App {
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
         .handlesExternalEvents(matching: ["*"])
+
+        Settings {
+            SettingsView(store: store)
+        }
         .commands {
             // One window over one store; ⌘N starts a chat in it instead.
             CommandGroup(replacing: .newItem) {}

@@ -27,6 +27,8 @@ package struct AppFeature {
         /// A link opened from outside, shown once the sidebar has read
         /// what it names, which may be new.
         package var opening: HumataLink?
+        /// Settings > Environments.
+        package var settings = EnvironmentsFeature.State()
 
         package init() {}
     }
@@ -59,6 +61,7 @@ package struct AppFeature {
         case search(PresentationAction<SearchFeature.Action>)
         /// A `humata://` URL was opened, as by `humata mcp`'s show tool.
         case opened(URL)
+        case settings(EnvironmentsFeature.Action)
     }
 
     @Dependency(\.daemon) var daemon
@@ -68,6 +71,7 @@ package struct AppFeature {
 
     package var body: some ReducerOf<Self> {
         Scope(state: \.sidebar, action: \.sidebar) { ProjectsFeature() }
+        Scope(state: \.settings, action: \.settings) { EnvironmentsFeature() }
         Reduce { state, action in
             switch action {
             case .task:
@@ -202,7 +206,7 @@ package struct AppFeature {
                 state.session = SessionFeature.State(session: session)
                 return .send(.sidebar(.refresh))
 
-            case .sidebar, .session, .board, .hosts, .search:
+            case .sidebar, .session, .board, .hosts, .search, .settings:
                 return .none
             }
         }

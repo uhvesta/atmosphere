@@ -138,8 +138,8 @@ original spec; lettered ones were added since.
 | 7 Search across sessions | Done |
 | 8 Ship as pull requests | Done |
 | G Drive Humata from outside | Done |
-| S Settings and environments | In progress |
-| H Humata's own model server | After S |
+| S Settings and environments | Done |
+| H Humata's own model server | In progress |
 | The demo | After H |
 | R Review pass | After the demo |
 
@@ -572,10 +572,10 @@ The sidebar's Hosts view keeps what's running: sessions per host, recovery
 copies, terminals and ports. On iPhone the same pane sits under the app's
 settings.
 
-- [ ] A Settings window with an Environments pane
-- [ ] `~/.ssh/config` hosts listed with added, version and reachability
-- [ ] Add installs humatad; Update when a newer build is bundled
-- [ ] Variables, token and setup script edited from the pane
+- [x] A Settings window with an Environments pane
+- [x] `~/.ssh/config` hosts listed with added, version and reachability
+- [x] Add installs humatad; Update when a newer build is bundled
+- [x] Variables, token and setup script edited from the pane
 
 **Done when:** a flow test opens Settings > Environments, adds a host from
 the SSH config and sees it installed and reachable.

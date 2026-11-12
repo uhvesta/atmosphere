@@ -798,6 +798,36 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Settings > Environments lists the SSH config's hosts; adding one
+    /// installs Humata there, and its variables and setup script are edited
+    /// beside it.
+    func testSettingsEnvironments() async throws {
+        let daemon = InMemoryDaemon(sshHosts: ["build-box", "gpu", "staging"])
+        var state = AppFeature.State()
+        state.settings.bundledVersion = "0.0.0"
+        let store = Store(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("settings", SettingsView(store: store))
+
+        store.send(.settings(.task))
+        try await until { store.settings.environments.count == 3 }
+        await flow.step("environments")
+
+        store.send(.settings(.addTapped(destination: "build-box")))
+        try await until {
+            if case .known(.reachable)? = store.settings.health["build-box"] { return true }
+            return false
+        }
+        await flow.step("added")
+        flow.finish()
+    }
+
     private func sidebarShows(
         _ state: SessionState, _ store: StoreOf<AppFeature>, _ session: Session
     ) async throws {

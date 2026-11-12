@@ -353,7 +353,7 @@ extension HostStatus {
 }
 
 /// How the host is, with what to do when it needs the person.
-private struct HealthSection: View {
+struct HealthSection: View {
     let host: RemoteHost
     let health: HostsFeature.Health?
     let check: () -> Void
@@ -430,7 +430,7 @@ private struct HealthSection: View {
 }
 
 /// The host's agents' variables and its setup script, saved together.
-private struct HostEditorSections: View {
+struct HostEditorSections: View {
     @Bindable var store: StoreOf<HostEditorFeature>
 
     var body: some View {
