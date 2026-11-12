@@ -19,6 +19,7 @@ mod import;
 mod links;
 mod local_model;
 mod log;
+mod mcp_client;
 mod paths;
 mod runtime;
 mod scripted;

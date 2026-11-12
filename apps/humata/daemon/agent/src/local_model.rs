@@ -14,11 +14,13 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use crate::Model;
+use crate::claude::McpServer;
 use crate::env::Env;
 use crate::error::AgentError;
 use crate::event::{Event, EventKind, PermissionKind};
+use crate::mcp_client::McpClient;
 use crate::paths::inside;
-use crate::runtime::{Runner, Turn};
+use crate::runtime::{Runner, Turn, describe};
 
 /// Ollama's address; llama.cpp's server and LM Studio need theirs set.
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11434/v1";
@@ -173,6 +175,8 @@ pub struct LocalModelRunner {
     server: ModelServer,
     http: ureq::Agent,
     env: Env,
+    /// Humata's tools, started for each turn and offered to the model.
+    mcp: Option<McpServer>,
 }
 
 impl LocalModelRunner {
@@ -188,6 +192,7 @@ impl LocalModelRunner {
             server: ModelServer::default(),
             http,
             env: Env::default(),
+            mcp: None,
         }
     }
 
@@ -215,6 +220,11 @@ impl LocalModelRunner {
     #[must_use]
     pub fn with_env(mut self, env: Env) -> Self {
         self.env = env;
+        self
+    }
+
+    pub fn with_mcp(mut self, mcp: Option<McpServer>) -> Self {
+        self.mcp = mcp;
         self
     }
 }
@@ -255,9 +265,32 @@ impl Runner for LocalModelRunner {
                 .ok_or(LocalModelError::NoModel)?,
         };
 
+        // Without Humata's tools the turn still has the files to work on.
+        let mut offered = tools();
+        let mut humata = match &self.mcp {
+            None => None,
+            Some(server) => {
+                match McpClient::start(server, turn.record().id.as_str(), &self.env).await {
+                    Ok((client, listed)) => {
+                        if let Some(offered) = offered.as_array_mut() {
+                            offered.extend(listed);
+                        }
+                        Some(client)
+                    }
+                    Err(failure) => {
+                        eprintln!(
+                            "humatad: the local model works without Humata's tools this turn: {}",
+                            describe(&failure)
+                        );
+                        None
+                    }
+                }
+            }
+        };
+
         let mut calls = 0_usize;
         for _ in 0..MAX_STEPS {
-            let reply = self.reply(&turn, &request, apps).await?;
+            let reply = self.reply(&turn, &request, &offered, apps).await?;
             if reply.calls.is_empty() {
                 return Ok(());
             }
@@ -269,8 +302,13 @@ impl Runner for LocalModelRunner {
                     tool: call.name.clone(),
                     arguments_json: call.arguments.clone(),
                 })?;
-                let (success, output) =
-                    run_tool(&turn, &self.env, &call.name, &call.arguments).await?;
+                let (success, output) = match humata.as_mut() {
+                    Some(humata) if humata.owns(&call.name) => humata
+                        .call(&call.name, &call.arguments)
+                        .await
+                        .unwrap_or_else(|failure| (false, describe(&failure))),
+                    _ => run_tool(&turn, &self.env, &call.name, &call.arguments).await?,
+                };
                 turn.emit(EventKind::ToolCompleted {
                     call_id,
                     success,
@@ -326,13 +364,14 @@ impl LocalModelRunner {
         &self,
         turn: &Turn,
         request: &Request,
+        tools: &Value,
         apps: bool,
     ) -> Result<Reply, LocalModelError> {
         let mut waiting = false;
         loop {
             // Asked afresh each time, so steering sent while it waited is in.
             let messages = messages(turn.record().instructions.as_deref(), &turn.history());
-            match self.complete(turn, request, messages).await {
+            match self.complete(turn, request, tools, messages).await {
                 Err(LocalModelError::Connect { .. }) if apps => {
                     if !waiting {
                         waiting = true;
@@ -352,12 +391,13 @@ impl LocalModelRunner {
         &self,
         turn: &Turn,
         request: &Request,
+        tools: &Value,
         messages: Vec<Value>,
     ) -> Result<Reply, LocalModelError> {
         let body = json!({
             "model": request.model,
             "messages": messages,
-            "tools": tools(),
+            "tools": tools,
             "stream": true,
             "stream_options": {"include_usage": true},
         })

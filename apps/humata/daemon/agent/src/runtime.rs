@@ -1284,7 +1284,7 @@ fn save(dir: &Path, record: &SessionRecord) -> Result<(), AgentError> {
 }
 
 /// The error and its causes, on one line.
-fn describe(error: &dyn std::error::Error) -> String {
+pub(crate) fn describe(error: &dyn std::error::Error) -> String {
     let mut text = error.to_string();
     let mut source = error.source();
     while let Some(cause) = source {

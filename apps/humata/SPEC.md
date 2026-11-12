@@ -686,7 +686,7 @@ waiting on you. It kept these, in build order:
 - [x] New Session never sends one agent's model to another, and a Local Model
   session can't start without a model
 - [x] Local models can list a folder
-- [ ] Local-model sessions get Humata's tools, so they can plan and propose
+- [x] Local-model sessions get Humata's tools, so they can plan and propose
 - [ ] The inbox separates Blocked on You from To Look Over, rows say what
   happened, the Dock counts only the blocked, reply notices are silent,
   rows sort by longest wait, and a reply that fails to send is kept

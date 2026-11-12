@@ -337,7 +337,8 @@ impl Host {
             api_key: std::env::var("HUMATA_LOCAL_API_KEY").ok(),
         })
         .with_env(env.clone())
-        .with_server(model_server.clone());
+        .with_server(model_server.clone())
+        .with_mcp(mcp.clone());
         let local =
             LocalAgent::open(state.join("local"), local_model)?.with_workspaces(workspaces());
         // Signed in with `copilot login`, it uses GitHub's models; given a

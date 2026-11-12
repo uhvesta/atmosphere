@@ -81,3 +81,82 @@ fn a_local_model_session_calls_a_tool_through_the_apps_server() {
     );
     assert_eq!(approved.last().map(|(kind, _)| kind.as_str()), Some("idle"));
 }
+
+const PLAN: &str = r##"[
+    {"call": "propose_task", "arguments": {"title": "Login form", "spec": "Email and password."}},
+    {"answer": "I proposed a task."}
+]"##;
+
+#[test]
+fn a_local_model_planning_session_proposes_a_task_with_humatas_tools() {
+    let scratch = common::scratch();
+    let root = scratch.path();
+    let repository = root.join("repository");
+    common::git_repository(&repository, &[("README.md", "hello\n")]);
+    let script = root.join("plan.json");
+    std::fs::write(&script, PLAN).unwrap_or_else(|error| panic!("{error}"));
+
+    let mut server = Command::new(common::binary("HUMATA_MODEL_SERVER"))
+        .arg("--script")
+        .arg(&script)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("couldn't start the model server: {error}"));
+    let stdout = server.stdout.take().unwrap_or_else(|| panic!("no stdout"));
+    let _server = common::Running(server);
+    let mut port = String::new();
+    BufReader::new(stdout)
+        .read_line(&mut port)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let port = port.trim().to_owned();
+
+    let (_daemon, humata) = common::start(root, &[]);
+    humata.run(&["model-server", &port]);
+    let project = humata.run(&[
+        "project",
+        "add",
+        "--name",
+        "demo",
+        "--repository",
+        &repository.display().to_string(),
+    ]);
+    let project = project.trim();
+    let session = humata.run(&[
+        "start",
+        "--backend",
+        "local",
+        "--project",
+        project,
+        "--planning",
+        "--model",
+        "scripted",
+    ]);
+    let session = session.trim();
+    let planned = events(&humata.run(&["send", session, "plan the app", "--wait"]));
+    assert_eq!(
+        planned.last().map(|(kind, _)| kind.as_str()),
+        Some("idle"),
+        "{planned:?}"
+    );
+
+    let listed = humata.run(&["proposal", "list", session]);
+    let proposals: Vec<Vec<&str>> = listed
+        .lines()
+        .map(|line| line.split('\t').collect())
+        .collect();
+    let [proposal] = proposals.as_slice() else {
+        panic!("expected one proposal, got {listed:?}");
+    };
+    assert_eq!(proposal.get(2).copied(), Some("pending"), "{listed:?}");
+    assert_eq!(proposal.get(3).copied(), Some("Login form"), "{listed:?}");
+
+    let id = proposal.first().copied().unwrap_or_default();
+    humata.run(&["proposal", "apply", session, id]);
+    let board = humata.run(&["item", "list", "--project", project]);
+    assert!(
+        board
+            .lines()
+            .any(|line| line.split('\t').nth(6) == Some("Login form")),
+        "{board:?}"
+    );
+}
