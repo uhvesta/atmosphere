@@ -55,6 +55,8 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
     /// A plan couldn't be added; `at` says which part, such as
     /// "task 2 “Buy clothes” › Sub task 1 “Jacket”". Nothing was added.
     indirect case plan(at: String, PlanProblem)
+    /// The Avenue's agent access lets agents see it but not change it.
+    case readOnlyForAgents(avenue: String)
 
     package var description: String {
         switch self {
@@ -133,6 +135,9 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
             "That field changed again after this. Undo the later change first, or set the field by hand."
         case .plan(let at, let problem):
             "Nothing was added. In \(at): \(problem.description)"
+        case .readOnlyForAgents(let avenue):
+            "\(avenue) is read only for agents, so nothing in it can change from here. To allow it, set its "
+                + "agent access to Full in Settings."
         }
     }
 }

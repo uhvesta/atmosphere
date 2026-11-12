@@ -20,8 +20,11 @@ package final class AssistantTools: Sendable {
     let writes: AssistantWrites?
 
     package init(workspace: Workspace, now: Date, timeZone: TimeZone, writes: AssistantWrites? = nil) {
-        current = LockIsolated(workspace)
-        initial = workspace
+        // Never anything in an Avenue hidden from agents, even when a
+        // proposal is made again on newer records.
+        let seen = workspace.seenByAgents
+        current = LockIsolated(seen)
+        initial = seen
         self.now = now
         self.timeZone = timeZone
         self.writes = writes

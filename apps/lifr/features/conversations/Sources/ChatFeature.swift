@@ -1042,7 +1042,8 @@ package struct ChatFeature {
                     TextState("Couldn't save")
                 } message: {
                     TextState(
-                        "\(error.localizedDescription) Nothing changed. Send a message and the assistant will fix the draft.")
+                        "\(error.localizedDescription) Nothing changed. "
+                            + "Send a message and the assistant will fix the draft.")
                 }
                 return .none
 

@@ -297,6 +297,9 @@ extension AssistantTools {
         } catch {
             return .refused(error)
         }
+        if let avenue = records.readOnlyForAgents(since: workspace) {
+            return .refused(.readOnlyForAgents(avenue: avenue.name))
+        }
         workspace = records
         proposed.withValue { $0.append((action, operation)) }
         return .success

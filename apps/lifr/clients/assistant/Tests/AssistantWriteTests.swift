@@ -268,6 +268,44 @@ final class AssistantWriteTests: XCTestCase {
         XCTAssertNil(saved?.dueDate)
         XCTAssertNil(saved?.dueTime)
     }
+
+    func testTheAssistantNeverSeesAHiddenAvenue() throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let home = records.avenue("HOME", "Home")
+        let health = records.avenue("HEALTH", "Health")
+        let rent = records.task("Pay rent", in: home)
+        let therapy = records.task("Book therapy", in: health)
+        var workspace = records.workspace
+        try workspace.setAgentAccess(.hidden, ofAvenue: health.id)
+        let tools = tools(on: workspace)
+
+        let found = tools.findTasks(words: "", avenue: nil, status: nil, dueBy: nil)
+        XCTAssertTrue(found.contains(workspace.displayCode(of: rent)))
+        XCTAssertFalse(found.contains("therapy"))
+        XCTAssertFalse(tools.overview().contains("therapy"))
+        XCTAssertFalse(tools.getTask(code: workspace.displayCode(of: therapy)).contains("therapy"))
+        XCTAssertNil(tools.workspace.avenues[health.id])
+    }
+
+    func testTheAssistantCantChangeOrMoveIntoAReadOnlyAvenue() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let home = records.avenue("HOME", "Home")
+        let work = records.avenue("WORK", "Work")
+        let rent = records.task("Pay rent", in: home)
+        let report = records.task("Send the report", in: work)
+        var workspace = records.workspace
+        try workspace.setAgentAccess(.readOnly, ofAvenue: work.id)
+        let tools = tools(on: workspace)
+
+        await assertThrowsAsync(
+            try await tools.change(TaskChange(code: workspace.displayCode(of: report), status: "done")),
+            .refused(code: workspace.displayCode(of: report), .readOnlyForAgents(avenue: "Work")))
+        await assertThrowsAsync(
+            try await tools.change(TaskChange(code: workspace.displayCode(of: rent), place: "WORK")),
+            .refused(code: workspace.displayCode(of: rent), .readOnlyForAgents(avenue: "Work")))
+        XCTAssertNil(tools.proposal)
+        XCTAssertTrue(tools.findTasks(words: "report", avenue: nil, status: nil, dueBy: nil).contains("report"))
+    }
 }
 
 /// Fails unless `body` throws `expected`.

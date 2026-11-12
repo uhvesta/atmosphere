@@ -213,7 +213,8 @@ package struct AssistantRequest: Hashable, Sendable {
         self.messages = messages
         self.draft = draft
         self.problem = problem
-        self.workspace = workspace
+        // The assistant is an agent: it never sees an Avenue hidden from them.
+        self.workspace = workspace.seenByAgents
         self.now = now
         self.timeZone = timeZone
         self.writes = writes
@@ -313,7 +314,8 @@ package struct AssistantLookup: Hashable, Sendable {
         let avenues = workspace.avenues.values
             .filter { $0.archivedAt == nil }
             .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
-        places = avenues.map { avenue in
+        // Drafts only go where agents may add.
+        places = avenues.filter { $0.agentAccess == .full }.map { avenue in
             Place(
                 key: avenue.key.rawValue, name: avenue.name,
                 projects: workspace.projects.values
