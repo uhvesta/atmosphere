@@ -88,6 +88,9 @@ public struct ChatCore<Replier: ChatReplier> {
         public var dictatedAfter: String?
         /// The message being edited, whose new text is in the field.
         public var editing: UUID?
+        /// What the field held before editing started, put back when the
+        /// edit is cancelled.
+        public var inputBeforeEditing: String?
         /// The reply being read aloud.
         public var speaking: UUID?
         /// Whether the bar to find words in the messages is open.
@@ -330,13 +333,15 @@ public struct ChatCore<Replier: ChatReplier> {
                 guard state.canGo,
                     let message = state.thread.messages.first(where: { $0.id == id && $0.role == .person })
                 else { return .none }
+                if state.editing == nil { state.inputBeforeEditing = state.input }
                 state.editing = id
                 state.input = message.text
                 return .none
 
             case .cancelEditTapped:
                 state.editing = nil
-                state.input = ""
+                state.input = state.inputBeforeEditing ?? ""
+                state.inputBeforeEditing = nil
                 return .none
 
             case .branchTapped(let id, let offset):
@@ -733,6 +738,7 @@ public struct ChatCore<Replier: ChatReplier> {
             photos = (old?.photos ?? []) + photos
             state.thread.go(before: editing)
             state.editing = nil
+            state.inputBeforeEditing = nil
         }
         let message = Message(person: uuid(), text: text, at: now, files: files, photos: photos)
         state.thread.append(replier.sending(message, replacing: old, host: state.host))

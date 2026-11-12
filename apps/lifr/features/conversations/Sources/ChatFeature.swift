@@ -63,6 +63,9 @@ package struct ChatFeature {
         /// The draft last discarded, put back on Undo until the next
         /// message is sent.
         package var discardedDraft: Plan?
+        /// The skill picked before editing a message started, put back
+        /// when the edit is cancelled.
+        package var skillBeforeEditing: String?
         /// The drafts this chat added, by the journal entry that added
         /// them: undone, the draft is back to add again.
         package var addedDrafts: [UUID: Plan] = [:]
@@ -387,6 +390,8 @@ package struct ChatFeature {
             case copyFixUp(String)
             /// Copies a prompt to plan `goal`, listing the tasks in `scope`.
             case exportPlan(goal: String, scope: PlanPrompt.Scope)
+            /// Puts a pasted plan on the draft card in place of the draft.
+            case replaceDraft(Plan)
         }
 
         @CasePathable
@@ -551,14 +556,17 @@ package struct ChatFeature {
                 return send(in: &state)
 
             case .core(.editTapped(let id)):
+                let wasEditing = state.core.editing != nil
                 let effect = core(.editTapped(messageID: id), &state)
                 if state.core.editing == id {
+                    if !wasEditing { state.skillBeforeEditing = state.skill }
                     state.skill = state.conversation.messages.first { $0.id == id }?.skill
                 }
                 return effect
 
             case .core(.cancelEditTapped):
-                state.skill = nil
+                state.skill = state.skillBeforeEditing
+                state.skillBeforeEditing = nil
                 return core(.cancelEditTapped, &state)
 
             case .core(.retryTapped(let id)):
@@ -780,9 +788,11 @@ package struct ChatFeature {
                 return .send(.exportPlanScoped(goal: goal, scope: scope))
 
             case .commandChosen(let command):
+                guard command.isAvailable(in: state) else { return .none }
                 return run(command, details: state.input, in: &state)
 
             case .pastePlanTapped:
+                guard ChatCommand.paste.isAvailable(in: state) else { return .none }
                 return .run { [pasteboard] send in
                     let text = await pasteboard.read()
                     await send(.planPasted(text))
@@ -790,6 +800,11 @@ package struct ChatFeature {
 
             case .planPasted(let text):
                 return pasted(text, in: &state)
+
+            case .alert(.presented(.replaceDraft(let plan))):
+                guard ChatCommand.paste.isAvailable(in: state) else { return .none }
+                draft(plan, in: &state)
+                return .none
 
             case .alert(.presented(.copyFixUp(let prompt))):
                 return .run { [pasteboard] _ in await pasteboard.copy(prompt) }
@@ -1169,6 +1184,7 @@ package struct ChatFeature {
         state.core.host.pick = nil
         if state.core.isReplying {
             state.skill = nil
+            state.skillBeforeEditing = nil
             state.recordings = []
             state.discardedDraft = nil
         }
@@ -1253,7 +1269,19 @@ package struct ChatFeature {
             }
             return .none
         }
-        draft(plan.pinned(today: CalendarDate(now, in: timeZone)), in: &state)
+        let pinned = plan.pinned(today: CalendarDate(now, in: timeZone))
+        guard state.conversation.draft != nil else {
+            draft(pinned, in: &state)
+            return .none
+        }
+        state.alert = AlertState {
+            TextState("Replace the Draft?")
+        } actions: {
+            ButtonState(role: .destructive, action: .replaceDraft(pinned)) { TextState("Replace") }
+            ButtonState(role: .cancel) { TextState("Cancel") }
+        } message: {
+            TextState("The pasted plan takes the place of the draft on the card, which isn't added yet.")
+        }
         return .none
     }
 

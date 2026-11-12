@@ -29,17 +29,17 @@ final class ChatPlanPromptTests: XCTestCase {
         Want reminders too?
         """
 
-    /// A chat over a HOME Avenue, with `clipboard` as the clipboard.
+    /// A chat over a HOME Avenue, with `clipboard` as the clipboard,
+    /// replying when `replying`.
     private func chat(
-        _ clipboard: LockIsolated<String?>, _ workspace: Workspace? = nil
+        _ clipboard: LockIsolated<String?>, _ workspace: Workspace? = nil, replying: Bool = false
     ) -> (TestStoreOf<ChatFeature>, Workspace) {
         var records = RecordsBuilder(now: now, timeZone: .gmt)
         _ = records.avenue("HOME", "Home")
         let workspace = workspace ?? records.workspace
-        let store = TestStore(
-            initialState: ChatFeature.State(
-                conversation: Conversation(id: UUID(0), createdAt: now), workspace: workspace)
-        ) {
+        var state = ChatFeature.State(conversation: Conversation(id: UUID(0), createdAt: now), workspace: workspace)
+        state.core.isReplying = replying
+        let store = TestStore(initialState: state) {
             ChatFeature()
         } withDependencies: { [now] in
             $0.store = .inMemory(workspace, actor: .user(device: "iPhone", surface: .iPhone))
@@ -193,5 +193,32 @@ final class ChatPlanPromptTests: XCTestCase {
 
         XCTAssertNil(store.state.conversation.draft)
         XCTAssertNotNil(store.state.alert)
+    }
+
+    func testPastingOverADraftAsksBeforeReplacingIt() async throws {
+        let clipboard = LockIsolated<String?>(reply)
+        let (store, _) = chat(clipboard)
+        await store.send(.pastePlanTapped)
+        await store.receive(\.planPasted)
+        let first = try XCTUnwrap(store.state.conversation.draft)
+
+        clipboard.setValue(reply.replacingOccurrences(of: "Book the van", with: "Pack the books"))
+        await store.send(.pastePlanTapped)
+        await store.receive(\.planPasted)
+        XCTAssertEqual(store.state.conversation.draft, first, "the draft stays until Replace")
+        XCTAssertNotNil(store.state.alert)
+
+        let plan = try XCTUnwrap(PlanPrompt.read(clipboard.value ?? ""))
+        await store.send(.alert(.presented(.replaceDraft(plan.pinned(today: CalendarDate(now, in: .gmt))))))
+        XCTAssertEqual(store.state.conversation.draft?.tasks.map(\.title), ["Pack the books"])
+    }
+
+    func testPasteDoesNothingWhileAReplyIsWritten() async {
+        let (store, _) = chat(LockIsolated<String?>(reply), replying: true)
+
+        await store.send(.commandChosen(.paste))
+        await store.send(.pastePlanTapped)
+
+        XCTAssertNil(store.state.conversation.draft)
     }
 }

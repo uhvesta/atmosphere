@@ -2837,6 +2837,12 @@
     "Repeats" : {
 
     },
+    "Replace" : {
+
+    },
+    "Replace the Draft?" : {
+
+    },
     "Replying…" : {
 
     },
@@ -3440,6 +3446,9 @@
 
     },
     "The open task" : {
+
+    },
+    "The pasted plan takes the place of the draft on the card, which isn't added yet." : {
 
     },
     "The recording stopped (%@). Record again; if another app is using the microphone, close it first." : {

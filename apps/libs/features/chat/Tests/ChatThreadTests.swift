@@ -167,6 +167,16 @@ final class ChatThreadTests: XCTestCase {
         XCTAssertEqual(store.texts, ["Amigo?", "Friend."])
     }
 
+    func testCancellingAnEditPutsBackWhatWasBeingTyped() async throws {
+        let store = chat(Runs([ScriptedRuntime.answer("Friend.")]))
+        await store.ask("Amigo?")
+        await store.send(.binding(.set(\.input, "Buy milk")))
+        await store.send(.editTapped(messageID: try store.state.thread.messages.first.unwrap().id))
+        XCTAssertEqual(store.state.input, "Amigo?")
+        await store.send(.cancelEditTapped)
+        XCTAssertEqual(store.state.input, "Buy milk")
+    }
+
     func testWhatTheModelThinksIsShownAndKeptWithTheReply() async throws {
         let runs = Runs([
             ScriptedRuntime.think("It's Spanish.", for: .seconds(2), then: ScriptedRuntime.answer("Friend."))
