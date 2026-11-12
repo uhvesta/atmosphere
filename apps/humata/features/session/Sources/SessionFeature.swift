@@ -231,6 +231,8 @@ package struct SessionFeature {
         case docs(DocsFeature.Action)
         /// Opens another terminal in the session's folder, and shows it.
         case newTerminalTapped
+        /// Opens the board at the task it works on.
+        case itemTapped
         case terminals(TerminalsFeature.Action)
         case proposals(ProposalsFeature.Action)
         /// Opens the sheet to land the session on a branch, or as pull
@@ -245,6 +247,8 @@ package struct SessionFeature {
         package enum Delegate: Equatable {
             /// A fork was made, or work started on a proposed task; open it.
             case openSession(Session)
+            /// Open the board at the task it works on.
+            case openItem(projectID: Project.ID, itemID: Item.ID)
         }
     }
 
@@ -291,6 +295,10 @@ package struct SessionFeature {
 
             case .proposals(.delegate(.openSession(let session))):
                 return .send(.delegate(.openSession(session)))
+
+            case .itemTapped:
+                guard let project = state.session.projectID, let item = state.session.itemID else { return .none }
+                return .send(.delegate(.openItem(projectID: project, itemID: item)))
 
             case .binding, .delegate, .alert, .review, .docs, .terminals, .proposals, .land:
                 return .none

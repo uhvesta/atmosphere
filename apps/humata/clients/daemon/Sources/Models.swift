@@ -189,6 +189,8 @@ package struct Session: Identifiable, Hashable, Sendable {
     package var keeper: Bool
     /// The task or subtask it works on; nil for the project itself.
     package var itemID: String?
+    /// That task's or subtask's title; nil for none.
+    package var itemTitle: String?
     /// How many turns it has finished.
     package var turns: Int
     /// How many of its finished turns the person has seen.
@@ -212,7 +214,7 @@ package struct Session: Identifiable, Hashable, Sendable {
         approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil, archived: Bool = false,
         keeper: Bool = false, itemID: String? = nil, turns: Int = 0, seenTurns: Int = 0,
         pending: [PendingPermission] = [], hostOffline: Bool = false, lastActive: Date? = nil, planning: Bool = false,
-        asking: Bool = false, lastMessage: String? = nil
+        asking: Bool = false, lastMessage: String? = nil, itemTitle: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -236,6 +238,7 @@ package struct Session: Identifiable, Hashable, Sendable {
         self.planning = planning
         self.asking = asking
         self.lastMessage = lastMessage
+        self.itemTitle = itemTitle
     }
 }
 

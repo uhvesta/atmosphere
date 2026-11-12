@@ -174,10 +174,12 @@ package struct AppFeature {
                 state.session = SessionFeature.State(session: session, highlighted: event)
                 return .none
 
-            case .search(.presented(.delegate(.openItem(let projectID, let itemID)))):
+            case .search(.presented(.delegate(.openItem(let projectID, let itemID)))),
+                .session(.presented(.delegate(.openItem(let projectID, let itemID)))):
                 guard let project = state.sidebar.projects[id: projectID] else { return .none }
                 state.sidebar.selection = .board(projectID)
                 state.search = nil
+                state.session = nil
                 state.board = BoardFeature.State(project: project, opening: itemID)
                 return .none
 

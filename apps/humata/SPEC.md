@@ -698,7 +698,7 @@ waiting on you. It kept these, in build order:
   fresh copy, removing the source
 - [x] Closing an item offers to stop and archive its sessions
 - [x] Delete a task, revertible from Board History
-- [ ] A session shows its task and opens it
+- [x] A session shows its task and opens it
 - [ ] Listing sessions reads a kept summary instead of copying every history
 - [ ] The task page's subtasks open, and spec comments go to a live session
 - [ ] The sidebar holds still while agents work

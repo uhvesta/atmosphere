@@ -12,7 +12,7 @@
       [StaticText] "" value: "Board"
     [Row/OutlineRow] ""
       [Unknown] "Unread" help: "It finished a turn you haven't read yet"
-      [StaticText] "" value: "Sign in"
+      [StaticText] "" value: "Sign in" help: "Works on Sign in"
       [StaticText] "" value: "Active 9 mins ago"
       [Image] "Waiting for you" help: "Asks you something, or to move its task" id: hand.raised.fill
     [Row/OutlineRow] ""

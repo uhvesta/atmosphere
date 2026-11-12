@@ -157,6 +157,34 @@ final class AppFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.board?.opening, item.id)
     }
 
+    func testASessionOpensTheTaskItWorksOn() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let item = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        let onTask = try await daemon.client.start(StartRequest(backend: .scripted, itemID: item.id))
+        let onProject = try await daemon.client.start(StartRequest(backend: .scripted, projectID: project.id))
+        let sessions = try await daemon.client.sessions(nil)
+        XCTAssertEqual(sessions.first { $0.id == onTask.id }?.itemTitle, "login")
+        XCTAssertNil(sessions.first { $0.id == onProject.id }?.itemTitle)
+        var state = AppFeature.State()
+        state.sidebar.projects = [project]
+        state.sidebar.sessions = IdentifiedArray(uniqueElements: sessions)
+        let store = TestStore(initialState: state) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.sidebar.selected, .session(onTask.id))
+        await store.receive(\.sidebar.delegate.openSession)
+        await store.send(\.session.itemTapped)
+        await store.receive(\.session.delegate.openItem)
+        XCTAssertEqual(store.state.board?.project.id, project.id)
+        XCTAssertEqual(store.state.board?.opening, item.id)
+    }
+
     func testALinkOpensASessionTheSidebarHasNotReadYet() async throws {
         let daemon = InMemoryDaemon()
         let store = TestStore(initialState: AppFeature.State()) {

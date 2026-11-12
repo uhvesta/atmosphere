@@ -155,7 +155,7 @@ extension Session {
             },
             hostOffline: info.hostOffline,
             lastActive: info.lastActiveUnixMs == 0 ? nil : date(info.lastActiveUnixMs), planning: info.planning,
-            asking: info.asking, lastMessage: optional(info.lastMessage))
+            asking: info.asking, lastMessage: optional(info.lastMessage), itemTitle: optional(info.itemTitle))
     }
 }
 

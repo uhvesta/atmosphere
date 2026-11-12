@@ -11,7 +11,7 @@
     [Row/OutlineRow] ""
       [StaticText] "" value: "Board"
     [Row/OutlineRow] ""
-      [StaticText] "" value: "Login form"
+      [StaticText] "" value: "Login form" help: "Works on Login form"
       [StaticText] "" value: "Active 9 mins ago"
       [Image] "Waiting for you" help: "Waiting for you to answer a request" id: hand.raised.fill
     [Row/OutlineRow] ""

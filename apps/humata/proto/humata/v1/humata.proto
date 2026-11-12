@@ -1290,6 +1290,9 @@ message SessionInfo {
   // Its last turn's failure, or else the agent's last reply, cut to about
   // 300 characters; empty before either.
   string last_message = 23;
+  // The title of the task or subtask it works on; empty for none. The
+  // daemon fills it in.
+  string item_title = 24;
 }
 
 // A session's git worktree of one repository.

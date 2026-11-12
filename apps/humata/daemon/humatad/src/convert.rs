@@ -156,6 +156,7 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, history: &[Event]) 
         archived: record.archived,
         keeper: record.keeper,
         item_id: String::new(),
+        item_title: String::new(),
         turns: u32::try_from(
             history
                 .iter()

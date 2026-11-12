@@ -12,7 +12,7 @@
       [StaticText] "" value: "Board"
     [Row/OutlineRow, selected] ""
       [Unknown] "Unread" help: "It finished a turn you haven't read yet"
-      [StaticText] "" value: "Sign in"
+      [StaticText] "" value: "Sign in" help: "Works on Sign in"
       [StaticText] "" value: "Active 9 mins ago"
       [Image] "Waiting for you" help: "Asks you something, or to move its task" id: hand.raised.fill
     [Row/OutlineRow] ""
@@ -31,6 +31,7 @@
   [StaticText] "" value: "Approvals"
   [PopUpButton] "" value: "Allow Everything" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
+  [Link] "Sign in" help: "Open Sign in on the board"
   [StaticText] "" value: "Changes"
   [PopUpButton] "" value: "Everything" help: "Which of the session's changes to review"
   [Button] "Exit Full Screen" help: "Show fewer unchanged lines around each change" id: arrow.down.right.and.arrow.up.left

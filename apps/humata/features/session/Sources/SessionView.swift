@@ -95,6 +95,17 @@ package struct SessionView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if let task = store.session.itemTitle {
+                    Button {
+                        store.send(.itemTapped)
+                    } label: {
+                        Label(task, systemImage: "checklist")
+                            .font(.caption)
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.link)
+                    .help("Open \(task) on the board")
+                }
             }
             .frame(minWidth: 90, alignment: .leading)
             Spacer()

@@ -400,6 +400,9 @@ package final class InMemoryDaemon: Sendable {
                         var session = session
                         session.hostOffline = session.host.map(state.offline.contains) ?? false
                         session.asking = state.requests.contains { $0.sessionID == session.id }
+                        session.itemTitle = session.itemID.flatMap { item in
+                            state.items.first { $0.id == item }?.title
+                        }
                         return session
                     }
                 }

@@ -243,6 +243,7 @@ struct SessionRow: View {
             }
             Label(session.title, systemImage: icon)
                 .lineLimit(1)
+                .help(session.itemTitle.map { "Works on \($0)" } ?? "")
             if session.keeper {
                 Image(systemName: "star.fill")
                     .foregroundStyle(.yellow)

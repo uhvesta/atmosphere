@@ -494,6 +494,12 @@ impl Daemon {
             .map(|placement| (placement.project, placement.item, placement.seen_turns))
             .unwrap_or_default();
         session.project_id = project.unwrap_or_default();
+        // One deleted since shows no title.
+        session.item_title = item
+            .as_deref()
+            .and_then(|item| self.store.item(item).ok())
+            .map(|item| item.fields.title)
+            .unwrap_or_default();
         session.item_id = item.unwrap_or_default();
         session.seen_turns = seen;
         session.planning = self.store.planning(&session.id)?;
