@@ -37,6 +37,9 @@ import OSLog
 /// and reschedules this device's reminders after each change.
 @Reducer
 package struct RootFeature {
+    /// How long the last change's Undo stays on screen.
+    static let toastDuration = Duration.seconds(5)
+
     package enum Platform: Equatable, Sendable {
         /// Tabs, and no agents: only the Mac runs the CLI.
         case phone
@@ -981,7 +984,7 @@ package struct RootFeature {
 
             case .toastShown(let id):
                 return .run { [clock] send in
-                    try await clock.sleep(for: .seconds(5))
+                    try await clock.sleep(for: Self.toastDuration)
                     await send(.toastExpired(id))
                 }
 

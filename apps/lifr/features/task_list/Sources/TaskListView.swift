@@ -248,7 +248,7 @@ package struct TaskListRow: View {
         .accessibilityAddTraits(store.isSelecting && isPicked ? .isSelected : [])
         // Onto a day in the calendar, to move it there. A list in manual
         // order drags rows to reorder them instead.
-        .modifier(DraggableTask(id: row.id, isOn: !store.canReorder))
+        .modifier(DraggableTask(row: row, isOn: !store.canReorder))
         // Another task dropped onto this one becomes its Sub task. Text
         // from another app goes where the list sends it, as if dropped
         // beside the row.
@@ -418,12 +418,22 @@ private struct BulkBar: View {
 
 /// Lets a row be dragged out as its task's ID, when `isOn`.
 private struct DraggableTask: ViewModifier {
-    var id: UUID
+    var row: TaskRowData
     var isOn: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         if isOn {
-            content.draggable(id.uuidString)
+            content.draggable(row.id.uuidString) {
+                // Lifted off the list while it moves: tilted, with a shadow.
+                TaskRow(row) {}
+                    .padding(12)
+                    .frame(width: 320, alignment: .leading)
+                    .background(.background, in: .rect(cornerRadius: 10))
+                    .rotationEffect(.degrees(reduceMotion ? 0 : 2))
+                    .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+                    .padding(12)
+            }
         } else {
             content
         }

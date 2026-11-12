@@ -116,6 +116,8 @@ package struct RootView: View {
                 }
                 if let toast = store.toast {
                     UndoToast(message: toast.message) { store.send(.undoTapped(toast.id)) }
+                        // A new change starts its own countdown.
+                        .id(toast.id)
                         .task(id: toast.id) { await store.send(.toastShown(toast.id)).finish() }
                         .transition(edgeTransition)
                 }
@@ -724,6 +726,8 @@ private struct SyncBannerView: View {
 private struct UndoToast: View {
     var message: String
     var undo: () -> Void
+    /// How much of the time to undo is left, drawn as a line that runs down.
+    @State private var remaining = 1.0
 
     var body: some View {
         HStack {
@@ -733,8 +737,22 @@ private struct UndoToast: View {
         }
         .font(.callout)
         .padding()
+        .overlay(alignment: .bottomLeading) {
+            GeometryReader { proxy in
+                Capsule()
+                    .fill(.secondary.opacity(0.5))
+                    .frame(width: proxy.size.width * remaining, height: 2)
+            }
+            .frame(height: 2)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 5)
+            .accessibilityHidden(true)
+        }
         .background(.thinMaterial, in: .rect(cornerRadius: 12))
         .padding(.horizontal)
+        .onAppear {
+            withAnimation(.linear(duration: RootFeature.toastDuration / .seconds(1))) { remaining = 0 }
+        }
     }
 }
 

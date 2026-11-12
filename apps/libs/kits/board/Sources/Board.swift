@@ -65,6 +65,9 @@ public struct BoardCard<Content: View, Menu: View>: View {
     private let menu: Menu
     /// Whether a card dragged is over this one, to drop onto it.
     @State private var isTargeted = false
+    /// The card's width, so the one lifted while dragging keeps it.
+    @State private var width: CGFloat = 240
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
         id: String, onDrop: (([String]) -> Bool)? = nil, @ViewBuilder content: () -> Content,
@@ -78,13 +81,19 @@ public struct BoardCard<Content: View, Menu: View>: View {
     }
 
     public var body: some View {
-        content
-            .padding(8)
+        card
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 8).fill(.background))
+            .onGeometryChange(for: CGFloat.self, of: \.size.width) { width = $0 }
             .contentShape(Rectangle())
             .onTapGesture(perform: onTap)
-            .draggable(id)
+            .draggable(id) {
+                // Lifted off the column while it moves: tilted, with a shadow.
+                card
+                    .frame(width: width, alignment: .leading)
+                    .rotationEffect(.degrees(reduceMotion ? 0 : 2))
+                    .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+                    .padding(12)
+            }
             .modifier(CardDrop(onDrop: onDrop, isTargeted: $isTargeted))
             .overlay {
                 if isTargeted {
@@ -94,6 +103,13 @@ public struct BoardCard<Content: View, Menu: View>: View {
             .accessibilityElement(children: .combine)
             .accessibilityAction { onTap() }
             .contextMenu { menu }
+    }
+
+    private var card: some View {
+        content
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(.background))
     }
 }
 
