@@ -102,6 +102,18 @@ func recurrenceTests() -> [TestCase] {
                 fixture.workspace.reminders(of: next.id, timeZone: .gmt).map(\.trigger), [.beforeDue(seconds: 3600)])
             try expectEqual(try fixture.get(task).status, .done)
         },
+        TestCase("given a repeating task with a snooze, then the next keeps only the reminders that were set") {
+            let fixture = try Fixture()
+            let task = try fixture.repeating("Long run", due: "2026-11-08", .weekly(weekdays: [1]))
+            try fixture.workspace.addReminder(.beforeDue(seconds: 0), to: task.id, in: fixture.context)
+            let snooze = Reminder.Trigger.at(fixture.now + 3600)
+            try fixture.workspace.addReminder(snooze, to: task.id, isOneOff: true, in: fixture.context)
+            try fixture.set(today: "2026-11-08")
+            _ = try fixture.workspace.setStatus(.done, of: task.id, in: fixture.context)
+            let next = try fixture.next(after: task)
+            try expectEqual(
+                fixture.workspace.reminders(of: next.id, timeZone: .gmt).map(\.trigger), [.beforeDue(seconds: 0)])
+        },
         TestCase("given two devices close the same occurrence offline, then both make the same next one") {
             let phone = try Fixture()
             let task = try phone.repeating("Weigh in", due: "2026-11-09", .weekly(weekdays: [2]))

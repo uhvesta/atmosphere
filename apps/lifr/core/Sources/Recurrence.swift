@@ -279,7 +279,9 @@ extension Workspace {
                 in: context, &change)
         }
 
-        let carried = reminders.values.filter { $0.taskID == task.id }.sorted { $0.id.uuidString < $1.id.uuidString }
+        // A snooze rang for this occurrence only.
+        let carried = reminders.values.filter { $0.taskID == task.id && !$0.isOneOff }
+            .sorted { $0.id.uuidString < $1.id.uuidString }
         for (offset, reminder) in carried.enumerated() {
             let trigger: Reminder.Trigger
             switch reminder.trigger {

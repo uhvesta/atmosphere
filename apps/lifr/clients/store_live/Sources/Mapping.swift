@@ -182,15 +182,16 @@ extension StoredComment {
 extension StoredReminder {
     var record: Reminder? {
         guard let task else { return nil }
-        if let fireAt { return Reminder(id: id, taskID: task.id, trigger: .at(fireAt)) }
+        if let fireAt { return Reminder(id: id, taskID: task.id, trigger: .at(fireAt), isOneOff: isOneOff) }
         if let secondsBeforeDue {
-            return Reminder(id: id, taskID: task.id, trigger: .beforeDue(seconds: secondsBeforeDue))
+            return Reminder(id: id, taskID: task.id, trigger: .beforeDue(seconds: secondsBeforeDue), isOneOff: isOneOff)
         }
         return nil
     }
 
     func write(_ reminder: Reminder, in index: Index) {
         task = index.tasks[reminder.taskID]
+        isOneOff = reminder.isOneOff
         switch reminder.trigger {
         case .at(let date):
             fireAt = date

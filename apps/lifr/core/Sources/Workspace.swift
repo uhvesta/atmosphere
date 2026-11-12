@@ -887,14 +887,15 @@ package struct Workspace: Hashable, Codable, Sendable {
     // MARK: - Reminders
 
     /// Adds a reminder to a task. One before the due date needs the task to
-    /// have one.
+    /// have one. A one-off, such as a snooze, isn't copied to the next
+    /// occurrence.
     @discardableResult
     package mutating func addReminder(
-        _ trigger: Reminder.Trigger, to taskID: UUID, in context: Context
+        _ trigger: Reminder.Trigger, to taskID: UUID, isOneOff: Bool = false, in context: Context
     ) throws(LifrError) -> Reminder {
         let task = try liveTask(taskID)
         if case .beforeDue = trigger, task.dueDate == nil { throw .reminderNeedsDueDate(taskID) }
-        let reminder = Reminder(id: context.newID(), taskID: taskID, trigger: trigger)
+        let reminder = Reminder(id: context.newID(), taskID: taskID, trigger: trigger, isOneOff: isOneOff)
         reminders[reminder.id] = reminder
         return reminder
     }

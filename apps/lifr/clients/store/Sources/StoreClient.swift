@@ -428,9 +428,11 @@ extension StoreClient {
         }
     }
 
-    package func addReminder(_ trigger: Reminder.Trigger, to id: UUID) async throws -> Saved {
+    /// A one-off, such as a snooze, isn't copied to a repeating task's next
+    /// occurrence.
+    package func addReminder(_ trigger: Reminder.Trigger, to id: UUID, isOneOff: Bool = false) async throws -> Saved {
         try await save { (workspace, context) throws(LifrError) in
-            try workspace.addReminder(trigger, to: id, in: context)
+            try workspace.addReminder(trigger, to: id, isOneOff: isOneOff, in: context)
             return Change()
         }
     }

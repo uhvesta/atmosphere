@@ -263,11 +263,28 @@ package struct Reminder: Identifiable, Hashable, Codable, Sendable {
     package var id: UUID
     package var taskID: UUID
     package var trigger: Trigger
+    /// Rings once, such as a snooze: a repeating task's next occurrence
+    /// doesn't get a copy.
+    package var isOneOff: Bool
 
-    package init(id: UUID, taskID: UUID, trigger: Trigger) {
+    package init(id: UUID, taskID: UUID, trigger: Trigger, isOneOff: Bool = false) {
         self.id = id
         self.taskID = taskID
         self.trigger = trigger
+        self.isOneOff = isOneOff
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, taskID, trigger, isOneOff
+    }
+
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        taskID = try container.decode(UUID.self, forKey: .taskID)
+        trigger = try container.decode(Trigger.self, forKey: .trigger)
+        // Reminders saved before one-offs were marked carry over.
+        isOneOff = try container.decodeIfPresent(Bool.self, forKey: .isOneOff) ?? false
     }
 }
 

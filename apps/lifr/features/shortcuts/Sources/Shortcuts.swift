@@ -294,7 +294,7 @@ package struct Shortcuts: Sendable {
     /// date stays. Allowed while locked, since it shows nothing.
     package func snooze(_ id: UUID, until date: Date) async throws {
         do {
-            _ = try await reported { try await store.addReminder(.at(date), to: id) }
+            _ = try await reported { try await store.addReminder(.at(date), to: id, isOneOff: true) }
         } catch LifrError.notFound {
             throw ShortcutError.noTask
         }

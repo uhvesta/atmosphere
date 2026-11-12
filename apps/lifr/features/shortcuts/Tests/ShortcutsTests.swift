@@ -40,6 +40,7 @@ final class ShortcutsTests: XCTestCase {
         let reminders = try await store.load().reminders.values
         XCTAssertEqual(reminders.map(\.trigger), [.at(now + 3600)])
         XCTAssertEqual(reminders.map(\.taskID), [run.id])
+        XCTAssertEqual(reminders.map(\.isOneOff), [true], "a snooze isn't copied to the next occurrence")
     }
 
     func testAStoreThatCantSaveGivesAReasonSiriCanSay() async throws {

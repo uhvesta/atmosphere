@@ -448,7 +448,8 @@ package struct TaskDetailFeature {
                 return save { try await $0.revert(eventID) }
 
             case .reminderPicked(let choice):
-                return addReminder(choice.trigger(now: now, timeZone: timeZone), to: state.id)
+                return addReminder(
+                    choice.trigger(now: now, timeZone: timeZone), to: state.id, isOneOff: choice.isOneOff)
 
             case .reminderCustomTapped:
                 state.reminderDraft = ReminderDraft(now: now, hasDueDate: state.dueDate != nil)
@@ -535,10 +536,10 @@ package struct TaskDetailFeature {
 
     /// Saves the reminder, then asks for notifications if they haven't been
     /// asked for, and says so when they're off.
-    private func addReminder(_ trigger: Reminder.Trigger, to id: UUID) -> Effect<Action> {
+    private func addReminder(_ trigger: Reminder.Trigger, to id: UUID, isOneOff: Bool = false) -> Effect<Action> {
         .run { [store, reminders] send in
             do {
-                await send(.saved(.success(try await store.addReminder(trigger, to: id))))
+                await send(.saved(.success(try await store.addReminder(trigger, to: id, isOneOff: isOneOff))))
             } catch {
                 await send(.saved(.failure(error)))
                 return

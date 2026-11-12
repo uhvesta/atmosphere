@@ -38,6 +38,10 @@ package enum ReminderChoice: CaseIterable, Hashable, Sendable {
         }
     }
 
+    /// Whether it rings only for this occurrence of a repeating task: an
+    /// hour from now postpones, like a snooze.
+    package var isOneOff: Bool { self == .inOneHour }
+
     package func trigger(now: Date, timeZone: TimeZone) -> Reminder.Trigger {
         switch self {
         case .inOneHour:

@@ -129,6 +129,8 @@ final class StoredReminder {
     var task: StoredTask?
     var fireAt: Date?
     var secondsBeforeDue: Int?
+    /// `Reminder.isOneOff`.
+    var isOneOff = false
 
     init(id: UUID) { self.id = id }
 }
