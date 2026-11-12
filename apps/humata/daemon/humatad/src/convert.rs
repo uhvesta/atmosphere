@@ -166,6 +166,23 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, history: &[Event]) 
         seen_turns: 0,
         pending: pending(history),
         last_active_unix_ms: history.last().map_or(0, |event| event.time_unix_ms),
+        last_message: last_message(history),
+    }
+}
+
+/// The latest failure or reply, cut short to show in a row.
+fn last_message(history: &[Event]) -> String {
+    const MAX_CHARS: usize = 300;
+    let Some(text) = history.iter().rev().find_map(|event| match &event.kind {
+        EventKind::Failed { message } => Some(message.trim()),
+        EventKind::AssistantMessage { text } => Some(text.trim()),
+        _ => None,
+    }) else {
+        return String::new();
+    };
+    match text.char_indices().nth(MAX_CHARS) {
+        None => text.to_owned(),
+        Some((end, _)) => format!("{}…", text[..end].trim_end()),
     }
 }
 

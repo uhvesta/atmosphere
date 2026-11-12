@@ -402,7 +402,7 @@ final class ProjectsFeatureTests: XCTestCase {
         await task.cancel()
     }
 
-    func testWhileHumataIsBehindTheOpenSessionIsNotifiedAndTheDockCountsTheInbox() async throws {
+    func testWhileHumataIsBehindTheOpenSessionIsNotifiedQuietlyOfAReply() async throws {
         let daemon = InMemoryDaemon()
         let clock = TestClock()
         let posted = LockIsolated<[Notice]>([])
@@ -436,8 +436,95 @@ final class ProjectsFeatureTests: XCTestCase {
         await store.receive(\.loaded)
         await fulfillment(of: [notified], timeout: 5)
         XCTAssertEqual(posted.value.map(\.sessionID), [open.id])
-        XCTAssertEqual(badges.value, [0, 1])
+        XCTAssertEqual(posted.value.map(\.silent), [true])
+        // A reply only needs looking over, so the Dock doesn't count it.
+        XCTAssertEqual(badges.value, [0])
         await task.cancel()
+    }
+
+    func testTheDockCountsOnlyTheSessionsBlockedOnYou() async throws {
+        let daemon = InMemoryDaemon { message in
+            message == "build" ? [.run(command: "make", output: ""), .say("Built.")] : [.say("Done.")]
+        }
+        let badges = LockIsolated<[Int]>([])
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.notifications.post = { _ in }
+            $0.appActivity = AppActivity(
+                isActive: { true }, activations: { AsyncStream { $0.finish() } },
+                setBadge: { count in badges.withValue { $0.append(count) } })
+        }
+        store.exhaustivity = .off
+
+        let building = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/build"))
+        try await daemon.client.send(building.id, "build", .enqueue)
+        for name in ["a", "b", "c"] {
+            let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/\(name)"))
+            try await daemon.client.send(session.id, "hi", .enqueue)
+        }
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.inbox.count, 4)
+        XCTAssertEqual(store.state.inbox.first?.reason, .approval)
+        XCTAssertEqual(store.state.inbox.last?.session.lastMessage, "Done.")
+        await store.finish()
+        XCTAssertEqual(badges.value, [1])
+    }
+
+    func testAReplyIsMarkedAsReadFromTheInbox() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        try await daemon.client.send(session.id, "hi", .enqueue)
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.inbox.map(\.reason), [.reply])
+
+        await store.send(.markReadTapped(session.id))
+        await store.receive(\.loaded)
+        XCTAssertTrue(store.state.inbox.isEmpty)
+        let seen = try await daemon.client.sessions(nil).first
+        XCTAssertEqual(seen?.seenTurns, seen?.turns)
+    }
+
+    func testAReplyThatCouldntBeSentIsKeptAndOneThatWasIsCleared() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        let first = daemon.addRequest(session.id, .question, "Email or phone?")
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        // Answered elsewhere meanwhile, so this reply can't be sent.
+        try await daemon.client.answerRequest(first.id, .dismiss)
+        await store.send(.draftChanged(first.id, "Email."))
+        await store.send(.requestAnswered(first.id, .reply("Email.")))
+        await store.receive(\.answerFailed)
+        XCTAssertEqual(store.state.drafts[first.id], "Email.")
+
+        let second = daemon.addRequest(session.id, .question, "Which provider?")
+        await store.send(.draftChanged(second.id, "Apple."))
+        await store.send(.requestAnswered(second.id, .reply("Apple.")))
+        await store.receive(\.requestAnswerSent)
+        XCTAssertNil(store.state.drafts[second.id])
     }
 
     func testANewSessionCanRunOnAHost() async throws {

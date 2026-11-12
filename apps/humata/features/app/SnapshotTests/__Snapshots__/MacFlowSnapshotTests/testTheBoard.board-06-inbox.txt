@@ -20,6 +20,8 @@
     [Button] "Search"
   [Outline] ""
     [Row/OutlineRow] ""
+      [Heading] "Blocked on You"
+    [Row/OutlineRow] ""
       [Button] "Login form, Write /code/humata/LoginForm.swift, humata › Login form, Waiting for approval"
       [Button] "Deny" help: "Deny: Write /code/humata/LoginForm.swift"
       [Button] "Allow" help: "Allow: Write /code/humata/LoginForm.swift"

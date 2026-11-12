@@ -30,11 +30,14 @@ package struct Notice: Hashable, Sendable {
     package var sessionID: Session.ID
     package var title: String
     package var body: String
+    /// It plays no sound: the session only has something to look over.
+    package var silent: Bool
 
-    package init(sessionID: Session.ID, title: String, body: String) {
+    package init(sessionID: Session.ID, title: String, body: String, silent: Bool = false) {
         self.sessionID = sessionID
         self.title = title
         self.body = body
+        self.silent = silent
     }
 
     init(_ entry: InboxEntry) {
@@ -48,7 +51,8 @@ package struct Notice: Hashable, Sendable {
             case .move: "Finished; asks you to move it to \(entry.request?.kind.statusName ?? "another column")."
             }
         self.init(
-            sessionID: entry.session.id, title: entry.session.title, body: place.isEmpty ? what : "\(place): \(what)")
+            sessionID: entry.session.id, title: entry.session.title, body: place.isEmpty ? what : "\(place): \(what)",
+            silent: !entry.reason.blocks)
     }
 }
 

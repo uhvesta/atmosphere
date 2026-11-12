@@ -203,6 +203,8 @@ package struct Session: Identifiable, Hashable, Sendable {
     package var planning: Bool
     /// It waits on the person to answer its question or its move request.
     package var asking: Bool
+    /// What it last said or why it failed, cut short; nil when it hasn't yet.
+    package var lastMessage: String?
 
     package init(
         id: String, name: String, backend: Backend, workingDirectory: String, model: String? = nil,
@@ -210,7 +212,7 @@ package struct Session: Identifiable, Hashable, Sendable {
         approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil, archived: Bool = false,
         keeper: Bool = false, itemID: String? = nil, turns: Int = 0, seenTurns: Int = 0,
         pending: [PendingPermission] = [], hostOffline: Bool = false, lastActive: Date? = nil, planning: Bool = false,
-        asking: Bool = false
+        asking: Bool = false, lastMessage: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -233,6 +235,7 @@ package struct Session: Identifiable, Hashable, Sendable {
         self.lastActive = lastActive
         self.planning = planning
         self.asking = asking
+        self.lastMessage = lastMessage
     }
 }
 
@@ -389,6 +392,10 @@ package enum InboxReason: Hashable, Sendable {
     case question
     /// It finished and asks you to move its item.
     case move
+
+    /// Whether the session can't go on until the person acts; otherwise it
+    /// only has something to look over.
+    package var blocks: Bool { self != .reply }
 }
 
 /// A question an agent asked, or a move it asked for, waiting on you.

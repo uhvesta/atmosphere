@@ -14,6 +14,9 @@ package struct ProjectsFeature {
         package var sessions: IdentifiedArrayOf<Session> = []
         /// Every session waiting on you.
         package var inbox: [InboxEntry] = []
+        /// What the person has typed to each agent's request, kept until it's
+        /// sent.
+        package var drafts: [AgentRequest.ID: String] = [:]
         /// Whether the list was read yet: until then nothing is new, so
         /// nothing is notified.
         package var loadedOnce = false
@@ -155,6 +158,11 @@ package struct ProjectsFeature {
         case inboxAnswered(Session.ID, request: String, approved: Bool)
         /// The person answered an agent's question or move from the inbox.
         case requestAnswered(AgentRequest.ID, RequestAnswer)
+        /// The answer reached the agent, so its draft can go.
+        case requestAnswerSent(AgentRequest.ID)
+        case draftChanged(AgentRequest.ID, String)
+        /// The person read a session's reply in the inbox without opening it.
+        case markReadTapped(Session.ID)
         /// The person opened what a session changed, to look before moving
         /// its item.
         case changesTapped(Session.ID)
@@ -218,7 +226,10 @@ package struct ProjectsFeature {
                 // The open session needs no notice only while it's on screen.
                 let open = activity.isActive() ? state.selection : nil
                 let notices = state.loadedOnce ? Self.notices(new: inbox, old: state.inbox, open: open) : []
-                let badge = !state.loadedOnce || inbox.count != state.inbox.count ? inbox.count : nil
+                // The Dock counts only the sessions that can't go on without
+                // the person.
+                let blocked = inbox.count(where: \.reason.blocks)
+                let badge = !state.loadedOnce || blocked != state.inbox.count(where: \.reason.blocks) ? blocked : nil
                 state.loadedOnce = true
                 state.now = date.now
                 state.inbox = inbox
@@ -402,9 +413,31 @@ package struct ProjectsFeature {
                 state.inbox.removeAll { $0.request?.id == id }
                 return .run { send in
                     try await daemon.answerRequest(id, answer)
+                    await send(.requestAnswerSent(id))
                     await send(await load())
                 } catch: { error, send in
                     await send(.answerFailed(error.localizedDescription))
+                    await send(await load())
+                }
+
+            case .requestAnswerSent(let id):
+                state.drafts[id] = nil
+                return .none
+
+            case .draftChanged(let id, let text):
+                state.drafts[id] = text.isEmpty ? nil : text
+                return .none
+
+            case .markReadTapped(let id):
+                guard let entry = state.inbox.first(where: { $0.session.id == id && $0.reason == .reply })
+                else { return .none }
+                state.inbox.removeAll { $0.id == entry.id }
+                let turns = entry.session.turns
+                return .run { send in
+                    try await daemon.markSeen(id, turns)
+                    await send(await load())
+                } catch: { _, send in
+                    // It stays in the inbox, as the daemon still has it.
                     await send(await load())
                 }
 

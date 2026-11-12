@@ -1265,6 +1265,9 @@ message SessionInfo {
   // It waits on the person to answer its question or its move request.
   // The daemon fills it in.
   bool asking = 22;
+  // Its last turn's failure, or else the agent's last reply, cut to about
+  // 300 characters; empty before either.
+  string last_message = 23;
 }
 
 // A session's git worktree of one repository.

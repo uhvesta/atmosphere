@@ -853,6 +853,11 @@ package final class InMemoryDaemon: Sendable {
                 state.sessions[index].lastActive = event.time
                 if kind.endsTurn { state.sessions[index].turns += 1 }
                 switch kind {
+                case .assistantMessage(let text), .failed(let text):
+                    state.sessions[index].lastMessage = text.count > 300 ? String(text.prefix(300)) + "…" : text
+                default: break
+                }
+                switch kind {
                 case .turnStarted, .turnEnded: state.sessions[index].pending = []
                 case .permissionRequested(let request, let permission, let summary):
                     state.sessions[index].pending.append(
@@ -1304,8 +1309,12 @@ extension InMemoryDaemon {
                 return InboxEntry(
                     session: session, reason: reason, projectName: project(session), itemTitle: item?.title)
             } + asked
+        // Within a rank, the one waiting longest comes first.
         let order: [[InboxReason]] = [[.approval], [.question, .move], [.failed], [.reply]]
-        return order.flatMap { reasons in entries.filter { reasons.contains($0.reason) } }
+        return order.flatMap { reasons in
+            entries.filter { reasons.contains($0.reason) }
+                .sorted { ($0.session.lastActive ?? .distantPast) < ($1.session.lastActive ?? .distantPast) }
+        }
     }
 }
 

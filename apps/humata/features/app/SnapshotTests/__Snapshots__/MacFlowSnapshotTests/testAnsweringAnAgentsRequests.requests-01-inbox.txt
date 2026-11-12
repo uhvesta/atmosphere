@@ -21,6 +21,8 @@
     [Button] "Search"
   [Outline] ""
     [Row/OutlineRow] ""
+      [Heading] "Blocked on You"
+    [Row/OutlineRow] ""
       [Button] "Sign in, humata › Sign in, Asks you"
       [StaticText] "" value: "Sign in with email or phone? I'd pick email: no SMS costs."
       [TextField] ""

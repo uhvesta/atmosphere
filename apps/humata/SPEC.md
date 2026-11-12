@@ -687,7 +687,7 @@ waiting on you. It kept these, in build order:
   session can't start without a model
 - [x] Local models can list a folder
 - [x] Local-model sessions get Humata's tools, so they can plan and propose
-- [ ] The inbox separates Blocked on You from To Look Over, rows say what
+- [x] The inbox separates Blocked on You from To Look Over, rows say what
   happened, the Dock counts only the blocked, reply notices are silent,
   rows sort by longest wait, and a reply that fails to send is kept
 - [ ] Start Work on a card or task: one click, seeds the first message, stays

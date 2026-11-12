@@ -1,40 +1,50 @@
 import HumataDaemonClient
 import SwiftUI
 
-/// Every session waiting on you, across projects: approvals first, then
-/// agents' questions and moves, then failures, then replies to read.
-/// Picking one opens it; a request for permission, a question or a move can
-/// be answered from its row.
+/// Every session waiting on you, across projects: first those blocked on you
+/// (approvals, agents' questions and moves, failures), then replies to look
+/// over. Picking one opens it; a request for permission, a question or a move
+/// can be answered from its row, and a reply marked as read.
 package struct InboxView: View {
     var entries: [InboxEntry]
     var open: (Session.ID) -> Void
     var openChanges: (Session.ID) -> Void
     var answer: (Session.ID, _ request: String, _ approved: Bool) -> Void
     var answerRequest: (AgentRequest.ID, RequestAnswer) -> Void
+    var drafts: [AgentRequest.ID: String]
+    var draftChanged: (AgentRequest.ID, String) -> Void
+    var markRead: (Session.ID) -> Void
 
     package init(
-        entries: [InboxEntry], open: @escaping (Session.ID) -> Void,
+        entries: [InboxEntry], drafts: [AgentRequest.ID: String], open: @escaping (Session.ID) -> Void,
         openChanges: @escaping (Session.ID) -> Void,
         answer: @escaping (Session.ID, _ request: String, _ approved: Bool) -> Void,
-        answerRequest: @escaping (AgentRequest.ID, RequestAnswer) -> Void
+        answerRequest: @escaping (AgentRequest.ID, RequestAnswer) -> Void,
+        draftChanged: @escaping (AgentRequest.ID, String) -> Void,
+        markRead: @escaping (Session.ID) -> Void
     ) {
         self.entries = entries
+        self.drafts = drafts
         self.open = open
         self.openChanges = openChanges
         self.answer = answer
         self.answerRequest = answerRequest
+        self.draftChanged = draftChanged
+        self.markRead = markRead
     }
 
     package var body: some View {
         List {
-            ForEach(entries) { entry in
-                if let request = entry.request {
-                    RequestRow(
-                        entry: entry, request: request, open: { open(entry.session.id) },
-                        openChanges: { openChanges(entry.session.id) },
-                        answer: { answerRequest(request.id, $0) })
-                } else {
-                    sessionRow(entry)
+            let blocked = entries.filter(\.reason.blocks)
+            let toLookOver = entries.filter { !$0.reason.blocks }
+            if !blocked.isEmpty {
+                Section("Blocked on You") {
+                    ForEach(blocked, content: row)
+                }
+            }
+            if !toLookOver.isEmpty {
+                Section("To Look Over") {
+                    ForEach(toLookOver, content: row)
                 }
             }
         }
@@ -47,6 +57,19 @@ package struct InboxView: View {
             }
         }
         .navigationTitle("Inbox")
+    }
+
+    @ViewBuilder
+    private func row(_ entry: InboxEntry) -> some View {
+        if let request = entry.request {
+            RequestRow(
+                entry: entry, request: request,
+                reply: Binding(get: { drafts[request.id] ?? "" }, set: { draftChanged(request.id, $0) }),
+                open: { open(entry.session.id) }, openChanges: { openChanges(entry.session.id) },
+                answer: { answerRequest(request.id, $0) })
+        } else {
+            sessionRow(entry)
+        }
     }
 
     private func sessionRow(_ entry: InboxEntry) -> some View {
@@ -68,6 +91,9 @@ package struct InboxView: View {
                 Button("Allow") { answer(entry.session.id, request.requestID, true) }
                     .buttonStyle(.borderedProminent)
                     .help("Allow: \(request.summary)")
+            } else if entry.reason == .reply {
+                Button("Mark as Read") { markRead(entry.session.id) }
+                    .help("Take it out of the inbox without opening it")
             }
         }
     }
@@ -78,10 +104,10 @@ package struct InboxView: View {
 private struct RequestRow: View {
     var entry: InboxEntry
     var request: AgentRequest
+    @Binding var reply: String
     var open: () -> Void
     var openChanges: () -> Void
     var answer: (RequestAnswer) -> Void
-    @State private var reply = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -122,9 +148,9 @@ private struct RequestRow: View {
     private var trimmed: String { reply.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private func sendReply() {
+        // The draft stays until the answer reaches the agent.
         guard !trimmed.isEmpty else { return }
         answer(.reply(trimmed))
-        reply = ""
     }
 }
 
@@ -148,6 +174,12 @@ private struct InboxRow: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                }
+                if entry.reason == .failed || entry.reason == .reply, let message = entry.session.lastMessage {
+                    Text(message)
+                        .font(.callout)
+                        .foregroundStyle(entry.reason == .failed ? Color.red : Color.secondary)
+                        .lineLimit(3)
                 }
                 Text(place)
                     .font(.caption)

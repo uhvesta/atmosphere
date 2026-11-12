@@ -1524,6 +1524,76 @@ async fn done_stays_done_and_the_inbox_has_only_open_replies() {
 }
 
 #[tokio::test]
+async fn the_inbox_says_what_failed_and_replied_and_puts_the_longest_waiting_first() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let task = item(&client, &project.id, "", "login").await;
+    let start = |script: &str| {
+        let mut request = start_on(&task.id);
+        if let pb::request::Kind::StartSession(start) = &mut request {
+            start.backend_config = script.to_owned();
+        }
+        started(&client, request)
+    };
+    let writer = r#"{"rules": [{"when": "", "steps": [
+        {"step": "write_file", "path": "a.txt", "contents": "a"}
+    ]}]}"#;
+    let first = start(writer).await;
+    send(&client, &first.id, "write").await;
+    waiting(&client, &first.id).await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let second = start(writer).await;
+    send(&client, &second.id, "write").await;
+    waiting(&client, &second.id).await;
+    let failing = start(
+        r#"{"rules": [{"when": "", "steps": [{"step": "fail", "message": "the tests broke"}]}]}"#,
+    )
+    .await;
+    send(&client, &failing.id, "go").await;
+    let replying = start(SCRIPT).await;
+    send(&client, &replying.id, "hello").await;
+    after_turns(&client, &replying.id, 1).await;
+
+    let mut entries = Vec::new();
+    for _ in 0..200 {
+        let inbox = client
+            .call(pb::request::Kind::ListInbox(pb::ListInbox {}))
+            .await;
+        let Ok(pb::response::Kind::Inbox(inbox)) = inbox else {
+            panic!("{inbox:?}")
+        };
+        entries = inbox
+            .entries
+            .into_iter()
+            .filter_map(|entry| {
+                let reason = entry.reason();
+                let session = entry.session?;
+                Some((session.id, reason, session.last_message))
+            })
+            .collect();
+        if entries.len() == 4 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        entries,
+        [
+            (first.id, pb::InboxReason::Approval, String::new()),
+            (second.id, pb::InboxReason::Approval, String::new()),
+            (
+                failing.id,
+                pb::InboxReason::Failed,
+                "the tests broke".to_owned()
+            ),
+            (replying.id, pb::InboxReason::Reply, "hi there".to_owned()),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn every_board_change_can_be_reverted() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let repository = git_repository();

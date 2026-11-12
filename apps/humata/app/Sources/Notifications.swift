@@ -17,7 +17,7 @@ extension NotificationClient {
                 let content = UNMutableNotificationContent()
                 content.title = notice.title
                 content.body = notice.body
-                content.sound = .default
+                content.sound = notice.silent ? nil : .default
                 content.threadIdentifier = notice.sessionID
                 content.userInfo = [NotificationDelegate.sessionKey: notice.sessionID]
                 // One per session: a newer wait replaces the one before.

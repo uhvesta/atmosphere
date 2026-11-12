@@ -594,7 +594,14 @@ impl Daemon {
             pb::InboxReason::Failed => 2,
             pb::InboxReason::Reply | pb::InboxReason::Unspecified => 3,
         };
-        entries.sort_by_key(rank);
+        // Within a rank, what has waited longest comes first.
+        entries.sort_by_key(|entry| {
+            let since = entry
+                .session
+                .as_ref()
+                .map_or(0, |session| session.last_active_unix_ms);
+            (rank(entry), since)
+        });
         Ok(pb::Inbox { entries })
     }
 
