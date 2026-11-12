@@ -127,10 +127,11 @@ package struct RootView: View {
                         .transition(edgeTransition)
                 }
                 if let banner = store.syncBanner {
-                    SyncBannerView(banner: banner, syncNow: { store.send(.syncNowTapped) }) {
-                        store.send(.syncBannerDismissed)
-                    }
-                        .transition(edgeTransition)
+                    SyncBannerView(
+                        banner: banner, syncNow: { store.send(.syncNowTapped) },
+                        dismiss: { store.send(.syncBannerDismissed) }
+                    )
+                    .transition(edgeTransition)
                 }
             }
             .frame(maxWidth: store.platform == .phone ? .infinity : 440)

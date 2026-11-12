@@ -84,7 +84,8 @@ final class RootFeatureTests: XCTestCase {
         for permission in [ReminderPermission.allowed, .denied] {
             let store = makeStore(.phone)
             store.dependencies.reminders = RemindersClient(
-                permission: { permission }, requestPermission: { false }, schedule: { _ in throw Refused() }, setBadge: { _ in })
+                permission: { permission }, requestPermission: { false }, schedule: { _ in throw Refused() },
+                setBadge: { _ in })
 
             let task = await store.send(.task)
             await store.receive(\.loaded)

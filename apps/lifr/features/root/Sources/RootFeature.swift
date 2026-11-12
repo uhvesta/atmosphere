@@ -1028,7 +1028,9 @@ package struct RootFeature {
                 return .none
 
             case .syncBannerDismissed:
-                if let banner = state.syncBanner, banner.isFailure { state.dismissedSyncFailure = banner.messages.first }
+                if let banner = state.syncBanner, banner.isFailure {
+                    state.dismissedSyncFailure = banner.messages.first
+                }
                 state.syncBanner = nil
                 return .none
 
