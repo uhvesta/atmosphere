@@ -753,6 +753,9 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
         case turnEnded(aborted: Bool)
         case idle
         case failed(String)
+        /// The turn can't go on yet, and says why; any later event means it
+        /// went on.
+        case waiting(String)
         case usage(model: String, inputTokens: UInt64, outputTokens: UInt64, premiumRequests: Double)
         /// The session's code was saved after a turn; a fork with code made
         /// after this starts from it.

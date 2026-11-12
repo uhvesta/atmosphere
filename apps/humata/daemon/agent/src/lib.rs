@@ -43,7 +43,9 @@ pub use humata_workspace::{
     delete_branch,
 };
 pub use import::{Importable, Imported};
-pub use local_model::{DEFAULT_BASE_URL, LocalModelConfig, LocalModelError, LocalModelRunner};
+pub use local_model::{
+    DEFAULT_BASE_URL, LocalModelConfig, LocalModelError, LocalModelRunner, ModelServer,
+};
 pub use runtime::{LocalAgent, Runner, Skipped, Turn};
 pub use scripted::{Rule, Script, ScriptedError, ScriptedRunner, Step};
 

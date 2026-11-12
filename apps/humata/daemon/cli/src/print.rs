@@ -64,6 +64,7 @@ pub fn event(event: &pb::SessionEvent) -> String {
         ),
         Some(Kind::Idle(_)) => ("idle", String::new()),
         Some(Kind::Failed(failed)) => ("failed", failed.message.clone()),
+        Some(Kind::Waiting(waiting)) => ("waiting", waiting.reason.clone()),
         Some(Kind::Usage(usage)) => (
             "usage",
             format!(

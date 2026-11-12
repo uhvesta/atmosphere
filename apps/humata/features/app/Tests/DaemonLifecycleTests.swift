@@ -31,6 +31,25 @@ final class DaemonLifecycleTests: XCTestCase {
         XCTAssertEqual(restarts.value, 0)
     }
 
+    func testTheDaemonIsToldWhereTheModelServerIs() async {
+        let told = LockIsolated<[UInt16]>([])
+        var daemon = InMemoryDaemon().client
+        daemon.setModelServer = { port in told.withValue { $0.append(port) } }
+        let store = TestStore(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemonService = service(current: true, restarts: LockIsolated(0))
+            $0.daemon = daemon
+            $0.modelServer = ModelServerService { 47830 }
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.receive(\.daemonChecked)
+        await store.finish()
+        XCTAssertEqual(told.value, [47830])
+    }
+
     func testAnOlderDaemonWithNothingInProgressIsReplacedAtOnce() async {
         let restarts = LockIsolated(0)
         let store = TestStore(initialState: AppFeature.State()) {

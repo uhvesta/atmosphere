@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use humata_agent::{
     Agent, AgentError, ApprovalMode, BackendFile, Backup, Checkout, ClaudeOptions, ClaudeRunner,
     CopilotOptions, CopilotProvider, CopilotRunner, Edit, Env, Event, EventId, ForkOptions,
-    Importable, Landed, LocalAgent, LocalModelConfig, LocalModelRunner, McpServer, Merged, Query,
-    Repository, Script, ScriptedRunner, SendMode, SessionId, SessionRecord, SessionUpdate,
-    StartOptions, Watch, Workspaces, bundle,
+    Importable, Landed, LocalAgent, LocalModelConfig, LocalModelRunner, McpServer, Merged,
+    ModelServer, Query, Repository, Script, ScriptedRunner, SendMode, SessionId, SessionRecord,
+    SessionUpdate, StartOptions, Watch, Workspaces, bundle,
 };
 use humata_wire::{Reply, Service, ServiceFuture, describe, error, pb};
 use tokio::sync::{broadcast, mpsc};
@@ -282,6 +282,9 @@ pub struct Host {
     terminals: Terminals,
     /// Connections to its ports, for the Mac's forwards.
     ports: Arc<Ports>,
+    /// Where the app's model server is, which local-model sessions use
+    /// unless told otherwise.
+    model_server: ModelServer,
 }
 
 impl Host {
@@ -292,6 +295,24 @@ impl Host {
     /// the Mac it runs on.
     pub fn set_env(&self, env: std::collections::BTreeMap<String, String>) {
         self.machine.set_env(env);
+    }
+
+    /// Points this host's local-model sessions at the app's model server
+    /// on `port`, kept for when it starts again. Failing to keep it isn't
+    /// fatal: sessions use it until the host stops.
+    pub fn set_model_server(&self, port: u16) {
+        if let Err(error) = self.model_server.set_port(port) {
+            eprintln!(
+                "humatad: couldn't keep the model server's port {port} for after a restart ({error}). \
+                 Sessions use it until humatad stops; check that its state folder is writable."
+            );
+        }
+    }
+
+    /// Where the app's model server is, as last set, shared with what
+    /// reaches the hosts.
+    pub fn model_server(&self) -> ModelServer {
+        self.model_server.clone()
     }
 
     pub async fn open(
@@ -310,11 +331,13 @@ impl Host {
         )?
         .with_workspaces(workspaces());
         // A session's own backend config can name another server.
+        let model_server = ModelServer::open(state.join("model-server"));
         let local_model = LocalModelRunner::new(LocalModelConfig {
             base_url: std::env::var("HUMATA_LOCAL_URL").ok(),
             api_key: std::env::var("HUMATA_LOCAL_API_KEY").ok(),
         })
-        .with_env(env.clone());
+        .with_env(env.clone())
+        .with_server(model_server.clone());
         let local =
             LocalAgent::open(state.join("local"), local_model)?.with_workspaces(workspaces());
         // Signed in with `copilot login`, it uses GitHub's models; given a
@@ -374,6 +397,7 @@ impl Host {
             env,
             terminals: Terminals::default(),
             ports: Arc::default(),
+            model_server,
         })
     }
 
@@ -678,16 +702,24 @@ impl Host {
             | Request::LinkCommands(_)
             | Request::Search(_)
             | Request::ListPullRequests(_)
-            | Request::ImportIssues(_) => {
+            | Request::ImportIssues(_)
+            | Request::SetModelServer(_) => {
                 return Err(HostError::NotForHosts);
             }
             Request::SetSpecs(set) => {
                 self.relay.set_specs(set);
                 Response::SpecsSet(pb::SpecsSet {})
             }
-            Request::ConfigureHost(configure) => Response::HostConfigured(pb::HostConfigured {
-                setup: Some(self.machine.configure(configure).await?),
-            }),
+            Request::ConfigureHost(configure) => {
+                if let Ok(port) = u16::try_from(configure.model_server_port)
+                    && port != 0
+                {
+                    self.set_model_server(port);
+                }
+                Response::HostConfigured(pb::HostConfigured {
+                    setup: Some(self.machine.configure(configure).await?),
+                })
+            }
             Request::ReadHostStatus(_) => {
                 Response::HostStatus(self.machine.status(self.program_version.clone()).await)
             }

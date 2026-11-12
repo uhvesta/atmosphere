@@ -143,6 +143,13 @@ package struct SessionFeature {
         /// Whether the agent is waiting on the person to answer a request.
         package var isWaiting: Bool { !pendingPermissions.isEmpty }
 
+        /// Why the turn can't go on yet, such as the model server being
+        /// down, until it goes on.
+        package var waitReason: String? {
+            guard streaming.isEmpty, case .waiting(let reason)? = events.last?.kind else { return nil }
+            return reason
+        }
+
         /// Requests for permission the agent is still waiting on.
         package var pendingPermissions: [SessionEvent] {
             let answered = Set(

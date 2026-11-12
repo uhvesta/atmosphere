@@ -11,6 +11,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use humata_agent::ModelServer;
 use humata_wire::{Client, pb};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -124,8 +125,11 @@ impl HostConfig {
         }
     }
 
-    fn configure(&self) -> pb::ConfigureHost {
+    /// What the host is sent on connecting: its variables, its setup
+    /// script, and the port the app's model server is forwarded to.
+    fn configure(&self, model_server: Option<u16>) -> pb::ConfigureHost {
         pb::ConfigureHost {
+            model_server_port: model_server.map_or(0, u32::from),
             env: self
                 .env
                 .iter()
@@ -141,8 +145,9 @@ impl HostConfig {
     /// The command that reaches the host. A managed host's goes through
     /// `humatad relay` to the host on its socket, which keeps running between
     /// connections; a humatad from before the relay is run on stdio instead,
-    /// until the daemon updates it.
-    fn command(&self) -> Vec<String> {
+    /// until the daemon updates it. The app's model server, on
+    /// `model_server`, is forwarded to the same port on the host.
+    fn command(&self, model_server: Option<u16>) -> Vec<String> {
         let Some(ssh) = &self.ssh else {
             return self.command.clone();
         };
@@ -157,6 +162,17 @@ impl HostConfig {
              else exec {program} host --stdio --state {state} --cache {cache}; fi"
         );
         let mut command = ssh.base();
+        if let Some(port) = model_server {
+            // A port taken on the host leaves it without the Mac's models,
+            // not without the host.
+            let forward = [
+                "-R".to_owned(),
+                format!("127.0.0.1:{port}:127.0.0.1:{port}"),
+                "-o".to_owned(),
+                "ExitOnForwardFailure=no".to_owned(),
+            ];
+            command.splice(1..1, forward);
+        }
         command.push(remote);
         command
     }
@@ -222,6 +238,8 @@ pub struct Remote {
     config: Mutex<HostConfig>,
     connection: tokio::sync::Mutex<Option<(Arc<Client>, Child)>>,
     retry: Mutex<Option<Retry>>,
+    /// The app's model server on this Mac, forwarded to the host.
+    model_server: ModelServer,
 }
 
 /// A call an agent on a host made to the humata tools, which the daemon
@@ -244,6 +262,7 @@ impl Remote {
         name: String,
         config: HostConfig,
         tool_calls: mpsc::UnboundedSender<ToolCall>,
+        model_server: ModelServer,
     ) -> Self {
         Self {
             name,
@@ -251,6 +270,7 @@ impl Remote {
             config: Mutex::new(config),
             connection: tokio::sync::Mutex::new(None),
             retry: Mutex::new(None),
+            model_server,
         }
     }
 
@@ -264,7 +284,7 @@ impl Remote {
     /// Takes `config` for the next connection, and sends the host its
     /// variables and setup script now if it is connected.
     pub async fn reconfigure(&self, config: HostConfig) -> Result<(), DaemonError> {
-        let configure = config.configure();
+        let configure = config.configure(self.model_server.port());
         *self.config.lock().unwrap_or_else(PoisonError::into_inner) = config;
         let client = self
             .connection
@@ -384,7 +404,7 @@ impl Remote {
         let client = Arc::new(client);
         // The variables before anything else, then the setup script, which
         // can take minutes, without holding up the requests behind this one.
-        let mut configure = config.configure();
+        let mut configure = config.configure(self.model_server.port());
         let script = std::mem::take(&mut configure.setup_script);
         self.send_configure(&client, configure.clone()).await?;
         if !script.trim().is_empty() {
@@ -440,7 +460,7 @@ impl Remote {
         hosts: &Path,
         build: &str,
     ) -> Result<(Client, Child), DaemonError> {
-        let command = config.command();
+        let command = config.command(self.model_server.port());
         let Some((program, arguments)) = command.split_first() else {
             return Err(DaemonError::NoCommand {
                 host: self.name.clone(),
@@ -729,7 +749,7 @@ Host !bad *.internal build
             }),
             ..HostConfig::default()
         };
-        let command = config.command();
+        let command = config.command(None);
         assert_eq!(command[0], "ssh");
         assert_eq!(command[command.len() - 2], "build");
         let remote = &command[command.len() - 1];
@@ -739,6 +759,30 @@ Host !bad *.internal build
             ),
             "{remote}"
         );
+    }
+
+    #[test]
+    fn the_apps_model_server_is_forwarded_to_the_same_port_on_the_host() {
+        let config = HostConfig {
+            ssh: Some(Ssh {
+                destination: "build".to_owned(),
+                config: None,
+                folder: DEFAULT_FOLDER.to_owned(),
+            }),
+            ..HostConfig::default()
+        };
+        let command = config.command(Some(47830));
+        let forward = command.iter().position(|part| part == "-R");
+        let destination = command.iter().position(|part| part == "build");
+        assert!(forward < destination, "{command:?}");
+        assert_eq!(
+            forward
+                .and_then(|at| command.get(at + 1))
+                .map(String::as_str),
+            Some("127.0.0.1:47830:127.0.0.1:47830")
+        );
+        assert!(!config.command(None).contains(&"-R".to_owned()));
+        assert_eq!(config.configure(Some(47830)).model_server_port, 47830);
     }
 
     #[test]

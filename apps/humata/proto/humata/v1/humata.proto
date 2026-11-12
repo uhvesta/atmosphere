@@ -178,6 +178,10 @@ message Request {
     ImportIssues import_issues = 83;
     // For hosts only: delete branches a merged session landed on.
     DeleteBranches delete_branches = 84;
+    // For the Mac only: the app serves the Mac's models on this port of
+    // 127.0.0.1, for local-model sessions on the Mac and, forwarded over
+    // SSH, on its hosts.
+    SetModelServer set_model_server = 85;
   }
 }
 
@@ -263,6 +267,7 @@ message Response {
     BaseUpdated base_updated = 76;
     IssuesImported issues_imported = 77;
     BranchesDeleted branches_deleted = 78;
+    ModelServerSet model_server_set = 79;
   }
 }
 
@@ -1292,7 +1297,15 @@ message SessionEvent {
     MessageQueued message_queued = 17;
     Dequeued dequeued = 18;
     Saved saved = 19;
+    Waiting waiting = 20;
   }
+}
+
+// The turn is waiting for something outside it, such as the model server,
+// and goes on when it's back. Whatever comes next ends the wait.
+message Waiting {
+  // What it waits for, and what brings it back.
+  string reason = 1;
 }
 
 // The code was saved part way through a turn, after a tool call. Unlike a
@@ -1703,7 +1716,16 @@ message SshHosts {
 message ConfigureHost {
   repeated EnvVar env = 1;
   string setup_script = 2;
+  // The port of the Mac's model server, forwarded to the same port on the
+  // host's 127.0.0.1; 0 leaves the one it has.
+  uint32 model_server_port = 3;
 }
+
+message SetModelServer {
+  uint32 port = 1;
+}
+
+message ModelServerSet {}
 
 message HostConfigured {
   SetupResult setup = 1;

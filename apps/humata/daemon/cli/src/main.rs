@@ -793,6 +793,12 @@ enum Command {
     /// Serve Humata to an agent outside it, as MCP tools on stdin and
     /// stdout: `claude mcp add humata -- humata mcp`.
     Mcp,
+    /// Point local-model sessions, here and on hosts, at a model server on
+    /// this Mac's 127.0.0.1, as the Humata app does when it starts.
+    ModelServer {
+        /// The port it printed when it started.
+        port: u32,
+    },
 }
 
 fn main() -> ExitCode {
@@ -980,6 +986,15 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
         Command::Unstage(edit) => edit_changes(&client, edit, pb::ChangeAction::Unstage).await?,
         Command::Revert(edit) => edit_changes(&client, edit, pb::ChangeAction::Revert).await?,
         Command::Review(command) => review(&client, command).await?,
+        Command::ModelServer { port } => {
+            match client
+                .call(Request::SetModelServer(pb::SetModelServer { port }))
+                .await?
+            {
+                Response::ModelServerSet(_) => {}
+                other => return Err(unexpected("the model server's port", &other)),
+            }
+        }
         Command::Inbox => match client.call(Request::ListInbox(pb::ListInbox {})).await? {
             Response::Inbox(inbox) => {
                 for entry in &inbox.entries {

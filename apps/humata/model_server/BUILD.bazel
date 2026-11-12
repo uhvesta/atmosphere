@@ -1,0 +1,33 @@
+load("@rules_apple//apple:macos.bzl", "macos_command_line_application")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# Humata's model server on its own: a scripted model for the end-to-end
+# tests, and Apple's on-device model by hand. The app runs the same server
+# in its own process, on the models it has.
+swift_library(
+    name = "model_server_lib",
+    srcs = glob(["Sources/*.swift"]),
+    linkopts = ["-Wl,-weak_framework,FoundationModels"],
+    module_name = "HumataModelServer",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        "//apps/libs/kits/inference",
+        "//apps/libs/kits/inference/live",
+        "//apps/libs/kits/inference/server",
+        "//apps/libs/kits/json",
+    ],
+)
+
+macos_command_line_application(
+    name = "humata-model-server",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/humata:__subpackages__"],
+    deps = [":model_server_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

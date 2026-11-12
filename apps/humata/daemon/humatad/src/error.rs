@@ -392,6 +392,11 @@ pub enum DaemonError {
     NoReply,
 
     #[error(
+        "{port} isn't a port the model server can listen on; give its port from 1 to 65535, as it printed when it started"
+    )]
+    ModelServerPort { port: u32 },
+
+    #[error(
         "lines {start} to {end} aren't in {path}, which has {lines} lines now; read the file again and pick lines in it"
     )]
     LinesOutside {
@@ -673,7 +678,8 @@ impl DaemonError {
             | Self::NoRequestText
             | Self::NotAMove
             | Self::NothingToApprove
-            | Self::NoReply => pb::ErrorCode::InvalidRequest,
+            | Self::NoReply
+            | Self::ModelServerPort { .. } => pb::ErrorCode::InvalidRequest,
             Self::UnknownHost { .. } => pb::ErrorCode::UnknownHost,
             Self::SaveHosts { .. } | Self::Mirror { .. } => pb::ErrorCode::StorageFailed,
             Self::BadRepositoryName { .. } | Self::NoRecovery { .. } => {

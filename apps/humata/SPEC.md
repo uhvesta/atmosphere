@@ -139,7 +139,7 @@ original spec; lettered ones were added since.
 | 8 Ship as pull requests | Done |
 | G Drive Humata from outside | Done |
 | S Settings and environments | Done |
-| H Humata's own model server | In progress |
+| H Humata's own model server | Done |
 | The demo | After H |
 | R Review pass | After the demo |
 
@@ -604,13 +604,26 @@ Structure:
   waits, with the reason shown, when the app is closed. Small models call
   tools less reliably than large ones; the picker marks the models known to
   call tools well.
-- [ ] An OpenAI-compatible server on loopback, backed by InferenceKit, with streaming and tool calls
-- [ ] This Mac's local-model backend uses it by default; its models in the picker
-- [ ] Remote hosts reach it over a reverse port forward
-- [ ] A session waits with a reason when the server is down
+- [x] An OpenAI-compatible server on loopback, backed by InferenceKit, with streaming and tool calls
+- [x] This Mac's local-model backend uses it by default; its models in the picker
+- [x] Remote hosts reach it over a reverse port forward
+- [x] A session waits with a reason when the server is down
+- [ ] The picker marks the models known to call tools well → after R, once
+  there are downloaded models to measure
 
 **Done when:** an end-to-end test starts a local-model session against the
 server with a small model, which calls a tool and replies.
+
+As built: `InferenceServerKit` (apps/libs/kits/inference/server) is the
+server; the app serves Apple's model as `apple` and each MLX model
+downloaded for Humata, on port 47830 when it's free, and sends the port to
+the daemon, which keeps it and forwards it to each host it connects to
+(`-R 127.0.0.1:P:127.0.0.1:P`). `humata model-server PORT` does the same by
+hand. `//apps/humata/e2e:local_model_server_test` runs the real
+`humata-model-server` with a scripted model through humatad: the model
+calls `write_file`, the person approves it, and the model replies. Apple's
+model was checked by hand to call tools through it
+(`humata-model-server --apple`).
 
 ### The demo
 

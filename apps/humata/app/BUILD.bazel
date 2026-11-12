@@ -10,6 +10,8 @@ swift_library(
     name = "app_lib",
     package_name = "humata",
     srcs = glob(["Sources/*.swift"]),
+    # Apple's model is there from macOS 26; before, it says it's unavailable.
+    linkopts = ["-Wl,-weak_framework,FoundationModels"],
     module_name = "HumataApp",
     target_compatible_with = ["//bazel/xcode"],
     deps = [
@@ -17,6 +19,10 @@ swift_library(
         "//apps/humata/clients/daemon_live",
         "//apps/humata/features/app",
         "//apps/humata/features/projects",
+        "//apps/libs/kits/inference",
+        "//apps/libs/kits/inference/live",
+        "//apps/libs/kits/inference/mlx",
+        "//apps/libs/kits/inference/server",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

@@ -209,7 +209,8 @@ extension ChatItem {
                 answer(request, automatic ? .allowedByMode : approved ? .approved : .denied)
             case .failed(let message):
                 items.append(.failure(id: event.id, message: message))
-            case .turnStarted, .assistantDelta, .turnEnded, .idle, .usage, .checkpoint, .messageQueued, .dequeued:
+            case .turnStarted, .assistantDelta, .turnEnded, .idle, .usage, .checkpoint, .messageQueued, .dequeued,
+                .waiting:
                 continue
             }
         }

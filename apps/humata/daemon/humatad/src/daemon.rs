@@ -77,11 +77,17 @@ impl Daemon {
         let (tool_calls, calls) = mpsc::unbounded_channel();
         local.set_env(hosts.coordinator_env.clone());
         let coordinator_env = std::sync::Mutex::new(hosts.coordinator_env);
+        let model_server = local.model_server();
         let remotes = hosts
             .hosts
             .into_iter()
             .map(|(name, config)| {
-                let remote = Remote::new(name.clone(), config, tool_calls.clone());
+                let remote = Remote::new(
+                    name.clone(),
+                    config,
+                    tool_calls.clone(),
+                    model_server.clone(),
+                );
                 (name, Arc::new(remote))
             })
             .collect();
@@ -105,6 +111,32 @@ impl Daemon {
         tokio::spawn(answer_tool_calls(Arc::downgrade(&daemon), calls));
         tokio::spawn(pulls::follow(Arc::downgrade(&daemon)));
         daemon
+    }
+
+    /// Points local-model sessions here and on the hosts at the app's
+    /// model server on `port`. A host reached before forwards the old
+    /// port, so a change drops the connections; hosts on their sockets keep
+    /// running, and the next request reconnects with the new forward.
+    async fn set_model_server(&self, port: u32) -> Result<(), DaemonError> {
+        let port = u16::try_from(port)
+            .ok()
+            .filter(|port| *port != 0)
+            .ok_or(DaemonError::ModelServerPort { port })?;
+        let changed = self.local.model_server().port() != Some(port);
+        self.local.set_model_server(port);
+        if changed {
+            let remotes: Vec<_> = self
+                .remotes
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .values()
+                .cloned()
+                .collect();
+            for remote in remotes {
+                remote.disconnect().await;
+            }
+        }
+        Ok(())
     }
 
     fn remote(&self, host: &str) -> Result<Arc<Remote>, DaemonError> {
@@ -224,7 +256,12 @@ impl Daemon {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(
                 name.clone(),
-                Arc::new(Remote::new(name, config, self.tool_calls.clone())),
+                Arc::new(Remote::new(
+                    name,
+                    config,
+                    self.tool_calls.clone(),
+                    self.local.model_server(),
+                )),
             );
         Ok(info)
     }
@@ -1100,6 +1137,12 @@ impl Daemon {
             Request::Search(search) => {
                 let results = self.search(std::mem::take(search), None).await?;
                 return Ok(Reply::Response(Response::SearchResults(results)));
+            }
+            Request::SetModelServer(set) => {
+                self.set_model_server(set.port).await?;
+                return Ok(Reply::Response(Response::ModelServerSet(
+                    pb::ModelServerSet {},
+                )));
             }
             Request::LinkCommands(link) => {
                 let linked = crate::commands::link_commands(link.check)?;

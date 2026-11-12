@@ -6,7 +6,7 @@
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -22,6 +22,55 @@ use crate::runtime::{Runner, Turn};
 
 /// Ollama's address; llama.cpp's server and LM Studio need theirs set.
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11434/v1";
+
+/// How often a turn waiting for the app's model server asks again.
+const SERVER_RETRY: Duration = Duration::from_secs(2);
+
+/// Where the Humata app serves the Mac's models while it runs: a port on
+/// 127.0.0.1, on the Mac or forwarded to a host over SSH. Kept in a file, so
+/// sessions still find it, and wait for it, after humatad restarts while
+/// the app is closed.
+#[derive(Clone, Debug, Default)]
+pub struct ModelServer {
+    port: Arc<RwLock<Option<u16>>>,
+    file: Option<PathBuf>,
+}
+
+impl ModelServer {
+    /// The server named in `file`, if it names one.
+    pub fn open(file: PathBuf) -> Self {
+        let port = std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|text| text.trim().parse().ok());
+        Self {
+            port: Arc::new(RwLock::new(port)),
+            file: Some(file),
+        }
+    }
+
+    pub fn port(&self) -> Option<u16> {
+        *self.port.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Serves from `port` from now on, and keeps it for after a restart.
+    pub fn set_port(&self, port: u16) -> std::io::Result<()> {
+        *self.port.write().unwrap_or_else(PoisonError::into_inner) = Some(port);
+        match &self.file {
+            Some(file) => {
+                if let Some(folder) = file.parent() {
+                    std::fs::create_dir_all(folder)?;
+                }
+                std::fs::write(file, port.to_string())
+            }
+            None => Ok(()),
+        }
+    }
+
+    fn base_url(&self) -> Option<String> {
+        self.port()
+            .map(|port| format!("http://127.0.0.1:{port}/v1"))
+    }
+}
 
 /// Model replies a turn may take, each after the last one's tool calls.
 const MAX_STEPS: usize = 32;
@@ -57,6 +106,15 @@ pub enum LocalModelError {
         "couldn't reach the model server at {url}; start it (for Ollama, `ollama serve`), or set base_url in the session's backend config to where it listens"
     )]
     Connect {
+        url: String,
+        #[source]
+        source: Box<ureq::Error>,
+    },
+
+    #[error(
+        "Humata's model server at {url} isn't answering; open the Humata app on the Mac, which runs it, or set base_url in the session's backend config to another server"
+    )]
+    AppServerDown {
         url: String,
         #[source]
         source: Box<ureq::Error>,
@@ -111,6 +169,8 @@ pub enum LocalModelError {
 /// Plays turns on a local model server.
 pub struct LocalModelRunner {
     defaults: LocalModelConfig,
+    /// The app's server, for sessions whose config and defaults name none.
+    server: ModelServer,
     http: ureq::Agent,
     env: Env,
 }
@@ -125,8 +185,29 @@ impl LocalModelRunner {
             .into();
         Self {
             defaults,
+            server: ModelServer::default(),
             http,
             env: Env::default(),
+        }
+    }
+
+    /// Uses the app's model server, when it has one, for sessions that name
+    /// no other.
+    #[must_use]
+    pub fn with_server(mut self, server: ModelServer) -> Self {
+        self.server = server;
+        self
+    }
+
+    /// The server a session uses: the one its config names, this runner's
+    /// default, the app's, or Ollama's; and whether it's the app's.
+    fn base_url(&self, own: Option<String>) -> (String, bool) {
+        if let Some(url) = own.or_else(|| self.defaults.base_url.clone()) {
+            return (url, false);
+        }
+        match self.server.base_url() {
+            Some(url) => (url, true),
+            None => (DEFAULT_BASE_URL.to_owned(), false),
         }
     }
 
@@ -147,12 +228,14 @@ impl Runner for LocalModelRunner {
                 .map_err(|source| LocalModelError::BadConfig { source })?,
             None => LocalModelConfig::default(),
         };
-        let base_url = own
-            .base_url
-            .or_else(|| self.defaults.base_url.clone())
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_owned());
+        let (base_url, apps) = self.base_url(own.base_url);
         let api_key = own.api_key.or_else(|| self.defaults.api_key.clone());
-        Ok(server_models(self.http.clone(), &base_url, api_key).await?)
+        match server_models(self.http.clone(), &base_url, api_key).await {
+            Err(LocalModelError::Connect { url, source }) if apps => {
+                Err(LocalModelError::AppServerDown { url, source }.into())
+            }
+            listed => Ok(listed?),
+        }
     }
 
     async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), LocalModelError> {
@@ -161,10 +244,7 @@ impl Runner for LocalModelRunner {
                 .map_err(|source| LocalModelError::BadConfig { source })?,
             None => LocalModelConfig::default(),
         };
-        let base_url = own
-            .base_url
-            .or_else(|| self.defaults.base_url.clone())
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_owned());
+        let (base_url, apps) = self.base_url(own.base_url);
         let request = Request {
             url: format!("{}/chat/completions", base_url.trim_end_matches('/')),
             api_key: own.api_key.or_else(|| self.defaults.api_key.clone()),
@@ -177,8 +257,7 @@ impl Runner for LocalModelRunner {
 
         let mut calls = 0_usize;
         for _ in 0..MAX_STEPS {
-            let messages = messages(turn.record().instructions.as_deref(), &turn.history());
-            let reply = self.complete(&turn, &request, messages).await?;
+            let reply = self.reply(&turn, &request, apps).await?;
             if reply.calls.is_empty() {
                 return Ok(());
             }
@@ -241,6 +320,33 @@ enum Part {
 }
 
 impl LocalModelRunner {
+    /// The model's next reply. While the app's server is down, the turn
+    /// says so and waits for it, until it's back or the turn is stopped.
+    async fn reply(
+        &self,
+        turn: &Turn,
+        request: &Request,
+        apps: bool,
+    ) -> Result<Reply, LocalModelError> {
+        let mut waiting = false;
+        loop {
+            // Asked afresh each time, so steering sent while it waited is in.
+            let messages = messages(turn.record().instructions.as_deref(), &turn.history());
+            match self.complete(turn, request, messages).await {
+                Err(LocalModelError::Connect { .. }) if apps => {
+                    if !waiting {
+                        waiting = true;
+                        turn.emit(EventKind::Waiting {
+                            reason: "Humata's model server isn't running. Open the Humata app on the Mac; the turn goes on when it's back.".to_owned(),
+                        })?;
+                    }
+                    tokio::time::sleep(SERVER_RETRY).await;
+                }
+                reply => return reply,
+            }
+        }
+    }
+
     /// Streams one reply, recording its text and reasoning as they come.
     async fn complete(
         &self,
@@ -785,6 +891,10 @@ mod tests {
 
     async fn serve(replies: Vec<(u16, String)>) -> FakeServer {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listens");
+        serve_on(listener, replies)
+    }
+
+    fn serve_on(listener: TcpListener, replies: Vec<(u16, String)>) -> FakeServer {
         let port = listener.local_addr().expect("an address").port();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let kept = requests.clone();
@@ -1014,6 +1124,84 @@ mod tests {
             said(&requests[2]),
             ["user: one", "assistant: One.", "user: three"]
         );
+    }
+
+    /// A port nothing listens on, for now.
+    fn free_port() -> u16 {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("listens");
+        listener.local_addr().expect("an address").port()
+    }
+
+    #[tokio::test]
+    async fn a_turn_waits_for_the_apps_server_and_goes_on_when_it_starts() {
+        let port = free_port();
+        let state = tempfile::tempdir().expect("a temporary folder");
+        let work = tempfile::tempdir().expect("a temporary folder");
+        let server = ModelServer::open(state.path().join("model-server"));
+        server.set_port(port).expect("the port is kept");
+        let runner = LocalModelRunner::new(LocalModelConfig::default()).with_server(server);
+        let fixture = Fixture {
+            agent: LocalAgent::open(state.path().join("local"), runner).expect("the agent opens"),
+            work,
+            _state: state,
+        };
+        let id = fixture.start(Some("apple")).await;
+        fixture.send(&id, "hi").await;
+
+        let is_waiting = |events: &[Event]| {
+            events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::Waiting { .. }))
+        };
+        wait_for(&fixture.agent, &id, is_waiting).await;
+
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .await
+            .expect("listens");
+        let app = serve_on(listener, vec![(200, sse(&[text("back")]))]);
+        let events = wait_for(&fixture.agent, &id, idle_turns(1)).await;
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| is_waiting(std::slice::from_ref(event)))
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::AssistantMessage { text } if text == "back"
+        )));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::Failed { .. }))
+        );
+        assert_eq!(app.requests()[0]["model"], "apple");
+    }
+
+    #[test]
+    fn the_apps_server_is_kept_for_after_a_restart() {
+        let state = tempfile::tempdir().expect("a temporary folder");
+        let file = state.path().join("model-server");
+        assert_eq!(ModelServer::open(file.clone()).port(), None);
+        ModelServer::open(file.clone())
+            .set_port(47830)
+            .expect("the port is kept");
+        assert_eq!(ModelServer::open(file).port(), Some(47830));
+    }
+
+    #[test]
+    fn a_server_the_session_names_comes_before_the_apps() {
+        let server = ModelServer::default();
+        server.set_port(47830).expect("the port is kept");
+        let runner = LocalModelRunner::new(LocalModelConfig::default()).with_server(server);
+        assert_eq!(
+            runner.base_url(None),
+            ("http://127.0.0.1:47830/v1".to_owned(), true)
+        );
+        let own = "http://gpu:11434/v1".to_owned();
+        assert_eq!(runner.base_url(Some(own.clone())), (own, false));
     }
 
     #[tokio::test]

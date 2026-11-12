@@ -1,0 +1,47 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# An OpenAI-compatible server on loopback for the models an app runs:
+# /v1/models and /v1/chat/completions, streamed or not, with tool calls. It
+# answers through InferenceKit's runtimes, so a program that speaks OpenAI's
+# protocol, such as Humata's agents, runs on the device's models.
+swift_library(
+    name = "server",
+    package_name = "inference",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "InferenceServerKit",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/humata:__subpackages__"],
+    deps = [
+        "//apps/libs/kits/inference",
+        "//apps/libs/kits/json",
+    ],
+)
+
+# Requests and replies against a scripted model, over a real loopback
+# connection, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "inference",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":server",
+        "//apps/libs/kits/inference",
+        "//apps/libs/kits/json",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -66,6 +66,7 @@ package struct AppFeature {
 
     @Dependency(\.daemon) var daemon
     @Dependency(\.daemonService) var service
+    @Dependency(\.modelServer) var modelServer
 
     package init() {}
 
@@ -87,7 +88,7 @@ package struct AppFeature {
 
             case .daemonChecked(isCurrent: true, _):
                 state.daemon = .running
-                return .send(.sidebar(.refresh))
+                return .merge(.send(.sidebar(.refresh)), serveModels())
 
             case .daemonChecked(isCurrent: false, let sessions):
                 guard !Self.anyBusy(sessions) else {
@@ -106,9 +107,9 @@ package struct AppFeature {
             case .restarted:
                 state.daemon = .running
                 // Its watch ended with the old daemon; watch the new one.
-                guard state.session != nil else { return .send(.sidebar(.refresh)) }
+                guard state.session != nil else { return .merge(.send(.sidebar(.refresh)), serveModels()) }
                 state.session?.alert = nil
-                return .merge(.send(.sidebar(.refresh)), .send(.session(.presented(.task))))
+                return .merge(.send(.sidebar(.refresh)), .send(.session(.presented(.task))), serveModels())
 
             case .openLoginItemsTapped:
                 return .run { _ in service.openLoginItems() }
@@ -235,6 +236,16 @@ package struct AppFeature {
             state.search = nil
             state.board = BoardFeature.State(project: project, opening: itemID)
             return .none
+        }
+    }
+
+    /// Starts the model server, if it isn't running, and tells the daemon
+    /// where it is. If either fails, local-model sessions on it wait and
+    /// say why, so there's nothing more to show here.
+    private func serveModels() -> Effect<Action> {
+        .run { _ in
+            guard let port = await modelServer.start() else { return }
+            try? await daemon.setModelServer(port)
         }
     }
 

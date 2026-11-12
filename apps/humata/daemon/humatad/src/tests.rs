@@ -1548,6 +1548,7 @@ async fn a_claude_code_session_on_the_host_is_listed_and_imported_once() {
                 variable("COPILOT_HOME", &dir.path().join("copilot")),
             ],
             setup_script: String::new(),
+            model_server_port: 0,
         }))
         .await
         .unwrap_or_else(|error| panic!("{error}"));

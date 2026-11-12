@@ -494,6 +494,13 @@ extension DaemonClient {
                 }
                 return CommandLinks(linked)
             },
+            setModelServer: { port in
+                var set = Humata_V1_SetModelServer()
+                set.port = UInt32(port)
+                guard case .modelServerSet = try await daemon.call(.setModelServer(set)) else {
+                    throw DaemonError.unexpected("something other than the model server being set")
+                }
+            },
             sshHosts: {
                 guard case .sshHosts(let hosts) = try await daemon.call(.listSshHosts(Humata_V1_ListSshHosts())) else {
                     throw DaemonError.unexpected("something other than the SSH config's hosts")

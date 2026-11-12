@@ -136,6 +136,11 @@ pub enum EventKind {
     Failed {
         message: String,
     },
+    /// The turn waits for something outside it, such as the model server,
+    /// and goes on when it's back; whatever comes next ends the wait.
+    Waiting {
+        reason: String,
+    },
     Usage {
         model: String,
         input_tokens: u64,

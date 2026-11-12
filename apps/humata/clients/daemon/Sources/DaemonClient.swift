@@ -123,6 +123,9 @@ package struct DaemonClient: Sendable {
     /// Links this Mac's commands into `~/.local/bin`, or with `check` only
     /// says how they're linked. Never replaces what isn't such a link.
     package var linkCommands: @Sendable (_ check: Bool) async throws -> CommandLinks
+    /// Points local-model sessions, on this Mac and its hosts, at the app's
+    /// model server on 127.0.0.1:`port`.
+    package var setModelServer: @Sendable (_ port: UInt16) async throws -> Void
     /// The hosts named in ~/.ssh/config, to add one by.
     package var sshHosts: @Sendable () async throws -> [String]
     /// The Mac's copies of the sessions on hosts, kept after each turn.

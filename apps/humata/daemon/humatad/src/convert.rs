@@ -74,6 +74,9 @@ pub fn event(event: &Event) -> pb::SessionEvent {
         EventKind::Failed { message } => Kind::Failed(pb::SessionFailed {
             message: message.clone(),
         }),
+        EventKind::Waiting { reason } => Kind::Waiting(pb::Waiting {
+            reason: reason.clone(),
+        }),
         EventKind::Usage {
             model,
             input_tokens,

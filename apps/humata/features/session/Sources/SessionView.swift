@@ -233,7 +233,12 @@ package struct SessionView: View {
                             }
                             .id(item.id)
                     }
-                    if store.isWorking, !store.isWaiting {
+                    if store.isWorking, let reason = store.waitReason {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text(reason).foregroundStyle(.secondary)
+                        }
+                    } else if store.isWorking, !store.isWaiting {
                         ReplyInProgress(
                             text: store.streaming, thinking: nil, showsThinking: false, toggleThinking: {})
                     }

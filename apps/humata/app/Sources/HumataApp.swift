@@ -16,6 +16,7 @@ struct HumataApp: App {
         $0.daemon = .live(programVersion: version)
         $0.daemonService = .live(socket: DaemonClient.defaultSocket, programVersion: version)
         $0.notifications = .live()
+        $0.modelServer = .live
     }
 
     private static var version: String {

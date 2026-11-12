@@ -489,6 +489,7 @@ package final class InMemoryDaemon: Sendable {
             checkHost: { host in try self.checkHost(host) },
             installHost: { host in try self.installHost(host) },
             linkCommands: { check in self.linkCommands(check) },
+            setModelServer: { _ in },
             sshHosts: { self.sshConfigHosts },
             recoveries: { self.recoveries() },
             restoreSession: { session, host in try self.restoreSession(session, onto: host) },

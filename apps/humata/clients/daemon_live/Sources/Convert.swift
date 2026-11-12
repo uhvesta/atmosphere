@@ -298,6 +298,7 @@ extension SessionEvent {
         case .turnEnded(let ended): kind = .turnEnded(aborted: ended.aborted)
         case .idle: kind = .idle
         case .failed(let failed): kind = .failed(failed.message)
+        case .waiting(let waiting): kind = .waiting(waiting.reason)
         case .usage(let usage):
             kind = .usage(
                 model: usage.model, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
