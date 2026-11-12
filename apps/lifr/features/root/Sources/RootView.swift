@@ -19,6 +19,7 @@ import LifrTrash
 import LifrUI
 import LifrUpcoming
 import SwiftUI
+import Synchronization
 import UniformTypeIdentifiers
 
 /// The app's window: tabs on iPhone, a sidebar on the Mac.
@@ -317,9 +318,34 @@ private struct PhoneRootView: View {
     }
 }
 
+/// The id of one window's toolbar. Windows whose toolbars share an id
+/// keep the same items, and AppKit traps when one window's page adds or
+/// drops an item the others don't have. So each open window holds its own
+/// number: the first window is always "lifr", and each keeps the
+/// customisation saved under its number.
+private final class ToolbarSlot: Sendable {
+    private static let taken = Mutex<Set<Int>>([])
+    private let number: Int
+    let id: String
+
+    init() {
+        number = Self.taken.withLock { taken in
+            let free = (0..<taken.count + 1).first { !taken.contains($0) } ?? taken.count
+            taken.insert(free)
+            return free
+        }
+        id = number == 0 ? "lifr" : "lifr-\(number + 1)"
+    }
+
+    deinit {
+        Self.taken.withLock { _ = $0.remove(number) }
+    }
+}
+
 /// The sidebar, then the list or board, then the task detail.
 private struct MacRootView: View {
     @Bindable var store: StoreOf<RootFeature>
+    @State private var toolbar = ToolbarSlot()
 
     var body: some View {
         if isBoardShown {
@@ -328,7 +354,7 @@ private struct MacRootView: View {
             NavigationSplitView {
                 sidebar
             } detail: {
-                NavigationStack { content.toolbar { addMenu } }
+                NavigationStack { content.toolbar(id: toolbar.id) { addMenu } }
             }
         } else {
             NavigationSplitView {
@@ -336,7 +362,7 @@ private struct MacRootView: View {
             } content: {
                 content
                     .navigationSplitViewColumnWidth(min: 320, ideal: 380)
-                    .toolbar { addMenu }
+                    .toolbar(id: toolbar.id) { addMenu }
                     #if os(macOS)
                         .onPasteCommand(of: [.utf8PlainText]) { _ in store.send(.pasteCommanded) }
                         // Text from another app lands like ⌘V; a task
@@ -379,8 +405,10 @@ private struct MacRootView: View {
             .navigationSplitViewColumnWidth(min: 180, ideal: 220)
     }
 
-    @ToolbarContentBuilder private var addMenu: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
+    /// Add and Search, which the person can rearrange or remove with
+    /// Customize Toolbar.
+    @ToolbarContentBuilder private var addMenu: some CustomizableToolbarContent {
+        ToolbarItem(id: "add", placement: .primaryAction) {
             // Named, as the Mac otherwise names it after its symbol only
             // once the first window has loaded.
             AddMenu(store: store)
@@ -388,7 +416,7 @@ private struct MacRootView: View {
                 .accessibilityIdentifier("add")
         }
         if !hasSearchField {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItem(id: "search", placement: .primaryAction) {
                 Button("Search", systemImage: "magnifyingglass") { store.send(.goTo(.search)) }
                     .help("Search titles, details and comments (⌘F)")
                     .accessibilityIdentifier("search")

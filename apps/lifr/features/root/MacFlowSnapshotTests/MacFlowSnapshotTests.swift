@@ -188,6 +188,24 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Two windows on different pages, then each moving on: changing one
+    /// window's page, and so its toolbar's items, leaves the other as it
+    /// was.
+    func testTwoWindows() async throws {
+        let (first, firstFlow) = app("two-windows")
+        let (second, secondFlow) = app("two-windows-second")
+        second.send(.selected(.search))
+        await secondFlow.step("search", image: false)
+        first.send(.selected(.upcoming))
+        await firstFlow.step("upcoming", image: false)
+        second.send(.selected(.today))
+        await secondFlow.step("today", image: false)
+        first.send(.selected(.search))
+        await firstFlow.step("search", image: false)
+        firstFlow.finish()
+        secondFlow.finish()
+    }
+
     /// A search saved as a filter shows under Filters in the sidebar and
     /// opens with its tasks.
     func testSavedFilters() async throws {
