@@ -46,6 +46,7 @@
   [Heading] "Won't Do, 0 tasks"
   [Toolbar] ""
     [Button] "Hide Sidebar"
+    [MenuButton] "Sort" id: arrow.up.arrow.down
     [RadioGroup] "Show as"
       [RadioButton/Segment] "List" value: "0"
       [RadioButton/Segment] "Board" value: "1"

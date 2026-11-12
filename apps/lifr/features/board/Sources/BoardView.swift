@@ -7,7 +7,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// The board: a column per status, each a stack of cards. Drag a card to
-/// another column to set its status, or use its context menu.
+/// another column to set its status, or use its context menu; in manual
+/// order, drag it onto another card in its column to reorder.
 package struct BoardView: View {
     @Bindable package var store: StoreOf<BoardFeature>
 
@@ -25,6 +26,20 @@ package struct BoardView: View {
             .padding()
         }
         .navigationTitle(store.title)
+        .toolbar {
+            ToolbarItem(placement: .secondaryAction) {
+                Menu {
+                    Picker(
+                        "Sort",
+                        selection: Binding(get: { store.list.sort }, set: { store.send(.list(.sortPicked($0))) })
+                    ) {
+                        ForEach(store.list.sorts, id: \.self) { Text($0.title).tag($0) }
+                    }
+                } label: {
+                    Label("Sort", systemImage: "arrow.up.arrow.down")
+                }
+            }
+        }
         .task { await store.send(.list(.task)).finish() }
         .modifier(TaskListPresentations(store: store.scope(state: \.list, action: \.list)))
     }
@@ -115,6 +130,15 @@ private struct BoardCard: View {
         .contentShape(Rectangle())
         .onTapGesture { store.send(.list(.rowTapped(row.id))) }
         .draggable(row.id.uuidString)
+        // In manual order, onto another card in its column to take its
+        // place; onto a card in another column to move there.
+        .dropDestination(for: String.self) { ids, _ in
+            let dropped = ids.compactMap(UUID.init(uuidString:))
+            for id in dropped {
+                store.send(.droppedCard(id, onto: row.id))
+            }
+            return !dropped.isEmpty
+        }
         .accessibilityElement(children: .combine)
         .accessibilityAction { store.send(.list(.rowTapped(row.id))) }
         .contextMenu {

@@ -96,4 +96,56 @@ final class BoardFeatureTests: XCTestCase {
         let saved = try? await store.dependencies.store.load()
         XCTAssertEqual(saved?.tasks[shoes.id]?.status, .todo)
     }
+
+    func testDroppingOntoACardInManualOrderTakesItsPlace() async {
+        let plan = records.task("Plan long runs", in: health)
+        records.task("Book physio", in: health)
+        let shoes = records.task("Buy running shoes", in: health)
+        let store = board(.avenue(health.id))
+        await store.send(.list(.sortPicked(.manual)))
+
+        await store.send(.droppedCard(shoes.id, onto: plan.id))
+        await store.receive(\.list.saved)
+
+        XCTAssertEqual(titles(store)[0], ["Buy running shoes", "Plan long runs", "Book physio"])
+        let saved = try? await store.dependencies.store.load()
+        let order = saved?.tasks.values.sorted { $0.sortOrder < $1.sortOrder }.map(\.title)
+        XCTAssertEqual(order, ["Buy running shoes", "Plan long runs", "Book physio"])
+    }
+
+    func testDroppingOntoACardBelowMovesItDown() async {
+        let plan = records.task("Plan long runs", in: health)
+        records.task("Book physio", in: health)
+        let shoes = records.task("Buy running shoes", in: health)
+        let store = board(.avenue(health.id))
+        await store.send(.list(.sortPicked(.manual)))
+
+        await store.send(.droppedCard(plan.id, onto: shoes.id))
+        await store.receive(\.list.saved)
+
+        XCTAssertEqual(titles(store)[0], ["Book physio", "Buy running shoes", "Plan long runs"])
+    }
+
+    func testDroppingOntoACardInAnotherColumnSetsItsStatus() async {
+        let shoes = records.task("Buy running shoes", in: health)
+        let physio = records.task("Book physio", in: health, status: .inProgress)
+        let store = board(.avenue(health.id))
+
+        await store.send(.droppedCard(shoes.id, onto: physio.id))
+        await store.receive(\.list.saved)
+
+        let saved = try? await store.dependencies.store.load()
+        XCTAssertEqual(saved?.tasks[shoes.id]?.status, .inProgress)
+    }
+
+    func testDroppingOntoACardInItsColumnOutOfManualOrderChangesNothing() async {
+        let plan = records.task("Plan long runs", in: health, priority: .high)
+        let shoes = records.task("Buy running shoes", in: health)
+        let store = board(.avenue(health.id))
+        await store.send(.list(.sortPicked(.smart)))
+
+        await store.send(.droppedCard(shoes.id, onto: plan.id))
+
+        XCTAssertEqual(titles(store)[0], ["Plan long runs", "Buy running shoes"])
+    }
 }

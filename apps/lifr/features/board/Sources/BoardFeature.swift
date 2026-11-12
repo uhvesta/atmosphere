@@ -14,7 +14,7 @@ extension TaskQuery {
             empty: .init(
                 "No tasks yet", systemImage: "rectangle.split.3x1",
                 description: String(localized: "Tasks you add here, or move here, show up in their status's column.")),
-            adds: NewTaskDefaults(scope: scope.newTaskScope)
+            adds: NewTaskDefaults(scope: scope.newTaskScope), reorders: true
         ) { workspace, now, timeZone in
             let tasks = workspace.listedTasks.filter { task in
                 guard !task.isSubtask else { return false }
@@ -83,6 +83,10 @@ package struct BoardFeature {
         case list(TaskListFeature.Action)
         /// A card was dropped on a column.
         case dropped(UUID, on: TaskStatus)
+        /// A card was dropped onto another card. From another column it
+        /// takes that column's status; from the same column, in manual
+        /// order, it takes the other card's place.
+        case droppedCard(UUID, onto: UUID)
         /// Add Task, under the To Do column: the app's quick add opens for
         /// this Avenue or Project.
         case addTapped
@@ -98,6 +102,19 @@ package struct BoardFeature {
                 let column = state.columns.first { $0.rows.contains { $0.id == id } }
                 guard column?.id != status.rawValue else { return .none }
                 return .send(.list(.rowAction(id, .status(status))))
+
+            case .droppedCard(let id, let target):
+                guard id != target,
+                    let column = state.columns.first(where: { $0.rows.contains { $0.id == target } }),
+                    let status = TaskStatus(rawValue: column.id)
+                else { return .none }
+                guard let from = column.rows.firstIndex(where: { $0.id == id }) else {
+                    return .send(.dropped(id, on: status))
+                }
+                guard let to = column.rows.firstIndex(where: { $0.id == target }) else { return .none }
+                // Where it lands is counted before it leaves its place.
+                let destination = from < to ? to + 1 : to
+                return .send(.list(.moved(section: column.id, from: IndexSet(integer: from), to: destination)))
 
             case .list, .addTapped:
                 return .none
