@@ -1,5 +1,6 @@
 import AppKit
 import CryptoKit
+import Darwin
 import Foundation
 import HumataAppFeature
 import HumataDaemonClient
@@ -21,8 +22,10 @@ extension DaemonService {
 
 /// Starts, checks and replaces humatad. A team-signed app registers the
 /// login agent in Contents/Library/LaunchAgents; an ad hoc one, such as a
-/// development build, which launchd won't run as an agent, runs humatad as
-/// its child and stops it when it quits.
+/// development build, which launchd won't run as an agent, runs humatad
+/// itself and leaves it running when it quits, as a login item would be, so
+/// turns going on aren't cut off. It notes which humatad it ran, so a later
+/// launch of a newer build replaces that one once its sessions are idle.
 private final class DaemonKeeper: @unchecked Sendable {
     private let socket: String
     private let programVersion: String
@@ -32,6 +35,9 @@ private final class DaemonKeeper: @unchecked Sendable {
     private let lock = NSLock()
     /// The humatad this app started, when it isn't a login item.
     private var child: Process?
+    /// Where the process ID of the humatad an ad hoc build started is kept,
+    /// for a later launch to know it as its own.
+    private var pidFile: URL { URL(filePath: socket + ".pid") }
 
     /// How long humatad has to answer after it is started. Before it
     /// listens it reads the login shell's environment, which may take 10
@@ -42,11 +48,6 @@ private final class DaemonKeeper: @unchecked Sendable {
     init(socket: String, programVersion: String) {
         self.socket = socket
         self.programVersion = programVersion
-        NotificationCenter.default.addObserver(
-            forName: NSApplication.willTerminateNotification, object: nil, queue: nil
-        ) { [weak self] _ in
-            self?.stopChild()
-        }
     }
 
     func start() async throws {
@@ -61,8 +62,9 @@ private final class DaemonKeeper: @unchecked Sendable {
     }
 
     /// Whether the daemon answering is this app's build, or one it should
-    /// keep: a humatad it didn't start, which speaks its protocol, is used as
-    /// it is, since only whoever started it can replace it.
+    /// keep: a humatad no build of this app started, which speaks its
+    /// protocol, is used as it is, since only whoever started it can replace
+    /// it.
     func isCurrent() async throws -> Bool {
         let build: String
         do {
@@ -71,7 +73,7 @@ private final class DaemonKeeper: @unchecked Sendable {
             return false
         }
         if build.hasSuffix("+" + (try bundledDigest())) { return true }
-        return !asLoginItem && runningChild() == nil
+        return !asLoginItem && runningChild() == nil && startedBefore() == nil
     }
 
     func restart() async throws {
@@ -80,8 +82,13 @@ private final class DaemonKeeper: @unchecked Sendable {
             try await waitUntilGone()
             try register()
         } else {
-            guard runningChild() != nil else { throw DaemonServiceError.notManaged(socket: socket) }
-            stopChild()
+            if runningChild() != nil {
+                stopChild()
+            } else if let earlier = startedBefore() {
+                kill(earlier, SIGTERM)
+            } else {
+                throw DaemonServiceError.notManaged(socket: socket)
+            }
             try await waitUntilGone()
             try spawn()
         }
@@ -124,6 +131,22 @@ private final class DaemonKeeper: @unchecked Sendable {
             throw DaemonServiceError.launchFailed(path: executable.path(percentEncoded: false), underlying: error)
         }
         lock.withLock { child = process }
+        try? Data(String(process.processIdentifier).utf8).write(to: pidFile, options: .atomic)
+    }
+
+    /// The humatad a launch of this app before started, if it still runs:
+    /// the process it noted, running the humatad at this app's path.
+    private func startedBefore() -> pid_t? {
+        guard let noted = try? String(contentsOf: pidFile, encoding: .utf8),
+            let pid = pid_t(noted.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0
+        else { return nil }
+        var path = [CChar](repeating: 0, count: 4 * 1024)
+        let length = proc_pidpath(pid, &path, UInt32(path.count))
+        guard length > 0 else { return nil }
+        guard let running = String(bytes: path.prefix(Int(length)).map { UInt8(bitPattern: $0) }, encoding: .utf8)
+        else { return nil }
+        let ours = executable.resolvingSymlinksInPath().path(percentEncoded: false)
+        return URL(filePath: running).resolvingSymlinksInPath().path(percentEncoded: false) == ours ? pid : nil
     }
 
     private func runningChild() -> Process? {
