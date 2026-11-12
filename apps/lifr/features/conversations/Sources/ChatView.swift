@@ -155,7 +155,8 @@ private struct LifrParts: ChatThreadParts {
     }
 
     @ViewBuilder func empty() -> some View {
-        if store.availability == .available {
+        // Not under a plan pasted in, or after one is added.
+        if store.availability == .available, store.conversation.draft == nil, store.conversation.added.isEmpty {
             Suggestions(
                 "Ask about your tasks, change them, or plan what to add.", suggestions: Self.suggestions
             ) { store.send(.suggestionTapped($0)) }

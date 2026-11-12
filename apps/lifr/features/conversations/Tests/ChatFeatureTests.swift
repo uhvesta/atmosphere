@@ -2044,6 +2044,39 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(after.state.chat?.input, "And then")
     }
 
+    func testAPlanPastedIntoANewChatIsKeptOnLeaving() async throws {
+        let kept = ConversationsClient.inMemory()
+        let store = list(kept)
+        await store.send(.newTapped)
+        let id = try XCTUnwrap(store.state.openID)
+        let reply = "```toml\n# Lifr plan v1\n\n[[task]]\ntitle = \"Book the van\"\nin = \"HOME\"\n```"
+
+        await store.send(.chats(.element(id: id, action: .planPasted(reply))))
+        await store.send(.closed)
+        await store.finish()
+
+        XCTAssertEqual(store.state.conversations[id: id]?.draft?.tasks.map(\.title), ["Book the van"])
+        let saved = try await kept.load()
+        XCTAssertEqual(saved.first { $0.id == id }?.draft?.tasks.map(\.title), ["Book the van"])
+        await store.send(.opened(id))
+        XCTAssertEqual(store.state.chat?.conversation.draft?.tasks.map(\.title), ["Book the van"])
+    }
+
+    func testWhatsTypedInAChatIsThereAgainAfterBack() async throws {
+        let store = list(ConversationsClient.inMemory())
+        await store.send(.newTapped)
+        let id = try XCTUnwrap(store.state.openID)
+        await store.send(.chats(.element(id: id, action: .core(.binding(.set(\.input, "Hello"))))))
+        await store.send(.chats(.element(id: id, action: .core(.sendTapped))))
+        await store.skipReceivedActions()
+        await store.send(.chats(.element(id: id, action: .core(.binding(.set(\.input, "And then"))))))
+
+        await store.send(.closed)
+        await store.send(.opened(id))
+
+        XCTAssertEqual(store.state.chat?.input, "And then")
+    }
+
     func testAChatClosedBeforeLifrQuitStaysClosed() async throws {
         let kept = ConversationsClient.inMemory()
         let before = list(kept)

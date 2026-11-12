@@ -128,10 +128,11 @@ package struct ConversationsFeature {
             }
         }
 
-        /// Lets go of chats that are neither on screen nor working.
+        /// Lets go of chats that are neither on screen nor working, nor
+        /// have something typed that isn't sent yet.
         mutating func prune() {
             let openID = openID
-            chats.removeAll { $0.id != openID && !$0.isWorking }
+            chats.removeAll { $0.id != openID && !$0.isWorking && $0.input.isEmpty && $0.recordings.isEmpty }
         }
     }
 
@@ -233,7 +234,7 @@ package struct ConversationsFeature {
             case .loaded(.success(let loaded)):
                 state.loadError = nil
                 state.conversations = IdentifiedArray(uniqueElements: loaded)
-                for chat in state.chats where !chat.conversation.messages.isEmpty {
+                for chat in state.chats where chat.conversation.isKept {
                     state.conversations[id: chat.id] = chat.conversation
                 }
                 // Back where the person was before the system ended Lifr.
@@ -410,10 +411,11 @@ package struct ConversationsFeature {
         .ifLet(\.$confirm, action: \.confirm)
         .ifLet(\.$alert, action: \.alert)
         // Keep each change to a chat, on screen or not. A chat with no
-        // messages isn't kept. A chat that finished off screen is let go.
+        // messages, draft or added plan isn't kept. A chat that finished off
+        // screen is let go.
         Reduce { state, action in
             let changed = state.chats.map(\.conversation).filter {
-                !$0.messages.isEmpty && state.conversations[id: $0.id] != $0
+                $0.isKept && state.conversations[id: $0.id] != $0
             }
             for conversation in changed { state.conversations[id: conversation.id] = conversation }
             if case .chats = action { state.prune() }
@@ -487,4 +489,10 @@ extension SharedKey where Self == FileStorageKey<OpenChat?>.Default {
     package static var openChat: Self {
         Self[.fileStorage(.applicationSupportDirectory.appending(path: "Lifr/open-chat.json")), default: nil]
     }
+}
+
+extension Conversation {
+    /// Whether there's anything to keep: a message, or a plan pasted in and
+    /// still to review or already added.
+    fileprivate var isKept: Bool { !messages.isEmpty || context.draft != nil || !context.added.isEmpty }
 }
