@@ -142,25 +142,42 @@ package struct TaskDetailView: View {
         }
     }
 
+    @ViewBuilder
+    private var repeatChoices: some View {
+        ForEach(store.repeatPresets, id: \.self) { preset in
+            Button(preset.title) { store.send(.repeatPicked(preset)) }
+        }
+        Button("Custom…") { store.send(.repeatCustomTapped) }
+        if store.recurrence != nil {
+            Divider()
+            Button("Never", role: .destructive) { store.send(.repeatPicked(nil)) }
+        }
+    }
+
     /// What the task repeats on, with the usual choices and a custom one.
     private var repeatRow: some View {
-        Menu {
-            ForEach(store.repeatPresets, id: \.self) { preset in
-                Button(preset.title) { store.send(.repeatPicked(preset)) }
-            }
-            Button("Custom…") { store.send(.repeatCustomTapped) }
-            if store.recurrence != nil {
-                Divider()
-                Button("Never", role: .destructive) { store.send(.repeatPicked(nil)) }
-            }
-        } label: {
-            LabeledContent("Repeat") {
-                Text(store.recurrence?.description ?? String(localized: "Never"))
-            }
-            .contentShape(Rectangle())
+        let value = store.recurrence?.description ?? String(localized: "Never")
+        return Group {
+            #if os(macOS)
+                // A Mac menu button shows only its label, so the value is the
+                // menu, beside the row's name like the pickers above it.
+                LabeledContent("Repeat") {
+                    Menu(value) { repeatChoices }
+                        .fixedSize()
+                        .accessibilityLabel("Repeat")
+                        .accessibilityValue(value)
+                }
+            #else
+                Menu {
+                    repeatChoices
+                } label: {
+                    LabeledContent("Repeat") { Text(value) }
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Repeat")
+                .accessibilityValue(value)
+            #endif
         }
-        .accessibilityLabel("Repeat")
-        .accessibilityValue(store.recurrence?.description ?? String(localized: "Never"))
         .sheet(
             isPresented: Binding(
                 get: { store.repeatDraft != nil },
