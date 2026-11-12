@@ -1194,7 +1194,7 @@ package struct ChatFeature {
             }
             return .none
         }
-        draft(plan, in: &state)
+        draft(plan.pinned(today: CalendarDate(now, in: timeZone)), in: &state)
         return .none
     }
 

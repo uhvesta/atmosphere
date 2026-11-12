@@ -75,7 +75,10 @@ final class FollowUpTests: XCTestCase {
 
         XCTAssertEqual(
             changes,
-            [DraftChange(task: "buy eggs", due: "Friday"), DraftChange(task: "buy milk", priority: .urgent)])
+            [
+                DraftChange(task: "buy eggs", due: CalendarDate.pinned("Friday", today: CalendarDate(now, in: .gmt))),
+                DraftChange(task: "buy milk", priority: .urgent),
+            ])
     }
 
     func testTheDraftsTasksAreOnlyChangeableWithoutAProblem() {
@@ -114,18 +117,23 @@ final class FollowUpTests: XCTestCase {
 
     // MARK: - Dates
 
-    func testADateWorkedOutWrongIsTheDayThePersonNamed() throws {
+    func testADateWorkedOutWrongIsTheDayThePersonNamed() {
         let request = request("Push “Book physio appointment” to next Monday")
-        let due = try XCTUnwrap(AssistantPrompt.dated("2026-11-07", request))
+        XCTAssertEqual(AssistantPrompt.dated("2026-11-07", request), "2026-11-09")
+    }
 
-        XCTAssertEqual(CalendarDate.resolving(due, today: CalendarDate(now, in: .gmt))?.description, "2026-11-09")
+    func testADayNamedRelativeToTodayIsSavedAsItsDate() {
+        let today = CalendarDate(now, in: .gmt)
+        let friday = CalendarDate.resolving("friday", today: today)?.description
+
+        XCTAssertEqual(AssistantPrompt.dated("friday", request("Move it to Monday")), friday)
+        XCTAssertEqual(AssistantPrompt.dated("none", request("Clear its date")), "none")
     }
 
     func testADateThePersonGaveOrNoSingleDayStaysAsWritten() {
         XCTAssertEqual(AssistantPrompt.dated("2026-11-07", request("Move it to 2026-11-07")), "2026-11-07")
         XCTAssertEqual(AssistantPrompt.dated("2026-11-07", request("Move it to Friday or Monday")), "2026-11-07")
         XCTAssertEqual(AssistantPrompt.dated("2026-11-07", request("Move it to next week")), "2026-11-07")
-        XCTAssertEqual(AssistantPrompt.dated("friday", request("Move it to Monday")), "friday")
         XCTAssertNil(AssistantPrompt.dated(nil, request("Move it to Monday")))
     }
 

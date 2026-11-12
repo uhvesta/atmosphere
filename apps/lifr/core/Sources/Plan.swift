@@ -423,10 +423,58 @@ extension CalendarDate {
     }
 }
 
+extension Plan {
+    /// The plan with each date written as a day relative to today, such as
+    /// tomorrow or +3d, written as the date it means on `today`, so adding
+    /// it on a later day adds what was shown.
+    package func pinned(today: CalendarDate) -> Plan {
+        var plan = self
+        plan.projects = projects.map { project in
+            var project = project
+            project.due = project.due.map { CalendarDate.pinned($0, today: today) }
+            project.tasks = project.tasks.map { $0.pinned(today: today) }
+            return project
+        }
+        plan.tasks = tasks.map { $0.pinned(today: today) }
+        return plan
+    }
+}
+
+extension Plan.TaskDraft {
+    fileprivate func pinned(today: CalendarDate) -> Self {
+        var task = self
+        task.start = start.map { CalendarDate.pinned($0, today: today) }
+        task.due = due.map { CalendarDate.pinned($0, today: today) }
+        task.reminders = reminders.map { Reminder.Trigger.pinned($0, today: today) }
+        task.subtasks = subtasks.map { $0.pinned(today: today) }
+        return task
+    }
+}
+
+extension CalendarDate {
+    /// `text` as the date it means on `today` when it names one, and as
+    /// written otherwise.
+    package static func pinned(_ text: String, today: CalendarDate) -> String {
+        resolving(text, today: today)?.description ?? text
+    }
+}
+
 extension Reminder.Trigger {
     /// Reads "N minutes|hours|days|weeks before due", or a date as
     /// `CalendarDate.resolving` reads it, optionally followed by HH:MM
     /// (09:00 when left out), in `timeZone`.
+    /// `text` with the date it names written as the date it means on
+    /// `today`, and its time kept.
+    static func pinned(_ text: String, today: CalendarDate) -> String {
+        var words = text.split(separator: " ").map(String.init)
+        let time = words.last.flatMap { (try? TimeOfDay($0)) != nil ? $0 : nil }
+        if time != nil { words.removeLast() }
+        guard !words.isEmpty, let date = CalendarDate.resolving(words.joined(separator: " "), today: today) else {
+            return text
+        }
+        return ([date.description] + (time.map { [$0] } ?? [])).joined(separator: " ")
+    }
+
     static func resolving(
         _ text: String, today: CalendarDate, timeZone: TimeZone, at: String
     ) throws(LifrError) -> Self {

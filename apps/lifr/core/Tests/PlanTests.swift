@@ -48,6 +48,27 @@ func planTests() -> [TestCase] {
             try expectEqual(fixture.workspace.projects[task.projectID.unwrap()]?.name, "Kitchen")
             try expectEqual(fixture.workspace.avenues[task.avenueID]?.key.rawValue, "RENO")
         },
+        TestCase("given a plan pinned on a Tuesday, when applied days later, then its dates are the shown ones") {
+            let tuesday = try CalendarDate("2026-11-03")
+            let plan = Plan(
+                projects: [
+                    .init(name: "Move", avenue: "HEALTH", due: "+1w", tasks: [.init(title: "Pack", due: "today")])
+                ],
+                tasks: [
+                    .init(
+                        title: "A", start: "tomorrow", due: "friday",
+                        reminders: ["1 day before due", "tomorrow 17:30", "monday"],
+                        subtasks: [.init(title: "B", due: "+2d")], place: "HEALTH")
+                ]
+            ).pinned(today: tuesday)
+            let task = try plan.tasks.first.unwrap()
+            try expectEqual(task.start, "2026-11-04")
+            try expectEqual(task.due, "2026-11-06")
+            try expectEqual(task.reminders, ["1 day before due", "2026-11-04 17:30", "2026-11-09"])
+            try expectEqual(task.subtasks.first?.due, "2026-11-05")
+            try expectEqual(plan.projects.first?.due, "2026-11-10")
+            try expectEqual(plan.projects.first?.tasks.first?.due, "2026-11-03")
+        },
         TestCase("given relative dates on a Tuesday, when applied, then Lifr works out the days") {
             let fixture = try Fixture()  // 2026-11-03, a Tuesday
             let plan = Plan(tasks: [

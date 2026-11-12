@@ -162,16 +162,22 @@ extension AssistantPrompt {
         return phrases.count == 1 ? phrases.first : nil
     }
 
-    /// The date a change is to, from the model's `due`: a small model
+    /// The date a change is to, from the model's `due`, written as a date
+    /// so applying it on a later day sets the day shown. A small model
     /// often works out a date the person named as a day, such as next
     /// Monday, and gets it wrong, so when it writes a date the last message
     /// doesn't have, the one day that message names is used instead.
     package static func dated(_ due: String?, _ request: AssistantRequest) -> String? {
+        let today = CalendarDate(request.now, in: request.timeZone)
+        return named(due, request, today: today).map { CalendarDate.pinned($0, today: today) }
+    }
+
+    /// The day `due` stands for, as the model or the last message wrote it.
+    private static func named(_ due: String?, _ request: AssistantRequest, today: CalendarDate) -> String? {
         guard let due, (try? CalendarDate(due)) != nil else { return due }
         let text = (request.messages.last?.text ?? "").lowercased()
         guard !text.contains(due) else { return due }
         let words = text.split { !$0.isLetter }.map(String.init)
-        let today = CalendarDate(request.now, in: request.timeZone)
         var named: [String] = []
         for (index, word) in words.enumerated() {
             let phrase = index > 0 && words[index - 1] == "next" ? "next " + word : word

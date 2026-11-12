@@ -259,6 +259,7 @@ enum LiveAssistant {
                 reply.plan, changes: AssistantPrompt.draftChanges(from: answer, titles: draftTitles, request),
                 to: draft)
         }
+        reply.plan = reply.plan?.pinned(today: CalendarDate(request.now, in: request.timeZone))
         reply.thinking = thoughts.value
         reply.leftOut = AssistantPrompt.leftOut(request, size: size)
         reply.context = AssistantPrompt.contextUse(

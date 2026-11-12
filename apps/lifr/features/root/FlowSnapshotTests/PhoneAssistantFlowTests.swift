@@ -202,7 +202,7 @@ final class PhoneAssistantFlowTests: PhoneFlowTestCase {
         send("Change that to Friday", in: id, of: store)
         await flow.step("changed")
         let draft = store.conversations.chats[id: id]?.conversation.draft
-        XCTAssertEqual(draft?.tasks.map(\.due), [nil, "Friday"])
+        XCTAssertEqual(draft?.tasks.map(\.due), [nil, "2026-11-06"])
         XCTAssertEqual(draft?.tasks.map(\.priority), [Priority.none, .none])
 
         send("Remove the second one", in: id, of: store)
