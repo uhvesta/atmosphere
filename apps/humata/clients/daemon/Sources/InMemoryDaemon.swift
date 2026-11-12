@@ -438,7 +438,11 @@ package final class InMemoryDaemon: Sendable {
                     state.skipped[host ?? ""]?.removeAll { $0 == session }
                 }
             },
-            send: { session, text, mode in try self.send(session, text, mode) },
+            send: { session, text, mode in
+                try self.send(session, text, mode)
+                // Writing to it answers what it asked.
+                self.answerRequests { $0.sessionID == session && $0.kind == .question }
+            },
             approve: { session, request, approved in try self.answer(session, request, approved: approved) },
             setApprovalMode: { session, mode in try self.setApprovalMode(session, mode) },
             abort: { session in try self.abort(session) },
@@ -482,7 +486,16 @@ package final class InMemoryDaemon: Sendable {
             readFileAt: { place, path in try self.readFile(at: place, path) },
             items: { project in try self.items(project) },
             createItem: { project, fields in try self.createItem(project, fields) },
-            updateItem: { item, update in try self.updateItem(item, update) },
+            updateItem: { item, update in
+                let updated = try self.updateItem(item, update)
+                if update.status != nil {
+                    // Moved by hand, which answers the moves agents asked for.
+                    self.answerRequests {
+                        if case .move(item, _) = $0.kind { true } else { false }
+                    }
+                }
+                return updated
+            },
             deleteItem: { item in try self.deleteItem(item) },
             boardLog: { project in
                 self.state.withValue { state in
@@ -1365,6 +1378,10 @@ extension InMemoryDaemon {
         case (.dismiss, _): break
         }
         state.withValue { $0.requests.removeAll { $0.id == id } }
+    }
+
+    private func answerRequests(where answered: (AgentRequest) -> Bool) {
+        state.withValue { $0.requests.removeAll(where: answered) }
     }
 
     /// Sessions waiting on you: approvals, then questions and moves, then

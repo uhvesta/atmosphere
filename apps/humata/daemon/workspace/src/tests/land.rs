@@ -196,3 +196,39 @@ async fn deleting_a_branch_twice_is_fine() {
         ""
     );
 }
+
+/// Makes every commit in `repository` fail until the hook is removed.
+fn refuse_commits(repository: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let hook = repository.join(".git/hooks/pre-commit");
+    std::fs::create_dir_all(hook.parent().expect("a hooks folder")).expect("made");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").expect("wrote");
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).expect("set");
+    hook
+}
+
+#[tokio::test]
+async fn a_land_that_failed_part_way_lands_again_on_the_same_name() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let (repositories, checkouts) = session(dir.path()).await;
+    std::fs::write(checkouts[0].path.join("README.md"), "changed\n").expect("wrote");
+    std::fs::write(checkouts[1].path.join("README.md"), "changed\n").expect("wrote");
+    let hook = refuse_commits(&repositories[1].path);
+
+    land(&checkouts, "humata/fix-it", "Fix it")
+        .await
+        .expect_err("the hook refuses the commit");
+    std::fs::remove_file(hook).expect("removed");
+
+    let landed = land(&checkouts, "humata/fix-it", "Fix it")
+        .await
+        .expect("landed on the second try");
+    assert_eq!(landed.len(), 2);
+    for checkout in &checkouts {
+        assert_eq!(
+            branch_of(&checkout.path).await.as_deref(),
+            Some("humata/fix-it")
+        );
+        assert_eq!(git_in(&checkout.path, &["status", "--porcelain"]), "");
+    }
+}

@@ -194,8 +194,6 @@ impl Relay {
             request,
             pb::request::Kind::ListSessions(_)
                 | pb::request::Kind::ListItems(_)
-                | pb::request::Kind::CreateItem(_)
-                | pb::request::Kind::UpdateItem(_)
                 | pb::request::Kind::ListThreads(_)
                 | pb::request::Kind::AskPerson(_)
                 | pb::request::Kind::RequestMove(_)

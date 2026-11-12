@@ -92,7 +92,7 @@ impl Daemon {
             None => (land.message.trim(), ""),
         };
         let kept = self.store.pulls(session)?;
-        let mut opened: Vec<(Repo, Pull, &pb::LandedRepository)> = Vec::new();
+        let mut opened: Vec<(Repo, Pull, &pb::LandedRepository, bool)> = Vec::new();
         for repository in landed {
             let repo = Repo::of(&repository.origin_url, other).ok_or_else(|| {
                 GitHubError::NotOnGitHub {
@@ -104,18 +104,21 @@ impl Daemon {
                     && pull.branch == repository.branch
                     && pull.state == PullState::Open
             });
-            let pull = match before {
-                Some(before) => github.pull(&repo, before.number).await?,
+            // Only a pull request opened now gets Humata's description;
+            // one there already keeps what people wrote in it since.
+            let (pull, new) = match before {
+                Some(before) => (github.pull(&repo, before.number).await?, false),
                 None => match github.open_pull_from(&repo, &repository.branch).await? {
-                    Some(pull) => pull,
-                    None => {
+                    Some(pull) => (pull, false),
+                    None => (
                         github
                             .open_pull(&repo, title, &repository.branch, &repository.base, details)
-                            .await?
-                    }
+                            .await?,
+                        true,
+                    ),
                 },
             };
-            opened.push((repo, pull, repository));
+            opened.push((repo, pull, repository, new));
         }
         let task = match &item {
             Some(item) => Some(self.store.item(item)?.fields.title),
@@ -126,9 +129,11 @@ impl Daemon {
             None => None,
         };
         let mut pulls = Vec::with_capacity(opened.len());
-        for (repo, pull, repository) in &opened {
-            let body = description(details, task.as_deref(), issue.as_deref(), repo, &opened);
-            github.set_body(repo, pull.number, &body).await?;
+        for (repo, pull, repository, new) in &opened {
+            if *new {
+                let body = description(details, task.as_deref(), issue.as_deref(), repo, &opened);
+                github.set_body(repo, pull.number, &body).await?;
+            }
             let kept = PullRequest {
                 session: session.clone(),
                 repository: repository.name.clone(),
@@ -162,13 +167,26 @@ impl Daemon {
         };
         if list.refresh {
             let (github, _) = self.github()?;
+            // Every pull request is read even when one fails, so the ones
+            // that could be read are fresh; the first failure is shown.
+            let mut failed = None;
             for session in &sessions {
                 for pull in self.store.pulls(session)? {
-                    if pull.state == PullState::Open {
-                        self.read_pull(&github, pull).await?;
+                    if pull.state == PullState::Open
+                        && let Err(error) = self.read_pull(&github, pull).await
+                    {
+                        if stops_reading(&error) {
+                            return Err(error);
+                        }
+                        failed.get_or_insert(error);
                     }
                 }
-                self.finish_if_merged(session).await?;
+                // A clean-up that fails is tried again by the follower; it
+                // doesn't hide the pull requests.
+                let _ = self.finish_if_merged(session).await;
+            }
+            if let Some(error) = failed {
+                return Err(error);
             }
         }
         let mut pull_requests = Vec::new();
@@ -185,24 +203,33 @@ impl Daemon {
     }
 
     /// Reads every open pull request again, and finishes the sessions whose
-    /// pull requests have all merged.
+    /// pull requests have all merged, trying again those whose host
+    /// couldn't be reached before. One that fails doesn't stop the others;
+    /// the first failure is returned at the end.
     async fn follow_pulls(&self) -> Result<(), DaemonError> {
         let open = self.store.open_pulls()?;
-        if open.is_empty() {
-            return Ok(());
-        }
-        let (github, _) = self.github()?;
-        let mut sessions: Vec<String> = Vec::new();
-        for pull in open {
-            if !sessions.contains(&pull.session) {
-                sessions.push(pull.session.clone());
+        let mut sessions = self.store.cleanups_pending()?;
+        let mut failed = None;
+        if !open.is_empty() {
+            let (github, _) = self.github()?;
+            for pull in open {
+                if !sessions.contains(&pull.session) {
+                    sessions.push(pull.session.clone());
+                }
+                if let Err(error) = self.read_pull(&github, pull).await {
+                    if stops_reading(&error) {
+                        return Err(error);
+                    }
+                    failed.get_or_insert(error);
+                }
             }
-            self.read_pull(&github, pull).await?;
         }
         for session in &sessions {
-            self.finish_if_merged(session).await?;
+            if let Err(error) = self.finish_if_merged(session).await {
+                failed.get_or_insert(error);
+            }
         }
-        Ok(())
+        failed.map_or(Ok(()), Err)
     }
 
     /// Reads `pull`'s state, reviews, checks and review comments, and keeps
@@ -271,25 +298,31 @@ impl Daemon {
         Ok(())
     }
 
-    /// When every pull request of `session` has merged: its task to Done,
-    /// the session archived, which removes its worktrees, and its branches
-    /// deleted on its host. Done once.
+    /// When every pull request of `session` has merged: its task to Done
+    /// (once, so a task the person reopens stays open), then the session
+    /// archived, which removes its worktrees, and its branches deleted on
+    /// its host, tried again until the host has done it.
     async fn finish_if_merged(&self, session: &str) -> Result<(), DaemonError> {
         let pulls = self.store.pulls(session)?;
         if pulls.is_empty() || pulls.iter().any(|pull| pull.state != PullState::Merged) {
             return Ok(());
         }
-        if !self.store.mark_cleaned(session)? {
+        if self.store.mark_merged(session)? {
+            self.task_done(session)?;
+        } else if !self
+            .store
+            .cleanups_pending()?
+            .iter()
+            .any(|pending| pending == session)
+        {
             return Ok(());
         }
-        let finished = self.finish(session, &pulls).await;
-        if finished.is_err() {
-            self.store.unmark_cleaned(session)?;
-        }
-        finished
+        self.clean_up(session, &pulls).await?;
+        self.store.mark_cleaned(session)?;
+        Ok(())
     }
 
-    async fn finish(&self, session: &str, pulls: &[PullRequest]) -> Result<(), DaemonError> {
+    fn task_done(&self, session: &str) -> Result<(), DaemonError> {
         if let Some(item) = self
             .store
             .placement(session)?
@@ -304,6 +337,10 @@ impl Daemon {
                 &Author::on(pb::ChangeSurface::Humata),
             )?;
         }
+        Ok(())
+    }
+
+    async fn clean_up(&self, session: &str, pulls: &[PullRequest]) -> Result<(), DaemonError> {
         let host = self.host_of(session).await?;
         let archive = Request::UpdateSession(pb::UpdateSession {
             session_id: session.to_owned(),
@@ -386,6 +423,19 @@ pub(super) async fn follow(daemon: std::sync::Weak<Daemon>) {
     }
 }
 
+/// Whether reading more pull requests would fail the same way: no token, a
+/// token GitHub refuses, or the rate limit.
+fn stops_reading(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::GitHub(
+            GitHubError::NoToken
+                | GitHubError::Unauthorized { .. }
+                | GitHubError::RateLimited { .. }
+        )
+    )
+}
+
 /// A forwarded request's failure, as the error it is.
 fn refused(reply: Reply) -> Result<(), DaemonError> {
     match reply {
@@ -404,7 +454,7 @@ fn description(
     task: Option<&str>,
     issue: Option<&str>,
     repo: &Repo,
-    all: &[(Repo, Pull, &pb::LandedRepository)],
+    all: &[(Repo, Pull, &pb::LandedRepository, bool)],
 ) -> String {
     let mut body = String::new();
     if !details.is_empty() {
@@ -425,8 +475,8 @@ fn description(
     }
     let others: Vec<String> = all
         .iter()
-        .filter(|(other, _, _)| other != repo)
-        .map(|(other, pull, _)| format!("- {other}#{}", pull.number))
+        .filter(|(other, ..)| other != repo)
+        .map(|(other, pull, ..)| format!("- {other}#{}", pull.number))
         .collect();
     if !others.is_empty() {
         body.push_str("\nGoes with:\n");

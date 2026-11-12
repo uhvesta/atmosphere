@@ -31,8 +31,9 @@ pub trait Service: Send + Sync + 'static {
 /// Envelopes waiting for the writer.
 const OUTGOING: usize = 1024;
 
-/// Serves `service` on a connection until the other side closes it. Requests
-/// still being answered then are dropped.
+/// Serves `service` on a connection until the other side closes it. A request
+/// still being answered then is answered to the end, so a step that changes
+/// state isn't cut off half way; only its reply and any stream are dropped.
 pub async fn serve<R, W, S>(
     mut reader: R,
     mut writer: W,
@@ -113,7 +114,16 @@ async fn answer<S: Service + ?Sized>(
     outgoing: mpsc::Sender<pb::Envelope>,
     tasks: Arc<Mutex<HashMap<u64, AbortHandle>>>,
 ) {
-    match service.handle(kind).await {
+    // On its own task, so aborting this one (the connection closed, or the
+    // stream was cancelled) never stops the service half way through.
+    let reply = match tokio::spawn(service.handle(kind)).await {
+        Ok(reply) => reply,
+        Err(_) => Reply::Response(error(
+            pb::ErrorCode::BackendFailed,
+            "Humata stopped while answering; try again, and if it keeps happening, report it with the daemon's log",
+        )),
+    };
+    match reply {
         Reply::Response(response) => {
             let _ = outgoing.send(respond(id, response)).await;
         }

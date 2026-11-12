@@ -60,10 +60,15 @@ pub async fn land(
             .await?
             .trim()
             .is_empty();
-        if !changed && checkout.branch != branch {
+        // The worktree's own branch, not the record's: a land that failed
+        // after renaming it is then landed again on the same name.
+        let current = branch_of(&checkout.path)
+            .await
+            .unwrap_or_else(|| checkout.branch.clone());
+        if !changed && current != branch {
             continue;
         }
-        if checkout.branch != branch && has_branch(&checkout.path, branch).await {
+        if current != branch && has_branch(&checkout.path, branch).await {
             return Err(WorkspaceError::BranchTaken {
                 branch: branch.to_owned(),
                 repository: checkout.name.clone(),
@@ -72,11 +77,11 @@ pub async fn land(
         if changed {
             identity(&checkout.path).await?;
         }
-        landing.push((checkout, changed, base(checkout).await?));
+        landing.push((checkout, current, changed, base(checkout).await?));
     }
     let mut landed = Vec::with_capacity(landing.len());
-    for (checkout, changed, base) in landing {
-        if checkout.branch != branch {
+    for (checkout, current, changed, base) in landing {
+        if current != branch {
             git(&checkout.path, &["branch", "-m", branch]).await?;
         }
         let commit = if changed {
@@ -170,6 +175,16 @@ pub async fn merge(checkout: &Checkout, upstream: &str) -> Result<Merged, Worksp
     } else {
         Merged::Merged
     })
+}
+
+/// The branch the worktree at `directory` has checked out; None when it
+/// can't be read or HEAD is detached.
+pub async fn branch_of(directory: &Path) -> Option<String> {
+    let branch = git(directory, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .await
+        .ok()?;
+    let branch = branch.trim();
+    (!branch.is_empty()).then(|| branch.to_owned())
 }
 
 /// Deletes `branch` from the repository at `repository`; one already gone

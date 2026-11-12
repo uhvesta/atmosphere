@@ -567,7 +567,7 @@ extension Recovery {
             id: recovery.sessionID, name: recovery.name, host: recovery.host,
             backedUpTurns: Int(recovery.backedUpTurns), turns: Int(recovery.turns),
             backedUp: Date(timeIntervalSince1970: Double(recovery.backedUpUnixMs) / 1000),
-            onHost: recovery.onHost)
+            onHost: recovery.onHost, problem: recovery.problem)
     }
 }
 

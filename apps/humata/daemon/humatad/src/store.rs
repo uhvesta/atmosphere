@@ -269,6 +269,14 @@ const MIGRATIONS: &[&str] = &["
     -- session whose proposal or request it applied.
     ALTER TABLE board_changes ADD COLUMN surface INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE board_changes ADD COLUMN session_id TEXT NOT NULL DEFAULT '';
+", "
+    -- A merged session whose host still has to archive it and delete its
+    -- branches; tried again until it does.
+    ALTER TABLE cleaned_sessions ADD COLUMN host_pending INTEGER NOT NULL DEFAULT 0;
+", "
+    -- The archived sessions a deleted item had, one id a line, put back on
+    -- it when the deletion is reverted.
+    ALTER TABLE board_changes ADD COLUMN sessions TEXT NOT NULL DEFAULT '';
 "];
 
 /// What reverting a board change did.
@@ -804,12 +812,26 @@ impl Store {
         self.item(id)
     }
 
-    /// Removes item `id`, logged so reverting the change brings it back.
-    /// Refused while subtasks or sessions are on it.
-    pub fn delete_item(&self, id: &str, author: &Author) -> Result<(), StoreError> {
+    /// Removes item `id`, logged so reverting the change brings it back,
+    /// with the `detach`ed sessions back on it. Refused while subtasks or
+    /// other sessions are on it.
+    pub fn delete_item(
+        &self,
+        id: &str,
+        author: &Author,
+        detach: &[String],
+    ) -> Result<(), StoreError> {
         let item = self.item(id)?;
         let mut connection = self.lock();
         let transaction = connection.transaction().map_err(self.failed())?;
+        for session in detach {
+            transaction
+                .execute(
+                    "UPDATE sessions SET item_id = NULL WHERE id = ?1 AND item_id = ?2",
+                    [session, id],
+                )
+                .map_err(self.failed())?;
+        }
         let (subtasks, sessions): (i64, i64) = transaction
             .query_row(
                 "SELECT
@@ -835,6 +857,10 @@ impl Store {
                 (Some(&item.fields), None),
                 None,
                 author,
+            )?;
+            transaction.execute(
+                "UPDATE board_changes SET sessions = ?1 WHERE id = last_insert_rowid()",
+                [detach.join("\n")],
             )?;
             transaction.commit()
         })();
@@ -1027,6 +1053,23 @@ impl Store {
                 }
                 insert_item(&transaction, &change.item_id, &project, &before, now)
                     .map_err(self.failed())?;
+                // Its sessions come back too, unless they went elsewhere.
+                let sessions: String = transaction
+                    .query_row(
+                        "SELECT sessions FROM board_changes WHERE id = ?1",
+                        [i64::try_from(id).unwrap_or(i64::MAX)],
+                        |row| row.get(0),
+                    )
+                    .map_err(self.failed())?;
+                for session in sessions.lines() {
+                    transaction
+                        .execute(
+                            "UPDATE sessions SET item_id = ?2
+                             WHERE id = ?1 AND item_id IS NULL AND project_id = ?3",
+                            [session, &change.item_id, &project],
+                        )
+                        .map_err(self.failed())?;
+                }
                 log(
                     &transaction,
                     &project,

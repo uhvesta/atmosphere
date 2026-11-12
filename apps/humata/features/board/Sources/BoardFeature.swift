@@ -501,6 +501,10 @@ package struct ItemFeature {
                     await send(.pullRequestsRead(try await daemon.pullRequests(.item(item), true)))
                     await send(.delegate(.changed))
                 } catch: { error, send in
+                    // The pull requests that did refresh are kept; show them.
+                    if let pulls = try? await daemon.pullRequests(.item(item), false) {
+                        await send(.pullRequestsRead(pulls))
+                    }
                     await send(.failed(error.localizedDescription))
                 }
 

@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use humata_agent::bundle;
 use humata_wire::{ClientError, pb};
@@ -37,6 +38,12 @@ impl Daemon {
                 return;
             }
         }
+        if self
+            .lock_backup_failures()
+            .waits(session, turns, Instant::now())
+        {
+            return;
+        }
         {
             let mut backing_up = self.lock_backing_up();
             if let Some(again) = backing_up.get_mut(session) {
@@ -52,12 +59,22 @@ impl Daemon {
         tokio::spawn(async move {
             loop {
                 // A copy that couldn't be made stays as it was; the next
-                // turn tries again.
-                if let Err(error) = daemon.back_up(&host, &session).await {
-                    eprintln!(
-                        "humatad: couldn't back up session {session} on {host}: {}",
-                        humata_wire::describe(&error)
-                    );
+                // turn, or ten minutes on, tries again.
+                match daemon.back_up(&host, &session).await {
+                    Ok(()) => daemon.lock_backup_failures().succeeded(&session),
+                    Err(error) => {
+                        let problem = humata_wire::describe(&error);
+                        eprintln!(
+                            "humatad: couldn't back up session {session} on {host}: {problem}"
+                        );
+                        daemon.lock_backup_failures().failed(
+                            &session,
+                            &host,
+                            turns,
+                            problem,
+                            Instant::now(),
+                        );
+                    }
                 }
                 let mut backing_up = daemon.lock_backing_up();
                 if backing_up.get(&session) == Some(&true) {
@@ -68,6 +85,12 @@ impl Daemon {
                 }
             }
         });
+    }
+
+    fn lock_backup_failures(&self) -> std::sync::MutexGuard<'_, BackupFailures> {
+        self.backup_failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn lock_backing_up(&self) -> std::sync::MutexGuard<'_, HashMap<String, bool>> {
@@ -104,6 +127,9 @@ impl Daemon {
             pb::response::Kind::SessionDeleted(_) => {}
             _ => return Err(unexpected(&session.host, "the session deleted")),
         }
+        // Gone from its host, so forgotten first: a mirror left behind
+        // mustn't offer it back as a recovery copy.
+        self.store.forget_session(id)?;
         let folder = self.mirrors(id, project.as_deref());
         if project.is_some() {
             for (_, mirror) in mirrors_in(&folder) {
@@ -122,7 +148,6 @@ impl Daemon {
                 source,
             })?;
         }
-        self.store.forget_session(id)?;
         Ok(())
     }
 
@@ -178,7 +203,8 @@ impl Daemon {
             .iter()
             .map(|session| ((session.id.as_str(), session.host.as_str()), session))
             .collect();
-        let recoveries = self
+        let failures = self.lock_backup_failures();
+        let mut recoveries: Vec<pb::Recovery> = self
             .store
             .recoveries()?
             .into_iter()
@@ -187,6 +213,10 @@ impl Daemon {
                 pb::Recovery {
                     turns: found.map_or(recovery.turns, |session| session.turns),
                     on_host: found.is_some(),
+                    problem: failures
+                        .problem(&recovery.session)
+                        .unwrap_or_default()
+                        .to_owned(),
                     session_id: recovery.session,
                     name: recovery.name,
                     host: recovery.host,
@@ -195,6 +225,26 @@ impl Daemon {
                 }
             })
             .collect();
+        // A session whose first backup failed has no copy yet, but says why.
+        for (session, host, problem) in failures.failing() {
+            if recoveries
+                .iter()
+                .any(|recovery| recovery.session_id == session)
+            {
+                continue;
+            }
+            if let Some(found) = listed.get(&(session, host)) {
+                recoveries.push(pb::Recovery {
+                    session_id: session.to_owned(),
+                    name: found.name.clone(),
+                    host: host.to_owned(),
+                    turns: found.turns,
+                    on_host: true,
+                    problem: problem.to_owned(),
+                    ..Default::default()
+                });
+            }
+        }
         Ok(pb::Recoveries { recoveries })
     }
 
@@ -422,5 +472,92 @@ fn unexpected(host: &str, expected: &'static str) -> DaemonError {
             expected,
             got: "another answer".to_owned(),
         },
+    }
+}
+
+/// How long a backup that failed is left before it is tried again for the
+/// same turn; a later turn tries at once.
+const BACKUP_RETRY: Duration = Duration::from_secs(10 * 60);
+
+/// Backups that failed, by session, so one that keeps failing (too big to
+/// send, say) isn't made again on every list.
+#[derive(Default)]
+pub(super) struct BackupFailures(HashMap<String, BackupFailure>);
+
+struct BackupFailure {
+    host: String,
+    turns: Option<u32>,
+    at: Instant,
+    problem: String,
+}
+
+impl BackupFailures {
+    /// Whether a backup of `session` at `turns` waits, having just failed.
+    fn waits(&self, session: &str, turns: Option<u32>, now: Instant) -> bool {
+        self.0.get(session).is_some_and(|failure| {
+            failure.turns == turns && now.duration_since(failure.at) < BACKUP_RETRY
+        })
+    }
+
+    fn failed(
+        &mut self,
+        session: &str,
+        host: &str,
+        turns: Option<u32>,
+        problem: String,
+        now: Instant,
+    ) {
+        self.0.insert(
+            session.to_owned(),
+            BackupFailure {
+                host: host.to_owned(),
+                turns,
+                at: now,
+                problem,
+            },
+        );
+    }
+
+    fn succeeded(&mut self, session: &str) {
+        self.0.remove(session);
+    }
+
+    fn problem(&self, session: &str) -> Option<&str> {
+        self.0.get(session).map(|failure| failure.problem.as_str())
+    }
+
+    /// Each failing session, with its host and why.
+    fn failing(&self) -> impl Iterator<Item = (&str, &str, &str)> {
+        self.0.iter().map(|(session, failure)| {
+            (
+                session.as_str(),
+                failure.host.as_str(),
+                failure.problem.as_str(),
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_backup_waits_for_the_next_turn_or_ten_minutes() {
+        let mut failures = BackupFailures::default();
+        let now = Instant::now();
+        assert!(!failures.waits("s", Some(2), now));
+
+        failures.failed("s", "build", Some(2), "too big".to_owned(), now);
+        assert!(failures.waits("s", Some(2), now + Duration::from_secs(60)));
+        assert!(!failures.waits("s", Some(3), now));
+        assert!(!failures.waits("other", Some(2), now));
+        assert!(!failures.waits("s", Some(2), now + BACKUP_RETRY));
+        assert_eq!(failures.problem("s"), Some("too big"));
+        assert_eq!(failures.failing().count(), 1);
+
+        failures.succeeded("s");
+        assert!(!failures.waits("s", Some(2), now));
+        assert_eq!(failures.problem("s"), None);
     }
 }

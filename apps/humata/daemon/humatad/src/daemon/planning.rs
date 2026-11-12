@@ -301,12 +301,21 @@ impl Daemon {
             );
             if busy {
                 let message = pb::request::Kind::SendMessage(pb::SendMessage {
-                    session_id: session,
-                    text,
+                    session_id: session.clone(),
+                    text: text.clone(),
                     mode: pb::SendMode::Enqueue.into(),
                 });
-                let _ = self.forward(&host, message).await;
-            } else if let Err(error) = self.store.note_spec(&session, &item.id, &text) {
+                // One the host wouldn't queue hears of it with its next
+                // message instead.
+                if self
+                    .forward(&host, message)
+                    .await
+                    .is_ok_and(|reply| super::refusal(&reply).is_none())
+                {
+                    continue;
+                }
+            }
+            if let Err(error) = self.store.note_spec(&session, &item.id, &text) {
                 eprintln!("humatad: couldn't keep the spec note for session {session}: {error}");
             }
         }

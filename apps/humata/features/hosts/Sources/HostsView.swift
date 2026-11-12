@@ -208,12 +208,13 @@ private struct RecoverySection: View {
                                 .truncationMode(.middle)
                             Text(status(of: recovery))
                                 .font(.caption)
-                                .foregroundStyle(recovery.onHost ? Color.secondary : Color.orange)
+                                .foregroundStyle(
+                                    recovery.onHost && recovery.problem.isEmpty ? Color.secondary : Color.orange)
                         }
                         Spacer()
                         if restoring.contains(recovery.id) {
                             ProgressView().controlSize(.small)
-                        } else {
+                        } else if recovery.hasCopy {
                             if !recovery.onHost {
                                 Button("Restore") { restore(recovery.id) }
                             }
@@ -245,6 +246,10 @@ private struct RecoverySection: View {
     }
 
     private func status(of recovery: Recovery) -> String {
+        guard recovery.problem.isEmpty else {
+            let when = recovery.hasCopy ? " · the copy is from turn \(recovery.backedUpTurns)" : ""
+            return "Couldn't back up: \(recovery.problem)\(when)"
+        }
         let copy =
             recovery.backedUpTurns == recovery.turns
             ? "Backed up after every turn"

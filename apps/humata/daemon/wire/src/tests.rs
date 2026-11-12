@@ -13,6 +13,9 @@ use crate::{Client, ClientError, Reply, Service, ServiceFuture, WireError, error
 #[derive(Default)]
 struct Echo {
     cancelled: Mutex<Option<oneshot::Sender<()>>>,
+    /// SendMessage to "gated" waits for this, then reports on `finished`.
+    gate: Mutex<Option<oneshot::Receiver<()>>>,
+    finished: Mutex<Option<oneshot::Sender<()>>>,
 }
 
 fn event(id: &str) -> pb::StreamItem {
@@ -30,6 +33,16 @@ impl Service for Echo {
             match request {
                 pb::request::Kind::SendMessage(message) if message.session_id == "slow" => {
                     tokio::time::sleep(Duration::from_millis(200)).await;
+                    Reply::Response(pb::response::Kind::MessageSent(pb::MessageSent {}))
+                }
+                pb::request::Kind::SendMessage(message) if message.session_id == "gated" => {
+                    let gate = self.gate.lock().await.take();
+                    if let Some(gate) = gate {
+                        let _ = gate.await;
+                    }
+                    if let Some(finished) = self.finished.lock().await.take() {
+                        let _ = finished.send(());
+                    }
                     Reply::Response(pb::response::Kind::MessageSent(pb::MessageSent {}))
                 }
                 pb::request::Kind::SendMessage(message) if message.session_id == "known" => {
@@ -193,6 +206,7 @@ async fn dropping_a_stream_stops_it_on_the_other_side() {
     let (cancelled, stopped) = oneshot::channel();
     let service = Arc::new(Echo {
         cancelled: Mutex::new(Some(cancelled)),
+        ..Echo::default()
     });
     let client = connected(service).await;
     let Ok((_, stream)) = client.stream(watch("forever")).await else {
@@ -238,6 +252,29 @@ async fn a_call_fails_when_the_other_side_goes_away() {
         "{response:?}"
     );
     assert!(peer.await.is_ok());
+}
+
+#[tokio::test]
+async fn a_request_is_answered_to_the_end_when_its_caller_goes_away() {
+    let (open, gate) = oneshot::channel();
+    let (finished, done) = oneshot::channel();
+    let service = Arc::new(Echo {
+        gate: Mutex::new(Some(gate)),
+        finished: Mutex::new(Some(finished)),
+        ..Echo::default()
+    });
+    let client = connected(service).await;
+    let call = tokio::spawn(async move { client.call(send("gated")).await });
+    // Let the request reach the service, then hang up.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    call.abort();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ = open.send(());
+    let finished = tokio::time::timeout(Duration::from_secs(5), done).await;
+    assert!(
+        matches!(finished, Ok(Ok(()))),
+        "the service was stopped half way"
+    );
 }
 
 async fn connect_to(

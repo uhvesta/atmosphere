@@ -241,6 +241,14 @@ async fn a_landed_task_opens_a_pull_request_and_finishes_when_it_merges() {
             .opened,
         1
     );
+    // ...and leaves its description as people may have edited it.
+    assert_eq!(
+        hub.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bodies
+            .len(),
+        1
+    );
 
     // Read again: approved, checks passing, and the reviewer's comment in a
     // thread.
@@ -288,6 +296,21 @@ async fn a_landed_task_opens_a_pull_request_and_finishes_when_it_merges() {
     assert_eq!(
         git(repository.path(), &["branch", "--list", "keep-notes"]),
         ""
+    );
+
+    // A task reopened after it was finished stays open.
+    let reopened = client
+        .call(pb::request::Kind::UpdateItem(pb::UpdateItem {
+            item_id: task.id.clone(),
+            status: Some(pb::ItemStatus::Todo.into()),
+            ..Default::default()
+        }))
+        .await;
+    assert!(reopened.is_ok(), "{reopened:?}");
+    pulls_of(&client, &task.id, true).await;
+    assert_eq!(
+        board(&client, &project.id).await,
+        [("Keep notes".to_owned(), pb::ItemStatus::Todo)]
     );
 }
 

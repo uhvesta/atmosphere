@@ -948,8 +948,18 @@ impl<R: Runner> Agent for LocalAgent<R> {
         events.extend(closing(&events).into_iter().map(Event::now));
         self.runner.restore(&record, &backup.backend)?;
         let session = self.create(record, events)?;
-        if !session.lock().record.archived {
-            prepare(&session, self.workspaces.as_deref()).await?;
+        let archived = session.lock().record.archived;
+        if !archived && let Err(error) = prepare(&session, self.workspaces.as_deref()).await {
+            // Nothing half made stays, so the restore can be tried again.
+            self.lock().remove(&id);
+            let record = session.lock().record.clone();
+            if let Err(forgetting) = self.runner.forget(&record) {
+                eprintln!("humata: couldn't forget the failed restore of {id}: {forgetting}");
+            }
+            if let Err(removing) = std::fs::remove_dir_all(&session.dir) {
+                eprintln!("humata: couldn't remove the failed restore of {id}: {removing}");
+            }
+            return Err(error);
         }
         let record = session.lock().record.clone();
         Ok(record)
@@ -986,7 +996,14 @@ impl<R: Runner> Agent for LocalAgent<R> {
         let session = self.session(id)?;
         let archiving = {
             let mut control = session.lock();
-            let archiving = update.archived == Some(true) && !control.record.archived;
+            // Archiving again puts away worktrees an earlier archive that
+            // failed half way left behind.
+            let owns = control
+                .record
+                .checkouts
+                .iter()
+                .any(|checkout| checkout.owner == id.as_str());
+            let archiving = update.archived == Some(true) && (!control.record.archived || owns);
             if archiving && control.running.is_some() {
                 return Err(AgentError::ArchiveWhileWorking {
                     session: id.clone(),
@@ -1057,22 +1074,25 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 session: id.clone(),
             },
         )?;
-        let landed = humata_workspace::land(&owned, branch, message)
-            .await
-            .map_err(workspace_failed(id))?;
+        let landed = humata_workspace::land(&owned, branch, message).await;
+        // A land can fail after renaming some branches, so the record takes
+        // each worktree's branch from git either way.
+        let mut current = Vec::with_capacity(owned.len());
+        for checkout in &owned {
+            if let Some(name) = humata_workspace::branch_of(&checkout.path).await {
+                current.push((checkout.path.clone(), name));
+            }
+        }
         let mut control = session.lock();
         let mut record = control.record.clone();
         for checkout in &mut record.checkouts {
-            if let Some(moved) = landed
-                .iter()
-                .find(|landed| landed.checkout.path == checkout.path)
-            {
-                checkout.branch = moved.checkout.branch.clone();
+            if let Some((_, name)) = current.iter().find(|(path, _)| *path == checkout.path) {
+                checkout.branch = name.clone();
             }
         }
         save(&session.dir, &record)?;
         control.record = record;
-        Ok(landed)
+        landed.map_err(workspace_failed(id))
     }
 
     async fn update_from_base(

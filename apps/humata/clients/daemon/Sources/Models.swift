@@ -1101,9 +1101,12 @@ package struct Recovery: Equatable, Identifiable, Sendable {
     /// Whether its host still has the session; if not, restoring it sets
     /// it up there again.
     package var onHost: Bool
+    /// Why its last backup failed; empty when it worked.
+    package var problem: String
 
     package init(
-        id: String, name: String, host: String, backedUpTurns: Int, turns: Int, backedUp: Date, onHost: Bool
+        id: String, name: String, host: String, backedUpTurns: Int, turns: Int, backedUp: Date, onHost: Bool,
+        problem: String = ""
     ) {
         self.id = id
         self.name = name
@@ -1112,7 +1115,12 @@ package struct Recovery: Equatable, Identifiable, Sendable {
         self.turns = turns
         self.backedUp = backedUp
         self.onHost = onHost
+        self.problem = problem
     }
+
+    /// Whether there is a copy at all: a session whose first backup failed
+    /// has none.
+    package var hasCopy: Bool { backedUp.timeIntervalSince1970 > 0 }
 }
 
 /// What restoring a host's lost sessions did: those set up again, and why

@@ -57,6 +57,8 @@ pub struct Daemon {
     /// The sessions being backed up, each with whether to back it up again
     /// once done.
     backing_up: std::sync::Mutex<HashMap<String, bool>>,
+    /// Backups that failed, left alone for a while.
+    backup_failures: std::sync::Mutex<recovery::BackupFailures>,
     /// The ports forwarded to hosts, by id.
     forwards: std::sync::Mutex<BTreeMap<String, forwards::Forwarding>>,
     next_forward: std::sync::atomic::AtomicU64,
@@ -106,6 +108,7 @@ impl Daemon {
             recovery,
             clones,
             backing_up: std::sync::Mutex::default(),
+            backup_failures: std::sync::Mutex::default(),
             forwards: std::sync::Mutex::default(),
             next_forward: std::sync::atomic::AtomicU64::new(0),
             indexing: tokio::sync::Mutex::new(()),
@@ -691,11 +694,18 @@ impl Daemon {
                 if text.is_empty() {
                     return Err(DaemonError::NoReply);
                 }
-                Some(pb::request::Kind::SendMessage(pb::SendMessage {
-                    session_id: request.session_id.clone(),
-                    text: text.to_owned(),
-                    ..Default::default()
-                }))
+                // Straight to the session: its other questions stay open.
+                let reply = self
+                    .send_message(pb::SendMessage {
+                        session_id: request.session_id.clone(),
+                        text: text.to_owned(),
+                        ..Default::default()
+                    })
+                    .await?;
+                if let Some(refused) = refusal(&reply) {
+                    return Err(refused);
+                }
+                None
             }
             Some(Answer::Approve(_)) if request.kind() == pb::AgentRequestKind::Move => {
                 Some(move_to(request.status()))
@@ -708,9 +718,31 @@ impl Daemon {
             Some(Answer::Dismiss(_)) | None => None,
         };
         if let Some(doing) = doing {
-            Box::pin(self.answer(doing)).await?;
+            let reply = Box::pin(self.answer(doing)).await?;
+            if let Some(refused) = refusal(&reply) {
+                return Err(refused);
+            }
         }
         Ok(self.store.answer_request(&request.id)?)
+    }
+
+    /// Sends `message` to its session with the spec notes kept for it, which
+    /// are forgotten only once its host took the message.
+    async fn send_message(&self, mut message: pb::SendMessage) -> Result<Reply, DaemonError> {
+        let host = self.host_of(&message.session_id).await?;
+        let notes = self.store.spec_notes(&message.session_id)?;
+        if !notes.is_empty() {
+            let told: Vec<&str> = notes.iter().map(|(_, note)| note.as_str()).collect();
+            message.text = format!("{}\n\n{}", told.join("\n\n"), message.text);
+        }
+        let session = message.session_id.clone();
+        let reply = self
+            .forward(&host, pb::request::Kind::SendMessage(message))
+            .await?;
+        if refusal(&reply).is_none() && !notes.is_empty() {
+            self.store.clear_spec_notes(&session, &notes)?;
+        }
+        Ok(reply)
     }
 
     fn create_item(&self, create: pb::CreateItem) -> Result<Item, DaemonError> {
@@ -756,10 +788,8 @@ impl Daemon {
                 live,
             });
         }
-        for session in &on_it {
-            self.store.move_session(&session.id, None)?;
-        }
-        Ok(self.store.delete_item(id, author)?)
+        let archived: Vec<String> = on_it.into_iter().map(|session| session.id).collect();
+        Ok(self.store.delete_item(id, author, &archived)?)
     }
 
     /// Every host's sessions, or only `project`'s if it isn't empty. A host
@@ -862,7 +892,7 @@ impl Daemon {
                 }
             };
             for mut session in sessions {
-                if !host.is_empty() && self.store.moved_away(&session.id, &host)? {
+                if self.store.moved_away(&session.id, &host)? {
                     continue;
                 }
                 if !host.is_empty() && !session.host_offline {
@@ -1169,8 +1199,14 @@ impl Daemon {
             }
             Request::UpdateItem(update) => {
                 let by = update.by_session_id.clone();
+                let moved = update.status.is_some() && by.is_empty();
                 let before = self.store.item(&update.item_id)?.fields.spec;
                 let updated = self.update_item(std::mem::take(update))?;
+                if moved {
+                    // The person moved it by hand, which answers the moves
+                    // agents asked for.
+                    self.store.answer_moves(&updated.id)?;
+                }
                 if updated.fields.spec != before {
                     self.spec_changed(&updated, &by).await;
                 }
@@ -1314,12 +1350,13 @@ impl Daemon {
                 host
             }
             Request::SendMessage(message) => {
-                let host = self.host_of(&message.session_id).await?;
-                let notes = self.store.take_spec_notes(&message.session_id)?;
-                if !notes.is_empty() {
-                    message.text = format!("{}\n\n{}", notes.join("\n\n"), message.text);
+                let session = message.session_id.clone();
+                let reply = self.send_message(std::mem::take(message)).await?;
+                if refusal(&reply).is_none() {
+                    // Writing to it answers what it asked.
+                    self.store.answer_questions(&session)?;
                 }
-                host
+                return Ok(reply);
             }
             Request::Approve(approve) => self.host_of(&approve.session_id).await?,
             Request::ReadHistory(read) => {
@@ -1536,6 +1573,7 @@ impl Daemon {
         };
         // What happened outside Humata isn't news: it was read there.
         let imported = matches!(request, Request::ImportSession(_));
+        let forked = matches!(request, Request::ForkSession(_));
         let planning = matches!(&request, Request::StartSession(start) if start.planning);
         let mut reply = self.forward(&host, request).await?;
         if let Reply::Response(
@@ -1564,6 +1602,9 @@ impl Daemon {
             if imported {
                 self.store.mark_seen(&session.id, session.turns)?;
                 session.seen_turns = session.turns;
+            }
+            if forked && !session.parent_id.is_empty() {
+                self.store.copy_decisions(&session.parent_id, &session.id)?;
             }
         }
         Ok(reply)
@@ -1682,11 +1723,6 @@ impl Daemon {
                 return Ok(pb::response::Kind::Sessions(sessions));
             }
             Some(Request::ListItems(list)) => in_project(&list.project_id),
-            Some(Request::CreateItem(create)) => in_project(&create.project_id),
-            Some(Request::UpdateItem(update)) => self
-                .store
-                .item(&update.item_id)
-                .is_ok_and(|item| in_project(&item.project_id)),
             Some(Request::ListThreads(list)) => sessions
                 .sessions
                 .iter()
@@ -1734,5 +1770,16 @@ impl Service for Daemon {
                 Err(failure) => Reply::Response(error(failure.code(), describe(&failure))),
             }
         })
+    }
+}
+
+/// The host's refusal in `reply`, as an error.
+fn refusal(reply: &Reply) -> Option<DaemonError> {
+    match reply {
+        Reply::Response(pb::response::Kind::Error(refused)) => Some(DaemonError::Refused {
+            code: refused.code(),
+            message: refused.message.clone(),
+        }),
+        _ => None,
     }
 }

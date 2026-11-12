@@ -1138,6 +1138,65 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn a_restore_that_fails_part_way_leaves_nothing_and_can_be_tried_again() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let backup = fixture.agent.backup(&id).await.expect("backed up");
+            let elsewhere = tempfile::tempdir().expect("a temporary folder");
+            let agent = LocalAgent::open(
+                elsewhere.path().join("state"),
+                ScriptedRunner::new(Script { rules: Vec::new() }),
+            )
+            .expect("the agent opens")
+            .with_workspaces(Workspaces::new(elsewhere.path().join("worktrees")));
+            let clone = elsewhere.path().join("app");
+            let original = fixture.repository.path.to_string_lossy().into_owned();
+            let git = |arguments: &[&str]| {
+                let status = std::process::Command::new("git")
+                    .args(arguments)
+                    .status()
+                    .expect("git runs");
+                assert!(status.success(), "git {arguments:?}");
+            };
+            let clone_path = clone.to_string_lossy().into_owned();
+            // Not a local clone, which would link in every object, the
+            // snapshots' commits too.
+            git(&["clone", "--quiet", "--no-local", &original, &clone_path]);
+            let repositories = vec![Repository {
+                name: "app".into(),
+                path: clone,
+            }];
+
+            // The clone lacks the session's snapshots, so its code can't be
+            // made again.
+            assert!(
+                agent
+                    .restore(backup.clone(), repositories.clone())
+                    .await
+                    .is_err()
+            );
+            assert!(agent.sessions().await.expect("listed").is_empty());
+
+            git(&[
+                "-C",
+                &clone_path,
+                "fetch",
+                "--quiet",
+                &original,
+                "refs/humata/*:refs/humata/*",
+            ]);
+            let restored = agent
+                .restore(backup, repositories)
+                .await
+                .expect("restored on the second try");
+            assert_eq!(
+                read(&restored.working_directory.join("a.txt")).as_deref(),
+                Some("one")
+            );
+        }
+
+        #[tokio::test]
         async fn a_restore_without_a_repository_the_session_works_in_is_refused() {
             let fixture = fixture();
             let id = fixture.start().await;
@@ -1202,6 +1261,29 @@ mod tests {
                 .await
                 .expect("compared");
             assert!(changes[0].patch.contains("+two"), "{changes:?}");
+        }
+
+        #[tokio::test]
+        async fn archiving_again_puts_away_what_a_failed_archive_left() {
+            let fixture = fixture();
+            let id = fixture.start().await;
+            fixture.turn(&id, "one", 1).await;
+            let folder = record(&fixture.agent, &id).await.working_directory;
+            // The repository goes missing, so the archive can't finish.
+            let repository = fixture.repository.path.clone();
+            let moved = repository.with_extension("away");
+            std::fs::rename(&repository, &moved).expect("moved the repository");
+            let archive = SessionUpdate {
+                archived: Some(true),
+                ..SessionUpdate::default()
+            };
+            let failed = fixture.agent.update(&id, archive.clone()).await;
+            assert!(failed.is_err(), "{failed:?}");
+            std::fs::rename(&moved, &repository).expect("moved the repository back");
+
+            let record = fixture.agent.update(&id, archive).await.expect("archived");
+            assert!(record.archived);
+            assert!(!folder.exists());
         }
 
         #[tokio::test]

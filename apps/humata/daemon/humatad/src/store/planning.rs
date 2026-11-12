@@ -54,6 +54,21 @@ impl Store {
         Ok(())
     }
 
+    /// Gives the fork `to` the decisions on `from`'s proposals, which its
+    /// history carries too.
+    pub fn copy_decisions(&self, from: &str, to: &str) -> Result<(), StoreError> {
+        self.lock()
+            .execute(
+                "INSERT OR IGNORE INTO proposal_decisions
+                     (session_id, proposal_id, applied, item_id, decided_unix_ms)
+                 SELECT ?2, proposal_id, applied, item_id, decided_unix_ms
+                 FROM proposal_decisions WHERE session_id = ?1",
+                [from, to],
+            )
+            .map_err(self.failed())?;
+        Ok(())
+    }
+
     /// The person's decisions on `session`'s proposals, by proposal.
     pub fn decisions(&self, session: &str) -> Result<Vec<(String, Decision)>, StoreError> {
         let connection = self.lock();
@@ -128,20 +143,38 @@ impl Store {
             .map_err(self.failed())
     }
 
-    /// The notes kept for `session`, which are then forgotten.
-    pub fn take_spec_notes(&self, session: &str) -> Result<Vec<String>, StoreError> {
+    /// The notes kept for `session`'s next message, with their items.
+    pub fn spec_notes(&self, session: &str) -> Result<Vec<(String, String)>, StoreError> {
         let connection = self.lock();
-        let taken = (|| -> rusqlite::Result<Vec<String>> {
-            let notes = connection
+        let read = (|| -> rusqlite::Result<Vec<(String, String)>> {
+            connection
                 .prepare_cached(
-                    "SELECT note FROM spec_notes WHERE session_id = ?1 ORDER BY item_id",
+                    "SELECT item_id, note FROM spec_notes WHERE session_id = ?1 ORDER BY item_id",
                 )?
-                .query_map([session], |row| row.get(0))?
-                .collect::<rusqlite::Result<Vec<String>>>()?;
-            connection.execute("DELETE FROM spec_notes WHERE session_id = ?1", [session])?;
-            Ok(notes)
+                .query_map([session], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect()
         })();
-        taken.map_err(self.failed())
+        read.map_err(self.failed())
+    }
+
+    /// Forgets `notes` once a message carried them; a note that changed
+    /// since they were read is kept for the next message.
+    pub fn clear_spec_notes(
+        &self,
+        session: &str,
+        notes: &[(String, String)],
+    ) -> Result<(), StoreError> {
+        let connection = self.lock();
+        let cleared = (|| -> rusqlite::Result<()> {
+            let mut statement = connection.prepare_cached(
+                "DELETE FROM spec_notes WHERE session_id = ?1 AND item_id = ?2 AND note = ?3",
+            )?;
+            for (item, note) in notes {
+                statement.execute([session, item, note])?;
+            }
+            Ok(())
+        })();
+        cleared.map_err(self.failed())
     }
 
     /// Replaces `project`'s skills.

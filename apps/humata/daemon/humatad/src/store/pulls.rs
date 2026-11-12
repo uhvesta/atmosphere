@@ -173,25 +173,40 @@ impl Store {
             .map_err(self.failed())
     }
 
-    /// Records that the merged session's worktrees and branches are gone,
-    /// so they aren't removed again; false if they were already.
-    pub fn mark_cleaned(&self, session: &str) -> Result<bool, StoreError> {
+    /// Records that every pull request of the session merged; true the first
+    /// time. Its clean-up on the host is then pending until
+    /// [`Store::mark_cleaned`].
+    pub fn mark_merged(&self, session: &str) -> Result<bool, StoreError> {
         self.lock()
             .execute(
-                "INSERT INTO cleaned_sessions (session_id, cleaned_unix_ms) VALUES (?1, ?2)
-                 ON CONFLICT (session_id) DO NOTHING",
+                "INSERT INTO cleaned_sessions (session_id, cleaned_unix_ms, host_pending)
+                 VALUES (?1, ?2, 1) ON CONFLICT (session_id) DO NOTHING",
                 params![session, now_unix_ms()],
             )
             .map(|changed| changed > 0)
             .map_err(self.failed())
     }
 
-    /// Takes back [`Store::mark_cleaned`], for a clean-up that failed.
-    pub fn unmark_cleaned(&self, session: &str) -> Result<(), StoreError> {
+    /// The merged sessions whose host hasn't archived them and deleted their
+    /// branches yet.
+    pub fn cleanups_pending(&self) -> Result<Vec<String>, StoreError> {
+        let connection = self.lock();
+        let mut statement = connection
+            .prepare("SELECT session_id FROM cleaned_sessions WHERE host_pending = 1 ORDER BY session_id")
+            .map_err(self.failed())?;
+        statement
+            .query_map([], |row| row.get(0))
+            .and_then(Iterator::collect)
+            .map_err(self.failed())
+    }
+
+    /// Records that the merged session's worktrees and branches are gone.
+    pub fn mark_cleaned(&self, session: &str) -> Result<(), StoreError> {
         self.lock()
             .execute(
-                "DELETE FROM cleaned_sessions WHERE session_id = ?1",
-                [session],
+                "UPDATE cleaned_sessions SET host_pending = 0, cleaned_unix_ms = ?2
+                 WHERE session_id = ?1",
+                params![session, now_unix_ms()],
             )
             .map(drop)
             .map_err(self.failed())
@@ -295,12 +310,14 @@ mod tests {
     }
 
     #[test]
-    fn a_session_is_cleaned_up_once_unless_that_is_taken_back() {
+    fn a_merged_session_waits_for_its_clean_up_until_it_is_done() {
         let (_dir, store) = store();
-        assert!(store.mark_cleaned("s").expect("marked"));
-        assert!(!store.mark_cleaned("s").expect("marked"));
-        store.unmark_cleaned("s").expect("unmarked");
-        assert!(store.mark_cleaned("s").expect("marked"));
+        assert!(store.mark_merged("s").expect("marked"));
+        assert!(!store.mark_merged("s").expect("marked"));
+        assert_eq!(store.cleanups_pending().expect("read"), ["s"]);
+        store.mark_cleaned("s").expect("cleaned");
+        assert!(store.cleanups_pending().expect("read").is_empty());
+        assert!(!store.mark_merged("s").expect("marked"));
     }
 
     #[test]

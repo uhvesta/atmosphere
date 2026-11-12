@@ -1971,6 +1971,55 @@ async fn a_task_is_deleted_once_its_sessions_are_archived_and_comes_back_on_reve
         .await
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(board(&client, &project.id).await.len(), 1);
+    // With its session back on it.
+    assert_eq!(item_of(&client, &session.id).await, task.id);
+
+    // A session moved to another task in between stays there.
+    let deleted = delete().await;
+    assert!(deleted.is_ok(), "{deleted:?}");
+    let other = item(&client, &project.id, "", "signup").await;
+    update(
+        &client,
+        pb::UpdateSession {
+            session_id: session.id.clone(),
+            item_id: Some(other.id.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{error}"));
+    let removal = board_log(&client, &project.id)
+        .await
+        .into_iter()
+        .find(|change| change.item_id == task.id && change.after.is_none())
+        .map(|change| change.id)
+        .unwrap_or_else(|| panic!("no removal"));
+    client
+        .call(pb::request::Kind::RevertBoardChange(
+            pb::RevertBoardChange {
+                change_id: removal,
+                ..Default::default()
+            },
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(item_of(&client, &session.id).await, other.id);
+}
+
+/// The item `session` works on; empty for none.
+async fn item_of(client: &Client, session: &str) -> String {
+    let listed = client
+        .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+        .await;
+    let Ok(pb::response::Kind::Sessions(listed)) = listed else {
+        panic!("{listed:?}")
+    };
+    listed
+        .sessions
+        .into_iter()
+        .find(|listed| listed.id == session)
+        .map(|listed| listed.item_id)
+        .unwrap_or_default()
 }
 
 #[tokio::test]
@@ -2196,7 +2245,14 @@ async fn a_hosts_agents_reach_only_the_boards_and_sessions_of_that_host() {
 
     let listed = daemon.tool_call("", list(&ours)).await;
     assert!(matches!(&listed, Ok(pb::response::Kind::Items(items)) if items.items.len() == 1));
-    assert!(allowed(&daemon.tool_call("", update(&our_task)).await));
+    // Agents propose; only the person writes the board.
+    assert!(!allowed(&daemon.tool_call("", update(&our_task)).await));
+    let create = Some(pb::request::Kind::CreateItem(pb::CreateItem {
+        project_id: ours.id.clone(),
+        title: "new".to_owned(),
+        ..Default::default()
+    }));
+    assert!(!allowed(&daemon.tool_call("", create).await));
     assert!(!allowed(&daemon.tool_call("", list(&theirs)).await));
     assert!(!allowed(&daemon.tool_call("", update(&their_task)).await));
     assert!(!allowed(&daemon.tool_call("other", list(&ours)).await));
@@ -2989,4 +3045,280 @@ async fn an_open_question_puts_the_task_in_waiting_on_you_until_answered() {
     after_turns(&client, &session.id, 2).await;
     assert!(!asking(&client, &session.id).await);
     assert_eq!(board(&client, &project.id).await, in_review);
+}
+
+fn archiving(session: &str, archived: bool) -> pb::UpdateSession {
+    pb::UpdateSession {
+        session_id: session.to_owned(),
+        archived: Some(archived),
+        ..Default::default()
+    }
+}
+
+async fn ask(client: &Client, request: pb::request::Kind) -> pb::AgentRequest {
+    match client.call(request).await {
+        Ok(pb::response::Kind::RequestMade(pb::RequestMade {
+            request: Some(request),
+        })) => request,
+        other => panic!("not asked: {other:?}"),
+    }
+}
+
+fn question(session: &str, text: &str) -> pb::request::Kind {
+    pb::request::Kind::AskPerson(pb::AskPerson {
+        session_id: session.to_owned(),
+        text: text.to_owned(),
+    })
+}
+
+fn answering(request: &pb::AgentRequest, answer: pb::answer_request::Answer) -> pb::request::Kind {
+    pb::request::Kind::AnswerRequest(pb::AnswerRequest {
+        request_id: request.id.clone(),
+        answer: Some(answer),
+    })
+}
+
+/// Whether `request` still waits: only an open one can be dismissed.
+async fn still_open(client: &Client, request: &pb::AgentRequest) -> bool {
+    client
+        .call(answering(
+            request,
+            pb::answer_request::Answer::Dismiss(true),
+        ))
+        .await
+        .is_ok()
+}
+
+#[tokio::test]
+async fn a_spec_note_waits_for_a_message_that_is_delivered() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let task = item(&client, &project.id, "", "login").await;
+    let session = started(&client, start_on(&task.id)).await;
+    send(&client, &session.id, "hello").await;
+    after_turns(&client, &session.id, 1).await;
+    let changed = client
+        .call(pb::request::Kind::UpdateItem(pb::UpdateItem {
+            item_id: task.id.clone(),
+            spec: Some("Sign in with a passkey.".to_owned()),
+            ..Default::default()
+        }))
+        .await;
+    assert!(changed.is_ok(), "{changed:?}");
+
+    update(&client, archiving(&session.id, true))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let refused = client
+        .call(pb::request::Kind::SendMessage(pb::SendMessage {
+            session_id: session.id.clone(),
+            text: "hello".to_owned(),
+            ..Default::default()
+        }))
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    update(&client, archiving(&session.id, false))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    send(&client, &session.id, "hello").await;
+    after_turns(&client, &session.id, 2).await;
+    let sent = sent_to(&client, &session.id).await;
+    assert!(sent[1].contains(&task.id), "the note came: {sent:?}");
+}
+
+#[tokio::test]
+async fn a_reply_the_host_refuses_leaves_the_question_open() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let task = item(&client, &project.id, "", "login").await;
+    let session = started(&client, start_on(&task.id)).await;
+    let request = ask(&client, question(&session.id, "Which provider?")).await;
+    update(&client, archiving(&session.id, true))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    let answered = client
+        .call(answering(
+            &request,
+            pb::answer_request::Answer::Reply("GitHub".to_owned()),
+        ))
+        .await;
+    assert!(answered.is_err(), "{answered:?}");
+    assert!(still_open(&client, &request).await);
+}
+
+#[tokio::test]
+async fn writing_to_a_session_answers_its_questions_and_moving_a_task_its_move_requests() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let task = item(&client, &project.id, "", "login").await;
+    let session = started(&client, start_on(&task.id)).await;
+
+    // Replying to one question from the Inbox leaves the other open.
+    let first = ask(&client, question(&session.id, "Which provider?")).await;
+    let second = ask(&client, question(&session.id, "Which database?")).await;
+    let answered = client
+        .call(answering(
+            &first,
+            pb::answer_request::Answer::Reply("GitHub".to_owned()),
+        ))
+        .await;
+    assert!(answered.is_ok(), "{answered:?}");
+    after_turns(&client, &session.id, 1).await;
+    assert!(asking(&client, &session.id).await);
+
+    // Writing in the chat answers what is left.
+    send(&client, &session.id, "SQLite").await;
+    after_turns(&client, &session.id, 2).await;
+    assert!(!asking(&client, &session.id).await);
+    assert!(!still_open(&client, &second).await);
+
+    let move_request = ask(
+        &client,
+        pb::request::Kind::RequestMove(pb::RequestMove {
+            session_id: session.id.clone(),
+            status: pb::ItemStatus::Done.into(),
+            summary: "It works.".to_owned(),
+            ..Default::default()
+        }),
+    )
+    .await;
+    let moved = client
+        .call(pb::request::Kind::UpdateItem(pb::UpdateItem {
+            item_id: task.id.clone(),
+            status: Some(pb::ItemStatus::InReview.into()),
+            ..Default::default()
+        }))
+        .await;
+    assert!(moved.is_ok(), "{moved:?}");
+    assert!(!asking(&client, &session.id).await);
+    assert!(!still_open(&client, &move_request).await);
+}
+
+async fn proposals_of(client: &Client, session: &str) -> Vec<pb::Proposal> {
+    match client
+        .call(pb::request::Kind::ListProposals(pb::ListProposals {
+            session_id: session.to_owned(),
+        }))
+        .await
+    {
+        Ok(pb::response::Kind::Proposals(listed)) => listed.proposals,
+        other => panic!("no proposals: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_fork_knows_which_of_its_parents_proposals_were_decided() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let mut request = start_in(&project.id);
+    if let pb::request::Kind::StartSession(start) = &mut request {
+        start.backend_config = r#"{"rules": [{"when": "", "steps": [
+            {"step": "tool", "tool": "propose_task",
+             "arguments": {"title": "Log in", "spec": "With email."}}
+        ]}]}"#
+            .to_owned();
+    }
+    let session = started(&client, request).await;
+    send(&client, &session.id, "plan").await;
+    after_turns(&client, &session.id, 1).await;
+    let [proposal] = proposals_of(&client, &session.id)
+        .await
+        .try_into()
+        .unwrap_or_else(|proposals: Vec<pb::Proposal>| panic!("one proposal: {proposals:?}"));
+    let apply = |session: &str| {
+        pb::request::Kind::ApplyProposal(pb::ApplyProposal {
+            session_id: session.to_owned(),
+            proposal_id: proposal.id.clone(),
+            ..Default::default()
+        })
+    };
+    let applied = client.call(apply(&session.id)).await;
+    assert!(applied.is_ok(), "{applied:?}");
+
+    let forked = client
+        .call(pb::request::Kind::ForkSession(pb::ForkSession {
+            session_id: session.id.clone(),
+            ..Default::default()
+        }))
+        .await;
+    let Ok(pb::response::Kind::SessionForked(pb::SessionForked {
+        session: Some(fork),
+    })) = forked
+    else {
+        panic!("{forked:?}")
+    };
+    let states: Vec<_> = proposals_of(&client, &fork.id)
+        .await
+        .iter()
+        .map(pb::Proposal::state)
+        .collect();
+    assert_eq!(states, [pb::ProposalState::Applied]);
+    assert!(client.call(apply(&fork.id)).await.is_err());
+    let tasks = board(&client, &project.id).await;
+    assert_eq!(tasks.len(), 1, "{tasks:?}");
+}
+
+#[tokio::test]
+async fn a_delete_that_cant_clean_up_still_forgets_the_session() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let folder = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = daemon(state.path(), Hosts::default()).await;
+    let session = started(&client, start(folder.path(), "")).await;
+    update(
+        &client,
+        pb::UpdateSession {
+            session_id: session.id.clone(),
+            archived: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{error}"));
+    // A file where its recovery folder would be can't be removed as one.
+    let mirrors = state.path().join("recovery/sessions");
+    std::fs::create_dir_all(&mirrors).unwrap_or_else(|error| panic!("{error}"));
+    std::fs::write(mirrors.join(&session.id), "").unwrap_or_else(|error| panic!("{error}"));
+
+    let deleted = client
+        .call(pb::request::Kind::DeleteSession(pb::DeleteSession {
+            session_id: session.id.clone(),
+        }))
+        .await;
+    assert!(deleted.is_err(), "{deleted:?}");
+    let listed = client
+        .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+        .await;
+    let Ok(pb::response::Kind::Sessions(sessions)) = listed else {
+        panic!("{listed:?}")
+    };
+    assert!(
+        sessions
+            .sessions
+            .iter()
+            .all(|listed| listed.id != session.id)
+    );
+    let recoveries = client
+        .call(pb::request::Kind::ListRecoveries(
+            pb::ListRecoveries::default(),
+        ))
+        .await;
+    let Ok(pb::response::Kind::Recoveries(recoveries)) = recoveries else {
+        panic!("{recoveries:?}")
+    };
+    assert!(
+        recoveries
+            .recoveries
+            .iter()
+            .all(|recovery| recovery.session_id != session.id)
+    );
 }

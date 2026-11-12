@@ -143,6 +143,7 @@ original spec; lettered ones were added since.
 | The demo | Done |
 | R Review pass | Done (9e2ac82e) |
 | J Agents ask, and a board journal | Done |
+| V Second review pass | In progress |
 | K Signed releases | In progress |
 
 ## Done milestones
@@ -810,6 +811,49 @@ there should be a journal of changes to undo, as in Lifr's Activity log.
 **Done when:** an agent's subtask and spec edit wait as proposals, the
 journal shows them as the session's once applied, and reverting an edit
 keeps a later change to another field.
+
+### V Second review pass
+
+The owner, 2026-11-12: run the R process again. Haiku agents gathered the
+UI flows and the daemon's behaviour; two Fable 5.2 finders (UX and the
+daemon) found 30 items; an independent Fable 5.2 judge at xhigh read the
+code for each, kept 27 (most trimmed to their essential part) and dropped
+reading GitHub past 100 entries, ETag caching of the follower, and labels
+on controls that are off during a turn. In build order:
+
+- [x] A request whose connection drops still finishes on the daemon and hosts
+- [x] Clean-up after a merge retries until the host answers, and a reopened
+  task stays reopened
+- [x] One failing pull request doesn't stop the others being followed
+- [x] Landing again doesn't overwrite a pull request's description
+- [x] A land that fails after renaming the branch can be tried again
+- [x] Spec-change notes are kept until a message carrying them is delivered
+- [x] Answering a request the host refuses keeps the request open
+- [x] A message to a session answers its open questions, and moving a card
+  by hand answers its move requests
+- [x] A fork knows which of its parent's proposals were already decided
+- [x] Agents can't write the board through the host's relay
+- [x] A restore that fails part way leaves no half copy behind
+- [x] Deleting a session forgets it before cleaning its mirrors
+- [x] A backup that fails backs off and says why in Recovery Copies
+- [x] Reverting a task's deletion re-attaches its sessions
+- [ ] The session shows what waits on you above the composer: its question,
+  move request, approvals and pending proposals
+- [ ] A command waiting for approval shows in full
+- [ ] Allow, and stop asking for edits (or everything) in this session
+- [ ] Try Again on a failed turn, in the chat and the Inbox
+- [ ] The Inbox badge counts what blocks; rows say how long they've waited
+- [ ] Shortcuts live in the menu bar, with a Go menu: Inbox, Next Waiting
+  Session, Search, Hosts
+- [ ] Files-tab comments and the open tab survive looking elsewhere
+- [ ] Board action errors stay until dismissed
+- [ ] Start Work can't start twice, and starting shows progress
+- [ ] Cancelling a changed task asks first; links are off while editing
+- [ ] A task's sessions show their state, waiting first, archived last
+- [ ] A proposed spec edit shows what it changes, and any proposal shows in
+  full on request
+- [ ] Read-only review ranges say where comments go, with a button to get
+  there
 
 ### Milestone K: signed releases
 

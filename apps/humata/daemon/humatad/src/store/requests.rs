@@ -102,6 +102,34 @@ impl Store {
         }
         Ok(())
     }
+
+    /// Answers `session`'s open questions: the person wrote to it.
+    pub fn answer_questions(&self, session: &str) -> Result<(), StoreError> {
+        self.answer_where("session_id", session, pb::AgentRequestKind::Question)
+    }
+
+    /// Answers the open requests to move `item`: the person moved it.
+    pub fn answer_moves(&self, item: &str) -> Result<(), StoreError> {
+        self.answer_where("item_id", item, pb::AgentRequestKind::Move)
+    }
+
+    fn answer_where(
+        &self,
+        column: &str,
+        value: &str,
+        kind: pb::AgentRequestKind,
+    ) -> Result<(), StoreError> {
+        self.lock()
+            .execute(
+                &format!(
+                    "UPDATE agent_requests SET answered_unix_ms = ?3
+                     WHERE {column} = ?1 AND kind = ?2 AND answered_unix_ms IS NULL"
+                ),
+                params![value, i32::from(kind), now_unix_ms()],
+            )
+            .map_err(self.failed())?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
