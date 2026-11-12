@@ -319,7 +319,9 @@ package struct TaskListFeature {
                 return setStatus(pick.status, pick.task, in: &state)
 
             case .reschedule(.presented(.delegate(.picked(let id, let date)))):
-                return save { try await $0.edit(id, Workspace.TaskEdit(dueDate: .some(date))) }
+                // As the bulk bar does: a task that runs over days moves
+                // as a whole, and No due date also clears the time.
+                return save { try await $0.apply(.dueDate(date), to: [id]) }
 
             case .prompt(.presented(.showSubtasks(let id))):
                 return .send(.rowTapped(id))

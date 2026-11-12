@@ -416,6 +416,25 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertNil(store.state.reschedule)
     }
 
+    func testRescheduleMovesATaskThatRunsOverDaysAndNoDueDateClearsItsTime() async throws {
+        let trip = records.task("Pack", in: health, due: 2, starts: 1)
+        let call = records.task("Call", in: health, due: 1, at: "15:00")
+        let store = await load()
+
+        await store.send(.rowAction(trip.id, .reschedule))
+        await store.send(.reschedule(.presented(.binding(.set(\.date, now.addingTimeInterval(4 * 24 * 60 * 60))))))
+        await store.send(.reschedule(.presented(.saveTapped)))
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.workspace?.tasks[trip.id]?.startDate, try CalendarDate("2026-11-06"))
+        XCTAssertEqual(store.state.workspace?.tasks[trip.id]?.dueDate, try CalendarDate("2026-11-07"))
+
+        await store.send(.rowAction(call.id, .reschedule))
+        await store.send(.reschedule(.presented(.clearTapped)))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertNil(store.state.workspace?.tasks[call.id]?.dueDate)
+        XCTAssertNil(store.state.workspace?.tasks[call.id]?.dueTime)
+    }
+
     func testReopeningAParentFromTheListOffersUndo() async {
         let review = records.task("Review", in: health)
         let read = records.task("Read", in: health, parent: review, status: .done)
