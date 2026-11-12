@@ -29,6 +29,7 @@ extension ErrorCode {
             case .unknownTerminal: .unknownTerminal
             case .unknownConnection: .unknownConnection
             case .unknownForward: .unknownForward
+            case .unknownProposal: .unknownProposal
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -91,8 +92,36 @@ extension Project {
     init(_ project: Humata_V1_Project) {
         self.init(
             id: project.id, name: project.name, repositories: project.repositories.map(Repository.init),
-            instructions: project.instructions,
+            instructions: project.instructions, skills: project.skills.map(Skill.init),
             created: Date(timeIntervalSince1970: Double(project.createdUnixMs) / 1000))
+    }
+}
+
+extension Skill {
+    init(_ skill: Humata_V1_Skill) {
+        self.init(name: skill.name, text: skill.text)
+    }
+
+    var proto: Humata_V1_Skill {
+        var skill = Humata_V1_Skill()
+        skill.name = name
+        skill.text = text
+        return skill
+    }
+}
+
+extension Proposal {
+    init(_ proposal: Humata_V1_Proposal) {
+        let state: Proposal.State =
+            switch proposal.state {
+            case .applied: .applied(itemID: proposal.appliedItemID)
+            case .declined: .declined
+            case .pending, .unspecified, .UNRECOGNIZED: .pending
+            }
+        self.init(
+            id: proposal.id, kind: proposal.kind == .specEdit ? .specEdit : .task, title: proposal.title,
+            spec: proposal.spec, parentID: optional(proposal.parentID), itemID: optional(proposal.itemID),
+            note: proposal.note, state: state)
     }
 }
 
@@ -123,7 +152,7 @@ extension Session {
                 PendingPermission(requestID: $0.requestID, kind: PermissionKind($0.kind), summary: $0.summary)
             },
             hostOffline: info.hostOffline,
-            lastActive: info.lastActiveUnixMs == 0 ? nil : date(info.lastActiveUnixMs))
+            lastActive: info.lastActiveUnixMs == 0 ? nil : date(info.lastActiveUnixMs), planning: info.planning)
     }
 }
 

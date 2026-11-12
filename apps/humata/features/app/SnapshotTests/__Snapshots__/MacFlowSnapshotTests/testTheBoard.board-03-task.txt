@@ -41,9 +41,8 @@
     [StaticText] "" value: "Priority"
     [PopUpButton] "" value: "High"
     [Heading] "Spec"
-    [StaticText] "" value: "People sign in with email and a password."
-    [Unknown] "Show an error under the field that's wrong"
-    [Unknown] "Keep them signed in for 30 days"
+    [Button] "People sign in with email and a password." help: "Comment on this part of the spec"
+    [Button] "Show an error under the field that's wrong, Keep them signed in for 30 days" help: "Comment on this part of the spec" id: model-text-model-text
     [Heading] "Subtasks"
     [StaticText] "" value: "Login form"
     [StaticText] "" value: "Waiting on You"

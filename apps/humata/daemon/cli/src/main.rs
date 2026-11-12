@@ -107,6 +107,24 @@ enum ProjectCommand {
         /// Instructions for every session in it.
         #[arg(long, default_value = "")]
         instructions: String,
+        /// A skill every session in it reads, as `NAME=FILE` of Markdown;
+        /// give it once for each.
+        #[arg(long = "skill")]
+        skills: Vec<String>,
+    },
+    /// Change a project's name, instructions or skills.
+    Update {
+        project: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        instructions: Option<String>,
+        /// Replaces every skill, as `NAME=FILE`; give it once for each.
+        #[arg(long = "skill")]
+        skills: Vec<String>,
+        /// Removes every skill.
+        #[arg(long, conflicts_with = "skills")]
+        no_skills: bool,
     },
     /// List the projects.
     List,
@@ -378,6 +396,30 @@ struct FolderPlace {
 }
 
 #[derive(Subcommand)]
+enum ProposalCommand {
+    /// A session's proposals, oldest first.
+    List {
+        session: String,
+    },
+    /// Add the proposed task, or change the item's spec, and print the
+    /// item's id.
+    Apply {
+        session: String,
+        proposal: String,
+        /// Use this title instead of the proposed one.
+        #[arg(long)]
+        title: Option<String>,
+        /// Use the spec in this file instead of the proposed one.
+        #[arg(long)]
+        spec: Option<PathBuf>,
+    },
+    Decline {
+        session: String,
+        proposal: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum PortCommand {
     /// Listen on 127.0.0.1 here for a port on a host, such as a dev
     /// server's, and print the forward with the port to open here.
@@ -462,6 +504,10 @@ enum Command {
     /// Forward a port on a host to 127.0.0.1 here, list or stop forwards.
     #[command(subcommand)]
     Port(PortCommand),
+    /// List, apply or decline the tasks and spec edits a session's agent
+    /// proposed.
+    #[command(subcommand)]
+    Proposal(ProposalCommand),
     /// List or import the Claude Code and Copilot sessions on a host that
     /// were started outside Humata.
     #[command(subcommand)]
@@ -543,6 +589,10 @@ enum Command {
         /// backend's script.
         #[arg(long)]
         backend_config: Option<PathBuf>,
+        /// Plan in the project rather than change code: no copy of the
+        /// repositories, so it starts at once.
+        #[arg(long, requires = "project", conflicts_with_all = ["directory", "item"])]
+        planning: bool,
     },
     /// Send a message to a session.
     Send {
@@ -592,6 +642,10 @@ enum Command {
         /// the code as it was there.
         #[arg(long)]
         chat_only: bool,
+        /// The task or subtask the fork works on, reading its specs; a fork
+        /// of a planning session also gets a copy of the repositories.
+        #[arg(long, default_value = "")]
+        item: String,
     },
     /// Rename a session.
     Rename { session: String, name: String },
@@ -715,6 +769,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             name,
             repositories,
             instructions,
+            skills,
         }) => {
             let repositories = repositories
                 .iter()
@@ -724,12 +779,38 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 name,
                 repositories,
                 instructions,
+                skills: read_skills(&skills)?,
             });
             match client.call(request).await? {
                 Response::ProjectCreated(pb::ProjectCreated {
                     project: Some(project),
                 }) => println!("{}", project.id),
                 other => return Err(unexpected("the created project", &other)),
+            }
+        }
+        Command::Project(ProjectCommand::Update {
+            project,
+            name,
+            instructions,
+            skills,
+            no_skills,
+        }) => {
+            let skills = if no_skills || !skills.is_empty() {
+                Some(pb::Skills {
+                    skills: read_skills(&skills)?,
+                })
+            } else {
+                None
+            };
+            let request = Request::UpdateProject(pb::UpdateProject {
+                project_id: project,
+                name,
+                instructions,
+                skills,
+            });
+            match client.call(request).await? {
+                Response::ProjectUpdated(_) => {}
+                other => return Err(unexpected("the updated project", &other)),
             }
         }
         Command::Project(ProjectCommand::List) => {
@@ -815,6 +896,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
         Command::Recover(command) => recover(&client, command).await?,
         Command::Terminal(command) => terminal(&client, command).await?,
         Command::Port(command) => port(&client, command).await?,
+        Command::Proposal(command) => proposal(&client, command).await?,
         Command::Stage(edit) => edit_changes(&client, edit, pb::ChangeAction::Stage).await?,
         Command::Unstage(edit) => edit_changes(&client, edit, pb::ChangeAction::Unstage).await?,
         Command::Revert(edit) => edit_changes(&client, edit, pb::ChangeAction::Revert).await?,
@@ -874,6 +956,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             model,
             instructions,
             backend_config,
+            planning,
         } => {
             let backend_config = match backend_config {
                 Some(path) => std::fs::read_to_string(&path)
@@ -900,6 +983,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                     pb::SpecScope::Item
                 }
                 .into(),
+                planning,
             });
             match client.call(request).await? {
                 Response::SessionStarted(pb::SessionStarted {
@@ -986,12 +1070,15 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             before,
             name,
             chat_only,
+            item,
         } => {
             let request = Request::ForkSession(pb::ForkSession {
                 session_id: session,
                 before_event_id: before,
                 name,
                 chat_only,
+                item_id: item,
+                ..Default::default()
             });
             match client.call(request).await? {
                 Response::SessionForked(pb::SessionForked {
@@ -1657,6 +1744,84 @@ fn read_spec(path: &std::path::Path) -> Result<String, CliError> {
 }
 
 /// A `--repository` value: `PATH` or `NAME=PATH`, made absolute.
+/// Skills given as `NAME=FILE`, read from their files.
+fn read_skills(given: &[String]) -> Result<Vec<pb::Skill>, CliError> {
+    given
+        .iter()
+        .map(|given| {
+            let (name, file) = given
+                .split_once('=')
+                .filter(|(name, file)| !name.trim().is_empty() && !file.is_empty())
+                .ok_or_else(|| CliError::BadSkill {
+                    given: given.clone(),
+                })?;
+            let path = PathBuf::from(file);
+            let text = std::fs::read_to_string(&path)
+                .map_err(|source| CliError::ReadFile { path, source })?;
+            Ok(pb::Skill {
+                name: name.trim().to_owned(),
+                text,
+            })
+        })
+        .collect()
+}
+
+async fn proposal(client: &Client, command: ProposalCommand) -> Result<(), CliError> {
+    use pb::request::Kind as Request;
+    use pb::response::Kind as Response;
+    match command {
+        ProposalCommand::List { session } => {
+            let request = Request::ListProposals(pb::ListProposals {
+                session_id: session,
+            });
+            match client.call(request).await? {
+                Response::Proposals(proposals) => {
+                    for proposal in &proposals.proposals {
+                        println!("{}", print::proposal(proposal));
+                    }
+                }
+                other => return Err(unexpected("the proposals", &other)),
+            }
+        }
+        ProposalCommand::Apply {
+            session,
+            proposal,
+            title,
+            spec,
+        } => {
+            let spec = spec
+                .map(|path| {
+                    std::fs::read_to_string(&path)
+                        .map_err(|source| CliError::ReadFile { path, source })
+                })
+                .transpose()?;
+            let request = Request::ApplyProposal(pb::ApplyProposal {
+                session_id: session,
+                proposal_id: proposal,
+                title,
+                spec,
+            });
+            match client.call(request).await? {
+                Response::ProposalApplied(pb::ProposalApplied {
+                    item: Some(item), ..
+                }) => println!("{}", item.id),
+                other => return Err(unexpected("the applied proposal", &other)),
+            }
+        }
+        ProposalCommand::Decline { session, proposal } => {
+            let request = Request::DeclineProposal(pb::DeclineProposal {
+                session_id: session,
+                proposal_id: proposal,
+            });
+            match client.call(request).await? {
+                Response::ProposalDeclined(_) => {}
+                other => return Err(unexpected("the declined proposal", &other)),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn repository(given: &str) -> Result<pb::Repository, CliError> {
     let (name, path) = match given.split_once('=') {
         Some((name, path)) if !name.contains('/') => (name, path),

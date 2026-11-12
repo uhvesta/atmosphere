@@ -234,3 +234,23 @@ filegroup(
     srcs = ["BUILD.bazel"],
     tags = ["starlark"],
 )
+
+# Planning with an agent: proposals applied and declined, then a fork onto
+# an applied task with a copy of the code.
+rust_test(
+    name = "planning_test",
+    srcs = [
+        "common.rs",
+        "planning_test.rs",
+    ],
+    crate_root = "planning_test.rs",
+    data = [
+        "//apps/humata/daemon/cli:humata",
+        "//apps/humata/daemon/humatad",
+    ],
+    env = {
+        "HUMATA": "$(rootpath //apps/humata/daemon/cli:humata)",
+        "HUMATAD": "$(rootpath //apps/humata/daemon/humatad)",
+    },
+    deps = ["@crates//:tempfile"],
+)

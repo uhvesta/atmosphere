@@ -194,11 +194,14 @@ package struct ItemFeature {
         /// The title and spec being edited; nil while they're only shown.
         package var draft: Draft?
         package var saving = false
+        /// Comments on the spec's blocks, to send to one of its sessions.
+        package var comments: SpecCommentsFeature.State
         @Presents package var destination: Destination.State?
 
         package init(project: Project, item: Item, parent: Item?, subtasks: [Item], sessions: [Session]) {
             self.project = project
             self.item = item
+            comments = SpecCommentsFeature.State(title: item.title)
             self.parent = parent
             self.subtasks = subtasks
             self.sessions = sessions
@@ -240,6 +243,7 @@ package struct ItemFeature {
         case sessionTapped(Session.ID)
         case startSessionTapped
         case addSubtaskTapped
+        case comments(SpecCommentsFeature.Action)
         case destination(PresentationAction<Destination.Action>)
         case delegate(Delegate)
 
@@ -257,9 +261,10 @@ package struct ItemFeature {
 
     package var body: some ReducerOf<Self> {
         BindingReducer()
+        Scope(state: \.comments, action: \.comments) { SpecCommentsFeature() }
         Reduce { state, action in
             switch action {
-            case .binding, .delegate:
+            case .binding, .delegate, .comments:
                 return .none
 
             case .task:
@@ -304,6 +309,7 @@ package struct ItemFeature {
 
             case .updated(let item):
                 state.item = item
+                state.comments.title = item.title
                 state.draft = nil
                 state.saving = false
                 return .send(.delegate(.changed))

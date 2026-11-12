@@ -619,6 +619,81 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Planning with an agent: it proposes tasks, which are applied or
+    /// declined in its chat; a project's skills; and comments on a task's
+    /// spec sent to its session.
+    func testPlanningWithAnAgent() async throws {
+        let daemon = InMemoryDaemon { _ in
+            [
+                .say("Here's the work as I'd split it."),
+                .propose(title: "Login form", spec: "Email and password, with an error under the wrong field."),
+                .propose(title: "Dark mode", spec: "Follow the system's appearance."),
+                .propose(title: "Confetti", spec: "On every save."),
+                .say("Three tasks. The confetti is optional."),
+            ]
+        }
+        let project = try await daemon.client.createProject(
+            "humata", [Repository(path: "/code/humata")], "Keep changes small.")
+        _ = try await daemon.client.updateProject(
+            project.id,
+            ProjectUpdate(skills: [
+                Skill(name: "Running the tests", text: "bazel test //..."),
+                Skill(name: "Releasing", text: "Tag main, then run tools/release.sh."),
+            ]))
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "Plan", projectID: project.id, planning: true))
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("planning", AppView(store: store))
+
+        try await until { store.daemon == .running && store.sidebar.projects.count == 1 }
+        store.send(.sidebar(.projectSettingsTapped(project.id)))
+        try await until { store.sidebar.destination?.projectSettings != nil }
+        await flow.step("project settings")
+        store.send(.sidebar(.destination(.dismiss)))
+
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { store.session != nil }
+        store.send(.session(.presented(.binding(.set(\.draft, "Plan sign in for the app")))))
+        store.send(.session(.presented(.sendTapped(.enqueue))))
+        try await until { store.session?.isWorking == false && store.session?.proposals.proposals.count == 3 }
+        await flow.step("proposals")
+
+        let proposals = try XCTUnwrap(store.session?.proposals.proposals)
+        store.send(.session(.presented(.proposals(.applyTapped(proposals[0].id)))))
+        store.send(.session(.presented(.proposals(.declineTapped(proposals[2].id)))))
+        try await until { store.session?.proposals.deciding.isEmpty == true }
+        try await until { store.session?.proposals.proposals[id: proposals[2].id]?.state == .declined }
+        await flow.step("decided")
+
+        let board = try await daemon.client.items(project.id)
+        let login = try XCTUnwrap(board.first)
+        let work = try await daemon.client.startWork(session.id, login.id)
+        store.send(.sidebar(.selected(.board(project.id))))
+        try await until { store.board?.items.count == 1 }
+        store.send(.board(.presented(.cardTapped(login.id))))
+        try await until { store.board?.destination?.item?.sessions.contains { $0.id == work.id } == true }
+        let block = try XCTUnwrap(MarkdownBlock.blocks([login.spec]).first)
+        let comments = { (action: SpecCommentsFeature.Action) in
+            _ = store.send(.board(.presented(.destination(.presented(.item(.comments(action)))))))
+        }
+        comments(.blockTapped(block))
+        comments(.binding(.set(\.comment, "Say which field in the error, too.")))
+        comments(.commentSaved)
+        comments(.blockTapped(block))
+        comments(.binding(.set(\.comment, "And lock the account after five tries?")))
+        try await until { store.board?.destination?.item?.comments.drafts.count == 1 }
+        await flow.step("spec comments")
+        flow.finish()
+    }
+
     private func sidebarShows(
         _ state: SessionState, _ store: StoreOf<AppFeature>, _ session: Session
     ) async throws {

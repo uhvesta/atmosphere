@@ -339,6 +339,31 @@ pub fn terminal(terminal: &pb::Terminal) -> String {
     )
 }
 
+/// A proposal: its id, kind, state, title, and the item it made or
+/// changes.
+pub fn proposal(proposal: &pb::Proposal) -> String {
+    let kind = match proposal.kind() {
+        pb::ProposalKind::SpecEdit => "spec edit",
+        _ => "task",
+    };
+    let state = match proposal.state() {
+        pb::ProposalState::Applied => "applied",
+        pb::ProposalState::Declined => "declined",
+        _ => "pending",
+    };
+    let item = if proposal.applied_item_id.is_empty() {
+        &proposal.item_id
+    } else {
+        &proposal.applied_item_id
+    };
+    format!(
+        "{}\t{kind}\t{state}\t{}\t{}",
+        proposal.id,
+        proposal.title,
+        or_dash(item)
+    )
+}
+
 /// A forward: its id, host, the port there, the port here, and session.
 pub fn forward(forward: &pb::Forward) -> String {
     format!(

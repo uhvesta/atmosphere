@@ -32,6 +32,7 @@ package struct SessionView: View {
                 TerminalsView(store: store.scope(state: \.terminals, action: \.terminals))
             } else {
                 chat
+                    .alert($store.scope(state: \.proposals.alert, action: \.proposals.alert))
             }
             if store.disconnected, !store.session.hostOffline {
                 ChatNotice(
@@ -63,6 +64,15 @@ package struct SessionView: View {
         .task { await store.send(.task).finish() }
         .alert($store.scope(state: \.alert, action: \.alert))
         .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
+        .sheet(isPresented: editingProposal) {
+            ProposalEditor(store: store.scope(state: \.proposals, action: \.proposals))
+        }
+    }
+
+    private var editingProposal: Binding<Bool> {
+        Binding(
+            get: { store.proposals.editing != nil },
+            set: { if !$0 { store.send(.proposals(.editCancelled)) } })
     }
 
     private func title(_ tab: SessionFeature.Tab) -> String {
@@ -226,8 +236,15 @@ package struct SessionView: View {
                 toggle: { store.send(.thinkingToggled(id: id)) }, select: { selecting = TextToSelect(text: $0) },
                 answering: true)
         case .tool(let call):
-            ToolCallView(call: call) { request, approved in
-                store.send(.answerPermission(requestID: request, approved: approved))
+            if let proposal = store.proposals.proposals[id: call.id] {
+                ProposalCard(
+                    proposal: proposal, deciding: store.proposals.deciding.contains(call.id),
+                    canStartWork: store.session.planning
+                ) { store.send(.proposals($0)) }
+            } else {
+                ToolCallView(call: call) { request, approved in
+                    store.send(.answerPermission(requestID: request, approved: approved))
+                }
             }
         case .permission(_, let permission):
             PermissionCard(permission: permission) { request, approved in

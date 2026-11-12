@@ -10,7 +10,7 @@ use humata_agent::{
 use humata_wire::pb;
 
 use crate::error::HostError;
-use crate::store::Project;
+use crate::store::{Project, Skill};
 
 pub fn event(event: &Event) -> pb::SessionEvent {
     use pb::session_event::Kind;
@@ -138,6 +138,7 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, history: &[Event]) 
         }
         .into(),
         project_id: String::new(),
+        planning: false,
         host_offline: false,
         checkouts: record
             .checkouts
@@ -231,7 +232,26 @@ pub fn project(project: Project) -> pb::Project {
         repositories: project.repositories.iter().map(wire_repository).collect(),
         instructions: project.instructions,
         created_unix_ms: project.created_unix_ms,
+        skills: project
+            .skills
+            .into_iter()
+            .map(|skill| pb::Skill {
+                name: skill.name,
+                text: skill.text,
+            })
+            .collect(),
     }
+}
+
+pub fn skills(skills: Vec<pb::Skill>) -> Vec<Skill> {
+    skills
+        .into_iter()
+        .map(|skill| Skill {
+            name: skill.name.trim().to_owned(),
+            text: skill.text,
+        })
+        .filter(|skill| !skill.name.is_empty() || !skill.text.trim().is_empty())
+        .collect()
 }
 
 /// What a ReadChanges asks for.

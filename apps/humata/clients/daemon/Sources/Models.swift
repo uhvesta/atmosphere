@@ -47,14 +47,89 @@ package struct Project: Identifiable, Hashable, Sendable {
     /// Each session works in its own copy of these.
     package var repositories: [Repository]
     package var instructions: String
+    /// Know-how every session in the project reads after its instructions.
+    package var skills: [Skill]
     package var created: Date
 
-    package init(id: String, name: String, repositories: [Repository], instructions: String = "", created: Date) {
+    package init(
+        id: String, name: String, repositories: [Repository], instructions: String = "", skills: [Skill] = [],
+        created: Date
+    ) {
         self.id = id
         self.name = name
         self.repositories = repositories
         self.instructions = instructions
+        self.skills = skills
         self.created = created
+    }
+}
+
+/// A named piece of know-how, such as how to run the tests.
+package struct Skill: Hashable, Sendable {
+    package var name: String
+    package var text: String
+
+    package init(name: String, text: String) {
+        self.name = name
+        self.text = text
+    }
+}
+
+/// What to change about a project; nil leaves it as it is.
+package struct ProjectUpdate: Hashable, Sendable {
+    package var name: String?
+    package var instructions: String?
+    /// Replaces every skill; an empty list removes them.
+    package var skills: [Skill]?
+
+    package init(name: String? = nil, instructions: String? = nil, skills: [Skill]? = nil) {
+        self.name = name
+        self.instructions = instructions
+        self.skills = skills
+    }
+}
+
+/// A task or spec edit an agent proposed; nothing is saved until the
+/// person applies it.
+package struct Proposal: Identifiable, Hashable, Sendable {
+    package enum Kind: Hashable, Sendable {
+        case task
+        case specEdit
+    }
+
+    package enum State: Hashable, Sendable {
+        case pending
+        /// Applied, making or changing this item.
+        case applied(itemID: String)
+        case declined
+    }
+
+    /// The tool call the agent proposed it with.
+    package var id: String
+    package var kind: Kind
+    /// For a task, its title; for a spec edit, the item's.
+    package var title: String
+    package var spec: String
+    /// The task a proposed subtask goes under.
+    package var parentID: String?
+    /// The item a spec edit changes.
+    package var itemID: String?
+    /// Why, in the agent's words.
+    package var note: String
+    package var state: State
+
+    package init(
+        id: String, kind: Kind = .task, title: String, spec: String = "", parentID: String? = nil,
+        itemID: String? = nil, note: String = "", state: State = .pending
+    ) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.spec = spec
+        self.parentID = parentID
+        self.itemID = itemID
+        self.note = note
+        self.state = state
     }
 }
 
@@ -100,13 +175,15 @@ package struct Session: Identifiable, Hashable, Sendable {
     package var hostOffline: Bool
     /// When anything last happened in it; nil when nothing has yet.
     package var lastActive: Date?
+    /// It plans in its project, in no copy of the code.
+    package var planning: Bool
 
     package init(
         id: String, name: String, backend: Backend, workingDirectory: String, model: String? = nil,
         state: SessionState = .idle, parentID: String? = nil, forkedBeforeEventID: String? = nil, host: String? = nil,
         approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil, archived: Bool = false,
         keeper: Bool = false, itemID: String? = nil, turns: Int = 0, seenTurns: Int = 0,
-        pending: [PendingPermission] = [], hostOffline: Bool = false, lastActive: Date? = nil
+        pending: [PendingPermission] = [], hostOffline: Bool = false, lastActive: Date? = nil, planning: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -127,6 +204,7 @@ package struct Session: Identifiable, Hashable, Sendable {
         self.pending = pending
         self.hostOffline = hostOffline
         self.lastActive = lastActive
+        self.planning = planning
     }
 }
 
@@ -690,12 +768,15 @@ package struct StartRequest: Hashable, Sendable {
     /// The task or subtask it works on, whose project it is in.
     package var itemID: String?
     package var specs: SpecScope
+    /// Plans in the project, proposing tasks and spec edits, with no copy
+    /// of the code, so it opens at once.
+    package var planning: Bool
 
     package init(
         backend: Backend, workingDirectory: String? = nil, name: String = "", host: String? = nil,
         model: String? = nil, instructions: String? = nil, backendConfig: String? = nil,
         approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil, itemID: String? = nil,
-        specs: SpecScope = .item
+        specs: SpecScope = .item, planning: Bool = false
     ) {
         self.backend = backend
         self.workingDirectory = workingDirectory
@@ -708,6 +789,7 @@ package struct StartRequest: Hashable, Sendable {
         self.projectID = projectID
         self.itemID = itemID
         self.specs = specs
+        self.planning = planning
     }
 }
 
@@ -859,6 +941,8 @@ package enum ErrorCode: Hashable, Sendable {
     case unknownConnection
     /// The forward was stopped already.
     case unknownForward
+    /// The session proposed nothing by that id, or it was decided already.
+    case unknownProposal
     case unknown
 }
 

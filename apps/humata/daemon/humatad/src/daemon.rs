@@ -24,6 +24,7 @@ const REWATCH_FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(1
 const REWATCH_LONGEST_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 mod forwards;
+mod planning;
 mod recovery;
 mod review;
 
@@ -442,6 +443,7 @@ impl Daemon {
         session.project_id = project.unwrap_or_default();
         session.item_id = item.unwrap_or_default();
         session.seen_turns = seen;
+        session.planning = self.store.planning(&session.id)?;
         Ok(())
     }
 
@@ -801,9 +803,12 @@ impl Daemon {
             let name = folder_name(wanted.as_deref(), &taken);
             repositories.push(Repository { name, path });
         }
-        let project = self
-            .store
-            .add_project(create.name, repositories, create.instructions)?;
+        let project = self.store.add_project(
+            create.name,
+            repositories,
+            create.instructions,
+            convert::skills(create.skills),
+        )?;
         Ok(convert::project(project))
     }
 
@@ -832,7 +837,9 @@ impl Daemon {
             return Ok((None, None));
         }
         let project = self.store.project(&project_id)?;
-        if start.working_directory.is_empty() && start.repositories.is_empty() {
+        // A planning session gets an empty folder of its own from its host.
+        let checkout = !start.planning;
+        if checkout && start.working_directory.is_empty() && start.repositories.is_empty() {
             start.repositories = if start.host.is_empty() {
                 project
                     .repositories
@@ -843,16 +850,20 @@ impl Daemon {
                 self.clone_on(&start.host, &project).await?.repositories
             };
         }
-        if start.instructions.is_empty() {
-            start.instructions = project.instructions;
-        }
-        if let Some(item) = &item {
-            let parent = match (&item.fields.parent_id, start.specs()) {
-                (Some(parent), pb::SpecScope::WithParents) => Some(self.store.item(parent)?),
-                _ => None,
-            };
-            start.instructions = with_specs(&start.instructions, item, parent.as_ref());
-        }
+        let parent = match (
+            item.as_ref()
+                .and_then(|item| item.fields.parent_id.as_ref()),
+            start.specs(),
+        ) {
+            (Some(parent), pb::SpecScope::WithParents) => Some(self.store.item(parent)?),
+            _ => None,
+        };
+        start.instructions = planning::instructions(
+            &project,
+            &start.instructions,
+            item.as_ref(),
+            parent.as_ref(),
+        );
         Ok((Some(project_id), item.map(|item| item.id)))
     }
 
@@ -1055,7 +1066,11 @@ impl Daemon {
                 })));
             }
             Request::UpdateItem(update) => {
+                let spec_changed = update.spec.is_some();
                 let updated = self.update_item(std::mem::take(update))?;
+                if spec_changed {
+                    self.spec_changed(&updated).await;
+                }
                 let item = self.shown_item(&updated).await?;
                 return Ok(Reply::Response(Response::ItemUpdated(pb::ItemUpdated {
                     item: Some(item),
@@ -1064,6 +1079,36 @@ impl Daemon {
             Request::ListItems(list) => {
                 let items = self.shown_items(&list.project_id).await?;
                 return Ok(Reply::Response(Response::Items(pb::Items { items })));
+            }
+            Request::ListProposals(list) => {
+                let proposals = self.proposals(&list.session_id).await?;
+                return Ok(Reply::Response(Response::Proposals(pb::Proposals {
+                    proposals,
+                })));
+            }
+            Request::ApplyProposal(apply) => {
+                let applied = self.apply_proposal(std::mem::take(apply)).await?;
+                return Ok(Reply::Response(Response::ProposalApplied(applied)));
+            }
+            Request::DeclineProposal(decline) => {
+                let proposal = self.decline_proposal(decline).await?;
+                return Ok(Reply::Response(Response::ProposalDeclined(
+                    pb::ProposalDeclined {
+                        proposal: Some(proposal),
+                    },
+                )));
+            }
+            Request::UpdateProject(update) => {
+                let project = self.update_project(std::mem::take(update))?;
+                return Ok(Reply::Response(Response::ProjectUpdated(
+                    pb::ProjectUpdated {
+                        project: Some(project),
+                    },
+                )));
+            }
+            Request::ReadSpec(read) => {
+                let spec = self.read_spec(read)?;
+                return Ok(Reply::Response(Response::Spec(spec)));
             }
             Request::ReadBoardLog(read) => {
                 let changes = self.store.board_log(&read.project_id)?;
@@ -1124,6 +1169,14 @@ impl Daemon {
                 if let Some(placement) = self.store.placement(&fork.session_id)? {
                     project = placement.project;
                     item = placement.item;
+                }
+                // Or onto the item asked for, reading its specs.
+                if let Some(onto) = convert::optional(std::mem::take(&mut fork.item_id)) {
+                    project = Some(
+                        self.fork_onto(fork, &host, &onto, project.as_deref())
+                            .await?,
+                    );
+                    item = Some(onto);
                 }
                 host
             }
@@ -1210,7 +1263,8 @@ impl Daemon {
             | Request::RestoreBackup(_)
             | Request::ConnectPort(_)
             | Request::WritePort(_)
-            | Request::ClosePort(_) => {
+            | Request::ClosePort(_)
+            | Request::SetSpecs(_) => {
                 return Err(DaemonError::ForHostsOnly);
             }
             Request::ForwardPort(forward) => {
@@ -1229,6 +1283,14 @@ impl Daemon {
             }
             Request::WatchSession(watch) => {
                 let host = self.host_of(&watch.session_id).await?;
+                // A host that restarted has lost its copy of the specs.
+                if self
+                    .store
+                    .placement(&watch.session_id)?
+                    .is_some_and(|placed| placed.item.is_some())
+                {
+                    let _ = self.push_specs(&watch.session_id, &host).await;
+                }
                 return self.watch(&host, std::mem::take(watch)).await;
             }
             Request::AbortTurn(abort) => self.host_of(&abort.session_id).await?,
@@ -1317,6 +1379,7 @@ impl Daemon {
         };
         // What happened outside Humata isn't news: it was read there.
         let imported = matches!(request, Request::ImportSession(_));
+        let planning = matches!(&request, Request::StartSession(start) if start.planning);
         let mut reply = self.forward(&host, request).await?;
         if let Reply::Response(
             Response::SessionStarted(pb::SessionStarted {
@@ -1330,7 +1393,17 @@ impl Daemon {
             }),
         ) = &mut reply
         {
+            if planning {
+                self.store
+                    .place(&session.id, &host, project.as_deref(), item.as_deref())?;
+                self.store.set_planning(&session.id)?;
+            }
             self.own(session, &host, project.as_deref(), item.as_deref())?;
+            if item.is_some() {
+                // Its agent reads them there while the Mac is away; one
+                // that can't have them reads them from here.
+                let _ = self.push_specs(&session.id, &host).await;
+            }
             if imported {
                 self.store.mark_seen(&session.id, session.turns)?;
                 session.seen_turns = session.turns;
@@ -1369,33 +1442,6 @@ async fn origin(host: &str, path: &Path) -> Result<String, DaemonError> {
         return Err(no_origin(None));
     }
     Ok(url)
-}
-
-/// `instructions`, followed by the specs a session on `item` reads: its
-/// task's first if given, then its own.
-fn with_specs(instructions: &str, item: &Item, parent: Option<&Item>) -> String {
-    let mut text = instructions.trim_end().to_owned();
-    let mut section = |heading: &str, item: &Item| {
-        if !text.is_empty() {
-            text.push_str("\n\n");
-        }
-        text.push_str(&format!("# {heading}: {}", item.fields.title));
-        let spec = item.fields.spec.trim();
-        if !spec.is_empty() {
-            text.push_str("\n\n");
-            text.push_str(spec);
-        }
-    };
-    if let Some(parent) = parent {
-        section("The task this is part of", parent);
-    }
-    let heading = if item.fields.parent_id.is_some() {
-        "Your subtask"
-    } else {
-        "Your task"
-    };
-    section(heading, item);
-    text
 }
 
 /// A name for a repository's folder in a session's copy: `wanted` if it is
@@ -1516,42 +1562,5 @@ impl Service for Daemon {
                 Err(failure) => Reply::Response(error(failure.code(), describe(&failure))),
             }
         })
-    }
-}
-
-#[cfg(test)]
-mod specs_tests {
-    use super::*;
-
-    fn item(title: &str, parent: Option<&str>, spec: &str) -> Item {
-        Item {
-            id: title.to_owned(),
-            project_id: "p".to_owned(),
-            fields: ItemFields {
-                parent_id: parent.map(str::to_owned),
-                title: title.to_owned(),
-                spec: spec.to_owned(),
-                status: Status::Todo,
-                priority: Priority::None,
-            },
-            created_unix_ms: 0,
-            updated_unix_ms: 0,
-            session_ids: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn a_session_reads_its_specs_after_its_instructions_parents_first() {
-        let task = item("login", None, "Let people sign in.");
-        let subtask = item("form", Some("login"), "The form.");
-        let alone = with_specs("be brief", &subtask, None);
-        assert!(alone.starts_with("be brief"), "{alone}");
-        assert!(alone.contains("The form."), "{alone}");
-        assert!(!alone.contains("Let people sign in."), "{alone}");
-
-        let both = with_specs("", &subtask, Some(&task));
-        let parent = both.find("Let people sign in.");
-        let own = both.find("The form.");
-        assert!(parent.is_some() && parent < own, "{both}");
     }
 }

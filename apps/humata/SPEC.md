@@ -133,8 +133,9 @@ original spec; lettered ones were added since.
 | C Polish: majors and minors | Done |
 | D Durable hosts | Done |
 | E Terminals and files | Done |
-| 6 Plan with the agent | After E |
-| 7 Search across sessions | After 6 |
+| 6 Plan with the agent | Done |
+| F Any host, any repository | In progress |
+| 7 Search across sessions | After F |
 | 8 Ship as pull requests | After 7 |
 
 ## Done milestones
@@ -363,17 +364,34 @@ a flow snapshots the terminal and the file browser. Both pass
 **Outcome:** a rough idea becomes a specced project with tasks in one
 conversation, and the agents doing the work always read the current spec.
 
-- [ ] Give the agent tools to read the board, read a spec, and propose tasks, subtasks and spec edits
-- [ ] Show each proposal as a card in the chat to apply, edit or decline, with nothing saved until you apply it
-- [ ] Start planning sessions without a checkout, so they open at once
-- [ ] Copy a session's specs to its host and hold the agent's proposals there, so sessions keep working while the app is away
-- [ ] Tell running sessions when a spec they depend on changes, and have them read the new one
-- [ ] Fork a planning session into a working session on a task it created
-- [ ] Pass each project's instructions and skills to every session in it
-- [ ] Comment inline on a task's spec, as in doc mode, and send the comments to a session
+- [x] Give the agent tools to read the board, read a spec, and propose tasks, subtasks and spec edits
+- [x] Show each proposal as a card in the chat to apply, edit or decline, with nothing saved until you apply it
+- [x] Start planning sessions without a checkout, so they open at once
+- [x] Copy a session's specs to its host and hold the agent's proposals there, so sessions keep working while the app is away
+- [x] Tell running sessions when a spec they depend on changes, and have them read the new one
+- [x] Fork a planning session into a working session on a task it created
+- [x] Pass each project's instructions and skills to every session in it
+- [x] Comment inline on a task's spec, as in doc mode, and send the comments to a session
 
 **Done when:** an end-to-end test has a scripted agent propose three tasks
-with specs, applies two, and finds exactly those two on the board.
+with specs, applies two, and finds exactly those two on the board. It passes
+(`planning_test`, with the `planning` flow).
+
+### Milestone F: any host, any repository
+
+**Outcome:** adding a Linux or Mac host over SSH just works, and a project
+can start from a GitHub URL as well as a folder.
+
+- [ ] Build humatad for macOS (arm64, x86_64) and Linux (x86_64, arm64, static musl) when packaging, and bundle every build in the app under `Contents/Helpers/humatad-<os>-<arch>`
+- [ ] On install, pick the build matching the host's `uname -sm`, copy it to `~/.humata/bin/humatad` atomically, and say which platform is missing if none matches
+- [ ] Link `humata` and `humatad` into `~/.local/bin` on hosts, and offer the same on this Mac, saying how to add the folder to PATH when it isn't on it; never edit shell profiles without asking
+- [ ] Reinstall on a host whose humatad is another build than the app's, as it does for this Mac
+- [ ] Make a project from GitHub repositories as well as folders, in any mix: add each by URL (`https://github.com/o/r` or `git@github.com:o/r`), and the Mac clones it into the cache folder once and fetches it before each session; hosts clone from GitHub with their token instead of from the Mac
+- [ ] Add, remove and rename a project's repositories after it's made, for sessions started after
+
+**Done when:** an end-to-end test installs the bundled Linux build on a Linux
+container over SSH and runs a session there, and a project made from a URL to
+a local git server starts a session with the repository checked out.
 
 ### Milestone 7: search across sessions
 

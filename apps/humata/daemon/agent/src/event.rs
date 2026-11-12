@@ -280,6 +280,11 @@ pub struct ForkOptions {
     /// Keep working in the parent's copy of the code, not a copy of the code
     /// as it was at `before`.
     pub chat_only: bool,
+    /// For a fork of a session that works in no repositories: these, which
+    /// it gets its own copy of. Ignored when the parent has repositories.
+    pub repositories: Vec<Repository>,
+    /// Replaces the parent's instructions; None keeps them.
+    pub instructions: Option<String>,
 }
 
 /// Changes to a session's record; None leaves a field as it is.

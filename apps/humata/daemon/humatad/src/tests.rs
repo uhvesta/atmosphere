@@ -682,6 +682,7 @@ fn create_project(repository: &Path) -> pb::request::Kind {
             path: repository.display().to_string(),
         }],
         instructions: "be brief".to_owned(),
+        skills: Vec::new(),
     })
 }
 

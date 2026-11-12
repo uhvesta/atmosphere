@@ -113,6 +113,7 @@ package struct ProjectsFeature {
         case rename(RenameSessionFeature)
         case move(MoveSessionFeature)
         case compare(CompareFeature)
+        case projectSettings(ProjectSettingsFeature)
         case alert(AlertState<Alert>)
 
         package enum Alert: Equatable {
@@ -130,6 +131,10 @@ package struct ProjectsFeature {
         case loadFailed(String)
         case addProjectTapped
         case newSessionTapped(projectID: Project.ID)
+        /// A session that plans in the project, proposing tasks and specs,
+        /// with no copy of the code.
+        case planTapped(projectID: Project.ID)
+        case projectSettingsTapped(Project.ID)
         /// A session in no project: a chat, in a folder or its own.
         case newChatTapped
         case importTapped
@@ -233,6 +238,21 @@ package struct ProjectsFeature {
             case .newSessionTapped(let id):
                 guard let project = state.projects[id: id] else { return .none }
                 state.destination = .newSession(NewSessionFeature.State(project: project))
+                return .none
+
+            case .planTapped(let id):
+                guard let project = state.projects[id: id] else { return .none }
+                state.destination = .newSession(NewSessionFeature.State(project: project, planning: true))
+                return .none
+
+            case .projectSettingsTapped(let id):
+                guard let project = state.projects[id: id] else { return .none }
+                state.destination = .projectSettings(ProjectSettingsFeature.State(project: project))
+                return .none
+
+            case .destination(.presented(.projectSettings(.delegate(.saved(let project))))):
+                state.projects[id: project.id] = project
+                state.destination = nil
                 return .none
 
             case .newChatTapped:
@@ -619,6 +639,9 @@ package struct NewSessionFeature {
         package var item: Item?
         /// Whether a session on a subtask also reads its task's spec.
         package var specs = SpecScope.withParents
+        /// Plans in the project with no copy of the code; only for a
+        /// session on the project itself.
+        package var planning = false
         package var name = ""
         package var backend = Backend.copilot
         /// Empty for the backend's default.
@@ -660,10 +683,11 @@ package struct NewSessionFeature {
             return String(data: data, encoding: .utf8)
         }
 
-        package init(project: Project?, item: Item? = nil) {
+        package init(project: Project?, item: Item? = nil, planning: Bool = false) {
             self.project = project
             self.item = item
-            self.name = item?.title ?? ""
+            self.planning = planning && project != nil && item == nil
+            self.name = item?.title ?? (self.planning ? "Plan" : "")
             backend = lastBackend
             model = lastModel
             approvalMode = lastApprovalMode
@@ -750,7 +774,8 @@ package struct NewSessionFeature {
                     name: state.name.trimmed, host: state.host,
                     model: model.isEmpty ? nil : model, backendConfig: state.backendConfig,
                     approvalMode: state.approvalMode, projectID: state.project?.id, itemID: state.item?.id,
-                    specs: state.item?.parentID == nil ? .item : state.specs)
+                    specs: state.item?.parentID == nil ? .item : state.specs,
+                    planning: state.planning && state.project != nil && state.item == nil)
                 return .run { send in
                     await send(.delegate(.started(try await daemon.start(request))))
                 } catch: { error, send in

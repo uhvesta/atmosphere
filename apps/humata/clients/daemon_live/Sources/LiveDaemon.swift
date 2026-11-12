@@ -53,6 +53,17 @@ extension DaemonClient {
                     throw DaemonError.unexpected("something other than the deleted project")
                 }
             },
+            updateProject: { project, update in
+                var request = Humata_V1_UpdateProject()
+                request.projectID = project
+                if let name = update.name { request.name = name }
+                if let instructions = update.instructions { request.instructions = instructions }
+                if let skills = update.skills { request.skills.skills = skills.map(\.proto) }
+                guard case .projectUpdated(let updated) = try await daemon.call(.updateProject(request)) else {
+                    throw DaemonError.unexpected("something other than the updated project")
+                }
+                return Project(updated.project)
+            },
             sessions: { project in
                 var list = Humata_V1_ListSessions()
                 list.projectID = project ?? ""
@@ -73,6 +84,7 @@ extension DaemonClient {
                 start.instructions = request.instructions ?? ""
                 start.backendConfig = request.backendConfig ?? ""
                 start.itemID = request.itemID ?? ""
+                start.planning = request.planning
                 start.specs = request.specs == .withParents ? .withParents : .item
                 guard case .sessionStarted(let started) = try await daemon.call(.startSession(start)) else {
                     throw DaemonError.unexpected("something other than the started session")
@@ -169,6 +181,42 @@ extension DaemonClient {
                     throw DaemonError.unexpected("something other than the forked session")
                 }
                 return try Session(forked.session)
+            },
+            startWork: { session, item in
+                var fork = Humata_V1_ForkSession()
+                fork.sessionID = session
+                fork.itemID = item
+                guard case .sessionForked(let forked) = try await daemon.call(.forkSession(fork)) else {
+                    throw DaemonError.unexpected("something other than the forked session")
+                }
+                return try Session(forked.session)
+            },
+            proposals: { session in
+                var list = Humata_V1_ListProposals()
+                list.sessionID = session
+                guard case .proposals(let proposals) = try await daemon.call(.listProposals(list)) else {
+                    throw DaemonError.unexpected("something other than the proposals")
+                }
+                return proposals.proposals.map(Proposal.init)
+            },
+            applyProposal: { session, proposal, title, spec in
+                var apply = Humata_V1_ApplyProposal()
+                apply.sessionID = session
+                apply.proposalID = proposal
+                if let title { apply.title = title }
+                if let spec { apply.spec = spec }
+                guard case .proposalApplied(let applied) = try await daemon.call(.applyProposal(apply)) else {
+                    throw DaemonError.unexpected("something other than the applied proposal")
+                }
+                return Item(applied.item)
+            },
+            declineProposal: { session, proposal in
+                var decline = Humata_V1_DeclineProposal()
+                decline.sessionID = session
+                decline.proposalID = proposal
+                guard case .proposalDeclined = try await daemon.call(.declineProposal(decline)) else {
+                    throw DaemonError.unexpected("something other than the declined proposal")
+                }
             },
             update: { session, update in
                 var request = Humata_V1_UpdateSession()

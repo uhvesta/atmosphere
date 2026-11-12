@@ -159,17 +159,47 @@ impl Server {
         match name {
             "board" => self.board().await,
             "read_item" => {
-                let item = self.item(&required(text("item_id"), "item_id")?).await?;
+                let item_id = required(text("item_id"), "item_id")?;
+                // The host's copy of this session's specs answers while the
+                // Mac is away.
+                let read = pb::ReadSpec {
+                    session_id: self.session.clone(),
+                    item_id,
+                };
+                let spec = match self.ask(pb::request::Kind::ReadSpec(read)).await? {
+                    pb::response::Kind::Spec(spec) => spec,
+                    other => return Err(unexpected(&other)),
+                };
                 Ok(format!(
-                    "{} ({}, {})\n\n{}",
-                    item.title,
-                    status_name(item.status()),
-                    item.id,
-                    if item.spec.trim().is_empty() {
+                    "{} ({})\n\n{}",
+                    spec.title,
+                    spec.item_id,
+                    if spec.spec.trim().is_empty() {
                         "It has no spec."
                     } else {
-                        &item.spec
+                        &spec.spec
                     }
+                ))
+            }
+            // Proposals are answered here: the call itself, in the session's
+            // history, is the proposal, which the person applies or declines
+            // in Humata. So proposing works while the Mac is away.
+            "propose_task" => {
+                let title = required(text("title"), "title")?;
+                Ok(format!(
+                    "Proposed {title:?}. It reaches the board only if the person applies it, perhaps edited; don't work on it until then."
+                ))
+            }
+            "propose_spec_edit" => {
+                let item_id = required(text("item_id"), "item_id")?;
+                if arguments["spec"]
+                    .as_str()
+                    .is_none_or(|spec| spec.trim().is_empty())
+                {
+                    return Err("give spec: the whole new spec, in Markdown".to_owned());
+                }
+                Ok(format!(
+                    "Proposed a new spec for {item_id}. It replaces the old one only if the person applies it; until then read_item shows the old one."
                 ))
             }
             "update_item" => {
@@ -511,7 +541,7 @@ fn tools() -> Value {
         },
         {
             "name": "read_item",
-            "description": "A task's or subtask's title, status and spec.",
+            "description": "A task's or subtask's title and spec, as it is now.",
             "inputSchema": object(json!({"item_id": string("From board.")}), &["item_id"]),
         },
         {
@@ -532,6 +562,25 @@ fn tools() -> Value {
                 "spec": string("What it is and why, in Markdown."),
                 "task_id": string("A task from board; a subtask can't have subtasks."),
             }), &["title"]),
+        },
+        {
+            "name": "propose_task",
+            "description": "Propose a task, or a subtask under parent_id, with its spec. Nothing is added until the person applies it from your proposal in the chat, perhaps after editing it.",
+            "inputSchema": object(json!({
+                "title": string("Short, like a commit subject."),
+                "spec": string("What it is, why, and when it's done, in Markdown."),
+                "parent_id": string("A task from board, to propose a subtask under it."),
+                "note": string("Why you propose it, if it isn't plain from the spec."),
+            }), &["title", "spec"]),
+        },
+        {
+            "name": "propose_spec_edit",
+            "description": "Propose a new spec for a task or subtask. It replaces the old one only when the person applies it; sessions working on it are told to read it again.",
+            "inputSchema": object(json!({
+                "item_id": string("From board."),
+                "spec": string("The whole new spec, in Markdown."),
+                "note": string("What changed and why."),
+            }), &["item_id", "spec"]),
         },
         {
             "name": "ask_person",

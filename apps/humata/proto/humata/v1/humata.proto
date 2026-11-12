@@ -151,6 +151,17 @@ message Request {
     ConnectPort connect_port = 69;
     WritePort write_port = 70;
     ClosePort close_port = 71;
+    // The tasks and spec edits a session's agent proposed, from its
+    // history, with what the person did about each.
+    ListProposals list_proposals = 72;
+    ApplyProposal apply_proposal = 73;
+    DeclineProposal decline_proposal = 74;
+    UpdateProject update_project = 75;
+    // For hosts only: the daemon's copy of the specs a session reads, kept
+    // on its host so its agent reads them while the Mac is away.
+    SetSpecs set_specs = 76;
+    // A spec on the session's board, or the host's copy of it.
+    ReadSpec read_spec = 77;
   }
 }
 
@@ -223,6 +234,12 @@ message Response {
     PortConnected port_connected = 63;
     PortWritten port_written = 64;
     PortClosed port_closed = 65;
+    Proposals proposals = 66;
+    ProposalApplied proposal_applied = 67;
+    ProposalDeclined proposal_declined = 68;
+    ProjectUpdated project_updated = 69;
+    SpecsSet specs_set = 70;
+    Spec spec = 71;
   }
 }
 
@@ -265,6 +282,8 @@ enum ErrorCode {
   // The connection to a forwarded port closed already.
   ERROR_CODE_UNKNOWN_CONNECTION = 22;
   ERROR_CODE_UNKNOWN_FORWARD = 23;
+  // The session has no such proposal, or it was applied or declined.
+  ERROR_CODE_UNKNOWN_PROPOSAL = 24;
 }
 
 enum Backend {
@@ -307,6 +326,9 @@ message StartSession {
   string item_id = 11;
   // Which specs it reads, ahead of its instructions.
   SpecScope specs = 12;
+  // Plans in its project rather than changing code: it gets no copy of the
+  // repositories, only an empty folder of its own, so it starts at once.
+  bool planning = 13;
 }
 
 enum SpecScope {
@@ -356,6 +378,14 @@ message Project {
   string instructions = 4;
   // Milliseconds since 1970 in UTC.
   int64 created_unix_ms = 5;
+  // Skills every session in it reads after its instructions.
+  repeated Skill skills = 7;
+}
+
+// A named piece of know-how, such as how to cut a release, in Markdown.
+message Skill {
+  string name = 1;
+  string text = 2;
 }
 
 message CreateProject {
@@ -365,6 +395,25 @@ message CreateProject {
   string instructions = 3;
   // At least one. A repository without a name is named after its folder.
   repeated Repository repositories = 4;
+  repeated Skill skills = 5;
+}
+
+// Changes a project. Unset fields are left as they are; sessions started
+// after read the new instructions and skills.
+message UpdateProject {
+  string project_id = 1;
+  optional string name = 2;
+  optional string instructions = 3;
+  // Replaces every skill when set.
+  Skills skills = 4;
+}
+
+message Skills {
+  repeated Skill skills = 1;
+}
+
+message ProjectUpdated {
+  Project project = 1;
 }
 
 message ProjectCreated {
@@ -607,6 +656,99 @@ message Approve {
 
 message Approved {}
 
+// Something a session's agent proposed with `propose_task` or
+// `propose_spec_edit`. It lives in the session's history, on its host, so
+// proposing needs nothing from the Mac; nothing reaches the board until the
+// person applies it.
+message Proposal {
+  // The tool call's id, unique in the session.
+  string id = 1;
+  string session_id = 2;
+  ProposalKind kind = 3;
+  // For a task: its title, its spec, and the task it goes under, if any.
+  // For a spec edit: the item's title and its whole new spec.
+  string title = 4;
+  string spec = 5;
+  string parent_id = 6;
+  // For a spec edit, the item it changes.
+  string item_id = 7;
+  // Why, in the agent's words.
+  string note = 8;
+  ProposalState state = 9;
+  // The item applying it made or changed.
+  string applied_item_id = 10;
+  // The turn it was proposed in, from 1.
+  uint32 turn = 11;
+  int64 time_unix_ms = 12;
+}
+
+enum ProposalKind {
+  PROPOSAL_KIND_UNSPECIFIED = 0;
+  PROPOSAL_KIND_TASK = 1;
+  PROPOSAL_KIND_SPEC_EDIT = 2;
+}
+
+enum ProposalState {
+  PROPOSAL_STATE_UNSPECIFIED = 0;
+  PROPOSAL_STATE_PENDING = 1;
+  PROPOSAL_STATE_APPLIED = 2;
+  PROPOSAL_STATE_DECLINED = 3;
+}
+
+message ListProposals {
+  string session_id = 1;
+}
+
+// Oldest first.
+message Proposals {
+  repeated Proposal proposals = 1;
+}
+
+// Adds the proposed task, or changes the item's spec, as proposed or as
+// edited here.
+message ApplyProposal {
+  string session_id = 1;
+  string proposal_id = 2;
+  optional string title = 3;
+  optional string spec = 4;
+}
+
+message ProposalApplied {
+  Proposal proposal = 1;
+  Item item = 2;
+}
+
+message DeclineProposal {
+  string session_id = 1;
+  string proposal_id = 2;
+}
+
+message ProposalDeclined {
+  Proposal proposal = 1;
+}
+
+// A spec as a session reads it.
+message Spec {
+  string item_id = 1;
+  string title = 2;
+  string spec = 3;
+  // The task above a subtask; empty for a task.
+  string parent_id = 4;
+}
+
+message SetSpecs {
+  string session_id = 1;
+  // Every spec the session reads; those not here are forgotten.
+  repeated Spec specs = 2;
+}
+
+message SpecsSet {}
+
+message ReadSpec {
+  string session_id = 1;
+  string item_id = 2;
+}
+
 message ForkSession {
   string session_id = 1;
   // The fork keeps the events before this one, not including it. Empty keeps
@@ -616,6 +758,15 @@ message ForkSession {
   // The fork shares its parent's copy of the code instead of getting its
   // own as it was at the fork.
   bool chat_only = 4;
+  // The task or subtask of the project the fork works on, reading its
+  // specs; empty stays on the parent's. A planning session's fork works in
+  // its own copy of the project's repositories.
+  string item_id = 5;
+  // Filled in by the daemon, for the host: the repositories a fork of a
+  // planning session gets a copy of, and the instructions it reads instead
+  // of its parent's.
+  repeated Repository repositories = 6;
+  optional string instructions = 7;
 }
 
 // Changes a session's record. Unset fields are left as they are.
@@ -1062,6 +1213,8 @@ message SessionInfo {
   repeated PermissionRequested pending = 19;
   // When its last event happened; 0 before it has any.
   int64 last_active_unix_ms = 20;
+  // It plans in its project, in no copy of the code; the daemon keeps it.
+  bool planning = 21;
 }
 
 // A session's git worktree of one repository.

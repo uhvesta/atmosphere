@@ -14,10 +14,12 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use crate::board::{Change, Item, ItemFields, ItemPatch, Priority, Status};
 use crate::error::StoreError;
 
+mod planning;
 mod recoveries;
 mod requests;
 mod review;
 
+pub use planning::{Decision, Skill};
 pub use review::{Comment, NewThread, Review, Thread};
 
 /// Each step takes the schema from its index to the next version; the
@@ -172,6 +174,28 @@ const MIGRATIONS: &[&str] = &["
         host TEXT NOT NULL,
         PRIMARY KEY (session_id, host)
     );
+", "
+    -- What the person did about each proposal an agent made; proposals
+    -- themselves are in the sessions' histories.
+    CREATE TABLE proposal_decisions (
+        session_id TEXT NOT NULL,
+        proposal_id TEXT NOT NULL,
+        applied INTEGER NOT NULL,
+        -- The item applying it made or changed; empty if declined.
+        item_id TEXT NOT NULL,
+        decided_unix_ms INTEGER NOT NULL,
+        PRIMARY KEY (session_id, proposal_id)
+    );
+    -- Sessions that plan, in no copy of the code.
+    ALTER TABLE sessions ADD COLUMN planning INTEGER NOT NULL DEFAULT 0;
+    -- Know-how every session in a project reads, in order.
+    CREATE TABLE project_skills (
+        project_id TEXT NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        text TEXT NOT NULL,
+        PRIMARY KEY (project_id, position)
+    );
 "];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -182,6 +206,8 @@ pub struct Project {
     pub repositories: Vec<Repository>,
     pub instructions: String,
     pub created_unix_ms: i64,
+    /// Read by every session in it, after its instructions.
+    pub skills: Vec<Skill>,
 }
 
 /// Where a session is, as the daemon records it.
@@ -244,6 +270,7 @@ impl Store {
         name: String,
         repositories: Vec<Repository>,
         instructions: String,
+        skills: Vec<Skill>,
     ) -> Result<Project, StoreError> {
         let project = Project {
             id: uuid::Uuid::new_v4().to_string(),
@@ -251,6 +278,7 @@ impl Store {
             repositories,
             instructions,
             created_unix_ms: now_unix_ms(),
+            skills,
         };
         let mut connection = self.lock();
         let added = (|| {
@@ -285,6 +313,7 @@ impl Store {
                     ],
                 )?;
             }
+            planning::insert_skills(&transaction, &project.id, &project.skills)?;
             transaction.commit()
         })();
         added.map_err(self.failed())?;
@@ -967,6 +996,7 @@ fn project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
         repositories: Vec::new(),
         instructions: row.get(2)?,
         created_unix_ms: row.get(3)?,
+        skills: Vec::new(),
     })
 }
 
@@ -982,8 +1012,10 @@ fn with_repositories(connection: &Connection, project: Project) -> rusqlite::Res
             })
         })?
         .collect::<Result<_, _>>()?;
+    let skills = planning::skills(connection, &project.id)?;
     Ok(Project {
         repositories,
+        skills,
         ..project
     })
 }
@@ -1046,10 +1078,20 @@ mod tests {
     fn projects_survive_reopening_in_the_order_they_were_added() {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let first = store(dir.path())
-            .add_project("one".into(), repositories("/code/one"), "be brief".into())
+            .add_project(
+                "one".into(),
+                repositories("/code/one"),
+                "be brief".into(),
+                Vec::new(),
+            )
             .expect("added");
         let second = store(dir.path())
-            .add_project("two".into(), repositories("/code/two"), String::new())
+            .add_project(
+                "two".into(),
+                repositories("/code/two"),
+                String::new(),
+                Vec::new(),
+            )
             .expect("added");
         let reopened = store(dir.path());
         assert_eq!(
@@ -1078,7 +1120,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary folder");
         let store = store(dir.path());
         let project = store
-            .add_project("one".into(), repositories("/code/one"), String::new())
+            .add_project(
+                "one".into(),
+                repositories("/code/one"),
+                String::new(),
+                Vec::new(),
+            )
             .expect("added");
         assert_eq!(store.placement("s").expect("read"), None);
         store

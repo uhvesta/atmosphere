@@ -637,8 +637,17 @@ impl Host {
             | Request::SendReview(_)
             | Request::ForwardPort(_)
             | Request::ListForwards(_)
-            | Request::StopForward(_) => {
+            | Request::StopForward(_)
+            | Request::ListProposals(_)
+            | Request::ApplyProposal(_)
+            | Request::DeclineProposal(_)
+            | Request::UpdateProject(_)
+            | Request::ReadSpec(_) => {
                 return Err(HostError::NotForHosts);
+            }
+            Request::SetSpecs(set) => {
+                self.relay.set_specs(set);
+                Response::SpecsSet(pb::SpecsSet {})
             }
             Request::ConfigureHost(configure) => Response::HostConfigured(pb::HostConfigured {
                 setup: Some(self.machine.configure(configure).await?),
@@ -747,6 +756,12 @@ impl Host {
                     before: convert::optional(fork.before_event_id).map(EventId::new),
                     name: convert::optional(fork.name),
                     chat_only: fork.chat_only,
+                    repositories: fork
+                        .repositories
+                        .into_iter()
+                        .map(convert::repository)
+                        .collect(),
+                    instructions: fork.instructions,
                 };
                 let record = agent.fork(&session, options).await?;
                 self.owners

@@ -32,6 +32,16 @@ pub enum CliError {
     #[error(transparent)]
     Wire(#[from] ClientError),
 
+    #[error("couldn't read {path}; check the path, and that the file is readable")]
+    ReadFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("a skill is given as NAME=FILE, not {given:?}")]
+    BadSkill { given: String },
+
     #[error("couldn't read the backend config {path}; check the path")]
     ReadBackendConfig {
         path: PathBuf,

@@ -26,6 +26,8 @@ package struct SessionFeature {
         package var docs: DocsFeature.State
         /// Shells in the session's folder, on its host.
         package var terminals: TerminalsFeature.State
+        /// What the agent proposed for the board, shown as cards.
+        package var proposals: ProposalsFeature.State
         /// Every event but the reply's parts as it streams, oldest first.
         package var events: IdentifiedArrayOf<SessionEvent> = []
         /// The reply so far, until its whole message arrives.
@@ -52,6 +54,7 @@ package struct SessionFeature {
             review = ReviewFeature.State(sessionID: session.id, turns: session.turns)
             docs = DocsFeature.State(sessionID: session.id)
             terminals = TerminalsFeature.State(place: HostPlace(sessionID: session.id), opensFirst: true)
+            proposals = ProposalsFeature.State(sessionID: session.id)
             let saved = Shared(wrappedValue: "", .appStorage(Self.draftKey(session.id)))
             _savedDraft = saved
             draft = saved.wrappedValue
@@ -117,6 +120,14 @@ package struct SessionFeature {
             }
         }
 
+        /// Whether `call` is the agent proposing a task or a spec edit.
+        func proposes(_ call: String) -> Bool {
+            events.contains { event in
+                guard case .toolStarted(call, let tool, _) = event.kind else { return false }
+                return tool.hasSuffix("propose_task") || tool.hasSuffix("propose_spec_edit")
+            }
+        }
+
         mutating func receive(_ event: SessionEvent) {
             defer {
                 if case .turnStarted = event.kind {
@@ -172,10 +183,11 @@ package struct SessionFeature {
         /// Opens another terminal in the session's folder, and shows it.
         case newTerminalTapped
         case terminals(TerminalsFeature.Action)
+        case proposals(ProposalsFeature.Action)
 
         @CasePathable
         package enum Delegate: Equatable {
-            /// A fork was made; open it.
+            /// A fork was made, or work started on a proposed task; open it.
             case openSession(Session)
         }
     }
@@ -201,13 +213,19 @@ package struct SessionFeature {
         Scope(state: \.terminals, action: \.terminals) {
             TerminalsFeature()
         }
+        Scope(state: \.proposals, action: \.proposals) {
+            ProposalsFeature()
+        }
         Reduce { state, action in
             switch action {
             case .binding(\.draft):
                 state.$savedDraft.withLock { $0 = state.draft }
                 return .none
 
-            case .binding, .delegate, .alert, .review, .docs, .terminals:
+            case .proposals(.delegate(.openSession(let session))):
+                return .send(.delegate(.openSession(session)))
+
+            case .binding, .delegate, .alert, .review, .docs, .terminals, .proposals:
                 return .none
 
             case .newTerminalTapped:
@@ -246,6 +264,9 @@ package struct SessionFeature {
             case .received(let event):
                 state.watchRetries = 0
                 state.receive(event)
+                if case .toolCompleted(let call, true, _) = event.kind, state.proposes(call) {
+                    return .send(.proposals(.refresh))
+                }
                 // The agent may have answered the review, or changed the code
                 // or the files.
                 guard case .turnEnded = event.kind else { return .none }

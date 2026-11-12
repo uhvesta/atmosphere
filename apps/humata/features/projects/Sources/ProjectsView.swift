@@ -119,6 +119,10 @@ package struct ProjectsView: View {
                         .help("Start a session in \(project.name)")
                     }
                     .contextMenu {
+                        Button("New Session…") { store.send(.newSessionTapped(projectID: project.id)) }
+                        Button("Plan With an Agent…") { store.send(.planTapped(projectID: project.id)) }
+                        Button("Project Settings…") { store.send(.projectSettingsTapped(project.id)) }
+                        Divider()
                         Button("Delete Project…", role: .destructive) {
                             store.send(.deleteProjectTapped(project.id))
                         }
@@ -408,6 +412,12 @@ package struct NewSessionView: View {
         Form {
             Section {
                 TextField("Name", text: $store.name, prompt: Text("What it's for"))
+                if store.project != nil, store.item == nil {
+                    Toggle(isOn: $store.planning) {
+                        Text("Plan Only")
+                        Text("Proposes tasks and specs for you to apply, with no copy of the code, so it opens at once")
+                    }
+                }
                 Picker("Agent", selection: $store.backend) {
                     Text("Claude Code").tag(Backend.claude)
                     Text("Copilot").tag(Backend.copilot)
@@ -640,6 +650,11 @@ private struct SessionSheets: ViewModifier {
             }
             .sheet(item: $store.scope(state: \.destination?.compare, action: \.destination.compare)) {
                 CompareView(store: $0)
+            }
+            .sheet(
+                item: $store.scope(state: \.destination?.projectSettings, action: \.destination.projectSettings)
+            ) {
+                ProjectSettingsView(store: $0)
             }
             .alert($store.scope(state: \.destination?.alert, action: \.destination.alert))
     }

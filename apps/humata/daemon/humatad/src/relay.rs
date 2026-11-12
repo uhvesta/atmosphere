@@ -26,6 +26,10 @@ struct State {
     /// The daemon's stream of calls, and which watch it is.
     watcher: Option<(u64, mpsc::Sender<Result<pb::StreamItem, pb::Error>>)>,
     waiting: HashMap<u64, oneshot::Sender<pb::response::Kind>>,
+    /// The daemon's copy of the specs each session reads, by session, so
+    /// its agent reads them while the Mac is away. Only in memory: the
+    /// daemon copies them again when it next watches the session.
+    specs: HashMap<String, Vec<pb::Spec>>,
 }
 
 impl Relay {
@@ -75,7 +79,32 @@ impl Relay {
         Ok(())
     }
 
+    pub fn set_specs(&self, set: pb::SetSpecs) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if set.specs.is_empty() {
+            state.specs.remove(&set.session_id);
+        } else {
+            state.specs.insert(set.session_id, set.specs);
+        }
+    }
+
+    /// The host's copy of a spec its session reads; None if it has none.
+    fn copied_spec(&self, read: &pb::ReadSpec) -> Option<pb::Spec> {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state
+            .specs
+            .get(&read.session_id)?
+            .iter()
+            .find(|spec| spec.item_id == read.item_id)
+            .cloned()
+    }
+
     async fn call(&self, request: pb::request::Kind) -> Result<pb::response::Kind, RelayError> {
+        if let pb::request::Kind::ReadSpec(read) = &request
+            && let Some(spec) = self.copied_spec(read)
+        {
+            return Ok(pb::response::Kind::Spec(spec));
+        }
         if !matches!(
             request,
             pb::request::Kind::ListSessions(_)
@@ -85,6 +114,7 @@ impl Relay {
                 | pb::request::Kind::ListThreads(_)
                 | pb::request::Kind::AskPerson(_)
                 | pb::request::Kind::RequestMove(_)
+                | pb::request::Kind::ReadSpec(_)
         ) {
             return Err(RelayError::NotATool);
         }

@@ -318,6 +318,11 @@ pub enum StoreError {
         "can't bring back {title:?}: its task was removed since. Revert the change that removed the task first"
     )]
     ParentRemoved { title: String },
+
+    #[error(
+        "proposal {proposal} was applied or declined already; ask the agent for a new one to change it again"
+    )]
+    AlreadyDecided { proposal: String },
 }
 
 /// What the daemon can fail at while reaching a host.
@@ -544,6 +549,21 @@ pub enum DaemonError {
     )]
     NoRecovery { session: String },
 
+    #[error(
+        "session {session} has no proposal {proposal}; list its proposals, since the agent may have proposed it in a session forked from this one"
+    )]
+    UnknownProposal { session: String, proposal: String },
+
+    #[error(
+        "session {session} isn't in a project, so there is no board for its proposals; start a planning session in a project"
+    )]
+    NoBoard { session: String },
+
+    #[error(
+        "the agent's proposal {proposal} names no item to change, or one no longer on the board; decline it and ask the agent to propose it again"
+    )]
+    NoProposedItem { proposal: String },
+
     #[error("host {host:?} didn't answer")]
     Host {
         host: String,
@@ -580,6 +600,9 @@ impl DaemonError {
                 | StoreError::ItemInUse { .. }
                 | StoreError::ParentRemoved { .. },
             ) => pb::ErrorCode::InvalidRequest,
+            Self::Store(StoreError::AlreadyDecided { .. }) | Self::UnknownProposal { .. } => {
+                pb::ErrorCode::UnknownProposal
+            }
             Self::Store(_) => pb::ErrorCode::StorageFailed,
             Self::Refused { code, .. } => *code,
             Self::ProjectInUse { .. } => pb::ErrorCode::Busy,
@@ -609,7 +632,9 @@ impl DaemonError {
             | Self::ForHostsOnly
             | Self::NoSetupHere
             | Self::BadPort { .. }
-            | Self::OutOfScope { .. } => pb::ErrorCode::InvalidRequest,
+            | Self::OutOfScope { .. }
+            | Self::NoBoard { .. }
+            | Self::NoProposedItem { .. } => pb::ErrorCode::InvalidRequest,
             Self::Listen { .. } => pb::ErrorCode::Busy,
             Self::NotAPortStream { .. } => pb::ErrorCode::HostUnavailable,
             Self::UnknownForward { .. } => pb::ErrorCode::UnknownForward,

@@ -18,6 +18,11 @@ package final class InMemoryDaemon: Sendable {
         /// Asks to write `contents` to `path`; if allowed, writes it to the
         /// session's ``files(of:)``.
         case write(path: String, contents: String)
+        /// Proposes a task, or a subtask under `parentID`, with Humata's
+        /// propose_task tool; nothing is saved until it's applied.
+        case propose(title: String, spec: String, parentID: String? = nil)
+        /// Proposes `spec` as `itemID`'s new spec.
+        case proposeSpecEdit(itemID: String, spec: String)
     }
 
     /// A turn stopped at a permission request, with the steps after it.
@@ -109,6 +114,9 @@ package final class InMemoryDaemon: Sendable {
         var nextForward = 1
         /// The ports that answer, on each host; "" is this Mac.
         var listening: [String: Set<Int>] = [:]
+        /// What the person did about each session's proposals, by session
+        /// then proposal.
+        var decisions: [String: [String: Proposal.State]] = [:]
     }
 
     let state = LockIsolated(State())
@@ -362,6 +370,7 @@ package final class InMemoryDaemon: Sendable {
                 try self.createProject(name: name, repositories: repositories, instructions: instructions)
             },
             deleteProject: { project in try self.deleteProject(project) },
+            updateProject: { project, update in try self.updateProject(project, update) },
             sessions: { project in
                 self.state.withValue { state in
                     state.sessions.filter {
@@ -412,6 +421,12 @@ package final class InMemoryDaemon: Sendable {
             fork: { session, before, name, chatOnly in
                 try self.fork(session, before: before, name: name, chatOnly: chatOnly)
             },
+            startWork: { session, item in try self.startWork(session, on: item) },
+            proposals: { session in try self.proposals(session) },
+            applyProposal: { session, proposal, title, spec in
+                try self.applyProposal(session, proposal, title: title, spec: spec)
+            },
+            declineProposal: { session, proposal in try self.declineProposal(session, proposal) },
             update: { session, update in try self.update(session, update) },
             markSeen: { session, turns in try self.markSeen(session, turns) },
             changes: { session, query in try self.changes(session, query) },
@@ -603,14 +618,15 @@ package final class InMemoryDaemon: Sendable {
                 guard let project = state.projects.first(where: { $0.id == projectID }) else {
                     throw DaemonError.refused(.unknownProject, message: "There is no project \(projectID).")
                 }
-                directory = directory ?? Self.copy(of: project, for: id)
+                directory = directory ?? (request.planning ? "/plans/\(id)" : Self.copy(of: project, for: id))
             }
             // A chat in no folder gets one of its own.
             let folder = directory ?? "/chats/\(id)"
             let session = Session(
                 id: id, name: request.name, backend: request.backend,
                 workingDirectory: folder, model: request.model, host: request.host,
-                approvalMode: request.approvalMode, projectID: projectID, itemID: request.itemID)
+                approvalMode: request.approvalMode, projectID: projectID, itemID: request.itemID,
+                planning: request.planning)
             state.nextSession += 1
             state.sessions.append(session)
             state.histories[session.id] = []
@@ -622,7 +638,7 @@ package final class InMemoryDaemon: Sendable {
 
     /// Where a session's copy of the project is: the repository's folder in
     /// it if there is one, otherwise the folder holding each.
-    private static func copy(of project: Project, for session: String) -> String {
+    static func copy(of project: Project, for session: String) -> String {
         let folder = "/copies/\(session)"
         guard project.repositories.count == 1, let repository = project.repositories.first else { return folder }
         return "\(folder)/\(repository.name)"
@@ -698,6 +714,8 @@ package final class InMemoryDaemon: Sendable {
                 append(.assistantMessage(text), to: session)
             case .think(let text):
                 append(.reasoning(text), to: session)
+            case .propose, .proposeSpecEdit:
+                propose(step, in: session)
             case .run(let command, _), .write(let command, _):
                 let (tool, kind) = step.isRun ? ("shell", PermissionKind.shell) : ("write_file", .write)
                 let summary = step.isRun ? "Run `\(command)`" : "Write \(command)"
@@ -733,7 +751,7 @@ package final class InMemoryDaemon: Sendable {
         case .run(_, let ran): output = approved ? ran : "The person denied this."
         case .write(let path, _):
             output = approved ? "Wrote \(path)" : "The person denied this."
-        case .say, .think: return
+        case .say, .think, .propose, .proposeSpecEdit: return
         }
         let event = append(.toolCompleted(callID: callID, success: approved, output: output), to: session)
         if approved, case .write(let path, let contents) = step {
@@ -830,7 +848,7 @@ package final class InMemoryDaemon: Sendable {
         }
     }
 
-    private func fork(_ session: String, before: String?, name: String?, chatOnly: Bool) throws -> Session {
+    func fork(_ session: String, before: String?, name: String?, chatOnly: Bool) throws -> Session {
         try known(session)
         return try state.withValue { state in
             guard let parent = state.sessions.first(where: { $0.id == session }) else {
@@ -933,7 +951,7 @@ package final class InMemoryDaemon: Sendable {
 
 // The board.
 extension InMemoryDaemon {
-    private static func unknownItem(_ item: String) -> DaemonError {
+    static func unknownItem(_ item: String) -> DaemonError {
         .refused(.unknownItem, message: "There is no task or subtask \(item); list the board to find its id.")
     }
 
@@ -987,7 +1005,7 @@ extension InMemoryDaemon {
         }
     }
 
-    private func createItem(_ project: String, _ fields: ItemFields) throws -> Item {
+    func createItem(_ project: String, _ fields: ItemFields) throws -> Item {
         try state.withValue { state in
             guard state.projects.contains(where: { $0.id == project }) else {
                 throw DaemonError.refused(.unknownProject, message: "There is no project \(project).")
@@ -1013,7 +1031,7 @@ extension InMemoryDaemon {
         }
     }
 
-    private func updateItem(_ itemID: String, _ update: ItemUpdate) throws -> Item {
+    func updateItem(_ itemID: String, _ update: ItemUpdate) throws -> Item {
         let projectID = try state.withValue { state in
             guard let index = state.items.firstIndex(where: { $0.id == itemID }) else {
                 throw Self.unknownItem(itemID)
@@ -1259,7 +1277,7 @@ extension InMemoryDaemon.Step {
         switch self {
         case .run: .shell
         case .write: .write
-        case .say, .think: nil
+        case .say, .think, .propose, .proposeSpecEdit: nil
         }
     }
 }

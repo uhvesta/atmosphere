@@ -11,6 +11,9 @@ package struct DaemonClient: Sendable {
     /// Removes a project once every session in it is archived; its sessions
     /// are kept, in no project.
     package var deleteProject: @Sendable (_ project: String) async throws -> Void
+    /// Renames the project, or changes its instructions or skills, for the
+    /// turns its sessions start after.
+    package var updateProject: @Sendable (_ project: String, _ update: ProjectUpdate) async throws -> Project
     /// Every host's sessions, or only the project's.
     package var sessions: @Sendable (_ project: String?) async throws -> [Session]
     /// Starts a session, idle until the first message.
@@ -46,6 +49,17 @@ package struct DaemonClient: Sendable {
     /// when it works in the same copy as the session.
     package var fork:
         @Sendable (_ session: String, _ before: String?, _ name: String?, _ chatOnly: Bool) async throws -> Session
+    /// A working session on `item` carrying on the planning session
+    /// `session`, with all of its history and its own copy of the code.
+    package var startWork: @Sendable (_ session: String, _ item: String) async throws -> Session
+    /// What the session's agent proposed, oldest first, with what the
+    /// person did about each.
+    package var proposals: @Sendable (_ session: String) async throws -> [Proposal]
+    /// Adds the proposed task, or changes the item's spec, with `title` or
+    /// `spec` instead of the proposed ones when given.
+    package var applyProposal:
+        @Sendable (_ session: String, _ proposal: String, _ title: String?, _ spec: String?) async throws -> Item
+    package var declineProposal: @Sendable (_ session: String, _ proposal: String) async throws -> Void
     /// Renames, archives or unarchives, or marks the session as the keeper.
     package var update: @Sendable (_ session: String, _ update: SessionUpdate) async throws -> Session
     /// Records that the person has seen the session's first `turns` finished

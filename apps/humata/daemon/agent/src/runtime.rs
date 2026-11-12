@@ -717,8 +717,21 @@ impl<R: Runner> Agent for LocalAgent<R> {
         events.extend(closing(&events).into_iter().map(Event::now));
         let from = parent.lock().record.clone();
         let fork = SessionId::random();
-        let (working_directory, checkouts) = if from.repositories.is_empty() {
+        let repositories = if from.repositories.is_empty() {
+            options.repositories
+        } else {
+            from.repositories.clone()
+        };
+        let (working_directory, checkouts) = if repositories.is_empty() {
             (from.working_directory.clone(), Vec::new())
+        } else if from.repositories.is_empty() {
+            // A fork of a chat that works in code from here: its copy is
+            // made from each repository's HEAD before its first turn.
+            let workspaces = self.workspaces(&fork)?;
+            (
+                workspaces.working_directory(fork.as_str(), &repositories),
+                Vec::new(),
+            )
         } else if options.chat_only {
             (from.working_directory.clone(), from.checkouts.clone())
         } else {
@@ -747,6 +760,8 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 session: id.clone(),
                 before: options.before,
             }),
+            instructions: options.instructions.or(from.instructions),
+            repositories,
             checkouts,
             archived: false,
             keeper: false,
