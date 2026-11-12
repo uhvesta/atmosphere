@@ -55,6 +55,29 @@ final class QuickAddFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.lastAvenue, home.id.uuidString)
     }
 
+    func testAddTappedTwiceAddsOneTask() async throws {
+        _ = home
+        let store = try quickAdd()
+
+        await store.send(.binding(.set(\.avenueID, home.id)))
+        await store.send(.binding(.set(\.title, "Call the plumber")))
+        // The first save waits until the second tap is in.
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        let saves = LockIsolated(0)
+        let save = store.dependencies.store.save
+        store.dependencies.store.save = { operation in
+            saves.withValue { $0 += 1 }
+            for await _ in gate {}
+            return try await save(operation)
+        }
+        await store.send(.addTapped)
+        await store.send(.addTapped)
+        open.finish()
+        await store.finish()
+
+        XCTAssertEqual(saves.value, 1)
+    }
+
     func testTheTitleSetsTheDueDayTimeAndPriorityUnlessAPartIsKeptAsText() async throws {
         _ = (health, home)
         let store = try quickAdd()

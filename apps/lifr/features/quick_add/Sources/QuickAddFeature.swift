@@ -68,6 +68,8 @@ package struct QuickAddFeature {
         /// Titles added under `parent` so far.
         package var addedSubtasks: [String] = []
         package var error: String?
+        /// A save is on its way, so Add waits for it.
+        package var isAdding = false
         package var avenues: [Choice]
         package var projects: [UUID: [Choice]]
         /// Words in the title the person chose to keep as text.
@@ -122,7 +124,7 @@ package struct QuickAddFeature {
         }
 
         package var canAdd: Bool {
-            !finalTitle.isEmpty && (parent != nil || avenueID != nil || entry?.avenueID != nil)
+            !isAdding && !finalTitle.isEmpty && (parent != nil || avenueID != nil || entry?.avenueID != nil)
         }
     }
 
@@ -175,6 +177,7 @@ package struct QuickAddFeature {
                 guard state.canAdd else { return .none }
                 let title = state.finalTitle
                 state.error = nil
+                state.isAdding = true
                 if state.parent == nil, state.kind == .project, let avenueID = state.avenueID {
                     return .run { [store] send in
                         await send(.added(Result { try await store.createProject(title, in: avenueID) }))
@@ -191,7 +194,7 @@ package struct QuickAddFeature {
                 }
 
             case .linesPasted(let text):
-                guard state.parent == nil, state.kind == .task else { return .none }
+                guard !state.isAdding, state.parent == nil, state.kind == .task else { return .none }
                 let tasks = Self.lines(text).compactMap { line -> Workspace.NewTask? in
                     let entry = QuickEntry(line, today: state.today, in: state.workspace, monthFirst: state.monthFirst)
                     let title = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -203,6 +206,7 @@ package struct QuickAddFeature {
                     return .none
                 }
                 state.error = nil
+                state.isAdding = true
                 // Each line is a task of its own, not a parent of the next.
                 state.subtaskMode = false
                 return .run { [store, tasks] send in
@@ -210,6 +214,7 @@ package struct QuickAddFeature {
                 }
 
             case .added(.success(let saved)):
+                state.isAdding = false
                 let created = saved.change.previous.first { $0.value == nil }.flatMap { saved.workspace.tasks[$0.key] }
                 if state.parent != nil {
                     state.addedSubtasks.append(state.finalTitle)
@@ -232,6 +237,7 @@ package struct QuickAddFeature {
                 }
 
             case .added(.failure(let error)):
+                state.isAdding = false
                 state.error = (error as? LifrError)?.description ?? error.localizedDescription
                 return .none
 
