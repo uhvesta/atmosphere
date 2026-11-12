@@ -328,7 +328,7 @@ private struct MacRootView: View {
             NavigationSplitView {
                 sidebar
             } detail: {
-                NavigationStack { content.toolbar(id: "lifr") { addMenu } }
+                NavigationStack { content.toolbar { addMenu } }
             }
         } else {
             NavigationSplitView {
@@ -336,7 +336,7 @@ private struct MacRootView: View {
             } content: {
                 content
                     .navigationSplitViewColumnWidth(min: 320, ideal: 380)
-                    .toolbar(id: "lifr") { addMenu }
+                    .toolbar { addMenu }
                     #if os(macOS)
                         .onPasteCommand(of: [.utf8PlainText]) { _ in store.send(.pasteCommanded) }
                         // Text from another app lands like ⌘V; a task
@@ -379,10 +379,8 @@ private struct MacRootView: View {
             .navigationSplitViewColumnWidth(min: 180, ideal: 220)
     }
 
-    /// Add and Search, which the person can rearrange or remove with
-    /// Customize Toolbar.
-    @ToolbarContentBuilder private var addMenu: some CustomizableToolbarContent {
-        ToolbarItem(id: "add", placement: .primaryAction) {
+    @ToolbarContentBuilder private var addMenu: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
             // Named, as the Mac otherwise names it after its symbol only
             // once the first window has loaded.
             AddMenu(store: store)
@@ -390,7 +388,7 @@ private struct MacRootView: View {
                 .accessibilityIdentifier("add")
         }
         if !hasSearchField {
-            ToolbarItem(id: "search", placement: .primaryAction) {
+            ToolbarItem(placement: .primaryAction) {
                 Button("Search", systemImage: "magnifyingglass") { store.send(.goTo(.search)) }
                     .help("Search titles, details and comments (⌘F)")
                     .accessibilityIdentifier("search")
