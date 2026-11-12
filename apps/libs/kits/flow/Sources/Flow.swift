@@ -180,19 +180,29 @@
         /// drawing, such as the tab bar folding up beside a search field:
         /// draws the screen until two looks in a row match, and returns the
         /// last look if it's still moving after `timeout`.
+        /// The screen once two renders in a row match, as a PNG would keep
+        /// it. The render itself can hold colours a PNG can't, which a
+        /// recorded reference then never matches exactly.
         private func stillImage() async -> UIImage {
             let clock = ContinuousClock()
             let deadline = clock.now + timeout
             var last = render()
+            var lastData = last.pngData()
             while clock.now < deadline {
                 try? await Task.sleep(for: .milliseconds(100))
                 let next = render()
-                if next.pngData() == last.pngData() {
-                    return next
+                let nextData = next.pngData()
+                if nextData == lastData {
+                    return Self.stored(next, nextData)
                 }
                 last = next
+                lastData = nextData
             }
-            return last
+            return Self.stored(last, lastData)
+        }
+
+        private static func stored(_ image: UIImage, _ data: Data?) -> UIImage {
+            data.flatMap { UIImage(data: $0, scale: image.scale) } ?? image
         }
 
         private func render() -> UIImage {
