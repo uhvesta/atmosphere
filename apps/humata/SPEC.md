@@ -140,7 +140,7 @@ original spec; lettered ones were added since.
 | G Drive Humata from outside | Done |
 | S Settings and environments | Done |
 | H Humata's own model server | Done |
-| The demo | After H |
+| The demo | Done |
 | R Review pass | After the demo |
 
 ## Done milestones
@@ -632,6 +632,12 @@ for the owner to look at: projects for the `uhvesta/atmosphere` and
 `uhvesta/statify` repositories added by URL, a few chats with local models
 in each, and planning sessions writing Markdown specs, then opens the app on
 them.
+
+As run: an outside agent added both projects by URL, then started a Local
+Model chat and a spec-writing session in each on Apple's model, served by
+`humata-model-server`. Both specs were written. The chats tried `read_file`
+on a folder, which local-model tools can't do, and fell back to shell
+commands that wait for approval under Allow Edits; that goes to R.
 
 ### R Review pass
 
