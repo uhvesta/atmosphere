@@ -507,6 +507,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_notice_sent_again_while_it_waits_starts_one_turn() {
+        let fixture = fixture(vec![rule("", vec![write_file("a.txt", "one")])]);
+        let id = fixture.start().await;
+        fixture
+            .agent
+            .send(&id, "first".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&fixture.agent, &id, waiting).await;
+        for _ in 0..3 {
+            fixture
+                .agent
+                .send(&id, "the spec changed".into(), SendMode::EnqueueOnce)
+                .await
+                .expect("queued");
+        }
+        let events = wait_for(&fixture.agent, &id, |events| !queued_ids(events).is_empty()).await;
+        assert_eq!(queued_ids(&events).len(), 1);
+        fixture
+            .agent
+            .send(&id, "another".into(), SendMode::EnqueueOnce)
+            .await
+            .expect("queued");
+        let events = wait_for(&fixture.agent, &id, |events| queued_ids(events).len() == 2).await;
+        assert_eq!(queued_ids(&events).len(), 2);
+    }
+
+    #[tokio::test]
     async fn allowing_everything_never_waits() {
         let fixture = fixture(vec![rule(
             "",

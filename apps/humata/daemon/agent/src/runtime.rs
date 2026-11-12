@@ -561,6 +561,8 @@ impl<R: Runner> Agent for LocalAgent<R> {
         }
         match mode {
             SendMode::Enqueue => session.queue(&mut control, text, false),
+            SendMode::EnqueueOnce if control.queue.iter().any(|queued| queued.text == text) => {}
+            SendMode::EnqueueOnce => session.queue(&mut control, text, false),
             SendMode::Immediate if control.turn_open => {
                 session
                     .log

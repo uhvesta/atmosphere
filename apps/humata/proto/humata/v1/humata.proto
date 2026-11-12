@@ -707,6 +707,9 @@ enum SendMode {
   SEND_MODE_ENQUEUE = 1;
   // Steer the running turn.
   SEND_MODE_IMMEDIATE = 2;
+  // As ENQUEUE, unless the same text already waits in the queue, so a
+  // repeated notice starts one turn, not one each time.
+  SEND_MODE_ENQUEUE_ONCE = 3;
 }
 
 message SendMessage {

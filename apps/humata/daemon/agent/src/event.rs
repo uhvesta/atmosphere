@@ -218,6 +218,8 @@ pub enum SendMode {
     Enqueue,
     /// Steer the running turn; start one if none is running.
     Immediate,
+    /// As `Enqueue`, unless the same text already waits in the queue.
+    EnqueueOnce,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

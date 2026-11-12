@@ -397,7 +397,8 @@ impl Daemon {
                 let message = pb::request::Kind::SendMessage(pb::SendMessage {
                     session_id: session.clone(),
                     text: text.clone(),
-                    mode: pb::SendMode::Enqueue.into(),
+                    // Saving again before it runs adds no second turn.
+                    mode: pb::SendMode::EnqueueOnce.into(),
                 });
                 // One the host wouldn't queue hears of it with its next
                 // message instead.

@@ -186,6 +186,7 @@ pub fn approval_mode(mode: pb::ApprovalMode) -> ApprovalMode {
 pub fn send_mode(mode: pb::SendMode) -> SendMode {
     match mode {
         pb::SendMode::Immediate => SendMode::Immediate,
+        pb::SendMode::EnqueueOnce => SendMode::EnqueueOnce,
         pb::SendMode::Enqueue | pb::SendMode::Unspecified => SendMode::Enqueue,
     }
 }
