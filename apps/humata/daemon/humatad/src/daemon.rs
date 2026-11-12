@@ -711,10 +711,13 @@ impl Daemon {
                     return Err(DaemonError::NoReply);
                 }
                 // Straight to the session: its other questions stay open.
+                // Named by the request, so answering it again, as after a
+                // crash before it was marked answered, sends it once.
                 let reply = self
                     .send_message(pb::SendMessage {
                         session_id: request.session_id.clone(),
                         text: text.to_owned(),
+                        client_id: format!("answer-{}", request.id),
                         ..Default::default()
                     })
                     .await?;
