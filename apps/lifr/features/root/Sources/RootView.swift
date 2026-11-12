@@ -136,7 +136,8 @@ package struct RootView: View {
                     UndoToast(
                         message: toast.message, countsDown: !stays,
                         undo: { store.send(.undoTapped(toast.id)) },
-                        dismiss: { store.send(.toastExpired(toast.id)) })
+                        dismiss: { store.send(.toastExpired(toast.id)) }
+                    )
                     // A new change starts its own countdown.
                     .id(toast.id)
                     .task(id: toast.id) {
@@ -157,7 +158,11 @@ package struct RootView: View {
                 }
             }
             .frame(maxWidth: store.platform == .phone ? .infinity : 440)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { bannersHeight = $0 }
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+            } action: { height in
+                bannersHeight = height
+            }
             .padding(bannersAtBottom ? .bottom : .top, bannerInset)
             .padding(.trailing, bannerAlignment == .topTrailing ? 24 : 0)
             .animation(reduceMotion ? .easeInOut(duration: 0.2) : .spring, value: store.toast?.id)
