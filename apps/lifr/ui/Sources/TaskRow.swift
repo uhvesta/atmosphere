@@ -2,7 +2,7 @@ import LifrCore
 import SwiftUI
 
 /// One task in a list: status, title, code, due date, Sub task progress and
-/// priority. VoiceOver reads it as one element, with toggling Done as an
+/// priority. VoiceOver reads it as one element, with Change Status as an
 /// action.
 package struct TaskRow: View {
     package var row: TaskRowData
@@ -36,8 +36,8 @@ package struct TaskRow: View {
                     .animation(reduceMotion ? nil : .easeOut(duration: 0.3), value: row.status)
                 // One line when it fits, otherwise one item per line.
                 ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) { details }
-                    VStack(alignment: .leading, spacing: 4) { details }
+                    HStack(spacing: 8) { details(oneLine: true) }
+                    VStack(alignment: .leading, spacing: 4) { details(oneLine: false) }
                 }
                 if !row.labels.isEmpty {
                     // As many chips as fit on one line; VoiceOver reads them all.
@@ -63,13 +63,13 @@ package struct TaskRow: View {
         .accessibilityValue(row.accessibilityValue(locale))
         .accessibilityIdentifier(row.code)
         .accessibilityAddTraits(.isButton)
-        .accessibilityAction(named: row.status.isClosed ? Text("Mark To Do") : Text("Mark Done"), toggle)
+        .accessibilityAction(named: Text("Change Status"), toggle)
     }
 
     /// The code, due date, repeat, Sub task progress and priority. Each stays on one
-    /// line.
+    /// line, unless they're stacked, where one too wide for the row wraps.
     @ViewBuilder
-    private var details: some View {
+    private func details(oneLine: Bool) -> some View {
         HStack(spacing: 4) {
             if let color = row.avenueColor {
                 Circle()
@@ -78,18 +78,18 @@ package struct TaskRow: View {
             }
             TaskCodeLabel(row.code)
         }
-        .fixedSize()
+        .fixedSize(horizontal: oneLine, vertical: true)
         if let starts = row.starts {
             Text("Starts \(starts.formatted(locale))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .fixedSize()
+                .fixedSize(horizontal: oneLine, vertical: true)
         }
         if let due = row.due {
             Text(due.text(locale))
                 .font(.caption)
                 .foregroundStyle(due.isOverdue ? .red : .secondary)
-                .fixedSize()
+                .fixedSize(horizontal: oneLine, vertical: true)
         }
         if row.repeats {
             Image(systemName: "repeat")
@@ -105,10 +105,10 @@ package struct TaskRow: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
-            .fixedSize()
+            .fixedSize(horizontal: oneLine, vertical: true)
         }
         PriorityBadge(row.priority)
-            .fixedSize()
+            .fixedSize(horizontal: oneLine, vertical: true)
     }
 }
 
