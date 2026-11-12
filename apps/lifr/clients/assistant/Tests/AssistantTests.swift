@@ -189,11 +189,23 @@ final class AssistantTests: XCTestCase {
         let home = records.avenue("HOME", "Home")
         for index in 0..<30 { records.task("Late \(index)", in: home, due: -2) }
         let soon = records.task("Soon", in: home, due: 3)
+        let tools = self.tools
 
         let text = tools.overview()
 
         XCTAssertTrue(text.contains("(30)"))
         XCTAssertTrue(text.contains(code(soon)))
+        XCTAssertTrue(tools.leftTasksOut)
+    }
+
+    func testAShortOverviewLeavesNoTaskOut() {
+        let home = records.avenue("HOME", "Home")
+        records.task("Late", in: home, due: -2)
+        let tools = self.tools
+
+        _ = tools.overview()
+
+        XCTAssertFalse(tools.leftTasksOut)
     }
 
     func testTheScriptedClientStreamsTheTextThenTheWholeReply() async throws {

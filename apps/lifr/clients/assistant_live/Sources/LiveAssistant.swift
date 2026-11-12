@@ -265,6 +265,7 @@ enum LiveAssistant {
         reply.context = AssistantPrompt.contextUse(
             request, size: size, answer: reply.text, thinking: reply.thinking, budget: model.budget)
         reply.proposal = tools.proposal
+        reply.leftTasksOut = tools.leftTasksOut
         timing.finish(&reply, turn)
         continuation.yield(
             AssistantPrompt.reply(reply, changed: changed, refused: refused, refusedProjects: refusedProjects))

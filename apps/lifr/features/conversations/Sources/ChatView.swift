@@ -214,6 +214,11 @@ private struct LifrParts: ChatThreadParts {
                 systemImage: "text.badge.minus", action: "Compact"
             ) { store.send(.compactTapped) }
             Divider()
+        } else if store.leftTasksOut {
+            ChatNotice(
+                "The assistant saw only some matching tasks. Ask about one Avenue or a shorter time for the rest.",
+                systemImage: "list.bullet.indent")
+            Divider()
         }
     }
 

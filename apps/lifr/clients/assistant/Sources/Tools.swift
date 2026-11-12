@@ -14,6 +14,7 @@ package final class AssistantTools: Sendable {
     /// What the answer asked to change, in order, with how to make each.
     let proposed = LockIsolated<[(action: AssistantAction, operation: AssistantOperation)]>([])
     private let budget = LockIsolated(1_200)
+    private let cut = LockIsolated(false)
     package let now: Date
     package let timeZone: TimeZone
     /// Whether the tools may propose changes; without it they only read.
@@ -36,6 +37,9 @@ package final class AssistantTools: Sendable {
         set { current.setValue(newValue) }
     }
 
+    /// Whether a result left tasks out, so the answer may not cover them all.
+    package var leftTasksOut: Bool { cut.value }
+
     /// The most characters of each result `capped` returns.
     package var resultBudget: Int {
         get { budget.value }
@@ -47,6 +51,7 @@ package final class AssistantTools: Sendable {
     package func capped(_ result: String) -> String {
         let limit = resultBudget
         guard result.count > limit else { return result }
+        cut.setValue(true)
         let lines = result.split(separator: "\n", omittingEmptySubsequences: false)
         var kept: [Substring] = []
         var used = 0
@@ -171,7 +176,10 @@ package final class AssistantTools: Sendable {
 
     func lines(_ tasks: [LifrTask], limit: Int = AssistantTools.limit) -> String {
         var text = tasks.prefix(limit).map(line).joined(separator: "\n")
-        if tasks.count > limit { text += "\n(\(tasks.count - limit) more; search with more words)" }
+        if tasks.count > limit {
+            cut.setValue(true)
+            text += "\n(\(tasks.count - limit) more; search with more words)"
+        }
         return text
     }
 

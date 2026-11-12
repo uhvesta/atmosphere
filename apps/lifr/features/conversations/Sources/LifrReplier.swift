@@ -15,6 +15,8 @@ package struct ReplyChanges: Hashable, Sendable {
     package var plan: Plan?
     /// How many older messages it was written without, as they didn't fit.
     package var leftOut = 0
+    /// Whether the tools found more tasks than the model was shown.
+    package var leftTasksOut = false
     /// The skill Lifr picked for the message it answers, sent without one.
     package var skill: String?
 }
@@ -236,7 +238,9 @@ private struct Writer: Sendable {
                     read: $0.read, written: $0.written, reading: $0.reading, writing: $0.writing,
                     estimated: $0.estimated)
             },
-            extra: ReplyChanges(proposal: reply.proposal, plan: reply.plan, leftOut: reply.leftOut, skill: picked),
+            extra: ReplyChanges(
+                proposal: reply.proposal, plan: reply.plan, leftOut: reply.leftOut, leftTasksOut: reply.leftTasksOut,
+                skill: picked),
             prompt: reply.sent.map {
                 ReplyPrompt(
                     instructions: $0.instructions, prompt: $0.prompt, photos: $0.photos, context: reply.context)

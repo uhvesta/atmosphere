@@ -45,6 +45,9 @@ package struct ChatFeature {
         /// How many older messages the model didn't get with the last
         /// message, as they didn't fit: the chat then offers Compact.
         package var leftOut = 0
+        /// Whether the last reply was written from only some of the tasks
+        /// it looked up.
+        package var leftTasksOut = false
         /// Whether the assistant is summarizing older messages.
         package var compacting = false
         /// The day the draft's dates are read from, such as "saturday".
@@ -1144,6 +1147,7 @@ package struct ChatFeature {
         state.stopped = false
         state.reloading = true
         state.leftOut = extra?.leftOut ?? 0
+        state.leftTasksOut = extra?.leftTasksOut ?? false
         if let plan = extra?.plan { draft(plan, in: &state) }
         var effect: Effect<Action> = .run { [store] send in
             await send(.reloaded(messageID: id, Result { try await store.snapshot() }))
@@ -1277,6 +1281,7 @@ package struct ChatFeature {
     private func go(to id: UUID, in state: inout State) -> Effect<Action> {
         guard state.canGo else { return .none }
         state.leftOut = 0
+        state.leftTasksOut = false
         let changed = state.conversation.changedReplies(hiddenGoingTo: id)
         guard !changed.isEmpty else {
             state.core.rival = nil

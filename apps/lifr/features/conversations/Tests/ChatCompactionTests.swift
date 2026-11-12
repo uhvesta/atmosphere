@@ -15,7 +15,8 @@ final class ChatCompactionTests: XCTestCase {
     /// A chat whose replies say `leftOut` messages didn't fit, and whose
     /// summaries are `summary`, keeping what each request and summary got.
     private func chat(
-        leftOut: Int, summary: @escaping @Sendable () throws -> String = { "They planned the week." },
+        leftOut: Int, leftTasksOut: Bool = false,
+        summary: @escaping @Sendable () throws -> String = { "They planned the week." },
         asked: LockIsolated<[AssistantRequest]> = LockIsolated([]),
         compacted: LockIsolated<[([ChatMessage], String?)]> = LockIsolated([])
     ) -> TestStoreOf<ChatFeature> {
@@ -36,7 +37,9 @@ final class ChatCompactionTests: XCTestCase {
             $0.assistant.reply = { request in
                 asked.withValue { $0.append(request) }
                 return AssistantReplies { continuation in
-                    continuation.yield(AssistantReply(text: "Noted.", isComplete: true, leftOut: leftOut))
+                    var reply = AssistantReply(text: "Noted.", isComplete: true, leftOut: leftOut)
+                    reply.leftTasksOut = leftTasksOut
+                    continuation.yield(reply)
                     continuation.finish()
                 }
             }
@@ -70,6 +73,16 @@ final class ChatCompactionTests: XCTestCase {
         let left = chat(leftOut: 2)
         await send(["Plan the week", "Add laundry"], in: left)
         XCTAssertTrue(left.state.offersCompact)
+    }
+
+    func testAReplyFromCutLookupsSaysSo() async {
+        let store = chat(leftOut: 0)
+        await send(["Plan the week"], in: store)
+        XCTAssertFalse(store.state.leftTasksOut)
+
+        let cut = chat(leftOut: 0, leftTasksOut: true)
+        await send(["Plan the week"], in: cut)
+        XCTAssertTrue(cut.state.leftTasksOut)
     }
 
     func testCompactSummarizesAllButTheLatestExchangeAndSendsTheSummaryInstead() async throws {

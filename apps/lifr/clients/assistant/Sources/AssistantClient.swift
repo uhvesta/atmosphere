@@ -360,6 +360,9 @@ package struct AssistantReply: Hashable, Sendable {
     /// How many of the request's messages the model didn't get, as they
     /// didn't fit: older ones, which a summary can stand in for.
     package var leftOut = 0
+    /// Whether what the tools found was cut short, so the answer may not
+    /// cover every task it's about.
+    package var leftTasksOut = false
     /// How much of the model's window the turn took, estimated, once the
     /// reply is complete.
     package var context: ContextUse?
