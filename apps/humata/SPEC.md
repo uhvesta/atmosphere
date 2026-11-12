@@ -683,9 +683,9 @@ waiting on you. It kept these, in build order:
 - [x] Agents on a host can ask and request moves while the Mac is away
   (queued on the host, sent on reconnect), and read the live spec when
   the Mac is there
-- [ ] New Session never sends one agent's model to another, and a Local Model
+- [x] New Session never sends one agent's model to another, and a Local Model
   session can't start without a model
-- [ ] Local models can list a folder
+- [x] Local models can list a folder
 - [ ] Local-model sessions get Humata's tools, so they can plan and propose
 - [ ] The inbox separates Blocked on You from To Look Over, rows say what
   happened, the Dock counts only the blocked, reply notices are silent,

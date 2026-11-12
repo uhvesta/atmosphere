@@ -500,6 +500,57 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(daemon.sessions.first?.model, "gpt-5-mini")
     }
 
+    func testALocalModelSessionTakesAModelItsServerRunsNeverAnotherAgents() async throws {
+        let daemon = InMemoryDaemon()
+        daemon.setModels([ModelChoice(id: "apple", name: "Apple")], for: .local)
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        var initial = NewSessionFeature.State(project: project)
+        initial.backend = .claude
+        let store = TestStore(initialState: initial) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.binding.model, "opus")
+        await store.send(\.binding.backend, .local)
+        await store.receive(\.modelsLoaded)
+        XCTAssertEqual(store.state.model, "apple")
+
+        daemon.setModels([], for: .local)
+        await store.send(\.binding.backend, .claude)
+        await store.receive(\.modelsLoaded)
+        await store.send(\.binding.backend, .local)
+        await store.receive(\.modelsLoaded)
+        XCTAssertFalse(store.state.canStart)
+        await store.send(.startTapped)
+        XCTAssertTrue(daemon.sessions.isEmpty)
+    }
+
+    func testAnAgentKeepsATypedModelItsListLacks() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        var initial = NewSessionFeature.State(project: project)
+        initial.backend = .claude
+        let store = TestStore(initialState: initial) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.binding.model, "claude-next")
+        await store.send(.task)
+        await store.receive(\.modelsLoaded)
+        XCTAssertFalse(store.state.models.contains(where: { $0.id == "claude-next" }))
+        await store.send(.startTapped)
+        await store.receive(\.delegate.started)
+        XCTAssertEqual(daemon.sessions.first?.model, "claude-next")
+    }
+
     func testTheNextSessionStartsFromWhatTheLastOneDid() async throws {
         let daemon = InMemoryDaemon()
         let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")

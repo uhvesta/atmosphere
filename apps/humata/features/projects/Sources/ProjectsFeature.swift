@@ -692,6 +692,10 @@ package struct NewSessionFeature {
         @Shared(.appStorage("newSessionHost")) var lastHost: String?
         @Shared(.appStorage("newSessionModelServer")) var lastModelServer = ""
 
+        /// A local model server has no default model, so one must be named.
+        package var needsModel: Bool { backend == .local && model.trimmed.isEmpty }
+        package var canStart: Bool { !starting && !needsModel }
+
         /// Whether the backend can use a model server of the person's.
         package var takesModelServer: Bool { backend == .copilot || backend == .local }
 
@@ -748,7 +752,12 @@ package struct NewSessionFeature {
         BindingReducer()
         Reduce { state, action in
             switch action {
-            case .binding(\.backend), .binding(\.host):
+            case .binding(\.backend):
+                // One agent's model means nothing to another.
+                state.model = ""
+                return loadModels(&state)
+
+            case .binding(\.host):
                 return loadModels(&state)
 
             case .binding(\.modelServer):
@@ -777,6 +786,13 @@ package struct NewSessionFeature {
             case .modelsLoaded(.success(let models)):
                 state.models = models
                 state.modelsUnavailable = nil
+                // Others take a typed name their list lacks; a local server
+                // runs only what it has.
+                if state.backend == .local, let first = models.first,
+                    !models.contains(where: { $0.id == state.model.trimmed })
+                {
+                    state.model = first.id
+                }
                 return .none
 
             case .modelsLoaded(.failure(let error)):
@@ -785,7 +801,7 @@ package struct NewSessionFeature {
                 return .none
 
             case .startTapped:
-                guard !state.starting else { return .none }
+                guard state.canStart else { return .none }
                 state.starting = true
                 state.$lastBackend.withLock { $0 = state.backend }
                 state.$lastModel.withLock { $0 = state.model }

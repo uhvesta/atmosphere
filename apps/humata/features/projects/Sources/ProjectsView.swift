@@ -487,6 +487,11 @@ package struct NewSessionView: View {
                                 .lineLimit(2)
                                 .help(reason)
                         }
+                        if store.needsModel {
+                            Text("Name one the model server runs; it has no default.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 if store.takesModelServer {
@@ -560,7 +565,7 @@ package struct NewSessionView: View {
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Start") { store.send(.startTapped) }
-                    .disabled(store.starting)
+                    .disabled(!store.canStart)
             }
         }
         .alert($store.scope(state: \.alert, action: \.alert))
