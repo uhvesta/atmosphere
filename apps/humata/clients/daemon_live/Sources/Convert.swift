@@ -26,6 +26,7 @@ extension ErrorCode {
             case .unknownImport: .unknownImport
             case .alreadyImported: .alreadyImported
             case .unknownRequest: .unknownRequest
+            case .unknownTerminal: .unknownTerminal
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -505,5 +506,36 @@ extension ImportableSession {
         self.init(
             backend: backend, id: session.id, workingDirectory: session.workingDirectory, summary: session.summary,
             updated: Date(timeIntervalSince1970: Double(session.updatedUnixMs) / 1000))
+    }
+}
+
+extension Terminal {
+    init(_ terminal: Humata_V1_Terminal) {
+        self.init(
+            id: terminal.id, host: terminal.host.isEmpty ? nil : terminal.host,
+            sessionID: terminal.sessionID.isEmpty ? nil : terminal.sessionID, folder: terminal.folder,
+            shell: terminal.shell, opened: Date(timeIntervalSince1970: Double(terminal.openedUnixMs) / 1000),
+            exitCode: terminal.exited ? Int(terminal.exitCode) : nil)
+    }
+}
+
+extension FileContents {
+    init(_ contents: Humata_V1_FileContents) {
+        self.init(
+            path: contents.path, text: contents.binary ? nil : contents.text,
+            data: contents.data.isEmpty ? nil : contents.data, size: contents.size, truncated: contents.truncated)
+    }
+}
+
+extension Folder {
+    init(_ folder: Humata_V1_Folder) {
+        self.init(
+            root: folder.root, directory: folder.directory,
+            entries: folder.entries.map {
+                FolderEntry(
+                    name: $0.name, isDirectory: $0.isDirectory, size: $0.size,
+                    modified: Date(timeIntervalSince1970: Double($0.modifiedUnixMs) / 1000))
+            },
+            truncated: folder.truncated)
     }
 }

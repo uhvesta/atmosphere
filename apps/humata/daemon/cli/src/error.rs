@@ -67,6 +67,15 @@ pub enum CliError {
     #[error("{name} isn't set in this shell; set it, or pass --set {name}=VALUE")]
     NoVariable { name: String },
 
+    #[error(
+        "terminal {terminal} didn't show {until:?} within {seconds} seconds; what it showed is above. Wait longer with --timeout, or check the command typed into it"
+    )]
+    TerminalTimedOut {
+        terminal: String,
+        until: String,
+        seconds: u64,
+    },
+
     #[error("host {host:?} can't be reached; see the problem above")]
     Unreachable { host: String },
 }

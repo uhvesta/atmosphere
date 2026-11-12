@@ -446,6 +446,75 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// A session's terminal opens in its folder with ⌘T and runs what's
+    /// typed; the host's Terminals list it beside one opened outside any
+    /// session.
+    func testTerminals() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("build-box", "build-box")
+        _ = try await daemon.client.installHost("build-box")
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .claude, name: "Profile the build", host: "build-box", projectID: project.id))
+        let logs = try await daemon.client.openTerminal(HostPlace(host: "build-box", folder: "/var/log"), .standard)
+        try await daemon.client.typeInTerminal(logs, Data("echo tailing the build logs\r".utf8))
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("terminals", AppView(store: store))
+
+        try await until { store.daemon == .running && store.sidebar.sessions.count == 1 }
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { store.session != nil }
+        store.send(.session(.presented(.newTerminalTapped)))
+        try await until { store.session?.terminals.current != nil }
+        let terminal = try XCTUnwrap(store.session?.terminals.selected)
+        for line in ["pwd", "echo hello from build-box", "cargo --version"] {
+            store.send(
+                .session(
+                    .presented(.terminals(.terminals(.element(id: terminal, action: .typed(Data((line + "\r").utf8))))))
+                ))
+        }
+        try await until {
+            String(bytes: store.session?.terminals.current?.screen.data ?? Data(), encoding: .utf8)?
+                .contains("command not found") == true
+        }
+        await flow.step("session terminal")
+
+        store.send(.sidebar(.selected(.hosts)))
+        try await until { store.hosts != nil }
+        store.send(.hosts(.presented(.selected("build-box"))))
+        store.send(.hosts(.presented(.paneSelected(.terminals))))
+        try await until { store.hosts?.terminals?.tabs.count == 2 }
+        store.send(.hosts(.presented(.terminals(.selected(logs.id)))))
+        try await until {
+            String(bytes: store.hosts?.terminals?.current?.screen.data ?? Data(), encoding: .utf8)?
+                .contains("tailing") == true
+        }
+        await flow.step("host terminals")
+
+        daemon.addFile(
+            "/home/me/notes.md", Data("# Build box\n\nCaches live in `~/.cache/bazel`.\n".utf8), on: "build-box")
+        daemon.addFile(
+            "/home/me/scripts/warm.sh", Data("#!/bin/sh\n# Warms the cache.\nbazel build //...\n".utf8),
+            on: "build-box")
+        daemon.addFile("/home/me/.bashrc", Data("export PATH\n".utf8), on: "build-box")
+        store.send(.hosts(.presented(.paneSelected(.files))))
+        try await until { store.hosts?.files?.root != nil }
+        store.send(.hosts(.presented(.files(.folderToggled("scripts")))))
+        try await until { store.hosts?.files?.folders["scripts"] != nil }
+        store.send(.hosts(.presented(.files(.fileSelected("scripts/warm.sh")))))
+        try await until { store.hosts?.files?.contents != nil }
+        await flow.step("host files")
+        flow.finish()
+    }
+
     /// Claude Code and Copilot sessions started outside Humata are listed,
     /// and one is brought in with its history, into a project.
     func testImportingASession() async throws {

@@ -5,6 +5,7 @@ import ComposableArchitecture
 import HumataDaemonClient
 import HumataDocs
 import HumataReview
+import HumataTerminal
 import InferenceKit
 import SwiftUI
 
@@ -27,6 +28,8 @@ package struct SessionView: View {
                 ReviewView(store: store.scope(state: \.review, action: \.review))
             } else if store.tab == .files {
                 DocsView(store: store.scope(state: \.docs, action: \.docs))
+            } else if store.tab == .terminal {
+                TerminalsView(store: store.scope(state: \.terminals, action: \.terminals))
             } else {
                 chat
             }
@@ -67,6 +70,7 @@ package struct SessionView: View {
         case .chat: "Chat"
         case .review: store.review.pending > 0 ? "Review (\(store.review.pending))" : "Review"
         case .files: store.docs.drafts.isEmpty ? "Files" : "Files (\(store.docs.drafts.count))"
+        case .terminal: "Terminal"
         }
     }
 
@@ -88,7 +92,7 @@ package struct SessionView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
-            .help("The chat, the session's changes to review, or the files in its folder (⌘1, ⌘2, ⌘3)")
+            .help("The chat, the session's changes to review, the files in its folder, or a terminal there (⌘1 to ⌘4)")
             .background { tabShortcuts }
             Spacer()
             if let usage = store.usage {
@@ -133,9 +137,14 @@ package struct SessionView: View {
         .padding(.vertical, 10)
     }
 
-    /// ⌘1, ⌘2 and ⌘3 for the views, in the order the picker shows them.
+    /// ⌘1, ⌘2 and so on for the views, in the order the picker shows them,
+    /// and ⌘T for another terminal.
     private var tabShortcuts: some View {
         ZStack {
+            if store.tabs.contains(.terminal) {
+                Button("New Terminal") { store.send(.newTerminalTapped) }
+                    .keyboardShortcut("t", modifiers: .command)
+            }
             ForEach(Array(store.tabs.enumerated()), id: \.element) { index, tab in
                 Button(title(tab)) { store.send(.tabPicked(tab)) }
                     .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)

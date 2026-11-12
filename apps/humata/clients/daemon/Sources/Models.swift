@@ -854,6 +854,7 @@ package enum ErrorCode: Hashable, Sendable {
     case alreadyImported
     /// The request was answered already.
     case unknownRequest
+    case unknownTerminal
     case unknown
 }
 
@@ -1033,10 +1034,128 @@ package struct ChatFiles: Hashable, Sendable {
 /// A file's contents; nil when it isn't text.
 package struct FileContents: Hashable, Sendable {
     package var path: String
+    /// nil when it isn't text.
     package var text: String?
+    /// An image's bytes, when it was small enough to send.
+    package var data: Data?
+    package var size: UInt64
+    /// Only the start of a large text file was read.
+    package var truncated: Bool
 
-    package init(path: String, text: String?) {
+    package init(path: String, text: String?, data: Data? = nil, size: UInt64? = nil, truncated: Bool = false) {
         self.path = path
         self.text = text
+        self.data = data
+        self.size = size ?? UInt64(text?.utf8.count ?? data?.count ?? 0)
+        self.truncated = truncated
+    }
+}
+
+/// One level of a folder on a host: folders first, then files.
+package struct Folder: Equatable, Sendable {
+    /// The absolute folder browsed from.
+    package var root: String
+    /// Under `root`, with "/" between folders; empty for the root itself.
+    package var directory: String
+    package var entries: [FolderEntry]
+    /// There were more than are listed.
+    package var truncated: Bool
+
+    package init(root: String, directory: String, entries: [FolderEntry], truncated: Bool = false) {
+        self.root = root
+        self.directory = directory
+        self.entries = entries
+        self.truncated = truncated
+    }
+}
+
+package struct FolderEntry: Equatable, Sendable {
+    package var name: String
+    package var isDirectory: Bool
+    package var size: UInt64
+    package var modified: Date
+
+    package init(name: String, isDirectory: Bool, size: UInt64 = 0, modified: Date = Date(timeIntervalSince1970: 0)) {
+        self.name = name
+        self.isDirectory = isDirectory
+        self.size = size
+        self.modified = modified
+    }
+}
+
+/// A shell on a host, in a session's folder or any of the host's. It keeps
+/// running while nothing shows it, until it exits or is closed.
+package struct Terminal: Equatable, Identifiable, Sendable {
+    package var id: String
+    /// Nil for this Mac.
+    package var host: String?
+    /// The session it was opened for, if any.
+    package var sessionID: String?
+    /// Where it started, on the host.
+    package var folder: String
+    package var shell: String
+    package var opened: Date
+    /// How the shell exited, once it has; -1 when a signal ended it.
+    package var exitCode: Int?
+
+    package init(
+        id: String, host: String?, sessionID: String?, folder: String, shell: String, opened: Date,
+        exitCode: Int? = nil
+    ) {
+        self.id = id
+        self.host = host
+        self.sessionID = sessionID
+        self.folder = folder
+        self.shell = shell
+        self.opened = opened
+        self.exitCode = exitCode
+    }
+
+    /// The folder's last part, to name the terminal by.
+    package var title: String {
+        let name = (folder as NSString).lastPathComponent
+        return name.isEmpty ? folder : name
+    }
+}
+
+/// A folder on a host to open a terminal in or browse: a session's folder
+/// on its host, else `folder` on `host`, else the host's home.
+package struct HostPlace: Equatable, Sendable {
+    package var host: String?
+    package var sessionID: String?
+    package var folder: String?
+
+    package init(host: String? = nil, sessionID: String? = nil, folder: String? = nil) {
+        self.host = host
+        self.sessionID = sessionID
+        self.folder = folder
+    }
+}
+
+package struct TerminalSize: Equatable, Sendable {
+    package var rows: Int
+    package var columns: Int
+
+    package init(rows: Int, columns: Int) {
+        self.rows = rows
+        self.columns = columns
+    }
+
+    package static let standard = TerminalSize(rows: 24, columns: 80)
+}
+
+/// What a terminal printed.
+package struct TerminalOutput: Equatable, Sendable {
+    package var data: Data
+    /// The data is the terminal's recent output from the start: what was
+    /// shown goes first.
+    package var replay: Bool
+    /// Set once the shell has exited; nothing follows.
+    package var exitCode: Int?
+
+    package init(data: Data, replay: Bool = false, exitCode: Int? = nil) {
+        self.data = data
+        self.replay = replay
+        self.exitCode = exitCode
     }
 }

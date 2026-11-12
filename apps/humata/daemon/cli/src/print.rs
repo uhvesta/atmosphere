@@ -172,6 +172,25 @@ pub fn files(files: &pb::Files) -> String {
     out
 }
 
+/// One line per entry: a folder's name ends in "/", a file's has its size.
+pub fn folder(folder: &pb::Folder) -> String {
+    let mut out: String = folder
+        .entries
+        .iter()
+        .map(|entry| {
+            if entry.is_directory {
+                format!("{:>10}  {}/\n", "", entry.name)
+            } else {
+                format!("{:>10}  {}\n", entry.size, entry.name)
+            }
+        })
+        .collect();
+    if folder.truncated {
+        out.push_str("(more entries not listed)\n");
+    }
+    out
+}
+
 pub fn thread(thread: &pb::ReviewThread) -> String {
     let file = thread
         .file
@@ -305,6 +324,21 @@ pub fn inbox_entry(entry: &pb::InboxEntry) -> String {
 
 /// A recovery copy: its session, name, host, the turns it has of the
 /// session's, and whether its host lost the session.
+pub fn terminal(terminal: &pb::Terminal) -> String {
+    let state = if terminal.exited {
+        format!("exited {}", terminal.exit_code)
+    } else {
+        "running".to_owned()
+    };
+    format!(
+        "{}\t{}\t{}\t{}\t{state}",
+        terminal.id,
+        or_dash(&terminal.host),
+        or_dash(&terminal.session_id),
+        terminal.folder
+    )
+}
+
 pub fn recovery(recovery: &pb::Recovery) -> String {
     let state = if recovery.on_host { "on host" } else { "lost" };
     format!(

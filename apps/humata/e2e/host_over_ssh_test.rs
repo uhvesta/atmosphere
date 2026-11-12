@@ -7,11 +7,12 @@
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
-use std::time::{Duration, Instant};
 
 use common::{Humata, pairs};
+use ssh_host::{DetachedHost, cut_ssh, eventually, stop_host, succeeds};
 
 mod common;
+mod ssh_host;
 
 const SCRIPT: &str = r#"{"rules": [
     {"when": "hold", "steps": [{"step": "wait_for", "path": "never"}]},
@@ -22,20 +23,6 @@ const SCRIPT: &str = r#"{"rules": [
     {"when": "hello", "steps": [{"step": "say", "text": "hi there"}]}
 ]}"#;
 
-/// Runs `humata` and says whether it succeeded, for commands that should fail.
-fn succeeds(humata: &Humata, arguments: &[&str]) -> bool {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| humata.run(arguments))).is_ok()
-}
-
-/// Asks `check` every so often until it is true.
-fn eventually(what: &str, mut check: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !check() {
-        assert!(Instant::now() < deadline, "{what} never happened");
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
 fn session_line(humata: &Humata, session: &str) -> String {
     humata
         .run(&["sessions"])
@@ -43,50 +30,6 @@ fn session_line(humata: &Humata, session: &str) -> String {
         .find(|line| line.starts_with(session))
         .map(str::to_owned)
         .unwrap_or_default()
-}
-
-/// Stops the `ssh` processes that reach humatad in `folder`, as a dropped
-/// network would, and says how many there were.
-fn cut_ssh(folder: &Path) -> usize {
-    let pattern = format!("{}/bin/humatad", folder.display());
-    let output = Command::new("pgrep")
-        .args(["-f", &pattern])
-        .output()
-        .unwrap_or_else(|error| panic!("{error}"));
-    let mut cut = 0;
-    for pid in String::from_utf8_lossy(&output.stdout).split_whitespace() {
-        let name = Command::new("ps")
-            .args(["-o", "comm=", "-p", pid])
-            .output()
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-            .unwrap_or_default();
-        if name.ends_with("ssh") {
-            let status = Command::new("kill").arg(pid).status();
-            assert!(status.is_ok_and(|status| status.success()));
-            cut += 1;
-        }
-    }
-    cut
-}
-
-/// Stops the host humatad in `folder` runs on its socket, as a crash or a
-/// reboot would, and says whether one was running.
-fn stop_host(folder: &Path) -> bool {
-    let pattern = format!("{}/bin/humatad host --socket", folder.display());
-    Command::new("pkill")
-        .args(["-KILL", "-f", &pattern])
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-/// Stops the host in its folder when the test ends, since it outlives the
-/// connections to it.
-struct DetachedHost<'a>(&'a Path);
-
-impl Drop for DetachedHost<'_> {
-    fn drop(&mut self) {
-        stop_host(self.0);
-    }
 }
 
 fn git(path: &Path, arguments: &[&str]) {

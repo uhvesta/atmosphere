@@ -1,12 +1,15 @@
 import ComposableArchitecture
 import Foundation
+import HumataBrowser
 import HumataDaemonClient
+import HumataTerminal
 
 /// The machines sessions run on over SSH: each one's health, checked when
 /// the list shows and on request; adding one from ~/.ssh/config; installing
 /// Humata's program on one; its agents' variables and setup script; the
 /// sessions on it that couldn't be opened; the Mac's copies of its sessions,
-/// to restore those it lost or move them elsewhere; and removing one.
+/// to restore those it lost or move them elsewhere; its terminals; its files; and
+/// removing one.
 @Reducer
 package struct HostsFeature {
     @ObservableState
@@ -26,6 +29,12 @@ package struct HostsFeature {
         package var restoring: Set<Recovery.ID> = []
         /// Why the hosts couldn't be read, and what to do about it.
         package var failure: String?
+        /// What the selected host shows: its settings, terminals or files.
+        package var pane = Pane.settings
+        /// The selected host's terminals, whether or not a session opened them.
+        package var terminals: TerminalsFeature.State?
+        /// The selected host's files, from its home.
+        package var files: FileBrowserFeature.State?
         @Presents package var destination: Destination.State?
 
         package init() {}
@@ -33,6 +42,12 @@ package struct HostsFeature {
         package var selected: RemoteHost? {
             selection.flatMap { $0 == coordinator.id ? coordinator : hosts[id: $0] }
         }
+    }
+
+    package enum Pane: Hashable, Sendable {
+        case settings
+        case terminals
+        case files
     }
 
     /// What's known of a host's health.
@@ -80,6 +95,9 @@ package struct HostsFeature {
         case restoreFailed(RemoteHost.ID, [Recovery.ID], title: String, message: String)
         case failed(title: String, message: String)
         case editor(HostEditorFeature.Action)
+        case paneSelected(Pane)
+        case terminals(TerminalsFeature.Action)
+        case files(FileBrowserFeature.Action)
         case destination(PresentationAction<Destination.Action>)
     }
 
@@ -293,17 +311,27 @@ package struct HostsFeature {
                 // Saving sets it up again, which the check reports on.
                 return check(host.id, in: &state)
 
-            case .editor, .destination:
+            case .paneSelected(let pane):
+                state.pane = pane
+                return .none
+
+            case .editor, .destination, .terminals, .files:
                 return .none
             }
         }
         .ifLet(\.editor, action: \.editor) { HostEditorFeature() }
+        .ifLet(\.terminals, action: \.terminals) { TerminalsFeature() }
+        .ifLet(\.files, action: \.files) { FileBrowserFeature() }
         .ifLet(\.$destination, action: \.destination)
     }
 
     private func select(_ id: RemoteHost.ID?, in state: inout State) -> Effect<Action> {
         state.selection = id
         state.editor = state.selected.map(HostEditorFeature.State.init)
+        state.terminals = id.map {
+            TerminalsFeature.State(place: HostPlace(host: $0.isEmpty ? nil : $0), opensFirst: false)
+        }
+        state.files = id.map { FileBrowserFeature.State(place: HostPlace(host: $0.isEmpty ? nil : $0)) }
         state.skipped = []
         state.recoveries = []
         guard let id else { return .none }

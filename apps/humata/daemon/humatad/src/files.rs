@@ -1,5 +1,7 @@
-//! The files in a session's folder, to browse and read.
+//! The files in a session's folder or any folder on a host, to browse and
+//! read.
 
+use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -10,8 +12,16 @@ use crate::error::HostError;
 /// The most files listed; a folder with more lists these and says so.
 const MOST_FILES: usize = 2000;
 
-/// The largest file read whole.
+/// The most of a text file read; a larger one is cut there.
 const LARGEST_FILE: u64 = 1024 * 1024;
+
+/// The largest image sent to be shown.
+const LARGEST_IMAGE: u64 = 8 * 1024 * 1024;
+
+/// Files shown as images, by extension.
+const IMAGES: [&str; 9] = [
+    "png", "jpg", "jpeg", "gif", "webp", "heic", "tif", "tiff", "bmp",
+];
 
 /// Every file under `root` but hidden ones and those in hidden folders,
 /// such as `.git`, by path.
@@ -50,12 +60,7 @@ pub fn list(root: &Path) -> Result<pb::Files, HostError> {
                 files.push(pb::ChatFile {
                     path: slashed(&relative),
                     size: metadata.as_ref().map_or(0, std::fs::Metadata::len),
-                    modified_unix_ms: metadata
-                        .and_then(|metadata| metadata.modified().ok())
-                        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                        .map_or(0, |since| {
-                            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
-                        }),
+                    modified_unix_ms: metadata.as_ref().map_or(0, unix_ms),
                 });
             }
         }
@@ -64,13 +69,87 @@ pub fn list(root: &Path) -> Result<pb::Files, HostError> {
     Ok(pb::Files { files, truncated })
 }
 
-/// The file at `path` under `root`, which it mustn't lead out of.
+/// One level of `directory` under `root`, which it mustn't lead out of:
+/// folders first, then files, without hidden ones.
+pub fn folder(root: &Path, directory: &str) -> Result<pb::Folder, HostError> {
+    let relative = Path::new(directory);
+    if !plain(relative) {
+        return Err(HostError::NotInFolder {
+            path: directory.to_owned(),
+        });
+    }
+    let path = root.join(relative);
+    let inside = match (path.canonicalize(), root.canonicalize()) {
+        (Ok(folder), Ok(root)) => folder.starts_with(root),
+        _ => false,
+    };
+    if !inside {
+        return Err(HostError::NotInFolder {
+            path: directory.to_owned(),
+        });
+    }
+    let read = |source| HostError::ReadFolder {
+        path: path.clone(),
+        source,
+    };
+    let mut entries = Vec::new();
+    let mut truncated = false;
+    for entry in std::fs::read_dir(&path).map_err(read)? {
+        let entry = entry.map_err(read)?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        if entries.len() == MOST_FILES {
+            truncated = true;
+            break;
+        }
+        // A link is followed for what it is, but reading it is still
+        // checked against the root.
+        let Ok(metadata) = std::fs::metadata(entry.path()) else {
+            continue;
+        };
+        entries.push(pb::FolderEntry {
+            name,
+            is_directory: metadata.is_dir(),
+            size: if metadata.is_dir() { 0 } else { metadata.len() },
+            modified_unix_ms: unix_ms(&metadata),
+        });
+    }
+    entries.sort_by(|a, b| {
+        b.is_directory
+            .cmp(&a.is_directory)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(pb::Folder {
+        root: root.to_string_lossy().into_owned(),
+        directory: slashed(relative),
+        entries,
+        truncated,
+    })
+}
+
+/// Whether `path` stays where it starts: no `..`, no root, no prefix.
+fn plain(path: &Path) -> bool {
+    path.components()
+        .all(|component| matches!(component, Component::Normal(_)))
+}
+
+fn unix_ms(metadata: &std::fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        })
+}
+
+/// The file at `path` under `root`, which it mustn't lead out of: its text,
+/// cut if it's large, or an image's bytes.
 pub fn read(root: &Path, path: &str) -> Result<pb::FileContents, HostError> {
     let relative = Path::new(path);
-    let plain = relative
-        .components()
-        .all(|component| matches!(component, Component::Normal(_)));
-    if path.is_empty() || !plain {
+    if path.is_empty() || !plain(relative) {
         return Err(HostError::NotInFolder {
             path: path.to_owned(),
         });
@@ -90,27 +169,49 @@ pub fn read(root: &Path, path: &str) -> Result<pb::FileContents, HostError> {
             path: path.to_owned(),
         });
     }
-    if metadata.len() > LARGEST_FILE {
-        return Err(HostError::FileTooLarge {
-            path: full,
-            size: metadata.len(),
-        });
-    }
-    let bytes = std::fs::read(&full).map_err(|source| HostError::ReadFile {
+    let size = metadata.len();
+    let image = relative
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| IMAGES.contains(&extension.to_lowercase().as_str()));
+    let failed = |source| HostError::ReadFile {
         path: full.clone(),
         source,
-    })?;
-    Ok(match String::from_utf8(bytes) {
-        Ok(text) => pb::FileContents {
+    };
+    if image {
+        let data = if size <= LARGEST_IMAGE {
+            std::fs::read(&full).map_err(failed)?
+        } else {
+            Vec::new()
+        };
+        return Ok(pb::FileContents {
             path: path.to_owned(),
-            text,
-            binary: false,
-        },
-        Err(_) => pb::FileContents {
-            path: path.to_owned(),
-            text: String::new(),
             binary: true,
-        },
+            data,
+            size,
+            ..pb::FileContents::default()
+        });
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(&full)
+        .and_then(|file| file.take(LARGEST_FILE).read_to_end(&mut bytes))
+        .map_err(failed)?;
+    let truncated = size > LARGEST_FILE;
+    // A cut can fall inside a character: what's before it is still text.
+    let text = match std::str::from_utf8(&bytes) {
+        Ok(text) => Some(text),
+        Err(error) if truncated && error.error_len().is_none() => {
+            std::str::from_utf8(&bytes[..error.valid_up_to()]).ok()
+        }
+        Err(_) => None,
+    };
+    Ok(pb::FileContents {
+        path: path.to_owned(),
+        text: text.unwrap_or_default().to_owned(),
+        binary: text.is_none(),
+        size,
+        truncated: truncated && text.is_some(),
+        ..pb::FileContents::default()
     })
 }
 
@@ -163,6 +264,54 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn a_folder_lists_one_level_folders_first() {
+        let dir = folder();
+        std::fs::write(dir.path().join("Zeta.txt"), "z").expect("a file");
+        let listed = folder_at(dir.path(), "");
+        let names: Vec<_> = listed
+            .entries
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry.is_directory))
+            .collect();
+        assert_eq!(
+            names,
+            [("docs", true), ("plan.md", false), ("Zeta.txt", false)]
+        );
+        let notes = folder_at(dir.path(), "docs/notes");
+        assert_eq!(notes.entries.len(), 1);
+        assert_eq!(notes.entries[0].size, 1);
+        for outside in ["..", "docs/../..", "/etc"] {
+            assert!(
+                matches!(
+                    super::folder(dir.path(), outside),
+                    Err(HostError::NotInFolder { .. })
+                ),
+                "{outside}"
+            );
+        }
+    }
+
+    fn folder_at(root: &Path, directory: &str) -> pb::Folder {
+        super::folder(root, directory).expect("listed")
+    }
+
+    #[test]
+    fn a_large_text_file_is_cut_and_an_image_is_sent_whole() {
+        let dir = folder();
+        let large = "é".repeat(usize::try_from(LARGEST_FILE).expect("small") / 2 + 1);
+        std::fs::write(dir.path().join("large.txt"), &large).expect("a file");
+        let contents = read(dir.path(), "large.txt").expect("read");
+        assert!(contents.truncated && !contents.binary);
+        assert!(contents.text.len() < large.len() && large.starts_with(&contents.text));
+        assert_eq!(contents.size, large.len() as u64);
+
+        std::fs::write(dir.path().join("photo.PNG"), [0x89, b'P', b'N', b'G']).expect("a file");
+        let image = read(dir.path(), "photo.PNG").expect("read");
+        assert!(image.binary);
+        assert_eq!(image.data, [0x89, b'P', b'N', b'G']);
     }
 
     #[test]

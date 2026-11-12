@@ -9,6 +9,9 @@ pub enum HostError {
     #[error(transparent)]
     Agent(#[from] AgentError),
 
+    #[error(transparent)]
+    Terminal(#[from] crate::terminals::TerminalError),
+
     #[error(
         "this host doesn't run the {backend} backend; pick one it has, or update humatad on this host"
     )]
@@ -37,13 +40,8 @@ pub enum HostError {
         source: std::io::Error,
     },
 
-    #[error("{path:?} isn't a file in the session's folder; give a path from its list of files")]
+    #[error("{path:?} isn't in the folder being browsed; give a path from its list of files")]
     NotInFolder { path: String },
-
-    #[error(
-        "{path} is {size} bytes, too large to show here; open it in an editor on the host instead"
-    )]
-    FileTooLarge { path: PathBuf, size: u64 },
 
     #[error(
         "the watcher fell {missed} events behind and stopped; watch the session again to catch up from its history"
@@ -186,10 +184,10 @@ impl HostError {
             }
             Self::Agent(_) => pb::ErrorCode::StorageFailed,
             Self::UnknownBackend { .. } => pb::ErrorCode::UnknownBackend,
+            Self::Terminal(error) => error.code(),
             Self::NotForHosts
             | Self::UnknownToolCall { .. }
             | Self::NotInFolder { .. }
-            | Self::FileTooLarge { .. }
             | Self::NotAName { .. }
             | Self::BadBackup { .. }
             | Self::NoClone { .. }

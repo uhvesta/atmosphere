@@ -29,6 +29,9 @@
       [StaticText] "" value: "gpu"
       [Image] "Unreachable" id: wifi.slash
       [StaticText] "" value: "me@10.0.0.7"
+  [RadioGroup] "Show" help: "The host's settings, or the shells running on it"
+    [RadioButton/Segment] "Settings" value: "1"
+    [RadioButton/Segment] "Terminals" value: "0"
   [Heading] "This Mac's Agents' Variables"
   [StaticText] "" value: "ANTHROPIC_API_KEY"
   [TextField/SecureTextField] "Value"

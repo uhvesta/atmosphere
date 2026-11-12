@@ -363,8 +363,83 @@ enum RecoverCommand {
     Host { name: String },
 }
 
+/// Where to browse: a session's folder, or a folder on a host.
+#[derive(clap::Args)]
+struct FolderPlace {
+    /// The session whose folder to browse, on its host.
+    #[arg(long)]
+    session: Option<String>,
+    /// The host, when no session is given; this Mac when left out.
+    #[arg(long, default_value = "")]
+    host: String,
+    /// An absolute folder on the host to browse from, instead of its home.
+    #[arg(long)]
+    root: Option<String>,
+}
+
+#[derive(Subcommand)]
+enum TerminalCommand {
+    /// Open a shell in a session's folder, a folder on a host, or the
+    /// host's home, and print the terminal.
+    Open {
+        /// Opens in this session's folder, on its host.
+        #[arg(long)]
+        session: Option<String>,
+        /// The host, when no session is given; this Mac when left out.
+        #[arg(long, default_value = "")]
+        host: String,
+        /// A folder on the host to open in, instead of its home.
+        #[arg(long)]
+        folder: Option<String>,
+    },
+    /// List a host's terminals, running and exited.
+    List {
+        #[arg(long, default_value = "")]
+        host: String,
+    },
+    /// Type a line into a terminal, then Enter.
+    Type {
+        terminal: String,
+        text: String,
+        #[arg(long, default_value = "")]
+        host: String,
+        /// Type the text as given, without pressing Enter after it.
+        #[arg(long)]
+        raw: bool,
+    },
+    /// Print what a terminal shows: its recent output, then what it prints
+    /// until --until's text appears, it exits, or --timeout passes.
+    Read {
+        terminal: String,
+        #[arg(long, default_value = "")]
+        host: String,
+        #[arg(long)]
+        until: Option<String>,
+        /// Seconds to wait for --until's text.
+        #[arg(long, default_value_t = 10)]
+        timeout: u64,
+    },
+    /// Change a terminal's size.
+    Resize {
+        terminal: String,
+        rows: u32,
+        columns: u32,
+        #[arg(long, default_value = "")]
+        host: String,
+    },
+    /// End a terminal's shell and forget it.
+    Close {
+        terminal: String,
+        #[arg(long, default_value = "")]
+        host: String,
+    },
+}
+
 #[derive(Subcommand)]
 enum Command {
+    /// Open, type into, read and close shells on a host.
+    #[command(subcommand)]
+    Terminal(TerminalCommand),
     /// List or import the Claude Code and Copilot sessions on a host that
     /// were started outside Humata.
     #[command(subcommand)]
@@ -541,6 +616,20 @@ enum Command {
     Files { session: String },
     /// Print a file in a session's folder, by its path from `files`.
     Cat { session: String, path: String },
+    /// List one level of a folder: a session's, or any on a host.
+    Ls {
+        /// Under the session's folder or the root; the root itself when
+        /// left out.
+        directory: Option<String>,
+        #[command(flatten)]
+        place: FolderPlace,
+    },
+    /// Print a file under a session's folder or any folder on a host.
+    Show {
+        path: String,
+        #[command(flatten)]
+        place: FolderPlace,
+    },
     /// Stage a file's changes in the session's copy, or one hunk's.
     Stage(EditArgs),
     /// Unstage a file's staged changes, or one hunk's.
@@ -702,6 +791,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
         }
         Command::Host(command) => host(&client, command).await?,
         Command::Recover(command) => recover(&client, command).await?,
+        Command::Terminal(command) => terminal(&client, command).await?,
         Command::Stage(edit) => edit_changes(&client, edit, pb::ChangeAction::Stage).await?,
         Command::Unstage(edit) => edit_changes(&client, edit, pb::ChangeAction::Unstage).await?,
         Command::Revert(edit) => edit_changes(&client, edit, pb::ChangeAction::Revert).await?,
@@ -972,12 +1062,48 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             let request = Request::ReadFile(pb::ReadFile {
                 session_id: session,
                 path,
+                ..pb::ReadFile::default()
             });
             match client.call(request).await? {
                 Response::FileContents(contents) if contents.binary => {
                     println!("{} isn't text", contents.path);
                 }
                 Response::FileContents(contents) => print!("{}", contents.text),
+                other => return Err(unexpected("the file", &other)),
+            }
+        }
+        Command::Ls { directory, place } => {
+            let request = Request::ListFolder(pb::ListFolder {
+                host: place.host,
+                session_id: place.session.unwrap_or_default(),
+                root: place.root.unwrap_or_default(),
+                directory: directory.unwrap_or_default(),
+            });
+            match client.call(request).await? {
+                Response::Folder(folder) => print!("{}", print::folder(&folder)),
+                other => return Err(unexpected("the folder", &other)),
+            }
+        }
+        Command::Show { path, place } => {
+            let request = Request::ReadFile(pb::ReadFile {
+                session_id: place.session.unwrap_or_default(),
+                path,
+                host: place.host,
+                root: place.root.unwrap_or_default(),
+            });
+            match client.call(request).await? {
+                Response::FileContents(contents) if contents.binary => {
+                    println!("{} isn't text ({} bytes)", contents.path, contents.size);
+                }
+                Response::FileContents(contents) => {
+                    print!("{}", contents.text);
+                    if contents.truncated {
+                        println!(
+                            "\n({} is {} bytes; this is its start)",
+                            contents.path, contents.size
+                        );
+                    }
+                }
                 other => return Err(unexpected("the file", &other)),
             }
         }
@@ -1149,6 +1275,155 @@ async fn recover(client: &Client, command: RecoverCommand) -> Result<(), CliErro
         }
     }
     Ok(())
+}
+
+async fn terminal(client: &Client, command: TerminalCommand) -> Result<(), CliError> {
+    use pb::request::Kind as Request;
+    use pb::response::Kind as Response;
+    match command {
+        TerminalCommand::Open {
+            session,
+            host,
+            folder,
+        } => {
+            let request = Request::OpenTerminal(pb::OpenTerminal {
+                host,
+                session_id: session.unwrap_or_default(),
+                folder: folder.unwrap_or_default(),
+                rows: 24,
+                columns: 80,
+            });
+            match client.call(request).await? {
+                Response::TerminalOpened(pb::TerminalOpened {
+                    terminal: Some(terminal),
+                }) => println!("{}", print::terminal(&terminal)),
+                other => return Err(unexpected("the terminal opened", &other)),
+            }
+        }
+        TerminalCommand::List { host } => {
+            match client
+                .call(Request::ListTerminals(pb::ListTerminals { host }))
+                .await?
+            {
+                Response::Terminals(terminals) => {
+                    for terminal in &terminals.terminals {
+                        println!("{}", print::terminal(terminal));
+                    }
+                }
+                other => return Err(unexpected("the terminals", &other)),
+            }
+        }
+        TerminalCommand::Type {
+            terminal,
+            text,
+            host,
+            raw,
+        } => {
+            let mut data = text.into_bytes();
+            if !raw {
+                data.push(b'\r');
+            }
+            let request = Request::TerminalInput(pb::TerminalInput {
+                host,
+                terminal_id: terminal,
+                data,
+            });
+            match client.call(request).await? {
+                Response::TerminalInputSent(_) => {}
+                other => return Err(unexpected("the text typed", &other)),
+            }
+        }
+        TerminalCommand::Read {
+            terminal,
+            host,
+            until,
+            timeout,
+        } => read_terminal(client, terminal, host, until, timeout).await?,
+        TerminalCommand::Resize {
+            terminal,
+            rows,
+            columns,
+            host,
+        } => {
+            let request = Request::ResizeTerminal(pb::ResizeTerminal {
+                host,
+                terminal_id: terminal,
+                rows,
+                columns,
+            });
+            match client.call(request).await? {
+                Response::TerminalResized(_) => {}
+                other => return Err(unexpected("the terminal resized", &other)),
+            }
+        }
+        TerminalCommand::Close { terminal, host } => {
+            let request = Request::CloseTerminal(pb::CloseTerminal {
+                host,
+                terminal_id: terminal,
+            });
+            match client.call(request).await? {
+                Response::TerminalClosed(_) => {}
+                other => return Err(unexpected("the terminal closed", &other)),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Prints the terminal's output as it comes, until `until` shows up in it,
+/// the shell exits, or `timeout` seconds pass; with no `until`, just what
+/// it has printed so far.
+async fn read_terminal(
+    client: &Client,
+    terminal: String,
+    host: String,
+    until: Option<String>,
+    timeout: u64,
+) -> Result<(), CliError> {
+    use std::io::Write;
+    let request = pb::request::Kind::AttachTerminal(pb::AttachTerminal {
+        host,
+        terminal_id: terminal.clone(),
+    });
+    let (_, mut stream) = client.stream(request).await?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
+    let mut shown = Vec::new();
+    let mut stdout = std::io::stdout();
+    loop {
+        let next = tokio::time::timeout_at(deadline, stream.next()).await;
+        let Ok(next) = next else {
+            return Err(CliError::TerminalTimedOut {
+                terminal,
+                until: until.unwrap_or_default(),
+                seconds: timeout,
+            });
+        };
+        let output = match next {
+            Some(Ok(pb::StreamItem {
+                kind: Some(pb::stream_item::Kind::TerminalOutput(output)),
+            })) => output,
+            Some(Ok(_)) => continue,
+            Some(Err(error)) => {
+                return Err(CliError::Wire(humata_wire::ClientError::Refused {
+                    code: error.code(),
+                    message: error.message,
+                }));
+            }
+            None => return Ok(()),
+        };
+        if output.replay {
+            shown.clear();
+        }
+        shown.extend_from_slice(&output.data);
+        let _ = stdout.write_all(&output.data);
+        let _ = stdout.flush();
+        let found = until
+            .as_deref()
+            .is_none_or(|until| String::from_utf8_lossy(&shown).contains(until));
+        if found || output.exited {
+            return Ok(());
+        }
+    }
 }
 
 /// The host `session`'s recovery copy is of, to restore it there.

@@ -1,5 +1,5 @@
 {
-  "checksum": "ba14536b3c63201d08523addf6a7878589e2ffba13380ad9fc1e55b67f61cc87",
+  "checksum": "fb1dadbe29b0cd5c1794ab5b34cb28bf6a2696daf8b83cf7f4fb24d7f5bf5521",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -3203,7 +3203,7 @@
             ],
             "cfg(windows)": [
               {
-                "id": "windows-sys 0.61.2",
+                "id": "windows-sys 0.52.0",
                 "target": "windows_sys"
               }
             ]
@@ -4879,6 +4879,10 @@
             "target": "rusqlite"
           },
           {
+            "id": "rustix 1.1.6",
+            "target": "rustix"
+          },
+          {
             "id": "ruzstd 0.9.1",
             "target": "ruzstd"
           },
@@ -5556,7 +5560,8 @@
           "errno",
           "general",
           "ioctl",
-          "no_std"
+          "no_std",
+          "prctl"
         ],
         "edition": "2021"
       },
@@ -8685,7 +8690,10 @@
           "alloc",
           "default",
           "fs",
-          "std"
+          "process",
+          "pty",
+          "std",
+          "termios"
         ],
         "deps": {
           "common": [
@@ -8736,7 +8744,7 @@
                 "target": "errno"
               },
               {
-                "id": "windows-sys 0.61.2",
+                "id": "windows-sys 0.52.0",
                 "target": "windows_sys"
               }
             ],
@@ -10672,7 +10680,7 @@
             ],
             "cfg(windows)": [
               {
-                "id": "windows-sys 0.61.2",
+                "id": "windows-sys 0.52.0",
                 "target": "windows_sys"
               }
             ]
@@ -13252,6 +13260,7 @@
     "regex 1.13.1",
     "rusqlite 0.42.0",
     "russh 0.65.1",
+    "rustix 1.1.6",
     "ruzstd 0.9.1",
     "serde 1.0.229",
     "serde_json 1.0.154",

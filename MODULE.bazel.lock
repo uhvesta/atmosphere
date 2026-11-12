@@ -917,7 +917,7 @@
           "REPO_MAPPING:rules_swift_package_manager+,bazel_skylib bazel_skylib+",
           "REPO_MAPPING:rules_swift_package_manager+,bazel_tools bazel_tools",
           "REPO_MAPPING:rules_swift_package_manager+,cgrindel_bazel_starlib cgrindel_bazel_starlib+",
-          "FILE:@@//apps/lifr/Package.resolved 93097e3045927a571b99b59e7d59bcf8829805e1b9a5ebc6ee1392a02acdb4da"
+          "FILE:@@//apps/lifr/Package.resolved df8bcb53e35d3f2f1d87741709e38bfb806fca7732bb44d72026db5ed91213bb"
         ],
         "generatedRepoSpecs": {
           "swift_package": {
@@ -935,6 +935,7 @@
                 "swiftpkg_eventsource",
                 "swiftpkg_mlx_swift",
                 "swiftpkg_mlx_swift_lm",
+                "swiftpkg_swift_argument_parser",
                 "swiftpkg_swift_asn1",
                 "swiftpkg_swift_case_paths",
                 "swiftpkg_swift_clocks",
@@ -955,6 +956,7 @@
                 "swiftpkg_swift_snapshot_testing",
                 "swiftpkg_swift_syntax",
                 "swiftpkg_swift_transformers",
+                "swiftpkg_swiftterm",
                 "swiftpkg_yyjson"
               ]
             }
@@ -1048,6 +1050,25 @@
               "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
             }
           },
+          "swiftpkg_swiftterm": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_swiftterm",
+              "commit": "7691f85b222a67a66b58499e1b2647443cf0dda7",
+              "remote": "https://github.com/migueldeicaza/SwiftTerm",
+              "version": "1.18.0",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "make_files_read_only": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": "",
+              "bazel_target_mods": "",
+              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
+            }
+          },
           "swiftpkg_combine_schedulers": {
             "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
             "attributes": {
@@ -1114,6 +1135,25 @@
               "patch_tool": "",
               "patches": [],
               "publicly_expose_all_targets": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": "",
+              "bazel_target_mods": "",
+              "package_repos": "@@rules_swift_package_manager++swift_deps+swift_deps_package_repos//:package_repos.json"
+            }
+          },
+          "swiftpkg_swift_argument_parser": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_swift_argument_parser",
+              "commit": "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+              "remote": "https://github.com/apple/swift-argument-parser",
+              "version": "1.8.2",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "make_files_read_only": false,
               "replace_scm_with_registry": false,
               "target_deps": {},
               "module_aliases": {},
@@ -1471,6 +1511,7 @@
             "swiftpkg_swift_snapshot_testing",
             "swiftpkg_mlx_swift_lm",
             "swiftpkg_swift_transformers",
+            "swiftpkg_swiftterm",
             "swift_package"
           ],
           "explicitRootModuleDirectDevDeps": [],

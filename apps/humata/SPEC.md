@@ -328,7 +328,8 @@ Structure:
   stream). Remote terminals ride the existing SSH connection through the
   daemon; nothing new is opened. The host keeps the terminal running if the
   Mac disconnects, and replays its recent output on reattach. The app renders
-  it with a terminal view in a session tab and in a Terminals window per host.
+  it with SwiftTerm in a session's Terminal tab and in each host's Terminals
+  pane in Hosts, which lists every shell on the host, a session's or not.
 - **Files.** A tree of a session's folder, or any folder on a host, read
   through the protocol (`ListFiles` and `ReadFile` already exist for chat
   files; they grow paths outside the session and lazy directory listing).
@@ -337,13 +338,13 @@ Structure:
 
 Work:
 
-- [ ] PTY in the host role, with input, resize, output stream, and replay on reattach
-- [ ] Terminal tab in a session, opened in its folder; ⌘T for a new one
-- [ ] Terminals for a host, outside any session, from the Hosts view
-- [ ] Terminals keep running when the app closes, and are listed so they can be closed
-- [ ] File browser for a session's folder and for any folder on a host
-- [ ] Read-only file view with highlighting, rendered Markdown and images
-- [ ] Open a file in an editor on this Mac (local) or copy its remote path
+- [x] PTY in the host role, with input, resize, output stream, and replay on reattach
+- [x] Terminal tab in a session, opened in its folder; ⌘T for a new one
+- [x] Terminals for a host, outside any session, from the Hosts view
+- [x] Terminals keep running when the app closes, and are listed so they can be closed
+- [x] File browser for a session's folder and for any folder on a host
+- [x] Read-only file view with highlighting, rendered Markdown and images
+- [x] Open a file in an editor on this Mac (local) or copy its remote path
 - [ ] Port forwarding for a dev server on a host, opened in the browser
 
 **Done when:** an end-to-end test opens a terminal on an SSH host, runs a

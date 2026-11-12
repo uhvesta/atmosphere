@@ -131,6 +131,17 @@ message Request {
     ListRecoveries list_recoveries = 56;
     RestoreSession restore_session = 57;
     RestoreHost restore_host = 58;
+    // Terminals on a host, in a session's folder or any of the host's. The
+    // daemon sends each to the host its `host` field names.
+    OpenTerminal open_terminal = 59;
+    AttachTerminal attach_terminal = 60;
+    TerminalInput terminal_input = 61;
+    ResizeTerminal resize_terminal = 62;
+    ListTerminals list_terminals = 63;
+    CloseTerminal close_terminal = 64;
+    // A folder's entries, a level at a time, in a session's folder or any
+    // folder on a host.
+    ListFolder list_folder = 65;
   }
 }
 
@@ -190,6 +201,12 @@ message Response {
     SessionRestored session_restored = 51;
     Recoveries recoveries = 52;
     HostRestored host_restored = 53;
+    TerminalOpened terminal_opened = 54;
+    TerminalInputSent terminal_input_sent = 55;
+    TerminalResized terminal_resized = 56;
+    Terminals terminals = 57;
+    TerminalClosed terminal_closed = 58;
+    Folder folder = 59;
   }
 }
 
@@ -227,6 +244,8 @@ enum ErrorCode {
   ERROR_CODE_ALREADY_IMPORTED = 19;
   // No such request waits in the inbox; it may have been answered.
   ERROR_CODE_UNKNOWN_REQUEST = 20;
+  // No such terminal on the host; it was closed, or the host restarted.
+  ERROR_CODE_UNKNOWN_TERMINAL = 21;
 }
 
 enum Backend {
@@ -806,17 +825,57 @@ message Files {
   bool truncated = 2;
 }
 
-// One file in a session's folder, by its path from ListFiles.
+// One file in a session's folder, by its path from ListFiles, or under
+// `root` on `host` when no session is given.
 message ReadFile {
   string session_id = 1;
+  // Relative to the session's folder or the root, with "/" between folders.
   string path = 2;
+  string host = 3;
+  // An absolute folder on the host; empty for its home.
+  string root = 4;
 }
 
 message FileContents {
   string path = 1;
+  // The text, or its start when truncated.
   string text = 2;
   // It isn't UTF-8 text, so text is empty.
   bool binary = 3;
+  // An image's bytes, when it isn't too large to send.
+  bytes data = 4;
+  uint64 size = 5;
+  // Only the start of a large text file was read.
+  bool truncated = 6;
+}
+
+// One level of a folder: in a session's folder when `session_id` is given,
+// else under `root` on `host`.
+message ListFolder {
+  string host = 1;
+  string session_id = 2;
+  // An absolute folder on the host; empty for its home.
+  string root = 3;
+  // Under the root, with "/" between folders; empty for the root itself.
+  string directory = 4;
+}
+
+message FolderEntry {
+  string name = 1;
+  bool is_directory = 2;
+  uint64 size = 3;
+  // Milliseconds since 1970 in UTC.
+  int64 modified_unix_ms = 4;
+}
+
+message Folder {
+  // The root as an absolute path on the host, to copy or open.
+  string root = 1;
+  string directory = 2;
+  // Folders first, then files, each by name; hidden ones aren't listed.
+  repeated FolderEntry entries = 3;
+  // There were more than are listed.
+  bool truncated = 4;
 }
 
 message ListThreads {
@@ -908,6 +967,7 @@ message StreamItem {
   oneof kind {
     SessionEvent session_event = 1;
     ToolCall tool_call = 2;
+    TerminalOutput terminal_output = 3;
   }
 }
 
@@ -1486,3 +1546,90 @@ message RepositoriesCloned {
   // can leave out what it has.
   repeated RepositoryCommits tips = 2;
 }
+
+// A shell on a host, opened in a session's folder, a folder named, or the
+// host's home. It keeps running when no one is attached, until it exits or
+// is closed.
+message Terminal {
+  string id = 1;
+  // As the daemon names it; empty for this Mac.
+  string host = 2;
+  // The session it was opened for; empty for none.
+  string session_id = 3;
+  // Where it started, on the host.
+  string folder = 4;
+  // The shell's program.
+  string shell = 5;
+  int64 opened_unix_ms = 6;
+  bool exited = 7;
+  // How it exited, when exited; -1 when it was killed by a signal.
+  int32 exit_code = 8;
+}
+
+// Opens a terminal in the session's folder, else in `folder`, else in the
+// host's home.
+message OpenTerminal {
+  // Ignored when a session is given: it opens on the session's host.
+  string host = 1;
+  string session_id = 2;
+  string folder = 3;
+  uint32 rows = 4;
+  uint32 columns = 5;
+}
+
+message TerminalOpened {
+  Terminal terminal = 1;
+}
+
+// A stream: the terminal's recent output, then what it prints from then on,
+// as TerminalOutput items, until it exits.
+message AttachTerminal {
+  string host = 1;
+  string terminal_id = 2;
+}
+
+message TerminalOutput {
+  bytes data = 1;
+  // The data is the terminal's recent output from the start: clear what's
+  // shown first. The first item is one, and so is one after a watcher fell
+  // behind.
+  bool replay = 2;
+  // The shell exited; the stream ends after this.
+  bool exited = 3;
+  int32 exit_code = 4;
+}
+
+// Typed into the terminal.
+message TerminalInput {
+  string host = 1;
+  string terminal_id = 2;
+  bytes data = 3;
+}
+
+message TerminalInputSent {}
+
+message ResizeTerminal {
+  string host = 1;
+  string terminal_id = 2;
+  uint32 rows = 3;
+  uint32 columns = 4;
+}
+
+message TerminalResized {}
+
+// The terminals on one host, running and exited, oldest first.
+message ListTerminals {
+  string host = 1;
+}
+
+message Terminals {
+  repeated Terminal terminals = 1;
+}
+
+// Ends the terminal's shell, if it still runs, and forgets the terminal.
+message CloseTerminal {
+  string host = 1;
+  string terminal_id = 2;
+}
+
+message TerminalClosed {}

@@ -1054,6 +1054,7 @@ dependencies = [
  "clap",
  "prost",
  "rusqlite",
+ "rustix",
  "ruzstd",
  "serde",
  "serde_json",
@@ -1749,7 +1750,7 @@ dependencies = [
  "getrandom 0.2.17",
  "libc",
  "untrusted",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

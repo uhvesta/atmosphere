@@ -431,6 +431,7 @@ async fn a_chat_in_no_folder_gets_its_own_and_its_files_can_be_read() {
         client.call(pb::request::Kind::ReadFile(pb::ReadFile {
             session_id: first.id.clone(),
             path: path.to_owned(),
+            ..Default::default()
         }))
     };
     let contents = read("docs/plan.md").await;
@@ -439,6 +440,71 @@ async fn a_chat_in_no_folder_gets_its_own_and_its_files_can_be_read() {
         "{contents:?}"
     );
     let outside = read("../humata.sqlite3").await;
+    assert!(
+        matches!(
+            outside,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::InvalidRequest,
+                ..
+            })
+        ),
+        "{outside:?}"
+    );
+}
+
+#[tokio::test]
+async fn any_folder_on_a_host_is_browsed_a_level_at_a_time() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = host(state.path()).await;
+    let root = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    std::fs::create_dir_all(root.path().join("src/bin")).unwrap_or_else(|error| panic!("{error}"));
+    std::fs::write(root.path().join("src/main.rs"), "fn main() {}\n")
+        .unwrap_or_else(|error| panic!("{error}"));
+    std::fs::write(root.path().join("README.md"), "# Hi\n")
+        .unwrap_or_else(|error| panic!("{error}"));
+    let list = |directory: &str| {
+        client.call(pb::request::Kind::ListFolder(pb::ListFolder {
+            root: root.path().display().to_string(),
+            directory: directory.to_owned(),
+            ..Default::default()
+        }))
+    };
+    let names = |folder: &pb::Folder| -> Vec<(String, bool)> {
+        folder
+            .entries
+            .iter()
+            .map(|entry| (entry.name.clone(), entry.is_directory))
+            .collect()
+    };
+    let top = list("").await;
+    let Ok(pb::response::Kind::Folder(top)) = top else {
+        panic!("not listed: {top:?}")
+    };
+    assert_eq!(
+        names(&top),
+        [("src".to_owned(), true), ("README.md".to_owned(), false)]
+    );
+    let src = list("src").await;
+    let Ok(pb::response::Kind::Folder(src)) = src else {
+        panic!("not listed: {src:?}")
+    };
+    assert_eq!(
+        names(&src),
+        [("bin".to_owned(), true), ("main.rs".to_owned(), false)]
+    );
+
+    let read = client
+        .call(pb::request::Kind::ReadFile(pb::ReadFile {
+            path: "src/main.rs".to_owned(),
+            root: root.path().display().to_string(),
+            ..Default::default()
+        }))
+        .await;
+    assert!(
+        matches!(&read, Ok(pb::response::Kind::FileContents(contents)) if contents.text == "fn main() {}\n"),
+        "{read:?}"
+    );
+    let outside = list("..").await;
     assert!(
         matches!(
             outside,
@@ -1858,5 +1924,113 @@ async fn a_session_lost_mid_turn_comes_back_with_the_files_written_so_far() {
     assert_eq!(
         said(&events)[said(&events).len() - 2..],
         ["user: and now?", "agent: carried on"]
+    );
+}
+
+/// Watches terminal `id` until what it shows contains `text`.
+async fn shows(client: &Client, id: &str, text: &str) -> String {
+    let request = pb::request::Kind::AttachTerminal(pb::AttachTerminal {
+        host: String::new(),
+        terminal_id: id.to_owned(),
+    });
+    let Ok((_, mut stream)) = client.stream(request).await else {
+        panic!("couldn't attach to {id}")
+    };
+    let mut shown = Vec::new();
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), stream.next()).await {
+            Ok(Some(Ok(pb::StreamItem {
+                kind: Some(pb::stream_item::Kind::TerminalOutput(output)),
+            }))) => {
+                if output.replay {
+                    shown.clear();
+                }
+                shown.extend(output.data);
+                let text_shown = String::from_utf8_lossy(&shown).into_owned();
+                if text_shown.contains(text) {
+                    return text_shown;
+                }
+            }
+            other => panic!(
+                "{text:?} never showed: {other:?}; shown: {}",
+                String::from_utf8_lossy(&shown)
+            ),
+        }
+    }
+}
+
+async fn typed(client: &Client, id: &str, text: &str) {
+    let typed = client
+        .call(pb::request::Kind::TerminalInput(pb::TerminalInput {
+            host: String::new(),
+            terminal_id: id.to_owned(),
+            data: format!("{text}\r").into_bytes(),
+        }))
+        .await;
+    assert!(
+        matches!(typed, Ok(pb::response::Kind::TerminalInputSent(_))),
+        "{typed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_sessions_terminal_opens_in_its_folder_and_keeps_going_between_watchers() {
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = host(dir.path()).await;
+    let work = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let start = pb::request::Kind::StartSession(pb::StartSession {
+        backend: pb::Backend::Scripted.into(),
+        name: "test".to_owned(),
+        working_directory: work.path().display().to_string(),
+        ..Default::default()
+    });
+    let session = started(&client, start).await;
+    let opened = client
+        .call(pb::request::Kind::OpenTerminal(pb::OpenTerminal {
+            session_id: session.id.clone(),
+            rows: 30,
+            columns: 100,
+            ..Default::default()
+        }))
+        .await;
+    let Ok(pb::response::Kind::TerminalOpened(pb::TerminalOpened {
+        terminal: Some(terminal),
+    })) = opened
+    else {
+        panic!("{opened:?}")
+    };
+    assert_eq!(terminal.session_id, session.id);
+
+    typed(&client, &terminal.id, "pwd -P; stty size").await;
+    let folder = work
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|error| panic!("{error}"));
+    let shown = shows(&client, &terminal.id, "30 100").await;
+    assert!(shown.contains(&folder.display().to_string()), "{shown}");
+
+    // Printed with no one watching, then seen by the next watcher.
+    typed(&client, &terminal.id, "echo later-$((40+2))").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let shown = shows(&client, &terminal.id, "later-42").await;
+    assert!(shown.contains("30 100"), "{shown}");
+
+    let closed = client
+        .call(pb::request::Kind::CloseTerminal(pb::CloseTerminal {
+            host: String::new(),
+            terminal_id: terminal.id.clone(),
+        }))
+        .await;
+    assert!(matches!(closed, Ok(pb::response::Kind::TerminalClosed(_))));
+    let again = client
+        .call(pb::request::Kind::TerminalInput(pb::TerminalInput {
+            host: String::new(),
+            terminal_id: terminal.id.clone(),
+            data: b"ls\r".to_vec(),
+        }))
+        .await;
+    assert!(
+        refused_with(&again, pb::ErrorCode::UnknownTerminal),
+        "{again:?}"
     );
 }

@@ -3,6 +3,7 @@ import Foundation
 import HumataDaemonClient
 import HumataDocs
 import HumataReview
+import HumataTerminal
 
 /// One session: its events as they happen, a message to send, permissions
 /// to answer and what the session may do without asking, and forks, with
@@ -14,6 +15,7 @@ package struct SessionFeature {
         case chat
         case review
         case files
+        case terminal
     }
 
     @ObservableState
@@ -22,6 +24,8 @@ package struct SessionFeature {
         package var tab = Tab.chat
         package var review: ReviewFeature.State
         package var docs: DocsFeature.State
+        /// Shells in the session's folder, on its host.
+        package var terminals: TerminalsFeature.State
         /// Every event but the reply's parts as it streams, oldest first.
         package var events: IdentifiedArrayOf<SessionEvent> = []
         /// The reply so far, until its whole message arrives.
@@ -47,6 +51,7 @@ package struct SessionFeature {
             self.session = session
             review = ReviewFeature.State(sessionID: session.id, turns: session.turns)
             docs = DocsFeature.State(sessionID: session.id)
+            terminals = TerminalsFeature.State(place: HostPlace(sessionID: session.id), opensFirst: true)
             let saved = Shared(wrappedValue: "", .appStorage(Self.draftKey(session.id)))
             _savedDraft = saved
             draft = saved.wrappedValue
@@ -71,9 +76,12 @@ package struct SessionFeature {
             return queued
         }
 
-        /// The views it has: a review only for a project's code.
+        /// The views it has: a review only for a project's code, and no
+        /// terminal once archived, when its folder is gone.
         package var tabs: [Tab] {
-            session.projectID == nil ? [.chat, .files] : [.chat, .review, .files]
+            var tabs: [Tab] = session.projectID == nil ? [.chat, .files] : [.chat, .review, .files]
+            if !session.archived { tabs.append(.terminal) }
+            return tabs
         }
 
         /// Whether a turn has started and not yet ended.
@@ -161,6 +169,9 @@ package struct SessionFeature {
         case tabPicked(Tab)
         case review(ReviewFeature.Action)
         case docs(DocsFeature.Action)
+        /// Opens another terminal in the session's folder, and shows it.
+        case newTerminalTapped
+        case terminals(TerminalsFeature.Action)
 
         @CasePathable
         package enum Delegate: Equatable {
@@ -187,14 +198,23 @@ package struct SessionFeature {
         Scope(state: \.docs, action: \.docs) {
             DocsFeature()
         }
+        Scope(state: \.terminals, action: \.terminals) {
+            TerminalsFeature()
+        }
         Reduce { state, action in
             switch action {
             case .binding(\.draft):
                 state.$savedDraft.withLock { $0 = state.draft }
                 return .none
 
-            case .binding, .delegate, .alert, .review, .docs:
+            case .binding, .delegate, .alert, .review, .docs, .terminals:
                 return .none
+
+            case .newTerminalTapped:
+                guard state.tabs.contains(.terminal) else { return .none }
+                state.tab = .terminal
+                // Shown for the first time, the tab opens one itself.
+                return state.terminals.listed ? .send(.terminals(.newTapped)) : .none
 
             case .tabPicked(let tab):
                 state.tab = tab
@@ -202,6 +222,7 @@ package struct SessionFeature {
                 case .chat: return .none
                 case .review: return .send(.review(.refresh))
                 case .files: return .send(.docs(.refresh))
+                case .terminal: return .none
                 }
 
             case .task:
@@ -237,6 +258,7 @@ package struct SessionFeature {
                 case .chat: return markSeen
                 case .review: return .merge(markSeen, .send(.review(.refresh)))
                 case .files: return .merge(markSeen, .send(.docs(.refresh)))
+                case .terminal: return markSeen
                 }
 
             case .watchEnded:

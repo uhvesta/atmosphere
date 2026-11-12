@@ -15,6 +15,7 @@ rust_library(
         "//apps/humata/daemon/wire",
         "@crates//:prost",
         "@crates//:rusqlite",
+        "@crates//:rustix",
         "@crates//:ruzstd",
         "@crates//:serde",
         "@crates//:serde_json",

@@ -1,5 +1,7 @@
 import ComposableArchitecture
+import HumataBrowser
 import HumataDaemonClient
+import HumataTerminal
 import SwiftUI
 
 /// The hosts beside the selected one's health, variables and setup script.
@@ -64,6 +66,32 @@ package struct HostsView: View {
     }
 
     @ViewBuilder private var detail: some View {
+        if store.selected != nil {
+            VStack(spacing: 0) {
+                Picker("Show", selection: $store.pane.sending(\.paneSelected)) {
+                    Text("Settings").tag(HostsFeature.Pane.settings)
+                    Text("Terminals").tag(HostsFeature.Pane.terminals)
+                    Text("Files").tag(HostsFeature.Pane.files)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .padding(8)
+                .help("The host's settings, the shells running on it, or its files")
+                if store.pane == .terminals, let terminals = store.scope(state: \.terminals, action: \.terminals) {
+                    TerminalsView(store: terminals)
+                        .id(store.selection)
+                } else if store.pane == .files, let files = store.scope(state: \.files, action: \.files) {
+                    FileBrowserView(store: files)
+                        .id(store.selection)
+                } else {
+                    settings
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var settings: some View {
         if let host = store.selected, host.isCoordinator,
             let editor = store.scope(state: \.editor, action: \.editor)
         {

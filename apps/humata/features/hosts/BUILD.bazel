@@ -13,6 +13,8 @@ swift_library(
     visibility = ["//apps/humata/features/app:__pkg__"],
     deps = [
         "//apps/humata/clients/daemon",
+        "//apps/humata/features/browser",
+        "//apps/humata/features/terminal",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

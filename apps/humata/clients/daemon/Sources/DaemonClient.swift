@@ -72,6 +72,10 @@ package struct DaemonClient: Sendable {
     package var files: @Sendable (_ session: String) async throws -> ChatFiles
     /// A file in the session's folder, by its path from `files`.
     package var readFile: @Sendable (_ session: String, _ path: String) async throws -> FileContents
+    /// One level of `directory`, under the folder `place` names.
+    package var listFolder: @Sendable (_ place: HostPlace, _ directory: String) async throws -> Folder
+    /// A file under the folder `place` names, by its path from `listFolder`.
+    package var readFileAt: @Sendable (_ place: HostPlace, _ path: String) async throws -> FileContents
     /// The project's board, its items' statuses as shown: tasks by
     /// priority, then by when they were added, each followed by its subtasks.
     package var items: @Sendable (_ project: String) async throws -> [Item]
@@ -112,6 +116,22 @@ package struct DaemonClient: Sendable {
     package var restoreSession: @Sendable (_ session: String, _ host: String?) async throws -> Session
     /// Sets up again every session the host lost.
     package var restoreHost: @Sendable (_ host: String) async throws -> HostRestore
+    /// Opens a shell at `place`, `size` big.
+    package var openTerminal: @Sendable (_ place: HostPlace, _ size: TerminalSize) async throws -> Terminal
+    /// The terminals on `host`, or this Mac if nil, oldest first.
+    package var terminals: @Sendable (_ host: String?) async throws -> [Terminal]
+    /// Types `data` into the terminal: keys as the terminal sends them.
+    package var typeInTerminal: @Sendable (_ terminal: Terminal, _ data: Data) async throws -> Void
+    package var resizeTerminal: @Sendable (_ terminal: Terminal, _ size: TerminalSize) async throws -> Void
+    /// Ends the terminal's shell, if it still runs, and forgets it.
+    package var closeTerminal: @Sendable (_ terminal: Terminal) async throws -> Void
+    /// The terminal's recent output, then what it prints, until it exits.
+    /// Ends when the calling task is cancelled; throws if the connection
+    /// drops, after which attaching again replays what was missed.
+    package var attachTerminal:
+        @Sendable (_ terminal: Terminal) async -> AsyncThrowingStream<TerminalOutput, any Error> = { _ in
+            AsyncThrowingStream { $0.finish() }
+        }
     /// The session's history, then each new event. Ends when the calling task
     /// is cancelled; throws if the connection drops.
     package var watch: @Sendable (_ session: String) async -> AsyncThrowingStream<SessionEvent, any Error> = { _ in

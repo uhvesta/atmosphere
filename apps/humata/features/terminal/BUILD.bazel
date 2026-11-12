@@ -1,0 +1,50 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# Terminals in a session's folder or on a host: tabs of shells the host keeps
+# running, each drawn by SwiftTerm. A TCA reducer with a SwiftUI view. Needs
+# Xcode: build with `--config=xcode`.
+swift_library(
+    name = "terminal",
+    package_name = "humata",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "HumataTerminal",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/humata/features/app:__pkg__",
+        "//apps/humata/features/hosts:__pkg__",
+        "//apps/humata/features/session:__pkg__",
+    ],
+    deps = [
+        "//apps/humata/clients/daemon",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+        "@swiftpkg_swiftterm//:SwiftTerm",
+    ],
+)
+
+# TestStore tests over the in-memory daemon, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "humata",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":terminal",
+        "//apps/humata/clients/daemon",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

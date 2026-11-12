@@ -20,6 +20,7 @@ use crate::convert;
 use crate::error::HostError;
 use crate::machine::Machine;
 use crate::relay::Relay;
+use crate::terminals::{Attached, Chunk, Opening, Terminals};
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, HostError>> + Send + 'a>>;
 
@@ -243,6 +244,9 @@ pub struct Host {
     /// stop.
     socket: std::sync::OnceLock<PathBuf>,
     stop: tokio::sync::Notify,
+    /// The agents' variables, which its terminals get too.
+    env: Env,
+    terminals: Terminals,
 }
 
 impl Host {
@@ -321,12 +325,19 @@ impl Host {
         Ok(Self {
             backends,
             owners: Mutex::new(owners),
-            machine: Machine::new(state.to_owned(), env, copilot_program, claude_program),
+            machine: Machine::new(
+                state.to_owned(),
+                env.clone(),
+                copilot_program,
+                claude_program,
+            ),
             chats: state.join("chats"),
             program_version: crate::build(),
             relay: Arc::default(),
             socket: std::sync::OnceLock::new(),
             stop: tokio::sync::Notify::new(),
+            env,
+            terminals: Terminals::default(),
         })
     }
 
@@ -356,6 +367,18 @@ impl Host {
     }
 
     /// The folder `session` works in.
+    /// The session's folder if one is given, else `folder`, else the home
+    /// folder.
+    async fn root(&self, session: &str, folder: &str) -> Result<PathBuf, HostError> {
+        if !session.is_empty() {
+            return self.folder(&SessionId::new(session.to_owned())).await;
+        }
+        if !folder.is_empty() {
+            return Ok(PathBuf::from(folder));
+        }
+        Ok(std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from))
+    }
+
     async fn folder(&self, session: &SessionId) -> Result<PathBuf, HostError> {
         let agent = self.owner(session)?.1;
         agent
@@ -762,8 +785,12 @@ impl Host {
                 Response::Files(crate::files::list(&folder)?)
             }
             Request::ReadFile(read) => {
-                let folder = self.folder(&SessionId::new(read.session_id)).await?;
-                Response::FileContents(crate::files::read(&folder, &read.path)?)
+                let root = self.root(&read.session_id, &read.root).await?;
+                Response::FileContents(crate::files::read(&root, &read.path)?)
+            }
+            Request::ListFolder(list) => {
+                let root = self.root(&list.session_id, &list.root).await?;
+                Response::Folder(crate::files::folder(&root, &list.directory)?)
             }
             Request::ReadHistory(read) => {
                 let session = SessionId::new(read.session_id);
@@ -791,6 +818,42 @@ impl Host {
                 let session = SessionId::new(watch.session_id);
                 let watch = self.owner(&session)?.1.watch(&session).await?;
                 return Ok(stream(watch));
+            }
+            Request::OpenTerminal(open) => {
+                let folder = self.root(&open.session_id, &open.folder).await?;
+                let terminal = self.terminals.open(Opening {
+                    session_id: open.session_id,
+                    folder: &folder,
+                    rows: dimension(open.rows, 24),
+                    columns: dimension(open.columns, 80),
+                    env: self.env.vars(),
+                })?;
+                Response::TerminalOpened(pb::TerminalOpened {
+                    terminal: Some(terminal),
+                })
+            }
+            Request::AttachTerminal(attach) => {
+                let (_, attached) = self.terminals.attach(&attach.terminal_id)?;
+                return Ok(terminal_stream(attached));
+            }
+            Request::TerminalInput(input) => {
+                self.terminals.input(&input.terminal_id, input.data).await?;
+                Response::TerminalInputSent(pb::TerminalInputSent {})
+            }
+            Request::ResizeTerminal(resize) => {
+                self.terminals.resize(
+                    &resize.terminal_id,
+                    dimension(resize.rows, 24),
+                    dimension(resize.columns, 80),
+                )?;
+                Response::TerminalResized(pb::TerminalResized {})
+            }
+            Request::ListTerminals(_) => Response::Terminals(pb::Terminals {
+                terminals: self.terminals.list(),
+            }),
+            Request::CloseTerminal(close) => {
+                self.terminals.close(&close.terminal_id)?;
+                Response::TerminalClosed(pb::TerminalClosed {})
             }
         }))
     }
@@ -831,6 +894,76 @@ fn stream(watch: Watch) -> Reply {
             if sent.is_err() {
                 return;
             }
+        }
+    });
+    Reply::Stream {
+        response: pb::response::Kind::Watching(pb::Watching {}),
+        items: receiver,
+    }
+}
+
+/// A terminal's size from the request, or `default` when it's unset.
+fn dimension(value: u32, default: u16) -> u16 {
+    match u16::try_from(value) {
+        Ok(0) => default,
+        Ok(value) => value,
+        Err(_) => u16::MAX,
+    }
+}
+
+/// The terminal's recent output, then what it prints, until it exits or
+/// the watcher goes away.
+fn terminal_stream(mut attached: Attached) -> Reply {
+    let (items, receiver) = mpsc::channel(64);
+    tokio::spawn(async move {
+        let item = |output: pb::TerminalOutput| {
+            Ok(pb::StreamItem {
+                kind: Some(pb::stream_item::Kind::TerminalOutput(output)),
+            })
+        };
+        let exit = |code: i32| pb::TerminalOutput {
+            exited: true,
+            exit_code: code,
+            ..Default::default()
+        };
+        let mut replay = std::mem::take(&mut attached.replay);
+        let mut exited = attached.exited;
+        loop {
+            let replayed = pb::TerminalOutput {
+                data: std::mem::take(&mut replay),
+                replay: true,
+                ..Default::default()
+            };
+            if items.send(item(replayed)).await.is_err() {
+                return;
+            }
+            if let Some(code) = exited {
+                let _ = items.send(item(exit(code))).await;
+                return;
+            }
+            loop {
+                let next = tokio::select! {
+                    next = attached.live.recv() => next,
+                    () = items.closed() => return,
+                };
+                let output = match next {
+                    Ok(Chunk::Output(data)) => pb::TerminalOutput {
+                        data,
+                        ..Default::default()
+                    },
+                    Ok(Chunk::Exited(code)) => {
+                        let _ = items.send(item(exit(code))).await;
+                        return;
+                    }
+                    // Starts over from what's kept, which has what it missed.
+                    Err(broadcast::error::RecvError::Lagged(_)) => break,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                };
+                if items.send(item(output)).await.is_err() {
+                    return;
+                }
+            }
+            (replay, exited) = attached.again();
         }
     });
     Reply::Stream {

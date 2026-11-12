@@ -15,6 +15,7 @@ mod mcp;
 mod relay;
 mod socket;
 mod store;
+mod terminals;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -276,7 +276,29 @@ extension DaemonClient {
                 guard case .fileContents(let contents) = try await daemon.call(.readFile(read)) else {
                     throw DaemonError.unexpected("something other than the file's contents")
                 }
-                return FileContents(path: contents.path, text: contents.binary ? nil : contents.text)
+                return FileContents(contents)
+            },
+            listFolder: { place, directory in
+                var list = Humata_V1_ListFolder()
+                list.host = place.host ?? ""
+                list.sessionID = place.sessionID ?? ""
+                list.root = place.folder ?? ""
+                list.directory = directory
+                guard case .folder(let folder) = try await daemon.call(.listFolder(list)) else {
+                    throw DaemonError.unexpected("something other than the folder's files")
+                }
+                return Folder(folder)
+            },
+            readFileAt: { place, path in
+                var read = Humata_V1_ReadFile()
+                read.host = place.host ?? ""
+                read.sessionID = place.sessionID ?? ""
+                read.root = place.folder ?? ""
+                read.path = path
+                guard case .fileContents(let contents) = try await daemon.call(.readFile(read)) else {
+                    throw DaemonError.unexpected("something other than the file's contents")
+                }
+                return FileContents(contents)
             },
             items: { project in
                 var list = Humata_V1_ListItems()
@@ -444,6 +466,75 @@ extension DaemonClient {
                 return HostRestore(
                     restored: try restored.restored.map(Session.init),
                     failed: restored.failed.map { RestoreFailure(id: $0.sessionID, message: $0.message) })
+            },
+            openTerminal: { place, size in
+                var open = Humata_V1_OpenTerminal()
+                open.host = place.host ?? ""
+                open.sessionID = place.sessionID ?? ""
+                open.folder = place.folder ?? ""
+                open.rows = UInt32(clamping: size.rows)
+                open.columns = UInt32(clamping: size.columns)
+                guard case .terminalOpened(let opened) = try await daemon.call(.openTerminal(open)) else {
+                    throw DaemonError.unexpected("something other than the terminal opened")
+                }
+                return Terminal(opened.terminal)
+            },
+            terminals: { host in
+                var list = Humata_V1_ListTerminals()
+                list.host = host ?? ""
+                guard case .terminals(let found) = try await daemon.call(.listTerminals(list)) else {
+                    throw DaemonError.unexpected("something other than the terminals")
+                }
+                return found.terminals.map(Terminal.init)
+            },
+            typeInTerminal: { terminal, data in
+                var input = Humata_V1_TerminalInput()
+                input.host = terminal.host ?? ""
+                input.terminalID = terminal.id
+                input.data = data
+                guard case .terminalInputSent = try await daemon.call(.terminalInput(input)) else {
+                    throw DaemonError.unexpected("something other than the keys typed")
+                }
+            },
+            resizeTerminal: { terminal, size in
+                var resize = Humata_V1_ResizeTerminal()
+                resize.host = terminal.host ?? ""
+                resize.terminalID = terminal.id
+                resize.rows = UInt32(clamping: size.rows)
+                resize.columns = UInt32(clamping: size.columns)
+                guard case .terminalResized = try await daemon.call(.resizeTerminal(resize)) else {
+                    throw DaemonError.unexpected("something other than the terminal resized")
+                }
+            },
+            closeTerminal: { terminal in
+                var close = Humata_V1_CloseTerminal()
+                close.host = terminal.host ?? ""
+                close.terminalID = terminal.id
+                guard case .terminalClosed = try await daemon.call(.closeTerminal(close)) else {
+                    throw DaemonError.unexpected("something other than the terminal closed")
+                }
+            },
+            attachTerminal: { terminal in
+                AsyncThrowingStream { continuation in
+                    let task = Task {
+                        do {
+                            var attach = Humata_V1_AttachTerminal()
+                            attach.host = terminal.host ?? ""
+                            attach.terminalID = terminal.id
+                            for try await item in try await daemon.stream(.attachTerminal(attach)) {
+                                guard case .terminalOutput(let output) = item.kind else { continue }
+                                continuation.yield(
+                                    TerminalOutput(
+                                        data: output.data, replay: output.replay,
+                                        exitCode: output.exited ? Int(output.exitCode) : nil))
+                            }
+                            continuation.finish()
+                        } catch {
+                            continuation.finish(throwing: error)
+                        }
+                    }
+                    continuation.onTermination = { _ in task.cancel() }
+                }
             },
             watch: { session in
                 AsyncThrowingStream { continuation in

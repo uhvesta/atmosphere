@@ -78,6 +78,9 @@ package final class InMemoryDaemon: Sendable {
         var skipped: [String: [SkippedSession]] = [:]
         /// The sessions their hosts lost, still in `sessions` for their copies.
         var lost: Set<String> = []
+        /// Files on each host outside sessions' folders, by absolute path;
+        /// "" for this Mac.
+        var hostFiles: [String: [String: Data]] = [:]
         /// What each backend offers; a backend missing here can't list them.
         var models: [Backend: [ModelChoice]] = [
             .claude: [
@@ -98,6 +101,9 @@ package final class InMemoryDaemon: Sendable {
         /// Agents' requests not answered yet, oldest first.
         var requests: [AgentRequest] = []
         var nextAgentRequest = 1
+        /// The open terminals, by id.
+        var terminals: [String: FakeTerminal] = [:]
+        var nextTerminal = 1
     }
 
     let state = LockIsolated(State())
@@ -248,6 +254,62 @@ package final class InMemoryDaemon: Sendable {
         }
     }
 
+    /// Puts a file at `path`, absolute, on `host` or this Mac.
+    package func addFile(_ path: String, _ data: Data, on host: String? = nil) {
+        state.withValue { $0.hostFiles[host ?? "", default: [:]][path] = data }
+    }
+
+    /// Where `place` browses from and the files under it, by path from it.
+    private func browsed(_ place: HostPlace) throws -> (root: String, files: [String: Data]) {
+        if let session = place.sessionID {
+            let root = state.value.sessions.first(where: { $0.id == session })?.workingDirectory ?? ""
+            return (root, try folder(of: session).mapValues { Data($0.utf8) })
+        }
+        let host = place.host ?? ""
+        if !host.isEmpty, state.value.offline.contains(host) {
+            throw DaemonError.refused(
+                .hostUnavailable, message: "Couldn't reach \(host). Check that it is up, then try again.")
+        }
+        let root = place.folder ?? (host.isEmpty ? "/Users/me" : "/home/me")
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        let files = (state.value.hostFiles[host] ?? [:]).reduce(into: [String: Data]()) { files, file in
+            if file.key.hasPrefix(prefix) { files[String(file.key.dropFirst(prefix.count))] = file.value }
+        }
+        return (root, files)
+    }
+
+    private func listFolder(_ place: HostPlace, _ directory: String) throws -> Folder {
+        let (root, files) = try browsed(place)
+        let prefix = directory.isEmpty ? "" : directory + "/"
+        var entries: [String: FolderEntry] = [:]
+        for (path, data) in files where path.hasPrefix(prefix) {
+            let rest = path.dropFirst(prefix.count).split(separator: "/", omittingEmptySubsequences: true)
+            guard let name = rest.first.map(String.init), !name.hasPrefix(".") else { continue }
+            if rest.count > 1 {
+                entries[name] = FolderEntry(name: name, isDirectory: true)
+            } else {
+                entries[name] = FolderEntry(name: name, isDirectory: false, size: UInt64(data.count))
+            }
+        }
+        let sorted = entries.values.sorted {
+            $0.isDirectory != $1.isDirectory
+                ? $0.isDirectory : $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        return Folder(root: root, directory: directory, entries: sorted)
+    }
+
+    private func readFile(at place: HostPlace, _ path: String) throws -> FileContents {
+        guard let data = try browsed(place).files[path] else {
+            throw DaemonError.refused(
+                .invalidRequest, message: "\(path) isn't a file in the folder being browsed.")
+        }
+        let images: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tif", "tiff", "bmp"]
+        let isImage = images.contains((path as NSString).pathExtension.lowercased())
+        return FileContents(
+            path: path, text: isImage ? nil : String(bytes: data, encoding: .utf8), data: isImage ? data : nil,
+            size: UInt64(data.count))
+    }
+
     package func history(_ session: String) -> [SessionEvent] {
         state.value.histories[session] ?? []
     }
@@ -334,6 +396,8 @@ package final class InMemoryDaemon: Sendable {
                 }
                 return FileContents(path: path, text: text)
             },
+            listFolder: { place, directory in try self.listFolder(place, directory) },
+            readFileAt: { place, path in try self.readFile(at: place, path) },
             items: { project in try self.items(project) },
             createItem: { project, fields in try self.createItem(project, fields) },
             updateItem: { item, update in try self.updateItem(item, update) },
@@ -363,6 +427,12 @@ package final class InMemoryDaemon: Sendable {
             recoveries: { self.recoveries() },
             restoreSession: { session, host in try self.restoreSession(session, onto: host) },
             restoreHost: { host in self.restoreHost(host) },
+            openTerminal: { place, _ in try self.openTerminal(place) },
+            terminals: { host in self.terminals(on: host) },
+            typeInTerminal: { terminal, data in try self.type(data, in: terminal.id) },
+            resizeTerminal: { terminal, _ in try self.terminal(terminal.id) },
+            closeTerminal: { terminal in try self.closeTerminal(terminal.id) },
+            attachTerminal: { terminal in self.attachTerminal(terminal.id) },
             watch: { session in self.watch(session) }
         )
     }

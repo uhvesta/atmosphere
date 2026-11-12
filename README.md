@@ -11,6 +11,10 @@ Everything else (toolchains, linters, and formatting tools) is fetched hermetica
 
 Without direnv, run `sh tools/bootstrap/bazelisk.sh`, then add `.tools/bin` to `PATH` or run `.tools/bin/bazel` directly.
 
+## Running Humata
+
+`./humata.sh` installs Bazelisk if needed, builds the Humata Mac app, installs it as `~/Applications/Humata.app` and opens it. It needs Xcode. Pass `--no-open` to install without opening.
+
 ## Contributing
 
 - `bazel build //...` and `bazel test //...` build and test everything.

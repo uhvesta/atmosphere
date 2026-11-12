@@ -383,6 +383,28 @@ impl Daemon {
         })
     }
 
+    /// Sends a request that answers with terminals to `host`, and names
+    /// the host in them.
+    async fn terminals(
+        &self,
+        host: &str,
+        request: pb::request::Kind,
+    ) -> Result<Reply, DaemonError> {
+        let mut reply = self.forward(host, request).await?;
+        match &mut reply {
+            Reply::Response(pb::response::Kind::TerminalOpened(pb::TerminalOpened {
+                terminal: Some(terminal),
+            })) => host.clone_into(&mut terminal.host),
+            Reply::Response(pb::response::Kind::Terminals(pb::Terminals { terminals })) => {
+                for terminal in terminals {
+                    host.clone_into(&mut terminal.host);
+                }
+            }
+            _ => {}
+        }
+        Ok(reply)
+    }
+
     /// The host `session` runs on, asking every host if it isn't known yet.
     async fn host_of(&self, session: &str) -> Result<String, DaemonError> {
         if let Some(placement) = self.store.placement(session)? {
@@ -1203,8 +1225,30 @@ impl Daemon {
                 return self.read_changes(&host, std::mem::take(read)).await;
             }
             Request::EditChanges(edit) => self.host_of(&edit.session_id).await?,
+            Request::OpenTerminal(open) => {
+                let host = if open.session_id.is_empty() {
+                    open.host.clone()
+                } else {
+                    self.host_of(&open.session_id).await?
+                };
+                return self.terminals(&host, request).await;
+            }
+            Request::AttachTerminal(attach) => {
+                let host = attach.host.clone();
+                return self.forward(&host, request).await;
+            }
+            Request::TerminalInput(input) => input.host.clone(),
+            Request::ResizeTerminal(resize) => resize.host.clone(),
+            Request::CloseTerminal(close) => close.host.clone(),
+            Request::ListTerminals(list) => {
+                let host = list.host.clone();
+                return self.terminals(&host, request).await;
+            }
             Request::ListFiles(list) => self.host_of(&list.session_id).await?,
+            Request::ReadFile(read) if read.session_id.is_empty() => read.host.clone(),
             Request::ReadFile(read) => self.host_of(&read.session_id).await?,
+            Request::ListFolder(list) if list.session_id.is_empty() => list.host.clone(),
+            Request::ListFolder(list) => self.host_of(&list.session_id).await?,
             Request::MarkSeen(mark) => {
                 self.store.mark_seen(&mark.session_id, mark.turns)?;
                 return Ok(Reply::Response(Response::Seen(pb::Seen {})));
