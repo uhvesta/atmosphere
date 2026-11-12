@@ -64,6 +64,7 @@ trait Backend: Send + Sync {
     ) -> BoxFuture<'a, Vec<humata_agent::Changes>>;
     fn edit_changes<'a>(&'a self, session: &'a SessionId, edit: &'a Edit) -> BoxFuture<'a, ()>;
     fn importable(&self) -> BoxFuture<'_, Vec<Importable>>;
+    fn models(&self, backend_config: Option<String>) -> BoxFuture<'_, Vec<humata_agent::Model>>;
     fn import<'a>(
         &'a self,
         external: &'a str,
@@ -175,6 +176,13 @@ where
     }
     fn importable(&self) -> BoxFuture<'_, Vec<Importable>> {
         Box::pin(async move { Agent::importable(self).await.map_err(Into::into) })
+    }
+    fn models(&self, backend_config: Option<String>) -> BoxFuture<'_, Vec<humata_agent::Model>> {
+        Box::pin(async move {
+            Agent::models(self, backend_config)
+                .await
+                .map_err(Into::into)
+        })
     }
     fn import<'a>(
         &'a self,
@@ -471,6 +479,22 @@ impl Host {
                 }
                 sessions.sort_by_key(|found| std::cmp::Reverse(found.updated_unix_ms));
                 Response::Importable(pb::Importable { sessions })
+            }
+            Request::ListModels(list) => {
+                let models = self
+                    .backend(list.backend())?
+                    .models(convert::optional(list.backend_config))
+                    .await?;
+                Response::Models(pb::Models {
+                    models: models
+                        .into_iter()
+                        .map(|model| pb::ModelChoice {
+                            id: model.id,
+                            name: model.name,
+                            detail: model.detail.unwrap_or_default(),
+                        })
+                        .collect(),
+                })
             }
             Request::ImportSession(import) => {
                 let backend = import.backend();

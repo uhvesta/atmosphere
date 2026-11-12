@@ -98,6 +98,19 @@ extension DaemonClient {
                 }
                 return try Session(started.session)
             },
+            models: { host, backend, backendConfig in
+                var list = Humata_V1_ListModels()
+                list.host = host ?? ""
+                list.backend = backend.proto
+                list.backendConfig = backendConfig ?? ""
+                guard case .models(let found) = try await daemon.call(.listModels(list)) else {
+                    throw DaemonError.unexpected("something other than the models")
+                }
+                return found.models.map {
+                    ModelChoice(
+                        id: $0.id, name: $0.name.isEmpty ? $0.id : $0.name, detail: $0.detail.isEmpty ? nil : $0.detail)
+                }
+            },
             send: { session, text, mode in
                 var message = Humata_V1_SendMessage()
                 message.sessionID = session

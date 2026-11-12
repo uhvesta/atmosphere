@@ -1,4 +1,4 @@
-[Window/StandardWindow] ""
+[Window/StandardWindow] "Profile the build"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""
       [StaticText] "" value: "Inbox, 0 sessions waiting"
@@ -35,4 +35,4 @@
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""
-  [StaticText] ""
+  [StaticText] "" value: "Profile the build"

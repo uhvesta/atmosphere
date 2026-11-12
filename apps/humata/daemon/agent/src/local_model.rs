@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
+use crate::Model;
 use crate::env::Env;
 use crate::error::AgentError;
 use crate::event::{Event, EventKind, PermissionKind};
@@ -67,6 +68,15 @@ pub enum LocalModelError {
     Status {
         url: String,
         model: String,
+        status: u16,
+        body: String,
+    },
+
+    #[error(
+        "the model server at {url} answered {status} when asked for its models: {body}. Check base_url, and api_key if it needs one"
+    )]
+    ListStatus {
+        url: String,
         status: u16,
         body: String,
     },
@@ -130,6 +140,20 @@ impl LocalModelRunner {
 
 impl Runner for LocalModelRunner {
     type Error = LocalModelError;
+
+    async fn models(&self, config: Option<String>) -> Result<Vec<Model>, AgentError> {
+        let own = match config {
+            Some(json) => serde_json::from_str::<LocalModelConfig>(&json)
+                .map_err(|source| LocalModelError::BadConfig { source })?,
+            None => LocalModelConfig::default(),
+        };
+        let base_url = own
+            .base_url
+            .or_else(|| self.defaults.base_url.clone())
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_owned());
+        let api_key = own.api_key.or_else(|| self.defaults.api_key.clone());
+        Ok(server_models(self.http.clone(), &base_url, api_key).await?)
+    }
 
     async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), LocalModelError> {
         let own = match &turn.record().backend_config {
@@ -341,6 +365,72 @@ struct Usage {
     prompt_tokens: u64,
     #[serde(default)]
     completion_tokens: u64,
+}
+
+/// The models an OpenAI-compatible server at `base_url` has, by its
+/// `/models`.
+pub(crate) async fn server_models(
+    http: ureq::Agent,
+    base_url: &str,
+    api_key: Option<String>,
+) -> Result<Vec<Model>, LocalModelError> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    // ureq blocks, so it's asked on its own thread; one that panicked lists
+    // nothing.
+    tokio::task::spawn_blocking(move || list_models(&http, &url, api_key.as_deref()))
+        .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
+}
+
+fn list_models(
+    http: &ureq::Agent,
+    url: &str,
+    api_key: Option<&str>,
+) -> Result<Vec<Model>, LocalModelError> {
+    let mut request = http.get(url).header("Accept", "application/json");
+    if let Some(key) = api_key {
+        request = request.header("Authorization", format!("Bearer {key}"));
+    }
+    let response = request.call().map_err(|source| LocalModelError::Connect {
+        url: url.to_owned(),
+        source: Box::new(source),
+    })?;
+    let status = response.status().as_u16();
+    let mut text = String::new();
+    response
+        .into_body()
+        .into_reader()
+        .take(4 * 1024 * 1024)
+        .read_to_string(&mut text)
+        .map_err(|source| LocalModelError::Read {
+            url: url.to_owned(),
+            source,
+        })?;
+    if status != 200 {
+        text.truncate(4096);
+        return Err(LocalModelError::ListStatus {
+            url: url.to_owned(),
+            status,
+            body: text.trim().to_owned(),
+        });
+    }
+    let listed: Value = serde_json::from_str(&text).map_err(|source| LocalModelError::Decode {
+        url: url.to_owned(),
+        source,
+    })?;
+    let mut models: Vec<Model> = listed["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|model| model["id"].as_str())
+        .map(|id| Model {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            detail: None,
+        })
+        .collect();
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(models)
 }
 
 /// Sends the request and passes on each part of the streamed reply, until it

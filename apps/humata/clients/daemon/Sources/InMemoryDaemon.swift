@@ -75,6 +75,18 @@ package final class InMemoryDaemon: Sendable {
         var threads: [Thread] = []
         /// The sessions started outside Humata, by host; "" for this Mac.
         var importable: [String: [ImportableSession]] = [:]
+        /// What each backend offers; a backend missing here can't list them.
+        var models: [Backend: [ModelChoice]] = [
+            .claude: [
+                ModelChoice(id: "opus", name: "Opus", detail: "The most capable"),
+                ModelChoice(id: "sonnet", name: "Sonnet", detail: "Fast and capable"),
+            ],
+            .copilot: [
+                ModelChoice(id: "gpt-5", name: "GPT-5", detail: "1 premium request"),
+                ModelChoice(id: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", detail: "1 premium request"),
+            ],
+            .local: [ModelChoice(id: "qwen3:8b", name: "qwen3:8b")],
+        ]
         /// The sessions imported, by the backend's id.
         var imported: [String: String] = [:]
         var reviews: [Review] = []
@@ -137,6 +149,12 @@ package final class InMemoryDaemon: Sendable {
         state.withValue { $0.importable[host ?? "", default: []].append(session) }
     }
 
+    /// Sets what `backend` offers; nil makes listing them fail, as on a
+    /// Copilot account without the feature.
+    package func setModels(_ models: [ModelChoice]?, for backend: Backend) {
+        state.withValue { $0.models[backend] = models }
+    }
+
     /// What the agent has written in the session's copy of the code, by path.
     package func files(of session: String) -> [String: String] {
         state.withValue { state in
@@ -189,6 +207,14 @@ package final class InMemoryDaemon: Sendable {
             },
             importSession: { session, host, projectID in
                 try self.importSession(session, on: host, projectID: projectID)
+            },
+            models: { host, backend, _ in
+                try self.reachable(host)
+                guard let models = self.state.value.models[backend] else {
+                    throw DaemonError.refused(
+                        .backendFailed, message: "Couldn't list the models. Type the model's name instead.")
+                }
+                return models
             },
             send: { session, text, mode in try self.send(session, text, mode) },
             approve: { session, request, approved in try self.answer(session, request, approved: approved) },

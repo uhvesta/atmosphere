@@ -633,6 +633,10 @@ package struct NewSessionFeature {
         /// Where it runs; nil for this Mac.
         package var host: RemoteHost.ID?
         package var starting = false
+        /// What the backend offers on the host, to pick the model from.
+        package var models: [ModelChoice] = []
+        /// Why they couldn't be listed; a typed model name still works.
+        package var modelsUnavailable: String?
         @Presents package var alert: AlertState<Never>?
         /// What the last session started with, for the next to start from.
         @Shared(.appStorage("newSessionBackend")) var lastBackend = Backend.copilot
@@ -673,6 +677,7 @@ package struct NewSessionFeature {
         /// The sheet appeared: reads the hosts to pick from.
         case task
         case hostsLoaded([RemoteHost])
+        case modelsLoaded(Result<[ModelChoice], any Error>)
         case startTapped
         case failed(String)
         case alert(PresentationAction<Never>)
@@ -685,6 +690,9 @@ package struct NewSessionFeature {
     }
 
     @Dependency(\.daemon) var daemon
+    @Dependency(\.continuousClock) var clock
+
+    private enum CancelID { case models }
 
     package init() {}
 
@@ -692,18 +700,40 @@ package struct NewSessionFeature {
         BindingReducer()
         Reduce { state, action in
             switch action {
+            case .binding(\.backend), .binding(\.host):
+                return loadModels(&state)
+
+            case .binding(\.modelServer):
+                // Typed a letter at a time; asks once it settles.
+                return loadModels(&state, after: .milliseconds(500))
+
             case .binding, .alert, .delegate:
                 return .none
 
             case .task:
-                return .run { send in
-                    // Without them, the session runs on this Mac.
-                    await send(.hostsLoaded((try? await daemon.hosts()) ?? []))
-                }
+                return .merge(
+                    .run { send in
+                        // Without them, the session runs on this Mac.
+                        await send(.hostsLoaded((try? await daemon.hosts()) ?? []))
+                    },
+                    loadModels(&state))
 
             case .hostsLoaded(let hosts):
                 state.hosts = hosts
-                if let host = state.host, !hosts.contains(where: { $0.id == host }) { state.host = nil }
+                if let host = state.host, !hosts.contains(where: { $0.id == host }) {
+                    state.host = nil
+                    return loadModels(&state)
+                }
+                return .none
+
+            case .modelsLoaded(.success(let models)):
+                state.models = models
+                state.modelsUnavailable = nil
+                return .none
+
+            case .modelsLoaded(.failure(let error)):
+                state.models = []
+                state.modelsUnavailable = error.localizedDescription
                 return .none
 
             case .startTapped:
@@ -738,6 +768,20 @@ package struct NewSessionFeature {
             }
         }
         .ifLet(\.$alert, action: \.alert)
+    }
+
+    /// Lists what the backend offers where the session would run, dropping
+    /// what another backend or host offered.
+    private func loadModels(_ state: inout State, after delay: Duration? = nil) -> Effect<Action> {
+        state.models = []
+        state.modelsUnavailable = nil
+        guard state.backend != .scripted else { return .cancel(id: CancelID.models) }
+        let (host, backend, config) = (state.host, state.backend, state.backendConfig)
+        return .run { send in
+            if let delay { try await clock.sleep(for: delay) }
+            await send(.modelsLoaded(Result { try await daemon.models(host, backend, config) }))
+        }
+        .cancellable(id: CancelID.models, cancelInFlight: true)
     }
 }
 

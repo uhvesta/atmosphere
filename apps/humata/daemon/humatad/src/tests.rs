@@ -1371,3 +1371,30 @@ async fn a_hosts_agents_reach_only_the_boards_and_sessions_of_that_host() {
     assert_eq!(sessions("").await, vec![session.id]);
     assert!(sessions("other").await.is_empty());
 }
+
+#[tokio::test]
+async fn a_host_lists_the_models_its_backends_offer() {
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = host(&dir.path().join("state")).await;
+    let list = |backend: pb::Backend, backend_config: &str| {
+        pb::request::Kind::ListModels(pb::ListModels {
+            backend: backend.into(),
+            backend_config: backend_config.to_owned(),
+            ..Default::default()
+        })
+    };
+
+    match client.call(list(pb::Backend::Claude, "")).await {
+        Ok(pb::response::Kind::Models(models)) => {
+            assert!(!models.models.is_empty());
+            assert!(models.models.iter().all(|model| !model.id.is_empty()));
+        }
+        other => panic!("not listed: {other:?}"),
+    }
+
+    // A model server nothing listens on can't be listed; the app then takes
+    // a typed name.
+    let unreachable = serde_json::json!({"base_url": "http://127.0.0.1:9/v1"}).to_string();
+    let listed = client.call(list(pb::Backend::Local, &unreachable)).await;
+    assert!(listed.is_err(), "listed from nowhere: {listed:?}");
+}

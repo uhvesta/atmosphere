@@ -1,4 +1,4 @@
-[Window/StandardWindow] "Inbox"
+[Window/StandardWindow] "Sign in"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""
       [StaticText] "Inbox, 1 session waiting" value: "1"
@@ -53,4 +53,4 @@
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""
-  [StaticText] "" value: "Inbox"
+  [StaticText] "" value: "Sign in"

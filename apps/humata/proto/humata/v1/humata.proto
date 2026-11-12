@@ -117,6 +117,8 @@ message Request {
     RequestMove request_move = 48;
     // From the person, in the inbox.
     AnswerRequest answer_request = 49;
+    // The models a backend on a host offers, to pick from when starting.
+    ListModels list_models = 50;
   }
 }
 
@@ -168,6 +170,7 @@ message Response {
     ToolCallAnswered tool_call_answered = 43;
     RequestMade request_made = 44;
     RequestAnswered request_answered = 45;
+    Models models = 46;
   }
 }
 
@@ -327,6 +330,30 @@ message ListImportable {
 
 message Importable {
   repeated ImportableSession sessions = 1;
+}
+
+// The models a backend offers. A backend that can't list them, such as
+// Copilot on an account without the feature, answers with an error and the
+// app takes a typed model name instead.
+message ListModels {
+  // The host to ask, as the daemon names it; empty for this machine.
+  string host = 1;
+  Backend backend = 2;
+  // As in `StartSession`: a local model server or a Copilot provider, whose
+  // models are listed instead.
+  string backend_config = 3;
+}
+
+message Models {
+  repeated ModelChoice models = 1;
+}
+
+message ModelChoice {
+  // What `StartSession` takes as the model.
+  string id = 1;
+  string name = 2;
+  // Such as what a turn costs; empty when there is nothing to say.
+  string detail = 3;
 }
 
 message ImportableSession {

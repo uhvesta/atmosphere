@@ -369,6 +369,31 @@ extension NewProjectView {
     }
 }
 
+/// The models the agent offers, to fill the model in from.
+private struct ModelMenu: View {
+    let models: [ModelChoice]
+    let pick: (String) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(models) { model in
+                Button {
+                    pick(model.id)
+                } label: {
+                    Text(model.name)
+                    if let detail = model.detail {
+                        Text(detail)
+                    }
+                }
+            }
+        } label: {
+            Text("Models")
+        }
+        .fixedSize()
+        .help("Pick one of the models the agent offers")
+    }
+}
+
 /// The sheet to start a session in a project or on one of its items, or a
 /// chat.
 package struct NewSessionView: View {
@@ -392,7 +417,24 @@ package struct NewSessionView: View {
                         Text("Scripted").tag(Backend.scripted)
                     }
                 }
-                TextField("Model", text: $store.model, prompt: Text("The agent's default"))
+                LabeledContent("Model") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            TextField("Model", text: $store.model, prompt: Text("The agent's default"))
+                                .labelsHidden()
+                            if !store.models.isEmpty {
+                                ModelMenu(models: store.models) { store.model = $0 }
+                            }
+                        }
+                        if let reason = store.modelsUnavailable {
+                            Text(reason)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .help(reason)
+                        }
+                    }
+                }
                 if store.takesModelServer {
                     TextField(
                         "Model Server", text: $store.modelServer,

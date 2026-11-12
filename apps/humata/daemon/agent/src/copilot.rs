@@ -281,6 +281,34 @@ async fn fork_at(cli: &Cli, source: &str, links: &Links) -> Result<Option<String
     string(&forked, "sessions.fork", "sessionId").map(Some)
 }
 
+/// The models in Copilot's answer to `models.list`: those the account may
+/// use, each with what it costs in premium requests.
+fn copilot_models(listed: &Value) -> Vec<crate::Model> {
+    listed["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|model| {
+            model["policy"]["state"]
+                .as_str()
+                .is_none_or(|state| state == "enabled")
+        })
+        .filter_map(|model| {
+            let id = model["id"].as_str()?;
+            let multiplier = model["billing"]["multiplier"].as_f64();
+            Some(crate::Model {
+                id: id.to_owned(),
+                name: model["name"].as_str().unwrap_or(id).to_owned(),
+                detail: multiplier.map(|times| match times {
+                    0.0 => "Included".to_owned(),
+                    1.0 => "1 premium request".to_owned(),
+                    times => format!("{times} premium requests"),
+                }),
+            })
+        })
+        .collect()
+}
+
 fn session_params(
     turn: &Turn,
     provider: Option<&CopilotProvider>,
@@ -344,6 +372,29 @@ fn string(
 
 impl Runner for CopilotRunner {
     type Error = CopilotError;
+
+    async fn models(&self, config: Option<String>) -> Result<Vec<crate::Model>, AgentError> {
+        let config = match config {
+            Some(json) => serde_json::from_str::<CopilotConfig>(&json)
+                .map_err(|source| CopilotError::BadConfig { source })?,
+            None => CopilotConfig::default(),
+        };
+        if let Some(provider) = config.provider.or_else(|| self.options.provider.clone()) {
+            let http = ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .timeout_connect(Some(Duration::from_secs(10)))
+                .build()
+                .into();
+            return Ok(crate::local_model::server_models(
+                http,
+                &provider.base_url,
+                provider.api_key,
+            )
+            .await?);
+        }
+        let listed = self.cli().await?.call("models.list", json!({})).await?;
+        Ok(copilot_models(&listed))
+    }
 
     fn importable(&self) -> Result<Vec<Importable>, AgentError> {
         let Some(sessions) = self.session_state() else {
@@ -621,5 +672,32 @@ impl Playing<'_> {
             .call("session.permissions.handlePendingPermissionRequest", params)
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::copilot_models;
+
+    #[test]
+    fn copilot_lists_the_models_the_account_may_use_with_their_cost() {
+        let listed = json!({"models": [
+            {"id": "gpt-5", "name": "GPT-5", "billing": {"multiplier": 1.0}},
+            {"id": "mini", "billing": {"multiplier": 0.0}},
+            {"id": "locked", "name": "Locked", "policy": {"state": "disabled"}},
+            {"name": "no id"},
+        ]});
+        let models = copilot_models(&listed);
+        let ids: Vec<_> = models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids, ["gpt-5", "mini"]);
+        assert_eq!(models[1].name, "mini");
+        assert!(models.iter().all(|model| model.detail.is_some()));
+    }
+
+    #[test]
+    fn an_answer_without_models_lists_none() {
+        assert!(copilot_models(&json!({"error": "nope"})).is_empty());
     }
 }

@@ -43,6 +43,16 @@ pub use local_model::{DEFAULT_BASE_URL, LocalModelConfig, LocalModelError, Local
 pub use runtime::{LocalAgent, Runner, Turn};
 pub use scripted::{Rule, Script, ScriptedError, ScriptedRunner, Step};
 
+/// A model a backend offers, to pick for a session.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Model {
+    /// What the session is started with.
+    pub id: String,
+    pub name: String,
+    /// What sets it apart, such as what it costs.
+    pub detail: Option<String>,
+}
+
 /// A session's history so far, and every event after it.
 #[derive(Debug)]
 pub struct Watch {
@@ -117,6 +127,13 @@ pub trait Agent: Send + Sync {
     /// The backend's own sessions on this host, started outside Humata, that
     /// can be imported, the most recently changed first.
     fn importable(&self) -> impl Future<Output = Result<Vec<Importable>, Self::Error>> + Send;
+
+    /// The models a session can pick, as the backend offers them on this
+    /// host; with `backend_config`, those of the model server it names.
+    fn models(
+        &self,
+        backend_config: Option<String>,
+    ) -> impl Future<Output = Result<Vec<Model>, Self::Error>> + Send;
 
     /// A new session carrying on the backend's session `external`: its
     /// history so far, working in its folder, named `name` or after its

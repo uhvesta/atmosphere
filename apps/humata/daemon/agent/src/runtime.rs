@@ -24,7 +24,7 @@ use crate::event::{
 };
 use crate::import::{Importable, Imported};
 use crate::log::EventLog;
-use crate::{Agent, Watch};
+use crate::{Agent, Model, Watch};
 
 const RECORD_FILE: &str = "session.json";
 const EVENTS_FILE: &str = "events.jsonl";
@@ -58,6 +58,17 @@ pub trait Runner: Send + Sync + 'static {
     /// that aren't imported yet. A runner that keeps none has none.
     fn importable(&self) -> Result<Vec<Importable>, AgentError> {
         Ok(Vec::new())
+    }
+
+    /// The models the backend offers; with `config`, a session's backend
+    /// config, those of the model server it names. A runner that picks none
+    /// offers none.
+    fn models(
+        &self,
+        config: Option<String>,
+    ) -> impl Future<Output = Result<Vec<Model>, AgentError>> + Send {
+        let _ = config;
+        async { Ok(Vec::new()) }
     }
 
     /// Reads the backend's session `external` as our history, and links it
@@ -699,6 +710,10 @@ impl<R: Runner> Agent for LocalAgent<R> {
         let mut found = self.runner.importable()?;
         found.sort_by(|a, b| b.updated_unix_ms.cmp(&a.updated_unix_ms));
         Ok(found)
+    }
+
+    async fn models(&self, backend_config: Option<String>) -> Result<Vec<Model>, AgentError> {
+        self.runner.models(backend_config).await
     }
 
     async fn import(

@@ -934,6 +934,7 @@ impl Daemon {
                 std::mem::take(&mut start.host)
             }
             Request::ListImportable(list) => std::mem::take(&mut list.host),
+            Request::ListModels(list) => std::mem::take(&mut list.host),
             Request::ImportSession(import) => {
                 if let Some(id) = convert::optional(std::mem::take(&mut import.project_id)) {
                     project = Some(self.store.project(&id)?.id);

@@ -21,6 +21,11 @@ package struct DaemonClient: Sendable {
     /// A new session carrying on `session`, with its history, in its folder.
     package var importSession:
         @Sendable (_ session: ImportableSession, _ host: String?, _ projectID: String?) async throws -> Session
+    /// The models `backend` offers on `host`, or this Mac if nil; with a
+    /// model server in `backendConfig`, that server's. Throws when they
+    /// can't be listed, and a typed model name still works then.
+    package var models:
+        @Sendable (_ host: String?, _ backend: Backend, _ backendConfig: String?) async throws -> [ModelChoice]
     package var send: @Sendable (_ session: String, _ text: String, _ mode: SendMode) async throws -> Void
     /// Answers a permission request.
     package var approve: @Sendable (_ session: String, _ request: String, _ approved: Bool) async throws -> Void

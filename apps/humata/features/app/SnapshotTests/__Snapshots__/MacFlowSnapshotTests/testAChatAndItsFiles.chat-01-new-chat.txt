@@ -27,7 +27,7 @@
     [StaticText] "" value: "Agent"
     [PopUpButton] "" value: "Scripted"
     [StaticText] "" value: "Model"
-    [TextField] ""
+    [TextField] "Model"
     [StaticText] "" value: "Folder"
     [StaticText] "" value: "Its Own"
     [Button] "Choose…"

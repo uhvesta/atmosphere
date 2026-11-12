@@ -1,4 +1,4 @@
-[Window/StandardWindow] ""
+[Window/StandardWindow] "Fix the login redirect after the session times out"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""
       [StaticText] "" value: "Inbox, 0 sessions waiting"
@@ -35,4 +35,4 @@
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""
-  [StaticText] ""
+  [StaticText] "" value: "Fix the login redirect after the session times out"

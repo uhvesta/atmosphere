@@ -144,6 +144,9 @@ impl HostError {
                 ..
             }) => pb::ErrorCode::InvalidRequest,
             Self::Agent(AgentError::Workspace { .. }) => pb::ErrorCode::BackendFailed,
+            Self::Agent(AgentError::Copilot(_) | AgentError::ModelServer(_)) => {
+                pb::ErrorCode::BackendFailed
+            }
             Self::Agent(_) => pb::ErrorCode::StorageFailed,
             Self::UnknownBackend { .. } => pb::ErrorCode::UnknownBackend,
             Self::NotForHosts

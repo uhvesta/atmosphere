@@ -396,6 +396,44 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(daemon.sessions.first?.host, "far")
     }
 
+    func testTheModelIsPickedFromWhatTheAgentOffersOrTypedWhenItCantList() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        var initial = NewSessionFeature.State(project: project)
+        initial.backend = .claude
+        let store = TestStore(initialState: initial) {
+            NewSessionFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.continuousClock = ImmediateClock()
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.modelsLoaded)
+        let claude = store.state.models.map(\.id)
+        XCTAssertFalse(claude.isEmpty)
+
+        daemon.setModels(nil, for: .copilot)
+        await store.send(\.binding.backend, .copilot)
+        await store.receive(\.modelsLoaded)
+        XCTAssertEqual(store.state.models, [])
+        XCTAssertNotNil(store.state.modelsUnavailable)
+
+        await store.send(\.binding.backend, .claude)
+        await store.receive(\.modelsLoaded)
+        XCTAssertEqual(store.state.models.map(\.id), claude)
+        XCTAssertNil(store.state.modelsUnavailable)
+
+        await store.send(\.binding.backend, .copilot)
+        await store.receive(\.modelsLoaded)
+        await store.send(\.binding.model, "gpt-5-mini")
+        await store.send(.startTapped)
+        await store.receive(\.delegate.started)
+        XCTAssertEqual(daemon.sessions.first?.model, "gpt-5-mini")
+    }
+
     func testTheNextSessionStartsFromWhatTheLastOneDid() async throws {
         let daemon = InMemoryDaemon()
         let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")

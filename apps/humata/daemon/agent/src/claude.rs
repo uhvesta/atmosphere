@@ -199,8 +199,31 @@ impl ClaudeRunner {
     }
 }
 
+/// Claude Code's model aliases, which follow the newest of each.
+const CLAUDE_MODELS: [(&str, &str, &str); 4] = [
+    ("opus", "Opus", "The most capable"),
+    ("sonnet", "Sonnet", "Fast and capable"),
+    ("haiku", "Haiku", "The fastest and cheapest"),
+    (
+        "opusplan",
+        "Opus Plan",
+        "Opus to plan, Sonnet to carry it out",
+    ),
+];
+
 impl Runner for ClaudeRunner {
     type Error = ClaudeError;
+
+    async fn models(&self, _config: Option<String>) -> Result<Vec<crate::Model>, AgentError> {
+        Ok(CLAUDE_MODELS
+            .iter()
+            .map(|(id, name, detail)| crate::Model {
+                id: (*id).to_owned(),
+                name: (*name).to_owned(),
+                detail: Some((*detail).to_owned()),
+            })
+            .collect())
+    }
 
     fn importable(&self) -> Result<Vec<Importable>, AgentError> {
         let Some(projects) = self.transcripts() else {

@@ -1,4 +1,4 @@
-[Window/StandardWindow] ""
+[Window/StandardWindow] "Reader plan"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""
       [StaticText] "" value: "Inbox, 0 sessions waiting"
@@ -40,4 +40,4 @@
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""
-  [StaticText] ""
+  [StaticText] "" value: "Reader plan"

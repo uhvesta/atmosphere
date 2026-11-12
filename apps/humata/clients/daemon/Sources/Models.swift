@@ -870,6 +870,21 @@ package struct ImportableSession: Equatable, Identifiable, Sendable {
     }
 }
 
+/// A model a backend offers, to start a session with.
+package struct ModelChoice: Equatable, Identifiable, Sendable {
+    /// What a session starts with as its model.
+    package var id: String
+    package var name: String
+    /// Such as what a turn costs; nil when there is nothing to say.
+    package var detail: String?
+
+    package init(id: String, name: String, detail: String? = nil) {
+        self.id = id
+        self.name = name
+        self.detail = detail
+    }
+}
+
 package enum DaemonError: LocalizedError, Hashable, CustomStringConvertible {
     /// The daemon answered with an error; its message says how to fix it.
     case refused(ErrorCode, message: String)

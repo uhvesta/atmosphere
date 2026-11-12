@@ -129,9 +129,27 @@ pub enum AgentError {
     )]
     NotImportable,
 
+    #[error(transparent)]
+    Copilot(Box<crate::CopilotError>),
+
+    #[error(transparent)]
+    ModelServer(Box<crate::LocalModelError>),
+
     #[error("couldn't encode a session event as JSON")]
     Encode {
         #[source]
         source: serde_json::Error,
     },
+}
+
+impl From<crate::CopilotError> for AgentError {
+    fn from(source: crate::CopilotError) -> Self {
+        Self::Copilot(Box::new(source))
+    }
+}
+
+impl From<crate::LocalModelError> for AgentError {
+    fn from(source: crate::LocalModelError) -> Self {
+        Self::ModelServer(Box::new(source))
+    }
 }
