@@ -30,7 +30,7 @@ package struct SessionView: View {
             } else {
                 chat
             }
-            if store.disconnected {
+            if store.disconnected, !store.session.hostOffline {
                 ChatNotice(
                     "Lost the connection to Humata's daemon. Reconnecting…", systemImage: "bolt.horizontal.circle",
                     action: "Reconnect Now"

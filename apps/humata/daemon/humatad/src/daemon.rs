@@ -28,7 +28,7 @@ pub struct Daemon {
     /// Held while the hosts file is changed, so changes don't race.
     editing: tokio::sync::Mutex<()>,
     hosts_file: PathBuf,
-    store: Store,
+    store: Arc<Store>,
     /// This humatad's build, which managed hosts are kept at.
     build: String,
 }
@@ -51,7 +51,7 @@ impl Daemon {
             remotes: RwLock::new(remotes),
             editing: tokio::sync::Mutex::new(()),
             hosts_file,
-            store,
+            store: Arc::new(store),
             build,
         }
     }
@@ -589,6 +589,91 @@ impl Daemon {
         Ok((Some(project_id), item.map(|item| item.id)))
     }
 
+    /// Watches `session` on its host, keeping the Mac's copy of its history
+    /// up to date as each turn ends. While the host can't be reached, the
+    /// copy is sent instead and the stream ends, so the session can still
+    /// be read and the app knows to watch again.
+    async fn watch(&self, host: &str, watch: pb::WatchSession) -> Result<Reply, DaemonError> {
+        let session = watch.session_id.clone();
+        let request = pb::request::Kind::WatchSession(watch);
+        if host.is_empty() {
+            return self.forward(host, request).await;
+        }
+        let (response, mut upstream) = match self.forward(host, request).await {
+            Ok(Reply::Stream { response, items }) => (response, items),
+            Err(failure) if failure.code() == pb::ErrorCode::HostUnavailable => {
+                let Some(history) = self.store.cached_history(&session)? else {
+                    return Err(failure);
+                };
+                let (items, receiver) = mpsc::channel(history.events.len().max(1));
+                for event in history.events {
+                    let item = pb::StreamItem {
+                        kind: Some(pb::stream_item::Kind::SessionEvent(event)),
+                    };
+                    // The channel holds every event, so this can't wait.
+                    let _ = items.try_send(Ok(item));
+                }
+                return Ok(Reply::Stream {
+                    response: pb::response::Kind::Watching(pb::Watching {}),
+                    items: receiver,
+                });
+            }
+            other => return other,
+        };
+        let store = self.store.clone();
+        // Histories only grow, so a copy is written only when it has more
+        // than the last, never part of the replay over a fuller one.
+        let mut kept = self
+            .store
+            .cached_history(&session)?
+            .map_or(0, |history| history.events.len());
+        let (items, receiver) = mpsc::channel(64);
+        tokio::spawn(async move {
+            let mut events = Vec::new();
+            let mut keep = |events: &Vec<pb::SessionEvent>| {
+                if events.len() <= kept {
+                    return;
+                }
+                let history = pb::History {
+                    events: events.clone(),
+                };
+                // A copy that couldn't be written stays as it was; the next
+                // turn tries again.
+                if store.cache_history(&session, &history).is_ok() {
+                    kept = events.len();
+                }
+            };
+            loop {
+                let next = tokio::select! {
+                    next = upstream.recv() => next,
+                    () = items.closed() => break,
+                };
+                let Some(item) = next else { break };
+                if let Ok(pb::StreamItem {
+                    kind: Some(pb::stream_item::Kind::SessionEvent(event)),
+                }) = &item
+                {
+                    events.push(event.clone());
+                    if matches!(
+                        event.kind,
+                        Some(pb::session_event::Kind::Idle(_))
+                            | Some(pb::session_event::Kind::Checkpoint(_))
+                    ) {
+                        keep(&events);
+                    }
+                }
+                if items.send(item).await.is_err() {
+                    break;
+                }
+            }
+            keep(&events);
+        });
+        Ok(Reply::Stream {
+            response,
+            items: receiver,
+        })
+    }
+
     async fn answer(&self, request: pb::request::Kind) -> Result<Reply, DaemonError> {
         use pb::request::Kind as Request;
         use pb::response::Kind as Response;
@@ -723,7 +808,10 @@ impl Daemon {
             | Request::CloneRepositories(_) => {
                 return Err(DaemonError::ForHostsOnly);
             }
-            Request::WatchSession(watch) => self.host_of(&watch.session_id).await?,
+            Request::WatchSession(watch) => {
+                let host = self.host_of(&watch.session_id).await?;
+                return self.watch(&host, std::mem::take(watch)).await;
+            }
             Request::AbortTurn(abort) => self.host_of(&abort.session_id).await?,
             Request::Unqueue(unqueue) => self.host_of(&unqueue.session_id).await?,
             Request::SetApprovalMode(set) => self.host_of(&set.session_id).await?,

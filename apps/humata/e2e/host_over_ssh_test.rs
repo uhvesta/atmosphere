@@ -218,12 +218,21 @@ fn a_managed_host_is_installed_set_up_and_survives_dropped_connections() {
         pairs(&[("user", "hello"), ("assistant", "hi there")])
     );
     let history = humata.run(&["history", session]);
+    // A turn only watched, never read as history, is kept on the Mac too.
+    assert_eq!(
+        humata.said(&["send", session, "hello again", "--wait"]),
+        pairs(&[("user", "hello again"), ("assistant", "hi there")])
+    );
 
-    // With the host gone, its sessions still show, as they last were.
+    // With the host gone, its sessions still show, as they last were, and
+    // watching one plays its history and ends.
     drop(sshd);
     let _ = cut_ssh(&folder);
     eventually("the session shown offline", || {
         session_line(&humata, session).contains("offline")
     });
-    assert_eq!(humata.run(&["history", session]), history);
+    let offline = humata.run(&["history", session]);
+    assert!(offline.starts_with(&history), "{offline}");
+    assert!(offline.contains("hello again"), "{offline}");
+    assert_eq!(humata.run(&["watch", session]), offline);
 }
