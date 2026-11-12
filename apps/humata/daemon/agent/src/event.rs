@@ -128,9 +128,11 @@ pub enum EventKind {
         text: String,
     },
     /// The queued message left the queue: its turn is starting, or the
-    /// person took it out.
+    /// person took it out, or, `dropped`, Humata stopped before it ran.
     Dequeued {
         queue_id: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        dropped: bool,
     },
     Idle,
     Failed {

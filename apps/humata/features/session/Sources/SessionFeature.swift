@@ -122,6 +122,16 @@ package struct SessionFeature {
         /// Messages sent while a turn ran, waiting for their own turn,
         /// first to run first.
         package private(set) var queued: [QueuedMessage] = []
+        /// Queued messages that never ran because Humata stopped first,
+        /// offered back until the person sends again.
+        package private(set) var dropped: [QueuedMessage] = []
+        /// Dropped messages already put back in the draft.
+        package var putBack: Set<String> = [] {
+            didSet {
+                let putBack = putBack
+                dropped.removeAll { putBack.contains($0.id) }
+            }
+        }
 
         /// The views it has: a review only for a project's code, and no
         /// terminal once archived, when its folder is gone.
@@ -163,13 +173,19 @@ package struct SessionFeature {
                 return !answered.contains(request)
             }
             queued = []
+            dropped = []
             for event in log {
                 switch event.kind {
                 case .messageQueued(let id, let text): queued.append(QueuedMessage(id: id, text: text))
-                case .dequeued(let id): queued.removeAll { $0.id == id }
+                case .dequeued(let id, let wasDropped):
+                    if wasDropped, let message = queued.first(where: { $0.id == id }) { dropped.append(message) }
+                    queued.removeAll { $0.id == id }
+                case .userMessage: dropped = []
                 default: continue
                 }
             }
+            let putBack = putBack
+            dropped.removeAll { putBack.contains($0.id) }
             retryableFailure = nil
             if lastTurnFailed, lastMessage != nil {
                 for item in items.reversed() {
@@ -272,6 +288,8 @@ package struct SessionFeature {
         case abortTapped
         /// Takes the queued message out before its turn starts.
         case unqueueTapped(String)
+        /// Puts a message that never ran back in the draft.
+        case putBackTapped(String)
         /// Sends the person's last message again, after a failed turn.
         case retryTapped
         /// Makes the move the agent asked for, from the strip over the box.
@@ -525,6 +543,13 @@ package struct SessionFeature {
 
             case .scrolled:
                 state.scrollTarget = nil
+                return .none
+
+            case .putBackTapped(let id):
+                guard let message = state.dropped.first(where: { $0.id == id }) else { return .none }
+                state.putBack.insert(id)
+                state.draft = state.draft.isEmpty ? message.text : state.draft + "\n\n" + message.text
+                state.$savedDraft.withLock { $0 = state.draft }
                 return .none
 
             case .unqueueTapped(let queued):

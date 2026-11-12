@@ -968,8 +968,8 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
         /// A message sent while a turn ran, waiting for its own turn.
         case messageQueued(queueID: String, text: String)
         /// A queued message left the queue: its turn started, or it was
-        /// taken out.
-        case dequeued(queueID: String)
+        /// taken out, or, `dropped`, Humata stopped before it ran.
+        case dequeued(queueID: String, dropped: Bool = false)
     }
 
     package var id: String

@@ -1489,6 +1489,9 @@ message MessageQueued {
 // took it out.
 message Dequeued {
   string queue_id = 1;
+  // Humata stopped before its turn, so it never ran; the app offers its
+  // text back rather than sending it unasked.
+  bool dropped = 2;
 }
 
 message SessionIdle {}

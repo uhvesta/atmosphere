@@ -392,7 +392,7 @@ extension SessionEvent {
                 premiumRequests: usage.premiumRequests)
         case .checkpoint: kind = .checkpoint
         case .messageQueued(let queued): kind = .messageQueued(queueID: queued.queueID, text: queued.text)
-        case .dequeued(let dequeued): kind = .dequeued(queueID: dequeued.queueID)
+        case .dequeued(let dequeued): kind = .dequeued(queueID: dequeued.queueID, dropped: dequeued.dropped)
         // A save part way through a turn only matters to forks and restores.
         case .saved, nil: return nil
         }

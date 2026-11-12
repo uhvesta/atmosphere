@@ -570,6 +570,33 @@ private struct QueuedRow: View {
     }
 }
 
+/// A queued message that never ran because Humata stopped before its turn,
+/// with a way to put it back in the draft; it isn't sent again unasked.
+private struct DroppedRow: View {
+    let message: QueuedMessage
+    let putBack: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.circle")
+                .foregroundStyle(.orange)
+            Text(message.text)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer()
+            Button("Put in Draft", action: putBack)
+                .buttonStyle(.borderless)
+                .help("Humata stopped before this queued message's turn, so it didn't run")
+        }
+        .font(.caption)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(.fill.quaternary, in: .rect(cornerRadius: 6))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Didn't run: \(message.text)")
+    }
+}
+
 /// What a request for permission would run or write, whole: monospaced,
 /// selectable, and scrolling past about twelve lines, so it can be read
 /// before it's allowed.
@@ -726,6 +753,9 @@ private struct SessionComposer: View {
         ) {
             store.send(.sendTapped(.enqueue))
         } top: {
+            ForEach(store.dropped) { dropped in
+                DroppedRow(message: dropped) { store.send(.putBackTapped(dropped.id)) }
+            }
             ForEach(store.queued) { queued in
                 QueuedRow(queued: queued) { store.send(.unqueueTapped(queued.id)) }
             }

@@ -551,6 +551,34 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertEqual(SessionFeature.State(session: session).draft, "")
     }
 
+    func testAQueuedMessageARestartDroppedIsOfferedBackNotSent() async {
+        let store = store()
+        await store.send(.received(event("e1", .userMessage("write the notes"))))
+        await store.send(.received(event("e2", .messageQueued(queueID: "q1", text: "then the changelog"))))
+        await store.send(.received(event("e3", .dequeued(queueID: "q1", dropped: true))))
+        XCTAssertEqual(store.state.queued, [])
+        XCTAssertEqual(store.state.dropped.map(\.text), ["then the changelog"])
+
+        await store.send(.putBackTapped("q1"))
+        XCTAssertEqual(store.state.draft, "then the changelog")
+        XCTAssertEqual(store.state.dropped, [])
+    }
+
+    func testADroppedMessageIsNoLongerOfferedOnceThePersonSendsAgain() async {
+        let store = store()
+        await store.send(.received(event("e1", .messageQueued(queueID: "q1", text: "then the changelog"))))
+        await store.send(.received(event("e2", .dequeued(queueID: "q1", dropped: true))))
+        await store.send(.received(event("e3", .userMessage("something else"))))
+        XCTAssertEqual(store.state.dropped, [])
+    }
+
+    func testAMessageTakenOutOfTheQueueIsNotOfferedBack() async {
+        let store = store()
+        await store.send(.received(event("e1", .messageQueued(queueID: "q1", text: "then the changelog"))))
+        await store.send(.received(event("e2", .dequeued(queueID: "q1"))))
+        XCTAssertEqual(store.state.dropped, [])
+    }
+
     func testUsageAddsUpEachTurn() async {
         let store = store()
         await store.send(

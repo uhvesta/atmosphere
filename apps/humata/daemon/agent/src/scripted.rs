@@ -457,7 +457,7 @@ mod tests {
         for event in events {
             match &event.kind {
                 EventKind::MessageQueued { queue_id, .. } => queued.push(queue_id.clone()),
-                EventKind::Dequeued { queue_id } => queued.retain(|id| id != queue_id),
+                EventKind::Dequeued { queue_id, .. } => queued.retain(|id| id != queue_id),
                 _ => {}
             }
         }

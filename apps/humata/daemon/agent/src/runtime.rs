@@ -249,7 +249,10 @@ impl Session {
     /// The next queued message, which leaves the queue to run.
     fn next_queued(&self, control: &mut Control) -> Option<String> {
         let next = control.queue.pop_front()?;
-        self.note(EventKind::Dequeued { queue_id: next.id });
+        self.note(EventKind::Dequeued {
+            queue_id: next.id,
+            dropped: false,
+        });
         Some(next.text)
     }
 }
@@ -589,6 +592,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
         control.queue.remove(position);
         session.note(EventKind::Dequeued {
             queue_id: queue_id.to_owned(),
+            dropped: false,
         });
         Ok(())
     }
@@ -1301,7 +1305,7 @@ fn closing(events: &[Event]) -> Vec<EventKind> {
     for event in events {
         match &event.kind {
             EventKind::MessageQueued { queue_id, .. } => queued.push(queue_id),
-            EventKind::Dequeued { queue_id } => queued.retain(|id| id != queue_id),
+            EventKind::Dequeued { queue_id, .. } => queued.retain(|id| id != queue_id),
             _ => {}
         }
     }
@@ -1309,6 +1313,7 @@ fn closing(events: &[Event]) -> Vec<EventKind> {
         .into_iter()
         .map(|id| EventKind::Dequeued {
             queue_id: id.to_owned(),
+            dropped: true,
         })
         .collect();
     kinds.extend(closing_turn(events));
@@ -1454,7 +1459,8 @@ pub(crate) mod tests {
         assert_eq!(
             closing(&events),
             vec![EventKind::Dequeued {
-                queue_id: "q1".into()
+                queue_id: "q1".into(),
+                dropped: true,
             }]
         );
     }

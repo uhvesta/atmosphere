@@ -67,8 +67,9 @@ pub fn event(event: &Event) -> pb::SessionEvent {
             queue_id: queue_id.clone(),
             text: text.clone(),
         }),
-        EventKind::Dequeued { queue_id } => Kind::Dequeued(pb::Dequeued {
+        EventKind::Dequeued { queue_id, dropped } => Kind::Dequeued(pb::Dequeued {
             queue_id: queue_id.clone(),
+            dropped: *dropped,
         }),
         EventKind::Idle => Kind::Idle(pb::SessionIdle {}),
         EventKind::Failed { message } => Kind::Failed(pb::SessionFailed {
