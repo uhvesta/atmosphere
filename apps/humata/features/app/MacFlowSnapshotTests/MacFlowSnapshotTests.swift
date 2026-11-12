@@ -1046,8 +1046,12 @@ final class MacFlowSnapshotTests: XCTestCase {
         try await until { store.sidebar.sessions[id: session.id]?.state == state }
     }
 
+    /// How many times a wait checks, 10 ms apart: 15 seconds, as a real
+    /// daemon answering under a full test run can take several.
+    private static let checks = 1_500
+
     private func until(line: UInt = #line, _ condition: () -> Bool) async throws {
-        for _ in 0..<500 {
+        for _ in 0..<Self.checks {
             if condition() { return }
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -1056,7 +1060,7 @@ final class MacFlowSnapshotTests: XCTestCase {
 
     /// Waits for the daemon, rather than the store, to get somewhere.
     private func untilDaemon(line: UInt = #line, _ condition: () async throws -> Bool) async throws {
-        for _ in 0..<500 {
+        for _ in 0..<Self.checks {
             if try await condition() { return }
             try await Task.sleep(for: .milliseconds(10))
         }
