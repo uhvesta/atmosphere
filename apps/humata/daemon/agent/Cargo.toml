@@ -1,0 +1,27 @@
+[package]
+name = "humata-agent"
+description = "Humata's agent interface, the runtime for backends in process, and the backends: Copilot, a local model and a scripted one."
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+# tests/copilot_test.rs needs the pinned Copilot CLI: run it with
+# `bazel test //apps/humata/daemon/agent:copilot_test`.
+autotests = false
+
+[lib]
+name = "humata_agent"
+path = "src/lib.rs"
+
+[dependencies]
+humata-workspace = { path = "../workspace" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+ureq.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

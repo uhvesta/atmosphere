@@ -1,0 +1,21 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# An SSH server on loopback for the end-to-end tests, with keys it makes.
+rust_binary(
+    name = "test_sshd",
+    testonly = True,
+    srcs = glob(["src/*.rs"]),
+    visibility = ["//apps/humata/e2e:__pkg__"],
+    deps = [
+        "@crates//:rand",
+        "@crates//:russh",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

@@ -20,6 +20,9 @@ bazel_dep(name = "apple_support", version = "2.11.0")
 bazel_dep(name = "rules_apple", version = "5.4.0")
 bazel_dep(name = "rules_xcodeproj", version = "4.1.0")
 bazel_dep(name = "rules_swift_package_manager", version = "1.25.0")
+bazel_dep(name = "protobuf", version = "34.0.bcr.1")
+bazel_dep(name = "rules_proto", version = "7.1.0")
+bazel_dep(name = "rules_rust_prost", version = "0.74.0")
 
 # MARK: - C/C++
 
@@ -91,6 +94,11 @@ register_toolchains(
     "@rust_toolchains//:rust_host__x86_64-unknown-linux-musl__stable",
     "@rust_toolchains//:all",
 )
+
+# prost for Humata's protocol, from the workspace's crates. Ahead of
+# rules_rust_prost's default toolchain, which pins an older prost. See
+# apps/humata/proto/BUILD.bazel.
+register_toolchains("//apps/humata/proto:prost_toolchain")
 
 # MARK: - Swift
 
@@ -208,6 +216,56 @@ gguf_test_model(name = "llama_test_model")
 test_model = use_repo_rule("//apps/libs/kits/inference/litert:test_model.bzl", "test_model")
 
 test_model(name = "lifr_test_model")
+
+# MARK: - Humata
+
+# The Copilot CLI, one repository per platform, each fetched only when a
+# build for that platform uses it. See apps/humata/copilot/copilot.bzl.
+copilot_cli = use_repo_rule("//apps/humata/copilot:copilot.bzl", "copilot_cli")
+
+copilot_cli(
+    name = "copilot_cli_darwin_arm64",
+    platform = "darwin_arm64",
+)
+
+copilot_cli(
+    name = "copilot_cli_darwin_x64",
+    platform = "darwin_x64",
+)
+
+copilot_cli(
+    name = "copilot_cli_linux_arm64",
+    platform = "linux_arm64",
+)
+
+copilot_cli(
+    name = "copilot_cli_linux_x64",
+    platform = "linux_x64",
+)
+
+# Claude Code, one repository per platform, each fetched only when a build
+# for that platform uses it. See apps/humata/claude/claude.bzl.
+claude_cli = use_repo_rule("//apps/humata/claude:claude.bzl", "claude_cli")
+
+claude_cli(
+    name = "claude_cli_darwin_arm64",
+    platform = "darwin_arm64",
+)
+
+claude_cli(
+    name = "claude_cli_darwin_x64",
+    platform = "darwin_x64",
+)
+
+claude_cli(
+    name = "claude_cli_linux_arm64",
+    platform = "linux_arm64",
+)
+
+claude_cli(
+    name = "claude_cli_linux_x64",
+    platform = "linux_x64",
+)
 
 # MARK: - Lifr signing
 

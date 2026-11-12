@@ -1,0 +1,29 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Humata's protocol on any byte stream (a local socket, SSH's stdin and
+# stdout): length-prefixed envelopes, the hello, and the client and server
+# every peer uses.
+rust_library(
+    name = "wire",
+    srcs = glob(["src/*.rs"]),
+    crate_name = "humata_wire",
+    visibility = ["//apps/humata:__subpackages__"],
+    deps = [
+        "//apps/humata/proto:humata_rust",
+        "@crates//:prost",
+        "@crates//:ruzstd",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+rust_test(
+    name = "wire_test",
+    crate = ":wire",
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

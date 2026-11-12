@@ -1,10 +1,10 @@
+import Board
 import ComposableArchitecture
 import LifrAvenue
 import LifrCore
 import LifrTaskList
 import LifrUI
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// The board: a column per status, each a stack of cards. Drag a card to
 /// another column to set its status, or use its context menu; in manual
@@ -20,7 +20,7 @@ package struct BoardView: View {
         ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: 12) {
                 ForEach(store.columns) { column in
-                    BoardColumn(column: column, store: store)
+                    LifrBoardColumn(column: column, store: store)
                 }
             }
             .padding()
@@ -45,25 +45,22 @@ package struct BoardView: View {
     }
 }
 
-private struct BoardColumn: View {
+private struct LifrBoardColumn: View {
     var column: TaskSection
     var store: StoreOf<BoardFeature>
-    @State private var isTargeted = false
 
     private var status: TaskStatus { TaskStatus(rawValue: column.id) ?? .todo }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("\(column.title.uppercased()) (\(column.rows.count))")
-                .font(.caption.bold())
-                .foregroundStyle(.secondary)
-                .accessibilityAddTraits(.isHeader)
-                .accessibilityLabel(
-                    column.rows.count == 1
-                        ? Text("\(column.title), 1 task") : Text("\(column.title), \(column.rows.count) tasks"))
+        BoardColumn(
+            title: column.title, count: column.rows.count,
+            countLabel: column.rows.count == 1
+                ? Text("\(column.title), 1 task") : Text("\(column.title), \(column.rows.count) tasks"),
+        ) {
             ForEach(column.rows) { row in
-                BoardCard(row: row, note: column.notes[row.id], store: store)
+                LifrBoardCard(row: row, note: column.notes[row.id], store: store)
             }
+        } footer: {
             if status == .todo {
                 Button("Add Task", systemImage: "plus") { store.send(.addTapped) }
                     .buttonStyle(.borderless)
@@ -71,89 +68,63 @@ private struct BoardColumn: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 8)
             }
-            Spacer(minLength: 40)
-        }
-        .frame(width: 200, alignment: .topLeading)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .padding(8)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(isTargeted ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.08))
-        )
-        .dropDestination(for: String.self) { ids, _ in
+        } onDrop: { ids in
             let dropped = ids.compactMap(UUID.init(uuidString:))
             for id in dropped {
                 store.send(.dropped(id, on: status))
             }
             return !dropped.isEmpty
-        } isTargeted: {
-            isTargeted = $0
         }
     }
 }
 
-private struct BoardCard: View {
+private struct LifrBoardCard: View {
     var row: TaskRowData
     var note: String?
     var store: StoreOf<BoardFeature>
     @Environment(\.locale) private var locale
-    /// Whether a card dragged is over this one, to drop onto it.
-    @State private var isTargeted = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                TaskCodeLabel(row.code)
-                Spacer()
-                PriorityBadge(row.priority)
-            }
-            Text(row.title).font(.callout)
-            if let note {
-                Text(note).font(.caption).foregroundStyle(.orange)
-            }
-            if row.subtasks != nil || row.due != nil {
-                HStack(spacing: 6) {
-                    if let progress = row.subtasks {
-                        Text("\(progress.closed)/\(progress.total)")
-                            .accessibilityLabel("\(progress.closed) of \(progress.total) Sub tasks closed")
-                    }
-                    if let due = row.due {
-                        Text(due.text(locale))
-                            .foregroundStyle(due.isOverdue ? .red : .secondary)
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-        }
-        .padding(8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(.background))
-        .contentShape(Rectangle())
-        .onTapGesture { store.send(.list(.rowTapped(row.id))) }
-        .draggable(row.id.uuidString)
         // In manual order, onto another card in its column to take its
         // place; onto a card in another column to move there.
-        .dropDestination(for: String.self) { ids, _ in
+        BoardCard(id: row.id.uuidString) { ids in
             let dropped = ids.compactMap(UUID.init(uuidString:))
             for id in dropped {
                 store.send(.droppedCard(id, onto: row.id))
             }
             return !dropped.isEmpty
-        } isTargeted: {
-            isTargeted = $0
-        }
-        .overlay {
-            if isTargeted {
-                RoundedRectangle(cornerRadius: 8).strokeBorder(.tint, lineWidth: 2).accessibilityHidden(true)
+        } content: {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    TaskCodeLabel(row.code)
+                    Spacer()
+                    PriorityBadge(row.priority)
+                }
+                Text(row.title).font(.callout)
+                if let note {
+                    Text(note).font(.caption).foregroundStyle(.orange)
+                }
+                if row.subtasks != nil || row.due != nil {
+                    HStack(spacing: 6) {
+                        if let progress = row.subtasks {
+                            Text("\(progress.closed)/\(progress.total)")
+                                .accessibilityLabel("\(progress.closed) of \(progress.total) Sub tasks closed")
+                        }
+                        if let due = row.due {
+                            Text(due.text(locale))
+                                .foregroundStyle(due.isOverdue ? .red : .secondary)
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
             }
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityAction { store.send(.list(.rowTapped(row.id))) }
-        .contextMenu {
+        } menu: {
             ForEach(BoardFeature.columns.filter { $0.rawValue != row.status.rawValue }, id: \.self) { status in
                 Button("Move to \(status.title)") { store.send(.dropped(row.id, on: status)) }
             }
+        } onTap: {
+            store.send(.list(.rowTapped(row.id)))
         }
     }
 }

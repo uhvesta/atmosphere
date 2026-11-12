@@ -1,0 +1,1488 @@
+// The one protocol Humata speaks: between the app, the command-line tool and
+// the MCP server and the daemon on your Mac, and between that daemon and the
+// host role on each machine (over a local socket, or over SSH's stdin and
+// stdout).
+//
+// On the wire each message is one Envelope, preceded by its length as a
+// 4-byte big-endian unsigned integer. Both sides send a Hello first and
+// refuse a peer whose protocol_version differs.
+syntax = "proto3";
+
+package humata.v1;
+
+// Bump when a change breaks older peers. Additive changes keep the number.
+enum ProtocolVersion {
+  PROTOCOL_VERSION_UNSPECIFIED = 0;
+  PROTOCOL_VERSION_CURRENT = 1;
+}
+
+message Envelope {
+  // The request this belongs to. A response, the events of a stream and its
+  // end all carry their request's id. Hello uses 0.
+  uint64 id = 1;
+
+  oneof body {
+    Hello hello = 2;
+    Request request = 3;
+    Response response = 4;
+    // One item of the stream a request opened (for example WatchSession).
+    StreamItem item = 5;
+    // The stream a request opened has ended, normally or with an error.
+    StreamEnd end = 6;
+    // The sender no longer wants the stream its request opened.
+    Cancel cancel = 7;
+  }
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  // The daemon on your Mac, which owns the board.
+  ROLE_DAEMON = 1;
+  // The host role, which runs sessions next to the code.
+  ROLE_HOST = 2;
+  // The app, the command-line tool or the MCP server.
+  ROLE_CLIENT = 3;
+}
+
+message Hello {
+  ProtocolVersion protocol_version = 1;
+  Role role = 2;
+  // The program's own version, for messages about updating it.
+  string program_version = 3;
+  // Whether this side reads envelopes compressed with zstd. A side
+  // compresses only what it sends to a peer that does.
+  bool accepts_zstd = 4;
+}
+
+message Request {
+  oneof kind {
+    StartSession start_session = 1;
+    SendMessage send_message = 2;
+    Approve approve = 3;
+    ForkSession fork_session = 4;
+    ReadHistory read_history = 5;
+    WatchSession watch_session = 6;
+    ListSessions list_sessions = 7;
+    AbortTurn abort_turn = 8;
+    SetApprovalMode set_approval_mode = 9;
+    // Projects live in the daemon; a host refuses these.
+    CreateProject create_project = 10;
+    ListProjects list_projects = 11;
+    UpdateSession update_session = 12;
+    ReadChanges read_changes = 13;
+    // The board lives in the daemon; a host refuses these.
+    CreateItem create_item = 14;
+    UpdateItem update_item = 15;
+    ListItems list_items = 16;
+    ReadBoardLog read_board_log = 17;
+    RevertBoardChange revert_board_change = 18;
+    ListInbox list_inbox = 19;
+    // Hosts are the daemon's; a host refuses these.
+    ListHosts list_hosts = 20;
+    AddHost add_host = 21;
+    UpdateHost update_host = 22;
+    RemoveHost remove_host = 23;
+    CheckHost check_host = 24;
+    InstallHost install_host = 25;
+    ListSshHosts list_ssh_hosts = 26;
+    // The daemon sends a host these itself; the daemon refuses them.
+    ConfigureHost configure_host = 27;
+    ReadHostStatus read_host_status = 28;
+    CloneRepositories clone_repositories = 29;
+    EditChanges edit_changes = 30;
+    // Review threads are the daemon's; a host refuses these.
+    MarkViewed mark_viewed = 31;
+    CreateThread create_thread = 32;
+    ReplyToThread reply_to_thread = 33;
+    ResolveThread resolve_thread = 34;
+    DeleteComment delete_comment = 35;
+    ListThreads list_threads = 36;
+    SendReview send_review = 37;
+    // A session's folder, to browse.
+    ListFiles list_files = 38;
+    ReadFile read_file = 39;
+    // Seen state is the daemon's; a host refuses it.
+    MarkSeen mark_seen = 40;
+    Unqueue unqueue = 41;
+    // Refused while any of its sessions isn't archived.
+    DeleteProject delete_project = 42;
+    ListImportable list_importable = 43;
+    ImportSession import_session = 44;
+    // From the daemon to a host: the host's agents' calls to the humata MCP
+    // tools, streamed for the daemon to answer. A daemon refuses both.
+    WatchToolCalls watch_tool_calls = 45;
+    AnswerToolCall answer_tool_call = 46;
+    // From an agent, through the humata tools: something for the person.
+    AskPerson ask_person = 47;
+    RequestMove request_move = 48;
+    // From the person, in the inbox.
+    AnswerRequest answer_request = 49;
+    // The models a backend on a host offers, to pick from when starting.
+    ListModels list_models = 50;
+    // Sessions on a host that couldn't be opened, and removing one.
+    ListSkipped list_skipped = 51;
+    RemoveSkipped remove_skipped = 52;
+    StopHost stop_host = 53;
+    // From the daemon to a host: a session's recovery copy, and setting a
+    // session up again from one. A daemon refuses both.
+    BackupSession backup_session = 54;
+    RestoreBackup restore_backup = 55;
+    // From a client: the Mac's recovery copies, and restoring from them.
+    ListRecoveries list_recoveries = 56;
+    RestoreSession restore_session = 57;
+    RestoreHost restore_host = 58;
+  }
+}
+
+message Response {
+  oneof kind {
+    Error error = 1;
+    SessionStarted session_started = 2;
+    MessageSent message_sent = 3;
+    Approved approved = 4;
+    SessionForked session_forked = 5;
+    History history = 6;
+    Sessions sessions = 7;
+    TurnAborted turn_aborted = 8;
+    // A stream request was accepted; its items follow as StreamItem.
+    Watching watching = 9;
+    ApprovalModeSet approval_mode_set = 10;
+    ProjectCreated project_created = 11;
+    Projects projects = 12;
+    SessionUpdated session_updated = 13;
+    Changes changes = 14;
+    ItemCreated item_created = 15;
+    ItemUpdated item_updated = 16;
+    Items items = 17;
+    BoardLog board_log = 18;
+    BoardChangeReverted board_change_reverted = 19;
+    Inbox inbox = 20;
+    Hosts hosts = 21;
+    HostSaved host_saved = 22;
+    HostRemoved host_removed = 23;
+    HostHealth host_health = 24;
+    HostInstalled host_installed = 25;
+    SshHosts ssh_hosts = 26;
+    HostConfigured host_configured = 27;
+    HostStatus host_status = 28;
+    RepositoriesCloned repositories_cloned = 29;
+    ChangesEdited changes_edited = 30;
+    FileViewed file_viewed = 31;
+    ThreadSaved thread_saved = 32;
+    CommentDeleted comment_deleted = 33;
+    Threads threads = 34;
+    ReviewSent review_sent = 35;
+    Files files = 36;
+    FileContents file_contents = 37;
+    Seen seen = 38;
+    Unqueued unqueued = 39;
+    ProjectDeleted project_deleted = 40;
+    Importable importable = 41;
+    ToolCallsWatched tool_calls_watched = 42;
+    ToolCallAnswered tool_call_answered = 43;
+    RequestMade request_made = 44;
+    RequestAnswered request_answered = 45;
+    Models models = 46;
+    Skipped skipped = 47;
+    SkippedRemoved skipped_removed = 48;
+    HostStopping host_stopping = 49;
+    SessionBackup session_backup = 50;
+    SessionRestored session_restored = 51;
+    Recoveries recoveries = 52;
+    HostRestored host_restored = 53;
+  }
+}
+
+message Error {
+  ErrorCode code = 1;
+  // For the person who has to fix it: what failed and how to resolve it.
+  string message = 2;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_UNKNOWN_SESSION = 1;
+  ERROR_CODE_UNKNOWN_EVENT = 2;
+  ERROR_CODE_UNKNOWN_PERMISSION_REQUEST = 3;
+  ERROR_CODE_UNKNOWN_BACKEND = 4;
+  ERROR_CODE_BUSY = 5;
+  ERROR_CODE_INVALID_REQUEST = 6;
+  ERROR_CODE_BACKEND_FAILED = 7;
+  ERROR_CODE_STORAGE_FAILED = 8;
+  ERROR_CODE_HOST_UNAVAILABLE = 9;
+  ERROR_CODE_UNKNOWN_PROJECT = 10;
+  // The session is archived; unarchive it first.
+  ERROR_CODE_ARCHIVED = 11;
+  ERROR_CODE_UNKNOWN_ITEM = 12;
+  ERROR_CODE_UNKNOWN_BOARD_CHANGE = 13;
+  ERROR_CODE_UNKNOWN_HOST = 14;
+  ERROR_CODE_UNKNOWN_THREAD = 15;
+  // What the request worked on changed since it was read; read it again.
+  ERROR_CODE_CHANGED = 16;
+  // The queued message already started or was taken out.
+  ERROR_CODE_UNKNOWN_QUEUED_MESSAGE = 17;
+  // The session to import isn't one the backend has, or has nothing in it.
+  ERROR_CODE_UNKNOWN_IMPORT = 18;
+  // The session was imported before; open that one.
+  ERROR_CODE_ALREADY_IMPORTED = 19;
+  // No such request waits in the inbox; it may have been answered.
+  ERROR_CODE_UNKNOWN_REQUEST = 20;
+}
+
+enum Backend {
+  BACKEND_UNSPECIFIED = 0;
+  BACKEND_SCRIPTED = 1;
+  BACKEND_LOCAL = 2;
+  BACKEND_COPILOT = 3;
+  // Claude Code, on the `claude` CLI signed in on the host.
+  BACKEND_CLAUDE = 4;
+}
+
+message StartSession {
+  Backend backend = 1;
+  // The folder the agent works in, on the host. Ignored when it works in
+  // repositories: then it works in its own copy of them. With neither, nor
+  // a project to take repositories from, it gets an empty folder of its own
+  // on the host, kept with the host's state: a chat that works in no folder
+  // of yours.
+  string working_directory = 2;
+  // The model to use; empty for the backend's default.
+  string model = 3;
+  // Instructions for the agent, set for the life of the session.
+  string instructions = 4;
+  string name = 5;
+  // The host to run on, as the daemon names it; empty for this machine.
+  string host = 6;
+  // Settings only the backend reads, as JSON; for the scripted backend, its
+  // script. A fork keeps them.
+  string backend_config = 7;
+  ApprovalMode approval_mode = 8;
+  // The project it belongs to. Its repositories and instructions, if empty,
+  // are the project's.
+  string project_id = 9;
+  // The repositories, on the host, it works in. Each gets a git worktree of
+  // its own, made before its first turn and saved after each one, without a
+  // commit.
+  repeated Repository repositories = 10;
+  // The task or subtask it works on, in the project; the project is the
+  // item's if not given. Empty for the project itself.
+  string item_id = 11;
+  // Which specs it reads, ahead of its instructions.
+  SpecScope specs = 12;
+}
+
+enum SpecScope {
+  // The same as ITEM.
+  SPEC_SCOPE_UNSPECIFIED = 0;
+  // Its item's spec alone.
+  SPEC_SCOPE_ITEM = 1;
+  // Its item's, and the task's above a subtask.
+  SPEC_SCOPE_WITH_PARENTS = 2;
+}
+
+// A git repository a session works in.
+message Repository {
+  // Its folder's name in the session's copy; unique within a session.
+  string name = 1;
+  // The repository's folder.
+  string path = 2;
+}
+
+// What a session may do without asking. A fork keeps its parent's.
+enum ApprovalMode {
+  // The same as ASK_EVERY_TIME.
+  APPROVAL_MODE_UNSPECIFIED = 0;
+  APPROVAL_MODE_ASK_EVERY_TIME = 1;
+  // Reads and file writes go ahead; commands and anything else still ask.
+  APPROVAL_MODE_ALLOW_EDITS = 2;
+  APPROVAL_MODE_ALLOW_EVERYTHING = 3;
+}
+
+// Sets a session's approval mode from now on. Requests waiting for an
+// answer that the new mode allows go ahead.
+message SetApprovalMode {
+  string session_id = 1;
+  ApprovalMode mode = 2;
+}
+
+message ApprovalModeSet {}
+
+message Project {
+  string id = 1;
+  string name = 2;
+  reserved 3;
+  reserved "repository";
+  // The repositories on this Mac its sessions work in.
+  repeated Repository repositories = 6;
+  // Instructions for every session in it.
+  string instructions = 4;
+  // Milliseconds since 1970 in UTC.
+  int64 created_unix_ms = 5;
+}
+
+message CreateProject {
+  string name = 1;
+  reserved 2;
+  reserved "repository";
+  string instructions = 3;
+  // At least one. A repository without a name is named after its folder.
+  repeated Repository repositories = 4;
+}
+
+message ProjectCreated {
+  Project project = 1;
+}
+
+// Removes a project and its board from the daemon. Its archived sessions
+// stay on their hosts, with no project, so their code and history are kept.
+message DeleteProject {
+  string project_id = 1;
+}
+
+message ProjectDeleted {}
+
+// The sessions the backends on a host ran outside Humata, newest first.
+message ListImportable {
+  // The host to look on, as the daemon names it; empty for this machine.
+  string host = 1;
+}
+
+message Importable {
+  repeated ImportableSession sessions = 1;
+}
+
+// The models a backend offers. A backend that can't list them, such as
+// Copilot on an account without the feature, answers with an error and the
+// app takes a typed model name instead.
+message ListModels {
+  // The host to ask, as the daemon names it; empty for this machine.
+  string host = 1;
+  Backend backend = 2;
+  // As in `StartSession`: a local model server or a Copilot provider, whose
+  // models are listed instead.
+  string backend_config = 3;
+}
+
+message ListSkipped {
+  // The host to ask, as the daemon names it; empty for this machine.
+  string host = 1;
+}
+
+message Skipped {
+  repeated SkippedSession sessions = 1;
+}
+
+// A session on a host whose files couldn't be read, so it is left as it is.
+message SkippedSession {
+  Backend backend = 1;
+  // Its folder's name, which is its id.
+  string id = 2;
+  // Its folder, on the host.
+  string folder = 3;
+  // Why it couldn't be opened, and what fixing it would take.
+  string reason = 4;
+}
+
+// Deletes a skipped session's folder, with its history.
+message RemoveSkipped {
+  string host = 1;
+  Backend backend = 2;
+  string id = 3;
+}
+
+message SkippedRemoved {}
+
+// Asks a host serving on its own socket to stop, once its replacement is
+// installed. It removes its socket first, so the next connection starts the
+// new one. Daemon to host only.
+message StopHost {}
+
+message HostStopping {}
+
+// A session's recovery copy, from the host it runs on. Daemon to host only.
+message BackupSession {
+  string session_id = 1;
+  // What the daemon's copy of each repository has already, so the bundles
+  // leave out what is reachable from it.
+  repeated RepositoryCommits haves = 2;
+}
+
+// Commits in one of a session's repositories, by the name the session
+// gives it.
+message RepositoryCommits {
+  string name = 1;
+  repeated string commits = 2;
+}
+
+// What sets a session up again on a host that lost it, or on another one.
+message SessionBackup {
+  Backend backend = 1;
+  // The session's record as its host keeps it, as JSON.
+  bytes record = 2;
+  // Its history as its host keeps it, as a JSON array of events.
+  bytes events = 3;
+  // The backend's own state of it, such as Claude Code's transcript.
+  repeated BackendFile backend_files = 4;
+  // Its snapshots' commits in each repository that the haves didn't
+  // have; a repository with nothing new isn't listed.
+  repeated RepositoryBundle bundles = 5;
+  // How many turns it had finished.
+  uint32 turns = 6;
+}
+
+message BackendFile {
+  string name = 1;
+  bytes contents = 2;
+}
+
+// A git bundle of a session's snapshot refs in one repository.
+message RepositoryBundle {
+  string name = 1;
+  bytes bundle = 2;
+}
+
+// Sets a session up again on this host from its recovery copy, at its last
+// snapshot. Refused if the host has the session already. Daemon to host
+// only.
+message RestoreBackup {
+  SessionBackup backup = 1;
+  // The clones on this host it works in, by the names its record gives.
+  repeated Repository repositories = 2;
+}
+
+message SessionRestored {
+  SessionInfo session = 1;
+}
+
+// The daemon's recovery copies of sessions on other machines.
+message ListRecoveries {}
+
+message Recoveries {
+  repeated Recovery recoveries = 1;
+}
+
+message Recovery {
+  string session_id = 1;
+  string name = 2;
+  // The host it was backed up from.
+  string host = 3;
+  // Turns finished when it was last backed up, and as its host last said.
+  // The copy is behind while the first is less.
+  uint32 backed_up_turns = 4;
+  uint32 turns = 5;
+  int64 backed_up_unix_ms = 6;
+  // Its host is reachable and has it, so there is nothing to restore
+  // there.
+  bool on_host = 7;
+}
+
+// Sets a session up again from the Mac's recovery copy on `host`, empty for
+// This Mac. Onto a host other than its own, it moves: its host changes and
+// its id, tree and task stay.
+message RestoreSession {
+  string session_id = 1;
+  string host = 2;
+}
+
+// Restores every session the Mac has a copy of from `host` that the host
+// doesn't have, such as after it was reinstalled.
+message RestoreHost {
+  string host = 1;
+}
+
+message HostRestored {
+  repeated SessionInfo restored = 1;
+  // Sessions that couldn't be restored, with why.
+  repeated RestoreFailure failed = 2;
+}
+
+message RestoreFailure {
+  string session_id = 1;
+  string message = 2;
+}
+
+message Models {
+  repeated ModelChoice models = 1;
+}
+
+message ModelChoice {
+  // What `StartSession` takes as the model.
+  string id = 1;
+  string name = 2;
+  // Such as what a turn costs; empty when there is nothing to say.
+  string detail = 3;
+}
+
+message ImportableSession {
+  Backend backend = 1;
+  // The backend's own id for it.
+  string id = 2;
+  // The folder it worked in, on the host.
+  string working_directory = 3;
+  // Its first message, on one line.
+  string summary = 4;
+  int64 updated_unix_ms = 5;
+}
+
+// Brings a session from `ListImportable` into Humata, with its history, to
+// carry on in the folder it worked in. Answered with `SessionStarted`.
+message ImportSession {
+  Backend backend = 1;
+  string external_id = 2;
+  string host = 3;
+  // Empty to name it after its summary.
+  string name = 4;
+  string project_id = 5;
+}
+
+message ListProjects {}
+
+message Projects {
+  repeated Project projects = 1;
+}
+
+message SessionStarted {
+  SessionInfo session = 1;
+}
+
+enum SendMode {
+  SEND_MODE_UNSPECIFIED = 0;
+  // Start a turn now, or wait for the running one to finish.
+  SEND_MODE_ENQUEUE = 1;
+  // Steer the running turn.
+  SEND_MODE_IMMEDIATE = 2;
+}
+
+message SendMessage {
+  string session_id = 1;
+  string text = 2;
+  SendMode mode = 3;
+}
+
+message MessageSent {}
+
+message Approve {
+  string session_id = 1;
+  string permission_request_id = 2;
+  bool approved = 3;
+}
+
+message Approved {}
+
+message ForkSession {
+  string session_id = 1;
+  // The fork keeps the events before this one, not including it. Empty keeps
+  // them all.
+  string before_event_id = 2;
+  string name = 3;
+  // The fork shares its parent's copy of the code instead of getting its
+  // own as it was at the fork.
+  bool chat_only = 4;
+}
+
+// Changes a session's record. Unset fields are left as they are.
+message UpdateSession {
+  string session_id = 1;
+  optional string name = 2;
+  // An archived session's copy of the code is saved and removed, and it
+  // takes no messages. Unarchived, its code comes back as it was.
+  optional bool archived = 3;
+  // Marks the session whose changes are the ones to keep.
+  optional bool keeper = 4;
+  // Moves the session to this task or subtask of its project; empty moves
+  // it to the project itself. Only the daemon keeps this.
+  optional string item_id = 5;
+}
+
+message SessionUpdated {
+  SessionInfo session = 1;
+}
+
+// What a session changed in each repository over a range of its history.
+message ReadChanges {
+  string session_id = 1;
+  // Unset: everything since its copy was made.
+  ChangeRange range = 2;
+  // Unchanged lines shown around each change; unset is 3.
+  optional uint32 context = 3;
+  // Only this file. With whole_file, every line of it, with its lines even
+  // when it didn't change.
+  FileRef file = 4;
+  bool whole_file = 5;
+}
+
+enum ChangeRangeKind {
+  // Everything since the session's copy was made.
+  CHANGE_RANGE_KIND_SESSION = 0;
+  // In the copy, not staged yet.
+  CHANGE_RANGE_KIND_UNSTAGED = 1;
+  // Staged in the copy, not committed yet.
+  CHANGE_RANGE_KIND_STAGED = 2;
+  // From where the copy's work and `branch` meet to the files in the copy.
+  CHANGE_RANGE_KIND_BRANCH = 3;
+  // What turn `turn` changed; the session's first turn is 1.
+  CHANGE_RANGE_KIND_TURN = 4;
+}
+
+message ChangeRange {
+  ChangeRangeKind kind = 1;
+  string branch = 2;
+  uint32 turn = 3;
+}
+
+// A file, by its repository's name in the session and its path there.
+message FileRef {
+  string repository = 1;
+  string path = 2;
+}
+
+message Changes {
+  repeated RepositoryChanges repositories = 1;
+}
+
+message RepositoryChanges {
+  string name = 1;
+  // A unified diff; empty if nothing changed.
+  string patch = 2;
+  repeated FileDiff files = 3;
+}
+
+enum FileStatus {
+  FILE_STATUS_MODIFIED = 0;
+  FILE_STATUS_ADDED = 1;
+  FILE_STATUS_DELETED = 2;
+  FILE_STATUS_RENAMED = 3;
+  // Read as a whole file, and the same at both ends of the range.
+  FILE_STATUS_UNCHANGED = 4;
+}
+
+message FileDiff {
+  string path = 1;
+  // Where a renamed file was.
+  string old_path = 2;
+  FileStatus status = 3;
+  bool binary = 4;
+  // Names its contents at the end of the range; empty for a deleted file.
+  string blob = 5;
+  repeated Hunk hunks = 6;
+  // Marked viewed, with these contents. The daemon fills it in.
+  bool viewed = 7;
+}
+
+message Hunk {
+  uint32 old_start = 1;
+  uint32 old_count = 2;
+  uint32 new_start = 3;
+  uint32 new_count = 4;
+  // What git shows after the hunk's range, such as the function it's in.
+  string header = 5;
+  repeated DiffLine lines = 6;
+}
+
+enum DiffLineKind {
+  DIFF_LINE_KIND_CONTEXT = 0;
+  DIFF_LINE_KIND_ADDED = 1;
+  DIFF_LINE_KIND_REMOVED = 2;
+}
+
+message DiffLine {
+  DiffLineKind kind = 1;
+  // Its number before the change; 0 for an added line.
+  uint32 old = 2;
+  // Its number after; 0 for a removed line.
+  uint32 new = 3;
+  string text = 4;
+}
+
+enum ChangeAction {
+  CHANGE_ACTION_UNSPECIFIED = 0;
+  // Stages the copy's unstaged changes.
+  CHANGE_ACTION_STAGE = 1;
+  // Unstages staged changes, keeping them in the copy.
+  CHANGE_ACTION_UNSTAGE = 2;
+  // Throws away the copy's unstaged changes; a file git didn't know is
+  // removed.
+  CHANGE_ACTION_REVERT = 3;
+}
+
+// A hunk, by where it starts in the diff the action works on, read with
+// `context` lines: the unstaged changes to stage or revert, the staged ones
+// to unstage.
+message HunkAt {
+  uint32 old_start = 1;
+  uint32 new_start = 2;
+  uint32 context = 3;
+}
+
+// Stages, unstages or reverts a file or, given `hunk`, one of its hunks.
+message EditChanges {
+  string session_id = 1;
+  FileRef file = 2;
+  ChangeAction action = 3;
+  HunkAt hunk = 4;
+}
+
+message ChangesEdited {}
+
+// Marks a file viewed with the contents `blob` names, or not viewed. It
+// stays viewed until its contents change.
+message MarkViewed {
+  string session_id = 1;
+  FileRef file = 2;
+  string blob = 3;
+  bool viewed = 4;
+}
+
+message FileViewed {}
+
+// The person has seen the session's first `turns` finished turns. Seen
+// turns only go up.
+message MarkSeen {
+  string session_id = 1;
+  uint32 turns = 2;
+}
+
+message Seen {}
+
+// Takes a queued message out before its turn starts.
+message Unqueue {
+  string session_id = 1;
+  // The id its MessageQueued event gave it.
+  string queue_id = 2;
+}
+
+message Unqueued {}
+
+// Comments on lines `start_line` to `end_line` of a file as it is in the
+// session's copy; in rendered Markdown, on `quote`, the text picked there.
+message CreateThread {
+  string session_id = 1;
+  FileRef file = 2;
+  uint32 start_line = 3;
+  uint32 end_line = 4;
+  string quote = 5;
+  string text = 6;
+}
+
+// Adds a comment to the thread, sent with the next review.
+message ReplyToThread {
+  string thread_id = 1;
+  string text = 2;
+}
+
+message ResolveThread {
+  string thread_id = 1;
+  bool resolved = 2;
+}
+
+message ThreadSaved {
+  ReviewThread thread = 1;
+}
+
+// Deletes a comment not sent yet; a thread left without comments goes too.
+message DeleteComment {
+  string comment_id = 1;
+}
+
+message CommentDeleted {}
+
+// The files in a session's folder, hidden ones and their contents left out.
+message ListFiles {
+  string session_id = 1;
+}
+
+message ChatFile {
+  // Relative to the session's folder, with "/" between folders.
+  string path = 1;
+  uint64 size = 2;
+  // Milliseconds since 1970 in UTC.
+  int64 modified_unix_ms = 3;
+}
+
+message Files {
+  // By path.
+  repeated ChatFile files = 1;
+  // There were more than are listed.
+  bool truncated = 2;
+}
+
+// One file in a session's folder, by its path from ListFiles.
+message ReadFile {
+  string session_id = 1;
+  string path = 2;
+}
+
+message FileContents {
+  string path = 1;
+  string text = 2;
+  // It isn't UTF-8 text, so text is empty.
+  bool binary = 3;
+}
+
+message ListThreads {
+  string session_id = 1;
+}
+
+message Threads {
+  repeated ReviewThread threads = 1;
+}
+
+// Sends every comment not sent yet, on threads not resolved, to the agent
+// as one message, asking it to answer each thread.
+message SendReview {
+  string session_id = 1;
+}
+
+message ReviewSent {
+  uint32 comments = 1;
+}
+
+message ReviewThread {
+  string id = 1;
+  string session_id = 2;
+  FileRef file = 3;
+  // Where it is in the file as it is now, from 1.
+  uint32 start_line = 4;
+  uint32 end_line = 5;
+  // The lines it was left on have changed, so it's where they were.
+  bool outdated = 6;
+  // The lines as they were when it was left.
+  repeated string code = 7;
+  string quote = 8;
+  bool resolved = 9;
+  repeated ReviewComment comments = 10;
+}
+
+enum CommentAuthor {
+  COMMENT_AUTHOR_YOU = 0;
+  COMMENT_AUTHOR_AGENT = 1;
+}
+
+message ReviewComment {
+  string id = 1;
+  CommentAuthor author = 2;
+  string text = 3;
+  // Sent to the agent; only a comment not sent yet can be deleted.
+  bool sent = 4;
+  int64 time_unix_ms = 5;
+  // The agent's: the turn it answered in, whose changes are its fix.
+  uint32 turn = 6;
+}
+
+message SessionForked {
+  SessionInfo session = 1;
+}
+
+message ReadHistory {
+  string session_id = 1;
+}
+
+message History {
+  repeated SessionEvent events = 1;
+}
+
+// Streams the session's events: first every event so far, then each new one
+// as it happens.
+message WatchSession {
+  string session_id = 1;
+}
+
+message Watching {}
+
+message ListSessions {
+  // Only this project's sessions; empty for every session.
+  string project_id = 1;
+}
+
+message Sessions {
+  repeated SessionInfo sessions = 1;
+}
+
+message AbortTurn {
+  string session_id = 1;
+}
+
+message TurnAborted {}
+
+message StreamItem {
+  oneof kind {
+    SessionEvent session_event = 1;
+    ToolCall tool_call = 2;
+  }
+}
+
+message WatchToolCalls {}
+
+message ToolCallsWatched {}
+
+// A request an agent on the host made through `humatad mcp`, for the daemon,
+// which keeps the board and review threads, to answer.
+message ToolCall {
+  uint64 id = 1;
+  Request request = 2;
+}
+
+message AnswerToolCall {
+  uint64 id = 1;
+  // What the agent gets back, an error included.
+  Response response = 2;
+}
+
+message ToolCallAnswered {}
+
+message StreamEnd {
+  // Unset when the stream ended normally.
+  Error error = 1;
+}
+
+message Cancel {}
+
+enum SessionState {
+  SESSION_STATE_UNSPECIFIED = 0;
+  SESSION_STATE_IDLE = 1;
+  SESSION_STATE_WORKING = 2;
+  SESSION_STATE_WAITING_FOR_APPROVAL = 3;
+  SESSION_STATE_FAILED = 4;
+}
+
+message SessionInfo {
+  string id = 1;
+  string name = 2;
+  Backend backend = 3;
+  string working_directory = 4;
+  string model = 5;
+  SessionState state = 6;
+  // The session this was forked from, and the event it was forked before.
+  // Empty for a root session.
+  string parent_id = 7;
+  string forked_before_event_id = 8;
+  // The host it runs on, as the daemon names it; empty for this machine.
+  string host = 9;
+  ApprovalMode approval_mode = 10;
+  // The project it belongs to, as the daemon records it; empty for none.
+  string project_id = 11;
+  // Its copy of each repository; empty before its first turn, while
+  // archived, or if it works in none.
+  repeated Checkout checkouts = 12;
+  bool archived = 13;
+  bool keeper = 14;
+  // The task or subtask it works on, as the daemon records it; empty for
+  // the project itself or none.
+  string item_id = 15;
+  // How many turns it has finished.
+  uint32 turns = 16;
+  // Its host couldn't be reached, so this is the daemon's copy from when it
+  // last could: it may have moved on since.
+  bool host_offline = 17;
+  // How many of its finished turns the person has seen. The daemon fills
+  // it in; the inbox lists a reply only while turns is more.
+  uint32 seen_turns = 18;
+  // The requests for permission the running turn waits on, oldest first,
+  // so they can be answered without opening the session.
+  repeated PermissionRequested pending = 19;
+  // When its last event happened; 0 before it has any.
+  int64 last_active_unix_ms = 20;
+}
+
+// A session's git worktree of one repository.
+message Checkout {
+  string name = 1;
+  // The worktree's folder, on the session's host.
+  string path = 2;
+  string branch = 3;
+}
+
+// One thing that happened in a session. Its id is stable for the life of the
+// session, and a fork's copies keep their ids.
+message SessionEvent {
+  string id = 1;
+  // Milliseconds since 1970 in UTC.
+  int64 time_unix_ms = 2;
+
+  oneof kind {
+    UserMessage user_message = 3;
+    TurnStarted turn_started = 4;
+    AssistantDelta assistant_delta = 5;
+    AssistantMessage assistant_message = 6;
+    Reasoning reasoning = 7;
+    ToolStarted tool_started = 8;
+    ToolCompleted tool_completed = 9;
+    PermissionRequested permission_requested = 10;
+    PermissionCompleted permission_completed = 11;
+    TurnEnded turn_ended = 12;
+    SessionIdle idle = 13;
+    SessionFailed failed = 14;
+    Usage usage = 15;
+    Checkpoint checkpoint = 16;
+    MessageQueued message_queued = 17;
+    Dequeued dequeued = 18;
+    Saved saved = 19;
+  }
+}
+
+// The code was saved part way through a turn, after a tool call. Unlike a
+// checkpoint it doesn't divide turns; a fork after it starts from it.
+message Saved {
+  repeated Snapshot snapshots = 1;
+}
+
+// The code was saved: before the first turn and after each one. A fork
+// before an event starts from the last checkpoint ahead of it.
+message Checkpoint {
+  repeated Snapshot snapshots = 1;
+}
+
+message Snapshot {
+  // The repository's name in the session.
+  string name = 1;
+  // The commit its worktree was on.
+  string head = 2;
+  // A commit, on no branch, of the worktree's files.
+  string commit = 3;
+}
+
+message UserMessage {
+  string text = 1;
+}
+
+message TurnStarted {}
+
+// Part of the reply as it streams. The AssistantMessage that follows holds
+// the whole of it.
+message AssistantDelta {
+  string text = 1;
+}
+
+message AssistantMessage {
+  string text = 1;
+}
+
+message Reasoning {
+  string text = 1;
+}
+
+message ToolStarted {
+  string call_id = 1;
+  string tool = 2;
+  // The tool's arguments, as JSON.
+  string arguments_json = 3;
+}
+
+message ToolCompleted {
+  string call_id = 1;
+  bool success = 2;
+  string output = 3;
+}
+
+enum PermissionKind {
+  PERMISSION_KIND_UNSPECIFIED = 0;
+  PERMISSION_KIND_SHELL = 1;
+  PERMISSION_KIND_WRITE = 2;
+  PERMISSION_KIND_READ = 3;
+  PERMISSION_KIND_OTHER = 4;
+}
+
+message PermissionRequested {
+  string request_id = 1;
+  PermissionKind kind = 2;
+  // What the agent wants to do, for the person deciding.
+  string summary = 3;
+}
+
+message PermissionCompleted {
+  string request_id = 1;
+  bool approved = 2;
+  // Answered by the session's approval mode, not by a person.
+  bool automatic = 3;
+}
+
+message TurnEnded {
+  // Set when the turn was stopped before it finished.
+  bool aborted = 1;
+}
+
+// A message waits for the running turn to end.
+message MessageQueued {
+  // Names it until it leaves the queue.
+  string queue_id = 1;
+  string text = 2;
+}
+
+// The queued message left the queue: its turn is starting, or the person
+// took it out.
+message Dequeued {
+  string queue_id = 1;
+}
+
+message SessionIdle {}
+
+message SessionFailed {
+  string message = 1;
+}
+
+message Usage {
+  string model = 1;
+  uint64 input_tokens = 2;
+  uint64 output_tokens = 3;
+  // Copilot's premium requests; 0 for other backends.
+  double premium_requests = 4;
+}
+
+// Where an item is on the board.
+enum ItemStatus {
+  // The same as TODO.
+  ITEM_STATUS_UNSPECIFIED = 0;
+  ITEM_STATUS_TODO = 1;
+  ITEM_STATUS_IN_PROGRESS = 2;
+  ITEM_STATUS_WAITING_ON_YOU = 3;
+  ITEM_STATUS_IN_REVIEW = 4;
+  ITEM_STATUS_DONE = 5;
+  ITEM_STATUS_WONT_DO = 6;
+}
+
+enum Priority {
+  PRIORITY_NONE = 0;
+  PRIORITY_LOW = 1;
+  PRIORITY_MEDIUM = 2;
+  PRIORITY_HIGH = 3;
+  PRIORITY_URGENT = 4;
+}
+
+// A task, or a subtask of one, on a project's board.
+message Item {
+  string id = 1;
+  string project_id = 2;
+  // The task a subtask is under; empty for a task.
+  string parent_id = 3;
+  string title = 4;
+  // Markdown.
+  string spec = 5;
+  // Where it shows on the board. While one of its sessions, or for a task
+  // one of its subtasks' sessions, is working, waiting or has finished a
+  // turn, that decides; otherwise, and always once Done or Won't do, it is
+  // given_status.
+  ItemStatus status = 6;
+  // The status it was given, by hand or when added.
+  ItemStatus given_status = 7;
+  Priority priority = 8;
+  // Milliseconds since 1970 in UTC.
+  int64 created_unix_ms = 9;
+  int64 updated_unix_ms = 10;
+  // The sessions that work on it, archived ones too.
+  repeated string session_ids = 11;
+}
+
+message CreateItem {
+  string project_id = 1;
+  // The task to add a subtask under; empty adds a task.
+  string parent_id = 2;
+  string title = 3;
+  string spec = 4;
+  ItemStatus status = 5;
+  Priority priority = 6;
+}
+
+message ItemCreated {
+  Item item = 1;
+}
+
+// Changes an item. Unset fields are left as they are.
+message UpdateItem {
+  string item_id = 1;
+  optional string title = 2;
+  optional string spec = 3;
+  optional ItemStatus status = 4;
+  optional Priority priority = 5;
+}
+
+message ItemUpdated {
+  Item item = 1;
+}
+
+message ListItems {
+  string project_id = 1;
+}
+
+// Tasks first by priority, then by when they were added; each task's
+// subtasks follow it in the same order.
+message Items {
+  repeated Item items = 1;
+}
+
+// An item's fields that the board's changes record.
+message ItemFields {
+  string parent_id = 1;
+  string title = 2;
+  string spec = 3;
+  ItemStatus status = 4;
+  Priority priority = 5;
+}
+
+// One change to a project's board.
+message BoardChange {
+  uint64 id = 1;
+  string item_id = 2;
+  int64 time_unix_ms = 3;
+  // Unset when the change added the item.
+  ItemFields before = 4;
+  // Unset when the change removed it.
+  ItemFields after = 5;
+  // The change this one reverted; 0 for none.
+  uint64 reverts = 6;
+}
+
+message ReadBoardLog {
+  string project_id = 1;
+}
+
+// Newest first.
+message BoardLog {
+  repeated BoardChange changes = 1;
+}
+
+// Puts an item back as it was before a change. Reverting the change that
+// added an item removes it, which it refuses while the item has subtasks or
+// sessions.
+message RevertBoardChange {
+  uint64 change_id = 1;
+}
+
+message BoardChangeReverted {
+  // The item as it is now; unset if it was removed.
+  Item item = 1;
+}
+
+// Every session, across projects, waiting on you.
+message ListInbox {}
+
+enum AgentRequestKind {
+  AGENT_REQUEST_KIND_UNSPECIFIED = 0;
+  AGENT_REQUEST_KIND_QUESTION = 1;
+  AGENT_REQUEST_KIND_MOVE = 2;
+}
+
+// Something an agent asks of the person, kept until they answer it.
+message AgentRequest {
+  string id = 1;
+  string session_id = 2;
+  AgentRequestKind kind = 3;
+  // The question, or for a move what the agent did.
+  string text = 4;
+  // For a move: the task or subtask, and the status asked for.
+  string item_id = 5;
+  ItemStatus status = 6;
+  int64 created_unix_ms = 7;
+}
+
+message AskPerson {
+  string session_id = 1;
+  string text = 2;
+}
+
+// Only to in review, done or won't do; the person approves it.
+message RequestMove {
+  string session_id = 1;
+  string item_id = 2;
+  ItemStatus status = 3;
+  string summary = 4;
+}
+
+message RequestMade {
+  AgentRequest request = 1;
+}
+
+message AnswerRequest {
+  string request_id = 1;
+  oneof answer {
+    // Sent to the session as a message, which it carries on from.
+    string reply = 2;
+    // Moves the item as asked.
+    bool approve = 3;
+    // Moves the item to another status of the person's choosing.
+    ItemStatus move_to = 4;
+    // Takes it out of the inbox without doing anything.
+    bool dismiss = 5;
+  }
+}
+
+message RequestAnswered {}
+
+enum InboxReason {
+  INBOX_REASON_UNSPECIFIED = 0;
+  // It asked to run a command, write or read and waits for your answer.
+  INBOX_REASON_APPROVAL = 1;
+  // It finished a turn: a question to answer or work to review.
+  INBOX_REASON_REPLY = 2;
+  // Its turn failed.
+  INBOX_REASON_FAILED = 3;
+  // It asked you a question or for your opinion.
+  INBOX_REASON_QUESTION = 4;
+  // It finished and asks to move its task.
+  INBOX_REASON_MOVE = 5;
+}
+
+message InboxEntry {
+  SessionInfo session = 1;
+  InboxReason reason = 2;
+  // Its project's and item's names; empty for none.
+  string project_name = 3;
+  string item_title = 4;
+  // What it asks, for a question or a move.
+  AgentRequest request = 5;
+}
+
+// Approvals first, then what agents ask, then failures, then replies.
+message Inbox {
+  repeated InboxEntry entries = 1;
+}
+
+// A machine the daemon runs sessions on over SSH.
+message HostInfo {
+  string name = 1;
+  // What `ssh` connects to, such as a Host in ~/.ssh/config; empty for a
+  // host reached by a command of its own, which Humata can't install on.
+  string ssh_destination = 2;
+  // The names of the variables set for its agents. Their values never leave
+  // the daemon but to the host.
+  repeated string env_names = 3;
+  // Run on the host when it changes, or until it succeeds.
+  string setup_script = 4;
+}
+
+message ListHosts {}
+
+message Hosts {
+  repeated HostInfo hosts = 1;
+  // The coordinator, the Mac the daemon runs on, with no name: the
+  // variables for its agents. `UpdateHost` with
+  // no name changes them; it takes no setup script.
+  HostInfo coordinator = 2;
+}
+
+message AddHost {
+  string name = 1;
+  string ssh_destination = 2;
+  // An ssh_config to use instead of ~/.ssh/config; empty for the default.
+  string ssh_config = 3;
+  // Where Humata keeps its program and state on the host, relative to the
+  // home folder there; empty for .humata.
+  string folder = 4;
+}
+
+message EnvVar {
+  string name = 1;
+  string value = 2;
+}
+
+// Changes a host's setup; it takes effect the next time the daemon connects.
+message UpdateHost {
+  string name = 1;
+  repeated EnvVar set_env = 2;
+  repeated string unset_env = 3;
+  optional string setup_script = 4;
+}
+
+message HostSaved {
+  HostInfo host = 1;
+}
+
+message RemoveHost {
+  string name = 1;
+}
+
+message HostRemoved {}
+
+// Connects to a host, installing or updating Humata's program there first if
+// it can, and reports how it is.
+message CheckHost {
+  string name = 1;
+}
+
+message HostHealth {
+  string name = 1;
+  bool reachable = 2;
+  // Why it couldn't be reached, for the person who has to fix it.
+  string problem = 3;
+  HostStatus status = 4;
+}
+
+// Copies Humata's program to a host over SSH.
+message InstallHost {
+  string name = 1;
+  // The program to copy, for a host of another platform; empty for this
+  // daemon's own.
+  string binary = 2;
+}
+
+message HostInstalled {
+  string program_version = 1;
+}
+
+// The hosts named in ~/.ssh/config, to add one from.
+message ListSshHosts {}
+
+message SshHosts {
+  repeated string names = 1;
+}
+
+message ConfigureHost {
+  repeated EnvVar env = 1;
+  string setup_script = 2;
+}
+
+message HostConfigured {
+  SetupResult setup = 1;
+}
+
+message SetupResult {
+  // False when there is no setup script.
+  bool ran = 1;
+  bool succeeded = 2;
+  // What it printed, cut to the end if it was long.
+  string output = 3;
+  // Milliseconds since 1970 in UTC.
+  int64 ran_unix_ms = 4;
+}
+
+message ReadHostStatus {}
+
+message HostStatus {
+  string program_version = 1;
+  // Its system and architecture, as `uname -sm` prints them.
+  string platform = 2;
+  uint64 free_disk_bytes = 3;
+  // Empty, with the reason in copilot_problem, if it couldn't be run.
+  string copilot_version = 4;
+  string copilot_problem = 5;
+  // Whether its agents have a GitHub token: GH_TOKEN, GITHUB_TOKEN or
+  // COPILOT_GITHUB_TOKEN. Without one, Copilot needs `copilot login` there.
+  bool github_token = 6;
+  SetupResult setup = 7;
+  // Empty, with the reason in claude_problem, if it couldn't be run.
+  string claude_version = 8;
+  string claude_problem = 9;
+  // Whether its agents have ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN.
+  // Without one, Claude Code needs `claude` signed in there.
+  bool anthropic_key = 10;
+}
+
+message RemoteRepository {
+  string name = 1;
+  // What `git clone` takes.
+  string url = 2;
+}
+
+// Clones each repository on the host, or fetches it if it is there already.
+message CloneRepositories {
+  // The folder to clone into, under the host's own; one per project.
+  string folder = 1;
+  repeated RemoteRepository repositories = 2;
+}
+
+message RepositoriesCloned {
+  // Each clone's folder on the host.
+  repeated Repository repositories = 1;
+  // The commits each clone's refs point at, by name, so what is sent to it
+  // can leave out what it has.
+  repeated RepositoryCommits tips = 2;
+}

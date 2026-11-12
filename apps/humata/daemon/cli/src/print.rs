@@ -1,0 +1,384 @@
+//! One line per thing, for people and for scripts that split on tabs.
+
+use humata_wire::pb;
+
+/// `<event id>\t<kind>\t<detail>`.
+pub fn event(event: &pb::SessionEvent) -> String {
+    use pb::session_event::Kind;
+    let (kind, detail) = match &event.kind {
+        Some(Kind::UserMessage(message)) => ("user", message.text.clone()),
+        Some(Kind::TurnStarted(_)) => ("turn_started", String::new()),
+        Some(Kind::AssistantDelta(delta)) => ("delta", delta.text.clone()),
+        Some(Kind::AssistantMessage(message)) => ("assistant", message.text.clone()),
+        Some(Kind::Reasoning(reasoning)) => ("reasoning", reasoning.text.clone()),
+        Some(Kind::ToolStarted(tool)) => (
+            "tool_started",
+            format!("{} {} {}", tool.call_id, tool.tool, tool.arguments_json),
+        ),
+        Some(Kind::ToolCompleted(tool)) => (
+            "tool_completed",
+            format!(
+                "{} {} {}",
+                tool.call_id,
+                if tool.success { "ok" } else { "failed" },
+                tool.output
+            ),
+        ),
+        Some(Kind::PermissionRequested(request)) => (
+            "permission_requested",
+            format!(
+                "{} {} {}",
+                request.request_id,
+                request.kind().as_str_name(),
+                request.summary
+            ),
+        ),
+        Some(Kind::PermissionCompleted(completed)) => (
+            "permission_completed",
+            format!(
+                "{} {}{}",
+                completed.request_id,
+                if completed.approved {
+                    "approved"
+                } else {
+                    "denied"
+                },
+                if completed.automatic {
+                    " automatic"
+                } else {
+                    ""
+                }
+            ),
+        ),
+        Some(Kind::MessageQueued(queued)) => {
+            ("queued", format!("{} {}", queued.queue_id, queued.text))
+        }
+        Some(Kind::Dequeued(dequeued)) => ("dequeued", dequeued.queue_id.clone()),
+        Some(Kind::TurnEnded(ended)) => (
+            "turn_ended",
+            if ended.aborted {
+                "aborted".to_owned()
+            } else {
+                String::new()
+            },
+        ),
+        Some(Kind::Idle(_)) => ("idle", String::new()),
+        Some(Kind::Failed(failed)) => ("failed", failed.message.clone()),
+        Some(Kind::Usage(usage)) => (
+            "usage",
+            format!(
+                "{} in={} out={} premium={}",
+                usage.model, usage.input_tokens, usage.output_tokens, usage.premium_requests
+            ),
+        ),
+        Some(Kind::Checkpoint(checkpoint)) => (
+            "checkpoint",
+            checkpoint
+                .snapshots
+                .iter()
+                .map(|snapshot| format!("{}={}", snapshot.name, snapshot.commit))
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        Some(Kind::Saved(saved)) => (
+            "saved",
+            saved
+                .snapshots
+                .iter()
+                .map(|snapshot| format!("{}={}", snapshot.name, snapshot.commit))
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        None => ("unknown", String::new()),
+    };
+    format!("{}\t{kind}\t{}", event.id, detail.replace('\n', "\\n"))
+}
+
+fn or_dash(text: &str) -> String {
+    if text.is_empty() {
+        "-".to_owned()
+    } else {
+        text.to_owned()
+    }
+}
+
+/// `<id>\t<host>\t<state>\t<parent>\t<project>\t<approval mode>\t<backend>\t<model>\t<marks>\t<working directory>\t<name>`,
+/// with `-` for this Mac, no parent, no project, the default model or no
+/// marks. The marks are `archived`, `keeper` and `offline` (its host can't
+/// be reached, so this is as it last was), joined by commas.
+pub fn session(session: &pb::SessionInfo) -> String {
+    let marks: Vec<&str> = [
+        (session.archived, "archived"),
+        (session.keeper, "keeper"),
+        (session.host_offline, "offline"),
+    ]
+    .into_iter()
+    .filter_map(|(set, mark)| set.then_some(mark))
+    .collect();
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        session.id,
+        or_dash(&session.host),
+        session.state().as_str_name(),
+        or_dash(&session.parent_id),
+        or_dash(&session.project_id),
+        session.approval_mode().as_str_name(),
+        session.backend().as_str_name(),
+        or_dash(&session.model),
+        or_dash(&marks.join(",")),
+        or_dash(&session.working_directory),
+        session.name
+    )
+}
+
+/// `<id>\t<repositories>\t<name>`, each repository as `NAME=PATH`, joined
+/// by commas.
+pub fn project(project: &pb::Project) -> String {
+    let repositories: Vec<String> = project
+        .repositories
+        .iter()
+        .map(|repository| format!("{}={}", repository.name, repository.path))
+        .collect();
+    format!(
+        "{}\t{}\t{}",
+        project.id,
+        repositories.join(","),
+        project.name
+    )
+}
+
+/// Each repository's diff; with several, each after a `# <name>` line.
+pub fn changes(changes: &pb::Changes) -> String {
+    match changes.repositories.as_slice() {
+        [only] => only.patch.clone(),
+        all => all
+            .iter()
+            .map(|repository| format!("# {}\n{}", repository.name, repository.patch))
+            .collect(),
+    }
+}
+
+/// `<thread id>\t<repository>/<path>:<start>-<end>\t<state>`, then a line
+/// `\t<comment id>\t<you|agent>\t<turn>\t<text>` for each comment.
+pub fn files(files: &pb::Files) -> String {
+    let mut out: String = files
+        .files
+        .iter()
+        .map(|file| format!("{:>10}  {}\n", file.size, file.path))
+        .collect();
+    if files.truncated {
+        out.push_str("(more files not listed)\n");
+    }
+    out
+}
+
+pub fn thread(thread: &pb::ReviewThread) -> String {
+    let file = thread
+        .file
+        .as_ref()
+        .map(|file| format!("{}/{}", file.repository, file.path))
+        .unwrap_or_default();
+    let mut state = if thread.resolved { "resolved" } else { "open" }.to_owned();
+    if thread.outdated {
+        state.push_str(",outdated");
+    }
+    let mut text = format!(
+        "{}\t{file}:{}-{}\t{state}\n",
+        thread.id, thread.start_line, thread.end_line
+    );
+    for comment in &thread.comments {
+        let author = match comment.author() {
+            pb::CommentAuthor::You => "you",
+            pb::CommentAuthor::Agent => "agent",
+        };
+        text.push_str(&format!(
+            "\t{}\t{author}\t{}\t{}\n",
+            comment.id, comment.turn, comment.text
+        ));
+    }
+    text
+}
+
+fn status(status: pb::ItemStatus) -> &'static str {
+    match status {
+        pb::ItemStatus::Unspecified | pb::ItemStatus::Todo => "todo",
+        pb::ItemStatus::InProgress => "in_progress",
+        pb::ItemStatus::WaitingOnYou => "waiting_on_you",
+        pb::ItemStatus::InReview => "in_review",
+        pb::ItemStatus::Done => "done",
+        pb::ItemStatus::WontDo => "wont_do",
+    }
+}
+
+fn priority(priority: pb::Priority) -> &'static str {
+    match priority {
+        pb::Priority::None => "none",
+        pb::Priority::Low => "low",
+        pb::Priority::Medium => "medium",
+        pb::Priority::High => "high",
+        pb::Priority::Urgent => "urgent",
+    }
+}
+
+/// `<id>\t<parent>\t<status>\t<given status>\t<priority>\t<sessions>\t<title>`,
+/// with `-` for a task's parent and no sessions; the sessions joined by
+/// commas.
+pub fn item(item: &pb::Item) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        item.id,
+        or_dash(&item.parent_id),
+        status(item.status()),
+        status(item.given_status()),
+        priority(item.priority()),
+        or_dash(&item.session_ids.join(",")),
+        item.title
+    )
+}
+
+fn fields(fields: Option<&pb::ItemFields>) -> String {
+    fields.map_or_else(
+        || "-".to_owned(),
+        |fields| {
+            format!(
+                "{} {} {:?}",
+                status(fields.status()),
+                priority(fields.priority()),
+                fields.title
+            )
+        },
+    )
+}
+
+/// `<change>\t<item>\t<reverts>\t<before>\t<after>`, `-` for nothing
+/// reverted, before an add and after a removal.
+pub fn change(change: &pb::BoardChange) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}",
+        change.id,
+        change.item_id,
+        if change.reverts == 0 {
+            "-".to_owned()
+        } else {
+            change.reverts.to_string()
+        },
+        fields(change.before.as_ref()),
+        fields(change.after.as_ref())
+    )
+}
+
+/// `<session>\t<reason>\t<project>\t<item>\t<name>`, `-` for none; for
+/// what an agent asks, then `\t<request id>\t<status asked for>\t<text>`.
+pub fn inbox_entry(entry: &pb::InboxEntry) -> String {
+    let reason = match entry.reason() {
+        pb::InboxReason::Approval => "approval",
+        pb::InboxReason::Reply => "reply",
+        pb::InboxReason::Failed => "failed",
+        pb::InboxReason::Question => "question",
+        pb::InboxReason::Move => "move",
+        pb::InboxReason::Unspecified => "-",
+    };
+    let asked = entry.request.as_ref().map_or_else(String::new, |request| {
+        let status = match request.kind() {
+            pb::AgentRequestKind::Move => status(request.status()),
+            _ => "-",
+        };
+        format!(
+            "\t{}\t{status}\t{}",
+            request.id,
+            request.text.replace('\n', " ")
+        )
+    });
+    let session = entry.session.as_ref();
+    format!(
+        "{}\t{reason}\t{}\t{}\t{}",
+        session
+            .map(|session| session.id.as_str())
+            .unwrap_or_default(),
+        or_dash(&entry.project_name),
+        or_dash(&entry.item_title),
+        session
+            .map(|session| session.name.as_str())
+            .unwrap_or_default(),
+    ) + &asked
+}
+
+/// A recovery copy: its session, name, host, the turns it has of the
+/// session's, and whether its host lost the session.
+pub fn recovery(recovery: &pb::Recovery) -> String {
+    let state = if recovery.on_host { "on host" } else { "lost" };
+    format!(
+        "{}\t{}\t{}\t{}/{} turns\t{state}",
+        recovery.session_id,
+        or_dash(&recovery.name),
+        or_dash(&recovery.host),
+        recovery.backed_up_turns,
+        recovery.turns
+    )
+}
+
+pub fn host(host: &pb::HostInfo) -> String {
+    let env = if host.env_names.is_empty() {
+        "-".to_owned()
+    } else {
+        host.env_names.join(",")
+    };
+    let setup = if host.setup_script.trim().is_empty() {
+        "no setup"
+    } else {
+        "setup"
+    };
+    format!(
+        "{}\t{}\t{env}\t{setup}",
+        host.name,
+        or_dash(&host.ssh_destination)
+    )
+}
+
+fn setup(setup: Option<&pb::SetupResult>) -> String {
+    match setup {
+        Some(setup) if setup.ran && setup.succeeded => "setup ok".to_owned(),
+        Some(setup) if setup.ran => format!(
+            "setup failed: {}",
+            setup.output.lines().last().unwrap_or_default()
+        ),
+        _ => "no setup".to_owned(),
+    }
+}
+
+pub fn health(health: &pb::HostHealth) -> String {
+    let Some(status) = health.status.as_ref().filter(|_| health.reachable) else {
+        return format!("{}\tunreachable\t{}", health.name, health.problem);
+    };
+    let copilot = if status.copilot_version.is_empty() {
+        format!("no copilot: {}", status.copilot_problem)
+    } else {
+        format!("copilot {}", status.copilot_version)
+    };
+    let token = if status.github_token {
+        "token"
+    } else {
+        "no token"
+    };
+    format!(
+        "{}\treachable\thumatad {}\t{}\t{} GB free\t{copilot}\t{token}\t{}",
+        health.name,
+        status.program_version,
+        status.platform,
+        status.free_disk_bytes / 1_000_000_000,
+        setup(status.setup.as_ref()),
+    )
+}
+
+/// `<backend>\t<id>\t<updated, ms since 1970>\t<working directory>\t<summary>`,
+/// one line per session that can be imported.
+pub fn importable(session: &pb::ImportableSession) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}",
+        session.backend().as_str_name(),
+        session.id,
+        session.updated_unix_ms,
+        session.working_directory,
+        session.summary
+    )
+}

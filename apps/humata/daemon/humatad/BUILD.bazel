@@ -1,0 +1,50 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# The one binary every machine runs: `humatad daemon` on your Mac, which the
+# app and the CLI talk to on a local socket, and `humatad host --stdio` on each
+# machine sessions run on, reached over SSH.
+rust_library(
+    name = "humatad_lib",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs"],
+    ),
+    crate_name = "humatad",
+    deps = [
+        "//apps/humata/daemon/agent",
+        "//apps/humata/daemon/wire",
+        "@crates//:prost",
+        "@crates//:rusqlite",
+        "@crates//:ruzstd",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:sha2",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+        "@crates//:uuid",
+    ],
+)
+
+rust_test(
+    name = "humatad_test",
+    crate = ":humatad_lib",
+    deps = ["@crates//:tempfile"],
+)
+
+rust_binary(
+    name = "humatad",
+    srcs = ["src/main.rs"],
+    visibility = ["//apps/humata:__subpackages__"],
+    deps = [
+        ":humatad_lib",
+        "//apps/humata/daemon/wire",
+        "@crates//:clap",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

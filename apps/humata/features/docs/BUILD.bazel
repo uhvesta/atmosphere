@@ -1,0 +1,49 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# A chat's folder: its files, Markdown rendered, comments on what was
+# picked kept as drafts and sent to the chat as one message. A TCA reducer
+# with a SwiftUI view. Needs Xcode: build with `--config=xcode`.
+swift_library(
+    name = "docs",
+    package_name = "humata",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "HumataDocs",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/humata/app:__subpackages__",
+        "//apps/humata/features:__subpackages__",
+    ],
+    deps = [
+        "//apps/humata/clients/daemon",
+        "//apps/humata/features/review",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# TestStore tests, on macOS.
+swift_library(
+    name = "tests_lib",
+    package_name = "humata",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":docs",
+        "//apps/humata/clients/daemon",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

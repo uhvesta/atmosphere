@@ -29,6 +29,12 @@
         private let redactsModelText: Bool
         private var count = 0
         private static var launched = false
+        /// Just above the desktop, under every other app's windows, so a
+        /// flow running in the background doesn't cover what the person is
+        /// doing. The window server captures a window, and accessibility
+        /// reads it, however much of it is covered.
+        private static let behind = NSWindow.Level(
+            rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
 
         /// Hosts `view` in a window of `size`, the app's default window.
         /// `name` names the flow's references. A step waits at most
@@ -64,7 +70,8 @@
             // Behind every other window, so a run doesn't cover what the
             // person is doing. The capture reads the window alone, so what's
             // in front of it doesn't show.
-            window.orderBack(nil)
+            window.level = FlowRecorder.behind
+            window.orderFrontRegardless()
             window.makeKey()
             // Draws the first screen now, so a change the test makes next is
             // always a change from it, and not sometimes the screen the app
@@ -196,7 +203,11 @@
             let deadline = clock.now + timeout
             while clock.now < deadline {
                 try? await Task.sleep(for: .milliseconds(80))
-                for window in windows { window.layoutIfNeeded() }
+                for window in windows {
+                    // Popovers and other windows the flow opens, too.
+                    window.level = FlowRecorder.behind
+                    window.layoutIfNeeded()
+                }
                 // A process's requests to itself are answered on the thread
                 // asking, and SwiftUI answers only on the main one.
                 let lines = MacAccessibilityTree.lines(redactingModelText: redactsModelText)

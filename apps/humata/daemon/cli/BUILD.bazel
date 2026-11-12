@@ -1,0 +1,20 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# `humata`: sessions from the command line, through the daemon's socket.
+rust_binary(
+    name = "humata",
+    srcs = glob(["src/*.rs"]),
+    visibility = ["//apps/humata:__subpackages__"],
+    deps = [
+        "//apps/humata/daemon/wire",
+        "@crates//:clap",
+        "@crates//:thiserror",
+        "@crates//:tokio",
+    ],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)

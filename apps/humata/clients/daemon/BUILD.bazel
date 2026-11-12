@@ -1,0 +1,43 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# The daemon client: sessions, their events and forks, as the app's features
+# see them. This package has the definition and an in-memory version for
+# tests and previews; the socket client is //apps/humata/clients/daemon_live,
+# which features never depend on.
+swift_library(
+    name = "daemon",
+    package_name = "humata",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "HumataDaemonClient",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/humata/app:__pkg__",
+        "//apps/humata/clients/daemon_live:__pkg__",
+        "//apps/humata/e2e:__pkg__",
+        "//apps/humata/features:__subpackages__",
+    ],
+    deps = ["@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
+)
+
+swift_library(
+    name = "tests_lib",
+    package_name = "humata",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":daemon"],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = ["BUILD.bazel"],
+    tags = ["starlark"],
+)
