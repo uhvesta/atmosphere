@@ -458,10 +458,16 @@ package struct Workspace: Hashable, Codable, Sendable {
         /// over days moves as a whole, and one that would start after
         /// `day` starts on it. `nil` when it's already due then.
         package static func due(_ day: CalendarDate, for task: LifrTask) -> TaskEdit? {
-            guard task.dueDate != day else { return nil }
+            due(day, start: task.startDate, due: task.dueDate)
+        }
+
+        /// Makes a task that starts on `start` and is due on `due` due on
+        /// `day` instead, as ``due(_:for:)`` does.
+        package static func due(_ day: CalendarDate, start: CalendarDate?, due: CalendarDate?) -> TaskEdit? {
+            guard due != day else { return nil }
             var edit = TaskEdit(dueDate: .some(day))
-            if let start = task.startDate {
-                if let due = task.dueDate {
+            if let start {
+                if let due {
                     edit.startDate = .some(start.adding(days: due.days(until: day)))
                 } else if start > day {
                     edit.startDate = .some(day)

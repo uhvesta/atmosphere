@@ -229,6 +229,9 @@ package struct TaskDetailFeature {
         case detailsCancelled
         case startDatePicked(CalendarDate?)
         case dueDatePicked(CalendarDate?)
+        /// Due Today, Tomorrow or none from the Task menu: moves the start
+        /// with the due date, as Reschedule does.
+        case rescheduled(CalendarDate?)
         case dueTimePicked(TimeOfDay?)
         /// A preset, or `nil` for Never.
         case repeatPicked(RepeatPreset?)
@@ -337,6 +340,12 @@ package struct TaskDetailFeature {
                 // A time only makes sense with a date.
                 let time: TimeOfDay?? = date == nil ? .some(nil) : nil
                 return edit(state, Workspace.TaskEdit(dueDate: .some(date), dueTime: time))
+
+            case .rescheduled(let date):
+                // The start moves with it, as Reschedule on a row does.
+                guard let date, let move = Workspace.TaskEdit.due(date, start: state.startDate, due: state.dueDate)
+                else { return date == nil ? .send(.dueDatePicked(nil)) : .none }
+                return edit(state, move)
 
             case .dueTimePicked(let time):
                 return edit(state, Workspace.TaskEdit(dueTime: .some(time)))

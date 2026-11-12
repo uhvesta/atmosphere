@@ -904,7 +904,7 @@ package struct RootFeature {
 
             case .dueShortcut(let due):
                 guard let slot = state.currentList, state[list: slot]?.detail != nil else { return .none }
-                return .send(list(slot, .detail(.presented(.dueDatePicked(due.date(now: now, in: timeZone))))))
+                return .send(list(slot, .detail(.presented(.rescheduled(due.date(now: now, in: timeZone))))))
 
             case .goTo(let item):
                 // Find puts the cursor in the search field.

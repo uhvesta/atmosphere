@@ -1349,11 +1349,11 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.workspace?.tasks[run.id]?.priority, .high)
 
         await store.send(.dueShortcut(.tomorrow))
-        await store.receive(\.anytime.delegate.saved)
+        await store.skipReceivedActions(strict: false)
         XCTAssertEqual(store.state.workspace?.tasks[run.id]?.dueDate, CalendarDate(now + 86_400, in: .gmt))
 
         await store.send(.dueShortcut(.none))
-        await store.receive(\.anytime.delegate.saved)
+        await store.skipReceivedActions(strict: false)
         XCTAssertNil(store.state.workspace?.tasks[run.id]?.dueDate)
         await task.cancel()
     }

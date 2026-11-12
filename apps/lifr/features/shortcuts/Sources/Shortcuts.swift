@@ -266,7 +266,12 @@ package struct Shortcuts: Sendable {
     /// Makes the task due on the day `date` falls on here, or on no day.
     package func reschedule(_ id: UUID, to date: Date?) async throws -> Item {
         let due = date.map { CalendarDate($0, in: timeZone) }
-        return try await change(id) { try await store.edit(id, Workspace.TaskEdit(dueDate: .some(due))) }
+        return try await change(id) {
+            // Moves the start with it, as Reschedule in the app does.
+            var edit = Workspace.TaskEdit(dueDate: .some(due))
+            if let due, let task = try await store.load().tasks[id] { edit = .due(due, for: task) ?? edit }
+            return try await store.edit(id, edit)
+        }
     }
 
     /// Adds `text` to the task's comments.

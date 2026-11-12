@@ -246,6 +246,22 @@ final class ShortcutsTests: XCTestCase {
         XCTAssertNil(undated?.dueDate)
     }
 
+    func testReschedulingMovesTheStartWithTheDueDate() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let health = records.avenue("HEALTH", "Health")
+        let fence = records.task("Paint the fence", in: health, due: 2, starts: 0)
+        let store = StoreClient.inMemory(records.workspace)
+        let now = now
+        let shortcuts = Shortcuts(store: store, locksApp: { false }, now: { now }, timeZone: .gmt)
+
+        _ = try await shortcuts.reschedule(fence.id, to: now + 5 * 24 * 60 * 60)
+
+        let task = try await store.load().tasks[fence.id]
+        let today = CalendarDate(now, in: .gmt)
+        XCTAssertEqual(task?.startDate, today.adding(days: 3))
+        XCTAssertEqual(task?.dueDate, today.adding(days: 5))
+    }
+
     func testCommentsOnATaskButNotWithNothingToSay() async throws {
         let (shortcuts, store) = shortcuts()
         let runs = try await shortcuts.openTasks(matching: "run")
