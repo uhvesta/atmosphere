@@ -729,6 +729,18 @@ package struct NewSessionFeature {
         package var needsModel: Bool { backend == .local && model.trimmed.isEmpty }
         package var canStart: Bool { !starting && !needsModel }
 
+        /// What starting the session asks of the daemon.
+        package var request: StartRequest {
+            let model = model.trimmed
+            return StartRequest(
+                backend: backend, workingDirectory: project == nil ? folder : nil,
+                name: name.trimmed, host: host,
+                model: model.isEmpty ? nil : model, backendConfig: backendConfig,
+                approvalMode: approvalMode, projectID: project?.id, itemID: item?.id,
+                specs: item?.parentID == nil ? .item : specs,
+                planning: planning && project != nil && item == nil)
+        }
+
         /// Whether the backend can use a model server of the person's.
         package var takesModelServer: Bool { backend == .copilot || backend == .local }
 
@@ -841,14 +853,7 @@ package struct NewSessionFeature {
                 state.$lastApprovalMode.withLock { $0 = state.approvalMode }
                 state.$lastHost.withLock { $0 = state.host }
                 state.$lastModelServer.withLock { $0 = state.modelServer }
-                let model = state.model.trimmed
-                let request = StartRequest(
-                    backend: state.backend, workingDirectory: state.project == nil ? state.folder : nil,
-                    name: state.name.trimmed, host: state.host,
-                    model: model.isEmpty ? nil : model, backendConfig: state.backendConfig,
-                    approvalMode: state.approvalMode, projectID: state.project?.id, itemID: state.item?.id,
-                    specs: state.item?.parentID == nil ? .item : state.specs,
-                    planning: state.planning && state.project != nil && state.item == nil)
+                let request = state.request
                 return .run { send in
                     await send(.delegate(.started(try await daemon.start(request))))
                 } catch: { error, send in

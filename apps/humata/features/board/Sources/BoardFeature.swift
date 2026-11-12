@@ -64,6 +64,9 @@ package struct BoardFeature {
         /// Adds a task, or a subtask under `parent`.
         case addTapped(parent: Item.ID?)
         case cardTapped(Item.ID)
+        /// Starts a session on the item with the last New Session settings,
+        /// and has it start, staying on the board.
+        case startWorkTapped(Item.ID)
         case dropped(Item.ID, on: ItemStatus)
         case moved(Item)
         case logTapped
@@ -167,6 +170,26 @@ package struct BoardFeature {
                         project: state.project, item: item, parent: state.parent(of: item),
                         subtasks: state.subtasks(of: item), sessions: state.sessions(on: item)))
                 return .none
+
+            case .startWorkTapped(let id):
+                guard let item = state.items[id: id] else { return .none }
+                let settings = NewSessionFeature.State(project: state.project, item: item)
+                guard !settings.needsModel else {
+                    // A local model must be picked; the item's page asks.
+                    var page = ItemFeature.State(
+                        project: state.project, item: item, parent: state.parent(of: item),
+                        subtasks: state.subtasks(of: item), sessions: state.sessions(on: item))
+                    page.destination = .newSession(settings)
+                    state.destination = .item(page)
+                    return .none
+                }
+                let project = state.project.id
+                return .run { send in
+                    _ = try await daemon.startWork(settings.request)
+                    await send(await load(project))
+                } catch: { error, send in
+                    await send(.failed("Couldn't start work on \(item.title): \(error.localizedDescription)"))
+                }
 
             case .dropped(let id, let status):
                 guard let item = state.items[id: id], item.fields.status != status else { return .none }
@@ -289,6 +312,10 @@ package struct ItemFeature {
         case failed(String)
         case sessionTapped(Session.ID)
         case startSessionTapped
+        /// Starts a session on the item with the last New Session settings,
+        /// and has it start, staying on the page.
+        case startWorkTapped
+        case startWorkFailed(String)
         case addSubtaskTapped
         case comments(SpecCommentsFeature.Action)
         case destination(PresentationAction<Destination.Action>)
@@ -402,6 +429,28 @@ package struct ItemFeature {
 
             case .startSessionTapped:
                 state.destination = .newSession(NewSessionFeature.State(project: state.project, item: state.item))
+                return .none
+
+            case .startWorkTapped:
+                let settings = NewSessionFeature.State(project: state.project, item: state.item)
+                guard !settings.needsModel else {
+                    state.destination = .newSession(settings)
+                    return .none
+                }
+                return .run { send in
+                    _ = try await daemon.startWork(settings.request)
+                    await send(.delegate(.changed))
+                } catch: { error, send in
+                    await send(.startWorkFailed(error.localizedDescription))
+                }
+
+            case .startWorkFailed(let message):
+                state.destination = .alert(
+                    AlertState {
+                        TextState("Couldn't start work on \(state.item.title)")
+                    } message: {
+                        TextState(message)
+                    })
                 return .none
 
             case .addSubtaskTapped:
@@ -599,5 +648,17 @@ package struct BoardLogFeature {
         } catch: { error, send in
             await send(.failed(error.localizedDescription))
         }
+    }
+}
+
+extension DaemonClient {
+    /// What a session started from a card is first told.
+    static let startWorkMessage = "Do this task as its spec says."
+
+    /// Starts a session and has it start on its item.
+    func startWork(_ request: StartRequest) async throws -> Session {
+        let session = try await start(request)
+        try await send(session.id, Self.startWorkMessage, .enqueue)
+        return session
     }
 }

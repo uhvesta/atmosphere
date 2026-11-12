@@ -58,6 +58,7 @@
     [Button] "Add Subtask…"
     [Heading] "Sessions"
     [Button] "Login form, 0 files changed"
+    [Button] "Start Work" help: "Start a session with your last New Session settings, told to do what the spec says"
     [Button] "Start Session…"
     [Button] "Done"
     [Button] "Edit"

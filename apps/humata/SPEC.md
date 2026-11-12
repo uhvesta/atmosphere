@@ -690,7 +690,7 @@ waiting on you. It kept these, in build order:
 - [x] The inbox separates Blocked on You from To Look Over, rows say what
   happened, the Dock counts only the blocked, reply notices are silent,
   rows sort by longest wait, and a reply that fails to send is kept
-- [ ] Start Work on a card or task: one click, seeds the first message, stays
+- [x] Start Work on a card or task: one click, seeds the first message, stays
   on the board
 - [ ] Delete an archived session, freeing its folders, refs and copies; the
   Archived list folds away

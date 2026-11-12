@@ -38,6 +38,59 @@ final class BoardFeatureTests: XCTestCase {
 
     private func titles(_ items: [Item]) -> [String] { items.map(\.title) }
 
+    /// The board, remembering `backend` and `model` as the last New Session
+    /// settings.
+    private func store(_ board: Board, lastBackend backend: Backend, model: String = "") throws
+        -> TestStoreOf<BoardFeature>
+    {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "board-tests-\(UUID())"))
+        defaults.set(backend.rawValue, forKey: "newSessionBackend")
+        defaults.set(model, forKey: "newSessionModel")
+        let store = TestStore(initialState: BoardFeature.State(project: board.project)) {
+            BoardFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+            $0.defaultAppStorage = defaults
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    func testStartWorkStartsASessionOnTheCardWithTheLastSettingsAndStaysOnTheBoard() async throws {
+        let board = try await board()
+        let store = try store(board, lastBackend: .scripted)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.startWorkTapped(board.task.id))
+        await store.receive(\.loaded)
+
+        let session = try XCTUnwrap(board.daemon.sessions.first)
+        XCTAssertEqual(board.daemon.sessions.count, 1)
+        XCTAssertEqual(session.itemID, board.task.id)
+        XCTAssertEqual(session.backend, .scripted)
+        XCTAssertEqual(session.name, "login")
+        let history = try await board.daemon.client.history(session.id)
+        let sent = history.filter { if case .userMessage = $0.kind { true } else { false } }
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertNil(store.state.destination)
+    }
+
+    func testStartWorkAsksForAModelWhenTheLastAgentWasALocalOneWithNone() async throws {
+        let board = try await board()
+        let store = try store(board, lastBackend: .local)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.startWorkTapped(board.subtask.id))
+
+        XCTAssertTrue(board.daemon.sessions.isEmpty)
+        guard case .item(let page) = store.state.destination, case .newSession = page.destination else {
+            return XCTFail("Expected the item's page asking for a model")
+        }
+        XCTAssertEqual(page.item.id, board.subtask.id)
+    }
+
     func testASessionWaitingOnASubtaskMovesItAndItsTask() async throws {
         let board = try await board { _ in [.run(command: "make test", output: "ok")] }
         let session = try await board.daemon.client.start(StartRequest(backend: .scripted, itemID: board.subtask.id))

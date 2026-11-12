@@ -107,8 +107,10 @@ package struct BoardView: View {
             ForEach(ItemStatus.allCases.filter { $0 != item.status }, id: \.self) { status in
                 Button("Move to \(status.title)") { store.send(.dropped(item.id, on: status)) }
             }
+            Divider()
+            Button("Start Work") { store.send(.startWorkTapped(item.id)) }
+                .help("Start a session on it with your last New Session settings, told to do what its spec says")
             if item.parentID == nil {
-                Divider()
                 Button("Add Subtask…") { store.send(.addTapped(parent: item.id)) }
             }
         } onTap: {
@@ -307,6 +309,9 @@ struct ItemView: View {
                     }
                     .buttonStyle(.plain)
                 }
+                Button("Start Work", systemImage: "play.fill") { store.send(.startWorkTapped) }
+                    .help("Start a session with your last New Session settings, told to do what the spec says")
+                    .buttonStyle(.borderless)
                 Button("Start Session…", systemImage: "play") { store.send(.startSessionTapped) }
                     .buttonStyle(.borderless)
             }
