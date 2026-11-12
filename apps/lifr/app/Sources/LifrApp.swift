@@ -63,6 +63,12 @@ struct LifrApp: App {
                 // Room for the sidebar, a list and a task side by side.
                 .defaultSize(width: 1180, height: 760)
                 .commands { RootCommands(store: Storage.root) }
+            WindowGroup(id: Place.windowID, for: Place.self) { $place in
+                if case .success = Storage.opened {
+                    OtherWindow(main: Storage.root, place: $place, store: Storage.window(at:))
+                }
+            }
+            .defaultSize(width: 1180, height: 760)
             Settings {
                 MacSettingsView(store: Storage.root)
             }
@@ -135,28 +141,42 @@ private enum Storage {
         }
     #endif
 
-    /// One store for every screen, so each change shows everywhere.
+    /// The first window's store, which also syncs, schedules reminders and
+    /// serves connected apps for as long as Lifr runs.
     static let root = Store(initialState: RootFeature.State(platform: platform)) {
         RootFeature()
     } withDependencies: {
-        $0.store = client
-        $0.reminders = .live()
-        $0.assistant = .live(runtime: { use, choice in models.runtime(for: use, choice: choice) })
-        $0.relatedWords = .live(
+        dependencies(&$0)
+    }
+
+    /// Another Mac window's own store, which shares the records.
+    static func window(at place: Place) -> StoreOf<RootFeature> {
+        Store(initialState: RootFeature.State(window: place)) {
+            RootFeature()
+        } withDependencies: {
+            dependencies(&$0)
+        }
+    }
+
+    private static func dependencies(_ values: inout DependencyValues) {
+        values.store = client
+        values.reminders = .live()
+        values.assistant = .live(runtime: { use, choice in models.runtime(for: use, choice: choice) })
+        values.relatedWords = .live(
             selected: { models.selection.model(for: .search) }, runtime: { models.runtime(for: .search) })
-        $0.models = models.client
-        $0.conversations = chats.conversations
-        $0.skills = chats.skills
-        $0.guidance = .onDisk()
-        $0.attachments = .onDisk()
-        $0.recorder = .live()
-        $0.speech = speech
-        $0.session = session
-        $0.sync = sync
-        $0.lock = .live()
-        $0.glance = .live(file: GlanceFile.shared)
+        values.models = models.client
+        values.conversations = chats.conversations
+        values.skills = chats.skills
+        values.guidance = .onDisk()
+        values.attachments = .onDisk()
+        values.recorder = .live()
+        values.speech = speech
+        values.session = session
+        values.sync = sync
+        values.lock = .live()
+        values.glance = .live(file: GlanceFile.shared)
         // Sample records stay out of the device's search.
-        if !ProcessInfo.processInfo.arguments.contains(sampleDataArgument) { $0.spotlight = .live() }
+        if !ProcessInfo.processInfo.arguments.contains(sampleDataArgument) { values.spotlight = .live() }
     }
 
     /// Syncs the records with the person's other devices through iCloud,
@@ -254,8 +274,14 @@ private enum Storage {
             store: store, locksApp: { Shared(.locksApp).wrappedValue }, now: { Date() }, timeZone: .current)
     }()
 
+    /// On the Mac each save reaches every window's store, so a change in
+    /// one window shows in the others.
     static let client: StoreClient =
-        if case .success(let store) = opened { .live(store, actor: actor) } else { StoreClient() }
+        if case .success(let store) = opened {
+            .live(store, actor: actor, announces: platform == .mac)
+        } else {
+            StoreClient()
+        }
 
     private static var platform: RootFeature.Platform {
         #if os(macOS)

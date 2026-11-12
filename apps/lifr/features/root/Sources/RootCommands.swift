@@ -11,11 +11,17 @@ import SwiftUI
 /// Help's shortcuts and bug reports. Items that don't apply are disabled,
 /// not hidden.
 package struct RootCommands: Commands {
-    package var store: StoreOf<RootFeature>
+    /// The first window's store, for when no Lifr window is in front.
+    private let main: StoreOf<RootFeature>
+    @FocusedValue(\.lifrWindow) private var focused
+    @Environment(\.openWindow) private var openWindow
 
     package init(store: StoreOf<RootFeature>) {
-        self.store = store
+        main = store
     }
+
+    /// The window in front's store.
+    private var store: StoreOf<RootFeature> { focused ?? main }
 
     package var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -25,6 +31,16 @@ package struct RootCommands: Commands {
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             Button("New Project") { store.send(.newProjectTapped(nil)) }
                 .keyboardShortcut("n", modifiers: [.command, .option])
+            #if os(macOS)
+                Divider()
+                Button("New Window") { openWindow(id: Place.windowID, value: Place(sidebar: store.selection)) }
+                    .keyboardShortcut("n", modifiers: [.command, .control])
+                    .disabled(store.isLocked)
+                Button("Open Task in New Window") {
+                    openWindow(id: Place.windowID, value: Place(sidebar: store.selection, task: store.openTaskID))
+                }
+                .disabled(store.isLocked || store.openTaskID == nil)
+            #endif
         }
         #if os(macOS)
             CommandGroup(replacing: .printItem) {
@@ -256,4 +272,9 @@ package struct MenuBarContent: View {
             Text(error)
         }
     }
+}
+
+extension FocusedValues {
+    /// The store of the Lifr window in front, which the menus act on.
+    @Entry var lifrWindow: StoreOf<RootFeature>?
 }

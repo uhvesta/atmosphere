@@ -349,8 +349,20 @@ private final class ToolbarSlot: Sendable {
 private struct MacRootView: View {
     @Bindable var store: StoreOf<RootFeature>
     @State private var toolbar = ToolbarSlot()
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        columns
+            // The menus act on the window in front.
+            .focusedSceneValue(\.lifrWindow, store)
+            #if os(macOS)
+                .environment(\.opensInNewWindow) { id in
+                    openWindow(id: Place.windowID, value: Place(sidebar: store.selection, task: id))
+                }
+            #endif
+    }
+
+    @ViewBuilder private var columns: some View {
         if isBoardShown {
             // A board needs the window's width for its columns, so it takes
             // the detail column's place, and a task opens over it.

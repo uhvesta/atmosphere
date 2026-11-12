@@ -35,14 +35,17 @@ final class RootFeatureTests: XCTestCase {
         store client: StoreClient? = nil,
         session: InMemorySession = InMemorySession(),
         reminders: InMemoryReminders = RemindersClient.inMemory(),
-        sync: SyncClient = .off
+        sync: SyncClient = .off,
+        window place: Place? = nil
     ) -> TestStoreOf<RootFeature> {
         let client = client ?? .inMemory(records.workspace)
-        let store = TestStore(initialState: RootFeature.State(platform: platform)) {
+        let state = place.map { RootFeature.State(window: $0) } ?? RootFeature.State(platform: platform)
+        let store = TestStore(initialState: state) {
             RootFeature()
         } withDependencies: { [now] in
             $0.store = client
-            if platform == .mac { $0.session = session.client }
+            // Another window leaves connected apps to the first.
+            if platform == .mac, place == nil { $0.session = session.client }
             $0.reminders = reminders.client
             $0.sync = sync
             $0.continuousClock = TestClock()
@@ -131,6 +134,71 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertEqual(place, Place(tab: .today, task: run.id))
         await store.send(.binding(.set(\.tab, .search)))
         XCTAssertEqual(place, Place(tab: .search))
+        await task.cancel()
+    }
+
+    func testAnotherWindowOpensWhereItWasAskedAndKeepsItsPlaceToItself() async {
+        let run = records.task("Run", in: health)
+        @Shared(.place) var place
+        $place.withLock { $0 = Place(sidebar: .upcoming) }
+        let reminders = RemindersClient.inMemory()
+        let window = makeStore(
+            .mac, reminders: reminders, window: Place(sidebar: .scope(.avenue(health.id)), task: run.id))
+
+        let task = await window.send(.task)
+        await window.receive(\.loaded)
+        await window.receive(\.reopen)
+        await window.skipReceivedActions(strict: false)
+
+        XCTAssertEqual(window.state.selection, .scope(.avenue(health.id)))
+        XCTAssertEqual(window.state.avenue?.list.detail?.id, run.id)
+        await window.send(.goTo(.search))
+        await window.receive(\.selected)
+        XCTAssertEqual(window.state.place, Place(sidebar: .search))
+        // The first window's place, and its reminders, are its own.
+        XCTAssertEqual(place, Place(sidebar: .upcoming))
+        XCTAssertTrue(reminders.scheduled.isEmpty)
+        await task.cancel()
+    }
+
+    func testAChangeInOneWindowShowsInTheOther() async {
+        let run = records.task("Run", in: health, due: 0)
+        let (client, sync) = StoreClient.inMemorySyncing(records.workspace)
+        // On the Mac every save reaches each window's store, as here.
+        var announcing = client
+        announcing.save = sync.writer(as: .user(device: "This device", surface: .mac)).save
+        let main = makeStore(.mac, store: client)
+        let window = makeStore(.mac, store: announcing, window: Place(sidebar: .today))
+        let mainTask = await main.send(.task)
+        await main.receive(\.loaded)
+        let windowTask = await window.send(.task)
+        await window.receive(\.loaded)
+
+        await window.send(.today(.list(.rowAction(run.id, .status(.done)))))
+        await main.receive(\.updated)
+
+        XCTAssertEqual(main.state.workspace?.tasks[run.id]?.status, .done)
+        await windowTask.cancel()
+        await mainTask.cancel()
+    }
+
+    func testWindowsLockAndUnlockTogether() async {
+        records.task("Run", in: health, due: 0)
+        let window = makeStore(.mac, window: Place(sidebar: .today))
+        let task = await window.send(.task)
+        await window.receive(\.loaded)
+
+        await window.send(.lockMirrored(true))
+        XCTAssertTrue(window.state.isLocked)
+        // Locked, it goes nowhere.
+        await window.send(.goTo(.search))
+        XCTAssertEqual(window.state.selection, .today)
+
+        await window.send(.lockMirrored(false))
+        XCTAssertFalse(window.state.isLocked)
+        await window.send(.goTo(.search))
+        await window.receive(\.selected)
+        XCTAssertEqual(window.state.selection, .search)
         await task.cancel()
     }
 

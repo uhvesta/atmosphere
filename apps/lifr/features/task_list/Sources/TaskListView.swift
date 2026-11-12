@@ -208,6 +208,7 @@ package struct TaskListRow: View {
     package var note: String?
     package var store: StoreOf<TaskListFeature>
     @Environment(\.droppedText) private var droppedText
+    @Environment(\.opensInNewWindow) private var opensInNewWindow
     /// Whether something dragged is over the row, to drop onto it.
     @State private var isTargeted = false
 
@@ -299,6 +300,9 @@ package struct TaskListRow: View {
             Divider()
             Button("Reschedule…") { store.send(.rowAction(row.id, .reschedule)) }
             Button("Copy as Markdown") { store.send(.copyTapped(row.id)) }
+            if let opensInNewWindow {
+                Button("Open in New Window") { opensInNewWindow(row.id) }
+            }
         }
     }
 
@@ -537,4 +541,7 @@ extension EnvironmentValues {
     /// Where text another app drops onto a task's row goes; with none,
     /// the row turns it down.
     @Entry package var droppedText: (@MainActor (String) -> Void)?
+    /// Opens a task in a window of its own; with none, as on iPhone, rows
+    /// don't offer it.
+    @Entry package var opensInNewWindow: (@MainActor (UUID) -> Void)?
 }

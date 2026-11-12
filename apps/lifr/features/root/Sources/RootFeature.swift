@@ -112,6 +112,10 @@ package struct RootFeature {
     @ObservableState
     package struct State: Equatable {
         package let platform: Platform
+        /// Whether this is one of the Mac's other windows: it goes where it
+        /// likes and changes the records, while the first store syncs,
+        /// schedules reminders and serves connected apps for the process.
+        package let isWindow: Bool
         /// `nil` until the records load.
         package var workspace: Workspace?
         /// The latest records shown, so a save's reply or an update that
@@ -238,8 +242,19 @@ package struct RootFeature {
 
         package init(platform: Platform) {
             self.platform = platform
+            isWindow = false
             today = TodayFeature.State()
             settings = SettingsFeature.State(showsAgents: platform == .mac)
+        }
+
+        /// Another Mac window, opening at `place`; where it goes after is
+        /// its own, not kept for the next launch.
+        package init(window place: Place) {
+            platform = .mac
+            isWindow = true
+            today = TodayFeature.State()
+            settings = SettingsFeature.State(showsAgents: true)
+            _place = Shared(value: place)
         }
 
         package var hasConnectedApp: Bool { apps.contains(where: \.isConnected) }
@@ -415,6 +430,8 @@ package struct RootFeature {
         /// The lock screen's Unlock, or the lock coming on.
         case unlockTapped
         case unlocked(Result<Void, any Error>)
+        /// Another window locked or unlocked: every window follows.
+        case lockMirrored(Bool)
         case lockAlert(PresentationAction<Never>)
         /// The Mac's File › Sync Now.
         case syncNowTapped
@@ -574,6 +591,7 @@ package struct RootFeature {
                 // syncing with no window open, and a second window must not
                 // start a second timer.
                 guard !state.isRunning else { return .none }
+                if state.isWindow { return startWindow(&state) }
                 var effects: [Effect<Action>] = [
                     // Changes too old to undo are packed, tasks trashed too
                     // long ago deleted, and the Inbox added, before loading.
@@ -697,6 +715,8 @@ package struct RootFeature {
                 return .none
 
             case .updated(let update):
+                // A window hears its own saves too, already shown.
+                guard update.number > state.saves.latest || !update.fixes.isEmpty else { return .none }
                 if !update.fixes.isEmpty {
                     state.syncBanner = SyncBanner(update.fixes, in: update.workspace)
                 }
@@ -1006,7 +1026,8 @@ package struct RootFeature {
                 let away = state.awayAt
                 state.awayAt = nil
                 var effects: [Effect<Action>] = []
-                if state.locksApp, !state.isLocked, AppLock.locks(away: away, now: now) {
+                // Other windows follow the first one's lock.
+                if !state.isWindow, state.locksApp, !state.isLocked, AppLock.locks(away: away, now: now) {
                     state.isLocked = true
                     effects.append(.send(.unlockTapped))
                 }
@@ -1030,7 +1051,7 @@ package struct RootFeature {
                 guard state.syncsContinuously, state.sync.status != .syncing else { return .none }
                 return .run { [sync] _ in _ = await sync.sync() }
 
-            case .unlockTapped, .unlocked:
+            case .unlockTapped, .unlocked, .lockMirrored:
                 return .none
 
             case .syncReviewTapped:
@@ -1198,7 +1219,11 @@ package struct RootFeature {
                 await send(.unlocked(Result { try await lock.authenticate(reason) }))
             }
 
-        case .unlocked(.success):
+        case .lockMirrored(true):
+            state.isLocked = true
+            return .none
+
+        case .unlocked(.success), .lockMirrored(false):
             state.isLocked = false
             state.isUnlocking = false
             guard let link = state.pendingLink else { return .none }
@@ -1273,7 +1298,24 @@ package struct RootFeature {
         state.settings.show(snapshot)
         state.conversations.show(snapshot)
         return .merge(
-            effects + [savedFilterShown, writeGlance(state), indexSpotlight(state), scheduleReminders(state)])
+            effects + [savedFilterShown]
+                + (state.isWindow ? [] : [writeGlance(state), indexSpotlight(state), scheduleReminders(state)]))
+    }
+
+    /// Another Mac window's start: the records and their changes, and how
+    /// sync is going, without the process's own work.
+    private func startWindow(_ state: inout State) -> Effect<Action> {
+        state.isRunning = true
+        state.biometry = lock.biometry()
+        if state.place != Place() { state.restoring = state.place }
+        return .merge(
+            reload(),
+            .run { [store] send in
+                for await update in await store.updates() { await send(.updated(update)) }
+            },
+            .run { [sync] send in
+                for await state in await sync.states() { await send(.syncChanged(state)) }
+            })
     }
 
     /// Schedules this device's notifications for the reminders in `state`,

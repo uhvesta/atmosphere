@@ -3,7 +3,10 @@ import Foundation
 
 /// Where the person was in Lifr: the tab or sidebar item and the open task,
 /// so Lifr opens there again after the system ends it in the background.
-package struct Place: Codable, Equatable, Sendable {
+package struct Place: Codable, Hashable, Sendable {
+    /// The Mac's other windows, each opening at a place of its own.
+    package static let windowID = "window"
+
     package var tab: RootFeature.Tab?
     package var sidebar: RootFeature.SidebarItem?
     package var task: UUID?
