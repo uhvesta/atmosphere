@@ -519,6 +519,7 @@ async fn call(client: &Client, name: &str, arguments: &Arguments<'_>) -> Result<
                 session_id: session.clone(),
                 text: arguments.required("text")?,
                 mode: pb::SendMode::Enqueue.into(),
+                client_id: String::new(),
             });
             let sent = |response: &Response| matches!(response, Response::MessageSent(_));
             wait(client, &session, request, sent, "MessageSent", arguments).await

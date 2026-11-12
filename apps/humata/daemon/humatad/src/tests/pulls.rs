@@ -192,6 +192,7 @@ async fn a_landed_task_opens_a_pull_request_and_finishes_when_it_merges() {
             session_id: session.id.clone(),
             text: "write the notes".to_owned(),
             mode: pb::SendMode::Enqueue.into(),
+            client_id: String::new(),
         }))
         .await;
     assert!(

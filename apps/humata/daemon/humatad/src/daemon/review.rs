@@ -251,6 +251,7 @@ impl Daemon {
             session_id: session.to_owned(),
             text: message.clone(),
             mode: pb::SendMode::Enqueue.into(),
+            client_id: String::new(),
         });
         self.ask(&host, request).await?;
         let comments: Vec<i64> = pending

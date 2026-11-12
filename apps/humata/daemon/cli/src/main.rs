@@ -1260,6 +1260,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 session_id: session.clone(),
                 text,
                 mode: mode.into(),
+                client_id: String::new(),
             });
             let sent = |response: &Response| matches!(response, Response::MessageSent(_));
             if wait {

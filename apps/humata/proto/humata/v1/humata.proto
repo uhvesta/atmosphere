@@ -716,6 +716,9 @@ message SendMessage {
   string session_id = 1;
   string text = 2;
   SendMode mode = 3;
+  // Names this send, so one sent again after its answer was lost runs
+  // once: the host takes an id it took lately as done. Empty for none.
+  string client_id = 4;
 }
 
 message MessageSent {}

@@ -63,6 +63,7 @@ async fn send(client: &Client, session: &str, text: &str) {
         session_id: session.to_owned(),
         text: text.to_owned(),
         mode: pb::SendMode::Enqueue.into(),
+        client_id: String::new(),
     });
     let sent = client.call(request).await;
     assert!(
@@ -139,6 +140,37 @@ async fn a_session_plays_its_script_on_the_host() {
     send(&client, &session.id, "hello").await;
     let events = after_turns(&client, &session.id, 1).await;
     assert_eq!(said(&events), ["user: hello", "agent: hi there"]);
+}
+
+#[tokio::test]
+async fn a_send_tried_again_after_its_answer_was_lost_runs_once() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = host(state.path()).await;
+    let session = started(&client, start(state.path(), "")).await;
+    for (text, id) in [
+        ("hello", "send-1"),
+        ("hello", "send-1"),
+        ("and then", "send-2"),
+    ] {
+        let sent = client
+            .call(pb::request::Kind::SendMessage(pb::SendMessage {
+                session_id: session.id.clone(),
+                text: text.to_owned(),
+                mode: pb::SendMode::Enqueue.into(),
+                client_id: id.to_owned(),
+            }))
+            .await;
+        assert!(
+            matches!(sent, Ok(pb::response::Kind::MessageSent(_))),
+            "{sent:?}"
+        );
+    }
+    let events = after_turns(&client, &session.id, 2).await;
+    let asked: Vec<String> = said(&events)
+        .into_iter()
+        .filter(|line| line.starts_with("user: "))
+        .collect();
+    assert_eq!(asked, ["user: hello", "user: and then"]);
 }
 
 #[tokio::test]

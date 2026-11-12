@@ -1,6 +1,7 @@
 import Foundation
 import HumataDaemonClient
 import HumataProto
+import os
 
 extension DaemonClient {
     /// Where humatad listens unless told otherwise: `$HUMATA_SOCKET`, else
@@ -28,6 +29,7 @@ extension DaemonClient {
     /// the connection drops.
     package static func live(socket: String = defaultSocket, programVersion: String = "0.0.0") -> DaemonClient {
         let daemon = LiveDaemon(socket: socket, programVersion: programVersion)
+        let unanswered = UnansweredSends()
         return DaemonClient(
             projects: {
                 guard case .projects(let projects) = try await daemon.call(.listProjects(Humata_V1_ListProjects()))
@@ -148,7 +150,12 @@ extension DaemonClient {
                 message.sessionID = session
                 message.text = text
                 message.mode = mode == .steer ? .immediate : .enqueue
+                // Sending the same text again after a send that got no
+                // answer reuses its id, so a host that took it runs it once.
+                message.clientID = unanswered.id(session: session, text: text)
+                // A host that refused it forgot the id, so keeping it is safe.
                 _ = try await daemon.call(.sendMessage(message))
+                unanswered.answered(session: session, text: text)
             },
             approve: { session, request, approved in
                 var approve = Humata_V1_Approve()
@@ -775,5 +782,25 @@ private actor LiveDaemon {
 
     func stream(_ request: Humata_V1_Request.OneOf_Kind) async throws -> Items {
         try await connected().stream(request)
+    }
+}
+
+/// The ids of sends that got no answer, which the host may have taken, by
+/// session and text.
+private final class UnansweredSends: Sendable {
+    private let ids = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
+
+    func id(session: String, text: String) -> String {
+        ids.withLock { ids in
+            let key = session + "\u{0}" + text
+            if let id = ids[key] { return id }
+            let id = UUID().uuidString
+            ids[key] = id
+            return id
+        }
+    }
+
+    func answered(session: String, text: String) {
+        _ = ids.withLock { $0.removeValue(forKey: session + "\u{0}" + text) }
     }
 }

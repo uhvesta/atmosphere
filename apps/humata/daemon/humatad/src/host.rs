@@ -274,6 +274,8 @@ pub struct Host {
     backends: HashMap<pb::Backend, Arc<dyn Backend>>,
     /// Which backend runs each session.
     owners: Mutex<HashMap<SessionId, pb::Backend>>,
+    /// The client ids of each session's latest sends, newest last.
+    sent: Mutex<HashMap<SessionId, std::collections::VecDeque<String>>>,
     machine: Machine,
     /// Where chats that work in no folder of the person's get one.
     chats: PathBuf,
@@ -393,6 +395,7 @@ impl Host {
         Ok(Self {
             backends,
             owners: Mutex::new(owners),
+            sent: Mutex::default(),
             machine: Machine::new(
                 state.to_owned(),
                 env.clone(),
@@ -470,6 +473,37 @@ impl Host {
             .ok_or(HostError::UnknownBackend {
                 backend: backend.as_str_name(),
             })
+    }
+
+    /// Whether a send named `client_id` is new to `session`, keeping it if
+    /// so. An empty id is always new.
+    fn take_send(&self, session: &SessionId, client_id: &str) -> bool {
+        const KEPT: usize = 32;
+        if client_id.is_empty() {
+            return true;
+        }
+        let mut sent = self.sent.lock().unwrap_or_else(PoisonError::into_inner);
+        let ids = sent.entry(session.clone()).or_default();
+        if ids.iter().any(|id| id == client_id) {
+            return false;
+        }
+        if ids.len() == KEPT {
+            ids.pop_front();
+        }
+        ids.push_back(client_id.to_owned());
+        true
+    }
+
+    /// Forgets a send that failed, so it can be tried again.
+    fn forget_send(&self, session: &SessionId, client_id: &str) {
+        if let Some(ids) = self
+            .sent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(session)
+        {
+            ids.retain(|id| id != client_id);
+        }
     }
 
     fn owner(&self, session: &SessionId) -> Result<(pb::Backend, &Arc<dyn Backend>), HostError> {
@@ -658,10 +692,14 @@ impl Host {
             Request::SendMessage(message) => {
                 let mode = convert::send_mode(message.mode());
                 let session = SessionId::new(message.session_id);
-                self.owner(&session)?
-                    .1
-                    .send(&session, message.text, mode)
-                    .await?;
+                let agent = self.owner(&session)?.1;
+                // One it took already, whose answer was lost, isn't run again.
+                if self.take_send(&session, &message.client_id) {
+                    if let Err(error) = agent.send(&session, message.text, mode).await {
+                        self.forget_send(&session, &message.client_id);
+                        return Err(error.into());
+                    }
+                }
                 Response::MessageSent(pb::MessageSent {})
             }
             Request::Approve(approve) => {
