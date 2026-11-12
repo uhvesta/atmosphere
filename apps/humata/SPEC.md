@@ -187,7 +187,7 @@ Kept short; the code and its tests are the record.
 - [x] An inbox of sessions waiting on an approval, a failure or a reply, across projects
 - [x] The board from `humata` and the MCP server
 - [x] Every board change recorded and revertible
-- [ ] Inline comments on a task's spec → done through doc mode (A) for chat files; for specs, moved to Milestone 6
+- [x] Inline comments on a task's spec → doc mode (A) for chat files; for specs, Milestone 6
 
 ### Milestone 3: a remote machine over SSH — done
 
@@ -200,7 +200,7 @@ Kept short; the code and its tests are the record.
 - [x] Clone a project's repositories on the host
 - [x] Each host's variables and setup script edited from the app
 - [x] Notifications when a session needs you or finishes
-- [ ] Language servers per host → later
+Language servers per host aren't part of this milestone; see Later.
 
 ### Milestone 4: code review — done
 
