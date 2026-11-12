@@ -72,17 +72,21 @@ package struct HostsView: View {
                     Text("Settings").tag(HostsFeature.Pane.settings)
                     Text("Terminals").tag(HostsFeature.Pane.terminals)
                     Text("Files").tag(HostsFeature.Pane.files)
+                    Text("Ports").tag(HostsFeature.Pane.ports)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .fixedSize()
                 .padding(8)
-                .help("The host's settings, the shells running on it, or its files")
+                .help("The host's settings, the shells running on it, its files, or the ports forwarded from it")
                 if store.pane == .terminals, let terminals = store.scope(state: \.terminals, action: \.terminals) {
                     TerminalsView(store: terminals)
                         .id(store.selection)
                 } else if store.pane == .files, let files = store.scope(state: \.files, action: \.files) {
                     FileBrowserView(store: files)
+                        .id(store.selection)
+                } else if store.pane == .ports, let ports = store.scope(state: \.ports, action: \.ports) {
+                    PortsView(store: ports)
                         .id(store.selection)
                 } else {
                     settings

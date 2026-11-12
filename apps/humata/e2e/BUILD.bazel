@@ -96,6 +96,28 @@ rust_test(
     deps = ["@crates//:tempfile"],
 )
 
+# A port on a host over SSH, forwarded to 127.0.0.1 here.
+rust_test(
+    name = "port_over_ssh_test",
+    srcs = [
+        "common.rs",
+        "port_over_ssh_test.rs",
+        "ssh_host.rs",
+    ],
+    crate_root = "port_over_ssh_test.rs",
+    data = [
+        "//apps/humata/daemon/cli:humata",
+        "//apps/humata/daemon/humatad",
+        "//apps/humata/e2e/sshd:test_sshd",
+    ],
+    env = {
+        "HUMATA": "$(rootpath //apps/humata/daemon/cli:humata)",
+        "HUMATAD": "$(rootpath //apps/humata/daemon/humatad)",
+        "TEST_SSHD": "$(rootpath //apps/humata/e2e/sshd:test_sshd)",
+    },
+    deps = ["@crates//:tempfile"],
+)
+
 # A scripted agent edits a file in a project through an approval.
 rust_test(
     name = "edit_through_approval_test",

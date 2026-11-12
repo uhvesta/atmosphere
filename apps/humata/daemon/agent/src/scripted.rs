@@ -49,6 +49,16 @@ pub enum Step {
         path: PathBuf,
         contents: String,
     },
+    /// Calls `tool` with `arguments`, as an agent calls one of Humata's
+    /// MCP tools, and reports `output`; nothing runs. Tests use it to stand
+    /// in for an agent proposing tasks or answering threads.
+    Tool {
+        tool: String,
+        #[serde(default)]
+        arguments: serde_json::Value,
+        #[serde(default)]
+        output: String,
+    },
     /// Fails the turn.
     Fail {
         message: String,
@@ -199,6 +209,22 @@ async fn play(turn: &Turn, index: usize, step: &Step) -> Result<(), ScriptedErro
                 call_id,
                 success: true,
                 output: format!("Wrote {}", path.display()),
+            })?;
+        }
+        Step::Tool {
+            tool,
+            arguments,
+            output,
+        } => {
+            turn.emit(EventKind::ToolStarted {
+                call_id: call_id.clone(),
+                tool: tool.clone(),
+                arguments_json: arguments.to_string(),
+            })?;
+            turn.emit(EventKind::ToolCompleted {
+                call_id,
+                success: true,
+                output: output.clone(),
             })?;
         }
         Step::Fail { message } => {

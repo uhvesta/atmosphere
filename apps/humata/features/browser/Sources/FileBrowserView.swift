@@ -197,6 +197,7 @@ private struct FileContentsView: View {
                 Image(nsImage: image)
                     .padding()
             }
+            .defaultScrollAnchor(.topLeading)
         } else {
             ContentUnavailableView(
                 "Not Text", systemImage: "doc",
@@ -232,5 +233,7 @@ private struct SourceText: View {
             .padding(.vertical, 8)
             .textSelection(.enabled)
         }
+        // A short file starts at the top left, not in the middle.
+        .defaultScrollAnchor(.topLeading)
     }
 }

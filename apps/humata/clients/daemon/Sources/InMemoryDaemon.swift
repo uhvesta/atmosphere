@@ -104,6 +104,11 @@ package final class InMemoryDaemon: Sendable {
         /// The open terminals, by id.
         var terminals: [String: FakeTerminal] = [:]
         var nextTerminal = 1
+        /// The ports being forwarded, oldest first.
+        var forwards: [Forward] = []
+        var nextForward = 1
+        /// The ports that answer, on each host; "" is this Mac.
+        var listening: [String: Set<Int>] = [:]
     }
 
     let state = LockIsolated(State())
@@ -119,6 +124,42 @@ package final class InMemoryDaemon: Sendable {
         self.start = start
         self.sshConfigHosts = sshHosts
         self.script = script
+    }
+
+    /// Has something answer on `port` on `host`, or this Mac if nil, so it
+    /// can be forwarded.
+    package func listen(on port: Int, at host: String? = nil) {
+        state.withValue { state in _ = state.listening[host ?? "", default: []].insert(port) }
+    }
+
+    private func forwardPort(_ host: String?, _ port: Int, _ session: String?) throws -> Forward {
+        try state.withValue { state in
+            if let host, state.offline.contains(host) {
+                throw DaemonError.refused(
+                    .hostUnavailable, message: "Couldn't reach \(host). Check that it is up, then try again.")
+            }
+            guard state.listening[host ?? ""]?.contains(port) == true else {
+                throw DaemonError.refused(
+                    .hostUnavailable, message: "Nothing answered on port \(port). Start the server, then try again.")
+            }
+            // The same port here, unless it's taken.
+            let taken = Set(state.forwards.map(\.localPort)).union(state.listening[""] ?? [])
+            let local = host == nil || taken.contains(port) ? 50_000 + state.nextForward : port
+            let forward = Forward(
+                id: "f\(state.nextForward)", host: host, port: port, localPort: local, sessionID: session)
+            state.nextForward += 1
+            state.forwards.append(forward)
+            return forward
+        }
+    }
+
+    private func stopForward(_ id: String) throws {
+        try state.withValue { state in
+            guard state.forwards.contains(where: { $0.id == id }) else {
+                throw DaemonError.refused(.unknownForward, message: "There is no forward \(id); it was stopped.")
+            }
+            state.forwards.removeAll { $0.id == id }
+        }
     }
 
     /// Makes `host` unreachable, as a dropped network would, or reachable
@@ -433,6 +474,9 @@ package final class InMemoryDaemon: Sendable {
             resizeTerminal: { terminal, _ in try self.terminal(terminal.id) },
             closeTerminal: { terminal in try self.closeTerminal(terminal.id) },
             attachTerminal: { terminal in self.attachTerminal(terminal.id) },
+            forwardPort: { host, port, session in try self.forwardPort(host, port, session) },
+            forwards: { self.state.value.forwards },
+            stopForward: { id in try self.stopForward(id) },
             watch: { session in self.watch(session) }
         )
     }

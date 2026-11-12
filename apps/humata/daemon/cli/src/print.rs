@@ -339,6 +339,18 @@ pub fn terminal(terminal: &pb::Terminal) -> String {
     )
 }
 
+/// A forward: its id, host, the port there, the port here, and session.
+pub fn forward(forward: &pb::Forward) -> String {
+    format!(
+        "{}\t{}\t{}\t127.0.0.1:{}\t{}",
+        forward.id,
+        or_dash(&forward.host),
+        forward.port,
+        forward.local_port,
+        or_dash(&forward.session_id)
+    )
+}
+
 pub fn recovery(recovery: &pb::Recovery) -> String {
     let state = if recovery.on_host { "on host" } else { "lost" };
     format!(

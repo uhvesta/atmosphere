@@ -29,12 +29,14 @@ package struct HostsFeature {
         package var restoring: Set<Recovery.ID> = []
         /// Why the hosts couldn't be read, and what to do about it.
         package var failure: String?
-        /// What the selected host shows: its settings, terminals or files.
+        /// What the selected host shows: its settings, terminals, files or ports.
         package var pane = Pane.settings
         /// The selected host's terminals, whether or not a session opened them.
         package var terminals: TerminalsFeature.State?
         /// The selected host's files, from its home.
         package var files: FileBrowserFeature.State?
+        /// The selected host's forwarded ports.
+        package var ports: PortsFeature.State?
         @Presents package var destination: Destination.State?
 
         package init() {}
@@ -48,6 +50,7 @@ package struct HostsFeature {
         case settings
         case terminals
         case files
+        case ports
     }
 
     /// What's known of a host's health.
@@ -98,6 +101,7 @@ package struct HostsFeature {
         case paneSelected(Pane)
         case terminals(TerminalsFeature.Action)
         case files(FileBrowserFeature.Action)
+        case ports(PortsFeature.Action)
         case destination(PresentationAction<Destination.Action>)
     }
 
@@ -315,13 +319,14 @@ package struct HostsFeature {
                 state.pane = pane
                 return .none
 
-            case .editor, .destination, .terminals, .files:
+            case .editor, .destination, .terminals, .files, .ports:
                 return .none
             }
         }
         .ifLet(\.editor, action: \.editor) { HostEditorFeature() }
         .ifLet(\.terminals, action: \.terminals) { TerminalsFeature() }
         .ifLet(\.files, action: \.files) { FileBrowserFeature() }
+        .ifLet(\.ports, action: \.ports) { PortsFeature() }
         .ifLet(\.$destination, action: \.destination)
     }
 
@@ -332,6 +337,7 @@ package struct HostsFeature {
             TerminalsFeature.State(place: HostPlace(host: $0.isEmpty ? nil : $0), opensFirst: false)
         }
         state.files = id.map { FileBrowserFeature.State(place: HostPlace(host: $0.isEmpty ? nil : $0)) }
+        state.ports = id.map { PortsFeature.State(host: $0.isEmpty ? nil : $0) }
         state.skipped = []
         state.recoveries = []
         guard let id else { return .none }

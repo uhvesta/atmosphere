@@ -19,6 +19,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::convert;
 use crate::error::HostError;
 use crate::machine::Machine;
+use crate::ports::Ports;
 use crate::relay::Relay;
 use crate::terminals::{Attached, Chunk, Opening, Terminals};
 
@@ -247,6 +248,8 @@ pub struct Host {
     /// The agents' variables, which its terminals get too.
     env: Env,
     terminals: Terminals,
+    /// Connections to its ports, for the Mac's forwards.
+    ports: Arc<Ports>,
 }
 
 impl Host {
@@ -338,6 +341,7 @@ impl Host {
             stop: tokio::sync::Notify::new(),
             env,
             terminals: Terminals::default(),
+            ports: Arc::default(),
         })
     }
 
@@ -630,7 +634,10 @@ impl Host {
             | Request::ResolveThread(_)
             | Request::DeleteComment(_)
             | Request::ListThreads(_)
-            | Request::SendReview(_) => {
+            | Request::SendReview(_)
+            | Request::ForwardPort(_)
+            | Request::ListForwards(_)
+            | Request::StopForward(_) => {
                 return Err(HostError::NotForHosts);
             }
             Request::ConfigureHost(configure) => Response::HostConfigured(pb::HostConfigured {
@@ -855,6 +862,18 @@ impl Host {
                 self.terminals.close(&close.terminal_id)?;
                 Response::TerminalClosed(pb::TerminalClosed {})
             }
+            Request::ConnectPort(connect) => {
+                let (id, chunks) = self.ports.connect(connect.port).await?;
+                return Ok(port_stream(id, chunks));
+            }
+            Request::WritePort(write) => {
+                self.ports.write(&write.connection_id, &write.data).await?;
+                Response::PortWritten(pb::PortWritten {})
+            }
+            Request::ClosePort(close) => {
+                self.ports.close(&close.connection_id).await;
+                Response::PortClosed(pb::PortClosed {})
+            }
         }))
     }
 }
@@ -898,6 +917,30 @@ fn stream(watch: Watch) -> Reply {
     });
     Reply::Stream {
         response: pb::response::Kind::Watching(pb::Watching {}),
+        items: receiver,
+    }
+}
+
+/// What the server on a port sends, until it closes the connection.
+fn port_stream(id: String, mut chunks: mpsc::Receiver<Vec<u8>>) -> Reply {
+    let (items, receiver) = mpsc::channel(16);
+    tokio::spawn(async move {
+        loop {
+            let next = tokio::select! {
+                next = chunks.recv() => next,
+                () = items.closed() => return,
+            };
+            let Some(data) = next else { return };
+            let item = pb::StreamItem {
+                kind: Some(pb::stream_item::Kind::PortData(pb::PortData { data })),
+            };
+            if items.send(Ok(item)).await.is_err() {
+                return;
+            }
+        }
+    });
+    Reply::Stream {
+        response: pb::response::Kind::PortConnected(pb::PortConnected { connection_id: id }),
         items: receiver,
     }
 }

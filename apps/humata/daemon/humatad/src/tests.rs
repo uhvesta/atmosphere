@@ -2034,3 +2034,135 @@ async fn a_sessions_terminal_opens_in_its_folder_and_keeps_going_between_watcher
         "{again:?}"
     );
 }
+
+/// A one-request web server on 127.0.0.1 that answers with `body`.
+async fn web_server(body: &'static str) -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let port = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("{error}"))
+        .port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let mut asked = vec![0; 1024];
+                let _ = socket.read(&mut asked).await;
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(reply.as_bytes()).await;
+            });
+        }
+    });
+    port
+}
+
+/// Asks for `/` on 127.0.0.1:`port` and returns the whole reply.
+async fn fetched(port: u32) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let port = u16::try_from(port).unwrap_or_else(|error| panic!("{error}"));
+    let mut socket = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    socket
+        .write_all(b"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n")
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let mut reply = String::new();
+    tokio::time::timeout(Duration::from_secs(10), socket.read_to_string(&mut reply))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"))
+        .unwrap_or_else(|error| panic!("{error}"));
+    reply
+}
+
+#[tokio::test]
+async fn a_forwarded_port_answers_here_until_it_is_stopped() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = daemon(state.path(), Hosts::default()).await;
+    let port = web_server("hello from the server").await;
+
+    let forwarded = client
+        .call(pb::request::Kind::ForwardPort(pb::ForwardPort {
+            host: String::new(),
+            port: u32::from(port),
+            session_id: "s1".to_owned(),
+        }))
+        .await;
+    let Ok(pb::response::Kind::PortForwarded(pb::PortForwarded {
+        forward: Some(forward),
+    })) = forwarded
+    else {
+        panic!("not forwarded: {forwarded:?}");
+    };
+    assert_eq!(forward.port, u32::from(port));
+    assert_ne!(forward.local_port, 0);
+    // Twice, so each connection is carried on its own.
+    for _ in 0..2 {
+        let reply = fetched(forward.local_port).await;
+        assert!(reply.ends_with("hello from the server"), "{reply}");
+    }
+
+    let listed = client
+        .call(pb::request::Kind::ListForwards(pb::ListForwards {}))
+        .await;
+    let Ok(pb::response::Kind::Forwards(forwards)) = listed else {
+        panic!("no forwards: {listed:?}");
+    };
+    assert_eq!(forwards.forwards, [forward.clone()]);
+
+    let stopped = client
+        .call(pb::request::Kind::StopForward(pb::StopForward {
+            id: forward.id.clone(),
+        }))
+        .await;
+    assert!(matches!(stopped, Ok(pb::response::Kind::ForwardStopped(_))));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let local = u16::try_from(forward.local_port).unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        tokio::net::TcpStream::connect(("127.0.0.1", local))
+            .await
+            .is_err()
+    );
+    let again = client
+        .call(pb::request::Kind::StopForward(pb::StopForward {
+            id: forward.id,
+        }))
+        .await;
+    assert!(
+        refused_with(&again, pb::ErrorCode::UnknownForward),
+        "{again:?}"
+    );
+}
+
+#[tokio::test]
+async fn forwarding_a_port_nothing_answers_on_is_refused() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = daemon(state.path(), Hosts::default()).await;
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let port = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("{error}"))
+        .port();
+    drop(listener);
+    let forwarded = client
+        .call(pb::request::Kind::ForwardPort(pb::ForwardPort {
+            host: String::new(),
+            port: u32::from(port),
+            session_id: String::new(),
+        }))
+        .await;
+    assert!(
+        refused_with(&forwarded, pb::ErrorCode::HostUnavailable),
+        "{forwarded:?}"
+    );
+}

@@ -132,7 +132,7 @@ original spec; lettered ones were added since.
 | C Polish: blockers and quick wins | Done (059649d) |
 | C Polish: majors and minors | Done |
 | D Durable hosts | Done |
-| E Terminals and files | After D |
+| E Terminals and files | Done |
 | 6 Plan with the agent | After E |
 | 7 Search across sessions | After 6 |
 | 8 Ship as pull requests | After 7 |
@@ -335,6 +335,12 @@ Structure:
   files; they grow paths outside the session and lazy directory listing).
   Files open read-only with syntax highlighting, Markdown rendered, images
   shown, and large files cut with a note. Comments use the review threads.
+- **Ports.** The daemon listens on 127.0.0.1 on the Mac, on the host's port
+  number when it's free, and carries each browser connection to the port on
+  the host over the host's connection (`ForwardPort`, then `ConnectPort`,
+  `WritePort` and `ClosePort` per connection). The host only connects to
+  127.0.0.1 there; nothing new listens on it. Each host's Ports pane in Hosts
+  and `humata port` forward, list, open and stop them.
 
 Work:
 
@@ -345,11 +351,12 @@ Work:
 - [x] File browser for a session's folder and for any folder on a host
 - [x] Read-only file view with highlighting, rendered Markdown and images
 - [x] Open a file in an editor on this Mac (local) or copy its remote path
-- [ ] Port forwarding for a dev server on a host, opened in the browser
+- [x] Port forwarding for a dev server on a host, opened in the browser
 
 **Done when:** an end-to-end test opens a terminal on an SSH host, runs a
 command and reads its output, disconnects and reattaches and still sees it;
-a flow snapshots the terminal and the file browser.
+a flow snapshots the terminal and the file browser. Both pass
+(`terminal_over_ssh_test`, `port_over_ssh_test`, the `terminals` flow).
 
 ### Milestone 6: plan with the agent
 

@@ -512,6 +512,17 @@ final class MacFlowSnapshotTests: XCTestCase {
         store.send(.hosts(.presented(.files(.fileSelected("scripts/warm.sh")))))
         try await until { store.hosts?.files?.contents != nil }
         await flow.step("host files")
+
+        daemon.listen(on: 5173, at: "build-box")
+        daemon.listen(on: 8080, at: "build-box")
+        store.send(.hosts(.presented(.paneSelected(.ports))))
+        for port in ["5173", "8080"] {
+            store.send(.hosts(.presented(.ports(.binding(.set(\.port, port))))))
+            store.send(.hosts(.presented(.ports(.forwardTapped))))
+            try await until { store.hosts?.ports?.forwarding == false && store.hosts?.ports?.port == "" }
+        }
+        try await until { store.hosts?.ports?.forwards.count == 2 }
+        await flow.step("host ports")
         flow.finish()
     }
 

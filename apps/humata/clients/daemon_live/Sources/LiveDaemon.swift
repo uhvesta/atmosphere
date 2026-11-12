@@ -536,6 +536,30 @@ extension DaemonClient {
                     continuation.onTermination = { _ in task.cancel() }
                 }
             },
+            forwardPort: { host, port, session in
+                var forward = Humata_V1_ForwardPort()
+                forward.host = host ?? ""
+                forward.port = UInt32(clamping: port)
+                forward.sessionID = session ?? ""
+                guard case .portForwarded(let forwarded) = try await daemon.call(.forwardPort(forward)) else {
+                    throw DaemonError.unexpected("something other than the port forwarded")
+                }
+                return Forward(forwarded.forward)
+            },
+            forwards: {
+                guard case .forwards(let forwards) = try await daemon.call(.listForwards(Humata_V1_ListForwards()))
+                else {
+                    throw DaemonError.unexpected("something other than the forwards")
+                }
+                return forwards.forwards.map(Forward.init)
+            },
+            stopForward: { id in
+                var stop = Humata_V1_StopForward()
+                stop.id = id
+                guard case .forwardStopped = try await daemon.call(.stopForward(stop)) else {
+                    throw DaemonError.unexpected("something other than the forward stopped")
+                }
+            },
             watch: { session in
                 AsyncThrowingStream { continuation in
                     let task = Task {

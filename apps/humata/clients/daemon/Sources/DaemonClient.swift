@@ -132,6 +132,13 @@ package struct DaemonClient: Sendable {
         @Sendable (_ terminal: Terminal) async -> AsyncThrowingStream<TerminalOutput, any Error> = { _ in
             AsyncThrowingStream { $0.finish() }
         }
+    /// Listens on 127.0.0.1 here for `port` on `host`, or this Mac if nil,
+    /// once something answers on it there.
+    package var forwardPort: @Sendable (_ host: String?, _ port: Int, _ session: String?) async throws -> Forward
+    /// The ports being forwarded.
+    package var forwards: @Sendable () async throws -> [Forward]
+    /// Stops listening; connections already open run until they close.
+    package var stopForward: @Sendable (_ forward: String) async throws -> Void
     /// The session's history, then each new event. Ends when the calling task
     /// is cancelled; throws if the connection drops.
     package var watch: @Sendable (_ session: String) async -> AsyncThrowingStream<SessionEvent, any Error> = { _ in

@@ -29,9 +29,11 @@
       [StaticText] "" value: "gpu"
       [Image] "Unreachable" id: wifi.slash
       [StaticText] "" value: "me@10.0.0.7"
-  [RadioGroup] "Show" help: "The host's settings, or the shells running on it"
+  [RadioGroup] "Show" help: "The host's settings, the shells running on it, its files, or the ports forwarded from it"
     [RadioButton/Segment] "Settings" value: "1"
     [RadioButton/Segment] "Terminals" value: "0"
+    [RadioButton/Segment] "Files" value: "0"
+    [RadioButton/Segment] "Ports" value: "0"
   [Heading] "gpu"
   [Button] "Install Humata" help: "Copy Humata's program to gpu"
   [Button] "Check Again"

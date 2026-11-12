@@ -23,6 +23,7 @@ use humata_agent::Repository;
 const REWATCH_FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 const REWATCH_LONGEST_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
+mod forwards;
 mod recovery;
 mod review;
 
@@ -49,6 +50,9 @@ pub struct Daemon {
     /// The sessions being backed up, each with whether to back it up again
     /// once done.
     backing_up: std::sync::Mutex<HashMap<String, bool>>,
+    /// The ports forwarded to hosts, by id.
+    forwards: std::sync::Mutex<BTreeMap<String, forwards::Forwarding>>,
+    next_forward: std::sync::atomic::AtomicU64,
 }
 
 impl Daemon {
@@ -84,6 +88,8 @@ impl Daemon {
             tool_calls,
             recovery,
             backing_up: std::sync::Mutex::default(),
+            forwards: std::sync::Mutex::default(),
+            next_forward: std::sync::atomic::AtomicU64::new(0),
         });
         tokio::spawn(answer_tool_calls(Arc::downgrade(&daemon), calls));
         daemon
@@ -1201,8 +1207,25 @@ impl Daemon {
             | Request::AnswerToolCall(_)
             | Request::StopHost(_)
             | Request::BackupSession(_)
-            | Request::RestoreBackup(_) => {
+            | Request::RestoreBackup(_)
+            | Request::ConnectPort(_)
+            | Request::WritePort(_)
+            | Request::ClosePort(_) => {
                 return Err(DaemonError::ForHostsOnly);
+            }
+            Request::ForwardPort(forward) => {
+                return self.forward_port(std::mem::take(forward)).await;
+            }
+            Request::ListForwards(_) => {
+                return Ok(Reply::Response(Response::Forwards(pb::Forwards {
+                    forwards: self.forwards_list(),
+                })));
+            }
+            Request::StopForward(stop) => {
+                self.stop_forward(&stop.id)?;
+                return Ok(Reply::Response(Response::ForwardStopped(
+                    pb::ForwardStopped {},
+                )));
             }
             Request::WatchSession(watch) => {
                 let host = self.host_of(&watch.session_id).await?;

@@ -142,6 +142,15 @@ message Request {
     // A folder's entries, a level at a time, in a session's folder or any
     // folder on a host.
     ListFolder list_folder = 65;
+    // Port forwarding: the Mac listens on a local port and carries each
+    // connection to a port on a host, over the host's connection.
+    ForwardPort forward_port = 66;
+    ListForwards list_forwards = 67;
+    StopForward stop_forward = 68;
+    // For hosts only: one connection to a port, its bytes as a stream.
+    ConnectPort connect_port = 69;
+    WritePort write_port = 70;
+    ClosePort close_port = 71;
   }
 }
 
@@ -207,6 +216,13 @@ message Response {
     Terminals terminals = 57;
     TerminalClosed terminal_closed = 58;
     Folder folder = 59;
+    PortForwarded port_forwarded = 60;
+    Forwards forwards = 61;
+    ForwardStopped forward_stopped = 62;
+    // A ConnectPort stream was accepted; its bytes follow as PortData.
+    PortConnected port_connected = 63;
+    PortWritten port_written = 64;
+    PortClosed port_closed = 65;
   }
 }
 
@@ -246,6 +262,9 @@ enum ErrorCode {
   ERROR_CODE_UNKNOWN_REQUEST = 20;
   // No such terminal on the host; it was closed, or the host restarted.
   ERROR_CODE_UNKNOWN_TERMINAL = 21;
+  // The connection to a forwarded port closed already.
+  ERROR_CODE_UNKNOWN_CONNECTION = 22;
+  ERROR_CODE_UNKNOWN_FORWARD = 23;
 }
 
 enum Backend {
@@ -968,6 +987,7 @@ message StreamItem {
     SessionEvent session_event = 1;
     ToolCall tool_call = 2;
     TerminalOutput terminal_output = 3;
+    PortData port_data = 4;
   }
 }
 
@@ -1633,3 +1653,69 @@ message CloseTerminal {
 }
 
 message TerminalClosed {}
+
+// Listens on 127.0.0.1 on the Mac and carries each connection to `port` on
+// the host, for a dev server there to open in the browser.
+message ForwardPort {
+  // Empty for this Mac.
+  string host = 1;
+  uint32 port = 2;
+  // The session it's for, if any, to list it with.
+  string session_id = 3;
+}
+
+message Forward {
+  string id = 1;
+  string host = 2;
+  // The port on the host.
+  uint32 port = 3;
+  // Where it listens on the Mac: http://127.0.0.1:local_port.
+  uint32 local_port = 4;
+  string session_id = 5;
+}
+
+message PortForwarded {
+  Forward forward = 1;
+}
+
+message ListForwards {}
+
+message Forwards {
+  repeated Forward forwards = 1;
+}
+
+message StopForward {
+  string id = 1;
+}
+
+message ForwardStopped {}
+
+message ConnectPort {
+  string host = 1;
+  uint32 port = 2;
+}
+
+message PortConnected {
+  string connection_id = 1;
+}
+
+// Bytes the server sent; the stream ends when it closes.
+message PortData {
+  bytes data = 1;
+}
+
+message WritePort {
+  string host = 1;
+  string connection_id = 2;
+  // Empty: the Mac's side closed its half.
+  bytes data = 3;
+}
+
+message PortWritten {}
+
+message ClosePort {
+  string host = 1;
+  string connection_id = 2;
+}
+
+message PortClosed {}

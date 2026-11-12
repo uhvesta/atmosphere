@@ -378,6 +378,25 @@ struct FolderPlace {
 }
 
 #[derive(Subcommand)]
+enum PortCommand {
+    /// Listen on 127.0.0.1 here for a port on a host, such as a dev
+    /// server's, and print the forward with the port to open here.
+    Forward {
+        port: u32,
+        /// The host the port is on; this Mac when left out.
+        #[arg(long, default_value = "")]
+        host: String,
+        /// The session the server belongs to, shown with the forward.
+        #[arg(long, default_value = "")]
+        session: String,
+    },
+    /// List the ports being forwarded.
+    List,
+    /// Stop forwarding; connections already open run until they close.
+    Stop { id: String },
+}
+
+#[derive(Subcommand)]
 enum TerminalCommand {
     /// Open a shell in a session's folder, a folder on a host, or the
     /// host's home, and print the terminal.
@@ -440,6 +459,9 @@ enum Command {
     /// Open, type into, read and close shells on a host.
     #[command(subcommand)]
     Terminal(TerminalCommand),
+    /// Forward a port on a host to 127.0.0.1 here, list or stop forwards.
+    #[command(subcommand)]
+    Port(PortCommand),
     /// List or import the Claude Code and Copilot sessions on a host that
     /// were started outside Humata.
     #[command(subcommand)]
@@ -792,6 +814,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
         Command::Host(command) => host(&client, command).await?,
         Command::Recover(command) => recover(&client, command).await?,
         Command::Terminal(command) => terminal(&client, command).await?,
+        Command::Port(command) => port(&client, command).await?,
         Command::Stage(edit) => edit_changes(&client, edit, pb::ChangeAction::Stage).await?,
         Command::Unstage(edit) => edit_changes(&client, edit, pb::ChangeAction::Unstage).await?,
         Command::Revert(edit) => edit_changes(&client, edit, pb::ChangeAction::Revert).await?,
@@ -1271,6 +1294,51 @@ async fn recover(client: &Client, command: RecoverCommand) -> Result<(), CliErro
                     }
                 }
                 other => return Err(unexpected("the sessions restored", &other)),
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn port(client: &Client, command: PortCommand) -> Result<(), CliError> {
+    use pb::request::Kind as Request;
+    use pb::response::Kind as Response;
+    match command {
+        PortCommand::Forward {
+            port,
+            host,
+            session,
+        } => {
+            let request = Request::ForwardPort(pb::ForwardPort {
+                host,
+                port,
+                session_id: session,
+            });
+            match client.call(request).await? {
+                Response::PortForwarded(pb::PortForwarded {
+                    forward: Some(forward),
+                }) => println!("{}", print::forward(&forward)),
+                other => return Err(unexpected("the port forwarded", &other)),
+            }
+        }
+        PortCommand::List => match client
+            .call(Request::ListForwards(pb::ListForwards {}))
+            .await?
+        {
+            Response::Forwards(forwards) => {
+                for forward in &forwards.forwards {
+                    println!("{}", print::forward(forward));
+                }
+            }
+            other => return Err(unexpected("the forwards", &other)),
+        },
+        PortCommand::Stop { id } => {
+            match client
+                .call(Request::StopForward(pb::StopForward { id }))
+                .await?
+            {
+                Response::ForwardStopped(_) => {}
+                other => return Err(unexpected("the forward stopped", &other)),
             }
         }
     }

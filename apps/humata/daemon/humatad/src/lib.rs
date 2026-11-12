@@ -12,6 +12,7 @@ mod hosts;
 mod login_env;
 mod machine;
 mod mcp;
+mod ports;
 mod relay;
 mod socket;
 mod store;

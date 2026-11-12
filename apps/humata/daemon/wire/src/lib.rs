@@ -33,6 +33,7 @@ pub fn streams(request: &pb::request::Kind) -> bool {
         pb::request::Kind::WatchSession(_)
             | pb::request::Kind::WatchToolCalls(_)
             | pb::request::Kind::AttachTerminal(_)
+            | pb::request::Kind::ConnectPort(_)
     )
 }
 

@@ -27,6 +27,8 @@ extension ErrorCode {
             case .alreadyImported: .alreadyImported
             case .unknownRequest: .unknownRequest
             case .unknownTerminal: .unknownTerminal
+            case .unknownConnection: .unknownConnection
+            case .unknownForward: .unknownForward
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -516,6 +518,14 @@ extension Terminal {
             sessionID: terminal.sessionID.isEmpty ? nil : terminal.sessionID, folder: terminal.folder,
             shell: terminal.shell, opened: Date(timeIntervalSince1970: Double(terminal.openedUnixMs) / 1000),
             exitCode: terminal.exited ? Int(terminal.exitCode) : nil)
+    }
+}
+
+extension Forward {
+    init(_ forward: Humata_V1_Forward) {
+        self.init(
+            id: forward.id, host: forward.host.isEmpty ? nil : forward.host, port: Int(forward.port),
+            localPort: Int(forward.localPort), sessionID: forward.sessionID.isEmpty ? nil : forward.sessionID)
     }
 }
 

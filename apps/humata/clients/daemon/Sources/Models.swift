@@ -855,6 +855,10 @@ package enum ErrorCode: Hashable, Sendable {
     /// The request was answered already.
     case unknownRequest
     case unknownTerminal
+    /// The browser's connection to a forwarded port closed already.
+    case unknownConnection
+    /// The forward was stopped already.
+    case unknownForward
     case unknown
 }
 
@@ -1081,6 +1085,31 @@ package struct FolderEntry: Equatable, Sendable {
         self.size = size
         self.modified = modified
     }
+}
+
+/// A port on a host, such as a dev server's, that the daemon listens for
+/// on 127.0.0.1 here and carries over the host's connection.
+package struct Forward: Equatable, Identifiable, Sendable {
+    package var id: String
+    /// Nil for this Mac.
+    package var host: String?
+    /// The port on the host.
+    package var port: Int
+    /// The port here to open, which is `port` when that was free.
+    package var localPort: Int
+    /// The session the server belongs to, if any.
+    package var sessionID: String?
+
+    package init(id: String, host: String?, port: Int, localPort: Int, sessionID: String? = nil) {
+        self.id = id
+        self.host = host
+        self.port = port
+        self.localPort = localPort
+        self.sessionID = sessionID
+    }
+
+    /// Where the forwarded server opens here.
+    package var url: URL? { URL(string: "http://127.0.0.1:\(localPort)") }
 }
 
 /// A shell on a host, in a session's folder or any of the host's. It keeps

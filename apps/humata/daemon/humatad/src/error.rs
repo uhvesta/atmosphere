@@ -12,6 +12,9 @@ pub enum HostError {
     #[error(transparent)]
     Terminal(#[from] crate::terminals::TerminalError),
 
+    #[error(transparent)]
+    Port(#[from] crate::ports::PortError),
+
     #[error(
         "this host doesn't run the {backend} backend; pick one it has, or update humatad on this host"
     )]
@@ -185,6 +188,7 @@ impl HostError {
             Self::Agent(_) => pb::ErrorCode::StorageFailed,
             Self::UnknownBackend { .. } => pb::ErrorCode::UnknownBackend,
             Self::Terminal(error) => error.code(),
+            Self::Port(error) => error.code(),
             Self::NotForHosts
             | Self::UnknownToolCall { .. }
             | Self::NotInFolder { .. }
@@ -388,6 +392,27 @@ pub enum DaemonError {
     )]
     NoSetupHere,
 
+    #[error("port {port} isn't a TCP port; give one from 1 to 65535")]
+    BadPort { port: u32 },
+
+    #[error(
+        "couldn't listen on 127.0.0.1 on this Mac to forward the port; another program may hold every port, so close some and try again"
+    )]
+    Listen {
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "{host} answered a port connection with something else; update humatad on {host} to this Mac's build, then forward the port again"
+    )]
+    NotAPortStream { host: String },
+
+    #[error(
+        "no forwarded port {id}; it was stopped already, or the daemon restarted since. Forward the port again"
+    )]
+    UnknownForward { id: String },
+
     #[error(
         "an agent on {host} asked for {asked}, which is outside the projects of the sessions running there; its humata tools reach only those sessions' boards and review threads"
     )]
@@ -583,7 +608,11 @@ impl DaemonError {
             | Self::NoRepositories
             | Self::ForHostsOnly
             | Self::NoSetupHere
+            | Self::BadPort { .. }
             | Self::OutOfScope { .. } => pb::ErrorCode::InvalidRequest,
+            Self::Listen { .. } => pb::ErrorCode::Busy,
+            Self::NotAPortStream { .. } => pb::ErrorCode::HostUnavailable,
+            Self::UnknownForward { .. } => pb::ErrorCode::UnknownForward,
             Self::Spawn { .. }
             | Self::Connect { .. }
             | Self::ConnectTimedOut { .. }
