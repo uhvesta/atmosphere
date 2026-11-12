@@ -374,6 +374,7 @@ extension DaemonClient {
                 create.spec = fields.spec
                 create.status = fields.status.proto
                 create.priority = fields.priority.proto
+                create.surface = .app
                 guard case .itemCreated(let created) = try await daemon.call(.createItem(create)) else {
                     throw DaemonError.unexpected("something other than the created item")
                 }
@@ -386,6 +387,7 @@ extension DaemonClient {
                 if let spec = update.spec { request.spec = spec }
                 if let status = update.status { request.status = status.proto }
                 if let priority = update.priority { request.priority = priority.proto }
+                request.surface = .app
                 guard case .itemUpdated(let updated) = try await daemon.call(.updateItem(request)) else {
                     throw DaemonError.unexpected("something other than the updated item")
                 }
@@ -394,6 +396,7 @@ extension DaemonClient {
             deleteItem: { item in
                 var request = Humata_V1_DeleteItem()
                 request.itemID = item
+                request.surface = .app
                 guard case .itemDeleted = try await daemon.call(.deleteItem(request)) else {
                     throw DaemonError.unexpected("something other than the deleted item")
                 }
@@ -409,11 +412,13 @@ extension DaemonClient {
             revert: { change in
                 var revert = Humata_V1_RevertBoardChange()
                 revert.changeID = change
+                revert.surface = .app
                 guard case .boardChangeReverted(let reverted) = try await daemon.call(.revertBoardChange(revert))
                 else {
                     throw DaemonError.unexpected("something other than the reverted item")
                 }
-                return reverted.hasItem ? Item(reverted.item) : nil
+                return Reverted(
+                    item: reverted.hasItem ? Item(reverted.item) : nil, kept: reverted.kept.compactMap(ItemField.init))
             },
             inbox: {
                 guard case .inbox(let inbox) = try await daemon.call(.listInbox(Humata_V1_ListInbox())) else {

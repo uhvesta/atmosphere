@@ -51,7 +51,7 @@ struct ProposalCard: View {
     private var kind: String {
         switch proposal.kind {
         case .task: proposal.parentID == nil ? "Proposed task" : "Proposed subtask"
-        case .specEdit: "Proposed spec edit"
+        case .specEdit: proposal.spec.isEmpty ? "Proposed new title" : "Proposed spec edit"
         }
     }
 
@@ -108,9 +108,7 @@ struct ProposalEditor: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Edit the Proposal")
                     .font(.headline)
-                if store.proposals[id: editing.id]?.kind == .task {
-                    TextField("Title", text: binding(\.title))
-                }
+                TextField("Title", text: binding(\.title))
                 Text("Spec")
                     .font(.caption)
                     .foregroundStyle(.secondary)

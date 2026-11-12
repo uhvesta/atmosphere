@@ -347,6 +347,26 @@ filegroup(
     tags = ["starlark"],
 )
 
+# Agents ask before they change the board: a session's proposals wait for
+# the person, and once applied the board's journal names the session.
+rust_test(
+    name = "agents_ask_test",
+    srcs = [
+        "agents_ask_test.rs",
+        "common.rs",
+    ],
+    crate_root = "agents_ask_test.rs",
+    data = [
+        "//apps/humata/daemon/cli:humata",
+        "//apps/humata/daemon/humatad",
+    ],
+    env = {
+        "HUMATA": "$(rootpath //apps/humata/daemon/cli:humata)",
+        "HUMATAD": "$(rootpath //apps/humata/daemon/humatad)",
+    },
+    deps = ["@crates//:tempfile"],
+)
+
 # Planning with an agent: proposals applied and declined, then a fork onto
 # an applied task with a copy of the code.
 rust_test(

@@ -205,92 +205,17 @@ impl Server {
             }
             "propose_spec_edit" => {
                 let item_id = required(text("item_id"), "item_id")?;
-                if arguments["spec"]
+                let spec = arguments["spec"]
                     .as_str()
-                    .is_none_or(|spec| spec.trim().is_empty())
-                {
-                    return Err("give spec: the whole new spec, in Markdown".to_owned());
+                    .is_some_and(|spec| !spec.trim().is_empty());
+                if !spec && text("title").is_none_or(|title| title.is_empty()) {
+                    return Err(
+                        "give spec, the whole new spec in Markdown, or title, or both".to_owned(),
+                    );
                 }
                 Ok(format!(
-                    "Proposed a new spec for {item_id}. It replaces the old one only if the person applies it; until then read_item shows the old one."
+                    "Proposed a change to {item_id}. It's made only if the person applies it; until then read_item shows it as it was."
                 ))
-            }
-            "update_item" => {
-                let item_id = required(text("item_id"), "item_id")?;
-                let status = text("status")
-                    .map(|status| {
-                        status_named(&status).ok_or_else(|| {
-                            format!(
-                                "{status:?} isn't a status; give one of {}",
-                                STATUSES.join(", ")
-                            )
-                        })
-                    })
-                    .transpose()?;
-                if let Some(status) = status.filter(|status| asked_for(*status)) {
-                    return Err(format!(
-                        "moving a task to {} is the person's call; ask with request_move, saying what you did",
-                        status_name(status)
-                    ));
-                }
-                let title = text("title").filter(|title| !title.is_empty());
-                let spec = arguments["spec"].as_str().map(str::to_owned);
-                if status.is_none() && title.is_none() && spec.is_none() {
-                    return Err("say what to change: status, title or spec".to_owned());
-                }
-                let update = pb::UpdateItem {
-                    item_id,
-                    title,
-                    spec,
-                    status: status.map(Into::into),
-                    priority: None,
-                    by_session_id: self.session.clone(),
-                };
-                match self.ask(pb::request::Kind::UpdateItem(update)).await? {
-                    pb::response::Kind::ItemUpdated(pb::ItemUpdated { item: Some(item) }) => {
-                        Ok(format!(
-                            "Updated {}: {} ({}). The person can undo it from the board's log.",
-                            item.id,
-                            item.title,
-                            status_name(item.given_status())
-                        ))
-                    }
-                    other => Err(unexpected(&other)),
-                }
-            }
-            "add_subtask" => {
-                let title = required(text("title"), "title")?;
-                let parent = match text("task_id").filter(|id| !id.is_empty()) {
-                    Some(task) => self.item(&task).await?,
-                    None => {
-                        let session = self.session().await?;
-                        if session.item_id.is_empty() {
-                            return Err(
-                                "this session works on no task; give task_id, from the board"
-                                    .to_owned(),
-                            );
-                        }
-                        let item = self.item(&session.item_id).await?;
-                        if item.parent_id.is_empty() {
-                            item
-                        } else {
-                            self.item(&item.parent_id).await?
-                        }
-                    }
-                };
-                let create = pb::CreateItem {
-                    project_id: parent.project_id.clone(),
-                    parent_id: parent.id.clone(),
-                    title,
-                    spec: text("spec").unwrap_or_default(),
-                    ..Default::default()
-                };
-                match self.ask(pb::request::Kind::CreateItem(create)).await? {
-                    pb::response::Kind::ItemCreated(pb::ItemCreated { item: Some(item) }) => Ok(
-                        format!("Added {} under {}: {}.", item.id, parent.title, item.title),
-                    ),
-                    other => Err(unexpected(&other)),
-                }
             }
             "ask_person" => {
                 let ask = pb::AskPerson {
@@ -413,19 +338,6 @@ impl Server {
         }
     }
 
-    /// One of the session's project's items.
-    async fn item(&self, id: &str) -> Result<pb::Item, String> {
-        let session = self.session().await?;
-        if session.project_id.is_empty() {
-            return Err("this session isn't in a project, so it has no board".to_owned());
-        }
-        self.items(&session.project_id)
-            .await?
-            .into_iter()
-            .find(|item| item.id == id)
-            .ok_or_else(|| format!("the board has no item {id}; see board for their ids"))
-    }
-
     async fn board(&self) -> Result<String, String> {
         let session = self.session().await?;
         if session.project_id.is_empty() {
@@ -433,9 +345,7 @@ impl Server {
         }
         let items = self.items(&session.project_id).await?;
         if items.is_empty() {
-            return Ok(
-                "The board is empty; add_subtask needs a task, which the person adds.".to_owned(),
-            );
+            return Ok("The board is empty; propose_task to suggest one.".to_owned());
         }
         let mut text = String::from("Tasks, with their subtasks under them:\n");
         for item in &items {
@@ -561,15 +471,6 @@ fn asked_for(status: pb::ItemStatus) -> bool {
     )
 }
 
-const STATUSES: [&str; 6] = [
-    "todo",
-    "in_progress",
-    "waiting_on_you",
-    "in_review",
-    "done",
-    "wont_do",
-];
-
 fn status_name(status: pb::ItemStatus) -> &'static str {
     use pb::ItemStatus::*;
     match status {
@@ -604,27 +505,8 @@ fn tools() -> Value {
             "inputSchema": object(json!({"item_id": string("From board.")}), &["item_id"]),
         },
         {
-            "name": "update_item",
-            "description": "Change a task's or subtask's status, title or spec. Moving it to in_review, done or wont_do is the person's call: use request_move for those.",
-            "inputSchema": object(json!({
-                "item_id": string("From board."),
-                "status": {"type": "string", "enum": STATUSES},
-                "title": string("The new title."),
-                "spec": string("The whole new spec, in Markdown; it replaces the old one."),
-            }), &["item_id"]),
-        },
-        {
-            "name": "add_subtask",
-            "description": "Add a subtask, under this session's task unless task_id says another.",
-            "inputSchema": object(json!({
-                "title": string("Short, like a commit subject."),
-                "spec": string("What it is and why, in Markdown."),
-                "task_id": string("A task from board; a subtask can't have subtasks."),
-            }), &["title"]),
-        },
-        {
             "name": "propose_task",
-            "description": "Propose a task, or a subtask under parent_id, with its spec. Nothing is added until the person applies it from your proposal in the chat, perhaps after editing it.",
+            "description": "Propose a task, or a subtask under parent_id, with its spec. You can't change the board yourself: nothing is added until the person applies it from your proposal in the chat, perhaps after editing it.",
             "inputSchema": object(json!({
                 "title": string("Short, like a commit subject."),
                 "spec": string("What it is, why, and when it's done, in Markdown."),
@@ -634,12 +516,13 @@ fn tools() -> Value {
         },
         {
             "name": "propose_spec_edit",
-            "description": "Propose a new spec for a task or subtask. It replaces the old one only when the person applies it; sessions working on it are told to read it again.",
+            "description": "Propose a new spec or title for a task or subtask. You can't change the board yourself: it changes only when the person applies your proposal; sessions working on it are told to read it again.",
             "inputSchema": object(json!({
                 "item_id": string("From board."),
-                "spec": string("The whole new spec, in Markdown."),
+                "spec": string("The whole new spec, in Markdown; leave out to keep it."),
+                "title": string("A new title; leave out to keep it."),
                 "note": string("What changed and why."),
-            }), &["item_id", "spec"]),
+            }), &["item_id"]),
         },
         {
             "name": "ask_person",
@@ -749,12 +632,13 @@ mod tests {
                     .collect()
             })
             .unwrap_or_default();
-        assert!(names.contains(&"update_item") && names.contains(&"reply_to_thread"));
+        assert!(names.contains(&"propose_task") && names.contains(&"reply_to_thread"));
+        assert!(!names.contains(&"update_item") && !names.contains(&"add_subtask"));
         assert_eq!(answers[2]["error"]["code"], -32601);
     }
 
     #[tokio::test]
-    async fn the_agent_moves_its_item_and_adds_subtasks_under_its_task() {
+    async fn the_agent_proposes_changes_but_cant_make_them() {
         use crate::tests::{board, daemon, git_repository, item, project, start_on, started};
         let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
         let repository = git_repository();
@@ -768,40 +652,32 @@ mod tests {
         let (listed, failed) = call(&server, "board", json!({})).await;
         assert!(!failed && listed.contains(&subtask.id), "{listed}");
 
-        let (_, failed) = call(
-            &server,
-            "update_item",
-            json!({"item_id": subtask.id, "status": "waiting_on_you"}),
-        )
-        .await;
-        assert!(!failed);
-        let (_, failed) = call(&server, "add_subtask", json!({"title": "copy"})).await;
-        assert!(!failed);
-        use pb::ItemStatus::{Todo, WaitingOnYou};
+        for (tool, arguments) in [
+            (
+                "propose_task",
+                json!({"title": "copy", "spec": "Words.", "parent_id": task.id}),
+            ),
+            (
+                "propose_spec_edit",
+                json!({"item_id": subtask.id, "title": "sign-in form"}),
+            ),
+        ] {
+            let (_, failed) = call(&server, tool, arguments.clone()).await;
+            assert!(!failed, "{tool} {arguments}");
+        }
+        use pb::ItemStatus::Todo;
         assert_eq!(
             board(&server.client, &project.id).await,
-            [
-                ("login".to_owned(), Todo),
-                ("form".to_owned(), WaitingOnYou),
-                ("copy".to_owned(), Todo),
-            ]
+            [("login".to_owned(), Todo), ("form".to_owned(), Todo)]
         );
 
         for (tool, arguments) in [
             (
                 "update_item",
-                json!({"item_id": subtask.id, "status": "finished"}),
+                json!({"item_id": subtask.id, "status": "in_progress"}),
             ),
-            ("update_item", json!({"item_id": subtask.id})),
-            ("update_item", json!({"item_id": "nope", "status": "todo"})),
-            (
-                "update_item",
-                json!({"item_id": subtask.id, "status": "done"}),
-            ),
-            (
-                "add_subtask",
-                json!({"title": "deeper", "task_id": subtask.id}),
-            ),
+            ("add_subtask", json!({"title": "deeper"})),
+            ("propose_spec_edit", json!({"item_id": subtask.id})),
             (
                 "reply_to_thread",
                 json!({"thread_id": "12", "text": "Done."}),

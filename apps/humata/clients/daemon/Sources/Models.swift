@@ -359,6 +359,27 @@ package struct ItemUpdate: Hashable, Sendable {
     }
 }
 
+/// Who made a board change.
+package enum BoardAuthor: Hashable, Sendable {
+    /// The person, in this app.
+    case app
+    /// The person, with the humata command.
+    case commandLine
+    /// An outside agent, through humata mcp.
+    case mcp
+    /// Humata itself, such as a task done when its pull request merged.
+    case humata
+    /// A session, whose proposal or request the person approved.
+    case session(String)
+    /// Made before Humata recorded who made changes.
+    case unknown
+}
+
+/// A field of an item, as a board change names it.
+package enum ItemField: Hashable, Sendable, CaseIterable {
+    case title, spec, status, priority
+}
+
 /// One change to a project's board.
 package struct BoardChange: Identifiable, Hashable, Sendable {
     package var id: UInt64
@@ -370,9 +391,11 @@ package struct BoardChange: Identifiable, Hashable, Sendable {
     package var after: ItemFields?
     /// The change it reverted, if it did.
     package var reverts: UInt64?
+    package var author: BoardAuthor
 
     package init(
-        id: UInt64, itemID: String, time: Date, before: ItemFields?, after: ItemFields?, reverts: UInt64? = nil
+        id: UInt64, itemID: String, time: Date, before: ItemFields?, after: ItemFields?, reverts: UInt64? = nil,
+        author: BoardAuthor = .unknown
     ) {
         self.id = id
         self.itemID = itemID
@@ -380,6 +403,39 @@ package struct BoardChange: Identifiable, Hashable, Sendable {
         self.before = before
         self.after = after
         self.reverts = reverts
+        self.author = author
+    }
+
+    /// The fields it changed, for an edit; none for adding or removing.
+    package var fields: [ItemField] {
+        guard let before, let after else { return [] }
+        return ItemField.allCases.filter { before.differs(from: after, in: $0) }
+    }
+}
+
+extension ItemFields {
+    /// Whether `other` has another value for `field`.
+    package func differs(from other: ItemFields, in field: ItemField) -> Bool {
+        switch field {
+        case .title: title != other.title
+        case .spec: spec != other.spec
+        case .status: status != other.status
+        case .priority: priority != other.priority
+        }
+    }
+}
+
+/// What reverting a board change did.
+package struct Reverted: Hashable, Sendable {
+    /// The item as it is now; nil when reverting removed it.
+    package var item: Item?
+    /// The fields the change set that were kept, as they changed again
+    /// since.
+    package var kept: [ItemField]
+
+    package init(item: Item?, kept: [ItemField] = []) {
+        self.item = item
+        self.kept = kept
     }
 }
 

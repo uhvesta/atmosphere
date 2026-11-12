@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use humata_wire::{Reply, pb};
 
 use super::Daemon;
-use crate::board::{Item, ItemFields, ItemPatch, Priority, Status};
+use crate::board::{Author, Item, ItemFields, ItemPatch, Priority, Status};
 use crate::error::DaemonError;
 use crate::store::{Decision, Project};
 
@@ -38,7 +38,9 @@ impl Daemon {
                 }
                 None => proposal.state = pb::ProposalState::Pending.into(),
             }
+            // A spec edit that proposes no new title shows the item's.
             if proposal.kind() == pb::ProposalKind::SpecEdit
+                && proposal.title.is_empty()
                 && let Ok(item) = self.store.item(&proposal.item_id)
             {
                 proposal.title = item.fields.title;
@@ -82,19 +84,26 @@ impl Daemon {
             .ok_or_else(|| DaemonError::NoBoard {
                 session: apply.session_id.clone(),
             })?;
-        let spec = apply.spec.unwrap_or_else(|| proposal.spec.clone());
+        let author = Author::session(&apply.session_id, pb::ChangeSurface::Unspecified);
         let item = match proposal.kind() {
             pb::ProposalKind::SpecEdit => {
+                // A proposal may change only the title, or only the spec.
                 let patch = ItemPatch {
                     status: None,
                     priority: None,
-                    title: apply.title.filter(|title| !title.trim().is_empty()),
-                    spec: Some(spec),
+                    title: apply
+                        .title
+                        .or_else(|| Some(proposal.title.clone()))
+                        .filter(|title| !title.trim().is_empty()),
+                    spec: apply
+                        .spec
+                        .or_else(|| Some(proposal.spec.clone()))
+                        .filter(|spec| !spec.trim().is_empty()),
                 };
                 let before = self.store.item(&proposal.item_id).ok();
                 let item = self
                     .store
-                    .update_item(&proposal.item_id, patch)
+                    .update_item(&proposal.item_id, patch, &author)
                     .map_err(|_| DaemonError::NoProposedItem {
                         proposal: proposal.id.clone(),
                     })?;
@@ -109,9 +118,9 @@ impl Daemon {
                     status: Status::Todo,
                     priority: Priority::None,
                     title: apply.title.unwrap_or_else(|| proposal.title.clone()),
-                    spec,
+                    spec: apply.spec.unwrap_or_else(|| proposal.spec.clone()),
                 };
-                self.store.add_item(&project, fields)?
+                self.store.add_item(&project, fields, &author)?
             }
         };
         self.store.decide(

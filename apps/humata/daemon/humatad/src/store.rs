@@ -12,7 +12,7 @@ use humata_wire::pb;
 use prost::Message as _;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use crate::board::{Change, Item, ItemFields, ItemPatch, Priority, Status};
+use crate::board::{Author, Change, Item, ItemFields, ItemPatch, Priority, Status};
 use crate::error::StoreError;
 
 mod planning;
@@ -264,7 +264,22 @@ const MIGRATIONS: &[&str] = &["
         note TEXT NOT NULL,
         PRIMARY KEY (session_id, item_id)
     );
+", "
+    -- Who made each board change: where from, as a ChangeSurface, and the
+    -- session whose proposal or request it applied.
+    ALTER TABLE board_changes ADD COLUMN surface INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE board_changes ADD COLUMN session_id TEXT NOT NULL DEFAULT '';
 "];
+
+/// What reverting a board change did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reverted {
+    /// The item as it is now; None if it was removed.
+    pub item: Option<Item>,
+    /// The fields the change set that were kept, as they changed again
+    /// since.
+    pub kept: Vec<pb::ItemField>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Project {
@@ -698,7 +713,12 @@ impl Store {
     }
 
     /// Adds a task, or a subtask under `fields.parent_id`, to `project`.
-    pub fn add_item(&self, project: &str, fields: ItemFields) -> Result<Item, StoreError> {
+    pub fn add_item(
+        &self,
+        project: &str,
+        fields: ItemFields,
+        author: &Author,
+    ) -> Result<Item, StoreError> {
         if fields.title.trim().is_empty() {
             return Err(StoreError::NoTitle);
         }
@@ -722,7 +742,14 @@ impl Store {
         let added = (|| {
             let transaction = connection.transaction()?;
             insert_item(&transaction, &id, project, &fields, now)?;
-            log(&transaction, project, &id, None, Some(&fields), None)?;
+            log(
+                &transaction,
+                project,
+                &id,
+                (None, Some(&fields)),
+                None,
+                author,
+            )?;
             transaction.commit()
         })();
         added.map_err(self.failed())?;
@@ -732,7 +759,12 @@ impl Store {
 
     /// Changes the fields `patch` sets, recording the change if there is
     /// one.
-    pub fn update_item(&self, id: &str, patch: ItemPatch) -> Result<Item, StoreError> {
+    pub fn update_item(
+        &self,
+        id: &str,
+        patch: ItemPatch,
+        author: &Author,
+    ) -> Result<Item, StoreError> {
         let item = self.item(id)?;
         let mut fields = item.fields.clone();
         if let Some(title) = patch.title {
@@ -761,9 +793,9 @@ impl Store {
                 &transaction,
                 &item.project_id,
                 id,
-                Some(&item.fields),
-                Some(&fields),
+                (Some(&item.fields), Some(&fields)),
                 None,
+                author,
             )?;
             transaction.commit()
         })();
@@ -774,7 +806,7 @@ impl Store {
 
     /// Removes item `id`, logged so reverting the change brings it back.
     /// Refused while subtasks or sessions are on it.
-    pub fn delete_item(&self, id: &str) -> Result<(), StoreError> {
+    pub fn delete_item(&self, id: &str, author: &Author) -> Result<(), StoreError> {
         let item = self.item(id)?;
         let mut connection = self.lock();
         let transaction = connection.transaction().map_err(self.failed())?;
@@ -800,9 +832,9 @@ impl Store {
                 &transaction,
                 &item.project_id,
                 id,
-                Some(&item.fields),
+                (Some(&item.fields), None),
                 None,
-                None,
+                author,
             )?;
             transaction.commit()
         })();
@@ -866,7 +898,8 @@ impl Store {
         let connection = self.lock();
         let listed = (|| -> rusqlite::Result<Vec<Change>> {
             let mut statement = connection.prepare(
-                "SELECT id, item_id, time_unix_ms, before, after, reverts FROM board_changes
+                "SELECT id, item_id, time_unix_ms, before, after, reverts, surface, session_id
+                 FROM board_changes
                  WHERE project_id = ?1 ORDER BY id DESC",
             )?;
             statement
@@ -891,12 +924,14 @@ impl Store {
     }
 
     /// Puts an item back as it was before change `id`, and records that as
-    /// a change of its own. Returns the item, or None if it was removed.
-    pub fn revert(&self, id: u64) -> Result<Option<Item>, StoreError> {
+    /// a change of its own. A field changed again since is left as it is,
+    /// rather than overwrite that later change.
+    pub fn revert(&self, id: u64, author: &Author) -> Result<Reverted, StoreError> {
         let mut connection = self.lock();
         let change = connection
             .query_row(
-                "SELECT id, item_id, time_unix_ms, before, after, reverts FROM board_changes
+                "SELECT id, item_id, time_unix_ms, before, after, reverts, surface, session_id
+                 FROM board_changes
                  WHERE id = ?1",
                 [i64::try_from(id).unwrap_or(i64::MAX)],
                 change_row,
@@ -920,6 +955,7 @@ impl Store {
             .optional()
             .map_err(self.failed())?;
         let now = now_unix_ms();
+        let mut kept = Vec::new();
         let transaction = connection.transaction().map_err(self.failed())?;
         match (change.before, current) {
             // It added the item: remove it, unless something hangs off it.
@@ -947,24 +983,27 @@ impl Store {
                     &transaction,
                     &project,
                     &item.id,
-                    Some(&item.fields),
-                    None,
+                    (Some(&item.fields), None),
                     Some(id),
+                    author,
                 )
                 .map_err(self.failed())?;
             }
             // Already gone; nothing to undo.
             (None, None) => {}
             (Some(before), Some(item)) => {
-                if before != item.fields {
-                    update_fields(&transaction, &item.id, &before).map_err(self.failed())?;
+                let after = change.after.as_ref().unwrap_or(&item.fields);
+                let (back, skipped) = put_back(&before, after, &item.fields);
+                kept = skipped;
+                if back != item.fields {
+                    update_fields(&transaction, &item.id, &back).map_err(self.failed())?;
                     log(
                         &transaction,
                         &project,
                         &item.id,
-                        Some(&item.fields),
-                        Some(&before),
+                        (Some(&item.fields), Some(&back)),
                         Some(id),
+                        author,
                     )
                     .map_err(self.failed())?;
                 }
@@ -992,20 +1031,21 @@ impl Store {
                     &transaction,
                     &project,
                     &change.item_id,
-                    None,
-                    Some(&before),
+                    (None, Some(&before)),
                     Some(id),
+                    author,
                 )
                 .map_err(self.failed())?;
             }
         }
         transaction.commit().map_err(self.failed())?;
         drop(connection);
-        match self.item(&change.item_id) {
-            Ok(item) => Ok(Some(item)),
-            Err(StoreError::UnknownItem { .. }) => Ok(None),
-            Err(error) => Err(error),
-        }
+        let item = match self.item(&change.item_id) {
+            Ok(item) => Some(item),
+            Err(StoreError::UnknownItem { .. }) => None,
+            Err(error) => return Err(error),
+        };
+        Ok(Reverted { item, kept })
     }
 }
 
@@ -1042,6 +1082,34 @@ fn with_sessions(connection: &Connection, item: Item) -> rusqlite::Result<Item> 
     })
 }
 
+/// What reverting an edit from `before` to `after` makes of `now`: each
+/// field the edit changed goes back to `before` if it is still as the edit
+/// left it, and is kept, and named, if it has changed again since.
+fn put_back(
+    before: &ItemFields,
+    after: &ItemFields,
+    now: &ItemFields,
+) -> (ItemFields, Vec<pb::ItemField>) {
+    let mut back = now.clone();
+    let mut kept = Vec::new();
+    macro_rules! field {
+        ($name:ident, $field:expr) => {
+            if before.$name != after.$name {
+                if now.$name == after.$name {
+                    back.$name.clone_from(&before.$name);
+                } else {
+                    kept.push($field);
+                }
+            }
+        };
+    }
+    field!(title, pb::ItemField::Title);
+    field!(spec, pb::ItemField::Spec);
+    field!(status, pb::ItemField::Status);
+    field!(priority, pb::ItemField::Priority);
+    (back, kept)
+}
+
 fn change_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Change> {
     let fields = |index: usize| -> rusqlite::Result<Option<ItemFields>> {
         let text: Option<String> = row.get(index)?;
@@ -1058,6 +1126,8 @@ fn change_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Change> {
     };
     let id: i64 = row.get(0)?;
     let reverts: Option<i64> = row.get(5)?;
+    let surface: i32 = row.get(6)?;
+    let session: String = row.get(7)?;
     Ok(Change {
         id: u64::try_from(id).unwrap_or_default(),
         item_id: row.get(1)?,
@@ -1065,6 +1135,10 @@ fn change_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Change> {
         before: fields(3)?,
         after: fields(4)?,
         reverts: reverts.and_then(|reverts| u64::try_from(reverts).ok()),
+        author: Author {
+            surface: pb::ChangeSurface::try_from(surface).unwrap_or_default(),
+            session_id: Some(session).filter(|id| !id.is_empty()),
+        },
     })
 }
 
@@ -1140,9 +1214,9 @@ fn log(
     transaction: &Transaction<'_>,
     project: &str,
     item: &str,
-    before: Option<&ItemFields>,
-    after: Option<&ItemFields>,
+    (before, after): (Option<&ItemFields>, Option<&ItemFields>),
     reverts: Option<u64>,
+    author: &Author,
 ) -> rusqlite::Result<()> {
     let json = |fields: Option<&ItemFields>| {
         fields
@@ -1151,8 +1225,9 @@ fn log(
             .map_err(|source| rusqlite::Error::ToSqlConversionFailure(Box::new(source)))
     };
     transaction.execute(
-        "INSERT INTO board_changes (project_id, item_id, time_unix_ms, before, after, reverts)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO board_changes (project_id, item_id, time_unix_ms, before, after, reverts,
+             surface, session_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             project,
             item,
@@ -1160,6 +1235,8 @@ fn log(
             json(before)?,
             json(after)?,
             reverts.and_then(|reverts| i64::try_from(reverts).ok()),
+            i32::from(author.surface),
+            author.session_id.as_deref().unwrap_or_default(),
         ],
     )?;
     Ok(())

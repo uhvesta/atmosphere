@@ -249,18 +249,35 @@ final class InMemoryDaemonTests: XCTestCase {
         let log = try await daemon.client.boardLog(project.id)
         let (update, add) = (try XCTUnwrap(log.first), try XCTUnwrap(log.last))
 
-        let reverted = try await daemon.client.revert(update.id)
+        let reverted = try await daemon.client.revert(update.id).item
         XCTAssertEqual(reverted?.title, "login")
         XCTAssertEqual(reverted?.priority, Priority.none)
-        let removed = try await daemon.client.revert(add.id)
+        let removed = try await daemon.client.revert(add.id).item
         XCTAssertNil(removed)
         let empty = try await board(daemon, project.id)
         XCTAssertEqual(empty, [])
 
         let removals = try await daemon.client.boardLog(project.id)
         let removal = try XCTUnwrap(removals.first)
-        let back = try await daemon.client.revert(removal.id)
+        let back = try await daemon.client.revert(removal.id).item
         XCTAssertEqual(back?.title, "login")
+    }
+
+    func testRevertingAnEditKeepsFieldsChangedSince() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("demo", [Repository(path: "/code")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        _ = try await daemon.client.updateItem(task.id, ItemUpdate(title: "sign in", priority: .high))
+        let log = try await daemon.client.boardLog(project.id)
+        let edit = try XCTUnwrap(log.first)
+        _ = try await daemon.client.updateItem(task.id, ItemUpdate(title: "log in", status: .done))
+
+        let reverted = try await daemon.client.revert(edit.id)
+
+        XCTAssertEqual(reverted.kept, [.title])
+        XCTAssertEqual(reverted.item?.title, "log in")
+        XCTAssertEqual(reverted.item?.priority, Priority.none)
+        XCTAssertEqual(reverted.item?.fields.status, .done)
     }
 
     func testAnItemInUseIsNotRemoved() async throws {

@@ -22,6 +22,11 @@ package struct BoardFeature {
         package var opening: Item.ID?
         /// Its repositories' issues are being made tasks.
         package var importing = false
+        /// The last change made here, which Undo takes back.
+        package var undo: UndoToast?
+        /// The first change Undo may take back: none made before the board
+        /// opened. Nil until the board's log is read.
+        package var undoFrom: BoardChange.ID?
 
         package init(project: Project, opening: Item.ID? = nil) {
             self.project = project
@@ -72,6 +77,16 @@ package struct BoardFeature {
         /// Asks to delete the item, then does.
         case deleteTapped(Item.ID)
         case logTapped
+        /// The board's newest change when it opened.
+        case logStarted(newest: BoardChange.ID?)
+        /// Something was changed here; offers to undo it.
+        case changedHere
+        case offerUndo(BoardChange)
+        /// ⌘Z, or Undo in the toast: reverts the last change made here not
+        /// yet undone.
+        case undoTapped
+        case undone(Reverted)
+        case undoExpired
         /// Makes a task of each open GitHub issue of the project's
         /// repositories not imported before.
         case importIssuesTapped
@@ -91,7 +106,10 @@ package struct BoardFeature {
     @Dependency(\.daemon) var daemon
     @Dependency(\.continuousClock) var clock
 
-    private enum CancelID { case refresh }
+    private enum CancelID { case refresh, undo }
+
+    /// How long the toast offers Undo; ⌘Z still works after.
+    static let undoInterval = Duration.seconds(8)
 
     package init() {}
 
@@ -100,13 +118,68 @@ package struct BoardFeature {
             switch action {
             case .task:
                 let project = state.project.id
-                return .run { send in
+                let refresh = Effect<Action>.run { send in
                     while !Task.isCancelled {
                         await send(await load(project))
                         try await clock.sleep(for: Self.refreshInterval)
                     }
                 }
                 .cancellable(id: CancelID.refresh, cancelInFlight: true)
+                guard state.undoFrom == nil else { return refresh }
+                return .merge(
+                    refresh,
+                    .run { send in
+                        await send(.logStarted(newest: try await daemon.boardLog(project).first?.id))
+                    } catch: { _, _ in
+                    })
+
+            case .logStarted(let newest):
+                state.undoFrom = newest.map { $0 + 1 } ?? 0
+                return .none
+
+            case .changedHere:
+                guard let from = state.undoFrom else { return .none }
+                let project = state.project.id
+                return .run { send in
+                    if let change = Self.undoable(try await daemon.boardLog(project), from: from) {
+                        await send(.offerUndo(change))
+                    }
+                } catch: { _, _ in
+                }
+
+            case .offerUndo(let change):
+                guard state.undo?.change != change.id else { return .none }
+                state.undo = UndoToast(change: change.id, message: BoardLogFeature.describe(change, items: state.items))
+                return .run { send in
+                    try await clock.sleep(for: Self.undoInterval)
+                    await send(.undoExpired)
+                }
+                .cancellable(id: CancelID.undo, cancelInFlight: true)
+
+            case .undoExpired:
+                state.undo = nil
+                return .none
+
+            case .undoTapped:
+                guard let from = state.undoFrom else { return .none }
+                state.undo = nil
+                let project = state.project.id
+                return .merge(
+                    .cancel(id: CancelID.undo),
+                    .run { send in
+                        guard let change = Self.undoable(try await daemon.boardLog(project), from: from) else {
+                            return
+                        }
+                        await send(.undone(try await daemon.revert(change.id)))
+                    } catch: { error, send in
+                        await send(.failed("Couldn't undo: \(error.localizedDescription)"))
+                    })
+
+            case .undone(let reverted):
+                if !reverted.kept.isEmpty {
+                    state.destination = .alert(BoardLogFeature.keptAlert(reverted.kept))
+                }
+                return .send(.refresh)
 
             case .refresh:
                 let project = state.project.id
@@ -212,7 +285,7 @@ package struct BoardFeature {
             case .moved(let item):
                 state.items[id: item.id] = item
                 // A task shows its subtasks' sessions, so read it all again.
-                return .send(.refresh)
+                return .merge(.send(.refresh), .send(.changedHere))
 
             case .deleteTapped(let id):
                 guard let item = state.items[id: id] else { return .none }
@@ -223,27 +296,31 @@ package struct BoardFeature {
                 return .run { send in
                     try await daemon.deleteItem(id)
                     await send(.refresh)
+                    await send(.changedHere)
                 } catch: { error, send in
                     await send(.failed(error.localizedDescription))
                 }
 
             case .destination(.presented(.item(.delegate(.deleted)))):
                 state.destination = nil
-                return .send(.refresh)
+                return .merge(.send(.refresh), .send(.changedHere))
 
             case .destination(.presented(.item(.delegate(.openItem(let id))))):
                 return .send(.cardTapped(id))
 
             case .logTapped:
-                state.destination = .log(BoardLogFeature.State(project: state.project, items: state.items))
+                state.destination = .log(
+                    BoardLogFeature.State(project: state.project, items: state.items, sessions: state.sessions))
                 return .none
 
             case .destination(.presented(.newItem(.delegate(.created)))):
                 state.destination = nil
-                return .send(.refresh)
+                return .merge(.send(.refresh), .send(.changedHere))
 
-            case .destination(.presented(.item(.delegate(.changed)))),
-                .destination(.presented(.log(.delegate(.changed)))):
+            case .destination(.presented(.item(.delegate(.changed)))):
+                return .merge(.send(.refresh), .send(.changedHere))
+
+            case .destination(.presented(.log(.delegate(.changed)))):
                 return .send(.refresh)
 
             case .destination(.presented(.item(.delegate(.openSession(let session))))):
@@ -255,6 +332,15 @@ package struct BoardFeature {
             }
         }
         .ifLet(\.$destination, action: \.destination)
+    }
+
+    /// The newest change made in this app from `from` on that isn't
+    /// itself a revert and hasn't been reverted, in `changes`, newest first.
+    static func undoable(_ changes: [BoardChange], from: BoardChange.ID) -> BoardChange? {
+        let reverted = Set(changes.compactMap(\.reverts))
+        return changes.first { change in
+            change.author == .app && change.reverts == nil && change.id >= from && !reverted.contains(change.id)
+        }
     }
 
     private func load(_ project: Project.ID) async -> Action {
@@ -645,8 +731,15 @@ package struct NewItemFeature {
     }
 }
 
-/// Every change to a project's board, newest first, each of which can be
-/// reverted.
+/// The last change made on the board in this app, which the toast offers
+/// to undo.
+package struct UndoToast: Equatable, Sendable {
+    package var change: BoardChange.ID
+    package var message: String
+}
+
+/// The board's journal: every change to a project's board, newest first,
+/// with who made it and what it changed, each of which can be reverted.
 @Reducer
 package struct BoardLogFeature {
     @ObservableState
@@ -655,23 +748,63 @@ package struct BoardLogFeature {
         /// The board's items when the log opened, for the titles of changes
         /// whose fields don't name them.
         package var items: IdentifiedArrayOf<Item>
+        /// The project's sessions, for the names of those whose proposals
+        /// or requests made changes.
+        package var sessions: IdentifiedArrayOf<Session>
         package var changes: [BoardChange] = []
+        /// Only this author's changes; nil for everyone's.
+        package var author: BoardAuthor?
         /// The change being reverted.
         package var reverting: BoardChange.ID?
         @Presents package var alert: AlertState<Never>?
 
-        package init(project: Project, items: IdentifiedArrayOf<Item>) {
+        package init(
+            project: Project, items: IdentifiedArrayOf<Item>, sessions: IdentifiedArrayOf<Session> = []
+        ) {
             self.project = project
             self.items = items
+            self.sessions = sessions
+        }
+
+        /// Everyone who made a change, in the order of their latest one.
+        package var authors: [BoardAuthor] {
+            var seen = Set<BoardAuthor>()
+            return changes.map(\.author).filter { seen.insert($0).inserted }
+        }
+
+        /// The changes the filter lets through.
+        package var shown: [BoardChange] {
+            guard let author else { return changes }
+            return changes.filter { $0.author == author }
+        }
+
+        /// The change that reverted `change`, if one did.
+        package func revert(of change: BoardChange) -> BoardChange? {
+            changes.first { $0.reverts == change.id }
+        }
+
+        /// Who made changes, in words.
+        package func name(of author: BoardAuthor) -> String {
+            switch author {
+            case .app: String(localized: "You, in Humata")
+            case .commandLine: String(localized: "You, with the humata command")
+            case .mcp: String(localized: "An outside agent, through humata mcp")
+            case .humata: String(localized: "Humata")
+            case .session(let id):
+                sessions[id: id].map { String(localized: "\($0.name), approved by you") }
+                    ?? String(localized: "A session, approved by you")
+            case .unknown: String(localized: "Not recorded")
+            }
         }
     }
 
-    package enum Action {
+    package enum Action: BindableAction {
         case task
         case loaded([BoardChange])
         case revertTapped(BoardChange.ID)
-        case reverted
+        case reverted(Reverted)
         case failed(String)
+        case binding(BindingAction<State>)
         case alert(PresentationAction<Never>)
         case delegate(Delegate)
 
@@ -686,6 +819,7 @@ package struct BoardLogFeature {
     package init() {}
 
     package var body: some ReducerOf<Self> {
+        BindingReducer()
         Reduce { state, action in
             switch action {
             case .task:
@@ -693,20 +827,25 @@ package struct BoardLogFeature {
 
             case .loaded(let changes):
                 state.changes = changes
+                if let author = state.author, !changes.contains(where: { $0.author == author }) {
+                    state.author = nil
+                }
                 return .none
 
             case .revertTapped(let id):
                 guard state.reverting == nil else { return .none }
                 state.reverting = id
                 return .run { send in
-                    _ = try await daemon.revert(id)
-                    await send(.reverted)
+                    await send(.reverted(try await daemon.revert(id)))
                 } catch: { error, send in
                     await send(.failed(error.localizedDescription))
                 }
 
-            case .reverted:
+            case .reverted(let reverted):
                 state.reverting = nil
+                if !reverted.kept.isEmpty {
+                    state.alert = Self.keptAlert(reverted.kept)
+                }
                 return .merge(read(state.project.id), .send(.delegate(.changed)))
 
             case .failed(let message):
@@ -718,11 +857,23 @@ package struct BoardLogFeature {
                 }
                 return .none
 
-            case .alert, .delegate:
+            case .binding, .alert, .delegate:
                 return .none
             }
         }
         .ifLet(\.$alert, action: \.alert)
+    }
+
+    /// Says which fields a revert left alone, and why.
+    static func keptAlert<Action>(_ kept: [ItemField]) -> AlertState<Action> {
+        let names = kept.map(\.name).formatted(.list(type: .and))
+        return AlertState {
+            TextState("Reverted, except the \(names)")
+        } message: {
+            TextState(
+                "The \(names) changed again after this change, so reverting it there would undo that later "
+                    + "change too. Revert the later change first to put it back as well.")
+        }
     }
 
     private func read(_ project: Project.ID) -> Effect<Action> {
@@ -730,6 +881,18 @@ package struct BoardLogFeature {
             await send(.loaded(try await daemon.boardLog(project)))
         } catch: { error, send in
             await send(.failed(error.localizedDescription))
+        }
+    }
+}
+
+extension ItemField {
+    /// The field's name, in a sentence.
+    var name: String {
+        switch self {
+        case .title: String(localized: "title")
+        case .spec: String(localized: "spec")
+        case .status: String(localized: "status")
+        case .priority: String(localized: "priority")
         }
     }
 }

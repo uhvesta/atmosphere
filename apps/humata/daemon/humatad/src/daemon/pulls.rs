@@ -8,7 +8,7 @@ use std::time::Duration;
 use humata_wire::{Reply, pb};
 
 use super::Daemon;
-use crate::board::{ItemFields, ItemPatch, Priority, Status};
+use crate::board::{Author, ItemFields, ItemPatch, Priority, Status};
 use crate::error::DaemonError;
 use crate::github::{self, GitHub, GitHubError, Pull, Repo, ReviewComment};
 use crate::store::{Checks, NewThread, PullRequest, PullState, Standing, now_unix_ms};
@@ -296,6 +296,7 @@ impl Daemon {
                     status: Some(Status::Done),
                     ..ItemPatch::default()
                 },
+                &Author::on(pb::ChangeSurface::Humata),
             )?;
         }
         let host = self.host_of(session).await?;
@@ -355,6 +356,7 @@ impl Daemon {
                             .trim_start()
                             .to_owned(),
                     },
+                    &Author::on(pb::ChangeSurface::Humata),
                 )?;
                 self.store.record_issue(project_id, &key, &item.id)?;
                 items.push(self.shown_item(&item).await?);

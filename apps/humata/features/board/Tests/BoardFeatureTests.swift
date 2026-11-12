@@ -312,6 +312,93 @@ final class BoardFeatureTests: XCTestCase {
         XCTAssertEqual(log.first?.reverts, edit.id)
     }
 
+    func testRevertingAnEditKeepsAFieldChangedSinceAndSaysSo() async throws {
+        let board = try await board()
+        _ = try await board.daemon.client.updateItem(board.task.id, ItemUpdate(title: "sign in", priority: .high))
+        _ = try await board.daemon.client.updateItem(board.task.id, ItemUpdate(title: "log in"))
+        let store = store(board)
+
+        await store.send(.logTapped)
+        await store.send(\.destination.log.task)
+        await store.receive(\.destination.log.loaded)
+        let edit = try XCTUnwrap(store.state.destination?.log?.changes.first { $0.after?.title == "sign in" })
+        await store.send(\.destination.log.revertTapped, edit.id)
+        await store.receive(\.destination.log.reverted)
+
+        XCTAssertNotNil(store.state.destination?.log?.alert)
+        let item = try await board.daemon.client.items(board.project.id).first { $0.id == board.task.id }
+        XCTAssertEqual(item?.title, "log in")
+        XCTAssertEqual(item?.priority, Priority.none)
+    }
+
+    func testTheJournalSaysWhoMadeEachChangeAndFiltersByThem() async throws {
+        let board = try await board()
+        let time = Date(timeIntervalSince1970: 0)
+        let fields = ItemFields(title: "login")
+        let changes = [
+            BoardChange(id: 3, itemID: board.task.id, time: time, before: nil, after: fields, author: .mcp),
+            BoardChange(
+                id: 2, itemID: board.task.id, time: time, before: fields, after: fields, author: .session("s1")),
+            BoardChange(id: 1, itemID: board.task.id, time: time, before: nil, after: fields, author: .app),
+            BoardChange(id: 0, itemID: board.task.id, time: time, before: fields, after: nil, author: .app),
+        ]
+        let store = TestStore(
+            initialState: BoardLogFeature.State(project: board.project, items: [])
+        ) {
+            BoardLogFeature()
+        }
+        store.exhaustivity = .off
+
+        await store.send(.loaded(changes))
+        XCTAssertEqual(store.state.authors, [.mcp, .session("s1"), .app])
+        await store.send(.binding(.set(\.author, .app)))
+        XCTAssertEqual(store.state.shown.map(\.id), [1, 0])
+
+        // An author whose changes are gone stops filtering.
+        await store.send(.loaded(Array(changes.prefix(2))))
+        XCTAssertNil(store.state.author)
+        XCTAssertEqual(store.state.shown.count, 2)
+    }
+
+    func testUndoTakesBackTheLastChangesMadeHereOneByOne() async throws {
+        let board = try await board()
+        let store = TestStore(initialState: BoardFeature.State(project: board.project)) {
+            BoardFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+            $0.continuousClock = ImmediateClock()
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        // Changes from before the board opened aren't offered.
+        let newest = try await board.daemon.client.boardLog(board.project.id).first?.id
+        await store.send(.logStarted(newest: newest))
+        await store.send(.undoTapped)
+        let before = try await board.daemon.client.items(board.project.id)
+        XCTAssertEqual(before.count, 3)
+
+        await store.send(.dropped(board.task.id, on: .inProgress))
+        await store.receive(\.moved)
+        await store.receive(\.offerUndo)
+        await store.skipReceivedActions(strict: false)
+        await store.send(.dropped(board.other.id, on: .done))
+        await store.receive(\.moved)
+        await store.receive(\.offerUndo)
+        await store.skipReceivedActions(strict: false)
+
+        await store.send(.undoTapped)
+        await store.receive(\.undone)
+        await store.send(.undoTapped)
+        await store.receive(\.undone)
+        await store.skipReceivedActions(strict: false)
+
+        let items = try await board.daemon.client.items(board.project.id)
+        XCTAssertEqual(items.first { $0.id == board.task.id }?.fields.status, .todo)
+        XCTAssertEqual(items.first { $0.id == board.other.id }?.fields.status, .todo)
+        XCTAssertNil(store.state.undo)
+    }
+
     func testRemovingAnItemWithSubtasksSaysWhy() async throws {
         let board = try await board()
         let store = store(board)

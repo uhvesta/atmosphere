@@ -598,6 +598,7 @@ async fn call(client: &Client, name: &str, arguments: &Arguments<'_>) -> Result<
                 parent_id: arguments.text("parent_id"),
                 title: arguments.required("title")?,
                 spec: arguments.0["spec"].as_str().unwrap_or_default().to_owned(),
+                surface: pb::ChangeSurface::Mcp.into(),
                 ..Default::default()
             });
             match ask(client, request).await? {
@@ -628,6 +629,7 @@ async fn call(client: &Client, name: &str, arguments: &Arguments<'_>) -> Result<
             let request = Request::UpdateItem(pb::UpdateItem {
                 item_id: arguments.required("item_id")?,
                 spec: Some(spec.to_owned()),
+                surface: pb::ChangeSurface::Mcp.into(),
                 ..Default::default()
             });
             match ask(client, request).await? {

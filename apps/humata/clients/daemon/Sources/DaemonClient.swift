@@ -105,8 +105,9 @@ package struct DaemonClient: Sendable {
     package var deleteItem: @Sendable (_ item: String) async throws -> Void
     /// The project's board changes, newest first.
     package var boardLog: @Sendable (_ project: String) async throws -> [BoardChange]
-    /// Puts an item back as it was before the change; nil when that removed it.
-    package var revert: @Sendable (_ change: UInt64) async throws -> Item?
+    /// Puts an item back as it was before the change, keeping each field
+    /// changed again since.
+    package var revert: @Sendable (_ change: UInt64) async throws -> Reverted
     /// Every session waiting on you: approvals, then failures, then replies.
     package var inbox: @Sendable () async throws -> [InboxEntry]
     /// Answers an agent's question or move; it leaves the inbox.

@@ -237,7 +237,36 @@ extension BoardChange {
             id: change.id, itemID: change.itemID, time: date(change.timeUnixMs),
             before: change.hasBefore ? ItemFields(change.before) : nil,
             after: change.hasAfter ? ItemFields(change.after) : nil,
-            reverts: change.reverts == 0 ? nil : change.reverts)
+            reverts: change.reverts == 0 ? nil : change.reverts, author: BoardAuthor(change))
+    }
+}
+
+extension BoardAuthor {
+    init(_ change: Humata_V1_BoardChange) {
+        if !change.sessionID.isEmpty {
+            self = .session(change.sessionID)
+            return
+        }
+        switch change.surface {
+        case .app: self = .app
+        case .commandLine: self = .commandLine
+        case .mcp: self = .mcp
+        case .humata: self = .humata
+        case .unspecified, .UNRECOGNIZED: self = .unknown
+        }
+    }
+}
+
+extension ItemField {
+    /// Nil for a field this app doesn't know, from a newer daemon.
+    init?(_ field: Humata_V1_ItemField) {
+        switch field {
+        case .title: self = .title
+        case .spec: self = .spec
+        case .status: self = .status
+        case .priority: self = .priority
+        case .unspecified, .UNRECOGNIZED: return nil
+        }
     }
 }
 

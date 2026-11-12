@@ -46,7 +46,10 @@ extension InMemoryDaemon {
                     var proposal = Self.proposal(call: call, tool: tool, argumentsJSON: json)
                 else { return nil }
                 proposal.state = decided[call] ?? .pending
-                if proposal.kind == .specEdit, let item = state.items.first(where: { $0.id == proposal.itemID }) {
+                // A spec edit that proposes no new title shows the item's.
+                if proposal.kind == .specEdit, proposal.title.isEmpty,
+                    let item = state.items.first(where: { $0.id == proposal.itemID })
+                {
                     proposal.title = item.title
                 }
                 return proposal
@@ -102,10 +105,13 @@ extension InMemoryDaemon {
             }
             item = try createItem(
                 project,
-                ItemFields(parentID: proposal.parentID, title: title ?? proposal.title, spec: spec ?? proposal.spec))
+                ItemFields(parentID: proposal.parentID, title: title ?? proposal.title, spec: spec ?? proposal.spec),
+                by: .session(session))
         case .specEdit:
             guard let itemID = proposal.itemID else { throw Self.unknownItem(proposalID) }
-            item = try updateItem(itemID, ItemUpdate(title: title, spec: spec ?? proposal.spec))
+            let proposedSpec = proposal.spec.isEmpty ? nil : proposal.spec
+            item = try updateItem(
+                itemID, ItemUpdate(title: title ?? proposal.title, spec: spec ?? proposedSpec), by: .session(session))
         }
         state.withValue { $0.decisions[session, default: [:]][proposalID] = .applied(itemID: item.id) }
         return item

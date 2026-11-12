@@ -970,12 +970,25 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             }
         }
         Command::Board(BoardCommand::Revert { change }) => {
-            let request = Request::RevertBoardChange(pb::RevertBoardChange { change_id: change });
-            expect_ok(
-                client.call(request).await?,
-                |response| matches!(response, Response::BoardChangeReverted(_)),
-                "BoardChangeReverted",
-            )?;
+            let request = Request::RevertBoardChange(pb::RevertBoardChange {
+                change_id: change,
+                surface: pb::ChangeSurface::CommandLine.into(),
+            });
+            match client.call(request).await? {
+                Response::BoardChangeReverted(reverted) => {
+                    for field in reverted.kept() {
+                        let name = match field {
+                            pb::ItemField::Title => "title",
+                            pb::ItemField::Spec => "spec",
+                            pb::ItemField::Status => "status",
+                            pb::ItemField::Priority => "priority",
+                            pb::ItemField::Unspecified => continue,
+                        };
+                        eprintln!("Kept the {name}: it changed again since.");
+                    }
+                }
+                other => return Err(unexpected("the reverted change", &other)),
+            }
         }
         Command::Host(command) => host(&client, command).await?,
         Command::Recover(command) => recover(&client, command).await?,
@@ -1462,6 +1475,7 @@ async fn item(client: &Client, command: ItemCommand) -> Result<(), CliError> {
                     .unwrap_or_default(),
                 status: pb::ItemStatus::from(status).into(),
                 priority: pb::Priority::from(priority).into(),
+                surface: pb::ChangeSurface::CommandLine.into(),
             });
             match client.call(request).await? {
                 Response::ItemCreated(pb::ItemCreated { item: Some(item) }) => {
@@ -1484,6 +1498,7 @@ async fn item(client: &Client, command: ItemCommand) -> Result<(), CliError> {
                 status: status.map(|status| pb::ItemStatus::from(status).into()),
                 priority: priority.map(|priority| pb::Priority::from(priority).into()),
                 by_session_id: String::new(),
+                surface: pb::ChangeSurface::CommandLine.into(),
             });
             expect_ok(client.call(request).await?, updated, "ItemUpdated")?;
         }
@@ -1491,6 +1506,7 @@ async fn item(client: &Client, command: ItemCommand) -> Result<(), CliError> {
             let request = Request::UpdateItem(pb::UpdateItem {
                 item_id: item,
                 status: Some(pb::ItemStatus::from(status).into()),
+                surface: pb::ChangeSurface::CommandLine.into(),
                 ..Default::default()
             });
             expect_ok(client.call(request).await?, updated, "ItemUpdated")?;

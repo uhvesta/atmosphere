@@ -271,11 +271,24 @@ fn fields(fields: Option<&pb::ItemFields>) -> String {
     )
 }
 
-/// `<change>\t<item>\t<reverts>\t<before>\t<after>`, `-` for nothing
-/// reverted, before an add and after a removal.
+/// `<change>\t<item>\t<reverts>\t<before>\t<after>\t<by>`, `-` for
+/// nothing reverted, before an add and after a removal. `<by>` is where it
+/// was made from (`app`, `command_line`, `mcp` or `humata`), or
+/// `session:<id>` for a session's proposal or request; `-` when unknown.
 pub fn change(change: &pb::BoardChange) -> String {
+    let by = if change.session_id.is_empty() {
+        match change.surface() {
+            pb::ChangeSurface::App => "app".to_owned(),
+            pb::ChangeSurface::CommandLine => "command_line".to_owned(),
+            pb::ChangeSurface::Mcp => "mcp".to_owned(),
+            pb::ChangeSurface::Humata => "humata".to_owned(),
+            pb::ChangeSurface::Unspecified => "-".to_owned(),
+        }
+    } else {
+        format!("session:{}", change.session_id)
+    };
     format!(
-        "{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{by}",
         change.id,
         change.item_id,
         if change.reverts == 0 {

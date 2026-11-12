@@ -1736,7 +1736,10 @@ async fn every_board_change_can_be_reverted() {
     );
     let revert = |change: u64| {
         client.call(pb::request::Kind::RevertBoardChange(
-            pb::RevertBoardChange { change_id: change },
+            pb::RevertBoardChange {
+                change_id: change,
+                ..Default::default()
+            },
         ))
     };
     let changes = board_log(&client, &project.id).await;
@@ -1776,7 +1779,7 @@ async fn every_board_change_can_be_reverted() {
         matches!(
             removed,
             Ok(pb::response::Kind::BoardChangeReverted(
-                pb::BoardChangeReverted { item: None }
+                pb::BoardChangeReverted { item: None, .. }
             ))
         ),
         "{removed:?}"
@@ -1792,6 +1795,111 @@ async fn every_board_change_can_be_reverted() {
 }
 
 #[tokio::test]
+async fn the_journal_says_who_made_each_change_and_a_revert_keeps_later_ones() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let task = item(&client, &project.id, "", "login").await;
+    let edit = |update: pb::UpdateItem| {
+        let request = pb::UpdateItem {
+            item_id: task.id.clone(),
+            ..update
+        };
+        let client = &client;
+        async move {
+            let edited = client.call(pb::request::Kind::UpdateItem(request)).await;
+            assert!(
+                matches!(edited, Ok(pb::response::Kind::ItemUpdated(_))),
+                "{edited:?}"
+            );
+        }
+    };
+    // The person renames it and raises its priority in the app; then a
+    // session's request moves it, and the command line renames it again.
+    edit(pb::UpdateItem {
+        title: Some("sign in".to_owned()),
+        priority: Some(pb::Priority::High.into()),
+        surface: pb::ChangeSurface::App.into(),
+        ..Default::default()
+    })
+    .await;
+    edit(pb::UpdateItem {
+        status: Some(pb::ItemStatus::InReview.into()),
+        by_session_id: "s1".to_owned(),
+        ..Default::default()
+    })
+    .await;
+    edit(pb::UpdateItem {
+        title: Some("log in".to_owned()),
+        surface: pb::ChangeSurface::CommandLine.into(),
+        ..Default::default()
+    })
+    .await;
+    let changes = board_log(&client, &project.id).await;
+    let authors: Vec<(pb::ChangeSurface, &str)> = changes
+        .iter()
+        .map(|change| (change.surface(), change.session_id.as_str()))
+        .collect();
+    assert_eq!(
+        authors,
+        [
+            (pb::ChangeSurface::CommandLine, ""),
+            (pb::ChangeSurface::Unspecified, "s1"),
+            (pb::ChangeSurface::App, ""),
+            (pb::ChangeSurface::Unspecified, ""),
+        ]
+    );
+
+    // Reverting the app's edit puts the priority back, but keeps the title
+    // the command line set since, and the move, which it didn't touch.
+    let reverted = client
+        .call(pb::request::Kind::RevertBoardChange(
+            pb::RevertBoardChange {
+                change_id: changes[2].id,
+                surface: pb::ChangeSurface::App.into(),
+            },
+        ))
+        .await;
+    let Ok(pb::response::Kind::BoardChangeReverted(reverted)) = reverted else {
+        panic!("{reverted:?}")
+    };
+    assert_eq!(reverted.kept().collect::<Vec<_>>(), [pb::ItemField::Title]);
+    let item = reverted.item.unwrap_or_default();
+    assert_eq!(item.title, "log in");
+    assert_eq!(item.priority(), pb::Priority::None);
+    assert_eq!(item.given_status(), pb::ItemStatus::InReview);
+    let revert = &board_log(&client, &project.id).await[0];
+    assert_eq!(revert.reverts, changes[2].id);
+    assert_eq!(revert.surface(), pb::ChangeSurface::App);
+
+    // A move to done is taken back from the journal like any other change.
+    edit(pb::UpdateItem {
+        status: Some(pb::ItemStatus::Done.into()),
+        surface: pb::ChangeSurface::App.into(),
+        ..Default::default()
+    })
+    .await;
+    let done = board_log(&client, &project.id).await[0].id;
+    let reverted = client
+        .call(pb::request::Kind::RevertBoardChange(
+            pb::RevertBoardChange {
+                change_id: done,
+                surface: pb::ChangeSurface::App.into(),
+            },
+        ))
+        .await;
+    let Ok(pb::response::Kind::BoardChangeReverted(reverted)) = reverted else {
+        panic!("{reverted:?}")
+    };
+    assert!(reverted.kept.is_empty());
+    assert_eq!(
+        reverted.item.unwrap_or_default().given_status(),
+        pb::ItemStatus::InReview
+    );
+}
+
+#[tokio::test]
 async fn a_task_is_deleted_once_its_sessions_are_archived_and_comes_back_on_revert() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let repository = git_repository();
@@ -1802,6 +1910,7 @@ async fn a_task_is_deleted_once_its_sessions_are_archived_and_comes_back_on_reve
     let delete = || {
         client.call(pb::request::Kind::DeleteItem(pb::DeleteItem {
             item_id: task.id.clone(),
+            ..Default::default()
         }))
     };
 
@@ -1854,7 +1963,10 @@ async fn a_task_is_deleted_once_its_sessions_are_archived_and_comes_back_on_reve
     let removal = board_log(&client, &project.id).await[0].id;
     client
         .call(pb::request::Kind::RevertBoardChange(
-            pb::RevertBoardChange { change_id: removal },
+            pb::RevertBoardChange {
+                change_id: removal,
+                ..Default::default()
+            },
         ))
         .await
         .unwrap_or_else(|error| panic!("{error}"));

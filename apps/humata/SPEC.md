@@ -142,6 +142,7 @@ original spec; lettered ones were added since.
 | H Humata's own model server | Done |
 | The demo | Done |
 | R Review pass | Done (9e2ac82e) |
+| J Agents ask, and a board journal | Done |
 
 ## Done milestones
 
@@ -775,11 +776,38 @@ up.
   - a single status plus caption on the task page
   - ListSessions keeps a summary instead of cloning histories
 
-**Owner's call:** the session MCP's `update_item` and `add_subtask` apply
-directly, without the person's approval. That goes against "agents propose,
-the person applies" above, and duplicates `propose_spec_edit` and
-`propose_task`. The review recommends dropping the direct paths. This is
-asked before it's changed.
+**Owner's call:** the session MCP's `update_item` and `add_subtask` applied
+directly, without the person's approval. The owner decided agents ask first;
+see Milestone J.
+
+### Milestone J: agents ask, and a board journal
+
+The owner, 2026-11-12: agents should ask before they change the board, and
+there should be a journal of changes to undo, as in Lifr's Activity log.
+
+- **Agents ask first.** `update_item` and `add_subtask` are gone from the
+  session's MCP. A subtask is proposed with `propose_task` and its
+  `parent_id`; a new title or spec with `propose_spec_edit`, which takes a
+  title too. Finishing a task is `request_move`, as before. Nothing reaches
+  the board until the person applies it.
+- **Who made each change.** Every board change records its author: you in
+  the app, the command line, an MCP client, a session whose proposal or
+  request you applied, or Humata itself for status that follows sessions.
+- **The journal.** Board History lists each change with its author and,
+  field by field, what it was and what it became. It filters by author.
+  A change reverted later says so.
+- **Undo without overwriting.** Reverting puts back only the fields nothing
+  has changed since, and says which it skipped and why. ⌘Z undoes your last
+  change to the board, offered in a toast as well.
+- [x] Agents propose instead of changing the board
+- [x] Each change records who made it
+- [x] The journal shows authors and field changes, filtered by author
+- [x] Revert skips fields changed since, and says so
+- [x] ⌘Z and a toast undo the last board change
+
+**Done when:** an agent's subtask and spec edit wait as proposals, the
+journal shows them as the session's once applied, and reverting an edit
+keeps a later change to another field.
 
 ## Later
 

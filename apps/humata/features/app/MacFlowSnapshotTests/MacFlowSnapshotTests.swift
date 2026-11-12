@@ -368,6 +368,54 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// A session proposes a task, which the person applies; the person
+    /// moves a task, and Undo offers to take it back; the journal says who
+    /// made each change, and shows only the session's.
+    func testTheBoardJournal() async throws {
+        let daemon = InMemoryDaemon { _ in
+            [
+                .propose(title: "Error copy", spec: "Say which field is wrong."),
+                .say("One more task, if you want it."),
+            ]
+        }
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "Sign in", priority: .high))
+        _ = try await daemon.client.createItem(project.id, ItemFields(title: "Dark mode", priority: .low))
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "Plan sign in", projectID: project.id))
+        try await daemon.client.send(session.id, "What's missing?", .enqueue)
+        try await untilDaemon { try await daemon.client.proposals(session.id).count == 1 }
+        let proposals = try await daemon.client.proposals(session.id)
+        let proposal = try XCTUnwrap(proposals.first)
+        _ = try await daemon.client.applyProposal(session.id, proposal.id, nil, nil)
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("journal", AppView(store: store))
+
+        try await until { store.daemon == .running && store.sidebar.projects.count == 1 }
+        store.send(.sidebar(.selected(.board(project.id))))
+        try await until { store.board?.items.count == 3 && store.board?.undoFrom != nil }
+        store.send(.board(.presented(.dropped(task.id, on: .inProgress))))
+        try await until { store.board?.undo != nil }
+        await flow.step("undo")
+
+        store.send(.board(.presented(.logTapped)))
+        try await until { store.board?.destination?.log?.changes.count == 4 }
+        await flow.step("journal")
+
+        store.send(.board(.presented(.destination(.presented(.log(.binding(.set(\.author, .session(session.id)))))))))
+        try await until { store.board?.destination?.log?.shown.count == 1 }
+        await flow.step("by a session")
+        flow.finish()
+    }
+
     /// Two hosts: one set up and working, one Humata isn't installed on
     /// yet; adding a third from the SSH config; the Mac's copies of a host's
     /// sessions, one of which it lost; and a session whose host went offline.

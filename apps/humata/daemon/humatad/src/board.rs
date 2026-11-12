@@ -143,6 +143,32 @@ pub struct ItemPatch {
     pub priority: Option<Priority>,
 }
 
+/// Who made a board change: where from, and the session whose proposal
+/// or request it applied, if any.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Author {
+    pub surface: pb::ChangeSurface,
+    pub session_id: Option<String>,
+}
+
+impl Author {
+    pub fn on(surface: pb::ChangeSurface) -> Self {
+        Self {
+            surface,
+            session_id: None,
+        }
+    }
+
+    /// The session whose proposal or request it applied, approved where
+    /// `surface` says.
+    pub fn session(session: &str, surface: pb::ChangeSurface) -> Self {
+        Self {
+            surface,
+            session_id: Some(session.to_owned()).filter(|id| !id.is_empty()),
+        }
+    }
+}
+
 /// One change to a board.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {
@@ -154,6 +180,7 @@ pub struct Change {
     /// None when it removed it.
     pub after: Option<ItemFields>,
     pub reverts: Option<u64>,
+    pub author: Author,
 }
 
 impl Change {
@@ -165,6 +192,8 @@ impl Change {
             before: self.before.as_ref().map(ItemFields::wire),
             after: self.after.as_ref().map(ItemFields::wire),
             reverts: self.reverts.unwrap_or_default(),
+            surface: self.author.surface.into(),
+            session_id: self.author.session_id.clone().unwrap_or_default(),
         }
     }
 }

@@ -848,6 +848,8 @@ message SessionDeleted {}
 // archived sessions move to the project.
 message DeleteItem {
   string item_id = 1;
+  // Where the person deleted it from.
+  ChangeSurface surface = 2;
 }
 
 message ItemDeleted {}
@@ -1499,6 +1501,8 @@ message CreateItem {
   string spec = 4;
   ItemStatus status = 5;
   Priority priority = 6;
+  // Where the person added it from.
+  ChangeSurface surface = 7;
 }
 
 message ItemCreated {
@@ -1515,6 +1519,8 @@ message UpdateItem {
   // The session whose agent made the change, which isn't told of its own
   // spec edit. Empty when the person made it.
   string by_session_id = 6;
+  // Where the change was made from.
+  ChangeSurface surface = 7;
 }
 
 message ItemUpdated {
@@ -1540,6 +1546,29 @@ message ItemFields {
   Priority priority = 5;
 }
 
+// Where a board change was made from, for the board's journal.
+enum ChangeSurface {
+  CHANGE_SURFACE_UNSPECIFIED = 0;
+  // The person, in the app.
+  CHANGE_SURFACE_APP = 1;
+  // The person, with the humata command.
+  CHANGE_SURFACE_COMMAND_LINE = 2;
+  // An outside agent, through humata mcp.
+  CHANGE_SURFACE_MCP = 3;
+  // Humata itself, such as a task marked done when its pull request merged
+  // or one brought in from a GitHub issue.
+  CHANGE_SURFACE_HUMATA = 4;
+}
+
+// An item's field, as a board change names it.
+enum ItemField {
+  ITEM_FIELD_UNSPECIFIED = 0;
+  ITEM_FIELD_TITLE = 1;
+  ITEM_FIELD_SPEC = 2;
+  ITEM_FIELD_STATUS = 3;
+  ITEM_FIELD_PRIORITY = 4;
+}
+
 // One change to a project's board.
 message BoardChange {
   uint64 id = 1;
@@ -1551,6 +1580,10 @@ message BoardChange {
   ItemFields after = 5;
   // The change this one reverted; 0 for none.
   uint64 reverts = 6;
+  // Where it was made from.
+  ChangeSurface surface = 7;
+  // The session whose proposal or request it applied; empty for none.
+  string session_id = 8;
 }
 
 message ReadBoardLog {
@@ -1567,11 +1600,16 @@ message BoardLog {
 // sessions.
 message RevertBoardChange {
   uint64 change_id = 1;
+  // Where the person reverted it from.
+  ChangeSurface surface = 2;
 }
 
 message BoardChangeReverted {
   // The item as it is now; unset if it was removed.
   Item item = 1;
+  // The fields the change set that were left alone, because they have
+  // changed again since.
+  repeated ItemField kept = 2;
 }
 
 // Every session, across projects, waiting on you.

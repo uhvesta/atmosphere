@@ -9,7 +9,7 @@ use std::sync::{Arc, PoisonError, RwLock, Weak};
 use humata_wire::{ClientError, Reply, Service, ServiceFuture, describe, error, pb, streams};
 use tokio::sync::mpsc;
 
-use crate::board::{self, Item, ItemFields, ItemPatch, Priority, Status};
+use crate::board::{self, Author, Item, ItemFields, ItemPatch, Priority, Status};
 use crate::convert;
 use crate::error::DaemonError;
 use crate::error::StoreError;
@@ -680,6 +680,8 @@ impl Daemon {
             pb::request::Kind::UpdateItem(pb::UpdateItem {
                 item_id: request.item_id.clone(),
                 status: Some(status.into()),
+                // The session asked for it; the journal says so.
+                by_session_id: request.session_id.clone(),
                 ..Default::default()
             })
         };
@@ -712,6 +714,7 @@ impl Daemon {
     }
 
     fn create_item(&self, create: pb::CreateItem) -> Result<Item, DaemonError> {
+        let author = Author::on(create.surface());
         let fields = ItemFields {
             parent_id: convert::optional(create.parent_id.clone()),
             status: Status::from_wire(create.status()),
@@ -719,10 +722,11 @@ impl Daemon {
             title: create.title,
             spec: create.spec,
         };
-        Ok(self.store.add_item(&create.project_id, fields)?)
+        Ok(self.store.add_item(&create.project_id, fields, &author)?)
     }
 
     fn update_item(&self, update: pb::UpdateItem) -> Result<Item, DaemonError> {
+        let author = Author::session(&update.by_session_id, update.surface());
         let patch = ItemPatch {
             status: update.status.map(|_| Status::from_wire(update.status())),
             priority: update
@@ -731,12 +735,12 @@ impl Daemon {
             title: update.title,
             spec: update.spec,
         };
-        Ok(self.store.update_item(&update.item_id, patch)?)
+        Ok(self.store.update_item(&update.item_id, patch, &author)?)
     }
 
     /// Deletes item `id`, refused while sessions on it aren't archived. Its
     /// archived sessions move to its project.
-    async fn delete_item(&self, id: &str) -> Result<(), DaemonError> {
+    async fn delete_item(&self, id: &str, author: &Author) -> Result<(), DaemonError> {
         let item = self.store.item(id)?;
         let on_it: Vec<pb::SessionInfo> = self
             .list(&item.project_id)
@@ -755,7 +759,7 @@ impl Daemon {
         for session in &on_it {
             self.store.move_session(&session.id, None)?;
         }
-        Ok(self.store.delete_item(id)?)
+        Ok(self.store.delete_item(id, author)?)
     }
 
     /// Every host's sessions, or only `project`'s if it isn't empty. A host
@@ -1164,7 +1168,7 @@ impl Daemon {
                 })));
             }
             Request::UpdateItem(update) => {
-                let by = std::mem::take(&mut update.by_session_id);
+                let by = update.by_session_id.clone();
                 let before = self.store.item(&update.item_id)?.fields.spec;
                 let updated = self.update_item(std::mem::take(update))?;
                 if updated.fields.spec != before {
@@ -1176,7 +1180,8 @@ impl Daemon {
                 })));
             }
             Request::DeleteItem(delete) => {
-                self.delete_item(&delete.item_id).await?;
+                self.delete_item(&delete.item_id, &Author::on(delete.surface()))
+                    .await?;
                 return Ok(Reply::Response(Response::ItemDeleted(pb::ItemDeleted {})));
             }
             Request::ListItems(list) => {
@@ -1235,7 +1240,9 @@ impl Daemon {
             }
             Request::RevertBoardChange(revert) => {
                 let before = self.store.changed_item(revert.change_id)?;
-                let item = match self.store.revert(revert.change_id)? {
+                let author = Author::on(revert.surface());
+                let reverted = self.store.revert(revert.change_id, &author)?;
+                let item = match reverted.item {
                     Some(item) => {
                         if before.is_some_and(|before| before.fields.spec != item.fields.spec) {
                             self.spec_changed(&item, "").await;
@@ -1245,7 +1252,10 @@ impl Daemon {
                     None => None,
                 };
                 return Ok(Reply::Response(Response::BoardChangeReverted(
-                    pb::BoardChangeReverted { item },
+                    pb::BoardChangeReverted {
+                        item,
+                        kept: reverted.kept.into_iter().map(Into::into).collect(),
+                    },
                 )));
             }
             Request::ListInbox(_) => {

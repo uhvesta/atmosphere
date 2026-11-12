@@ -45,8 +45,21 @@ package struct BoardView: View {
                     .background(.bar)
             }
         }
+        .overlay(alignment: .bottom) {
+            if let undo = store.undo {
+                UndoToastView(message: undo.message) { store.send(.undoTapped) }
+                    .padding()
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.default, value: store.undo)
         .navigationTitle(store.project.name)
         .toolbar {
+            ToolbarItem {
+                Button("Undo", systemImage: "arrow.uturn.backward") { store.send(.undoTapped) }
+                    .keyboardShortcut("z", modifiers: .command)
+                    .help("Undo the last change you made to this board here; the History has every change")
+            }
             ToolbarItem {
                 Button("History", systemImage: "clock.arrow.circlepath") { store.send(.logTapped) }
                     .help("See and revert the board's changes")
@@ -408,32 +421,60 @@ struct NewItemView: View {
     }
 }
 
+/// What was just changed on the board, with Undo.
+private struct UndoToastView: View {
+    let message: String
+    let undo: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(message)
+                .lineLimit(2)
+            Button("Undo", action: undo)
+                .buttonStyle(.borderless)
+                .fontWeight(.semibold)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: .capsule)
+        .shadow(radius: 4, y: 2)
+    }
+}
+
+/// The board's journal: each change, who made it, and what it changed.
 struct BoardLogView: View {
     @Bindable var store: StoreOf<BoardLogFeature>
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        List {
-            if store.changes.isEmpty {
-                Text("Nothing has changed on this board yet.")
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(store.changes) { change in
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(BoardLogFeature.describe(change, items: store.items))
-                        Text(change.time, format: .dateTime.month().day().hour().minute())
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            // A sheet on the Mac shows no title or navigation toolbar items,
+            // so the title and the filter head the list.
+            HStack {
+                Text("Board History").font(.headline)
+                Spacer()
+                Picker("Made by", selection: $store.author) {
+                    Text("Everyone").tag(BoardAuthor?.none)
+                    ForEach(store.authors, id: \.self) { author in
+                        Text(store.state.name(of: author)).tag(BoardAuthor?.some(author))
                     }
-                    Spacer()
-                    Button("Revert") { store.send(.revertTapped(change.id)) }
-                        .disabled(store.reverting != nil)
-                        .help("Put the item back as it was before this change")
+                }
+                .fixedSize()
+                .help("Show only the changes one author made")
+            }
+            .padding()
+            Divider()
+            List {
+                if store.changes.isEmpty {
+                    Text("Nothing has changed on this board yet.")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(store.shown) { change in
+                    row(change)
                 }
             }
         }
-        .frame(minWidth: 460, minHeight: 360)
+        .frame(minWidth: 520, minHeight: 400)
         .navigationTitle("Board History")
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
@@ -442,6 +483,30 @@ struct BoardLogView: View {
         }
         .task { await store.send(.task).finish() }
         .alert($store.scope(state: \.alert, action: \.alert))
+    }
+
+    private func row(_ change: BoardChange) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(BoardLogFeature.describe(change, items: store.items))
+                HStack(spacing: 4) {
+                    Text(store.state.name(of: change.author))
+                    Text("·")
+                    Text(change.time, format: .dateTime.month().day().hour().minute())
+                    if let revert = store.state.revert(of: change) {
+                        Text("·")
+                        Text("Reverted by \(store.state.name(of: revert.author))")
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Revert") { store.send(.revertTapped(change.id)) }
+                .disabled(store.reverting != nil)
+                .help("Put back what this change changed; fields changed again since are kept")
+        }
     }
 }
 

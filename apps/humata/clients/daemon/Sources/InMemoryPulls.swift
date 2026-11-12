@@ -34,7 +34,7 @@ extension InMemoryDaemon {
             state.sessions[index].archived = true
             return state.sessions[index].itemID
         }
-        if let item { _ = try updateItem(item, ItemUpdate(status: .done)) }
+        if let item { _ = try updateItem(item, ItemUpdate(status: .done), by: .humata) }
     }
 
     /// Each of the project's repositories lands; with pull requests, each
@@ -111,7 +111,7 @@ extension InMemoryDaemon {
             return (new, all.count - new.count)
         }
         let items = try issues.map { issue in
-            try createItem(project, ItemFields(title: issue.title, spec: issue.body))
+            try createItem(project, ItemFields(title: issue.title, spec: issue.body), by: .humata)
         }
         return ImportedIssues(items: items, skipped: skipped)
     }

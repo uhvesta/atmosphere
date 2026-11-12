@@ -1087,7 +1087,7 @@ extension InMemoryDaemon {
         }
     }
 
-    func createItem(_ project: String, _ fields: ItemFields) throws -> Item {
+    func createItem(_ project: String, _ fields: ItemFields, by author: BoardAuthor = .app) throws -> Item {
         try state.withValue { state in
             guard state.projects.contains(where: { $0.id == project }) else {
                 throw DaemonError.refused(.unknownProject, message: "There is no project \(project).")
@@ -1108,12 +1108,12 @@ extension InMemoryDaemon {
             let item = Item(id: "i\(state.nextItem)", projectID: project, fields: fields, created: time)
             state.nextItem += 1
             state.items.append(item)
-            Self.log(&state, item: item.id, before: nil, after: fields, time: time)
+            Self.log(&state, item: item.id, before: nil, after: fields, time: time, author: author)
             return item
         }
     }
 
-    func updateItem(_ itemID: String, _ update: ItemUpdate) throws -> Item {
+    func updateItem(_ itemID: String, _ update: ItemUpdate, by author: BoardAuthor = .app) throws -> Item {
         let projectID = try state.withValue { state in
             guard let index = state.items.firstIndex(where: { $0.id == itemID }) else {
                 throw Self.unknownItem(itemID)
@@ -1128,7 +1128,7 @@ extension InMemoryDaemon {
                 let time = start + Double(1000 + state.nextChange)
                 state.items[index].fields = after
                 state.items[index].updated = time
-                Self.log(&state, item: itemID, before: before, after: after, time: time)
+                Self.log(&state, item: itemID, before: before, after: after, time: time, author: author)
             }
             return state.items[index].projectID
         }
@@ -1153,7 +1153,7 @@ extension InMemoryDaemon {
             let time = start + Double(1000 + state.nextChange)
             state.items.remove(at: index)
             state.removed[itemID] = item
-            Self.log(&state, item: itemID, before: item.fields, after: nil, time: time)
+            Self.log(&state, item: itemID, before: item.fields, after: nil, time: time, author: .app)
         }
     }
 
@@ -1163,16 +1163,20 @@ extension InMemoryDaemon {
     }
 
     private static func log(
-        _ state: inout State, item: String, before: ItemFields?, after: ItemFields?, time: Date, reverts: UInt64? = nil
+        _ state: inout State, item: String, before: ItemFields?, after: ItemFields?, time: Date,
+        reverts: UInt64? = nil, author: BoardAuthor
     ) {
         state.changes.append(
-            BoardChange(id: state.nextChange, itemID: item, time: time, before: before, after: after, reverts: reverts))
+            BoardChange(
+                id: state.nextChange, itemID: item, time: time, before: before, after: after, reverts: reverts,
+                author: author))
         state.nextChange += 1
     }
 
     /// Puts the item back as it was before the change, removing it if the
-    /// change added it.
-    private func revert(_ changeID: UInt64) throws -> Item? {
+    /// change added it. A field changed again since is kept.
+    private func revert(_ changeID: UInt64) throws -> Reverted {
+        var keptFields: [ItemField] = []
         let kept = try state.withValue { state -> (String, String)? in
             guard let change = state.changes.first(where: { $0.id == changeID }) else {
                 throw DaemonError.refused(
@@ -1191,16 +1195,35 @@ extension InMemoryDaemon {
                 }
                 state.items.remove(at: index)
                 state.removed[item.id] = item
-                Self.log(&state, item: item.id, before: item.fields, after: nil, time: time, reverts: changeID)
+                Self.log(
+                    &state, item: item.id, before: item.fields, after: nil, time: time, reverts: changeID, author: .app)
                 return nil
             }
             let projectID: String
             if let index {
                 let current = state.items[index].fields
-                state.items[index].fields = before
-                state.items[index].updated = time
+                var back = current
+                let after = change.after ?? current
+                for field in change.fields {
+                    guard !current.differs(from: after, in: field) else {
+                        keptFields.append(field)
+                        continue
+                    }
+                    switch field {
+                    case .title: back.title = before.title
+                    case .spec: back.spec = before.spec
+                    case .status: back.status = before.status
+                    case .priority: back.priority = before.priority
+                    }
+                }
                 projectID = state.items[index].projectID
-                Self.log(&state, item: change.itemID, before: current, after: before, time: time, reverts: changeID)
+                if back != current {
+                    state.items[index].fields = back
+                    state.items[index].updated = time
+                    Self.log(
+                        &state, item: change.itemID, before: current, after: back, time: time, reverts: changeID,
+                        author: .app)
+                }
             } else {
                 guard var item = state.removed[change.itemID] else { throw Self.unknownItem(change.itemID) }
                 if let parent = before.parentID, !state.items.contains(where: { $0.id == parent }) {
@@ -1212,12 +1235,14 @@ extension InMemoryDaemon {
                 projectID = item.projectID
                 state.removed[item.id] = nil
                 state.items.append(item)
-                Self.log(&state, item: change.itemID, before: nil, after: before, time: time, reverts: changeID)
+                Self.log(
+                    &state, item: change.itemID, before: nil, after: before, time: time, reverts: changeID,
+                    author: .app)
             }
             return (change.itemID, projectID)
         }
-        guard let (itemID, projectID) = kept else { return nil }
-        return try shown(itemID, in: projectID)
+        guard let (itemID, projectID) = kept else { return Reverted(item: nil) }
+        return Reverted(item: try shown(itemID, in: projectID), kept: keptFields)
     }
 
     private static func unknownHost(_ host: String) -> DaemonError {
@@ -1334,7 +1359,7 @@ extension InMemoryDaemon {
         case (.reply(let text), _):
             try send(request.sessionID, text, .enqueue)
         case (.approve, .move(let item, let status)), (.move(let status), .move(let item, _)):
-            _ = try updateItem(item, ItemUpdate(status: status))
+            _ = try updateItem(item, ItemUpdate(status: status), by: .session(request.sessionID))
         case (.approve, .question), (.move, .question):
             throw DaemonError.refused(.invalidRequest, message: "A question is answered with a reply.")
         case (.dismiss, _): break
