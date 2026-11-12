@@ -26,7 +26,7 @@ final class Connection: Sendable {
     }
 
     /// The largest envelope either side accepts, as humatad's MAX_FRAME.
-    static let maxFrame = 64 * 1024 * 1024
+    static let maxFrame = 1024 * 1024 * 1024
 
     private let descriptor: Int32
     private let state = OSAllocatedUnfairLock(initialState: State())

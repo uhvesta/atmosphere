@@ -4,9 +4,11 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::error::WireError;
 use crate::pb;
 
-/// The largest envelope either side accepts: room for a long session's
-/// whole history in one response.
-pub const MAX_FRAME: usize = 64 * 1024 * 1024;
+/// The largest envelope either side accepts. Both sides are humatad or the
+/// app, so this only stops a garbled length from taking all memory; it is
+/// room for a long session's whole history or backup, with the code it
+/// committed, in one response.
+pub const MAX_FRAME: usize = 1024 * 1024 * 1024;
 
 /// The length prefix's top bit, set when the body is compressed with zstd.
 const COMPRESSED: u32 = 1 << 31;
