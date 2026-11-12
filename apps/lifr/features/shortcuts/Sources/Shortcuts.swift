@@ -16,15 +16,25 @@ package struct Shortcuts: Sendable {
     package var locksApp: @Sendable () -> Bool
     package var now: @Sendable () -> Date
     package var timeZone: TimeZone
+    /// The reminder a new task due at a time, or on a day with no time,
+    /// gets, as Quick Add gives it; nil for none.
+    package var defaultReminder: @Sendable (TimeOfDay?) -> Reminder.Trigger?
+    /// Whether "11/5" in a title is Nov 5, as in the US, or May 11.
+    package var monthFirst: Bool
 
     package init(
         store: StoreClient, locksApp: @escaping @Sendable () -> Bool, now: @escaping @Sendable () -> Date,
-        timeZone: TimeZone
+        timeZone: TimeZone, defaultReminder: @escaping @Sendable (TimeOfDay?) -> Reminder.Trigger? = { _ in nil },
+        locale: Locale = .current
     ) {
         self.store = store
         self.locksApp = locksApp
         self.now = now
         self.timeZone = timeZone
+        self.defaultReminder = defaultReminder
+        let order = DateFormatter.dateFormat(fromTemplate: "Md", options: 0, locale: locale) ?? "M/d"
+        let month = order.firstIndex(of: "M") ?? order.startIndex
+        monthFirst = month <= (order.firstIndex(of: "d") ?? order.endIndex)
     }
 
     /// When a new task is due.
@@ -54,16 +64,29 @@ package struct Shortcuts: Sendable {
     package func add(_ title: String, avenue: UUID?, due: Due) async throws -> Item {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { throw ShortcutError.noTitle }
+        let today = CalendarDate(now(), in: timeZone)
+        // Read like Quick Add: "Call dentist tomorrow 3pm !high #health".
+        let entry = QuickEntry(title, today: today, in: try await store.load(), monthFirst: monthFirst)
+        let avenue = entry.avenueID ?? avenue
         if avenue == nil { try await store.ensureInbox() }
-        let avenue = avenue ?? Avenue.inboxID
-        var new = Workspace.NewTask(title: title, avenueID: avenue)
-        let now = now()
+        var new = Workspace.NewTask(
+            title: entry.title.isEmpty ? title : entry.title, avenueID: avenue ?? Avenue.inboxID)
+        new.projectID = entry.projectID
+        new.priority = entry.priority ?? new.priority
+        new.labelIDs = entry.labelIDs
+        new.dueTime = entry.dueTime
         new.dueDate =
-            switch due {
-            case .today: CalendarDate(now, in: timeZone)
-            case .tomorrow: CalendarDate(now, in: timeZone).adding(days: 1)
-            case .none: nil
-            }
+            entry.dueDate
+            ?? {
+                switch due {
+                case .today: today
+                case .tomorrow: today.adding(days: 1)
+                case .none: nil
+                }
+            }()
+        if new.dueDate != nil, let trigger = defaultReminder(new.dueTime) {
+            new.reminders = [trigger]
+        }
         let saved = try await store.createTask(new)
         guard
             let task = saved.change.previous.first(where: { $0.value == nil }).flatMap({ saved.workspace.tasks[$0.key] }

@@ -100,6 +100,40 @@ final class ShortcutsTests: XCTestCase {
         XCTAssertEqual(task?.dueDate, CalendarDate(now + 24 * 60 * 60, in: .gmt))
     }
 
+    func testATitleIsReadLikeQuickAddAndGetsTheDefaultReminder() async throws {
+        let (plain, store) = shortcuts()
+        let shortcuts = Shortcuts(
+            store: store, locksApp: { false }, now: plain.now, timeZone: .gmt,
+            defaultReminder: { _ in .beforeDue(seconds: 0) })
+        let avenues = try await shortcuts.avenues()
+        let health = try XCTUnwrap(avenues.first)
+
+        let added = try await shortcuts.add("Call dentist tomorrow 3pm !high @health", avenue: nil, due: .none)
+
+        let workspace = try await store.load()
+        let task = try XCTUnwrap(workspace.tasks[added.id])
+        XCTAssertEqual(task.title, "Call dentist")
+        XCTAssertEqual(task.avenueID, health.id)
+        XCTAssertEqual(task.priority, .high)
+        XCTAssertEqual(task.dueDate, CalendarDate(now + 24 * 60 * 60, in: .gmt))
+        XCTAssertEqual(task.dueTime, try TimeOfDay("15:00"))
+        XCTAssertEqual(
+            workspace.reminders.values.filter { $0.taskID == added.id }.map(\.trigger), [.beforeDue(seconds: 0)])
+    }
+
+    func testATaskWithNoDueDateGetsNoDefaultReminder() async throws {
+        let (plain, store) = shortcuts()
+        let shortcuts = Shortcuts(
+            store: store, locksApp: { false }, now: plain.now, timeZone: .gmt,
+            defaultReminder: { _ in .beforeDue(seconds: 0) })
+
+        let added = try await shortcuts.add("Someday", avenue: nil, due: .none)
+
+        let workspace = try await store.load()
+        XCTAssertNil(workspace.tasks[added.id]?.dueDate)
+        XCTAssertFalse(workspace.reminders.values.contains { $0.taskID == added.id })
+    }
+
     func testAnEmptyTitleAddsNothing() async throws {
         let (shortcuts, store) = shortcuts()
         let before = try await store.load().tasks.count

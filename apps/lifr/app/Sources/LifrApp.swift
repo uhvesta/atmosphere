@@ -271,7 +271,8 @@ private enum Storage {
                 StoreClient()
             }
         return Shortcuts(
-            store: store, locksApp: { Shared(.locksApp).wrappedValue }, now: { Date() }, timeZone: .current)
+            store: store, locksApp: { Shared(.locksApp).wrappedValue }, now: { Date() }, timeZone: .current,
+            defaultReminder: { Shared(.defaultReminder).wrappedValue.trigger(dueTime: $0) })
     }()
 
     /// On the Mac each save reaches every window's store, so a change in

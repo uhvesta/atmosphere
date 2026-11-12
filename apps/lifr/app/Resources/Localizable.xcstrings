@@ -934,6 +934,9 @@
     "Changed %lld tasks" : {
 
     },
+    "Changed Since It Was Proposed" : {
+
+    },
     "Changed the status of %@." : {
 
     },
