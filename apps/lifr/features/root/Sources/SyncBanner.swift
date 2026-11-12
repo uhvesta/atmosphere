@@ -5,6 +5,14 @@ import LifrCore
 /// made on this device doesn't go unexplained.
 package struct SyncBanner: Equatable, Sendable {
     package var messages: [String]
+    /// Whether it says sync keeps failing, with Sync Now, rather than what
+    /// a sync fixed.
+    package var isFailure = false
+
+    package init(failure reason: String) {
+        messages = [reason]
+        isFailure = true
+    }
 
     package init(_ fixes: [Fix], in workspace: Workspace) {
         messages = fixes.map { fix in

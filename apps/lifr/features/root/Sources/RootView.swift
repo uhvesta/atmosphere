@@ -127,7 +127,9 @@ package struct RootView: View {
                         .transition(edgeTransition)
                 }
                 if let banner = store.syncBanner {
-                    SyncBannerView(banner: banner) { store.send(.syncBannerDismissed) }
+                    SyncBannerView(banner: banner, syncNow: { store.send(.syncNowTapped) }) {
+                        store.send(.syncBannerDismissed)
+                    }
                         .transition(edgeTransition)
                 }
             }
@@ -719,13 +721,17 @@ private struct SyncReviewBanner: View {
 /// What the last sync fixed, with a way to dismiss it.
 private struct SyncBannerView: View {
     var banner: SyncBanner
+    var syncNow: () -> Void
     var dismiss: () -> Void
 
     var body: some View {
         HStack(alignment: .top) {
-            Image(systemName: "arrow.triangle.2.circlepath")
+            Image(systemName: banner.isFailure ? "exclamationmark.icloud" : "arrow.triangle.2.circlepath")
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(banner.messages, id: \.self) { Text($0) }
+                if banner.isFailure {
+                    Button("Sync Now", action: syncNow)
+                }
             }
             Spacer()
             Button("Dismiss", systemImage: "xmark", action: dismiss)
@@ -735,7 +741,7 @@ private struct SyncBannerView: View {
         .padding()
         .background(.thinMaterial, in: .rect(cornerRadius: 12))
         .padding(.horizontal)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: banner.isFailure ? .contain : .combine)
     }
 }
 

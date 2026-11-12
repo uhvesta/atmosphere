@@ -29,9 +29,9 @@ package struct TaskListFeature {
         /// Every status, from a row's Status swipe.
         @Presents package var statusPicker: ConfirmationDialogState<StatusPick>?
         @Presents package var alert: AlertState<Never>?
-        /// Whether a pull already said why sync can't run, so the next pull
-        /// just ends.
-        package var explainedSync = false
+        /// Why sync failed, as a pull last said, so the same failure isn't
+        /// told on every pull.
+        package var explainedSync: String?
         /// Tasks just closed here, kept where they were for a moment so a
         /// mis-pick can be undone in place.
         package var lingering: Set<UUID> = []
@@ -183,6 +183,7 @@ package struct TaskListFeature {
         /// Pull to sync; ends when the sync does.
         case pulled
         case pullFailed(String)
+        case pullSucceeded
         case loaded(Result<Workspace, any Error>)
         /// The records changed elsewhere, such as in another tab or a sync.
         case show(Snapshot)
@@ -332,12 +333,20 @@ package struct TaskListFeature {
 
             case .pulled:
                 return .run { [sync] send in
-                    if case .failed(let error) = await sync.sync().status { await send(.pullFailed(error.description)) }
+                    switch await sync.sync().status {
+                    case .failed(let error): await send(.pullFailed(error.description))
+                    default: await send(.pullSucceeded)
+                    }
                 }
 
+            case .pullSucceeded:
+                state.explainedSync = nil
+                return .none
+
             case .pullFailed(let reason):
-                guard !state.explainedSync else { return .none }
-                state.explainedSync = true
+                // Each failure once, until a sync works or it fails another way.
+                guard state.explainedSync != reason else { return .none }
+                state.explainedSync = reason
                 state.alert = AlertState {
                     TextState("Couldn't sync")
                 } actions: {

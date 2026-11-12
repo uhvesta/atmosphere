@@ -119,6 +119,7 @@ package struct SettingsFeature {
         case pagePicked(SettingsPage)
         case activityTapped
         case syncNowTapped
+        case syncNowFailed(String)
         case syncContinuouslyToggled(Bool)
         case activity(PresentationAction<ActivityFeature.Action>)
         case labelsTapped
@@ -294,7 +295,22 @@ package struct SettingsFeature {
 
             case .syncNowTapped:
                 guard state.sync.status != .syncing else { return .none }
-                return .run { [sync] _ in _ = await sync.sync() }
+                // Asked for, so a failure is told.
+                return .run { [sync] send in
+                    if case .failed(let error) = await sync.sync().status {
+                        await send(.syncNowFailed(error.description))
+                    }
+                }
+
+            case .syncNowFailed(let reason):
+                state.alert = AlertState {
+                    TextState("Couldn't Sync")
+                } actions: {
+                    ButtonState(role: .cancel) { TextState("OK") }
+                } message: {
+                    TextState(reason)
+                }
+                return .none
 
             case .syncContinuouslyToggled(let on):
                 state.$syncsContinuously.withLock { $0 = on }

@@ -374,6 +374,26 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(syncs.value, 2)
     }
 
+    func testPullingTellsASyncFailureAgainAfterASyncWorksOrItFailsAnotherWay() async {
+        let store = await load()
+        let results = LockIsolated<[SyncState.Status]>([
+            .failed(.quotaExceeded), .idle, .failed(.quotaExceeded), .failed(.unreachable("offline")),
+        ])
+        var sync = SyncClient.off
+        sync.sync = { SyncState(status: results.withValue { $0.removeFirst() }) }
+        store.dependencies.sync = sync
+        var told: [Bool] = []
+
+        for fails in [true, false, true, true] {
+            await store.send(.pulled)
+            if fails { await store.receive(\.pullFailed) } else { await store.receive(\.pullSucceeded) }
+            told.append(store.state.alert != nil)
+            if store.state.alert != nil { await store.send(.alert(.dismiss)) }
+        }
+
+        XCTAssertEqual(told, [true, false, true, true])
+    }
+
     func testARefusedChangeWarns() async {
         let review = records.task("Review", in: health)
         records.task("Read", in: health, parent: review)

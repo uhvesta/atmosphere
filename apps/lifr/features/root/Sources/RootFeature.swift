@@ -157,6 +157,10 @@ package struct RootFeature {
         package var isSettingsShown = false
         /// What the last sync fixed, until dismissed.
         package var syncBanner: SyncBanner?
+        /// Syncs in a row that failed for a reason the person can act on.
+        package var syncFailures = 0
+        /// The sync failure whose banner the person closed.
+        package var dismissedSyncFailure: String?
         /// Where sync is, and what waits for review.
         package var sync = SyncState()
         /// Apps with a grant; the menu bar shows a dot while one is connected.
@@ -438,6 +442,7 @@ package struct RootFeature {
         case lockAlert(PresentationAction<Never>)
         /// The Mac's File › Sync Now.
         case syncNowTapped
+        case syncNowFailed(String)
         /// The banner's Review.
         case syncReviewTapped
         case syncReview(PresentationAction<SyncReviewFeature.Action>)
@@ -1023,12 +1028,31 @@ package struct RootFeature {
                 return .none
 
             case .syncBannerDismissed:
+                if let banner = state.syncBanner, banner.isFailure { state.dismissedSyncFailure = banner.messages.first }
                 state.syncBanner = nil
                 return .none
 
             case .syncChanged(let sync):
                 state.sync = sync
                 state.settings.sync = sync
+                switch sync.status {
+                case .failed(.notSetUp), .failed(.noAccount), .syncing:
+                    break
+                case .failed(let error):
+                    // Once is often the network; twice in a row is told,
+                    // until it works or fails another way.
+                    state.syncFailures += 1
+                    let reason = error.description
+                    if state.syncFailures >= 2, state.dismissedSyncFailure != reason,
+                        state.syncBanner == nil || state.syncBanner?.isFailure == true
+                    {
+                        state.syncBanner = SyncBanner(failure: reason)
+                    }
+                case .idle:
+                    state.syncFailures = 0
+                    state.dismissedSyncFailure = nil
+                    if state.syncBanner?.isFailure == true { state.syncBanner = nil }
+                }
                 guard state.syncReview != nil else { return .none }
                 return .send(.syncReview(.presented(.show(sync.review, state.workspace ?? Workspace()))))
 
@@ -1053,7 +1077,22 @@ package struct RootFeature {
 
             case .syncNowTapped:
                 guard state.sync.status != .syncing else { return .none }
-                return .run { [sync] _ in _ = await sync.sync() }
+                // Asked for, so a failure is told.
+                return .run { [sync] send in
+                    if case .failed(let error) = await sync.sync().status {
+                        await send(.syncNowFailed(error.description))
+                    }
+                }
+
+            case .syncNowFailed(let reason):
+                state.notice = AlertState {
+                    TextState("Couldn't Sync")
+                } actions: {
+                    ButtonState(role: .cancel) { TextState("OK") }
+                } message: {
+                    TextState(reason)
+                }
+                return .none
 
             case .backgrounded:
                 // What changed here reaches the other devices before Lifr
@@ -1115,6 +1154,13 @@ package struct RootFeature {
             case .upcomingCalendarShown(let shown):
                 state.$upcomingShowsCalendar.withLock { $0 = shown }
                 return .none
+
+            case .today(.list(.retryTapped)), .upcoming(.list(.retryTapped)), .calendar(.list(.retryTapped)),
+                .procrastinated(.list(.retryTapped)), .anytime(.retryTapped), .later(.retryTapped),
+                .logbook(.retryTapped), .board(.list(.retryTapped)):
+                // A first load that failed left every screen without the
+                // records; one Try Again loads them all.
+                return state.workspace == nil ? reload() : .none
 
             case .remindersScheduled(let failure?):
                 guard !state.explainedReminders else { return .none }

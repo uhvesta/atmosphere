@@ -1124,6 +1124,74 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testSyncFailingTwiceInARowShowsABannerUntilItWorksOrIsDismissed() async {
+        let store = makeStore(.phone)
+        let full = SyncState(status: .failed(.quotaExceeded))
+
+        await store.send(.syncChanged(full))
+        XCTAssertNil(store.state.syncBanner)
+        await store.send(.syncChanged(full))
+        XCTAssertEqual(store.state.syncBanner?.isFailure, true)
+        await store.send(.syncChanged(SyncState(status: .idle, lastSynced: now)))
+        XCTAssertNil(store.state.syncBanner)
+
+        // Dismissed, the same failure stays quiet; another one is told.
+        await store.send(.syncChanged(full))
+        await store.send(.syncChanged(full))
+        await store.send(.syncBannerDismissed)
+        await store.send(.syncChanged(full))
+        XCTAssertNil(store.state.syncBanner)
+        await store.send(.syncChanged(SyncState(status: .failed(.unreachable("offline")))))
+        XCTAssertEqual(store.state.syncBanner?.isFailure, true)
+    }
+
+    func testSyncWithNoAccountShowsNoBanner() async {
+        let store = makeStore(.phone)
+
+        for _ in 0..<3 { await store.send(.syncChanged(SyncState(status: .failed(.noAccount)))) }
+
+        XCTAssertNil(store.state.syncBanner)
+    }
+
+    func testSyncNowSaysWhyItFailed() async {
+        var sync = SyncClient.off
+        sync.sync = { SyncState(status: .failed(.quotaExceeded)) }
+        let store = makeStore(.mac, sync: sync)
+
+        await store.send(.syncNowTapped)
+        await store.receive(\.syncNowFailed)
+
+        XCTAssertNotNil(store.state.notice)
+    }
+
+    func testTryAgainAfterAFailedFirstLoadLoadsEveryScreen() async {
+        records.task("Run", in: health, due: 0)
+        let workspace = records.workspace
+        let fails = LockIsolated(true)
+        let working = StoreClient.inMemory(workspace)
+        var client = working
+        client.snapshot = {
+            if fails.value { throw LifrError.invalidRecurrence }
+            return try await working.snapshot()
+        }
+        client.load = {
+            if fails.value { throw LifrError.invalidRecurrence }
+            return try await working.load()
+        }
+        let store = makeStore(.phone, store: client)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertNil(store.state.workspace)
+
+        fails.setValue(false)
+        await store.send(.today(.list(.retryTapped)))
+        await store.receive(\.loaded)
+
+        XCTAssertNotNil(store.state.workspace)
+        XCTAssertEqual(store.state.upcoming.list.rows.map(\.title), ["Run"])
+        await task.cancel()
+    }
+
     func testWhatAnAvenueSharesWithAppsIsNotAChangeToUndo() async throws {
         let health = health
         let client = StoreClient.inMemory(records.workspace)
