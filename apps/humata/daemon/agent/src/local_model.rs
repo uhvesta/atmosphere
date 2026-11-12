@@ -1,7 +1,7 @@
 //! The local-model backend: a model behind an OpenAI-compatible server, such
 //! as Ollama or llama.cpp's, so iterating costs no tokens. The model works in
-//! the session's folder with three tools: `shell` and `write_file`, which
-//! ask the person first, and `read_file`.
+//! the session's folder with four tools: `shell` and `write_file`, which
+//! ask the person first, and `read_file` and `list_folder`.
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -691,8 +691,13 @@ fn tools() -> Value {
         ),
         tool(
             "read_file",
-            "Returns a file's contents.",
+            "Returns a file's contents, or a folder's list.",
             json!({"type": "object", "properties": {"path": path}, "required": ["path"]}),
+        ),
+        tool(
+            "list_folder",
+            "Lists what a folder holds, folders ending in /; the project folder when no path is given.",
+            json!({"type": "object", "properties": {"path": path}}),
         ),
         tool(
             "write_file",
@@ -709,6 +714,12 @@ struct ShellArguments {
 
 #[derive(Deserialize)]
 struct ReadArguments {
+    path: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct ListArguments {
+    #[serde(default)]
     path: PathBuf,
 }
 
@@ -746,10 +757,21 @@ async fn run_tool(
             Err(error) => bad(error),
             Ok(ReadArguments { path }) => match inside(&root, &path) {
                 None => outside(&path),
+                Some(target) if target.is_dir() => list(&target, &path).await,
                 Some(target) => match tokio::fs::read_to_string(&target).await {
                     Ok(contents) => (true, truncated(contents)),
                     Err(error) => (false, format!("Couldn't read {}: {error}", path.display())),
                 },
+            },
+        },
+        "list_folder" => match serde_json::from_str::<ListArguments>(arguments) {
+            Err(error) => bad(error),
+            Ok(ListArguments { path }) if path.as_os_str().is_empty() || path == Path::new(".") => {
+                list(&root, &path).await
+            }
+            Ok(ListArguments { path }) => match inside(&root, &path) {
+                None => outside(&path),
+                Some(target) => list(&target, &path).await,
             },
         },
         "write_file" => match serde_json::from_str::<WriteArguments>(arguments) {
@@ -814,6 +836,37 @@ async fn write(target: &Path, path: &Path, contents: &str) -> (bool, String) {
         Ok(()) => (true, format!("Wrote {}", path.display())),
         Err(error) => (false, format!("Couldn't write {}: {error}", path.display())),
     }
+}
+
+/// The names in a folder, sorted, folders ending in `/`; Git's own folder
+/// is left out.
+async fn list(target: &Path, path: &Path) -> (bool, String) {
+    let couldnt =
+        |error: std::io::Error| (false, format!("Couldn't list {}: {error}", path.display()));
+    let mut entries = match tokio::fs::read_dir(target).await {
+        Ok(entries) => entries,
+        Err(error) => return couldnt(error),
+    };
+    let mut names = Vec::new();
+    loop {
+        match entries.next_entry().await {
+            Ok(Some(entry)) => {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name == ".git" {
+                    continue;
+                }
+                let folder = entry.file_type().await.is_ok_and(|kind| kind.is_dir());
+                names.push(if folder { format!("{name}/") } else { name });
+            }
+            Ok(None) => break,
+            Err(error) => return couldnt(error),
+        }
+    }
+    if names.is_empty() {
+        return (true, "(empty)".into());
+    }
+    names.sort();
+    (true, truncated(names.join("\n")))
 }
 
 fn denied() -> (bool, String) {
@@ -1023,6 +1076,31 @@ mod tests {
         let requests = server.requests();
         assert_eq!(requests[0]["model"], "qwen3");
         assert_eq!(said(&requests[0]), ["user: hi"]);
+    }
+
+    #[tokio::test]
+    async fn the_model_lists_a_folder_without_asking() {
+        let server = serve(vec![
+            (200, sse(&call("c1", "list_folder", json!({})))),
+            (200, sse(&call("c2", "read_file", json!({"path": "src"})))),
+            (200, sse(&[text("Seen.")])),
+        ])
+        .await;
+        let fixture = fixture(&server);
+        std::fs::create_dir_all(fixture.work.path().join("src")).expect("a folder");
+        std::fs::write(fixture.work.path().join("src/a.txt"), "one").expect("a file");
+        std::fs::write(fixture.work.path().join("b.txt"), "two").expect("a file");
+        let id = fixture.start(Some("qwen3")).await;
+        fixture.send(&id, "look around").await;
+
+        wait_for(&fixture.agent, &id, idle_turns(1)).await;
+
+        let requests = server.requests();
+        let tools: Vec<_> = said(&requests[2])
+            .into_iter()
+            .filter(|said| said.starts_with("tool: "))
+            .collect();
+        assert_eq!(tools, ["tool: b.txt\nsrc/", "tool: a.txt"]);
     }
 
     #[tokio::test]
