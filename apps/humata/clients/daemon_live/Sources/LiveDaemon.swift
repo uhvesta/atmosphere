@@ -79,6 +79,25 @@ extension DaemonClient {
                 }
                 return try Session(started.session)
             },
+            importable: { host in
+                var list = Humata_V1_ListImportable()
+                list.host = host ?? ""
+                guard case .importable(let found) = try await daemon.call(.listImportable(list)) else {
+                    throw DaemonError.unexpected("something other than the sessions to import")
+                }
+                return try found.sessions.map(ImportableSession.init)
+            },
+            importSession: { session, host, projectID in
+                var request = Humata_V1_ImportSession()
+                request.backend = session.backend.proto
+                request.externalID = session.id
+                request.host = host ?? ""
+                request.projectID = projectID ?? ""
+                guard case .sessionStarted(let started) = try await daemon.call(.importSession(request)) else {
+                    throw DaemonError.unexpected("something other than the imported session")
+                }
+                return try Session(started.session)
+            },
             send: { session, text, mode in
                 var message = Humata_V1_SendMessage()
                 message.sessionID = session

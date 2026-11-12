@@ -795,7 +795,32 @@ package enum ErrorCode: Hashable, Sendable {
     case changed
     /// The queued message already started or was taken out.
     case unknownQueuedMessage
+    /// The session to import isn't one the backend has.
+    case unknownImport
+    /// The session was imported before.
+    case alreadyImported
     case unknown
+}
+
+/// A session a backend ran on a host outside Humata, which can be imported
+/// with its history and carried on.
+package struct ImportableSession: Equatable, Identifiable, Sendable {
+    package var backend: Backend
+    /// The backend's own id for it.
+    package var id: String
+    /// The folder it worked in, on the host.
+    package var workingDirectory: String
+    /// Its first message, on one line.
+    package var summary: String
+    package var updated: Date
+
+    package init(backend: Backend, id: String, workingDirectory: String, summary: String, updated: Date) {
+        self.backend = backend
+        self.id = id
+        self.workingDirectory = workingDirectory
+        self.summary = summary
+        self.updated = updated
+    }
 }
 
 package enum DaemonError: LocalizedError, Hashable, CustomStringConvertible {

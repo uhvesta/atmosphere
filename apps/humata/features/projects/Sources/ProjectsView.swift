@@ -132,6 +132,14 @@ package struct ProjectsView: View {
                     Text("Chats")
                     Spacer()
                     Button {
+                        store.send(.importTapped)
+                    } label: {
+                        Label("Import Session…", systemImage: "square.and.arrow.down")
+                            .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Bring in a Claude Code or Copilot session started outside Humata, with its history")
+                    Button {
                         store.send(.newChatTapped)
                     } label: {
                         Label("New Chat", systemImage: "plus")
@@ -568,6 +576,9 @@ private struct Sheets: ViewModifier {
             }
             .sheet(item: $store.scope(state: \.destination?.newSession, action: \.destination.newSession)) {
                 NewSessionView(store: $0)
+            }
+            .sheet(item: $store.scope(state: \.destination?.importSession, action: \.destination.importSession)) {
+                ImportSessionView(store: $0)
             }
             .sheet(item: $store.scope(state: \.destination?.rename, action: \.destination.rename)) {
                 RenameSessionView(store: $0)

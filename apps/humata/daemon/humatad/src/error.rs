@@ -116,6 +116,13 @@ impl HostError {
                 pb::ErrorCode::UnknownQueuedMessage
             }
             Self::Agent(AgentError::Archived { .. }) => pb::ErrorCode::Archived,
+            Self::Agent(AgentError::UnknownImport { .. } | AgentError::NothingToImport { .. }) => {
+                pb::ErrorCode::UnknownImport
+            }
+            Self::Agent(AgentError::AlreadyImported { .. }) => pb::ErrorCode::AlreadyImported,
+            Self::Agent(AgentError::ImportedFolderMissing { .. } | AgentError::NotImportable) => {
+                pb::ErrorCode::InvalidRequest
+            }
             Self::Agent(AgentError::ArchiveWhileWorking { .. }) => pb::ErrorCode::Busy,
             Self::Agent(AgentError::NoWorkspaces { .. }) => pb::ErrorCode::InvalidRequest,
             Self::Agent(AgentError::Workspace {

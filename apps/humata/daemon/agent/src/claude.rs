@@ -25,7 +25,8 @@ use tokio::process::{ChildStdin, Command};
 
 use crate::env::Env;
 use crate::error::AgentError;
-use crate::event::{EventKind, PermissionKind, SessionRecord};
+use crate::event::{EventKind, PermissionKind, SessionId, SessionRecord};
+use crate::import::{self, Importable, Imported};
 use crate::links::Links;
 use crate::runtime::{Runner, Turn};
 
@@ -111,6 +112,12 @@ impl ClaudeRunner {
         Self { options }
     }
 
+    /// Where Claude Code keeps its transcripts, one folder per project.
+    fn transcripts(&self) -> Option<PathBuf> {
+        import::backend_home(&self.options.env, "CLAUDE_CONFIG_DIR", ".claude")
+            .map(|home| home.join("projects"))
+    }
+
     /// The CLI for a turn of `record`, in the session `links` say: resumed,
     /// forked, or new. The Claude Code session it plays in.
     fn command(&self, record: &SessionRecord, links: &mut Links) -> (Command, String) {
@@ -194,6 +201,24 @@ impl ClaudeRunner {
 
 impl Runner for ClaudeRunner {
     type Error = ClaudeError;
+
+    fn importable(&self) -> Result<Vec<Importable>, AgentError> {
+        let Some(projects) = self.transcripts() else {
+            return Ok(Vec::new());
+        };
+        import::not_imported(&self.options.state, import::claude_importable(&projects)?)
+    }
+
+    fn import(&self, external: &str, session: &SessionId) -> Result<Imported, AgentError> {
+        let projects = self
+            .transcripts()
+            .ok_or_else(|| AgentError::UnknownImport {
+                id: external.to_owned(),
+            })?;
+        import::import_into(&self.options.state, external, session, || {
+            import::claude_read(&import::claude_transcript(&projects, external)?)
+        })
+    }
 
     async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), ClaudeError> {
         let record = turn.record();

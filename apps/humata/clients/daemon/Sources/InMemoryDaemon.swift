@@ -73,6 +73,10 @@ package final class InMemoryDaemon: Sendable {
         /// The contents each session marked viewed, by file.
         var viewed: [String: [FileRef: String]] = [:]
         var threads: [Thread] = []
+        /// The sessions started outside Humata, by host; "" for this Mac.
+        var importable: [String: [ImportableSession]] = [:]
+        /// The sessions imported, by the backend's id.
+        var imported: [String: String] = [:]
         var reviews: [Review] = []
         var nextThread = 1
         var nextComment = 1
@@ -109,6 +113,12 @@ package final class InMemoryDaemon: Sendable {
 
     /// The sessions as they are now.
     package var sessions: [Session] { state.value.sessions }
+
+    /// Puts `session` on `host`, or this Mac if nil, as one a backend ran
+    /// outside Humata.
+    package func addImportable(_ session: ImportableSession, on host: String? = nil) {
+        state.withValue { $0.importable[host ?? "", default: []].append(session) }
+    }
 
     /// What the agent has written in the session's copy of the code, by path.
     package func files(of session: String) -> [String: String] {
@@ -156,6 +166,13 @@ package final class InMemoryDaemon: Sendable {
                 }
             },
             start: { request in try self.startSession(request) },
+            importable: { host in
+                try self.reachable(host)
+                return self.state.value.importable[host ?? "", default: []].sorted { $0.updated > $1.updated }
+            },
+            importSession: { session, host, projectID in
+                try self.importSession(session, on: host, projectID: projectID)
+            },
             send: { session, text, mode in try self.send(session, text, mode) },
             approve: { session, request, approved in try self.answer(session, request, approved: approved) },
             setApprovalMode: { session, mode in try self.setApprovalMode(session, mode) },
@@ -273,15 +290,57 @@ package final class InMemoryDaemon: Sendable {
         }
     }
 
-    private func startSession(_ request: StartRequest) throws -> Session {
-        try state.withValue { state in
-            if let host = request.host {
-                guard state.hosts.contains(where: { $0.name == host }) else { throw Self.unknownHost(host) }
-                guard !state.offline.contains(host), state.installed.contains(host) else {
+    /// Refuses a host that isn't known, or can't be reached.
+    private func reachable(_ host: String?) throws {
+        guard let host else { return }
+        let state = state.value
+        guard state.hosts.contains(where: { $0.name == host }) else { throw Self.unknownHost(host) }
+        guard !state.offline.contains(host), state.installed.contains(host) else {
+            throw DaemonError.refused(
+                .hostUnavailable, message: "Couldn't reach \(host). Check it in Hosts, then try again.")
+        }
+    }
+
+    private func importSession(_ found: ImportableSession, on host: String?, projectID: String?) throws -> Session {
+        try reachable(host)
+        let session = try state.withValue { state in
+            guard state.importable[host ?? "", default: []].contains(found) else {
+                if let session = state.imported[found.id] {
                     throw DaemonError.refused(
-                        .hostUnavailable, message: "Couldn't reach \(host). Check it in Hosts, then try again.")
+                        .alreadyImported, message: "\(found.id) was already imported, as \(session); open that one.")
                 }
+                throw DaemonError.refused(.unknownImport, message: "There is no session \(found.id) to import.")
             }
+            if let projectID, !state.projects.contains(where: { $0.id == projectID }) {
+                throw DaemonError.refused(.unknownProject, message: "There is no project \(projectID).")
+            }
+            let id = "s\(state.nextSession)"
+            state.nextSession += 1
+            state.importable[host ?? ""]?.removeAll { $0 == found }
+            state.imported[found.id] = id
+            let session = Session(
+                id: id, name: found.summary, backend: found.backend, workingDirectory: found.workingDirectory,
+                host: host, projectID: projectID)
+            state.sessions.append(session)
+            state.histories[id] = []
+            state.copies[id] = []
+            state.copyOf[id] = id
+            return session
+        }
+        _ = append(.userMessage(found.summary), to: session.id)
+        _ = append(.turnEnded(aborted: false), to: session.id)
+        _ = append(.idle, to: session.id)
+        // What happened outside Humata isn't news: it was read there.
+        return state.withValue { state in
+            guard let index = state.sessions.firstIndex(where: { $0.id == session.id }) else { return session }
+            state.sessions[index].seenTurns = state.sessions[index].turns
+            return state.sessions[index]
+        }
+    }
+
+    private func startSession(_ request: StartRequest) throws -> Session {
+        try reachable(request.host)
+        return try state.withValue { state in
             let id = "s\(state.nextSession)"
             var directory = request.workingDirectory
             var projectID = request.projectID

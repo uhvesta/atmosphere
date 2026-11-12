@@ -243,8 +243,13 @@ for you without hunting, land work, and find your way around.
 - [x] History cost: each turn's tokens and premium requests, and the session's total
 - [x] Sessions stay readable offline from the Mac's copy of their history
 - [x] Sidebar: sorted by last activity, with timestamps, an unread mark, search by name, and delete project
-- [ ] Import existing sessions: Claude Code transcripts and Copilot session folders already on a host
+- [x] Import existing sessions: Claude Code transcripts and Copilot session folders already on a host
 - [ ] MCP for every session: remote and Copilot sessions get the same `humatad mcp` tools as local Claude ones
+- [ ] The inbox holds what an agent asks of you, not only approvals and replies:
+  - an agent asks a question or wants your opinion through a new `ask_person` MCP tool; the row shows it, and your answer goes to the session as a message
+  - an agent that's finished asks to move its task through a new `request_move` tool (to In Review, Done or Won't Do) with a summary of what it did; `update_item` no longer sets those itself
+  - the row opens the session's changes to look over, and from it you approve the move, send feedback that the agent carries on from, or move the task anywhere yourself
+  - requests are kept in the daemon's SQLite, so they survive restarts and work for remote sessions through the MCP relay; the Dock count and a notification remind you until each is answered
 - [ ] Claude and Copilot parity: model lists, approval modes, steering and usage behave the same
 - [ ] Spec drafting: a task's spec edited in the app with a rendered preview
 - [ ] A variables editor for This Mac, like the hosts have

@@ -13,7 +13,7 @@
       [StaticText] "" value: "Sum"
       [StaticText] "" value: "Active 9 mins ago"
     [Row/OutlineRow] ""
-      [Heading] "Chats" help: "Start a chat in no project, in a folder you pick or one of its own (⌘N)"
+      [Heading] "Chats" help: "Bring in a Claude Code or Copilot session started outside Humata, with its history, Start a chat in no project, in a folder you pick or one of its own (⌘N)"
   [TextField/SearchField] ""
     [Button] "Search"
   [StaticText] "" value: "Sum"

@@ -771,6 +771,13 @@ impl Daemon {
                 // name.
                 std::mem::take(&mut start.host)
             }
+            Request::ListImportable(list) => std::mem::take(&mut list.host),
+            Request::ImportSession(import) => {
+                if let Some(id) = convert::optional(std::mem::take(&mut import.project_id)) {
+                    project = Some(self.store.project(&id)?.id);
+                }
+                std::mem::take(&mut import.host)
+            }
             Request::ForkSession(fork) => {
                 // A fork stays in its parent's project, on its item.
                 let host = self.host_of(&fork.session_id).await?;
@@ -898,6 +905,8 @@ impl Daemon {
                 })));
             }
         };
+        // What happened outside Humata isn't news: it was read there.
+        let imported = matches!(request, Request::ImportSession(_));
         let mut reply = self.forward(&host, request).await?;
         if let Reply::Response(
             Response::SessionStarted(pb::SessionStarted {
@@ -912,6 +921,10 @@ impl Daemon {
         ) = &mut reply
         {
             self.own(session, &host, project.as_deref(), item.as_deref())?;
+            if imported {
+                self.store.mark_seen(&session.id, session.turns)?;
+                session.seen_turns = session.turns;
+            }
         }
         Ok(reply)
     }

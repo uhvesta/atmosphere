@@ -392,6 +392,44 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Claude Code and Copilot sessions started outside Humata are listed,
+    /// and one is brought in with its history, into a project.
+    func testImportingASession() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let now = Date(timeIntervalSince1970: 1_794_000_600)
+        let login = ImportableSession(
+            backend: .claude, id: "0a1b-2c3d", workingDirectory: "/code/humata",
+            summary: "Fix the login redirect after the session times out", updated: now - 300)
+        daemon.addImportable(login)
+        daemon.addImportable(
+            ImportableSession(
+                backend: .copilot, id: "7f8e-9d0c", workingDirectory: "/code/notes",
+                summary: "Sort the meeting notes by date", updated: now - 7_200))
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(now)
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("import", AppView(store: store))
+
+        try await until { store.daemon == .running && store.sidebar.projects.count == 1 }
+        store.send(.sidebar(.importTapped))
+        try await until { store.sidebar.destination?.importSession?.sessions?.count == 2 }
+        store.send(.sidebar(.destination(.presented(.importSession(.binding(.set(\.projectID, project.id)))))))
+        store.send(.sidebar(.destination(.presented(.importSession(.binding(.set(\.selection, login.id)))))))
+        await flow.step("sessions")
+
+        store.send(.sidebar(.destination(.presented(.importSession(.importTapped)))))
+        try await until { store.session != nil && store.sidebar.destination == nil }
+        await flow.step("imported")
+        flow.finish()
+    }
+
     private func sidebarShows(
         _ state: SessionState, _ store: StoreOf<AppFeature>, _ session: Session
     ) async throws {

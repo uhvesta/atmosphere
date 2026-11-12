@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use humata_agent::{
     Agent, AgentError, ApprovalMode, ClaudeOptions, ClaudeRunner, CopilotOptions, CopilotProvider,
-    CopilotRunner, Edit, Env, Event, EventId, ForkOptions, LocalAgent, LocalModelConfig,
-    LocalModelRunner, McpServer, Query, Script, ScriptedRunner, SendMode, SessionId, SessionRecord,
-    SessionUpdate, StartOptions, Watch, Workspaces,
+    CopilotRunner, Edit, Env, Event, EventId, ForkOptions, Importable, LocalAgent,
+    LocalModelConfig, LocalModelRunner, McpServer, Query, Script, ScriptedRunner, SendMode,
+    SessionId, SessionRecord, SessionUpdate, StartOptions, Watch, Workspaces,
 };
 use humata_wire::{Reply, Service, ServiceFuture, describe, error, pb};
 use tokio::sync::{broadcast, mpsc};
@@ -62,6 +62,12 @@ trait Backend: Send + Sync {
         query: &'a Query,
     ) -> BoxFuture<'a, Vec<humata_agent::Changes>>;
     fn edit_changes<'a>(&'a self, session: &'a SessionId, edit: &'a Edit) -> BoxFuture<'a, ()>;
+    fn importable(&self) -> BoxFuture<'_, Vec<Importable>>;
+    fn import<'a>(
+        &'a self,
+        external: &'a str,
+        name: Option<String>,
+    ) -> BoxFuture<'a, SessionRecord>;
 }
 
 impl<A> Backend for A
@@ -166,6 +172,20 @@ where
                 .map_err(Into::into)
         })
     }
+    fn importable(&self) -> BoxFuture<'_, Vec<Importable>> {
+        Box::pin(async move { Agent::importable(self).await.map_err(Into::into) })
+    }
+    fn import<'a>(
+        &'a self,
+        external: &'a str,
+        name: Option<String>,
+    ) -> BoxFuture<'a, SessionRecord> {
+        Box::pin(async move {
+            Agent::import(self, external, name)
+                .await
+                .map_err(Into::into)
+        })
+    }
 }
 
 /// Runs sessions here and answers requests about them.
@@ -222,6 +242,7 @@ impl Host {
                     base_url,
                     api_key: std::env::var("HUMATA_COPILOT_PROVIDER_API_KEY").ok(),
                 }),
+            mcp: mcp.clone(),
         });
         let copilot = LocalAgent::open(copilot_state.join("sessions"), copilot_runner)?
             .with_workspaces(workspaces());
@@ -423,6 +444,36 @@ impl Host {
                 let session = SessionId::new(abort.session_id);
                 self.owner(&session)?.1.abort(&session).await?;
                 Response::TurnAborted(pb::TurnAborted {})
+            }
+            Request::ListImportable(_) => {
+                let mut sessions = Vec::new();
+                for backend in [pb::Backend::Claude, pb::Backend::Copilot] {
+                    for found in self.backend(backend)?.importable().await? {
+                        sessions.push(pb::ImportableSession {
+                            backend: backend.into(),
+                            id: found.id,
+                            working_directory: found.working_directory.display().to_string(),
+                            summary: found.summary,
+                            updated_unix_ms: found.updated_unix_ms,
+                        });
+                    }
+                }
+                sessions.sort_by_key(|found| std::cmp::Reverse(found.updated_unix_ms));
+                Response::Importable(pb::Importable { sessions })
+            }
+            Request::ImportSession(import) => {
+                let backend = import.backend();
+                let agent = self.backend(backend)?;
+                let record = agent
+                    .import(&import.external_id, convert::optional(import.name))
+                    .await?;
+                self.owners
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(record.id.clone(), backend);
+                Response::SessionStarted(pb::SessionStarted {
+                    session: Some(self.info(backend, agent.as_ref(), &record).await?),
+                })
             }
             Request::ForkSession(fork) => {
                 let session = SessionId::new(fork.session_id);

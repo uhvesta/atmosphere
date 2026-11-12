@@ -109,6 +109,7 @@ package struct ProjectsFeature {
     package enum Destination {
         case newProject(NewProjectFeature)
         case newSession(NewSessionFeature)
+        case importSession(ImportSessionFeature)
         case rename(RenameSessionFeature)
         case move(MoveSessionFeature)
         case compare(CompareFeature)
@@ -131,6 +132,7 @@ package struct ProjectsFeature {
         case newSessionTapped(projectID: Project.ID)
         /// A session in no project: a chat, in a folder or its own.
         case newChatTapped
+        case importTapped
         case searchChanged(String)
         /// Asks before deleting the project, or says what to do first.
         case deleteProjectTapped(Project.ID)
@@ -228,6 +230,10 @@ package struct ProjectsFeature {
 
             case .newChatTapped:
                 state.destination = .newSession(NewSessionFeature.State(project: nil))
+                return .none
+
+            case .importTapped:
+                state.destination = .importSession(ImportSessionFeature.State(projects: state.sortedProjects))
                 return .none
 
             case .searchChanged(let text):
@@ -379,7 +385,8 @@ package struct ProjectsFeature {
                 state.destination = .newSession(NewSessionFeature.State(project: project))
                 return .none
 
-            case .destination(.presented(.newSession(.delegate(.started(let session))))):
+            case .destination(.presented(.newSession(.delegate(.started(let session))))),
+                .destination(.presented(.importSession(.delegate(.imported(let session))))):
                 state.sessions.append(session)
                 state.destination = nil
                 state.selection = .session(session.id)

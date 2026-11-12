@@ -1151,3 +1151,86 @@ async fn a_subtask_of_a_subtask_and_an_unknown_item_are_refused() {
         "{unknown:?}"
     );
 }
+
+#[tokio::test]
+async fn a_claude_code_session_on_the_host_is_listed_and_imported_once() {
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let work = dir.path().join("work");
+    let config = dir.path().join("claude");
+    let transcript = config.join("projects/-work/0a1b-2c3d.jsonl");
+    std::fs::create_dir_all(&work).unwrap_or_else(|error| panic!("{error}"));
+    std::fs::create_dir_all(transcript.parent().unwrap_or(&config))
+        .unwrap_or_else(|error| panic!("{error}"));
+    let cwd = work.display().to_string();
+    let lines = [
+        serde_json::json!({"type": "user", "uuid": "u1", "cwd": cwd,
+            "timestamp": "2026-11-03T09:00:01Z", "message": {"content": "fix the login"}}),
+        serde_json::json!({"type": "assistant", "uuid": "a1", "cwd": cwd,
+            "timestamp": "2026-11-03T09:00:05Z",
+            "message": {"content": [{"type": "text", "text": "Fixed."}]}}),
+    ];
+    let text: Vec<String> = lines.iter().map(ToString::to_string).collect();
+    std::fs::write(&transcript, text.join("\n") + "\n").unwrap_or_else(|error| panic!("{error}"));
+
+    let state = dir.path().join("state");
+    let client = host(&state).await;
+    let variable = |name: &str, value: &Path| pb::EnvVar {
+        name: name.to_owned(),
+        value: value.display().to_string(),
+    };
+    client
+        .call(pb::request::Kind::ConfigureHost(pb::ConfigureHost {
+            env: vec![
+                variable("CLAUDE_CONFIG_DIR", &config),
+                variable("COPILOT_HOME", &dir.path().join("copilot")),
+            ],
+            setup_script: String::new(),
+        }))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    let listed = match client
+        .call(pb::request::Kind::ListImportable(
+            pb::ListImportable::default(),
+        ))
+        .await
+    {
+        Ok(pb::response::Kind::Importable(importable)) => importable.sessions,
+        other => panic!("not listed: {other:?}"),
+    };
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].backend(), pb::Backend::Claude);
+    assert_eq!(listed[0].working_directory, cwd);
+
+    let import = || {
+        pb::request::Kind::ImportSession(pb::ImportSession {
+            backend: pb::Backend::Claude.into(),
+            external_id: listed[0].id.clone(),
+            ..Default::default()
+        })
+    };
+    let session = started(&client, import()).await;
+    assert_eq!(session.working_directory, cwd);
+    let history = match client
+        .call(pb::request::Kind::ReadHistory(pb::ReadHistory {
+            session_id: session.id.clone(),
+        }))
+        .await
+    {
+        Ok(pb::response::Kind::History(history)) => history.events,
+        other => panic!("no history: {other:?}"),
+    };
+    assert_eq!(said(&history), ["user: fix the login", "agent: Fixed."]);
+
+    let again = client.call(import()).await;
+    assert!(
+        matches!(
+            again,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::AlreadyImported,
+                ..
+            })
+        ),
+        "{again:?}"
+    );
+}

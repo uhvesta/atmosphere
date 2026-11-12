@@ -228,6 +228,7 @@ impl Setup {
                 base_url: self.base_url.clone(),
                 api_key: None,
             }),
+            mcp: None,
         });
         LocalAgent::open(self.state.path().join("sessions"), runner).expect("open the sessions")
     }

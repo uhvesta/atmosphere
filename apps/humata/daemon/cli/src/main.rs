@@ -37,6 +37,17 @@ enum Backend {
     Claude,
 }
 
+impl From<Backend> for pb::Backend {
+    fn from(backend: Backend) -> Self {
+        match backend {
+            Backend::Scripted => Self::Scripted,
+            Backend::Local => Self::Local,
+            Backend::Copilot => Self::Copilot,
+            Backend::Claude => Self::Claude,
+        }
+    }
+}
+
 /// What a session may do without asking.
 #[derive(Clone, Copy, ValueEnum)]
 enum Approval {
@@ -56,6 +67,30 @@ impl From<Approval> for pb::ApprovalMode {
             Approval::Everything => Self::AllowEverything,
         }
     }
+}
+
+#[derive(Subcommand)]
+enum ImportCommand {
+    /// List them, newest first: backend, id, when, folder and first message.
+    List {
+        /// The host to look on; this machine if not given.
+        #[arg(long, default_value = "")]
+        host: String,
+    },
+    /// Import one, with its history, and print the new session's id.
+    Session {
+        #[arg(long, value_enum)]
+        backend: Backend,
+        /// Its id, as `humata import list` prints it.
+        id: String,
+        #[arg(long, default_value = "")]
+        host: String,
+        /// Named after its first message if not given.
+        #[arg(long, default_value = "")]
+        name: String,
+        #[arg(long, default_value = "")]
+        project: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -313,6 +348,10 @@ enum HostCommand {
 
 #[derive(Subcommand)]
 enum Command {
+    /// List or import the Claude Code and Copilot sessions on a host that
+    /// were started outside Humata.
+    #[command(subcommand)]
+    Import(ImportCommand),
     /// Add, check, set up or list the machines sessions run on.
     #[command(subcommand)]
     Host(HostCommand),
@@ -570,6 +609,40 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             )?;
         }
         Command::Item(command) => item(&client, command).await?,
+        Command::Import(ImportCommand::List { host }) => {
+            match client
+                .call(Request::ListImportable(pb::ListImportable { host }))
+                .await?
+            {
+                Response::Importable(importable) => {
+                    for session in &importable.sessions {
+                        println!("{}", print::importable(session));
+                    }
+                }
+                other => return Err(unexpected("the importable sessions", &other)),
+            }
+        }
+        Command::Import(ImportCommand::Session {
+            backend,
+            id,
+            host,
+            name,
+            project,
+        }) => {
+            let request = Request::ImportSession(pb::ImportSession {
+                backend: pb::Backend::from(backend).into(),
+                external_id: id,
+                host,
+                name,
+                project_id: project,
+            });
+            match client.call(request).await? {
+                Response::SessionStarted(pb::SessionStarted {
+                    session: Some(session),
+                }) => println!("{}", session.id),
+                other => return Err(unexpected("the imported session", &other)),
+            }
+        }
         Command::Board(BoardCommand::Log { project }) => {
             let request = Request::ReadBoardLog(pb::ReadBoardLog {
                 project_id: project,
@@ -633,14 +706,8 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                     .map_err(|source| CliError::ReadBackendConfig { path, source })?,
                 None => String::new(),
             };
-            let backend = match backend {
-                Backend::Scripted => pb::Backend::Scripted,
-                Backend::Local => pb::Backend::Local,
-                Backend::Copilot => pb::Backend::Copilot,
-                Backend::Claude => pb::Backend::Claude,
-            };
             let request = Request::StartSession(pb::StartSession {
-                backend: backend.into(),
+                backend: pb::Backend::from(backend).into(),
                 working_directory: directory
                     .map(|directory| directory.display().to_string())
                     .unwrap_or_default(),

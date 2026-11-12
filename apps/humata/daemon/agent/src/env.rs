@@ -29,6 +29,15 @@ impl Env {
             .collect()
     }
 
+    /// The value of `name`, if set.
+    pub fn get(&self, name: &str) -> Option<String> {
+        self.0
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(name)
+            .cloned()
+    }
+
     /// Whether `name` is set to something.
     pub fn has(&self, name: &str) -> bool {
         self.0

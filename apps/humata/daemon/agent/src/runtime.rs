@@ -22,6 +22,7 @@ use crate::event::{
     ApprovalMode, Event, EventKind, ForkOptions, Parent, PermissionKind, SendMode, SessionId,
     SessionRecord, SessionState, SessionUpdate, StartOptions,
 };
+use crate::import::{Importable, Imported};
 use crate::log::EventLog;
 use crate::{Agent, Watch};
 
@@ -51,6 +52,19 @@ pub trait Runner: Send + Sync + 'static {
     ) -> Result<(), AgentError> {
         let _ = (parent, fork, history);
         Ok(())
+    }
+
+    /// The backend's own sessions on this host, started outside Humata,
+    /// that aren't imported yet. A runner that keeps none has none.
+    fn importable(&self) -> Result<Vec<Importable>, AgentError> {
+        Ok(Vec::new())
+    }
+
+    /// Reads the backend's session `external` as our history, and links it
+    /// to our new session `session`, so its turns carry on the backend's.
+    fn import(&self, external: &str, session: &SessionId) -> Result<Imported, AgentError> {
+        let _ = (external, session);
+        Err(AgentError::NotImportable)
     }
 }
 
@@ -678,6 +692,39 @@ impl<R: Runner> Agent for LocalAgent<R> {
         };
         self.runner.forked(id, &record, &events)?;
         self.create(record.clone(), events)?;
+        Ok(record)
+    }
+
+    async fn importable(&self) -> Result<Vec<Importable>, AgentError> {
+        let mut found = self.runner.importable()?;
+        found.sort_by(|a, b| b.updated_unix_ms.cmp(&a.updated_unix_ms));
+        Ok(found)
+    }
+
+    async fn import(
+        &self,
+        external: &str,
+        name: Option<String>,
+    ) -> Result<SessionRecord, AgentError> {
+        let id = SessionId::random();
+        let imported = self.runner.import(external, &id)?;
+        let record = SessionRecord {
+            id,
+            name: name
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or(imported.summary),
+            working_directory: imported.working_directory,
+            model: None,
+            instructions: None,
+            backend_config: None,
+            parent: None,
+            approval: ApprovalMode::default(),
+            repositories: Vec::new(),
+            checkouts: Vec::new(),
+            archived: false,
+            keeper: false,
+        };
+        self.create(record.clone(), imported.events)?;
         Ok(record)
     }
 

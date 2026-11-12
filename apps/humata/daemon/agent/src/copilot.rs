@@ -23,9 +23,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 
+use crate::claude::McpServer;
 use crate::env::Env;
 use crate::error::AgentError;
+use crate::event::SessionId;
 use crate::event::{EventKind, PermissionKind};
+use crate::import::{self, Importable, Imported};
 use crate::links::{Cut, Links};
 use crate::runtime::{Runner, Turn};
 use rpc::{Cli, PROTOCOL_VERSION};
@@ -49,6 +52,9 @@ pub struct CopilotOptions {
     pub env: Env,
     /// For sessions that name none: a model server to use instead of GitHub's.
     pub provider: Option<CopilotProvider>,
+    /// Humata's MCP server, which each session starts for its board and
+    /// review tools.
+    pub mcp: Option<McpServer>,
 }
 
 /// An OpenAI-compatible model server, as JSON:
@@ -154,6 +160,12 @@ impl CopilotRunner {
         }
     }
 
+    /// Where Copilot keeps its sessions, one folder each.
+    fn session_state(&self) -> Option<PathBuf> {
+        import::backend_home(&self.options.env, "COPILOT_HOME", ".copilot")
+            .map(|home| home.join("session-state"))
+    }
+
     async fn cli(&self) -> Result<Arc<Cli>, CopilotError> {
         let mut cli = self.cli.lock().await;
         if let Some(running) = cli.as_ref().filter(|cli| cli.is_running()) {
@@ -176,7 +188,8 @@ impl CopilotRunner {
     ) -> Result<String, CopilotError> {
         if let Some(session) = &links.session {
             if !cli.is_live(session) {
-                let params = session_params(turn, provider, Some(session));
+                let params =
+                    session_params(turn, provider, self.options.mcp.as_ref(), Some(session));
                 cli.call("session.resume", params).await?;
                 cli.set_live(session);
             }
@@ -190,7 +203,7 @@ impl CopilotRunner {
             Some(session) => {
                 cli.call(
                     "session.resume",
-                    session_params(turn, provider, Some(&session)),
+                    session_params(turn, provider, self.options.mcp.as_ref(), Some(&session)),
                 )
                 .await?;
                 session
@@ -198,7 +211,10 @@ impl CopilotRunner {
             None => {
                 links.events.clear();
                 let created = cli
-                    .call("session.create", session_params(turn, provider, None))
+                    .call(
+                        "session.create",
+                        session_params(turn, provider, self.options.mcp.as_ref(), None),
+                    )
                     .await?;
                 string(&created, "session.create", "sessionId")?
             }
@@ -265,7 +281,12 @@ async fn fork_at(cli: &Cli, source: &str, links: &Links) -> Result<Option<String
     string(&forked, "sessions.fork", "sessionId").map(Some)
 }
 
-fn session_params(turn: &Turn, provider: Option<&CopilotProvider>, id: Option<&str>) -> Value {
+fn session_params(
+    turn: &Turn,
+    provider: Option<&CopilotProvider>,
+    mcp: Option<&McpServer>,
+    id: Option<&str>,
+) -> Value {
     let record = turn.record();
     let mut params = json!({
         "workingDirectory": record.working_directory,
@@ -288,8 +309,26 @@ fn session_params(turn: &Turn, provider: Option<&CopilotProvider>, id: Option<&s
     if let Some(instructions) = &record.instructions {
         params["systemMessage"] = json!({"mode": "append", "content": instructions});
     }
+    if let Some(mcp) = mcp {
+        let mut env: serde_json::Map<String, Value> = mcp
+            .env
+            .iter()
+            .map(|(name, value)| (name.clone(), json!(value)))
+            .collect();
+        env.insert("HUMATA_SESSION".into(), json!(record.id.as_str()));
+        params["mcpServers"] = json!({HUMATA_MCP: {
+            "type": "local",
+            "command": mcp.command,
+            "args": mcp.args,
+            "env": env,
+            "tools": ["*"],
+        }});
+    }
     params
 }
+
+/// The name Humata's MCP server goes by in each session.
+const HUMATA_MCP: &str = "humata";
 
 fn string(
     value: &Value,
@@ -305,6 +344,24 @@ fn string(
 
 impl Runner for CopilotRunner {
     type Error = CopilotError;
+
+    fn importable(&self) -> Result<Vec<Importable>, AgentError> {
+        let Some(sessions) = self.session_state() else {
+            return Ok(Vec::new());
+        };
+        import::not_imported(&self.options.state, import::copilot_importable(&sessions)?)
+    }
+
+    fn import(&self, external: &str, session: &SessionId) -> Result<Imported, AgentError> {
+        let sessions = self
+            .session_state()
+            .ok_or_else(|| AgentError::UnknownImport {
+                id: external.to_owned(),
+            })?;
+        import::import_into(&self.options.state, external, session, || {
+            import::copilot_read(&import::copilot_folder(&sessions, external)?)
+        })
+    }
 
     async fn run_turn(self: Arc<Self>, turn: Turn) -> Result<(), CopilotError> {
         let config = match &turn.record().backend_config {
@@ -535,6 +592,9 @@ impl Playing<'_> {
     async fn ask(&mut self, data: &Value) -> Result<(), CopilotError> {
         let request = &data["permissionRequest"];
         let field = |name: &str| request[name].as_str().map(str::to_owned);
+        // Humata's tools change only its board and review threads, which the
+        // person sees and can revert, so they aren't asked about.
+        let ours = request["kind"] == "mcp" && request["serverName"] == HUMATA_MCP;
         let (kind, summary) = match request["kind"].as_str().unwrap_or_default() {
             "shell" => (PermissionKind::Shell, field("fullCommandText")),
             "write" => (PermissionKind::Write, field("fileName")),
@@ -546,7 +606,7 @@ impl Playing<'_> {
             .or_else(|| field("intention"))
             .or_else(|| field("kind"))
             .unwrap_or_default();
-        let approved = self.turn.ask(kind, summary).await?;
+        let approved = ours || self.turn.ask(kind, summary).await?;
         let result = if approved {
             json!({"kind": "approve-once"})
         } else {

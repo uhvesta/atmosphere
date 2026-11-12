@@ -14,6 +14,7 @@ mod copilot;
 mod env;
 mod error;
 mod event;
+mod import;
 mod links;
 mod local_model;
 mod log;
@@ -37,6 +38,7 @@ pub use humata_workspace::{
     Action, Changes, Checkout, Edit, FileDiff, FileRef, FileStatus, Hunk, HunkAt, Line, LineKind,
     Query, Range, Repository, Snapshot, WorkspaceError, Workspaces,
 };
+pub use import::{Importable, Imported};
 pub use local_model::{DEFAULT_BASE_URL, LocalModelConfig, LocalModelError, LocalModelRunner};
 pub use runtime::{LocalAgent, Runner, Turn};
 pub use scripted::{Rule, Script, ScriptedError, ScriptedRunner, Step};
@@ -111,6 +113,19 @@ pub trait Agent: Send + Sync {
     -> impl Future<Output = Result<Watch, Self::Error>> + Send;
 
     fn sessions(&self) -> impl Future<Output = Result<Vec<SessionRecord>, Self::Error>> + Send;
+
+    /// The backend's own sessions on this host, started outside Humata, that
+    /// can be imported, the most recently changed first.
+    fn importable(&self) -> impl Future<Output = Result<Vec<Importable>, Self::Error>> + Send;
+
+    /// A new session carrying on the backend's session `external`: its
+    /// history so far, working in its folder, named `name` or after its
+    /// first message.
+    fn import(
+        &self,
+        external: &str,
+        name: Option<String>,
+    ) -> impl Future<Output = Result<SessionRecord, Self::Error>> + Send;
 
     /// Renames, archives or unarchives the session, or marks it as the
     /// keeper, and returns its record after.

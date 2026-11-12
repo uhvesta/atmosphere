@@ -332,3 +332,16 @@ pub fn health(health: &pb::HostHealth) -> String {
         setup(status.setup.as_ref()),
     )
 }
+
+/// `<backend>\t<id>\t<updated, ms since 1970>\t<working directory>\t<summary>`,
+/// one line per session that can be imported.
+pub fn importable(session: &pb::ImportableSession) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}",
+        session.backend().as_str_name(),
+        session.id,
+        session.updated_unix_ms,
+        session.working_directory,
+        session.summary
+    )
+}

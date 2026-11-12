@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AgentError;
-use crate::event::{Event, EventId};
+use crate::event::{Event, EventId, SessionId};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Links {
@@ -31,6 +31,31 @@ pub(crate) struct PendingFork {
 impl Links {
     pub(crate) fn path(root: &Path, session: &str) -> PathBuf {
         root.join("links").join(format!("{session}.json"))
+    }
+
+    /// Which of our sessions under `root` carries on each backend session
+    /// linked there.
+    pub(crate) fn linked(root: &Path) -> Result<Vec<(String, SessionId)>, AgentError> {
+        let dir = root.join("links");
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(source) => return Err(AgentError::ReadDirectory { path: dir, source }),
+        };
+        let mut linked = Vec::new();
+        for path in entries.filter_map(Result::ok).map(|entry| entry.path()) {
+            let Some(ours) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(".json"))
+            else {
+                continue;
+            };
+            if let Some(theirs) = Self::load(&path)?.session {
+                linked.push((theirs, SessionId::new(ours)));
+            }
+        }
+        Ok(linked)
     }
 
     /// The links in `path`; none if there is no file.

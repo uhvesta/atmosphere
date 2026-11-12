@@ -628,4 +628,84 @@ final class ProjectsFeatureTests: XCTestCase {
         let projects = try await daemon.client.projects()
         XCTAssertEqual(projects, [])
     }
+
+    private func importable(_ id: String, _ summary: String, minutesAgo: Double) -> ImportableSession {
+        ImportableSession(
+            backend: .claude, id: id, workingDirectory: "/code/\(id)", summary: summary,
+            updated: Date(timeIntervalSince1970: 1_794_000_600 - minutesAgo * 60))
+    }
+
+    func testAnImportedSessionOpensWithItsHistoryInTheProjectPicked() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        daemon.addImportable(importable("old", "rename the module", minutesAgo: 90))
+        daemon.addImportable(importable("new", "fix the login", minutesAgo: 5))
+        var initial = ProjectsFeature.State()
+        initial.projects = [project]
+        let store = TestStore(initialState: initial) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.importTapped)
+        await store.send(\.destination.importSession.task)
+        await store.receive(\.destination.importSession.loaded)
+        XCTAssertEqual(store.state.destination?.importSession?.sessions?.map(\.id), ["new", "old"])
+        await store.send(\.destination.importSession.binding.projectID, project.id)
+        await store.send(\.destination.importSession.binding.selection, "new")
+        await store.send(\.destination.importSession.importTapped)
+        await store.receive(\.destination.importSession.delegate.imported)
+        let session = try XCTUnwrap(daemon.sessions.first)
+        await store.receive(\.delegate.openSession, session)
+        XCTAssertNil(store.state.destination)
+        XCTAssertEqual(store.state.selection, .session(session.id))
+        XCTAssertEqual(session.workingDirectory, "/code/new")
+        XCTAssertEqual(session.projectID, project.id)
+        XCTAssertEqual(session.seenTurns, session.turns, "what happened outside Humata isn't unread")
+        XCTAssertEqual(
+            daemon.history(session.id).compactMap {
+                if case .userMessage(let text) = $0.kind { text } else { nil }
+            },
+            ["fix the login"])
+
+        await store.send(.importTapped)
+        await store.send(\.destination.importSession.task)
+        await store.receive(\.destination.importSession.loaded)
+        XCTAssertEqual(store.state.destination?.importSession?.sessions?.map(\.id), ["old"])
+    }
+
+    func testPickingAHostListsItsSessionsAndImportingOneTwiceIsRefused() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        _ = try await daemon.client.installHost("far")
+        let far = importable("far1", "tune the cache", minutesAgo: 1)
+        daemon.addImportable(importable("mac1", "fix the login", minutesAgo: 1))
+        daemon.addImportable(far, on: "far")
+        let store = TestStore(initialState: ImportSessionFeature.State(projects: [])) {
+            ImportSessionFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.sessions?.map(\.id), ["mac1"])
+        await store.send(\.binding.host, "far")
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.sessions?.map(\.id), ["far1"])
+
+        _ = try await daemon.client.importSession(far, "far", nil)
+        await store.send(\.binding.selection, "far1")
+        await store.send(.importTapped)
+        await store.receive(\.failed)
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertFalse(store.state.importing)
+        XCTAssertEqual(daemon.sessions.count, 1)
+        XCTAssertEqual(daemon.sessions.first?.host, "far")
+    }
 }

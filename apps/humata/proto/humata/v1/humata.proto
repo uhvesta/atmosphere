@@ -106,6 +106,8 @@ message Request {
     Unqueue unqueue = 41;
     // Refused while any of its sessions isn't archived.
     DeleteProject delete_project = 42;
+    ListImportable list_importable = 43;
+    ImportSession import_session = 44;
   }
 }
 
@@ -152,6 +154,7 @@ message Response {
     Seen seen = 38;
     Unqueued unqueued = 39;
     ProjectDeleted project_deleted = 40;
+    Importable importable = 41;
   }
 }
 
@@ -183,6 +186,10 @@ enum ErrorCode {
   ERROR_CODE_CHANGED = 16;
   // The queued message already started or was taken out.
   ERROR_CODE_UNKNOWN_QUEUED_MESSAGE = 17;
+  // The session to import isn't one the backend has, or has nothing in it.
+  ERROR_CODE_UNKNOWN_IMPORT = 18;
+  // The session was imported before; open that one.
+  ERROR_CODE_ALREADY_IMPORTED = 19;
 }
 
 enum Backend {
@@ -296,6 +303,38 @@ message DeleteProject {
 }
 
 message ProjectDeleted {}
+
+// The sessions the backends on a host ran outside Humata, newest first.
+message ListImportable {
+  // The host to look on, as the daemon names it; empty for this machine.
+  string host = 1;
+}
+
+message Importable {
+  repeated ImportableSession sessions = 1;
+}
+
+message ImportableSession {
+  Backend backend = 1;
+  // The backend's own id for it.
+  string id = 2;
+  // The folder it worked in, on the host.
+  string working_directory = 3;
+  // Its first message, on one line.
+  string summary = 4;
+  int64 updated_unix_ms = 5;
+}
+
+// Brings a session from `ListImportable` into Humata, with its history, to
+// carry on in the folder it worked in. Answered with `SessionStarted`.
+message ImportSession {
+  Backend backend = 1;
+  string external_id = 2;
+  string host = 3;
+  // Empty to name it after its summary.
+  string name = 4;
+  string project_id = 5;
+}
 
 message ListProjects {}
 

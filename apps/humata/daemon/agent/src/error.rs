@@ -104,6 +104,31 @@ pub enum AgentError {
     )]
     ArchiveWhileWorking { session: SessionId },
 
+    #[error(
+        "there is no Claude Code or Copilot session {id} on this host to import; list the importable sessions to find its id"
+    )]
+    UnknownImport { id: String },
+
+    #[error(
+        "session {id} has no message from you, or doesn't say which folder it worked in, so there is nothing to carry on from; start a new session instead"
+    )]
+    NothingToImport { id: String },
+
+    #[error(
+        "session {id} was already imported, as session {session}; open that one. Importing it again would have two sessions carry on the same conversation"
+    )]
+    AlreadyImported { id: String, session: SessionId },
+
+    #[error(
+        "session {id} worked in {path}, which isn't a folder on this host any more; restore the folder, or start a new session where the code is now"
+    )]
+    ImportedFolderMissing { id: String, path: PathBuf },
+
+    #[error(
+        "only Claude Code and Copilot sessions can be imported; this backend keeps none of its own"
+    )]
+    NotImportable,
+
     #[error("couldn't encode a session event as JSON")]
     Encode {
         #[source]

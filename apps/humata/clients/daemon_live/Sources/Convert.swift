@@ -23,6 +23,8 @@ extension ErrorCode {
             case .unknownThread: .unknownThread
             case .changed: .changed
             case .unknownQueuedMessage: .unknownQueuedMessage
+            case .unknownImport: .unknownImport
+            case .alreadyImported: .alreadyImported
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -452,5 +454,16 @@ extension PermissionKind {
             case .read: .read
             case .other, .unspecified, .UNRECOGNIZED: .other
             }
+    }
+}
+
+extension ImportableSession {
+    init(_ session: Humata_V1_ImportableSession) throws {
+        guard let backend = Backend(session.backend) else {
+            throw DaemonError.unexpected("a session to import on a backend this app doesn't know")
+        }
+        self.init(
+            backend: backend, id: session.id, workingDirectory: session.workingDirectory, summary: session.summary,
+            updated: Date(timeIntervalSince1970: Double(session.updatedUnixMs) / 1000))
     }
 }

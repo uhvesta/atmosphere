@@ -15,6 +15,12 @@ package struct DaemonClient: Sendable {
     package var sessions: @Sendable (_ project: String?) async throws -> [Session]
     /// Starts a session, idle until the first message.
     package var start: @Sendable (_ request: StartRequest) async throws -> Session
+    /// The Claude Code and Copilot sessions on `host`, or this Mac if nil,
+    /// that were started outside Humata, newest first.
+    package var importable: @Sendable (_ host: String?) async throws -> [ImportableSession]
+    /// A new session carrying on `session`, with its history, in its folder.
+    package var importSession:
+        @Sendable (_ session: ImportableSession, _ host: String?, _ projectID: String?) async throws -> Session
     package var send: @Sendable (_ session: String, _ text: String, _ mode: SendMode) async throws -> Void
     /// Answers a permission request.
     package var approve: @Sendable (_ session: String, _ request: String, _ approved: Bool) async throws -> Void
