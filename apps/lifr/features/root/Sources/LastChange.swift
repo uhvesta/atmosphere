@@ -165,7 +165,12 @@ package struct LastChange: Equatable, Sendable {
             let place = task.flatMap { task in
                 task.projectID.flatMap { workspace.projects[$0]?.name } ?? workspace.avenues[task.avenueID]?.name
             }
-            return place.map { String(localized: "Moved \(title) to \($0)") } ?? String(localized: "Changed \(title)")
+            guard let place else { return String(localized: "Changed \(title)") }
+            // In another Avenue it got a new code, which people quote.
+            if let task, change.events.contains(where: { $0.taskID == task.id && $0.field == .avenue }) {
+                return String(localized: "Moved \(title) to \(place) as \(workspace.displayCode(of: task))")
+            }
+            return String(localized: "Moved \(title) to \(place)")
         case (.movedToTrash?, _):
             return String(localized: "Moved \(title) to the Trash")
         default:

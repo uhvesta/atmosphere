@@ -1120,6 +1120,28 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertNil(LastChange(saved, id: UUID()))
     }
 
+    func testMovingATaskToAnotherAvenueNamesItsNewCode() async throws {
+        let run = records.task("Run", in: health)
+        let work = records.avenue("WORK", "Work")
+        let race = records.project("Race", in: health)
+        let client = StoreClient.inMemory(records.workspace)
+
+        let (across, within) = try await withDependencies {
+            $0.uuid = .incrementing
+            $0.date.now = now
+        } operation: {
+            let within = try await client.move(run.id, toAvenue: health.id, project: race.id)
+            let across = try await client.move(run.id, toAvenue: work.id, project: nil)
+            return (across, within)
+        }
+
+        let code = across.workspace.tasks[run.id].map(across.workspace.displayCode(of:))
+        let moved = try XCTUnwrap(LastChange(across, id: UUID()))
+        XCTAssertTrue(moved.message.contains(try XCTUnwrap(code)))
+        let stayed = try XCTUnwrap(LastChange(within, id: UUID()))
+        XCTAssertFalse(stayed.message.contains(within.workspace.displayCode(of: run)))
+    }
+
     func testAddingACommentIsNotAChangeToUndo() async {
         let run = records.task("Run", in: health, due: 0)
         let store = makeStore(.phone)

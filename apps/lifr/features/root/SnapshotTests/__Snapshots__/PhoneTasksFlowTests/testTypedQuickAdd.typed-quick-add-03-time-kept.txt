@@ -14,6 +14,7 @@
 [button] "Paste" hint: "Adds a task for each line copied"
 [text] "Add a task for each line copied"
 [button] "Book physio appointment" value: "To Do, Medium priority, Overdue, Nov 1, HEALTH-0005"
+[text] "Adds “Call dentist 3pm”"
 [button] "Wed, Nov 4" hint: "Keeps “tomorrow” in the title instead"
 [button] "High" hint: "Keeps “!high” in the title instead"
 [button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 3 Sub tasks closed, WORK-0006"

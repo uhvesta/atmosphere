@@ -227,7 +227,7 @@ package struct TaskDetailView: View {
                 }
             }
         } footer: {
-            Text("Moving a task moves its Sub tasks with it.")
+            Text("Moving a task moves its Sub tasks with it. In another Avenue it gets a new code.")
         }
     }
 

@@ -2157,6 +2157,16 @@
         }
       }
     },
+    "Moved %@ to %@ as %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Moved %1$@ to %2$@ as %3$@"
+          }
+        }
+      }
+    },
     "Moved %@ to the Trash" : {
 
     },
@@ -2176,6 +2186,9 @@
 
     },
     "Moving a task moves its Sub tasks with it." : {
+
+    },
+    "Moving a task moves its Sub tasks with it. In another Avenue it gets a new code." : {
 
     },
     "Name" : {

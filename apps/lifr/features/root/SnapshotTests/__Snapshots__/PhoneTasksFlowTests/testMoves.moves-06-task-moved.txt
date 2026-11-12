@@ -12,7 +12,7 @@
 [button] "Remove due date"
 [button] "Add a time"
 [button] "Add a start date"
-[text] "Moved “Review Q4 roadmap” to Half marathon"
+[text] "Moved “Review Q4 roadmap” to Half marathon as HEALTH-0006"
 [button] "Repeat" value: "Never"
 [button] "Undo"
 [text] "Overdue"
