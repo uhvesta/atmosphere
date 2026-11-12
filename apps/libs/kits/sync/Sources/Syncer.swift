@@ -189,9 +189,8 @@ public actor Syncer<Snapshot: SyncSnapshot> {
             ledger.lastSynced = synced
             // An idle sync leaves the whole ledger as it was, so writing it
             // out again only to note the time can wait.
-            if writes != writesBefore || keptLastSynced.map({ synced.timeIntervalSince($0) >= Self.lastSyncedEvery })
-                != false
-            {
+            let notedLongAgo = keptLastSynced.map { synced.timeIntervalSince($0) >= Self.lastSyncedEvery } ?? true
+            if writes != writesBefore || notedLongAgo {
                 try keep(ledger)
             } else {
                 self.ledger = ledger
