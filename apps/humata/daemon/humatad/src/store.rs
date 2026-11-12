@@ -305,6 +305,16 @@ const MIGRATIONS: &[&str] = &["
     -- The approval or grant a change by another client ran under.
     ALTER TABLE board_changes ADD COLUMN approval_id TEXT NOT NULL DEFAULT '';
     ALTER TABLE board_changes ADD COLUMN grant_id TEXT NOT NULL DEFAULT '';
+", "
+    -- The id the host relay gave a request, so one handed over twice is
+    -- kept once; empty when it came straight from an agent here.
+    ALTER TABLE agent_requests ADD COLUMN client_id TEXT NOT NULL DEFAULT '';
+    CREATE UNIQUE INDEX agent_request_client_ids ON agent_requests (client_id)
+        WHERE client_id != '';
+", "
+    -- How many events the cached history holds, so it's known without
+    -- reading the history; null for one cached before it was kept.
+    ALTER TABLE remote_sessions ADD COLUMN history_events INTEGER;
 "];
 
 /// What reverting a board change did.
@@ -696,11 +706,45 @@ impl Store {
         );
         self.lock()
             .execute(
-                "UPDATE remote_sessions SET history = ?2 WHERE id = ?1",
-                params![session, compressed],
+                "UPDATE remote_sessions SET history = ?2, history_events = ?3 WHERE id = ?1",
+                params![
+                    session,
+                    compressed,
+                    i64::try_from(history.events.len()).unwrap_or(i64::MAX)
+                ],
             )
             .map(drop)
             .map_err(self.failed())
+    }
+
+    /// How many events `session`'s cached history holds; 0 if none is.
+    pub fn cached_history_len(&self, session: &str) -> Result<usize, StoreError> {
+        let counted: Option<Option<i64>> = self
+            .lock()
+            .query_row(
+                "SELECT history_events FROM remote_sessions WHERE id = ?1 AND history IS NOT NULL",
+                [session],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(self.failed())?;
+        match counted {
+            None => Ok(0),
+            Some(Some(count)) => Ok(usize::try_from(count).unwrap_or(0)),
+            Some(None) => Ok(self
+                .cached_history(session)?
+                // Copies from before the parts of a reply were dropped once
+                // it was whole are counted as the host now keeps them.
+                .map_or(0, |history| {
+                    history
+                        .events
+                        .iter()
+                        .filter(|event| {
+                            !matches!(event.kind, Some(pb::session_event::Kind::AssistantDelta(_)))
+                        })
+                        .count()
+                })),
+        }
     }
 
     /// `session`'s history as last read, if it was.
@@ -834,7 +878,10 @@ impl Store {
         })();
         if !added.map_err(self.failed())? {
             return Err(StoreError::AlreadyDecided {
-                proposal: proposed.map(|(_, proposal)| proposal).unwrap_or_default().to_owned(),
+                proposal: proposed
+                    .map(|(_, proposal)| proposal)
+                    .unwrap_or_default()
+                    .to_owned(),
             });
         }
         drop(connection);
@@ -1667,6 +1714,11 @@ mod tests {
             reopened.cached_history("a").ok().flatten(),
             Some(history.clone())
         );
+        assert_eq!(
+            reopened.cached_history_len("a").ok(),
+            Some(history.events.len())
+        );
+        assert_eq!(reopened.cached_history_len("b").ok(), Some(0));
 
         reopened
             .cache_sessions("build", &[session("a")])

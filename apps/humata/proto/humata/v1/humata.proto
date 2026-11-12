@@ -1387,7 +1387,14 @@ message SessionEvent {
     Dequeued dequeued = 18;
     Saved saved = 19;
     Waiting waiting = 20;
+    Notice notice = 21;
   }
+}
+
+// Something the person should know about the session that isn't from the
+// agent, such as that it started over without its earlier conversation.
+message Notice {
+  string text = 1;
 }
 
 // The turn is waiting for something outside it, such as the model server,
@@ -1700,6 +1707,9 @@ message AgentRequest {
 message AskPerson {
   string session_id = 1;
   string text = 2;
+  // Set by the host relay, so a question it hands over again after an
+  // unanswered try reaches the inbox once.
+  string client_id = 3;
 }
 
 // Only to in review, done or won't do; the person approves it.
@@ -1709,6 +1719,8 @@ message RequestMove {
   string item_id = 2;
   ItemStatus status = 3;
   string summary = 4;
+  // As for AskPerson.
+  string client_id = 5;
 }
 
 message RequestMade {

@@ -10,7 +10,7 @@ use crate::error::StoreError;
 const COLUMNS: &str = "SELECT id, session_id, kind, text, item_id, status, created_unix_ms
     FROM agent_requests";
 
-fn request(row: &Row<'_>) -> rusqlite::Result<pb::AgentRequest> {
+fn request_row(row: &Row<'_>) -> rusqlite::Result<pb::AgentRequest> {
     Ok(pb::AgentRequest {
         id: row.get(0)?,
         session_id: row.get(1)?,
@@ -23,17 +23,22 @@ fn request(row: &Row<'_>) -> rusqlite::Result<pb::AgentRequest> {
 }
 
 impl Store {
-    /// Keeps `request` waiting, under a new id, and returns it.
+    /// Keeps `request` waiting, under a new id, and returns it. A request
+    /// whose non-empty `client_id` was kept before isn't added again; the
+    /// one kept is returned.
     pub fn add_request(
         &self,
         mut request: pb::AgentRequest,
+        client_id: &str,
     ) -> Result<pb::AgentRequest, StoreError> {
         request.id = uuid::Uuid::new_v4().to_string();
         request.created_unix_ms = now_unix_ms();
-        self.lock()
+        let connection = self.lock();
+        let added = connection
             .execute(
                 "INSERT INTO agent_requests (id, session_id, kind, text, item_id, status,
-                    created_unix_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    created_unix_ms, client_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    ON CONFLICT (client_id) WHERE client_id != '' DO NOTHING",
                 params![
                     request.id,
                     request.session_id,
@@ -42,9 +47,19 @@ impl Store {
                     request.item_id,
                     request.status,
                     request.created_unix_ms,
+                    client_id,
                 ],
             )
             .map_err(self.failed())?;
+        if added == 0 {
+            return connection
+                .query_row(
+                    &format!("{COLUMNS} WHERE client_id = ?1"),
+                    params![client_id],
+                    request_row,
+                )
+                .map_err(self.failed());
+        }
         Ok(request)
     }
 
@@ -57,7 +72,7 @@ impl Store {
             ))
             .map_err(self.failed())?;
         statement
-            .query_map([], request)
+            .query_map([], request_row)
             .and_then(Iterator::collect)
             .map_err(self.failed())
     }
@@ -80,7 +95,7 @@ impl Store {
             .query_row(
                 &format!("{COLUMNS} WHERE id = ?1 AND answered_unix_ms IS NULL"),
                 params![id],
-                request,
+                request_row,
             )
             .optional()
             .map_err(self.failed())?
@@ -152,10 +167,10 @@ mod tests {
         let (first, second) = {
             let store = Store::open(&path).unwrap_or_else(|error| panic!("{error}"));
             let first = store
-                .add_request(question("s", "Which database?"))
+                .add_request(question("s", "Which database?"), "")
                 .unwrap_or_else(|error| panic!("{error}"));
             let second = store
-                .add_request(question("s", "Tabs or spaces?"))
+                .add_request(question("s", "Tabs or spaces?"), "")
                 .unwrap_or_else(|error| panic!("{error}"));
             (first, second)
         };
@@ -180,5 +195,26 @@ mod tests {
             store.open_request(&first.id),
             Err(StoreError::UnknownRequest { .. })
         ));
+    }
+
+    #[test]
+    fn a_request_handed_over_twice_waits_once() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let store = Store::open(&dir.path().join("humata.sqlite3"))
+            .unwrap_or_else(|error| panic!("{error}"));
+        let first = store
+            .add_request(question("s", "Which database?"), "relay-1")
+            .unwrap_or_else(|error| panic!("{error}"));
+        let again = store
+            .add_request(question("s", "Which database?"), "relay-1")
+            .unwrap_or_else(|error| panic!("{error}"));
+        let other = store
+            .add_request(question("s", "Which database?"), "")
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(again, first);
+        let open = store
+            .open_requests()
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(open, vec![first, other]);
     }
 }

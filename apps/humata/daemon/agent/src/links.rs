@@ -32,6 +32,17 @@ pub(crate) struct PendingFork {
     pub(crate) source: String,
 }
 
+/// Said when a session with earlier turns has no backend session to carry
+/// on, so its agent starts with none of what came before.
+pub(crate) const STARTED_OVER: &str = "The agent started a new conversation: its earlier one in this session couldn't be found, so it doesn't know what was said before. Tell it what it needs from before to carry on.";
+
+/// Whether `history` holds a finished turn before the one starting.
+pub(crate) fn had_turns(history: &[Event]) -> bool {
+    history
+        .iter()
+        .any(|event| matches!(event.kind, crate::event::EventKind::TurnEnded { .. }))
+}
+
 impl Links {
     pub(crate) fn path(root: &Path, session: &str) -> PathBuf {
         root.join("links").join(format!("{session}.json"))

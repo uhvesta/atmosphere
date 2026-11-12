@@ -386,6 +386,7 @@ extension SessionEvent {
         case .idle: kind = .idle
         case .failed(let failed): kind = .failed(failed.message)
         case .waiting(let waiting): kind = .waiting(waiting.reason)
+        case .notice(let notice): kind = .notice(notice.text)
         case .usage(let usage):
             kind = .usage(
                 model: usage.model, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,

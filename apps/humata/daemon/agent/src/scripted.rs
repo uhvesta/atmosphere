@@ -821,7 +821,16 @@ mod tests {
             .expect("sent");
         wait_for(&fixture.agent, &fork.id, idle_turns(2)).await;
         let after = fixture.agent.history(&id).await.expect("history");
-        assert_eq!(after, original, "the original is untouched");
+        assert_eq!(after, whole(original), "the original is untouched");
+    }
+
+    /// `events` as a history keeps them once its replies are whole: without
+    /// the parts they streamed in.
+    fn whole(events: Vec<Event>) -> Vec<Event> {
+        events
+            .into_iter()
+            .filter(|event| !matches!(event.kind, EventKind::AssistantDelta { .. }))
+            .collect()
     }
 
     #[tokio::test]
@@ -851,7 +860,7 @@ mod tests {
             LocalAgent::open(fixture.state.path(), ScriptedRunner::new(Script::default()))
                 .expect("reopens");
         let after = reopened.history(&id).await.expect("history");
-        assert_eq!(after, before);
+        assert_eq!(after, whole(before));
         let ids: Vec<_> = reopened
             .sessions()
             .await
@@ -863,7 +872,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_session_cut_off_mid_turn_reopens_aborted() {
+    async fn a_session_cut_off_mid_turn_reopens_aborted_and_failed() {
         let fixture = fixture(vec![rule("", vec![write_file("a.txt", "a")])]);
         let id = fixture.start().await;
         fixture
@@ -877,7 +886,7 @@ mod tests {
             LocalAgent::open(fixture.state.path(), ScriptedRunner::new(Script::default()))
                 .expect("reopens");
         let history = reopened.history(&id).await.expect("history");
-        assert_eq!(SessionState::after(&history), SessionState::Idle);
+        assert_eq!(SessionState::after(&history), SessionState::Failed);
         assert!(
             history
                 .iter()

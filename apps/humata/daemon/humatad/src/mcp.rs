@@ -221,6 +221,7 @@ impl Server {
                 let ask = pb::AskPerson {
                     session_id: self.session.clone(),
                     text: required(text("question"), "question")?,
+                    client_id: String::new(),
                 };
                 match self.ask(pb::request::Kind::AskPerson(ask)).await? {
                     pb::response::Kind::RequestMade(made) if made.request.is_none() => Ok(
@@ -252,6 +253,7 @@ impl Server {
                     item_id,
                     status: status.into(),
                     summary,
+                    client_id: String::new(),
                 };
                 match self.ask(pb::request::Kind::RequestMove(asked)).await? {
                     pb::response::Kind::RequestMade(made) if made.request.is_none() => Ok(format!(

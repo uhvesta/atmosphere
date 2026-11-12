@@ -147,6 +147,9 @@ const SESSION_STATE: &str = "session-state";
 
 /// Plays turns on the Copilot CLI, started when first needed and again if it
 /// stops.
+/// The folder under the state one where the running CLI is noted.
+const RUNNING: &str = "running";
+
 pub struct CopilotRunner {
     options: CopilotOptions,
     cli: tokio::sync::Mutex<Option<Arc<Cli>>>,
@@ -157,6 +160,7 @@ pub struct CopilotRunner {
 
 impl CopilotRunner {
     pub fn new(options: CopilotOptions) -> Self {
+        crate::children::stop_left(&options.state.join(RUNNING));
         Self {
             options,
             cli: tokio::sync::Mutex::new(None),
@@ -175,7 +179,12 @@ impl CopilotRunner {
         if let Some(running) = cli.as_ref().filter(|cli| cli.is_running()) {
             return Ok(running.clone());
         }
-        let started = Cli::start(&self.options.program, &self.options.env.vars()).await?;
+        let started = Cli::start(
+            &self.options.program,
+            &self.options.env.vars(),
+            &self.options.state.join(RUNNING),
+        )
+        .await?;
         *cli = Some(started.clone());
         Ok(started)
     }
@@ -214,6 +223,11 @@ impl CopilotRunner {
             }
             None => {
                 links.events.clear();
+                if crate::links::had_turns(&turn.history()) {
+                    turn.emit(EventKind::Notice {
+                        text: crate::links::STARTED_OVER.to_owned(),
+                    })?;
+                }
                 let created = cli
                     .call(
                         "session.create",

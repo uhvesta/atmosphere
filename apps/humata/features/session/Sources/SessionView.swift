@@ -343,6 +343,11 @@ package struct SessionView: View {
             Label("Stopped", systemImage: "stop.circle")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+        case .notice(_, let text):
+            Label(text, systemImage: "info.circle")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
         case .failure(let id, let message):
             HStack(alignment: .firstTextBaseline) {
                 Label(message, systemImage: "exclamationmark.triangle")

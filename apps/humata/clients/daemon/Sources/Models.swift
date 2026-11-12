@@ -961,6 +961,9 @@ package struct SessionEvent: Identifiable, Hashable, Sendable {
         /// The turn can't go on yet, and says why; any later event means it
         /// went on.
         case waiting(String)
+        /// Something the person should know that isn't from the agent, such
+        /// as that it started over without its earlier conversation.
+        case notice(String)
         case usage(model: String, inputTokens: UInt64, outputTokens: UInt64, premiumRequests: Double)
         /// The session's code was saved after a turn; a fork with code made
         /// after this starts from it.

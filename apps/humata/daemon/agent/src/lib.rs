@@ -10,6 +10,7 @@
 //! queues and steers turns, holds approvals and forks.
 
 mod backup;
+mod children;
 mod claude;
 mod copilot;
 mod env;

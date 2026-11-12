@@ -1,5 +1,10 @@
 //! A session's history: events in memory, appended to a JSON-lines file and
 //! broadcast to whoever watches.
+//!
+//! The parts of a reply as it streams are only for watchers, and for one
+//! that starts watching part way through it. They're never written to the
+//! file and are dropped from memory once the reply they make up is whole,
+//! so a history read again doesn't carry every reply twice.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -9,7 +14,7 @@ use std::sync::Mutex;
 use tokio::sync::broadcast;
 
 use crate::error::AgentError;
-use crate::event::Event;
+use crate::event::{Event, EventKind};
 use crate::summary::Summary;
 
 /// How many events a watcher can fall behind before it lags.
@@ -23,6 +28,8 @@ pub(crate) struct EventLog {
 
 struct Inner {
     events: Vec<Event>,
+    /// Where the parts of the reply streaming now start in `events`.
+    streaming: Option<usize>,
     /// Kept up to date with `events`.
     summary: Summary,
     file: File,
@@ -35,6 +42,10 @@ impl EventLog {
             path: path.clone(),
             source,
         })?;
+        let events: Vec<Event> = events
+            .into_iter()
+            .filter(|event| !streamed(event))
+            .collect();
         let mut text = String::new();
         for event in &events {
             text.push_str(&encode(event)?);
@@ -72,14 +83,20 @@ impl EventLog {
                 kept = start.min(bytes.len());
                 continue;
             }
-            match serde_json::from_slice(line) {
+            // Written before parts of replies were left out; they're
+            // dropped as they're read.
+            match serde_json::from_slice::<Event>(line) {
                 Ok(event) if complete => {
-                    events.push(event);
+                    if !streamed(&event) {
+                        events.push(event);
+                    }
                     kept = start;
                 }
                 // Whole but for its newline: the write was cut after it.
                 Ok(event) => {
-                    events.push(event);
+                    if !streamed(&event) {
+                        events.push(event);
+                    }
                     kept = bytes.len();
                 }
                 Err(_) if !complete => break,
@@ -120,23 +137,41 @@ impl EventLog {
             inner: Mutex::new(Inner {
                 summary: Summary::of(&events),
                 events,
+                streaming: None,
                 file,
             }),
             live,
         }
     }
 
-    /// Writes the event, then tells watchers.
+    /// Writes the event, then tells watchers. Part of a reply as it
+    /// streams is kept only until the reply is whole, or its turn ends.
     pub(crate) fn append(&self, event: Event) -> Result<Event, AgentError> {
-        let line = encode(&event)?;
         let mut inner = self.lock();
-        inner
-            .file
-            .write_all(line.as_bytes())
-            .map_err(|source| AgentError::Write {
-                path: self.path.clone(),
-                source,
-            })?;
+        if streamed(&event) {
+            if inner.streaming.is_none() {
+                inner.streaming = Some(inner.events.len());
+            }
+        } else {
+            let line = encode(&event)?;
+            inner
+                .file
+                .write_all(line.as_bytes())
+                .map_err(|source| AgentError::Write {
+                    path: self.path.clone(),
+                    source,
+                })?;
+            if matches!(
+                event.kind,
+                EventKind::AssistantMessage { .. } | EventKind::TurnEnded { .. }
+            ) && let Some(from) = inner.streaming.take()
+            {
+                let tail = inner.events.split_off(from);
+                inner
+                    .events
+                    .extend(tail.into_iter().filter(|kept| !streamed(kept)));
+            }
+        }
         inner.summary.add(&event);
         inner.events.push(event.clone());
         // No watchers is not an error.
@@ -168,6 +203,11 @@ impl EventLog {
     }
 }
 
+/// Whether `event` is part of a reply as it streams.
+fn streamed(event: &Event) -> bool {
+    matches!(event.kind, EventKind::AssistantDelta { .. })
+}
+
 fn encode(event: &Event) -> Result<String, AgentError> {
     let mut line = serde_json::to_string(event).map_err(|source| AgentError::Encode { source })?;
     line.push('\n');
@@ -177,7 +217,6 @@ fn encode(event: &Event) -> Result<String, AgentError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::EventKind;
 
     fn said(text: &str) -> Event {
         Event::now(EventKind::UserMessage { text: text.into() })
@@ -226,5 +265,44 @@ mod tests {
             EventLog::open(path),
             Err(AgentError::CorruptHistory { line: 1, .. })
         ));
+    }
+
+    #[test]
+    fn the_parts_of_a_reply_are_kept_only_until_it_is_whole() {
+        let folder = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = folder.path().join("events.jsonl");
+        let log = EventLog::create(path.clone(), vec![said("hi")])
+            .unwrap_or_else(|error| panic!("{error}"));
+        let (_, mut live) = log.watch();
+        let append = |kind| {
+            log.append(Event::now(kind))
+                .unwrap_or_else(|error| panic!("{error}"))
+        };
+        append(EventKind::AssistantDelta { text: "hel".into() });
+        append(EventKind::AssistantDelta { text: "lo".into() });
+        // One who starts watching now sees the reply so far.
+        assert_eq!(log.events().len(), 3);
+        append(EventKind::AssistantMessage {
+            text: "hello".into(),
+        });
+        let kinds = |events: Vec<Event>| -> Vec<EventKind> {
+            events.into_iter().map(|event| event.kind).collect()
+        };
+        let whole = vec![
+            EventKind::UserMessage { text: "hi".into() },
+            EventKind::AssistantMessage {
+                text: "hello".into(),
+            },
+        ];
+        assert_eq!(kinds(log.events()), whole);
+        // Those watching got every part.
+        let mut streamed = 0;
+        while let Ok(event) = live.try_recv() {
+            streamed += usize::from(matches!(event.kind, EventKind::AssistantDelta { .. }));
+        }
+        assert_eq!(streamed, 2);
+        drop(log);
+        let reopened = EventLog::open(path).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(kinds(reopened.events()), whole);
     }
 }

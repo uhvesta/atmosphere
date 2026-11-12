@@ -3057,6 +3057,7 @@ async fn an_open_question_puts_the_task_in_waiting_on_you_until_answered() {
         .call(pb::request::Kind::AskPerson(pb::AskPerson {
             session_id: session.id.clone(),
             text: "Which login provider?".to_owned(),
+            client_id: String::new(),
         }))
         .await;
     let Ok(pb::response::Kind::RequestMade(pb::RequestMade {
@@ -3104,6 +3105,7 @@ fn question(session: &str, text: &str) -> pb::request::Kind {
     pb::request::Kind::AskPerson(pb::AskPerson {
         session_id: session.to_owned(),
         text: text.to_owned(),
+        client_id: String::new(),
     })
 }
 

@@ -346,7 +346,7 @@ impl<R: Runner> LocalAgent<R> {
                     continue;
                 }
             };
-            for kind in closing(&session.log.events()) {
+            for kind in stopped(&session.log.events()) {
                 session.log.append(Event::now(kind))?;
             }
             sessions.insert(session.id.clone(), Arc::new(session));
@@ -951,7 +951,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
         // Its worktrees are made again from its last snapshot.
         record.checkouts = Vec::new();
         let mut events = backup.events;
-        events.extend(closing(&events).into_iter().map(Event::now));
+        events.extend(stopped(&events).into_iter().map(Event::now));
         self.runner.restore(&record, &backup.backend)?;
         let session = self.create(record, events)?;
         let archived = session.lock().record.archived;
@@ -1320,6 +1320,25 @@ fn closing(events: &[Event]) -> Vec<EventKind> {
     kinds
 }
 
+/// As `closing`, for a session whose turn Humata stopped running, at a
+/// restart or a move: a cut turn ends as failed, so the inbox says it
+/// stopped rather than that the agent replied.
+fn stopped(events: &[Event]) -> Vec<EventKind> {
+    let mut kinds = closing(events);
+    if let Some(at) = kinds
+        .iter()
+        .position(|kind| *kind == EventKind::TurnEnded { aborted: true })
+    {
+        kinds.insert(
+            at,
+            EventKind::Failed {
+                message: "Humata stopped while this turn ran, so it was cut short. Send a message to carry on from where it stopped; check its last changes first, as a tool may have been cut off partway.".to_owned(),
+            },
+        );
+    }
+    kinds
+}
+
 fn closing_turn(events: &[Event]) -> Vec<EventKind> {
     match SessionState::after(events) {
         SessionState::Working | SessionState::WaitingForApproval => {
@@ -1442,6 +1461,22 @@ pub(crate) mod tests {
             closing(&events),
             vec![EventKind::TurnEnded { aborted: true }, EventKind::Idle]
         );
+    }
+
+    #[test]
+    fn a_turn_cut_by_a_stop_ends_failed() {
+        let mut events = vec![
+            Event::now(EventKind::UserMessage { text: "hi".into() }),
+            Event::now(EventKind::TurnStarted),
+        ];
+        events.extend(stopped(&events).into_iter().map(Event::now));
+        assert_eq!(SessionState::after(&events), SessionState::Failed);
+        let finished = vec![
+            Event::now(EventKind::TurnStarted),
+            Event::now(EventKind::TurnEnded { aborted: false }),
+            Event::now(EventKind::Idle),
+        ];
+        assert!(stopped(&finished).is_empty());
     }
 
     #[test]

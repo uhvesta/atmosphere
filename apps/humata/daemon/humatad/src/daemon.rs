@@ -2,7 +2,7 @@
 //! sessions on this Mac or passes them to a host it reaches over a command's
 //! stdin and stdout (in practice `ssh <host> humatad host --stdio`).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError, RwLock, Weak};
 
@@ -560,7 +560,7 @@ impl Daemon {
             .map(|project| (project.id.as_str(), project.name.as_str()))
             .collect();
         let requests = self.store.open_requests()?;
-        let asking: std::collections::HashSet<&str> = requests
+        let asking: HashSet<&str> = requests
             .iter()
             .map(|request| request.session_id.as_str())
             .collect();
@@ -647,12 +647,15 @@ impl Daemon {
             return Err(DaemonError::NoRequestText);
         }
         self.placement(&ask.session_id).await?;
-        Ok(self.store.add_request(pb::AgentRequest {
-            session_id: ask.session_id,
-            kind: pb::AgentRequestKind::Question.into(),
-            text: text.to_owned(),
-            ..Default::default()
-        })?)
+        Ok(self.store.add_request(
+            pb::AgentRequest {
+                session_id: ask.session_id,
+                kind: pb::AgentRequestKind::Question.into(),
+                text: text.to_owned(),
+                ..Default::default()
+            },
+            &ask.client_id,
+        )?)
     }
 
     async fn request_move(&self, asked: pb::RequestMove) -> Result<pb::AgentRequest, DaemonError> {
@@ -680,14 +683,17 @@ impl Daemon {
             }
             .into());
         }
-        Ok(self.store.add_request(pb::AgentRequest {
-            session_id: asked.session_id,
-            kind: pb::AgentRequestKind::Move.into(),
-            text: summary.to_owned(),
-            item_id: item.id,
-            status: status.into(),
-            ..Default::default()
-        })?)
+        Ok(self.store.add_request(
+            pb::AgentRequest {
+                session_id: asked.session_id,
+                kind: pb::AgentRequestKind::Move.into(),
+                text: summary.to_owned(),
+                item_id: item.id,
+                status: status.into(),
+                ..Default::default()
+            },
+            &asked.client_id,
+        )?)
     }
 
     /// Does what the person answered, then takes the request out of the
@@ -1050,12 +1056,10 @@ impl Daemon {
             other => return other,
         };
         let store = self.store.clone();
-        // Histories only grow, so a copy is written only when it has more
-        // than the last, never part of the replay over a fuller one.
-        let mut kept = self
-            .store
-            .cached_history(&session)?
-            .map_or(0, |history| history.events.len());
+        // A history grows by a turn at a time, so a copy is written only
+        // when it has more than the last, never part of the replay over a
+        // fuller one.
+        let mut kept = self.store.cached_history_len(&session)?;
         // The events the host sends first that this Mac already has: their
         // saves and turns were backed up when they happened, so replaying
         // them must not send the whole session over again.
@@ -1063,9 +1067,15 @@ impl Daemon {
         let (items, receiver) = mpsc::channel(64);
         let (daemon, host) = (self.me.clone(), host.to_owned());
         tokio::spawn(async move {
-            let mut events = Vec::new();
-            // Events of a replay already passed on, after re-watching.
-            let mut skip = 0;
+            // The history so far, without the parts of replies since
+            // made whole, as the host keeps it.
+            let mut events: Vec<pb::SessionEvent> = Vec::new();
+            // Where the parts of the reply being streamed start in `events`.
+            let mut streaming: Option<usize> = None;
+            // Every event passed on, so a replay after re-watching passes on
+            // only those not sent before. A history drops the parts of a
+            // reply once it is whole, so it can't be skipped by count.
+            let mut sent = HashSet::new();
             let mut keep = |events: &Vec<pb::SessionEvent>| {
                 if events.len() <= kept {
                     return;
@@ -1095,7 +1105,6 @@ impl Daemon {
                     match daemon.rewatch(&host, &session, &items).await {
                         Some(stream) => {
                             upstream = stream;
-                            skip = events.len();
                             continue;
                         }
                         None => break,
@@ -1105,16 +1114,34 @@ impl Daemon {
                     kind: Some(pb::stream_item::Kind::SessionEvent(event)),
                 }) = &item
                 {
-                    if skip > 0 {
-                        skip -= 1;
+                    if !sent.insert(event.id.clone()) {
                         continue;
                     }
+                    match event.kind {
+                        Some(pb::session_event::Kind::AssistantDelta(_)) => {
+                            streaming.get_or_insert(events.len());
+                        }
+                        Some(
+                            pb::session_event::Kind::AssistantMessage(_)
+                            | pb::session_event::Kind::TurnEnded(_),
+                        ) => {
+                            if let Some(from) = streaming.take() {
+                                let tail = events.split_off(from);
+                                events.extend(tail.into_iter().filter(|kept| {
+                                    !matches!(
+                                        kept.kind,
+                                        Some(pb::session_event::Kind::AssistantDelta(_))
+                                    )
+                                }));
+                            }
+                        }
+                        _ => {}
+                    }
                     events.push(event.clone());
-                    if matches!(
-                        event.kind,
-                        Some(pb::session_event::Kind::Idle(_))
-                            | Some(pb::session_event::Kind::Checkpoint(_))
-                    ) {
+                    // Once a turn, at its end: its checkpoint comes just
+                    // before, and a copy cut short of it is kept at the
+                    // watch's end.
+                    if matches!(event.kind, Some(pb::session_event::Kind::Idle(_))) {
                         keep(&events);
                     }
                     let replayed = events.len() <= known;

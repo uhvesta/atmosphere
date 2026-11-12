@@ -538,3 +538,86 @@ async fn an_aborted_turn_stops_and_the_next_one_runs() {
     );
     assert_eq!(replies(&events), vec!["Back."], "{events:#?}");
 }
+
+/// What Copilot does with a turn cut off by a crash: resumed, it mustn't
+/// run the turn again by itself, which would spend its tokens a second
+/// time, nor send what it replays of the session twice.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_cut_off_by_a_crash_isnt_run_again_on_resume() {
+    let setup = Setup::with_model(Model {
+        // The cut turn's request never answers; any other is "Done.".
+        replies: Mutex::new(vec![Reply::Hang]),
+        answers: vec![("banana", Reply::Text("Back."))],
+        ..Model::default()
+    })
+    .await;
+    let asked_apricot = |requests: &[String]| {
+        requests
+            .iter()
+            .filter(|messages| {
+                serde_json::from_str::<Value>(messages)
+                    .ok()
+                    .and_then(|messages| {
+                        messages
+                            .as_array()?
+                            .iter()
+                            .rev()
+                            .find(|message| message["role"] == "user")
+                            .cloned()
+                    })
+                    .is_some_and(|last| last["content"].to_string().contains("apricot"))
+            })
+            .count()
+    };
+
+    // A daemon of its own, dropped whole mid-turn as a crash would: its
+    // tasks end and its CLI is killed, with nothing written after.
+    let session = tokio::task::block_in_place(|| {
+        let crashed = tokio::runtime::Runtime::new().expect("a runtime");
+        let session = crashed.block_on(async {
+            let agent = setup.agent();
+            let session = agent.start(setup.start_options()).await.expect("start");
+            agent
+                .send(&session.id, "apricot".into(), SendMode::Enqueue)
+                .await
+                .expect("send");
+            let deadline = tokio::time::Instant::now() + TIMEOUT;
+            while asked_apricot(&setup.model.requests()) == 0 {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the model was never asked"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            // Kept from dropping, so its CLI runs on as a killed
+            // daemon's would.
+            std::mem::forget(agent);
+            session
+        });
+        crashed.shutdown_timeout(Duration::from_secs(5));
+        session
+    });
+    // The next start stops the CLI left running, as the daemon's does.
+    let agent = setup.agent();
+    let history = agent.history(&session.id).await.expect("history");
+    assert_eq!(SessionState::after(&history), SessionState::Failed);
+
+    // Resumed, it waits for the person; give it a moment to do otherwise.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(asked_apricot(&setup.model.requests()), 1);
+
+    agent
+        .send(&session.id, "banana".into(), SendMode::Enqueue)
+        .await
+        .expect("send");
+    let before = history.len();
+    let events = wait_for(&agent, &session.id, idle_turns(2)).await;
+    let after = &events[before..];
+    assert_eq!(replies(after), vec!["Back."], "{after:#?}");
+    let said = after
+        .iter()
+        .filter(|event| matches!(&event.kind, EventKind::UserMessage { text } if text == "banana"))
+        .count();
+    assert_eq!(said, 1, "{after:#?}");
+    assert_eq!(asked_apricot(&setup.model.requests()), 1);
+}

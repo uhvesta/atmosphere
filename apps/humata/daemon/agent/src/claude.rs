@@ -24,6 +24,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufRead
 use tokio::process::{ChildStdin, Command};
 
 use crate::backup::{self, BackendFile};
+use crate::children;
 use crate::env::Env;
 use crate::error::AgentError;
 use crate::event::{EventKind, PermissionKind, SessionId, SessionRecord};
@@ -37,6 +38,9 @@ pub const CLAUDE_VERSION: &str = "2.1.322";
 
 /// How often a running turn passes on steering messages.
 const STEER_EVERY: Duration = Duration::from_millis(100);
+
+/// The folder under the state one where running CLIs are noted.
+const RUNNING: &str = "running";
 
 /// How long the CLI gets to exit after a turn before it's stopped.
 const EXIT_WAIT: Duration = Duration::from_secs(10);
@@ -118,6 +122,7 @@ pub struct ClaudeRunner {
 
 impl ClaudeRunner {
     pub fn new(options: ClaudeOptions) -> Self {
+        children::stop_left(&options.state.join(RUNNING));
         Self { options }
     }
 
@@ -203,6 +208,7 @@ impl ClaudeRunner {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .process_group(0)
             .kill_on_drop(true);
         (command, session)
     }
@@ -325,11 +331,20 @@ impl Runner for ClaudeRunner {
                 projects,
             });
         }
+        if links.session.is_none()
+            && links.fork.is_none()
+            && crate::links::had_turns(&turn.history())
+        {
+            turn.emit(EventKind::Notice {
+                text: crate::links::STARTED_OVER.to_owned(),
+            })?;
+        }
         let (mut command, session) = self.command(&record, &mut links);
         let mut child = command.spawn().map_err(|source| ClaudeError::Start {
             program: self.options.program.clone(),
             source,
         })?;
+        let _noted = children::Noted::note(&self.options.state.join(RUNNING), child.id());
         let (Some(stdin), Some(stdout), Some(stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {
@@ -469,11 +484,14 @@ impl Playing<'_> {
             return Ok(false);
         }
         match event["type"].as_str().unwrap_or_default() {
-            "system" => {
-                if event["subtype"] == "init"
-                    && let Some(model) = event["model"].as_str()
-                {
+            "system" if event["subtype"] == "init" => {
+                if let Some(model) = event["model"].as_str() {
                     model.clone_into(&mut self.model);
+                }
+                // The session it says it plays in is the one the next turn
+                // resumes, should a version give a resumed one a new id.
+                if let Some(session) = event["session_id"].as_str().filter(|id| !id.is_empty()) {
+                    session.clone_into(&mut self.session);
                 }
             }
             "stream_event" => {

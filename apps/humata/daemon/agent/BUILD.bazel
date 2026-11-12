@@ -10,6 +10,7 @@ rust_library(
     visibility = ["//apps/humata/daemon:__subpackages__"],
     deps = [
         "//apps/humata/daemon/workspace",
+        "@crates//:rustix",
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:thiserror",

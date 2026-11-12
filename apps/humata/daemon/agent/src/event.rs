@@ -143,6 +143,11 @@ pub enum EventKind {
     Waiting {
         reason: String,
     },
+    /// Something the person should know that isn't from the agent, such as
+    /// that it started over without its earlier conversation.
+    Notice {
+        text: String,
+    },
     Usage {
         model: String,
         input_tokens: u64,

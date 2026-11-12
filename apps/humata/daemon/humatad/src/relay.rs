@@ -216,7 +216,15 @@ impl Relay {
             }
             // Made while the Mac is away, they wait in the queue, and the
             // agent hears it was asked with no request yet.
-            pb::request::Kind::AskPerson(_) | pb::request::Kind::RequestMove(_) => {
+            // One id for every try, so the inbox keeps it once however
+            // often it's handed over.
+            mut request @ (pb::request::Kind::AskPerson(_) | pb::request::Kind::RequestMove(_)) => {
+                let client_id = uuid::Uuid::new_v4().to_string();
+                match &mut request {
+                    pb::request::Kind::AskPerson(ask) => ask.client_id = client_id,
+                    pb::request::Kind::RequestMove(asked) => asked.client_id = client_id,
+                    _ => {}
+                }
                 match self.send(request.clone()).await {
                     Err(RelayError::NotWatched | RelayError::TimedOut { .. }) => {
                         self.enqueue(request)?;
@@ -338,7 +346,16 @@ mod tests {
         pb::request::Kind::AskPerson(pb::AskPerson {
             session_id: "s1".to_owned(),
             text: text.to_owned(),
+            client_id: String::new(),
         })
+    }
+
+    /// The question `call` asks, and the id it's asked under.
+    fn asked(call: &pb::request::Kind) -> (&str, &str) {
+        match call {
+            pb::request::Kind::AskPerson(ask) => (&ask.text, &ask.client_id),
+            other => panic!("expected a question, got {other:?}"),
+        }
     }
 
     fn calls(reply: Reply) -> mpsc::Receiver<Result<pb::StreamItem, pb::Error>> {
@@ -415,7 +432,7 @@ mod tests {
         let mut daemon = calls(relay.watch());
         for text in ["one", "two"] {
             let (id, call) = next_call(&mut daemon).await;
-            assert_eq!(call, ask(text));
+            assert_eq!(asked(&call).0, text);
             answer(
                 &relay,
                 id,
@@ -444,12 +461,14 @@ mod tests {
         assert!(made.is_ok(), "{made:?}");
 
         let mut gone = calls(relay.watch());
-        let _ = next_call(&mut gone).await;
+        let (_, tried) = next_call(&mut gone).await;
         drop(gone);
 
+        // Handed over again under the same id, so the inbox keeps it once.
         let mut daemon = calls(relay.watch());
         let (id, call) = next_call(&mut daemon).await;
-        assert_eq!(call, ask("one"));
+        assert_eq!(asked(&call), asked(&tried));
+        assert!(!asked(&call).1.is_empty());
         answer(
             &relay,
             id,

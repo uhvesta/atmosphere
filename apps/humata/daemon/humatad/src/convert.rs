@@ -75,6 +75,7 @@ pub fn event(event: &Event) -> pb::SessionEvent {
         EventKind::Failed { message } => Kind::Failed(pb::SessionFailed {
             message: message.clone(),
         }),
+        EventKind::Notice { text } => Kind::Notice(pb::Notice { text: text.clone() }),
         EventKind::Waiting { reason } => Kind::Waiting(pb::Waiting {
             reason: reason.clone(),
         }),

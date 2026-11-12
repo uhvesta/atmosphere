@@ -30,6 +30,7 @@ pub(super) struct Cli {
     shared: Arc<Mutex<Shared>>,
     /// Killed when dropped.
     _child: Child,
+    _noted: Option<crate::children::Noted>,
 }
 
 #[derive(Default)]
@@ -47,6 +48,7 @@ impl Cli {
     pub(super) async fn start(
         program: &Path,
         env: &[(String, String)],
+        running: &Path,
     ) -> Result<Arc<Self>, CopilotError> {
         let mut child = Command::new(program)
             .args(["--server", "--stdio", "--no-auto-update"])
@@ -55,12 +57,14 @@ impl Cli {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
+            .process_group(0)
             .kill_on_drop(true)
             .spawn()
             .map_err(|source| CopilotError::Start {
                 program: program.to_owned(),
                 source,
             })?;
+        let noted = crate::children::Noted::note(running, child.id());
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             return Err(CopilotError::Exited);
         };
@@ -72,6 +76,7 @@ impl Cli {
             next_id: AtomicU64::new(1),
             shared,
             _child: child,
+            _noted: noted,
         });
         let hello = cli.call("connect", json!({})).await?;
         let found = hello.get("protocolVersion").and_then(Value::as_i64);

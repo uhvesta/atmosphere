@@ -14,13 +14,15 @@ package enum ChatItem: Identifiable, Hashable, Sendable {
     /// The person stopped the turn.
     case stopped(id: String)
     case failure(id: String, message: String)
+    /// Said by Humata, not the agent.
+    case notice(id: String, text: String)
     /// What a turn used, where it ended; only for turns that report it.
     case cost(id: String, Usage)
 
     package var id: String {
         switch self {
         case .person(let id, _), .reply(let id, _), .thinking(let id, _), .permission(let id, _), .stopped(let id),
-            .failure(let id, _), .cost(let id, _):
+            .failure(let id, _), .notice(let id, _), .cost(let id, _):
             id
         case .tool(let call): call.id
         }
@@ -223,6 +225,8 @@ extension ChatItem {
                 answer(request, automatic ? .allowedByMode : approved ? .approved : .denied)
             case .failed(let message):
                 items.append(.failure(id: event.id, message: message))
+            case .notice(let text):
+                items.append(.notice(id: event.id, text: text))
             case .turnStarted, .assistantDelta, .turnEnded, .idle, .usage, .checkpoint, .messageQueued, .dequeued,
                 .waiting:
                 continue

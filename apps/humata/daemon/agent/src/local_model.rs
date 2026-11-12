@@ -693,35 +693,55 @@ fn messages(instructions: Option<&str>, history: &[Event]) -> Vec<Value> {
         system.push_str(instructions);
     }
     let mut messages = vec![json!({"role": "system", "content": system})];
+    // Calls with no result yet. One a restart cut off never gets one, and
+    // servers refuse a call without its result, so it's given one.
+    let mut open: Vec<&str> = Vec::new();
+    let close = |messages: &mut Vec<Value>, open: &mut Vec<&str>| {
+        for call_id in open.drain(..) {
+            messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": INTERRUPTED}));
+        }
+    };
     for event in history {
         match &event.kind {
             EventKind::UserMessage { text } => {
+                close(&mut messages, &mut open);
                 messages.push(json!({"role": "user", "content": text}));
             }
             EventKind::AssistantMessage { text } => {
+                close(&mut messages, &mut open);
                 messages.push(json!({"role": "assistant", "content": text}));
             }
             EventKind::ToolStarted {
                 call_id,
                 tool,
                 arguments_json,
-            } => messages.push(json!({
-                "role": "assistant",
-                "content": null,
-                "tool_calls": [{
-                    "id": call_id,
-                    "type": "function",
-                    "function": {"name": tool, "arguments": arguments_json},
-                }],
-            })),
+            } => {
+                open.push(call_id);
+                messages.push(json!({
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": tool, "arguments": arguments_json},
+                    }],
+                }));
+            }
             EventKind::ToolCompleted {
                 call_id, output, ..
-            } => messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": output})),
+            } => {
+                open.retain(|open| open != call_id);
+                messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": output}));
+            }
             _ => {}
         }
     }
+    close(&mut messages, &mut open);
     messages
 }
+
+/// The result given a tool call that was cut off before it finished.
+const INTERRUPTED: &str = "This tool call was interrupted before it finished, so its result is unknown. Check what it was meant to change before relying on it.";
 
 fn tools() -> Value {
     let tool = |name: &str, description: &str, parameters: Value| {
@@ -1426,5 +1446,44 @@ mod tests {
         assert_eq!(inside(root, Path::new("../a")), None);
         assert_eq!(inside(root, Path::new("/etc/passwd")), None);
         assert_eq!(inside(root, Path::new("")), None);
+    }
+
+    #[test]
+    fn a_tool_call_cut_off_before_its_result_still_gets_one() {
+        let history = [
+            EventKind::UserMessage { text: "go".into() },
+            EventKind::ToolStarted {
+                call_id: "c1".into(),
+                tool: "shell".into(),
+                arguments_json: "{}".into(),
+            },
+            EventKind::ToolStarted {
+                call_id: "c2".into(),
+                tool: "shell".into(),
+                arguments_json: "{}".into(),
+            },
+            EventKind::ToolCompleted {
+                call_id: "c2".into(),
+                success: true,
+                output: "ok".into(),
+            },
+            EventKind::TurnEnded { aborted: true },
+            EventKind::UserMessage {
+                text: "again".into(),
+            },
+        ]
+        .map(Event::now);
+        let messages = messages(None, &history);
+        let results: Vec<&str> = messages
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .filter_map(|message| message["tool_call_id"].as_str())
+            .collect();
+        assert_eq!(results, vec!["c2", "c1"]);
+        // Each result comes before the person's next message.
+        assert_eq!(
+            messages.last().map(|message| &message["content"]),
+            Some(&json!("again"))
+        );
     }
 }
