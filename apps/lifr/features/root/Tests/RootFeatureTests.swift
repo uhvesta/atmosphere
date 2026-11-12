@@ -77,6 +77,24 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testRemindersThatCantBeScheduledAreToldOnceUnlessNotificationsAreOff() async {
+        struct Refused: Error {}
+        let run = records.task("Run", in: health, due: 0)
+        records.reminder(.at(now + 60 * 60), on: run)
+        for permission in [ReminderPermission.allowed, .denied] {
+            let store = makeStore(.phone)
+            store.dependencies.reminders = RemindersClient(
+                permission: { permission }, requestPermission: { false }, schedule: { _ in throw Refused() }, setBadge: { _ in })
+
+            let task = await store.send(.task)
+            await store.receive(\.loaded)
+            await store.receive(\.remindersScheduled)
+
+            XCTAssertEqual(store.state.notice != nil, permission == .allowed)
+            await task.cancel()
+        }
+    }
+
     func testTheIPhoneOpensWhereThePersonWas() async {
         let stretch = records.task("Stretch", in: health, due: 3)
         @Shared(.place) var place

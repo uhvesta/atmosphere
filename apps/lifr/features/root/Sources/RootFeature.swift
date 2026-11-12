@@ -173,6 +173,9 @@ package struct RootFeature {
         /// A short message: why Undo or Redo couldn't, or that a link
         /// named a task Lifr doesn't have.
         @Presents package var notice: AlertState<Never>?
+        /// Whether reminders that couldn't be scheduled were told about,
+        /// once per launch.
+        package var explainedReminders = false
         @Shared(.lastChange) package var lastChange
         /// The change Undo just took back, which Redo puts back, until
         /// something else changes.
@@ -439,7 +442,8 @@ package struct RootFeature {
         case syncReviewTapped
         case syncReview(PresentationAction<SyncReviewFeature.Action>)
         /// This device's notifications match the records again.
-        case remindersScheduled
+        /// Why some reminders couldn't be scheduled, if they couldn't.
+        case remindersScheduled(failure: String?)
         /// The approval sheet closed: show the next app's, if one is waiting.
         case nextApproval
         /// The iPhone was shaken: the bug menu, or the end of a recording.
@@ -1112,6 +1116,18 @@ package struct RootFeature {
                 state.$upcomingShowsCalendar.withLock { $0 = shown }
                 return .none
 
+            case .remindersScheduled(let failure?):
+                guard !state.explainedReminders else { return .none }
+                state.explainedReminders = true
+                state.notice = AlertState {
+                    TextState("Some Reminders Won't Ring Here")
+                } actions: {
+                    ButtonState(role: .cancel) { TextState("OK") }
+                } message: {
+                    TextState(failure)
+                }
+                return .none
+
             case .binding, .remindersScheduled, .today, .upcoming, .calendar, .trash, .procrastinated, .avenues,
                 .search, .savedFilter, .anytime, .later, .logbook,
                 .avenue, .board, .conversations, .settings, .quickAdd, .approval, .notice, .syncReview,
@@ -1331,12 +1347,17 @@ package struct RootFeature {
         let scheduled = workspace.scheduledReminders(now: now, timeZone: timeZone, hidingTitles: state.locksApp)
         let badge = workspace.badgeCount(state.badgeCount, now: now, timeZone: timeZone)
         return .run { [reminders] send in
-            // Notifications that are off, or a device that refuses them,
-            // leave the reminders saved and ringing elsewhere; the detail
-            // screen says so when one is added.
-            try? await reminders.schedule(scheduled)
+            // Notifications that are off leave the reminders saved and
+            // ringing elsewhere; the detail screen says so when one is
+            // added. Any other failure is told once per launch.
+            var failure: String?
+            do {
+                try await reminders.schedule(scheduled)
+            } catch {
+                if await reminders.permission() != .denied { failure = String(describing: error) }
+            }
             await reminders.setBadge(badge)
-            await send(.remindersScheduled)
+            await send(.remindersScheduled(failure: failure))
         }
         .cancellable(id: CancelID.reminders, cancelInFlight: true)
     }

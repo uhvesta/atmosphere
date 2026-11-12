@@ -4,13 +4,16 @@ import UserNotifications
 
 /// Why scheduling a notification failed.
 package enum LiveRemindersError: Error, CustomStringConvertible {
-    case scheduleFailed(title: String, underlying: any Error)
+    /// The reminders for `titles` failed; the others were scheduled.
+    case scheduleFailed(titles: [String], underlying: any Error)
 
     package var description: String {
         switch self {
-        case .scheduleFailed(let title, let underlying):
-            "Couldn't schedule the reminder for \"\(title)\": \(underlying.localizedDescription). "
-                + "Check that notifications are on for Lifr in System Settings, then open Lifr again."
+        case .scheduleFailed(let titles, let underlying):
+            "Couldn't schedule \(titles.count == 1 ? "the reminder" : "\(titles.count) reminders") for "
+                + "\(titles.map { "\"\($0)\"" }.joined(separator: ", ")) on this device: "
+                + "\(underlying.localizedDescription). They're saved and ring on your other devices. Check that "
+                + "notifications are on for Lifr in Settings, then open Lifr again."
         }
     }
 }
@@ -36,6 +39,9 @@ extension RemindersClient {
             },
             schedule: { reminders in
                 center.removeAllPendingNotificationRequests()
+                // One that fails doesn't stop the rest.
+                var failed: [String] = []
+                var firstError: (any Error)?
                 for reminder in reminders {
                     let content = UNMutableNotificationContent()
                     content.title = reminder.title
@@ -55,9 +61,11 @@ extension RemindersClient {
                     do {
                         try await center.add(request)
                     } catch {
-                        throw LiveRemindersError.scheduleFailed(title: reminder.title, underlying: error)
+                        failed.append(reminder.title)
+                        firstError = firstError ?? error
                     }
                 }
+                if let firstError { throw LiveRemindersError.scheduleFailed(titles: failed, underlying: firstError) }
             },
             setBadge: { count in try? await center.setBadgeCount(count) }
         )
