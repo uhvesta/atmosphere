@@ -923,6 +923,11 @@ impl Daemon {
                     ) {
                         keep(&events);
                     }
+                    if matches!(event.kind, Some(pb::session_event::Kind::Saved(_))) {
+                        if let Some(daemon) = daemon.upgrade() {
+                            daemon.back_up_soon(&host, &session, None);
+                        }
+                    }
                     if matches!(event.kind, Some(pb::session_event::Kind::Idle(_))) {
                         if let Some(daemon) = daemon.upgrade() {
                             let turns = events

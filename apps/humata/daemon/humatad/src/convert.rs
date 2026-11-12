@@ -86,14 +86,10 @@ pub fn event(event: &Event) -> pb::SessionEvent {
             premium_requests: *premium_requests,
         }),
         EventKind::Checkpoint { snapshots } => Kind::Checkpoint(pb::Checkpoint {
-            snapshots: snapshots
-                .iter()
-                .map(|snapshot| pb::Snapshot {
-                    name: snapshot.name.clone(),
-                    head: snapshot.head.clone(),
-                    commit: snapshot.commit.clone(),
-                })
-                .collect(),
+            snapshots: wire_snapshots(snapshots),
+        }),
+        EventKind::Saved { snapshots } => Kind::Saved(pb::Saved {
+            snapshots: wire_snapshots(snapshots),
         }),
     };
     pb::SessionEvent {
@@ -397,4 +393,15 @@ mod tests {
         ended.extend([event(EventKind::TurnStarted), asked("c")]);
         assert_eq!(ids(&ended), ["c"]);
     }
+}
+
+fn wire_snapshots(snapshots: &[humata_agent::Snapshot]) -> Vec<pb::Snapshot> {
+    snapshots
+        .iter()
+        .map(|snapshot| pb::Snapshot {
+            name: snapshot.name.clone(),
+            head: snapshot.head.clone(),
+            commit: snapshot.commit.clone(),
+        })
+        .collect()
 }

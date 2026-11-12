@@ -83,7 +83,15 @@ fn a_comment_sent_as_a_review_gets_a_reply_and_a_fix() {
     let deadline = Instant::now() + Duration::from_secs(20);
     let threads = loop {
         let threads = humata.run(&["review", "threads", session]);
-        if comments(&threads).len() == 2 || Instant::now() > deadline {
+        // The reply comes part way through the fix's turn; its changes are
+        // there once the turn has ended and the session is idle again.
+        let history = humata.run(&["history", session]);
+        let idle = history
+            .lines()
+            .last()
+            .and_then(|line| line.split('\t').nth(1))
+            == Some("idle");
+        if (comments(&threads).len() == 2 && idle) || Instant::now() > deadline {
             break threads;
         }
         std::thread::sleep(Duration::from_millis(100));

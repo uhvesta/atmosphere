@@ -118,11 +118,34 @@ impl Workspaces {
         turn: usize,
         checkouts: &[Checkout],
     ) -> Result<Vec<Snapshot>, WorkspaceError> {
+        self.take(session, &turn.to_string(), checkouts).await
+    }
+
+    /// Saves each checkout as it is now, part way through a turn, as the
+    /// session's `saved`th such save. These are kept apart from the turns'
+    /// snapshots, so what a turn changed is still from one turn's end to the
+    /// next.
+    pub async fn save(
+        &self,
+        session: &str,
+        saved: usize,
+        checkouts: &[Checkout],
+    ) -> Result<Vec<Snapshot>, WorkspaceError> {
+        self.take(session, &format!("saved/{saved}"), checkouts)
+            .await
+    }
+
+    async fn take(
+        &self,
+        session: &str,
+        label: &str,
+        checkouts: &[Checkout],
+    ) -> Result<Vec<Snapshot>, WorkspaceError> {
         let mut snapshots = Vec::with_capacity(checkouts.len());
         for (position, checkout) in checkouts.iter().enumerate() {
             let (head, commit) = self.capture(session, &checkout.path).await?;
             // By position: a folder's name needn't be a valid ref's.
-            let name = format!("refs/humata/{session}/{turn}/{position}");
+            let name = format!("refs/humata/{session}/{label}/{position}");
             git(&checkout.path, &["update-ref", &name, &commit]).await?;
             snapshots.push(Snapshot {
                 name: checkout.name.clone(),

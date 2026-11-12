@@ -80,6 +80,15 @@ pub fn event(event: &pb::SessionEvent) -> String {
                 .collect::<Vec<_>>()
                 .join(" "),
         ),
+        Some(Kind::Saved(saved)) => (
+            "saved",
+            saved
+                .snapshots
+                .iter()
+                .map(|snapshot| format!("{}={}", snapshot.name, snapshot.commit))
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
         None => ("unknown", String::new()),
     };
     format!("{}\t{kind}\t{}", event.id, detail.replace('\n', "\\n"))

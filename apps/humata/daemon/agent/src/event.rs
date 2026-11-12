@@ -148,6 +148,13 @@ pub enum EventKind {
     Checkpoint {
         snapshots: Vec<Snapshot>,
     },
+    /// The session's code part way through a turn, after a tool call, so a
+    /// machine lost mid-turn loses at most what came after it. Unlike a
+    /// checkpoint it doesn't divide turns: a turn's changes still run from
+    /// one checkpoint to the next.
+    Saved {
+        snapshots: Vec<Snapshot>,
+    },
 }
 
 impl EventKind {
@@ -155,6 +162,15 @@ impl EventKind {
     pub fn snapshots(&self) -> Option<&[Snapshot]> {
         match self {
             Self::Checkpoint { snapshots } => Some(snapshots),
+            _ => None,
+        }
+    }
+
+    /// The snapshots of a checkpoint or of a save part way through a turn;
+    /// None for any other event.
+    pub fn code(&self) -> Option<&[Snapshot]> {
+        match self {
+            Self::Checkpoint { snapshots } | Self::Saved { snapshots } => Some(snapshots),
             _ => None,
         }
     }

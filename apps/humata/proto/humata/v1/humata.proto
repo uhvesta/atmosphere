@@ -1016,7 +1016,14 @@ message SessionEvent {
     Checkpoint checkpoint = 16;
     MessageQueued message_queued = 17;
     Dequeued dequeued = 18;
+    Saved saved = 19;
   }
+}
+
+// The code was saved part way through a turn, after a tool call. Unlike a
+// checkpoint it doesn't divide turns; a fork after it starts from it.
+message Saved {
+  repeated Snapshot snapshots = 1;
 }
 
 // The code was saved: before the first turn and after each one. A fork

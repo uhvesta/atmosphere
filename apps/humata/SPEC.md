@@ -131,7 +131,7 @@ original spec; lettered ones were added since.
 | B Claude Code and MCP | Done (8f6091c) |
 | C Polish: blockers and quick wins | Done (059649d) |
 | C Polish: majors and minors | Done |
-| D Durable hosts | In progress |
+| D Durable hosts | Done |
 | E Terminals and files | After D |
 | 6 Plan with the agent | After E |
 | 7 Search across sessions | After 6 |
@@ -289,8 +289,13 @@ Structure:
   - *Restoring on another host* is the same steps against a different machine,
     which makes it a move. The session's host changes; its id, tree and item
     stay.
-- **Mid-turn snapshots.** A snapshot after each write tool, not only at the end
-  of the turn, so a machine lost mid-turn loses at most one tool call.
+- **Mid-turn snapshots.** A save after each tool call that succeeds, not only
+  at the end of the turn, so a machine lost mid-turn loses at most the call
+  still running. Saves are their own `saved` events, kept apart from
+  checkpoints so a turn's changes still run from one turn's end to the next.
+  Calls that finish while a save is being taken are saved together once it's
+  done, and each save is bundled to the Mac like a checkpoint. A fork or a
+  restore starts from the newest of the two.
 
 Work:
 
@@ -301,7 +306,7 @@ Work:
 - [x] Restore a session onto a set-up host: clone, bundle in the snapshots, worktrees, history, backend state (`humata recover session`)
 - [x] Restore a whole host: every session it lost (`humata recover host`, after `humata host install`)
 - [x] Restore onto another host, or this Mac, as a move
-- [ ] Mid-turn snapshots after each write tool
+- [x] Mid-turn snapshots after each tool call that succeeds, bundled to the Mac
 - [x] The Hosts view shows each host's sessions' recovery copies, Restore, Restore All and Move
 
 **Done when:** an end-to-end test runs a turn on an SSH host, kills the host
@@ -407,7 +412,7 @@ the worktree gone.
 | Risk | Recommendation | Settle by |
 | --- | --- | --- |
 | Sessions that share a working copy can collide. | One turn at a time in a shared copy; queue the rest. | Settled in 2 |
-| A host killed mid-turn leaves a half-written turn. | Mid-turn snapshots after each write tool, and a cut turn is marked aborted on restart. | D |
+| A host killed mid-turn leaves a half-written turn. | A save after each tool call that succeeds, bundled to the Mac, and a cut turn is marked aborted on restart. A file written outside a tool call (a shell command's side effect still running) can still be lost. | D |
 | A first backup of a repository with a long history may not fit in one 64 MiB frame. | Split bundles across frames, or send the first one by `git fetch` over SSH. | D, if it happens |
 | The recovery copy grows without bound. | Keep every snapshot ref (they're deltas), compress backend state, and prune archived sessions' copies after a set time. | D |
 | A backend's state may not resume on another machine (paths inside transcripts). | Restore into the same paths under the cache folder; where a backend refuses, resume with the history summarized as the first message and say so. | D |

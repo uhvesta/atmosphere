@@ -271,7 +271,8 @@ extension SessionEvent {
         case .checkpoint: kind = .checkpoint
         case .messageQueued(let queued): kind = .messageQueued(queueID: queued.queueID, text: queued.text)
         case .dequeued(let dequeued): kind = .dequeued(queueID: dequeued.queueID)
-        case nil: return nil
+        // A save part way through a turn only matters to forks and restores.
+        case .saved, nil: return nil
         }
         self.init(id: event.id, time: Date(timeIntervalSince1970: Double(event.timeUnixMs) / 1000), kind: kind)
     }

@@ -1758,3 +1758,105 @@ async fn a_backup_leaves_out_the_commits_the_mac_has() {
     .await;
     assert!(known.bundles.is_empty(), "{:?}", known.bundles.len());
 }
+
+const WRITE_THEN_WAIT: &str = r#"{"rules": [
+    {"when": "write", "steps": [
+        {"step": "write_file", "path": "notes.txt", "contents": "kept"},
+        {"step": "wait_for", "path": "never"}
+    ]},
+    {"when": "", "steps": [{"step": "say", "text": "carried on"}]}
+]}"#;
+
+/// Watches `session` until its code is saved part way through a turn.
+async fn saved_mid_turn(client: &Client, session: &str) {
+    let request = pb::request::Kind::WatchSession(pb::WatchSession {
+        session_id: session.to_owned(),
+    });
+    let Ok((_, mut stream)) = client.stream(request).await else {
+        panic!("couldn't watch {session}")
+    };
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), stream.next()).await {
+            Ok(Some(Ok(pb::StreamItem {
+                kind: Some(pb::stream_item::Kind::SessionEvent(event)),
+            }))) => {
+                if matches!(event.kind, Some(pb::session_event::Kind::Saved(_))) {
+                    return;
+                }
+            }
+            Ok(Some(Ok(_))) => {}
+            other => panic!("no save mid-turn: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_session_lost_mid_turn_comes_back_with_the_files_written_so_far() {
+    let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let first = host(&dir.path().join("first")).await;
+    let start = pb::request::Kind::StartSession(pb::StartSession {
+        backend: pb::Backend::Scripted.into(),
+        name: "test".to_owned(),
+        backend_config: WRITE_THEN_WAIT.to_owned(),
+        approval_mode: pb::ApprovalMode::AllowEverything.into(),
+        repositories: vec![pb::Repository {
+            name: "code".to_owned(),
+            path: repository.path().display().to_string(),
+        }],
+        ..Default::default()
+    });
+    let session = started(&first, start).await;
+    send(&first, &session.id, "write").await;
+    saved_mid_turn(&first, &session.id).await;
+    let backed_up = first
+        .call(pb::request::Kind::BackupSession(pb::BackupSession {
+            session_id: session.id.clone(),
+            haves: Vec::new(),
+        }))
+        .await;
+    let Ok(pb::response::Kind::SessionBackup(backup)) = backed_up else {
+        panic!("{backed_up:?}")
+    };
+
+    // The first host is gone with the turn still going; another carries on.
+    let second = host(&dir.path().join("second")).await;
+    let clone = dir.path().join("clone");
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "--quiet",
+            &repository.path().display().to_string(),
+            &clone.display().to_string(),
+        ],
+    );
+    let restored = second
+        .call(pb::request::Kind::RestoreBackup(pb::RestoreBackup {
+            backup: Some(backup),
+            repositories: vec![pb::Repository {
+                name: "code".to_owned(),
+                path: clone.display().to_string(),
+            }],
+        }))
+        .await;
+    let Ok(pb::response::Kind::SessionRestored(pb::SessionRestored {
+        session: Some(restored),
+    })) = restored
+    else {
+        panic!("{restored:?}")
+    };
+    let copy = PathBuf::from(&restored.working_directory);
+    assert_eq!(
+        std::fs::read_to_string(copy.join("notes.txt"))
+            .ok()
+            .as_deref(),
+        Some("kept")
+    );
+    send(&second, &session.id, "and now?").await;
+    let events = after_turns(&second, &session.id, 2).await;
+    assert_eq!(
+        said(&events)[said(&events).len() - 2..],
+        ["user: and now?", "agent: carried on"]
+    );
+}

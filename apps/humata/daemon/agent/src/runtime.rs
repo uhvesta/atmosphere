@@ -10,6 +10,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tokio::sync::oneshot;
@@ -97,6 +98,7 @@ pub trait Runner: Send + Sync + 'static {
 /// What a [`Runner`] uses to record a turn and to ask for permission.
 pub struct Turn {
     session: Arc<Session>,
+    workspaces: Option<Arc<Workspaces>>,
     text: String,
 }
 
@@ -116,7 +118,12 @@ impl Turn {
     }
 
     pub fn emit(&self, kind: EventKind) -> Result<Event, AgentError> {
-        self.session.log.append(Event::now(kind))
+        let saving = matches!(kind, EventKind::ToolCompleted { success: true, .. });
+        let event = self.session.log.append(Event::now(kind))?;
+        if saving {
+            save_soon(&self.session, self.workspaces.clone());
+        }
+        Ok(event)
     }
 
     /// Asks the person, and waits, unless the session's approval mode allows
@@ -185,6 +192,11 @@ struct Session {
     dir: PathBuf,
     log: EventLog,
     control: Mutex<Control>,
+    /// Held while the session's code is captured, so two captures of one
+    /// worktree never run at once.
+    capturing: tokio::sync::Mutex<()>,
+    /// Whether a tool call finished since the code was last saved.
+    unsaved: AtomicBool,
 }
 
 struct Control {
@@ -411,6 +423,8 @@ impl<R: Runner> LocalAgent<R> {
             dir,
             log,
             control: Mutex::new(Control::new(record)),
+            capturing: tokio::sync::Mutex::default(),
+            unsaved: AtomicBool::new(false),
         });
         self.lock().insert(session.id.clone(), session.clone());
         Ok(session)
@@ -461,6 +475,7 @@ async fn drive<R: Runner>(
                 .clone()
                 .run_turn(Turn {
                     session: session.clone(),
+                    workspaces: workspaces.clone(),
                     text,
                 })
                 .await
@@ -953,12 +968,13 @@ fn workspace_failed(session: &SessionId) -> impl FnOnce(WorkspaceError) -> Agent
     }
 }
 
-/// The snapshots of the last checkpoint in `events`; none if there is none.
+/// The snapshots of the last checkpoint or save in `events`; none if there
+/// is none.
 fn last_checkpoint(events: &[Event]) -> Vec<Snapshot> {
     events
         .iter()
         .rev()
-        .find_map(|event| event.kind.snapshots())
+        .find_map(|event| event.kind.code())
         .map(<[Snapshot]>::to_vec)
         .unwrap_or_default()
 }
@@ -1029,12 +1045,57 @@ async fn checkpoint(
     let workspaces = workspaces.ok_or_else(|| AgentError::NoWorkspaces {
         session: session.id.clone(),
     })?;
+    let _capturing = session.capturing.lock().await;
+    // The checkpoint has whatever a save still waiting would have.
+    session.unsaved.store(false, Ordering::SeqCst);
     let turn = checkpoints(&session.log.events());
     workspaces
         .snapshot(session.id.as_str(), turn, &checkouts)
         .await
         .map(Some)
         .map_err(workspace_failed(&session.id))
+}
+
+/// Saves the session's code in the background after a tool call, part way
+/// through its turn. Calls that finish while one is being saved are saved
+/// together once it's done.
+fn save_soon(session: &Arc<Session>, workspaces: Option<Arc<Workspaces>>) {
+    let Some(workspaces) = workspaces else {
+        return;
+    };
+    if session.lock().record.checkouts.is_empty() {
+        return;
+    }
+    session.unsaved.store(true, Ordering::SeqCst);
+    let session = session.clone();
+    tokio::spawn(async move {
+        let _capturing = session.capturing.lock().await;
+        if !session.unsaved.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let checkouts = session.lock().record.checkouts.clone();
+        let saved = session
+            .log
+            .events()
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::Saved { .. }))
+            .count();
+        match workspaces
+            .save(session.id.as_str(), saved, &checkouts)
+            .await
+        {
+            Ok(snapshots) => session.note(EventKind::Saved { snapshots }),
+            // The turn's end still checkpoints the code; a save that
+            // couldn't be taken only loses the mid-turn copy.
+            Err(source) => eprintln!(
+                "humata: {}",
+                describe(&AgentError::Workspace {
+                    session: session.id.clone(),
+                    source,
+                })
+            ),
+        }
+    });
 }
 
 /// Records a turn's checkpoint, or why it couldn't be taken.
@@ -1108,6 +1169,8 @@ fn load(dir: &Path) -> Result<Session, AgentError> {
         dir: dir.to_owned(),
         log,
         control: Mutex::new(Control::new(record)),
+        capturing: tokio::sync::Mutex::default(),
+        unsaved: AtomicBool::new(false),
     })
 }
 
