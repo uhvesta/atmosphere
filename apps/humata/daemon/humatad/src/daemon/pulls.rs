@@ -32,17 +32,22 @@ impl Daemon {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let token = github::TOKENS
-            .iter()
-            .find_map(|name| env.get(*name).filter(|token| !token.is_empty()))
-            .ok_or(GitHubError::NoToken)?;
         let other = env
             .get(API_VARIABLE)
             .cloned()
             .or_else(|| std::env::var(API_VARIABLE).ok())
             .filter(|api| !api.is_empty());
+        let given = github::TOKENS
+            .iter()
+            .find_map(|name| env.get(*name).filter(|token| !token.is_empty()).cloned());
+        // Without one, the GitHub command line's, which only github.com takes.
+        let token = match given {
+            Some(token) => token,
+            None if other.is_none() => github::cli_token().ok_or(GitHubError::NoToken)?,
+            None => return Err(GitHubError::NoToken),
+        };
         let api = other.as_deref().unwrap_or(github::API);
-        Ok((GitHub::new(api, token), other.is_some()))
+        Ok((GitHub::new(api, &token), other.is_some()))
     }
 
     /// Lands the session on its host, and with `open_pull_requests`, pushes

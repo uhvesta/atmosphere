@@ -143,6 +143,7 @@ original spec; lettered ones were added since.
 | The demo | Done |
 | R Review pass | Done (9e2ac82e) |
 | J Agents ask, and a board journal | Done |
+| K Signed releases | In progress |
 
 ## Done milestones
 
@@ -461,8 +462,9 @@ Structure:
   merging run on the session's host, in its worktrees, with the host's
   token handed to git through the credential helper, as cloning does.
   GitHub's API is called only from the Mac, with the token in This Mac's
-  variables (`GH_TOKEN` or `GITHUB_TOKEN`), so the board can follow pull
-  requests while hosts sleep. `HUMATA_GITHUB_API` points the daemon at
+  variables (`GH_TOKEN` or `GITHUB_TOKEN`), or else the GitHub command
+  line's (`gh auth token`), so the board can follow pull requests while
+  hosts sleep. There's no OAuth app of Humata's own. `HUMATA_GITHUB_API` points the daemon at
   another server, for GitHub Enterprise or a test; with it set, any remote's
   last two path parts name the repository.
 - **Landing.** "Land…" in a session's Ship menu names a branch (from the
@@ -808,6 +810,37 @@ there should be a journal of changes to undo, as in Lifr's Activity log.
 **Done when:** an agent's subtask and spec edit wait as proposals, the
 journal shows them as the session's once applied, and reverting an edit
 keeps a later change to another field.
+
+### Milestone K: signed releases
+
+The owner, 2026-11-12: release signed apps and binaries on GitHub, and
+test that they work. GitHub access reuses the GitHub command line's login,
+not an OAuth app.
+
+- **GitHub through `gh`.** Without `GH_TOKEN` or `GITHUB_TOKEN` in This
+  Mac's variables, the daemon asks `gh auth token` each time it needs
+  GitHub, and keeps the token only in memory.
+- **One command releases.** `apps/humata/tools/release/release.sh
+  <version>` builds Humata from a pushed commit, signs the app,
+  `humata` and `humatad` with the Developer ID certificate and the hardened
+  runtime, notarizes with the App Store Connect key the TestFlight uploads
+  keep in the Keychain, and staples. It uploads, as a draft release tagged
+  `humata-v<version>`: `Humata-<version>.zip`, `humata` and `humatad` for
+  the Mac, `humatad` for Linux arm64 and x86_64, and `SHA256SUMS`.
+- **Checked as people get it.** Before the draft is published, the release
+  is downloaded again into an empty folder and marked as downloaded
+  (quarantined), then: Gatekeeper accepts the app and the Mac binaries as
+  notarized Developer ID code, the ticket is stapled, every file matches
+  `SHA256SUMS`, and the downloaded `humatad` starts a daemon that the
+  downloaded `humata` talks to. Only then is it published.
+  `apps/humata/tools/release/check.sh <tag>` runs the same check on any
+  release later.
+- [x] The daemon uses `gh`'s token when This Mac has none
+- [ ] The release command signs, notarizes and uploads a draft
+- [ ] The check downloads, verifies and runs the release before publishing
+
+**Done when:** a release is on GitHub whose download Gatekeeper accepts
+and whose daemon and command line run.
 
 ## Later
 

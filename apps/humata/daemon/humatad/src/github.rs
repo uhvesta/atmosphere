@@ -14,13 +14,35 @@ pub const API: &str = "https://api.github.com";
 /// The variables a GitHub token is read from, in order.
 pub const TOKENS: [&str; 2] = ["GH_TOKEN", "GITHUB_TOKEN"];
 
+/// Where the GitHub command line is looked for besides `PATH`, which is
+/// short for a login agent.
+const GH: [&str; 3] = ["gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh"];
+
+/// The github.com token the GitHub command line signed in with, if it did.
+/// It's asked for each time, so a new `gh auth login` counts at once, and
+/// kept only in memory.
+pub fn cli_token() -> Option<String> {
+    GH.iter().find_map(|gh| {
+        let output = std::process::Command::new(gh)
+            .args(["auth", "token", "--hostname", "github.com"])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|output| output.status.success())?;
+        let token = String::from_utf8(output.stdout).ok()?;
+        let token = token.trim();
+        (!token.is_empty()).then(|| token.to_owned())
+    })
+}
+
 /// The most of a reply that is read.
 const MOST: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GitHubError {
     #[error(
-        "there's no GitHub token on this Mac, so Humata can't open or follow pull requests. In Hosts, select This Mac and add GH_TOKEN, a token that can read and write pull requests, contents and issues of these repositories. Don't put it in a project file: it would be committed"
+        "there's no GitHub token on this Mac, so Humata can't open or follow pull requests. Sign in to the GitHub command line with `gh auth login`, which Humata uses when it's there, or in Hosts select This Mac and add GH_TOKEN, a token that can read and write pull requests, contents and issues of these repositories. Don't put a token in a project file: it would be committed"
     )]
     NoToken,
 
@@ -46,7 +68,7 @@ pub enum GitHubError {
     },
 
     #[error(
-        "GitHub refused the token for {url} (it said: {message}). The token in This Mac's GH_TOKEN may have expired or lack access to this repository: make a new one with read and write access to pull requests, contents and issues, and replace it in Hosts"
+        "GitHub refused the token for {url} (it said: {message}). The token may have expired or lack access to this repository. If it's the GitHub command line's, sign in again with `gh auth login`; if it's This Mac's GH_TOKEN, make a new one with read and write access to pull requests, contents and issues, and replace it in Hosts"
     )]
     Unauthorized { url: String, message: String },
 
