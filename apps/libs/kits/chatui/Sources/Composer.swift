@@ -192,6 +192,8 @@ public struct SendButton: View {
 public struct RoundButtonStyle: ButtonStyle {
     let prominent: Bool
     @Environment(\.isEnabled) private var isEnabled
+    /// Grows with the text size, so the symbol stays inside the circle.
+    @ScaledMetric(relativeTo: .body) private var size = 34.0
 
     public init(prominent: Bool = false) {
         self.prominent = prominent
@@ -202,7 +204,7 @@ public struct RoundButtonStyle: ButtonStyle {
             .labelStyle(.iconOnly)
             .font(.body.weight(.semibold))
             .foregroundStyle(prominent ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
-            .frame(width: 34, height: 34)
+            .frame(width: max(size, 34), height: max(size, 34))
             .background {
                 Circle().fill(fill)
             }
@@ -222,6 +224,7 @@ public struct RoundButtonStyle: ButtonStyle {
 public struct MessageField: View {
     @Binding var text: String
     let prompt: Text?
+    @Environment(\.dynamicTypeSize) private var typeSize
     let token: String?
     let removeToken: () -> Void
     let submit: () -> Void
@@ -251,7 +254,8 @@ public struct MessageField: View {
             }
             TextField("Message", text: field, prompt: token == nil ? prompt : nil, axis: .vertical)
                 .textFieldStyle(.plain)
-                .lineLimit(1...8)
+                // At the largest text, three lines leave the thread room.
+                .lineLimit(typeSize.isAccessibilitySize ? 1...3 : 1...8)
                 .onSubmit(submit)
                 .overlay(alignment: .leading) {
                     // The mark keeps the field from showing its prompt.
@@ -287,6 +291,7 @@ public struct ModelPill: View {
     let name: String
     let detail: String?
     let pick: () -> Void
+    @ScaledMetric(relativeTo: .callout) private var height = 34.0
 
     /// `detail` follows the name in gray, such as the thinking level.
     public init(name: String, detail: String?, pick: @escaping () -> Void) {
@@ -308,7 +313,7 @@ public struct ModelPill: View {
             .font(.callout.weight(.medium))
             .lineLimit(1)
             .padding(.horizontal, 12)
-            .frame(height: 34)
+            .frame(minHeight: max(height, 34))
             .background(.fill.secondary, in: .capsule)
             .contentShape(.capsule)
         }
@@ -450,6 +455,8 @@ public struct ChatComposer<Top: View, Attach: View>: View {
                 mic
                 send
             }
+            // Past this size four controls no longer fit across a small phone.
+            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         }
         .padding(10)
         .background(.background, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
