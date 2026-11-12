@@ -677,7 +677,7 @@ package struct RootFeature {
 
             case .reopen(let id):
                 guard let slot = state.currentList, state.workspace?.tasks[id] != nil else { return .none }
-                return .send(list(slot, .rowTapped(id)))
+                return .send(list(slot, .taskOpened(id)))
 
             case .reminderStatusRequested(let id):
                 state.statusPickPending = id

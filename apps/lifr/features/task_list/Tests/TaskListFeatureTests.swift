@@ -353,6 +353,33 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.rows.map(\.title), ["Stretch"])
     }
 
+    func testRecordsArrivingAfterAFailedLoadClearTheError() async {
+        records.task("Stretch", in: health)
+        var client = StoreClient.inMemory(records.workspace)
+        client.load = { throw LifrError.notFound(.task, "LIFE-1") }
+        let store = await load(client: client)
+        XCTAssertNotNil(store.state.loadError)
+
+        await store.send(.show(Snapshot(records.workspace, number: 1)))
+
+        XCTAssertNil(store.state.loadError)
+        XCTAssertEqual(store.state.rows.map(\.title), ["Stretch"])
+    }
+
+    func testOpeningATaskWhilePickingEndsPickingAndOpensIt() async {
+        let stretch = records.task("Stretch", in: health)
+        records.task("Plan long runs", in: health)
+        let store = await load()
+        await store.send(.selectTapped)
+
+        await store.send(.taskOpened(stretch.id))
+        await store.receive(\.rowTapped)
+
+        XCTAssertFalse(store.state.isSelecting)
+        XCTAssertEqual(store.state.selection, [])
+        XCTAssertEqual(store.state.detail?.id, stretch.id)
+    }
+
     func testPullingSyncsAndSaysWhySyncCantRunOnlyOnce() async {
         let store = await load()
         let syncs = LockIsolated(0)

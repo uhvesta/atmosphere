@@ -114,6 +114,8 @@ package struct TaskListFeature {
         /// with them, unless later ones are shown already.
         package mutating func show(_ snapshot: Snapshot, now: Date, timeZone: TimeZone) {
             guard saves.isLatest(snapshot) else { return }
+            // Records arrived, so the list has loaded after all.
+            loadError = nil
             let previous = sections
             let before = rows.map(\.id)
             let wasOn = cursor
@@ -196,6 +198,9 @@ package struct TaskListFeature {
         /// The records changed elsewhere, such as in another tab or a sync.
         case show(Snapshot)
         case rowTapped(UUID)
+        /// A reminder, a link or Go to Task opens a task: it opens even
+        /// while picking, which ends.
+        case taskOpened(UUID)
         /// Select Tasks, or Done to stop picking.
         case selectTapped
         /// A row tapped while picking, or ⌘-clicked on the Mac.
@@ -291,6 +296,12 @@ package struct TaskListFeature {
             case .loaded(.failure(let error)):
                 state.loadError = (error as? any CustomStringConvertible)?.description ?? error.localizedDescription
                 return .none
+
+            case .taskOpened(let id):
+                state.isSelecting = false
+                state.selection = []
+                state.selectionAnchor = nil
+                return .send(.rowTapped(id))
 
             case .rowTapped(let id):
                 if state.isSelecting { return .send(.selectionToggled(id)) }
