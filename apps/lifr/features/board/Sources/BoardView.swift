@@ -97,6 +97,8 @@ private struct BoardCard: View {
     var note: String?
     var store: StoreOf<BoardFeature>
     @Environment(\.locale) private var locale
+    /// Whether a card dragged is over this one, to drop onto it.
+    @State private var isTargeted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -138,6 +140,13 @@ private struct BoardCard: View {
                 store.send(.droppedCard(id, onto: row.id))
             }
             return !dropped.isEmpty
+        } isTargeted: {
+            isTargeted = $0
+        }
+        .overlay {
+            if isTargeted {
+                RoundedRectangle(cornerRadius: 8).strokeBorder(.tint, lineWidth: 2).accessibilityHidden(true)
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityAction { store.send(.list(.rowTapped(row.id))) }

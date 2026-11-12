@@ -208,6 +208,8 @@ package struct TaskListRow: View {
     package var note: String?
     package var store: StoreOf<TaskListFeature>
     @Environment(\.droppedText) private var droppedText
+    /// Whether something dragged is over the row, to drop onto it.
+    @State private var isTargeted = false
 
     package init(row: TaskRowData, note: String? = nil, store: StoreOf<TaskListFeature>) {
         self.row = row
@@ -259,6 +261,16 @@ package struct TaskListRow: View {
             guard let droppedText, !items.isEmpty else { return false }
             droppedText(items.joined(separator: "\n"))
             return true
+        } isTargeted: {
+            isTargeted = $0
+        }
+        // Outlines the row a drop would land on, so onto a row reads
+        // apart from between two.
+        .overlay {
+            if isTargeted {
+                RoundedRectangle(cornerRadius: 6).strokeBorder(.tint, lineWidth: 2).padding(-4)
+                    .accessibilityHidden(true)
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityHint(note ?? "")
