@@ -119,6 +119,12 @@ package struct AppFeature {
                 state.session = SessionFeature.State(session: session)
                 return .none
 
+            case .sidebar(.delegate(.openChanges(let session))):
+                state.board = nil
+                state.hosts = nil
+                if state.session?.session.id != session.id { state.session = SessionFeature.State(session: session) }
+                return .send(.session(.presented(.tabPicked(.review))))
+
             case .sidebar(.delegate(.openBoard(let project))):
                 state.session = nil
                 state.hosts = nil

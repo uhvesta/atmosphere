@@ -25,6 +25,7 @@ extension ErrorCode {
             case .unknownQueuedMessage: .unknownQueuedMessage
             case .unknownImport: .unknownImport
             case .alreadyImported: .alreadyImported
+            case .unknownRequest: .unknownRequest
             case .unspecified, .UNRECOGNIZED: .unknown
             }
     }
@@ -213,11 +214,30 @@ extension InboxEntry {
         case .approval: reason = .approval
         case .reply: reason = .reply
         case .failed: reason = .failed
+        case .question: reason = .question
+        case .move: reason = .move
+        case .unspecified, .UNRECOGNIZED: return nil
+        }
+        let request = entry.hasRequest ? AgentRequest(entry.request) : nil
+        if [.question, .move].contains(reason), request == nil { return nil }
+        self.init(
+            session: try Session(entry.session), reason: reason, projectName: optional(entry.projectName),
+            itemTitle: optional(entry.itemTitle), request: request)
+    }
+}
+
+extension AgentRequest {
+    /// Nil for a kind this app doesn't know, from a newer daemon.
+    init?(_ request: Humata_V1_AgentRequest) {
+        let kind: Kind
+        switch request.kind {
+        case .question: kind = .question
+        case .move: kind = .move(item: request.itemID, status: ItemStatus(request.status))
         case .unspecified, .UNRECOGNIZED: return nil
         }
         self.init(
-            session: try Session(entry.session), reason: reason, projectName: optional(entry.projectName),
-            itemTitle: optional(entry.itemTitle))
+            id: request.id, sessionID: request.sessionID, kind: kind, text: request.text,
+            created: date(request.createdUnixMs))
     }
 }
 

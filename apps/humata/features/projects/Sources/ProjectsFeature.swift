@@ -148,6 +148,11 @@ package struct ProjectsFeature {
         case updateFailed(String)
         /// The person allowed or denied a request from the inbox.
         case inboxAnswered(Session.ID, request: String, approved: Bool)
+        /// The person answered an agent's question or move from the inbox.
+        case requestAnswered(AgentRequest.ID, RequestAnswer)
+        /// The person opened what a session changed, to look before moving
+        /// its item.
+        case changesTapped(Session.ID)
         case answerFailed(String)
         /// The person clicked the notification for a session.
         case notificationClicked(Session.ID)
@@ -157,6 +162,8 @@ package struct ProjectsFeature {
         @CasePathable
         package enum Delegate: Equatable {
             case openSession(Session)
+            /// Opens the session at its changes.
+            case openChanges(Session)
             case openBoard(Project)
             case openInbox
             case openHosts
@@ -351,7 +358,7 @@ package struct ProjectsFeature {
 
             case .inboxAnswered(let id, let request, let approved):
                 // Gone from the row at once; the refresh says what's next.
-                if let index = state.inbox.firstIndex(where: { $0.id == id }) {
+                if let index = state.inbox.firstIndex(where: { $0.session.id == id && $0.request == nil }) {
                     state.inbox[index].session.pending.removeAll { $0.requestID == request }
                 }
                 return .run { send in
@@ -361,6 +368,21 @@ package struct ProjectsFeature {
                     await send(.answerFailed(error.localizedDescription))
                     await send(await load())
                 }
+
+            case .requestAnswered(let id, let answer):
+                state.inbox.removeAll { $0.request?.id == id }
+                return .run { send in
+                    try await daemon.answerRequest(id, answer)
+                    await send(await load())
+                } catch: { error, send in
+                    await send(.answerFailed(error.localizedDescription))
+                    await send(await load())
+                }
+
+            case .changesTapped(let id):
+                guard let session = state.sessions[id: id] else { return .none }
+                state.selection = .session(id)
+                return .send(.delegate(.openChanges(session)))
 
             case .answerFailed(let message):
                 state.destination = .alert(
@@ -411,7 +433,7 @@ package struct ProjectsFeature {
     /// or are there for another reason now, but the one they have open.
     static func notices(new: [InboxEntry], old: [InboxEntry], open: SidebarItem?) -> [Notice] {
         let before = Dictionary(old.map { ($0.id, $0.reason) }, uniquingKeysWith: { first, _ in first })
-        return new.filter { before[$0.id] != $0.reason && open != .session($0.id) }.map(Notice.init)
+        return new.filter { before[$0.id] != $0.reason && open != .session($0.session.id) }.map(Notice.init)
     }
 
     private func load() async -> Action {

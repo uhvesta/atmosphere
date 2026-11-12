@@ -56,6 +56,7 @@ package struct SessionView: View {
                     .padding([.horizontal, .bottom])
             }
         }
+        .navigationTitle(store.session.name.isEmpty ? "Session" : store.session.name)
         .task { await store.send(.task).finish() }
         .alert($store.scope(state: \.alert, action: \.alert))
         .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }

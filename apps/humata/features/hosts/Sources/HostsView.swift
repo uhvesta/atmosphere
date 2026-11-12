@@ -54,6 +54,7 @@ package struct HostsView: View {
                 .help("Add a machine you reach with SSH")
             }
         }
+        .navigationTitle("Hosts")
         .task { await store.send(.task).finish() }
         .sheet(item: $store.scope(state: \.destination?.add, action: \.destination.add)) {
             AddHostView(store: $0)

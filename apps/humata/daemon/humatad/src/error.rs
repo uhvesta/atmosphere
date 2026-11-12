@@ -232,6 +232,11 @@ pub enum StoreError {
     UnknownThread { id: String },
 
     #[error(
+        "no request {id:?} waits in the inbox; it may have been answered already, so list the inbox again"
+    )]
+    UnknownRequest { id: String },
+
+    #[error(
         "there is no comment of yours {id:?} to delete; list the session's threads to find its id. The agent's replies can't be deleted"
     )]
     UnknownComment { id: String },
@@ -287,6 +292,22 @@ pub enum DaemonError {
 
     #[error("a comment needs some text; write what you want the agent to know or change")]
     NoComment,
+
+    #[error("say what to ask the person, or for a move, what you did")]
+    NoRequestText,
+
+    #[error(
+        "an agent asks to move its task only to in_review, done or wont_do, which the person approves; set other statuses with update_item"
+    )]
+    NotAMove,
+
+    #[error("a question is answered with a reply, not approved; reply to it or dismiss it")]
+    NothingToApprove,
+
+    #[error(
+        "a reply needs some text; write what the agent should know, or dismiss the request instead"
+    )]
+    NoReply,
 
     #[error(
         "lines {start} to {end} aren't in {path}, which has {lines} lines now; read the file again and pick lines in it"
@@ -456,6 +477,7 @@ impl DaemonError {
             Self::Store(StoreError::UnknownSession { .. }) => pb::ErrorCode::UnknownSession,
             Self::Store(StoreError::UnknownChange { .. }) => pb::ErrorCode::UnknownBoardChange,
             Self::Store(StoreError::UnknownThread { .. }) => pb::ErrorCode::UnknownThread,
+            Self::Store(StoreError::UnknownRequest { .. }) => pb::ErrorCode::UnknownRequest,
             Self::Store(
                 StoreError::NoTitle
                 | StoreError::UnknownComment { .. }
@@ -469,9 +491,14 @@ impl DaemonError {
             Self::Store(_) => pb::ErrorCode::StorageFailed,
             Self::Refused { code, .. } => *code,
             Self::ProjectInUse { .. } => pb::ErrorCode::Busy,
-            Self::NoFile | Self::NoComment | Self::LinesOutside { .. } | Self::NothingToReview => {
-                pb::ErrorCode::InvalidRequest
-            }
+            Self::NoFile
+            | Self::NoComment
+            | Self::LinesOutside { .. }
+            | Self::NothingToReview
+            | Self::NoRequestText
+            | Self::NotAMove
+            | Self::NothingToApprove
+            | Self::NoReply => pb::ErrorCode::InvalidRequest,
             Self::UnknownHost { .. } => pb::ErrorCode::UnknownHost,
             Self::SaveHosts { .. } => pb::ErrorCode::StorageFailed,
             Self::HostExists { .. }

@@ -279,6 +279,45 @@ package enum InboxReason: Hashable, Sendable {
     case reply
     /// Its turn failed.
     case failed
+    /// It asked you a question, or for your opinion.
+    case question
+    /// It finished and asks you to move its item.
+    case move
+}
+
+/// A question an agent asked, or a move it asked for, waiting on you.
+package struct AgentRequest: Identifiable, Hashable, Sendable {
+    package enum Kind: Hashable, Sendable {
+        case question
+        /// Move `item` to `status`.
+        case move(item: String, status: ItemStatus)
+    }
+
+    package var id: String
+    package var sessionID: String
+    package var kind: Kind
+    /// The question, or what it did and what to check.
+    package var text: String
+    package var created: Date
+
+    package init(id: String, sessionID: String, kind: Kind, text: String, created: Date) {
+        self.id = id
+        self.sessionID = sessionID
+        self.kind = kind
+        self.text = text
+        self.created = created
+    }
+}
+
+/// How the person answers an agent's request.
+package enum RequestAnswer: Hashable, Sendable {
+    /// Sent to the session as a message.
+    case reply(String)
+    /// Makes the move asked for.
+    case approve
+    /// Moves the item somewhere else.
+    case move(ItemStatus)
+    case dismiss
 }
 
 package struct InboxEntry: Identifiable, Hashable, Sendable {
@@ -286,15 +325,21 @@ package struct InboxEntry: Identifiable, Hashable, Sendable {
     package var reason: InboxReason
     package var projectName: String?
     package var itemTitle: String?
+    /// The request, for a question or a move.
+    package var request: AgentRequest?
 
-    package init(session: Session, reason: InboxReason, projectName: String? = nil, itemTitle: String? = nil) {
+    package init(
+        session: Session, reason: InboxReason, projectName: String? = nil, itemTitle: String? = nil,
+        request: AgentRequest? = nil
+    ) {
         self.session = session
         self.reason = reason
         self.projectName = projectName
         self.itemTitle = itemTitle
+        self.request = request
     }
 
-    package var id: String { session.id }
+    package var id: String { request?.id ?? session.id }
 }
 
 /// Which specs a session on an item reads ahead of its instructions.
@@ -799,6 +844,8 @@ package enum ErrorCode: Hashable, Sendable {
     case unknownImport
     /// The session was imported before.
     case alreadyImported
+    /// The request was answered already.
+    case unknownRequest
     case unknown
 }
 

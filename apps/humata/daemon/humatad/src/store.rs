@@ -14,6 +14,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use crate::board::{Change, Item, ItemFields, ItemPatch, Priority, Status};
 use crate::error::StoreError;
 
+mod requests;
 mod review;
 
 pub use review::{Comment, NewThread, Review, Thread};
@@ -138,6 +139,20 @@ const MIGRATIONS: &[&str] = &["
 ", "
     -- How many of its finished turns the person has seen.
     ALTER TABLE sessions ADD COLUMN seen_turns INTEGER NOT NULL DEFAULT 0;
+", "
+    -- What agents ask of the person: a question, or to move their task.
+    CREATE TABLE agent_requests (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        kind INTEGER NOT NULL,
+        text TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        status INTEGER NOT NULL,
+        created_unix_ms INTEGER NOT NULL,
+        -- Null while it waits in the inbox.
+        answered_unix_ms INTEGER
+    );
+    CREATE INDEX open_agent_requests ON agent_requests (answered_unix_ms, created_unix_ms);
 "];
 
 #[derive(Clone, Debug, PartialEq, Eq)]

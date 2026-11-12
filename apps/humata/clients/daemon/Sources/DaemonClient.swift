@@ -74,6 +74,8 @@ package struct DaemonClient: Sendable {
     package var revert: @Sendable (_ change: UInt64) async throws -> Item?
     /// Every session waiting on you: approvals, then failures, then replies.
     package var inbox: @Sendable () async throws -> [InboxEntry]
+    /// Answers an agent's question or move; it leaves the inbox.
+    package var answerRequest: @Sendable (_ request: String, _ answer: RequestAnswer) async throws -> Void
     package var history: @Sendable (_ session: String) async throws -> [SessionEvent]
     package var hosts: @Sendable () async throws -> [RemoteHost]
     /// Adds a host Humata reaches with `ssh destination` and installs itself on.

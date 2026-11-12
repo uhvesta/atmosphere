@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import HumataDaemonClient
+import SwiftUI
 
 /// Notifications for sessions that come to wait on the person.
 @DependencyClient
@@ -43,8 +44,32 @@ package struct Notice: Hashable, Sendable {
             case .approval: "Waiting for you to answer a request."
             case .reply: "Finished its turn."
             case .failed: "Its turn failed."
+            case .question: entry.request?.text ?? "Asked you something."
+            case .move: "Finished; asks you to move it to \(entry.request?.kind.statusName ?? "another column")."
             }
         self.init(
             sessionID: entry.session.id, title: entry.session.title, body: place.isEmpty ? what : "\(place): \(what)")
+    }
+}
+
+extension AgentRequest.Kind {
+    /// The column a move asks for, as the board names it; nil for a question.
+    var statusName: String? {
+        guard case .move(_, let status) = self else { return nil }
+        return status.title
+    }
+}
+
+extension ItemStatus {
+    /// The board column's name.
+    package var title: String {
+        switch self {
+        case .todo: String(localized: "To Do")
+        case .inProgress: String(localized: "In Progress")
+        case .waitingOnYou: String(localized: "Waiting on You")
+        case .inReview: String(localized: "In Review")
+        case .done: String(localized: "Done")
+        case .wontDo: String(localized: "Won't Do")
+        }
     }
 }

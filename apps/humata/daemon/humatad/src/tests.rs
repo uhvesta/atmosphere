@@ -73,7 +73,11 @@ async fn send(client: &Client, session: &str, text: &str) {
 
 /// Watches `session` until `turns` turns have ended and it is idle, and
 /// returns its events.
-async fn after_turns(client: &Client, session: &str, turns: usize) -> Vec<pb::SessionEvent> {
+pub(crate) async fn after_turns(
+    client: &Client,
+    session: &str,
+    turns: usize,
+) -> Vec<pb::SessionEvent> {
     let request = pb::request::Kind::WatchSession(pb::WatchSession {
         session_id: session.to_owned(),
     });

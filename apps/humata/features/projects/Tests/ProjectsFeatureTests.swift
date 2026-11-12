@@ -469,6 +469,69 @@ final class ProjectsFeatureTests: XCTestCase {
             store.state.inbox.contains { $0.id == session.id && $0.session.pending.contains(request) })
     }
 
+    func testAnAgentsQuestionIsRepliedToAndItsMoveApprovedFromTheInbox() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, projectID: project.id, itemID: task.id))
+        let question = daemon.addRequest(session.id, .question, "Email or phone?")
+        let move = daemon.addRequest(session.id, .move(item: task.id, status: .done), "Login works.")
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.inbox.map(\.reason), [.question, .move])
+
+        await store.send(.requestAnswered(question.id, .reply("Email.")))
+        await store.receive(\.loaded)
+        let history = try await daemon.client.history(session.id)
+        XCTAssertTrue(history.contains { $0.kind == .userMessage("Email.") })
+
+        await store.send(.requestAnswered(move.id, .approve))
+        await store.receive(\.loaded)
+        let status = try await daemon.client.items(project.id).first?.status
+        XCTAssertEqual(status, .done)
+        XCTAssertFalse(store.state.inbox.contains { $0.request != nil })
+
+        // Answered already, from elsewhere: the person is told.
+        await store.send(.requestAnswered(move.id, .dismiss))
+        await store.receive(\.answerFailed)
+        XCTAssertNotNil(store.state.destination)
+    }
+
+    func testAMoveCanBeMadeToAnotherColumnThanAsked() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "login"))
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, projectID: project.id, itemID: task.id))
+        let move = daemon.addRequest(session.id, .move(item: task.id, status: .done), "Login works.")
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        await store.send(.requestAnswered(move.id, .move(.inReview)))
+        await store.receive(\.loaded)
+        let status = try await daemon.client.items(project.id).first?.status
+        XCTAssertEqual(status, .inReview)
+        XCTAssertTrue(store.state.inbox.isEmpty)
+    }
+
     func testASessionMovesToATaskAndBackToTheProject() async throws {
         let daemon = InMemoryDaemon()
         let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")

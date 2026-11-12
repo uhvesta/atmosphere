@@ -258,14 +258,28 @@ pub fn change(change: &pb::BoardChange) -> String {
     )
 }
 
-/// `<session>\t<reason>\t<project>\t<item>\t<name>`, `-` for none.
+/// `<session>\t<reason>\t<project>\t<item>\t<name>`, `-` for none; for
+/// what an agent asks, then `\t<request id>\t<status asked for>\t<text>`.
 pub fn inbox_entry(entry: &pb::InboxEntry) -> String {
     let reason = match entry.reason() {
         pb::InboxReason::Approval => "approval",
         pb::InboxReason::Reply => "reply",
         pb::InboxReason::Failed => "failed",
+        pb::InboxReason::Question => "question",
+        pb::InboxReason::Move => "move",
         pb::InboxReason::Unspecified => "-",
     };
+    let asked = entry.request.as_ref().map_or_else(String::new, |request| {
+        let status = match request.kind() {
+            pb::AgentRequestKind::Move => status(request.status()),
+            _ => "-",
+        };
+        format!(
+            "\t{}\t{status}\t{}",
+            request.id,
+            request.text.replace('\n', " ")
+        )
+    });
     let session = entry.session.as_ref();
     format!(
         "{}\t{reason}\t{}\t{}\t{}",
@@ -277,7 +291,7 @@ pub fn inbox_entry(entry: &pb::InboxEntry) -> String {
         session
             .map(|session| session.name.as_str())
             .unwrap_or_default(),
-    )
+    ) + &asked
 }
 
 pub fn host(host: &pb::HostInfo) -> String {

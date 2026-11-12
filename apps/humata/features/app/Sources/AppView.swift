@@ -29,8 +29,12 @@ package struct AppView: View {
             if store.sidebar.selection == .inbox {
                 InboxView(entries: store.sidebar.inbox) {
                     store.send(.sidebar(.selected(.session($0))))
+                } openChanges: {
+                    store.send(.sidebar(.changesTapped($0)))
                 } answer: { session, request, approved in
                     store.send(.sidebar(.inboxAnswered(session, request: request, approved: approved)))
+                } answerRequest: { request, answer in
+                    store.send(.sidebar(.requestAnswered(request, answer)))
                 }
             } else if let hosts = store.scope(state: \.hosts, action: \.hosts.presented) {
                 HostsView(store: hosts)

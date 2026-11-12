@@ -83,6 +83,8 @@ impl Relay {
                 | pb::request::Kind::CreateItem(_)
                 | pb::request::Kind::UpdateItem(_)
                 | pb::request::Kind::ListThreads(_)
+                | pb::request::Kind::AskPerson(_)
+                | pb::request::Kind::RequestMove(_)
         ) {
             return Err(RelayError::NotATool);
         }

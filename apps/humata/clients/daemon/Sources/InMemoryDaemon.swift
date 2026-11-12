@@ -80,6 +80,9 @@ package final class InMemoryDaemon: Sendable {
         var reviews: [Review] = []
         var nextThread = 1
         var nextComment = 1
+        /// Agents' requests not answered yet, oldest first.
+        var requests: [AgentRequest] = []
+        var nextAgentRequest = 1
     }
 
     let state = LockIsolated(State())
@@ -113,6 +116,20 @@ package final class InMemoryDaemon: Sendable {
 
     /// The sessions as they are now.
     package var sessions: [Session] { state.value.sessions }
+
+    /// Has `session`'s agent ask a question or for a move, as its
+    /// ask_person and request_move tools do.
+    @discardableResult
+    package func addRequest(_ session: String, _ kind: AgentRequest.Kind, _ text: String) -> AgentRequest {
+        state.withValue { state in
+            defer { state.nextAgentRequest += 1 }
+            let request = AgentRequest(
+                id: "r\(state.nextAgentRequest)", sessionID: session, kind: kind, text: text,
+                created: start.addingTimeInterval(TimeInterval(state.nextAgentRequest)))
+            state.requests.append(request)
+            return request
+        }
+    }
 
     /// Puts `session` on `host`, or this Mac if nil, as one a backend ran
     /// outside Humata.
@@ -219,6 +236,7 @@ package final class InMemoryDaemon: Sendable {
             },
             revert: { change in try self.revert(change) },
             inbox: { self.inbox() },
+            answerRequest: { request, answer in try self.answerRequest(request, answer) },
             history: { session in
                 try self.known(session)
                 return self.history(session)
@@ -933,27 +951,54 @@ extension InMemoryDaemon {
         }
     }
 
-    /// Sessions waiting on you: approvals, then failures, then replies.
+    private func answerRequest(_ id: String, _ answer: RequestAnswer) throws {
+        guard let request = state.value.requests.first(where: { $0.id == id }) else {
+            throw DaemonError.refused(.unknownRequest, message: "Request \(id) was answered already.")
+        }
+        switch (answer, request.kind) {
+        case (.reply(let text), _):
+            try send(request.sessionID, text, .enqueue)
+        case (.approve, .move(let item, let status)), (.move(let status), .move(let item, _)):
+            _ = try updateItem(item, ItemUpdate(status: status))
+        case (.approve, .question), (.move, .question):
+            throw DaemonError.refused(.invalidRequest, message: "A question is answered with a reply.")
+        case (.dismiss, _): break
+        }
+        state.withValue { $0.requests.removeAll { $0.id == id } }
+    }
+
+    /// Sessions waiting on you: approvals, then questions and moves, then
+    /// failures, then replies.
     private func inbox() -> [InboxEntry] {
-        state.withValue { state in
-            let entries = state.sessions.compactMap { session -> InboxEntry? in
+        let state = state.value
+        let project = { (session: Session) in state.projects.first { $0.id == session.projectID }?.name }
+        let asked = state.requests.compactMap { request -> InboxEntry? in
+            guard let session = state.sessions.first(where: { $0.id == request.sessionID }), !session.archived
+            else { return nil }
+            let reason: InboxReason = if case .question = request.kind { .question } else { .move }
+            return InboxEntry(
+                session: session, reason: reason, projectName: project(session),
+                itemTitle: state.items.first { $0.id == session.itemID }?.title, request: request)
+        }
+        let entries =
+            state.sessions.compactMap { session -> InboxEntry? in
                 guard !session.archived else { return nil }
                 let item = state.items.first { $0.id == session.itemID }
                 let reason: InboxReason
                 switch session.state {
                 case .waitingForApproval: reason = .approval
                 case .failed: reason = .failed
-                case .idle where session.turns > session.seenTurns && item?.fields.status.closed != true:
+                case .idle
+                where session.turns > session.seenTurns && item?.fields.status.closed != true
+                    && !state.requests.contains(where: { $0.sessionID == session.id }):
                     reason = .reply
                 case .idle, .working: return nil
                 }
                 return InboxEntry(
-                    session: session, reason: reason,
-                    projectName: state.projects.first { $0.id == session.projectID }?.name, itemTitle: item?.title)
-            }
-            let order: [InboxReason] = [.approval, .failed, .reply]
-            return order.flatMap { reason in entries.filter { $0.reason == reason } }
-        }
+                    session: session, reason: reason, projectName: project(session), itemTitle: item?.title)
+            } + asked
+        let order: [[InboxReason]] = [[.approval], [.question, .move], [.failed], [.reply]]
+        return order.flatMap { reasons in entries.filter { reasons.contains($0.reason) } }
     }
 }
 

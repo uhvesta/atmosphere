@@ -112,6 +112,11 @@ message Request {
     // tools, streamed for the daemon to answer. A daemon refuses both.
     WatchToolCalls watch_tool_calls = 45;
     AnswerToolCall answer_tool_call = 46;
+    // From an agent, through the humata tools: something for the person.
+    AskPerson ask_person = 47;
+    RequestMove request_move = 48;
+    // From the person, in the inbox.
+    AnswerRequest answer_request = 49;
   }
 }
 
@@ -161,6 +166,8 @@ message Response {
     Importable importable = 41;
     ToolCallsWatched tool_calls_watched = 42;
     ToolCallAnswered tool_call_answered = 43;
+    RequestMade request_made = 44;
+    RequestAnswered request_answered = 45;
   }
 }
 
@@ -196,6 +203,8 @@ enum ErrorCode {
   ERROR_CODE_UNKNOWN_IMPORT = 18;
   // The session was imported before; open that one.
   ERROR_CODE_ALREADY_IMPORTED = 19;
+  // No such request waits in the inbox; it may have been answered.
+  ERROR_CODE_UNKNOWN_REQUEST = 20;
 }
 
 enum Backend {
@@ -1055,6 +1064,58 @@ message BoardChangeReverted {
 // Every session, across projects, waiting on you.
 message ListInbox {}
 
+enum AgentRequestKind {
+  AGENT_REQUEST_KIND_UNSPECIFIED = 0;
+  AGENT_REQUEST_KIND_QUESTION = 1;
+  AGENT_REQUEST_KIND_MOVE = 2;
+}
+
+// Something an agent asks of the person, kept until they answer it.
+message AgentRequest {
+  string id = 1;
+  string session_id = 2;
+  AgentRequestKind kind = 3;
+  // The question, or for a move what the agent did.
+  string text = 4;
+  // For a move: the task or subtask, and the status asked for.
+  string item_id = 5;
+  ItemStatus status = 6;
+  int64 created_unix_ms = 7;
+}
+
+message AskPerson {
+  string session_id = 1;
+  string text = 2;
+}
+
+// Only to in review, done or won't do; the person approves it.
+message RequestMove {
+  string session_id = 1;
+  string item_id = 2;
+  ItemStatus status = 3;
+  string summary = 4;
+}
+
+message RequestMade {
+  AgentRequest request = 1;
+}
+
+message AnswerRequest {
+  string request_id = 1;
+  oneof answer {
+    // Sent to the session as a message, which it carries on from.
+    string reply = 2;
+    // Moves the item as asked.
+    bool approve = 3;
+    // Moves the item to another status of the person's choosing.
+    ItemStatus move_to = 4;
+    // Takes it out of the inbox without doing anything.
+    bool dismiss = 5;
+  }
+}
+
+message RequestAnswered {}
+
 enum InboxReason {
   INBOX_REASON_UNSPECIFIED = 0;
   // It asked to run a command, write or read and waits for your answer.
@@ -1063,6 +1124,10 @@ enum InboxReason {
   INBOX_REASON_REPLY = 2;
   // Its turn failed.
   INBOX_REASON_FAILED = 3;
+  // It asked you a question or for your opinion.
+  INBOX_REASON_QUESTION = 4;
+  // It finished and asks to move its task.
+  INBOX_REASON_MOVE = 5;
 }
 
 message InboxEntry {
@@ -1071,9 +1136,11 @@ message InboxEntry {
   // Its project's and item's names; empty for none.
   string project_name = 3;
   string item_title = 4;
+  // What it asks, for a question or a move.
+  AgentRequest request = 5;
 }
 
-// Approvals first, then failures, then replies.
+// Approvals first, then what agents ask, then failures, then replies.
 message Inbox {
   repeated InboxEntry entries = 1;
 }

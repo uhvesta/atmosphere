@@ -5,19 +5,6 @@ import HumataDaemonClient
 import HumataProjects
 import SwiftUI
 
-extension ItemStatus {
-    package var title: String {
-        switch self {
-        case .todo: String(localized: "To Do")
-        case .inProgress: String(localized: "In Progress")
-        case .waitingOnYou: String(localized: "Waiting on You")
-        case .inReview: String(localized: "In Review")
-        case .done: String(localized: "Done")
-        case .wontDo: String(localized: "Won't Do")
-        }
-    }
-}
-
 extension Priority {
     var title: String {
         switch self {

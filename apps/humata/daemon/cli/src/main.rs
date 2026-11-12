@@ -364,8 +364,23 @@ enum Command {
     /// Read or revert a project's board changes.
     #[command(subcommand)]
     Board(BoardCommand),
-    /// List every session waiting on you, across projects.
+    /// List every session waiting on you, across projects, and what agents
+    /// ask of you.
     Inbox,
+    /// Answer what an agent asked, by the request id `humata inbox` prints:
+    /// reply, approve its move, move its task elsewhere, or dismiss it.
+    Answer {
+        request: String,
+        /// Sent to the session as a message, which it carries on from.
+        #[arg(long, conflicts_with_all = ["approve", "move_to", "dismiss"])]
+        reply: Option<String>,
+        #[arg(long, conflicts_with_all = ["move_to", "dismiss"])]
+        approve: bool,
+        #[arg(long, value_enum, conflicts_with = "dismiss")]
+        move_to: Option<Status>,
+        #[arg(long)]
+        dismiss: bool,
+    },
     /// Move a session to a task or subtask of its project, or with no
     /// --item to the project itself.
     MoveSession {
@@ -677,6 +692,30 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             }
             other => return Err(unexpected("the inbox", &other)),
         },
+        Command::Answer {
+            request,
+            reply,
+            approve,
+            move_to,
+            dismiss,
+        } => {
+            use pb::answer_request::Answer;
+            let answer = match (reply, move_to) {
+                (Some(text), _) => Answer::Reply(text),
+                (None, Some(status)) => Answer::MoveTo(pb::ItemStatus::from(status).into()),
+                (None, None) if approve => Answer::Approve(true),
+                (None, None) if dismiss => Answer::Dismiss(true),
+                (None, None) => return Err(CliError::NoAnswer),
+            };
+            let request = Request::AnswerRequest(pb::AnswerRequest {
+                request_id: request,
+                answer: Some(answer),
+            });
+            match client.call(request).await? {
+                Response::RequestAnswered(_) => {}
+                other => return Err(unexpected("RequestAnswered", &other)),
+            }
+        }
         Command::MoveSession { session, item } => {
             update(
                 &client,

@@ -184,6 +184,12 @@ impl Server {
                         })
                     })
                     .transpose()?;
+                if let Some(status) = status.filter(|status| asked_for(*status)) {
+                    return Err(format!(
+                        "moving a task to {} is the person's call; ask with request_move, saying what you did",
+                        status_name(status)
+                    ));
+                }
                 let title = text("title").filter(|title| !title.is_empty());
                 let spec = arguments["spec"].as_str().map(str::to_owned);
                 if status.is_none() && title.is_none() && spec.is_none() {
@@ -239,6 +245,54 @@ impl Server {
                     pb::response::Kind::ItemCreated(pb::ItemCreated { item: Some(item) }) => Ok(
                         format!("Added {} under {}: {}.", item.id, parent.title, item.title),
                     ),
+                    other => Err(unexpected(&other)),
+                }
+            }
+            "ask_person" => {
+                let ask = pb::AskPerson {
+                    session_id: self.session.clone(),
+                    text: required(text("question"), "question")?,
+                };
+                match self.ask(pb::request::Kind::AskPerson(ask)).await? {
+                    pb::response::Kind::RequestMade(_) => Ok(
+                        "Asked; it waits in the person's inbox, and their answer comes as your next message. End your turn unless you can carry on without it."
+                            .to_owned(),
+                    ),
+                    other => Err(unexpected(&other)),
+                }
+            }
+            "request_move" => {
+                let status = required(text("status"), "status")?;
+                let status = status_named(&status)
+                    .filter(|status| asked_for(*status))
+                    .ok_or_else(|| {
+                        format!(
+                            "{status:?} isn't a move to ask for; give in_review, done or wont_do"
+                        )
+                    })?;
+                let summary = required(text("summary"), "summary")?;
+                let item_id = match text("item_id").filter(|id| !id.is_empty()) {
+                    Some(id) => id,
+                    None => {
+                        let session = self.session().await?;
+                        if session.item_id.is_empty() {
+                            return Err("this session works on no task; give item_id, from board"
+                                .to_owned());
+                        }
+                        session.item_id
+                    }
+                };
+                let asked = pb::RequestMove {
+                    session_id: self.session.clone(),
+                    item_id,
+                    status: status.into(),
+                    summary,
+                };
+                match self.ask(pb::request::Kind::RequestMove(asked)).await? {
+                    pb::response::Kind::RequestMade(_) => Ok(format!(
+                        "Asked the person to move it to {}. They look over your changes, then approve, move it themselves, or send feedback as your next message.",
+                        status_name(status)
+                    )),
                     other => Err(unexpected(&other)),
                 }
             }
@@ -410,6 +464,14 @@ fn unexpected(response: &pb::response::Kind) -> String {
     format!("humatad answered with {response:?}; update Humata so the app and humatad match")
 }
 
+/// The moves an agent asks the person for rather than makes.
+fn asked_for(status: pb::ItemStatus) -> bool {
+    matches!(
+        status,
+        pb::ItemStatus::InReview | pb::ItemStatus::Done | pb::ItemStatus::WontDo
+    )
+}
+
 const STATUSES: [&str; 6] = [
     "todo",
     "in_progress",
@@ -454,7 +516,7 @@ fn tools() -> Value {
         },
         {
             "name": "update_item",
-            "description": "Change a task's or subtask's status, title or spec. Set in_review when your part is ready for the person to look at; done and wont_do are usually the person's call.",
+            "description": "Change a task's or subtask's status, title or spec. Moving it to in_review, done or wont_do is the person's call: use request_move for those.",
             "inputSchema": object(json!({
                 "item_id": string("From board."),
                 "status": {"type": "string", "enum": STATUSES},
@@ -470,6 +532,22 @@ fn tools() -> Value {
                 "spec": string("What it is and why, in Markdown."),
                 "task_id": string("A task from board; a subtask can't have subtasks."),
             }), &["title"]),
+        },
+        {
+            "name": "ask_person",
+            "description": "Ask the person a question, or for their opinion, when you can't decide well without them. It waits in their inbox; their answer comes as your next message.",
+            "inputSchema": object(json!({
+                "question": string("What you need to know, with the options and what you'd pick, in Markdown."),
+            }), &["question"]),
+        },
+        {
+            "name": "request_move",
+            "description": "When your work on a task is finished, ask the person to move it to in_review, done or wont_do. They look over your changes and approve it, or send feedback to carry on from.",
+            "inputSchema": object(json!({
+                "status": {"type": "string", "enum": ["in_review", "done", "wont_do"]},
+                "summary": string("What you did and anything they should check, in Markdown."),
+                "item_id": string("From board; defaults to this session's task."),
+            }), &["status", "summary"]),
         },
         {
             "name": "review_threads",
@@ -599,7 +677,11 @@ mod tests {
                 json!({"item_id": subtask.id, "status": "finished"}),
             ),
             ("update_item", json!({"item_id": subtask.id})),
-            ("update_item", json!({"item_id": "nope", "status": "done"})),
+            ("update_item", json!({"item_id": "nope", "status": "todo"})),
+            (
+                "update_item",
+                json!({"item_id": subtask.id, "status": "done"}),
+            ),
             (
                 "add_subtask",
                 json!({"title": "deeper", "task_id": subtask.id}),
@@ -613,5 +695,91 @@ mod tests {
             let (_, failed) = call(&server, tool, arguments.clone()).await;
             assert!(failed, "{tool} {arguments}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_agents_questions_and_moves_wait_in_the_inbox_until_answered() {
+        use crate::tests::{board, daemon, git_repository, item, project, start_on, started};
+        let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let repository = git_repository();
+        let client = daemon(state.path(), crate::hosts::Hosts::default()).await;
+        let project = project(&client, repository.path()).await;
+        let task = item(&client, &project.id, "", "login").await;
+        let session = started(&client, start_on(&task.id)).await;
+        let server = server(client, &session.id);
+        let inbox = || async {
+            match server
+                .client
+                .call(pb::request::Kind::ListInbox(pb::ListInbox {}))
+                .await
+            {
+                Ok(pb::response::Kind::Inbox(inbox)) => inbox
+                    .entries
+                    .into_iter()
+                    .filter_map(|entry| entry.request)
+                    .collect::<Vec<_>>(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let answer = |request: &pb::AgentRequest, answer| {
+            server
+                .client
+                .call(pb::request::Kind::AnswerRequest(pb::AnswerRequest {
+                    request_id: request.id.clone(),
+                    answer: Some(answer),
+                }))
+        };
+        use pb::answer_request::Answer;
+
+        let (_, failed) = call(
+            &server,
+            "ask_person",
+            json!({"question": "Email or phone?"}),
+        )
+        .await;
+        assert!(!failed);
+        let (_, failed) = call(
+            &server,
+            "request_move",
+            json!({"status": "done", "summary": "Login works."}),
+        )
+        .await;
+        assert!(!failed);
+        let (_, failed) = call(
+            &server,
+            "request_move",
+            json!({"status": "todo", "summary": "Nothing."}),
+        )
+        .await;
+        assert!(failed);
+
+        let asked = inbox().await;
+        let [question, moving] = asked.as_slice() else {
+            panic!("{asked:?}")
+        };
+        assert_eq!(question.kind(), pb::AgentRequestKind::Question);
+        assert_eq!(
+            (moving.kind(), moving.status()),
+            (pb::AgentRequestKind::Move, pb::ItemStatus::Done)
+        );
+        assert_eq!(moving.item_id, task.id);
+
+        // A question is replied to, not approved; the reply goes to the session.
+        assert!(answer(question, Answer::Approve(true)).await.is_err());
+        assert!(
+            answer(question, Answer::Reply("Email.".to_owned()))
+                .await
+                .is_ok()
+        );
+        crate::tests::after_turns(&server.client, &session.id, 1).await;
+
+        assert!(answer(moving, Answer::Approve(true)).await.is_ok());
+        assert_eq!(
+            board(&server.client, &project.id).await,
+            [("login".to_owned(), pb::ItemStatus::Done)]
+        );
+        assert!(inbox().await.is_empty());
+        // Answered once; again, it is no longer there.
+        assert!(answer(moving, Answer::Dismiss(true)).await.is_err());
     }
 }

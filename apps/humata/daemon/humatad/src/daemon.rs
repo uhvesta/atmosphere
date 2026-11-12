@@ -15,7 +15,7 @@ use crate::error::DaemonError;
 use crate::error::StoreError;
 use crate::host::Host;
 use crate::hosts::{self, HostConfig, Hosts, Remote, Ssh, ToolCall};
-use crate::store::Store;
+use crate::store::{Placement, Store};
 use humata_agent::Repository;
 
 mod review;
@@ -382,29 +382,160 @@ impl Daemon {
             .iter()
             .map(|project| (project.id.as_str(), project.name.as_str()))
             .collect();
-        let mut entries: Vec<pb::InboxEntry> = sessions
-            .into_iter()
-            .filter_map(|session| {
-                let item = items.get(&session.item_id);
-                let reason = board::inbox_reason(&session, item)?;
-                Some(pb::InboxEntry {
-                    project_name: names
-                        .get(session.project_id.as_str())
-                        .map(|name| (*name).to_owned())
-                        .unwrap_or_default(),
-                    item_title: item.map(|item| item.title.clone()).unwrap_or_default(),
-                    reason: reason.into(),
-                    session: Some(session),
-                })
-            })
+        let requests = self.store.open_requests()?;
+        let asking: std::collections::HashSet<&str> = requests
+            .iter()
+            .map(|request| request.session_id.as_str())
             .collect();
+        let project_name = |session: &pb::SessionInfo| {
+            names
+                .get(session.project_id.as_str())
+                .map(|name| (*name).to_owned())
+                .unwrap_or_default()
+        };
+        let mut entries: Vec<pb::InboxEntry> = Vec::new();
+        for request in &requests {
+            let Some(session) = sessions
+                .iter()
+                .find(|session| session.id == request.session_id && !session.archived)
+            else {
+                continue;
+            };
+            let item = items
+                .get(&request.item_id)
+                .or_else(|| items.get(&session.item_id));
+            entries.push(pb::InboxEntry {
+                project_name: project_name(session),
+                item_title: item.map(|item| item.title.clone()).unwrap_or_default(),
+                reason: match request.kind() {
+                    pb::AgentRequestKind::Move => pb::InboxReason::Move,
+                    _ => pb::InboxReason::Question,
+                }
+                .into(),
+                session: Some(session.clone()),
+                request: Some(request.clone()),
+            });
+        }
+        for session in &sessions {
+            let item = items.get(&session.item_id);
+            let Some(reason) = board::inbox_reason(session, item) else {
+                continue;
+            };
+            // What it asks says more than that it replied.
+            if reason == pb::InboxReason::Reply && asking.contains(session.id.as_str()) {
+                continue;
+            }
+            entries.push(pb::InboxEntry {
+                project_name: project_name(session),
+                item_title: item.map(|item| item.title.clone()).unwrap_or_default(),
+                reason: reason.into(),
+                session: Some(session.clone()),
+                request: None,
+            });
+        }
         let rank = |entry: &pb::InboxEntry| match entry.reason() {
             pb::InboxReason::Approval => 0,
-            pb::InboxReason::Failed => 1,
-            pb::InboxReason::Reply | pb::InboxReason::Unspecified => 2,
+            pb::InboxReason::Question | pb::InboxReason::Move => 1,
+            pb::InboxReason::Failed => 2,
+            pb::InboxReason::Reply | pb::InboxReason::Unspecified => 3,
         };
         entries.sort_by_key(rank);
         Ok(pb::Inbox { entries })
+    }
+
+    /// Where `session` is, found on its host if the daemon hasn't seen it.
+    async fn placement(&self, session: &str) -> Result<Placement, DaemonError> {
+        self.host_of(session).await?;
+        self.store.placement(session)?.ok_or_else(|| {
+            StoreError::UnknownSession {
+                id: session.to_owned(),
+            }
+            .into()
+        })
+    }
+
+    async fn ask_person(&self, ask: pb::AskPerson) -> Result<pb::AgentRequest, DaemonError> {
+        let text = ask.text.trim();
+        if text.is_empty() {
+            return Err(DaemonError::NoRequestText);
+        }
+        self.placement(&ask.session_id).await?;
+        Ok(self.store.add_request(pb::AgentRequest {
+            session_id: ask.session_id,
+            kind: pb::AgentRequestKind::Question.into(),
+            text: text.to_owned(),
+            ..Default::default()
+        })?)
+    }
+
+    async fn request_move(&self, asked: pb::RequestMove) -> Result<pb::AgentRequest, DaemonError> {
+        let summary = asked.summary.trim();
+        if summary.is_empty() {
+            return Err(DaemonError::NoRequestText);
+        }
+        let status = asked.status();
+        if !matches!(
+            status,
+            pb::ItemStatus::InReview | pb::ItemStatus::Done | pb::ItemStatus::WontDo
+        ) {
+            return Err(DaemonError::NotAMove);
+        }
+        let placement = self.placement(&asked.session_id).await?;
+        let item = self.store.item(&asked.item_id)?;
+        if placement.project.as_deref() != Some(item.project_id.as_str()) {
+            return Err(StoreError::ItemInAnotherProject {
+                title: item.fields.title,
+            }
+            .into());
+        }
+        Ok(self.store.add_request(pb::AgentRequest {
+            session_id: asked.session_id,
+            kind: pb::AgentRequestKind::Move.into(),
+            text: summary.to_owned(),
+            item_id: item.id,
+            status: status.into(),
+            ..Default::default()
+        })?)
+    }
+
+    /// Does what the person answered, then takes the request out of the
+    /// inbox; if doing it fails, the request stays.
+    async fn answer_request(&self, answer: pb::AnswerRequest) -> Result<(), DaemonError> {
+        use pb::answer_request::Answer;
+        let request = self.store.open_request(&answer.request_id)?;
+        let move_to = |status: pb::ItemStatus| {
+            pb::request::Kind::UpdateItem(pb::UpdateItem {
+                item_id: request.item_id.clone(),
+                status: Some(status.into()),
+                ..Default::default()
+            })
+        };
+        let doing = match answer.answer {
+            Some(Answer::Reply(text)) => {
+                let text = text.trim();
+                if text.is_empty() {
+                    return Err(DaemonError::NoReply);
+                }
+                Some(pb::request::Kind::SendMessage(pb::SendMessage {
+                    session_id: request.session_id.clone(),
+                    text: text.to_owned(),
+                    ..Default::default()
+                }))
+            }
+            Some(Answer::Approve(_)) if request.kind() == pb::AgentRequestKind::Move => {
+                Some(move_to(request.status()))
+            }
+            Some(Answer::Approve(_)) => return Err(DaemonError::NothingToApprove),
+            Some(Answer::MoveTo(status)) if request.kind() == pb::AgentRequestKind::Move => Some(
+                move_to(pb::ItemStatus::try_from(status).unwrap_or_default()),
+            ),
+            Some(Answer::MoveTo(_)) => return Err(DaemonError::NothingToApprove),
+            Some(Answer::Dismiss(_)) | None => None,
+        };
+        if let Some(doing) = doing {
+            Box::pin(self.answer(doing)).await?;
+        }
+        Ok(self.store.answer_request(&request.id)?)
     }
 
     fn create_item(&self, create: pb::CreateItem) -> Result<Item, DaemonError> {
@@ -778,6 +909,24 @@ impl Daemon {
                 let inbox = self.inbox().await?;
                 return Ok(Reply::Response(Response::Inbox(inbox)));
             }
+            Request::AskPerson(ask) => {
+                let request = self.ask_person(std::mem::take(ask)).await?;
+                return Ok(Reply::Response(Response::RequestMade(pb::RequestMade {
+                    request: Some(request),
+                })));
+            }
+            Request::RequestMove(asked) => {
+                let request = self.request_move(std::mem::take(asked)).await?;
+                return Ok(Reply::Response(Response::RequestMade(pb::RequestMade {
+                    request: Some(request),
+                })));
+            }
+            Request::AnswerRequest(answer) => {
+                self.answer_request(std::mem::take(answer)).await?;
+                return Ok(Reply::Response(Response::RequestAnswered(
+                    pb::RequestAnswered {},
+                )));
+            }
             Request::StartSession(start) => {
                 (project, item) = self.from_project(start).await?;
                 // The host runs it on itself; only the daemon knows hosts by
@@ -1093,6 +1242,14 @@ impl Daemon {
                 .sessions
                 .iter()
                 .any(|session| session.id == list.session_id),
+            Some(Request::AskPerson(ask)) => sessions
+                .sessions
+                .iter()
+                .any(|session| session.id == ask.session_id),
+            Some(Request::RequestMove(asked)) => sessions
+                .sessions
+                .iter()
+                .any(|session| session.id == asked.session_id),
             _ => return Err(out_of_scope("a request that isn't a humata tool's")),
         };
         let Some(request) = request.filter(|_| allowed) else {

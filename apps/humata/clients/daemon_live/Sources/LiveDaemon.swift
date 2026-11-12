@@ -304,6 +304,19 @@ extension DaemonClient {
                 }
                 return try inbox.entries.compactMap(InboxEntry.init)
             },
+            answerRequest: { request, answer in
+                var asked = Humata_V1_AnswerRequest()
+                asked.requestID = request
+                switch answer {
+                case .reply(let text): asked.reply = text
+                case .approve: asked.approve = true
+                case .move(let status): asked.moveTo = status.proto
+                case .dismiss: asked.dismiss = true
+                }
+                guard case .requestAnswered = try await daemon.call(.answerRequest(asked)) else {
+                    throw DaemonError.unexpected("something other than the answered request")
+                }
+            },
             history: { session in
                 var read = Humata_V1_ReadHistory()
                 read.sessionID = session

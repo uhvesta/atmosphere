@@ -4,6 +4,9 @@ use humata_wire::{ClientError, WireError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
+    #[error("say how to answer: --reply <text>, --approve, --move-to <status> or --dismiss")]
+    NoAnswer,
+
     #[error(
         "there is no home folder to find humatad's socket in; set HOME, or pass --socket or set HUMATA_SOCKET"
     )]

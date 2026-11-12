@@ -430,6 +430,61 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// An agent asks the person a question and, once done, to move its
+    /// task: both wait in the inbox. The reply goes to the session; the
+    /// person opens the changes, then approves the move.
+    func testAnsweringAnAgentsRequests() async throws {
+        let daemon = InMemoryDaemon { _ in
+            [.write(path: "/code/humata/Login.swift", contents: "let signIn = \"email\"\n"), .say("Done.")]
+        }
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let task = try await daemon.client.createItem(project.id, ItemFields(title: "Sign in"))
+        let session = try await daemon.client.start(
+            StartRequest(
+                backend: .scripted, name: "Sign in", approvalMode: .allowEverything, projectID: project.id,
+                itemID: task.id))
+        try await daemon.client.send(session.id, "Add sign in", .enqueue)
+        daemon.addRequest(
+            session.id, .question, "Sign in with **email** or **phone**? I'd pick email: no SMS costs.")
+        daemon.addRequest(
+            session.id, .move(item: task.id, status: .inReview),
+            "Added sign in by email. Check the redirect after the session times out.")
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("requests", AppView(store: store))
+
+        try await until { store.daemon == .running && store.sidebar.inbox.count == 2 }
+        store.send(.sidebar(.selected(.inbox)))
+        try await until { store.session == nil }
+        await flow.step("inbox")
+
+        let question = try XCTUnwrap(store.sidebar.inbox.first?.request)
+        store.send(.sidebar(.requestAnswered(question.id, .reply("Email."))))
+        try await until { store.sidebar.inbox.count == 1 && store.sidebar.inbox.first?.reason == .move }
+        await flow.step("replied")
+
+        store.send(.sidebar(.changesTapped(session.id)))
+        try await until { store.session?.tab == .review && store.session?.review.files.isEmpty == false }
+        await flow.step("changes")
+
+        let move = try XCTUnwrap(store.sidebar.inbox.first?.request)
+        store.send(.sidebar(.requestAnswered(move.id, .approve)))
+        try await until { store.sidebar.inbox.isEmpty }
+        let status = try await daemon.client.items(project.id).first?.status
+        XCTAssertEqual(status, .inReview)
+        store.send(.sidebar(.selected(.inbox)))
+        try await until { store.session == nil }
+        await flow.step("approved")
+        flow.finish()
+    }
+
     private func sidebarShows(
         _ state: SessionState, _ store: StoreOf<AppFeature>, _ session: Session
     ) async throws {
