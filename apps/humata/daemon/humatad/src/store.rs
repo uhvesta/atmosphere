@@ -256,6 +256,14 @@ const MIGRATIONS: &[&str] = &["
     ALTER TABLE review_comments ADD COLUMN github_id INTEGER;
     ALTER TABLE review_comments ADD COLUMN github_login TEXT NOT NULL DEFAULT '';
     CREATE UNIQUE INDEX review_comments_by_github ON review_comments (github_id);
+", "
+    -- Spec changes an idle session is told of with its next message.
+    CREATE TABLE spec_notes (
+        session_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        note TEXT NOT NULL,
+        PRIMARY KEY (session_id, item_id)
+    );
 "];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -799,6 +807,20 @@ impl Store {
                 .collect::<Result<_, _>>()
         })();
         listed.map_err(self.failed())
+    }
+
+    /// The item change `id` was made to, as it is now; None if it is gone.
+    pub fn changed_item(&self, id: u64) -> Result<Option<Item>, StoreError> {
+        self.lock()
+            .query_row(
+                &format!(
+                    "{ITEM_COLUMNS} WHERE id = (SELECT item_id FROM board_changes WHERE id = ?1)"
+                ),
+                [i64::try_from(id).unwrap_or(i64::MAX)],
+                item_row,
+            )
+            .optional()
+            .map_err(self.failed())
     }
 
     /// Puts an item back as it was before change `id`, and records that as

@@ -1360,6 +1360,121 @@ async fn a_session_on_a_subtask_moves_it_and_its_task() {
     );
 }
 
+async fn history_of(client: &Client, session: &str) -> Vec<pb::SessionEvent> {
+    match client
+        .call(pb::request::Kind::ReadHistory(pb::ReadHistory {
+            session_id: session.to_owned(),
+        }))
+        .await
+    {
+        Ok(pb::response::Kind::History(history)) => history.events,
+        other => panic!("no history: {other:?}"),
+    }
+}
+
+/// The messages `session` was sent, queued or not.
+async fn sent_to(client: &Client, session: &str) -> Vec<String> {
+    history_of(client, session)
+        .await
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            Some(pb::session_event::Kind::UserMessage(message)) => Some(message.text),
+            Some(pb::session_event::Kind::MessageQueued(queued)) => Some(queued.text),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn waiting(client: &Client, session: &str) {
+    for _ in 0..200 {
+        let listed = client
+            .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+            .await;
+        if let Ok(pb::response::Kind::Sessions(sessions)) = listed
+            && sessions.sessions.iter().any(|info| {
+                info.id == session && info.state() == pb::SessionState::WaitingForApproval
+            })
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("{session} never waited for approval");
+}
+
+#[tokio::test]
+async fn a_spec_change_asks_only_busy_agents_and_tells_idle_ones_with_their_next_message() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let task = item(&client, &project.id, "", "login").await;
+    let idle = started(&client, start_on(&task.id)).await;
+    send(&client, &idle.id, "hello").await;
+    after_turns(&client, &idle.id, 1).await;
+    let busy = {
+        let mut request = start_on(&task.id);
+        if let pb::request::Kind::StartSession(start) = &mut request {
+            start.backend_config = r#"{"rules": [
+                {"when": "write", "steps": [{"step": "write_file", "path": "a.txt", "contents": "a"}]},
+                {"when": "", "steps": [{"step": "say", "text": "ok"}]}
+            ]}"#
+            .to_owned();
+        }
+        started(&client, request).await
+    };
+    send(&client, &busy.id, "write").await;
+    waiting(&client, &busy.id).await;
+    let change = |spec: &str, by: &str| {
+        pb::request::Kind::UpdateItem(pb::UpdateItem {
+            item_id: task.id.clone(),
+            title: Some("sign-in".to_owned()),
+            spec: Some(spec.to_owned()),
+            by_session_id: by.to_owned(),
+            ..Default::default()
+        })
+    };
+    async fn changed(client: &Client, request: pb::request::Kind) {
+        let answer = client.call(request).await;
+        assert!(
+            matches!(answer, Ok(pb::response::Kind::ItemUpdated(_))),
+            "{answer:?}"
+        );
+    }
+
+    // A new title with the same spec tells nobody.
+    changed(&client, change(&task.spec, "")).await;
+    assert_eq!(sent_to(&client, &idle.id).await, ["hello"]);
+    assert_eq!(sent_to(&client, &busy.id).await, ["write"]);
+
+    // A change the waiting agent made itself isn't sent back to it; the
+    // idle one hears of it only with its next message.
+    changed(&client, change("Sign in with a passkey.", &busy.id)).await;
+    assert_eq!(sent_to(&client, &busy.id).await, ["write"]);
+    assert_eq!(sent_to(&client, &idle.id).await, ["hello"]);
+
+    // The person's change is queued for the waiting agent.
+    changed(&client, change("Sign in with a passkey or a password.", "")).await;
+    assert_eq!(sent_to(&client, &busy.id).await.len(), 2);
+    assert_eq!(sent_to(&client, &idle.id).await, ["hello"]);
+
+    send(&client, &idle.id, "hello").await;
+    after_turns(&client, &idle.id, 2).await;
+    let sent = sent_to(&client, &idle.id).await;
+    assert_eq!(sent.len(), 2, "{sent:?}");
+    assert!(sent[1].ends_with("hello") && sent[1] != "hello", "{sent:?}");
+    assert_eq!(
+        sent[1].matches(&task.id).count(),
+        1,
+        "one note per item: {sent:?}"
+    );
+
+    // Told once, it isn't told again.
+    send(&client, &idle.id, "hello").await;
+    after_turns(&client, &idle.id, 3).await;
+    assert_eq!(sent_to(&client, &idle.id).await[2], "hello");
+}
+
 #[tokio::test]
 async fn done_stays_done_and_the_inbox_has_only_open_replies() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));

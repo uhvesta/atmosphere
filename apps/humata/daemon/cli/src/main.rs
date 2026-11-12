@@ -1483,6 +1483,7 @@ async fn item(client: &Client, command: ItemCommand) -> Result<(), CliError> {
                 spec: spec.map(|path| read_spec(&path)).transpose()?,
                 status: status.map(|status| pb::ItemStatus::from(status).into()),
                 priority: priority.map(|priority| pb::Priority::from(priority).into()),
+                by_session_id: String::new(),
             });
             expect_ok(client.call(request).await?, updated, "ItemUpdated")?;
         }

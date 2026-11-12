@@ -91,13 +91,16 @@ impl Daemon {
                     title: apply.title.filter(|title| !title.trim().is_empty()),
                     spec: Some(spec),
                 };
+                let before = self.store.item(&proposal.item_id).ok();
                 let item = self
                     .store
                     .update_item(&proposal.item_id, patch)
                     .map_err(|_| DaemonError::NoProposedItem {
                         proposal: proposal.id.clone(),
                     })?;
-                self.spec_changed(&item).await;
+                if before.is_none_or(|before| before.fields.spec != item.fields.spec) {
+                    self.spec_changed(&item, "").await;
+                }
                 item
             }
             _ => {
@@ -253,24 +256,50 @@ impl Daemon {
         Ok(spec(&item))
     }
 
-    /// Tells every session that reads `item`'s spec that it changed: copies
-    /// it to their hosts, and asks each agent to read it again. A session
-    /// that can't be reached reads it when it next starts a turn.
-    pub(super) async fn spec_changed(&self, item: &Item) {
+    /// Tells the sessions that read `item`'s spec that it changed, except
+    /// `by`, whose agent made the change. Each gets the new copy on its
+    /// host. A running or waiting agent is asked to read it again before it
+    /// goes on; any other is told with the person's next message, so the
+    /// change starts no turn. Archived sessions aren't told.
+    pub(super) async fn spec_changed(&self, item: &Item, by: &str) {
         let Ok(sessions) = self.store.sessions_on(&item.id) else {
             return;
         };
+        if sessions.is_empty() {
+            return;
+        }
+        let listed = self
+            .list("")
+            .await
+            .map(|listed| listed.sessions)
+            .unwrap_or_default();
         for (session, host) in sessions {
             let _ = self.push_specs(&session, &host).await;
-            let message = pb::request::Kind::SendMessage(pb::SendMessage {
-                session_id: session,
-                text: format!(
-                    "The spec of {:?} changed. Read it again with read_item (id {}) before you go on, and say if it changes your plan.",
-                    item.fields.title, item.id
-                ),
-                mode: pb::SendMode::Enqueue.into(),
+            let info = listed.iter().find(|info| info.id == session);
+            if session == by || info.is_some_and(|info| info.archived) {
+                continue;
+            }
+            let busy = info.is_some_and(|info| {
+                !info.host_offline
+                    && matches!(
+                        info.state(),
+                        pb::SessionState::Working | pb::SessionState::WaitingForApproval
+                    )
             });
-            let _ = self.forward(&host, message).await;
+            let text = format!(
+                "The spec of {:?} changed. Read it again with read_item (id {}) before you go on, and say if it changes your plan.",
+                item.fields.title, item.id
+            );
+            if busy {
+                let message = pb::request::Kind::SendMessage(pb::SendMessage {
+                    session_id: session,
+                    text,
+                    mode: pb::SendMode::Enqueue.into(),
+                });
+                let _ = self.forward(&host, message).await;
+            } else if let Err(error) = self.store.note_spec(&session, &item.id, &text) {
+                eprintln!("humatad: couldn't keep the spec note for session {session}: {error}");
+            }
         }
     }
 }

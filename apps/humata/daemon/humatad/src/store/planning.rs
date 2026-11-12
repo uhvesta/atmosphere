@@ -116,6 +116,34 @@ impl Store {
         listed.map_err(self.failed())
     }
 
+    /// Keeps `note` about `item`'s spec for `session`'s next message, in
+    /// place of an older one about the same item.
+    pub fn note_spec(&self, session: &str, item: &str, note: &str) -> Result<(), StoreError> {
+        self.lock()
+            .execute(
+                "INSERT OR REPLACE INTO spec_notes (session_id, item_id, note) VALUES (?1, ?2, ?3)",
+                [session, item, note],
+            )
+            .map(|_| ())
+            .map_err(self.failed())
+    }
+
+    /// The notes kept for `session`, which are then forgotten.
+    pub fn take_spec_notes(&self, session: &str) -> Result<Vec<String>, StoreError> {
+        let connection = self.lock();
+        let taken = (|| -> rusqlite::Result<Vec<String>> {
+            let notes = connection
+                .prepare_cached(
+                    "SELECT note FROM spec_notes WHERE session_id = ?1 ORDER BY item_id",
+                )?
+                .query_map([session], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            connection.execute("DELETE FROM spec_notes WHERE session_id = ?1", [session])?;
+            Ok(notes)
+        })();
+        taken.map_err(self.failed())
+    }
+
     /// Replaces `project`'s skills.
     pub fn set_skills(&self, project: &str, skills: &[Skill]) -> Result<(), StoreError> {
         let mut connection = self.lock();

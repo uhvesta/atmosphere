@@ -366,7 +366,9 @@ package struct ItemFeature {
                     return .send(.failed("A task needs a title. Give it one, or cancel to keep the old one."))
                 }
                 state.saving = true
-                return update(state.item.id, ItemUpdate(title: title, spec: draft.spec))
+                // The spec only when it changed, so a rename reaches no agent.
+                let spec = draft.spec == state.item.spec ? nil : draft.spec
+                return update(state.item.id, ItemUpdate(title: title, spec: spec))
 
             case .statusPicked(let status):
                 guard status != state.item.fields.status else { return .none }

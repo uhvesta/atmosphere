@@ -1481,6 +1481,9 @@ message UpdateItem {
   optional string spec = 3;
   optional ItemStatus status = 4;
   optional Priority priority = 5;
+  // The session whose agent made the change, which isn't told of its own
+  // spec edit. Empty when the person made it.
+  string by_session_id = 6;
 }
 
 message ItemUpdated {

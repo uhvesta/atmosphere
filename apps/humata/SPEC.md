@@ -659,6 +659,56 @@ Only strict improvements count: additions to the UX that simplify without
 losing behaviour, or that add behaviour badly needed. No redesigns or
 rethinks.
 
+#### What R kept
+
+Two Fable 5.2 finders (one on many agents at once, one on jank) and the
+earlier review's list went to an independent Fable 5.2 judge at xhigh. It
+agreed with the vision and found the build short in three places:
+"ephemeral" was built as "recoverable"; "cross-machine" breaks with the
+laptop closed; and the board and notices don't yet say truthfully what is
+waiting on you. It kept these, in build order:
+
+- [x] A spec change tells only the sessions it should: only when the text
+  changed; running or waiting sessions get the message, idle ones get a
+  note with the person's next message, and the editing session nothing
+- [ ] The open session notifies when Humata isn't in front, and the poll and
+  badge live with the app, not the sidebar view
+- [ ] A slow or dead host never stalls the lists (a short deadline, then the
+  cached list); offline sessions draw as last known, with no spinner and
+  no Allow that can only fail
+- [ ] An agent's open question or move request counts as Waiting on You, on
+  the board and in the sidebar
+- [ ] A host is updated only when idle, and only when its build really is old
+  (a bundled build of another platform counts as current)
+- [ ] Agents on a host can ask and request moves while the Mac is away
+  (queued on the host, sent on reconnect), and read the live spec when
+  the Mac is there
+- [ ] New Session never sends one agent's model to another, and a Local Model
+  session can't start without a model
+- [ ] Local models can list a folder
+- [ ] Local-model sessions get Humata's tools, so they can plan and propose
+- [ ] The inbox separates Blocked on You from To Look Over, rows say what
+  happened, the Dock counts only the blocked, reply notices are silent,
+  rows sort by longest wait, and a reply that fails to send is kept
+- [ ] Start Work on a card or task: one click, seeds the first message, stays
+  on the board
+- [ ] Delete an archived session, freeing its folders, refs and copies; the
+  Archived list folds away
+- [ ] Move a session to another machine, both ways, from its menu, with a
+  fresh copy, removing the source
+- [ ] Closing an item offers to stop and archive its sessions
+- [ ] Delete a task, revertible from Board History
+- [ ] A session shows its task and opens it
+- [ ] Listing sessions reads a kept summary instead of copying every history
+- [ ] The task page's subtasks open, and spec comments go to a live session
+- [ ] The sidebar holds still while agents work
+
+Dropped by the judge: a driver panic (none reachable), the archive
+confirmation and retry, the torn last line (already fixed), held messages
+for offline hosts, turn time in the sidebar, bulk actions, card state icons,
+a per-host turn limit, PR state on cards, the naming and layout polish, and
+Start Work on All.
+
 #### An earlier outside review, as input
 
 A separate read-only review (three Fable 5.2 agents) already reported the

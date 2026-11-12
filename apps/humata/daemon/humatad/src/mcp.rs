@@ -244,6 +244,7 @@ impl Server {
                     spec,
                     status: status.map(Into::into),
                     priority: None,
+                    by_session_id: self.session.clone(),
                 };
                 match self.ask(pb::request::Kind::UpdateItem(update)).await? {
                     pb::response::Kind::ItemUpdated(pb::ItemUpdated { item: Some(item) }) => {

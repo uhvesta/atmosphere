@@ -1090,10 +1090,11 @@ impl Daemon {
                 })));
             }
             Request::UpdateItem(update) => {
-                let spec_changed = update.spec.is_some();
+                let by = std::mem::take(&mut update.by_session_id);
+                let before = self.store.item(&update.item_id)?.fields.spec;
                 let updated = self.update_item(std::mem::take(update))?;
-                if spec_changed {
-                    self.spec_changed(&updated).await;
+                if updated.fields.spec != before {
+                    self.spec_changed(&updated, &by).await;
                 }
                 let item = self.shown_item(&updated).await?;
                 return Ok(Reply::Response(Response::ItemUpdated(pb::ItemUpdated {
@@ -1155,8 +1156,14 @@ impl Daemon {
                 })));
             }
             Request::RevertBoardChange(revert) => {
+                let before = self.store.changed_item(revert.change_id)?;
                 let item = match self.store.revert(revert.change_id)? {
-                    Some(item) => Some(self.shown_item(&item).await?),
+                    Some(item) => {
+                        if before.is_some_and(|before| before.fields.spec != item.fields.spec) {
+                            self.spec_changed(&item, "").await;
+                        }
+                        Some(self.shown_item(&item).await?)
+                    }
                     None => None,
                 };
                 return Ok(Reply::Response(Response::BoardChangeReverted(
@@ -1218,7 +1225,14 @@ impl Daemon {
                 }
                 host
             }
-            Request::SendMessage(message) => self.host_of(&message.session_id).await?,
+            Request::SendMessage(message) => {
+                let host = self.host_of(&message.session_id).await?;
+                let notes = self.store.take_spec_notes(&message.session_id)?;
+                if !notes.is_empty() {
+                    message.text = format!("{}\n\n{}", notes.join("\n\n"), message.text);
+                }
+                host
+            }
             Request::Approve(approve) => self.host_of(&approve.session_id).await?,
             Request::ReadHistory(read) => {
                 let host = self.host_of(&read.session_id).await?;
