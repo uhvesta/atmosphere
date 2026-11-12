@@ -300,6 +300,207 @@ package struct PlanPromptIntent: AppIntent {
     }
 }
 
+/// A Project, for Shortcuts and Siri.
+package struct ProjectEntity: AppEntity {
+    package static let typeDisplayRepresentation: TypeDisplayRepresentation = "Project"
+    package static let defaultQuery = ProjectQuery()
+
+    package var id: UUID
+    package var name: String
+    package var avenue: String
+
+    package var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(title: "\(name)", subtitle: "\(avenue)")
+    }
+
+    init(_ item: Shortcuts.Item) {
+        id = item.id
+        name = item.name
+        avenue = item.detail
+    }
+
+    /// The active Projects.
+    package struct ProjectQuery: EntityQuery {
+        @AppDependency private var shortcuts: Shortcuts
+
+        package init() {}
+
+        package func entities(for identifiers: [UUID]) async throws -> [ProjectEntity] {
+            try await shortcuts.projects().filter { identifiers.contains($0.id) }.map(ProjectEntity.init)
+        }
+
+        package func suggestedEntities() async throws -> [ProjectEntity] {
+            try await shortcuts.projects().map(ProjectEntity.init)
+        }
+    }
+}
+
+/// A label, for Shortcuts and Siri.
+package struct LabelEntity: AppEntity {
+    package static let typeDisplayRepresentation: TypeDisplayRepresentation = "Label"
+    package static let defaultQuery = LabelQuery()
+
+    package var id: UUID
+    package var name: String
+
+    package var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(title: "\(name)")
+    }
+
+    package struct LabelQuery: EntityQuery {
+        @AppDependency private var shortcuts: Shortcuts
+
+        package init() {}
+
+        package func entities(for identifiers: [UUID]) async throws -> [LabelEntity] {
+            try await shortcuts.labels().filter { identifiers.contains($0.id) }.map {
+                LabelEntity(id: $0.id, name: $0.name)
+            }
+        }
+
+        package func suggestedEntities() async throws -> [LabelEntity] {
+            try await shortcuts.labels().map { LabelEntity(id: $0.id, name: $0.name) }
+        }
+    }
+}
+
+/// Finds tasks by status, Avenue, Project, label and due date, for a
+/// shortcut to go through. Refused while Lifr's lock is on.
+package struct FindTasksIntent: AppIntent {
+    package static let title: LocalizedStringResource = "Find Tasks"
+    package static let description = IntentDescription(
+        """
+        Finds tasks in Lifr by status, Avenue, Project, label or due date. With no status set, it finds \
+        open tasks.
+        """)
+
+    @Parameter(title: "Status")
+    package var status: StatusOption?
+    @Parameter(title: "Avenue")
+    package var avenue: AvenueEntity?
+    @Parameter(title: "Project")
+    package var project: ProjectEntity?
+    @Parameter(title: "Label")
+    package var label: LabelEntity?
+    @Parameter(title: "Due By")
+    package var dueBy: Date?
+
+    @AppDependency private var shortcuts: Shortcuts
+
+    package init() {}
+
+    package static var parameterSummary: some ParameterSummary {
+        Summary("Find tasks") {
+            \.$status
+            \.$avenue
+            \.$project
+            \.$label
+            \.$dueBy
+        }
+    }
+
+    package func perform() async throws -> some IntentResult & ReturnsValue<[TaskEntity]> & ProvidesDialog {
+        let found = try await shortcuts.find(
+            Shortcuts.Filter(
+                status: status?.status, avenue: avenue?.id, project: project?.id, label: label?.id, dueBy: dueBy))
+        let dialog: IntentDialog =
+            switch found.count {
+            case 0: "No tasks match."
+            case 1: "Found 1 task."
+            default: "Found \(found.count) tasks."
+            }
+        return .result(value: found.map(TaskEntity.init), dialog: dialog)
+    }
+}
+
+/// Gives a task's fields as text: status, due date, Avenue, Project,
+/// labels and description. Refused while Lifr's lock is on.
+package struct GetTaskDetailsIntent: AppIntent {
+    package static let title: LocalizedStringResource = "Get Task Details"
+    package static let description = IntentDescription(
+        "Gives a task's status, due date, Avenue, Project, labels and description as text.")
+
+    @Parameter(title: "Task", requestValueDialog: "Which task?")
+    package var task: TaskEntity
+
+    @AppDependency private var shortcuts: Shortcuts
+
+    package init() {}
+
+    package static var parameterSummary: some ParameterSummary {
+        Summary("Get the details of \(\.$task)")
+    }
+
+    package func perform() async throws -> some IntentResult & ReturnsValue<String> {
+        .result(value: try await shortcuts.details(of: task.id).text)
+    }
+}
+
+/// A list Lifr can open to.
+package enum ListOption: String, AppEnum {
+    case today, upcoming, calendar
+
+    package static let typeDisplayRepresentation: TypeDisplayRepresentation = "List"
+    package static let caseDisplayRepresentations: [ListOption: DisplayRepresentation] = [
+        .today: "Today", .upcoming: "Upcoming", .calendar: "Calendar",
+    ]
+
+    /// The link to the list; the calendar opens on the day `now` falls on.
+    func link(now: Date, timeZone: TimeZone) -> DeepLink {
+        switch self {
+        case .today: .today
+        case .upcoming: .upcoming
+        case .calendar: .calendar(CalendarDate(now, in: timeZone))
+        }
+    }
+}
+
+/// Opens Lifr to Today, Upcoming or the calendar.
+package struct OpenListIntent: AppIntent {
+    package static let title: LocalizedStringResource = "Open a List"
+    package static let description = IntentDescription("Opens Lifr to Today, Upcoming or the calendar.")
+    package static let openAppWhenRun = true
+
+    @Parameter(title: "List", requestValueDialog: "Which list?")
+    package var list: ListOption
+
+    package init() {}
+
+    package static var parameterSummary: some ParameterSummary {
+        Summary("Open \(\.$list)")
+    }
+
+    @MainActor
+    package func perform() async throws -> some IntentResult & OpensIntent {
+        var open = OpenURLIntent()
+        if let url = list.link(now: Date(), timeZone: .current).url { open.url = url }
+        return .result(opensIntent: open)
+    }
+}
+
+/// Opens an Avenue in Lifr.
+package struct OpenAvenueIntent: AppIntent {
+    package static let title: LocalizedStringResource = "Open an Avenue"
+    package static let description = IntentDescription("Opens an Avenue in Lifr.")
+    package static let openAppWhenRun = true
+
+    @Parameter(title: "Avenue", requestValueDialog: "Which Avenue?")
+    package var avenue: AvenueEntity
+
+    package init() {}
+
+    package static var parameterSummary: some ParameterSummary {
+        Summary("Open \(\.$avenue)")
+    }
+
+    @MainActor
+    package func perform() async throws -> some IntentResult & OpensIntent {
+        var open = OpenURLIntent()
+        if let url = DeepLink.avenue(avenue.id).url { open.url = url }
+        return .result(opensIntent: open)
+    }
+}
+
 /// What Siri offers without setting anything up.
 package struct LifrAppShortcuts: AppShortcutsProvider {
     package static var appShortcuts: [AppShortcut] {
@@ -323,5 +524,9 @@ package struct LifrAppShortcuts: AppShortcutsProvider {
             intent: OpenTaskIntent(),
             phrases: ["Open a task in \(.applicationName)", "Open \(\.$task) in \(.applicationName)"],
             shortTitle: "Open a Task", systemImageName: "arrow.up.forward.app")
+        AppShortcut(
+            intent: OpenListIntent(),
+            phrases: ["Open \(\.$list) in \(.applicationName)", "Show a list in \(.applicationName)"],
+            shortTitle: "Open a List", systemImageName: "list.bullet")
     }
 }

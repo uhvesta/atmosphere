@@ -814,6 +814,9 @@
     "Avenue or KEY/Project" : {
 
     },
+    "Avenue: %@" : {
+
+    },
     "Avenues" : {
 
     },
@@ -1382,6 +1385,9 @@
     "Due" : {
 
     },
+    "Due By" : {
+
+    },
     "Due Date" : {
 
     },
@@ -1392,6 +1398,9 @@
 
     },
     "Due today and overdue" : {
+
+    },
+    "Due: %@" : {
 
     },
     "Duplicate" : {
@@ -1493,6 +1502,9 @@
     "Find Related Conversations" : {
 
     },
+    "Find Tasks" : {
+
+    },
     "Find a skill" : {
 
     },
@@ -1509,6 +1521,9 @@
 
     },
     "Finding related conversations…" : {
+
+    },
+    "Finds tasks in Lifr by status, Avenue, Project, label or due date. With no status set, it finds open tasks." : {
 
     },
     "Finish a Task" : {
@@ -1550,6 +1565,12 @@
     "Forward" : {
 
     },
+    "Found %lld tasks." : {
+
+    },
+    "Found 1 task." : {
+
+    },
     "From Hugging Face" : {
 
     },
@@ -1568,10 +1589,16 @@
     "General" : {
 
     },
+    "Get Task Details" : {
+
+    },
     "Give a task a start date after today to put it away until then." : {
 
     },
     "Give the skill a name with letters or digits." : {
+
+    },
+    "Gives a task's status, due date, Avenue, Project, labels and description as text." : {
 
     },
     "Go Back to Here" : {
@@ -1786,6 +1813,9 @@
 
     },
     "Labels" : {
+
+    },
+    "Labels: %@" : {
 
     },
     "Last used %@" : {
@@ -2324,6 +2354,9 @@
     "No task selected" : {
 
     },
+    "No tasks match." : {
+
+    },
     "No text could be read from this file, so the model didn't see any." : {
 
     },
@@ -2417,7 +2450,13 @@
     "Open Lifr to see the task." : {
 
     },
+    "Open a List" : {
+
+    },
     "Open a Task" : {
+
+    },
+    "Open an Avenue" : {
 
     },
     "Open the Calendar" : {
@@ -2426,7 +2465,13 @@
     "Open the task" : {
 
     },
+    "Opens Lifr to Today, Upcoming or the calendar." : {
+
+    },
     "Opens a task in Lifr." : {
+
+    },
+    "Opens an Avenue in Lifr." : {
 
     },
     "Opens it" : {
@@ -2542,6 +2587,9 @@
 
     },
     "Project name" : {
+
+    },
+    "Project: %@" : {
 
     },
     "Projects" : {
@@ -3026,6 +3074,9 @@
 
     },
     "Status" : {
+
+    },
+    "Status: %@" : {
 
     },
     "Steps" : {
@@ -3582,6 +3633,12 @@
 
     },
     "Where the conversation is" : {
+
+    },
+    "Which Avenue?" : {
+
+    },
+    "Which list?" : {
 
     },
     "Which status?" : {

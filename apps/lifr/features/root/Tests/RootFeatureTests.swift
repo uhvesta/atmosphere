@@ -1325,7 +1325,7 @@ final class RootFeatureTests: XCTestCase {
     func testLinksReadBackWhatTheyName() throws {
         let id = UUID()
         let links: [DeepLink] = [
-            .task(id, picksStatus: false), .task(id, picksStatus: true), .today, .avenue(id),
+            .task(id, picksStatus: false), .task(id, picksStatus: true), .today, .upcoming, .avenue(id),
             .calendar(try CalendarDate("2026-11-09")), .add(title: nil), .add(title: "Call mum & dad"),
         ]
         for link in links {

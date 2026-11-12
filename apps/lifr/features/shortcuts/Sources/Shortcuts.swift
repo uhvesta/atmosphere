@@ -7,8 +7,8 @@ import LifrToday
 import LifrUI
 
 /// What Shortcuts and Siri can do in Lifr: add a task, say what's on
-/// Today, finish a task, change its status or due date, or comment on
-/// it. With the lock on, nothing that names a task leaves the app; Today
+/// Today, finish a task, change its status or due date, comment on it,
+/// find tasks and read a task's fields. With the lock on, nothing that names a task leaves the app; Today
 /// gives counts only.
 package struct Shortcuts: Sendable {
     package var store: StoreClient
@@ -32,11 +32,12 @@ package struct Shortcuts: Sendable {
         case today, tomorrow, none
     }
 
-    /// A task or an Avenue as Shortcuts lists it.
+    /// A task, Avenue, Project or label as Shortcuts lists it.
     package struct Item: Hashable, Identifiable, Sendable {
         package var id: UUID
         package var name: String
-        /// The task's code, such as HEALTH-0004; empty for an Avenue.
+        /// The task's code, such as HEALTH-0004, or a Project's Avenue;
+        /// empty for an Avenue or a label.
         package var detail: String
     }
 
@@ -121,6 +122,100 @@ package struct Shortcuts: Sendable {
         let now = now()
         return PlanPrompt.make(
             goal: goal, workspace: workspace, today: CalendarDate(now, in: timeZone), timeZone: timeZone)
+    }
+
+    /// What Find Tasks looks for. Each that's set must match; with no
+    /// status, open tasks match.
+    package struct Filter: Hashable, Sendable {
+        package var status: TaskStatus?
+        package var avenue: UUID?
+        package var project: UUID?
+        package var label: UUID?
+        /// Due on or before the day this falls on here.
+        package var dueBy: Date?
+
+        package init(
+            status: TaskStatus? = nil, avenue: UUID? = nil, project: UUID? = nil, label: UUID? = nil,
+            dueBy: Date? = nil
+        ) {
+            self.status = status
+            self.avenue = avenue
+            self.project = project
+            self.label = label
+            self.dueBy = dueBy
+        }
+    }
+
+    /// The tasks `filter` matches, dated ones first by date, in no
+    /// archived Avenue and not in the Trash. Refused while the lock is on.
+    package func find(_ filter: Filter) async throws -> [Item] {
+        guard !locksApp() else { throw ShortcutError.locked }
+        let workspace = try await store.load()
+        let dueBy = filter.dueBy.map { CalendarDate($0, in: timeZone) }
+        return workspace.tasks.values
+            .filter { task in
+                task.deletedAt == nil && workspace.avenues[task.avenueID]?.archivedAt == nil
+                    && (filter.status.map { task.status == $0 } ?? task.isOpen)
+                    && (filter.avenue.map { task.avenueID == $0 } ?? true)
+                    && (filter.project.map { task.projectID == $0 } ?? true)
+                    && (filter.label.map { task.labelIDs.contains($0) } ?? true)
+                    && (dueBy.map { day in task.dueDate.map { $0 <= day } ?? false } ?? true)
+            }
+            .sorted {
+                $0.dueDate == $1.dueDate ? $0.title < $1.title : earlier($0.dueDate, than: $1.dueDate)
+            }
+            .map { item($0, in: workspace) }
+    }
+
+    /// A task's fields, as Get Task Details gives them.
+    package struct Details: Hashable, Sendable {
+        package var title: String
+        package var code: String
+        package var status: TaskStatus
+        package var due: CalendarDate?
+        package var avenue: String
+        package var project: String?
+        package var labels: [String]
+        package var details: String
+
+        /// One field to a line, then the task's description.
+        package var text: String {
+            var lines = ["\(title) (\(code))", String(localized: "Status: \(status.title)")]
+            if let due { lines.append(String(localized: "Due: \(due.description)")) }
+            lines.append(String(localized: "Avenue: \(avenue)"))
+            if let project { lines.append(String(localized: "Project: \(project)")) }
+            if !labels.isEmpty { lines.append(String(localized: "Labels: \(labels.joined(separator: ", "))")) }
+            if !details.isEmpty { lines += ["", details] }
+            return lines.joined(separator: "\n")
+        }
+    }
+
+    /// The task's fields. Refused while the lock is on.
+    package func details(of id: UUID) async throws -> Details {
+        guard !locksApp() else { throw ShortcutError.locked }
+        let workspace = try await store.load()
+        guard let task = workspace.tasks[id], task.deletedAt == nil else { throw ShortcutError.noTask }
+        return Details(
+            title: task.title, code: workspace.displayCode(of: task), status: task.status, due: task.dueDate,
+            avenue: workspace.avenues[task.avenueID]?.name ?? "",
+            project: task.projectID.flatMap { workspace.projects[$0]?.name },
+            labels: task.labelIDs.compactMap { workspace.labels[$0]?.name }.sorted(), details: task.details)
+    }
+
+    /// The active Projects, each with its Avenue's name, in the sidebar's
+    /// order.
+    package func projects() async throws -> [Item] {
+        let workspace = try await store.load()
+        return workspace.projects.values
+            .filter { $0.status == .active }
+            .sorted { $0.sortOrder < $1.sortOrder }
+            .map { Item(id: $0.id, name: $0.name, detail: workspace.avenues[$0.avenueID]?.name ?? "") }
+    }
+
+    /// Every label, by name.
+    package func labels() async throws -> [Item] {
+        let workspace = try await store.load()
+        return workspace.labels.values.sorted { $0.name < $1.name }.map { Item(id: $0.id, name: $0.name, detail: "") }
     }
 
     /// Every Avenue, in the sidebar's order.

@@ -5,12 +5,14 @@ import Foundation
 /// - `lifr://task/<id>` opens a task, and `lifr://task/<id>?status` opens it
 ///   with the statuses to pick.
 /// - `lifr://today` shows Today.
+/// - `lifr://upcoming` shows Upcoming.
 /// - `lifr://avenue/<id>` shows an Avenue's page.
 /// - `lifr://calendar/2026-11-09` shows that day in the calendar.
 /// - `lifr://add?title=Buy%20milk` opens Quick Add, with the title if given.
 package enum DeepLink: Hashable, Sendable {
     case task(UUID, picksStatus: Bool)
     case today
+    case upcoming
     case avenue(UUID)
     case calendar(CalendarDate)
     case add(title: String?)
@@ -31,6 +33,8 @@ package enum DeepLink: Hashable, Sendable {
             self = .task(id, picksStatus: items.contains { $0.name == "status" })
         case ("today", 0):
             self = .today
+        case ("upcoming", 0):
+            self = .upcoming
         case ("avenue", 1):
             guard let id = UUID(uuidString: path[0]) else { return nil }
             self = .avenue(id)
@@ -56,6 +60,8 @@ package enum DeepLink: Hashable, Sendable {
             if picksStatus { components.queryItems = [URLQueryItem(name: "status", value: nil)] }
         case .today:
             components.host = "today"
+        case .upcoming:
+            components.host = "upcoming"
         case .avenue(let id):
             components.host = "avenue"
             components.path = "/\(id.uuidString)"

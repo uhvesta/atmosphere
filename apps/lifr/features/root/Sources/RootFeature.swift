@@ -1341,6 +1341,8 @@ package struct RootFeature {
             return .none
         case .today:
             return .send(.goTo(.today))
+        case .upcoming:
+            return .send(.goTo(.upcoming))
         case .avenue(let id):
             // An archived or deleted Avenue has no page: Today instead.
             guard state.workspace?.avenues[id].map({ $0.archivedAt == nil }) == true else {
