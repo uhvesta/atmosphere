@@ -654,12 +654,38 @@ final class TaskListFeatureTests: XCTestCase {
         await store.receive(\.bulkSaved)
         await store.receive(\.delegate.saved)
         XCTAssertEqual(store.state.rows.map(\.id), [ids[2]])
+        XCTAssertEqual(store.state.cursor, ids[2])
 
         let journal = try await client.load().journal
         let entry = try XCTUnwrap(journal.last?.id)
         _ = try await changing { try await client.revert(entries: [entry]) }
         let tasks = try await client.load().tasks
         XCTAssertEqual(ids.filter { tasks[$0]?.deletedAt == nil }, ids)
+    }
+
+    func testTheKeyboardRowMovesToTheNextRowWhenItsTaskIsTrashed() async {
+        records.task("A", in: health)
+        records.task("B", in: health)
+        records.task("C", in: health)
+        let store = await load()
+        let ids = store.state.rows.map(\.id)
+
+        await store.send(.cursorMoved(up: false, extending: false))
+        await store.send(.cursorMoved(up: false, extending: false))
+        await store.send(.trashKeyPressed)
+        await store.receive(\.bulkSaved)
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.cursor, ids[2])
+
+        await store.send(.trashKeyPressed)
+        await store.receive(\.bulkSaved)
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.cursor, ids[0])
+
+        await store.send(.trashKeyPressed)
+        await store.receive(\.bulkSaved)
+        await store.receive(\.delegate.saved)
+        XCTAssertNil(store.state.cursor)
     }
 
     func testOneUndoRevertsTheWholeChange() async throws {

@@ -115,6 +115,8 @@ package struct TaskListFeature {
         package mutating func show(_ snapshot: Snapshot, now: Date, timeZone: TimeZone) {
             guard saves.isLatest(snapshot) else { return }
             let previous = sections
+            let before = rows.map(\.id)
+            let wasOn = cursor
             workspace = snapshot.workspace
             sections = query.sections(snapshot.workspace, now, timeZone)
             keepLingering(from: previous, in: snapshot.workspace)
@@ -145,6 +147,12 @@ package struct TaskListFeature {
             }
             // Picked tasks no longer shown aren't picked.
             selection.formIntersection(rows.map(\.id))
+            // The keyboard row, gone, moves to the row that took its place.
+            let shown = Set(rows.map(\.id))
+            if let wasOn, !shown.contains(wasOn), let index = before.firstIndex(of: wasOn) {
+                selectionAnchor =
+                    before[(index + 1)...].first(where: shown.contains) ?? before[..<index].last(where: shown.contains)
+            }
             // A task trashed, here or elsewhere, closes.
             if var detail {
                 self.detail = detail.refresh(from: snapshot, now: now, timeZone: timeZone) ? detail : nil
@@ -526,9 +534,9 @@ package struct TaskListFeature {
             return bulk(.dueDate(days.map { today.adding(days: $0) }), state.selectedIDs)
 
         case .bulkSaved(_, .success(let saved)):
+            // The keyboard row stays, so the next key goes on from there.
             state.isSelecting = false
             state.selection = []
-            state.selectionAnchor = nil
             return .send(.saved(.success(saved)))
 
         case .bulkSaved(.status(let status), .failure(let error))
