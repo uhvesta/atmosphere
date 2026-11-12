@@ -50,7 +50,46 @@ package struct TaskFilter: Hashable, Codable, Sendable {
     }
 
     package func matches(_ task: LifrTask, in workspace: Workspace, now: Date, timeZone: TimeZone) -> Bool {
-        let status = task.effectiveStatus(now: now, settings: workspace.settings)
+        matches(task, Prepared(self, workspace, now: now, timeZone: timeZone, only: [task.id]))
+    }
+
+    /// The listed tasks that match, in list order. What every task is
+    /// checked against is worked out once, not once a task.
+    package func matching(in workspace: Workspace, now: Date, timeZone: TimeZone) -> [LifrTask] {
+        let prepared = Prepared(self, workspace, now: now, timeZone: timeZone, only: nil)
+        return workspace.listedTasks.filter { matches($0, prepared) }
+    }
+
+    /// What a run checks every task against.
+    private struct Prepared {
+        let workspace: Workspace
+        let now: Date
+        let today: CalendarDate
+        let time: TimeOfDay
+        let words: [Substring]
+        /// Each task's comments, when there are words to look for.
+        let comments: [UUID: [String]]
+
+        init(_ filter: TaskFilter, _ workspace: Workspace, now: Date, timeZone: TimeZone, only: Set<UUID>?) {
+            self.workspace = workspace
+            self.now = now
+            today = CalendarDate(now, in: timeZone)
+            time = TimeOfDay(now, in: timeZone)
+            words = filter.text.lowercased().split(whereSeparator: \.isWhitespace)
+            var comments: [UUID: [String]] = [:]
+            if !words.isEmpty {
+                for comment in workspace.comments.values
+                where comment.deletedAt == nil && only?.contains(comment.taskID) != false {
+                    comments[comment.taskID, default: []].append(comment.body)
+                }
+            }
+            self.comments = comments
+        }
+    }
+
+    private func matches(_ task: LifrTask, _ prepared: Prepared) -> Bool {
+        let workspace = prepared.workspace
+        let status = task.effectiveStatus(now: prepared.now, settings: workspace.settings)
         guard statuses.isEmpty ? !status.isClosed : statuses.contains(status) else { return false }
         guard priorities.isEmpty || priorities.contains(task.priority) else { return false }
         guard avenues.isEmpty || avenues.contains(task.avenueID) else { return false }
@@ -58,23 +97,20 @@ package struct TaskFilter: Hashable, Codable, Sendable {
             guard task.labelIDs.contains(where: { workspace.labels[$0].map { labels.contains($0.name) } == true })
             else { return false }
         }
-        let today = CalendarDate(now, in: timeZone)
+        let today = prepared.today
         switch due {
         case .any: break
-        case .overdue: guard task.isOverdue(today: today, time: TimeOfDay(now, in: timeZone)) else { return false }
+        case .overdue: guard task.isOverdue(today: today, time: prepared.time) else { return false }
         case .today: guard task.dueDate == today else { return false }
         case .nextSevenDays:
             let last = today.adding(days: 7)
             guard let date = task.dueDate, date >= today, date <= last else { return false }
         case .none: guard task.dueDate == nil else { return false }
         }
-        let words = text.lowercased().split(whereSeparator: \.isWhitespace)
-        guard !words.isEmpty else { return true }
-        let comments = workspace.comments.values
-            .filter { $0.taskID == task.id && $0.deletedAt == nil }
-            .map(\.body)
-        let haystack = ([task.title, task.details] + comments).joined(separator: "\n").lowercased()
-        return words.allSatisfy { haystack.contains($0) }
+        guard !prepared.words.isEmpty else { return true }
+        let haystack = ([task.title, task.details] + (prepared.comments[task.id] ?? [])).joined(separator: "\n")
+            .lowercased()
+        return prepared.words.allSatisfy { haystack.contains($0) }
     }
 }
 

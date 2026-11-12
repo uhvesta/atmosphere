@@ -1,3 +1,4 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
 load("@rules_swift//swift:swift_library.bzl", "swift_library")
 
 # Lists tasks in the system's search, so they turn up in Spotlight.
@@ -12,6 +13,22 @@ swift_library(
         "//apps/lifr/features/root:__pkg__",
     ],
     deps = ["@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
+)
+
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":spotlight"],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
 )
 
 filegroup(

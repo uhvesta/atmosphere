@@ -174,6 +174,10 @@ extension CalendarDate {
     /// The first of the month `months` after this day's, or before it when
     /// negative.
     package func firstOfMonth(adding months: Int) -> CalendarDate {
+        let total = year * 12 + month - 1 + months
+        if total >= 0, let first = try? CalendarDate(year: total / 12, month: total % 12 + 1, day: 1) {
+            return first
+        }
         var first = firstOfMonth
         for _ in 0..<abs(months) {
             first = months > 0 ? first.adding(days: 32).firstOfMonth : first.adding(days: -1).firstOfMonth

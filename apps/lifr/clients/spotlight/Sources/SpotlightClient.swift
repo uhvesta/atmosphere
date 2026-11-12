@@ -20,6 +20,33 @@ package struct SpotlightItem: Hashable, Sendable {
     }
 }
 
+/// What to send the system's search to go from one list to the next.
+struct SpotlightChange: Equatable {
+    /// Whether to take everything out first: on the first list, when
+    /// nothing was listed for certain, and for an empty one.
+    var replacesAll: Bool
+    var removed: Set<UUID>
+    var indexed: [SpotlightItem]
+
+    init(from last: [SpotlightItem]?, to items: [SpotlightItem]) {
+        guard let last, !items.isEmpty else {
+            self.init(replacesAll: true, removed: [], indexed: items)
+            return
+        }
+        let before = Dictionary(last.map { ($0.id, $0) }) { first, _ in first }
+        let now = Set(items.map(\.id))
+        self.init(
+            replacesAll: false, removed: Set(before.keys).subtracting(now),
+            indexed: items.filter { before[$0.id] != $0 })
+    }
+
+    init(replacesAll: Bool, removed: Set<UUID>, indexed: [SpotlightItem]) {
+        self.replacesAll = replacesAll
+        self.removed = removed
+        self.indexed = indexed
+    }
+}
+
 /// Keeps the tasks in the system's search the same as Lifr's.
 package struct SpotlightClient: Sendable {
     /// Replaces what the system's search has with `items`; none takes
@@ -36,30 +63,38 @@ extension SpotlightClient {
     /// The tasks' group in the system's search.
     private static let domain = "tasks"
 
-    /// Lists the tasks in the device's search, skipping a list that's the
-    /// same as the last.
+    /// Lists the tasks in the device's search, sending only what changed
+    /// since the last list.
     package static func live() -> Self {
         let last = LockIsolated<[SpotlightItem]?>(nil)
         return SpotlightClient { items in
             guard items != last.value else { return }
             let index = CSSearchableIndex.default()
-            let searchable = items.map { item in
-                let attributes = CSSearchableItemAttributeSet(contentType: .text)
-                attributes.title = item.title
-                attributes.contentDescription = item.details.isEmpty ? item.detail : "\(item.detail)\n\(item.details)"
-                attributes.keywords = [item.detail]
-                return CSSearchableItem(
-                    uniqueIdentifier: item.id.uuidString, domainIdentifier: domain, attributeSet: attributes)
-            }
+            let change = SpotlightChange(from: last.value, to: items)
             do {
-                try await index.deleteSearchableItems(withDomainIdentifiers: [domain])
-                if !searchable.isEmpty { try await index.indexSearchableItems(searchable) }
+                if change.replacesAll {
+                    try await index.deleteSearchableItems(withDomainIdentifiers: [domain])
+                } else if !change.removed.isEmpty {
+                    try await index.deleteSearchableItems(withIdentifiers: change.removed.map(\.uuidString))
+                }
+                if !change.indexed.isEmpty { try await index.indexSearchableItems(change.indexed.map(searchable)) }
                 last.setValue(items)
             } catch {
+                // What's listed is unknown now, so the next list replaces it.
+                last.setValue(nil)
                 let message = error.localizedDescription
                 Logger(subsystem: "lifr", category: "spotlight").error("\(message, privacy: .public)")
             }
         }
+    }
+
+    private static func searchable(_ item: SpotlightItem) -> CSSearchableItem {
+        let attributes = CSSearchableItemAttributeSet(contentType: .text)
+        attributes.title = item.title
+        attributes.contentDescription = item.details.isEmpty ? item.detail : "\(item.detail)\n\(item.details)"
+        attributes.keywords = [item.detail]
+        return CSSearchableItem(
+            uniqueIdentifier: item.id.uuidString, domainIdentifier: domain, attributeSet: attributes)
     }
 
     /// What Lifr is handed when opened from a search result.

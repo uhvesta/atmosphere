@@ -30,18 +30,28 @@ extension Workspace {
     package func calendarWeeks(
         month: CalendarDate, firstWeekday: Int, now: Date, timeZone: TimeZone
     ) -> [[CalendarDay]] {
+        calendarWeeks(month: month, firstWeekday: firstWeekday, now: now, timeZone: timeZone, due: openByDueDate)
+    }
+
+    /// The open tasks due on each day, in list order: worked out once for
+    /// many months.
+    var openByDueDate: [CalendarDate: [LifrTask]] {
+        var due: [CalendarDate: [LifrTask]] = [:]
+        for task in listedTasks where task.isOpen {
+            if let date = task.dueDate { due[date, default: []].append(task) }
+        }
+        return due
+    }
+
+    func calendarWeeks(
+        month: CalendarDate, firstWeekday: Int, now: Date, timeZone: TimeZone, due: [CalendarDate: [LifrTask]]
+    ) -> [[CalendarDay]] {
         let first = month.firstOfMonth
         let next = first.firstOfMonth(adding: 1)
         let start = first.adding(days: -((first.weekday - firstWeekday + 7) % 7))
         let weeks = (start.days(until: next) + 6) / 7
-        let end = start.adding(days: weeks * 7)
         let today = CalendarDate(now, in: timeZone)
         let time = TimeOfDay(now, in: timeZone)
-        var due: [CalendarDate: [LifrTask]] = [:]
-        for task in listedTasks where task.isOpen {
-            guard let date = task.dueDate, date >= start, date < end else { continue }
-            due[date, default: []].append(task)
-        }
         return (0..<weeks).map { week in
             (0..<7).map { offset in
                 let date = start.adding(days: week * 7 + offset)

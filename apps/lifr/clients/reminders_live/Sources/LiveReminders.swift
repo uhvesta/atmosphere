@@ -1,5 +1,6 @@
 import Foundation
 import LifrRemindersClient
+import Synchronization
 import UserNotifications
 
 /// Why scheduling a notification failed.
@@ -26,6 +27,9 @@ extension RemindersClient {
     /// Schedules through the system's notification center.
     package static func live(center: UNUserNotificationCenter = .current()) -> Self {
         center.setNotificationCategories(categories)
+        // The schedule last set in full. Reminders that have rung drop out
+        // of the next schedule, so an equal one means the same pending set.
+        let last = Mutex<[ScheduledReminder]?>(nil)
         return RemindersClient(
             permission: {
                 switch await center.notificationSettings().authorizationStatus {
@@ -38,6 +42,8 @@ extension RemindersClient {
                 try await center.requestAuthorization(options: [.alert, .sound, .badge])
             },
             schedule: { reminders in
+                guard last.withLock({ $0 != reminders }) else { return }
+                last.withLock { $0 = nil }
                 center.removeAllPendingNotificationRequests()
                 // One that fails doesn't stop the rest.
                 var failed: [String] = []
@@ -66,6 +72,7 @@ extension RemindersClient {
                     }
                 }
                 if let firstError { throw LiveRemindersError.scheduleFailed(titles: failed, underlying: firstError) }
+                last.withLock { $0 = reminders }
             },
             setBadge: { count in try? await center.setBadgeCount(count) }
         )

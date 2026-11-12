@@ -37,7 +37,7 @@ extension TaskQuery {
             adds: nil
         ) { workspace, now, timeZone in
             guard !filter.isEmpty else { return [] }
-            let tasks = workspace.listedTasks.filter { filter.matches($0, in: workspace, now: now, timeZone: timeZone) }
+            let tasks = filter.matching(in: workspace, now: now, timeZone: timeZone)
             return [
                 TaskSection(
                     id: "results", title: String(localized: "Results"),

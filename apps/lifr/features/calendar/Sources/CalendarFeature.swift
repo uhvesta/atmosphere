@@ -138,12 +138,13 @@ package struct CalendarFeature {
 
     /// The months either side of `month`, with the tasks due on each day.
     private func months(around month: CalendarDate, in workspace: Workspace, _ state: State) -> [CalendarMonth] {
-        (-Self.monthsAround...Self.monthsAround).map { offset in
+        let due = workspace.openByDueDate
+        return (-Self.monthsAround...Self.monthsAround).map { offset in
             let first = month.firstOfMonth(adding: offset)
             return CalendarMonth(
                 id: first,
                 weeks: workspace.calendarWeeks(
-                    month: first, firstWeekday: state.firstWeekday, now: now, timeZone: timeZone))
+                    month: first, firstWeekday: state.firstWeekday, now: now, timeZone: timeZone, due: due))
         }
     }
 }

@@ -79,6 +79,36 @@ func syncTests() -> [TestCase] {
             await mac.syncer.sync()
             try expectEqual(try mac.records.note(shopping.id), shopping)
         },
+        TestCase.async("given nothing changed, when sync runs again soon, then the ledger isn't written again") {
+            let cloud = InMemoryCloud<Notebook>()
+            let stored = Mutexed(Notebook())
+            stored.update { $0.put(shopping) }
+            let store = SyncStore<Notebook>(
+                load: { stored.value }, importSynced: { _ in stored.value }, resolve: { _ in })
+            let memory = LedgerStorage<Notebook>.inMemory()
+            let saves = Mutexed(0)
+            let storage = LedgerStorage<Notebook>(
+                load: { try memory.load() },
+                save: { ledger in
+                    saves.update { $0 += 1 }
+                    try memory.save(ledger)
+                })
+            let clock = Mutexed(Date(timeIntervalSince1970: 1_000_000))
+            let syncer = Syncer(
+                cloud: cloud.connection(device: "iPhone"), store: store, storage: storage, now: { clock.value })
+            await syncer.sync()
+            let afterFirst = saves.value
+
+            clock.update { $0 += 60 }
+            let idle = await syncer.sync()
+            try expectEqual(saves.value, afterFirst)
+            try expectEqual(idle.lastSynced, clock.value)
+
+            clock.update { $0 += 60 * 60 }
+            await syncer.sync()
+            try expect(saves.value > afterFirst)
+            try expectEqual(try memory.load().lastSynced, clock.value)
+        },
         TestCase.async("given a note on one device, when both sync, then the other has it") {
             _ = try await synced()
         },

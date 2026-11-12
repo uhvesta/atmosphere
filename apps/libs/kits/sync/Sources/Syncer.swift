@@ -84,6 +84,15 @@ public actor Syncer<Snapshot: SyncSnapshot> {
     /// before, so it runs again to send what changed since.
     private var runsAgain = false
     private let states = Locked<[UUID: AsyncStream<State>.Continuation]>([:])
+    /// How many times the ledger has been written, to tell whether a run
+    /// changed more than when it ended.
+    private var writes = 0
+    /// When the ledger last written says sync last finished.
+    private var keptLastSynced: Date?
+    /// How long a sync that changed nothing goes without writing the ledger
+    /// just for its time. The time shown stays right while the app runs;
+    /// after a relaunch it's at most this old until the next sync ends.
+    static var lastSyncedEvery: TimeInterval { 15 * 60 }
 
     public init(
         cloud: Cloud<Snapshot>, store: SyncStore<Snapshot>, storage: LedgerStorage<Snapshot>,
@@ -159,6 +168,7 @@ public actor Syncer<Snapshot: SyncSnapshot> {
     private func run() async -> State {
         publish(status: .syncing, review: state.review)
         do {
+            let writesBefore = writes
             var ledger = try loadLedger()
             var snapshot = try await load()
             let fetched = try await cloud.fetch()
@@ -175,8 +185,17 @@ public actor Syncer<Snapshot: SyncSnapshot> {
                 guard !refused.isEmpty else { break }
                 snapshot = try await receive(refused, into: snapshot, &ledger)
             }
-            ledger.lastSynced = now()
-            try keep(ledger)
+            let synced = now()
+            ledger.lastSynced = synced
+            // An idle sync leaves the whole ledger as it was, so writing it
+            // out again only to note the time can wait.
+            if writes != writesBefore || keptLastSynced.map({ synced.timeIntervalSince($0) >= Self.lastSyncedEvery })
+                != false
+            {
+                try keep(ledger)
+            } else {
+                self.ledger = ledger
+            }
             state.lastSynced = ledger.lastSynced
             publish(status: .idle, review: ledger.conflicts(snapshot))
         } catch {
@@ -219,6 +238,7 @@ public actor Syncer<Snapshot: SyncSnapshot> {
         if let ledger { return ledger }
         let loaded = try storage.load()
         ledger = loaded
+        keptLastSynced = loaded.lastSynced
         state.lastSynced = loaded.lastSynced
         return loaded
     }
@@ -226,6 +246,8 @@ public actor Syncer<Snapshot: SyncSnapshot> {
     private func keep(_ ledger: SyncLedger<Snapshot>) throws {
         self.ledger = ledger
         try storage.save(ledger)
+        writes += 1
+        keptLastSynced = ledger.lastSynced
     }
 
     private func publish(status: State.Status, review: [ReviewItem<Snapshot.Record>]) {
