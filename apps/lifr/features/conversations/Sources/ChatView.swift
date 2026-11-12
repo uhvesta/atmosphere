@@ -215,8 +215,14 @@ private struct LifrParts: ChatThreadParts {
     /// Says the reply stopped because the assistant was busy, with Try
     /// Again; or the last reply was written without older messages, with
     /// Compact; or that they're being summarized.
+    var composes: Bool { !store.conversation.isArchived }
+
     @ViewBuilder func notices() -> some View {
-        if store.stopped {
+        if store.conversation.isArchived {
+            ChatNotice(
+                "Archived. Unarchive to continue.", systemImage: "archivebox", action: "Unarchive"
+            ) { store.send(.unarchiveTapped) }
+        } else if store.stopped {
             ChatNotice(
                 "The assistant is busy. Lifr tries again when it's back on screen.",
                 systemImage: "pause.circle", action: "Try Again"

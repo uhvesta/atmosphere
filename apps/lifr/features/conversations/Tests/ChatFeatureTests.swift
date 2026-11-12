@@ -2482,6 +2482,27 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertEqual(tasks, workspace.tasks.count)
     }
 
+    func testAnArchivedConversationOpensToReadAndUnarchivingLetsItGoOn() async throws {
+        var archived = chat("Plan the week")
+        archived.archivedAt = now
+        let kept = ConversationsClient.inMemory([archived])
+        let store = list(kept)
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        await store.send(.foundTapped(archived.id, messageID: nil))
+        XCTAssertEqual(store.state.openID, archived.id)
+        await store.send(.chats(.element(id: archived.id, action: .core(.binding(.set(\.input, "And Friday?"))))))
+        XCTAssertEqual(store.state.chat?.canSend, false)
+
+        await store.send(.chats(.element(id: archived.id, action: .unarchiveTapped)))
+        await store.skipReceivedActions(strict: false)
+        await store.finish()
+        XCTAssertEqual(store.state.chat?.canSend, true)
+        let saved = try await kept.load()
+        XCTAssertEqual(saved.first?.isArchived, false)
+    }
+
     func testRenamingKeepsTheNameAndAnEmptyOneGoesBackToTheFirstMessage() async throws {
         let first = chat("Plan the week")
         let kept = ConversationsClient.inMemory([first])

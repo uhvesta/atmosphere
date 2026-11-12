@@ -226,7 +226,8 @@ package struct ChatFeature {
         /// Whether a reply is being written, which Stop ends.
         package var canStop: Bool { core.isReplying }
 
-        package var canSend: Bool { core.canSend }
+        /// An archived chat is read as it is: unarchived, it can go on.
+        package var canSend: Bool { !conversation.isArchived && core.canSend }
 
         /// The skill picked for the next message, while it exists and is on.
         package var picked: Skill? { skill.flatMap { id in skills.first { $0.id == id && $0.isOn } } }
@@ -306,6 +307,8 @@ package struct ChatFeature {
         /// A suggestion in an empty chat: sent as the person's message.
         case suggestionTapped(String)
         case editDraftTapped
+        /// Puts an archived chat back, so it can go on.
+        case unarchiveTapped
         /// A new day began while the chat is open.
         case dayChanged
         /// Closes the draft's editor, putting back the draft it opened on.
@@ -409,6 +412,8 @@ package struct ChatFeature {
         package enum Delegate {
             case saved(Snapshot)
             case rename
+            /// Puts the archived conversation back among the others.
+            case unarchive
             /// Opens a new conversation, as /new does.
             case new
             /// A new conversation forked from this one, to keep and open.
@@ -582,7 +587,8 @@ package struct ChatFeature {
 
             case .core(.retryTapped(let id)):
                 let messages = state.conversation.messages
-                guard let index = messages.firstIndex(where: { $0.id == id }), state.core.canRetry(messages[index]),
+                guard !state.conversation.isArchived, let index = messages.firstIndex(where: { $0.id == id }),
+                    state.core.canRetry(messages[index]),
                     let asked = messages[...index].last(where: { $0.role == .person })
                 else { return .none }
                 let changed = state.conversation.changedReplies(hiddenGoingTo: asked.id)
@@ -614,6 +620,9 @@ package struct ChatFeature {
                 guard state.conversation.messages.isEmpty else { return .none }
                 state.input = text
                 return .send(.core(.sendTapped))
+
+            case .unarchiveTapped:
+                return .send(.delegate(.unarchive))
 
             case .dayChanged:
                 state.today = CalendarDate(now, in: timeZone)

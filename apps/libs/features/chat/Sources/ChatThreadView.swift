@@ -49,11 +49,13 @@ where Parts.Message == Replier.Message {
                             Divider()
                         }
                         parts.notices()
-                        VStack(alignment: .leading, spacing: 8) {
-                            parts.above()
-                            composer
+                        if parts.composes {
+                            VStack(alignment: .leading, spacing: 8) {
+                                parts.above()
+                                composer
+                            }
+                            .padding(10)
                         }
-                        .padding(10)
                     }
                 }
                 .background(.bar)

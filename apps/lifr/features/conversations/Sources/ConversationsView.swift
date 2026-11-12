@@ -49,7 +49,7 @@ package struct ConversationsView: View {
                 }
                 newButton
             }
-            .navigationDestination(isPresented: chatShown) { chat }
+            .navigationDestination(isPresented: chatShown()) { chat }
         #else
             list
                 .toolbar {
@@ -60,11 +60,14 @@ package struct ConversationsView: View {
                     }
                     newButton
                 }
-                .navigationDestination(isPresented: chatShown) { chat }
+                .navigationDestination(isPresented: chatShown(overArchive: false)) { chat }
                 .navigationDestination(
                     isPresented: Binding(get: { store.showsArchive }, set: { store.send(.archiveShown($0)) })
                 ) {
+                    // An archived chat opens over the archive, so Back goes
+                    // back to it.
                     ArchivedConversationsView(store: store)
+                        .navigationDestination(isPresented: chatShown(overArchive: true)) { chat }
                 }
         #endif
     }
@@ -196,8 +199,12 @@ package struct ConversationsView: View {
         }
     }
 
-    private var chatShown: Binding<Bool> {
-        Binding(get: { store.openID != nil }, set: { if !$0 { store.send(.closed) } })
+    /// Whether a chat is open; with `overArchive`, only while the archive
+    /// shows (true) or doesn't (false).
+    private func chatShown(overArchive: Bool? = nil) -> Binding<Bool> {
+        Binding(
+            get: { store.openID != nil && overArchive.map { $0 == store.showsArchive } != false },
+            set: { if !$0 { store.send(.closed) } })
     }
 
     /// The open chat, rebuilt for each conversation so a new one starts
@@ -225,17 +232,28 @@ struct ArchivedConversationsView: View {
     var body: some View {
         List {
             ForEach(store.state.archivedFound) { conversation in
-                ConversationListRow(conversation: conversation, replying: false)
-                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                        UnarchiveButton(id: conversation.id, store: store).tint(.indigo)
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        DeleteButton(id: conversation.id, store: store)
-                    }
-                    .contextMenu {
-                        UnarchiveButton(id: conversation.id, store: store)
-                        DeleteButton(id: conversation.id, store: store)
-                    }
+                // Opens to read; Unarchive there lets it go on.
+                Button {
+                    store.send(.foundTapped(conversation.id, messageID: nil))
+                } label: {
+                    ConversationListRow(conversation: conversation, replying: false)
+                }
+                .buttonStyle(.plain)
+                #if os(macOS)
+                    .listRowBackground(
+                        store.openID == conversation.id
+                            ? RoundedRectangle(cornerRadius: 8).fill(.tint.opacity(0.15)) : nil)
+                #endif
+                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                    UnarchiveButton(id: conversation.id, store: store).tint(.indigo)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    DeleteButton(id: conversation.id, store: store)
+                }
+                .contextMenu {
+                    UnarchiveButton(id: conversation.id, store: store)
+                    DeleteButton(id: conversation.id, store: store)
+                }
             }
         }
         .searchable(

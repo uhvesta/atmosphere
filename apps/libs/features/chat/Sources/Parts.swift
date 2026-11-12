@@ -49,6 +49,9 @@ public protocol ChatThreadParts<Message> {
     var token: ChatToken? { get }
     /// The microphone, in place of dictation's.
     var mic: MicButton? { get }
+    /// Whether the field shows, so the person can write; without it,
+    /// `notices` says why.
+    var composes: Bool { get }
 }
 
 /// What's picked for the next message, such as a skill, at the start of
@@ -72,6 +75,7 @@ extension ChatThreadParts {
     public func undo(of message: Message) -> (() -> Void)? { nil }
     public var token: ChatToken? { nil }
     public var mic: MicButton? { nil }
+    public var composes: Bool { true }
 }
 
 extension ChatThreadParts where Empty == EmptyView {

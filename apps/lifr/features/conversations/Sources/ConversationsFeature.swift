@@ -317,7 +317,7 @@ package struct ConversationsFeature {
                 }
                 return save(conversation)
 
-            case .unarchiveTapped(let id):
+            case .unarchiveTapped(let id), .chats(.element(let id, .delegate(.unarchive))):
                 guard let conversation = state.update(id, { $0.archivedAt = nil }) else { return .none }
                 return save(conversation)
 
