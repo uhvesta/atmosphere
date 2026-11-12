@@ -45,6 +45,9 @@ package struct QuickAddView: View {
                 if store.entry?.parts.isEmpty == false || store.error != nil {
                     VStack(alignment: .leading, spacing: 8) {
                         if let entry = store.entry, !entry.parts.isEmpty {
+                            // The title as it will be saved, without the
+                            // words the chips stand for.
+                            Text("Adds “\(store.finalTitle)”")
                             PartChips(entry: entry, workspace: store.workspace) { store.send(.partIgnored($0)) }
                         }
                         if let error = store.error {

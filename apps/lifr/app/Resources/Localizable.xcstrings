@@ -649,6 +649,9 @@
     "Adds this task, then keeps Quick Add open for its Sub tasks." : {
 
     },
+    "Adds “%@”" : {
+
+    },
     "After closing" : {
 
     },
