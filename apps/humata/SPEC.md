@@ -141,7 +141,7 @@ original spec; lettered ones were added since.
 | S Settings and environments | Done |
 | H Humata's own model server | Done |
 | The demo | Done |
-| R Review pass | After the demo |
+| R Review pass | Done (9e2ac82e) |
 
 ## Done milestones
 
