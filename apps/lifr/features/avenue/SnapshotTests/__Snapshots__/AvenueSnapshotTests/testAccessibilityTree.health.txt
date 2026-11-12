@@ -1,3 +1,4 @@
+[button, toggle] "Show Completed" value: "1"
 [header, text] "Procrastinated"
 [button] "Plan long runs" value: "Procrastinated, HEALTH-0013"
 [header, text] "To Do"

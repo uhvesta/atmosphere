@@ -48,9 +48,9 @@ package enum AvenueScope: Hashable, Codable, Sendable {
 extension TaskQuery {
     /// The tasks in `scope`, Sub tasks inside their parents. Codes drop the
     /// Avenue's key, since every row shares it.
-    package static func scope(_ scope: AvenueScope, by grouping: Grouping) -> TaskQuery {
+    package static func scope(_ scope: AvenueScope, by grouping: Grouping, showsCompleted: Bool = true) -> TaskQuery {
         TaskQuery(
-            key: "\(scope)-\(grouping.rawValue)", listID: "\(scope)",
+            key: "\(scope)-\(grouping.rawValue)-\(showsCompleted)", listID: "\(scope)",
             empty: .init(
                 "No tasks yet", systemImage: "tray",
                 description: String(localized: "Tasks you add here, or move here, show up in this list.")),
@@ -74,7 +74,9 @@ extension TaskQuery {
             let today = CalendarDate(now, in: timeZone)
             let waiting = all.filter { task in task.isOpen && task.startDate.map { $0 > today } ?? false }
             let later = TaskSection(id: "later", title: String(localized: "Later"), rows: rows(waiting))
-            let tasks = all.filter { !waiting.contains($0) }
+            // Only grouping by status shows closed tasks, unless Show
+            // Completed is off.
+            let tasks = all.filter { !waiting.contains($0) && (showsCompleted || $0.isOpen) }
             let open = tasks.filter(\.isOpen)
             switch grouping {
             case .status:

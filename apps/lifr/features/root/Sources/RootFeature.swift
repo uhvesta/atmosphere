@@ -116,6 +116,10 @@ package struct RootFeature {
         package var saves = SaveOrder()
         package var tab = Tab.today
         package var selection: SidebarItem? = .today
+        /// The Mac's places before this one, for Back, latest last.
+        package var back: [SidebarItem] = []
+        /// The places Back left, for Forward, latest last.
+        package var forward: [SidebarItem] = []
         package var content = Content.list
         package var today: TodayFeature.State
         package var upcoming = UpcomingFeature.State()
@@ -211,6 +215,18 @@ package struct RootFeature {
         @Shared(.place) package var place
         /// The place to go back to, until the records are in.
         package var restoring: Place?
+
+        /// Whether `item` is still there to go to: a saved filter that
+        /// wasn't deleted, an Avenue or Project that wasn't archived.
+        func canShow(_ item: SidebarItem) -> Bool {
+            guard let workspace else { return false }
+            switch item {
+            case .savedFilter(let id): return workspace.savedFilters[id] != nil
+            case .scope(.avenue(let id)): return workspace.avenues[id].map { $0.archivedAt == nil } ?? false
+            case .scope(.project(let id)): return workspace.projects[id].map { $0.status == .active } ?? false
+            default: return true
+            }
+        }
 
         /// The last change, while its toast is up.
         package var toast: LastChange? {
@@ -342,6 +358,10 @@ package struct RootFeature {
         case apiSwitchFailed(String)
         case sessionEvent(SessionEvent)
         case selected(SidebarItem?)
+        /// ⌘[: the Mac's place before this one.
+        case backTapped
+        /// ⌘]: the place Back left.
+        case forwardTapped
         /// ⌘N, or Task in the + menu.
         case newTaskTapped
         /// ⌘⇧N: Sub tasks of the open task. Does nothing without one.
@@ -606,9 +626,10 @@ package struct RootFeature {
                 }
                 guard let place = state.restoring else { return shown }
                 state.restoring = nil
+                // Where Lifr opens isn't a step to go back from.
                 let selects: Effect<Action> =
                     if state.platform == .mac, let item = place.sidebar, item != state.selection {
-                        .send(.selected(item))
+                        select(item, in: &state)
                     } else {
                         .none
                     }
@@ -730,36 +751,25 @@ package struct RootFeature {
                 return .none
 
             case .selected(let item):
-                let left = state.selection
-                state.selection = item
-                state.avenue = nil
-                state.board = nil
-                // What the detail column showed belongs to the list left, so
-                // it goes with it.
-                if left != item {
-                    state.today.list.detail = nil
-                    state.upcoming.list.detail = nil
-                    state.calendar.list.detail = nil
-                    state.procrastinated.list.detail = nil
-                    state.search.list.detail = nil
-                    state.anytime.detail = nil
-                    state.later.detail = nil
-                    state.logbook.detail = nil
-                    state.savedFilter = nil
+                if item != state.selection, let left = state.selection {
+                    state.back.append(left)
+                    state.forward = []
                 }
-                let closesChat: Effect<Action> =
-                    left == .conversations && item != .conversations ? .send(.conversations(.closed)) : .none
-                if case .savedFilter(let id) = item, let workspace = state.workspace {
-                    state.savedFilter = workspace.savedFilters[id].map {
-                        SearchFeature.State(saved: $0, workspace: workspace, now: now, timeZone: timeZone)
-                    }
-                }
-                guard case .scope(let scope) = item, let workspace = state.workspace else { return closesChat }
-                let avenue = AvenueFeature.State(scope: scope, workspace: workspace, now: now, timeZone: timeZone)
-                state.avenue = avenue
-                state.board = BoardFeature.State(
-                    scope: scope, title: avenue.title, workspace: workspace, now: now, timeZone: timeZone)
-                return closesChat
+                return select(item, in: &state)
+
+            case .backTapped:
+                let backShown = state
+                state.back.removeAll { !backShown.canShow($0) }
+                guard let item = state.back.popLast() else { return .none }
+                if let left = state.selection { state.forward.append(left) }
+                return select(item, in: &state)
+
+            case .forwardTapped:
+                let forwardShown = state
+                state.forward.removeAll { !forwardShown.canShow($0) }
+                guard let item = state.forward.popLast() else { return .none }
+                if let left = state.selection { state.back.append(left) }
+                return select(item, in: &state)
 
             case .savedFilterTapped(let id):
                 guard let workspace = state.workspace, let saved = workspace.savedFilters[id] else { return .none }
@@ -1092,6 +1102,40 @@ package struct RootFeature {
     }
 
     /// The shake menu, recording the steps to a bug, and describing it.
+    /// Shows `item` on the Mac, closing what the list left showed.
+    private func select(_ item: SidebarItem?, in state: inout State) -> Effect<Action> {
+        let left = state.selection
+        state.selection = item
+        state.avenue = nil
+        state.board = nil
+        // What the detail column showed belongs to the list left, so
+        // it goes with it.
+        if left != item {
+            state.today.list.detail = nil
+            state.upcoming.list.detail = nil
+            state.calendar.list.detail = nil
+            state.procrastinated.list.detail = nil
+            state.search.list.detail = nil
+            state.anytime.detail = nil
+            state.later.detail = nil
+            state.logbook.detail = nil
+            state.savedFilter = nil
+        }
+        let closesChat: Effect<Action> =
+            left == .conversations && item != .conversations ? .send(.conversations(.closed)) : .none
+        if case .savedFilter(let id) = item, let workspace = state.workspace {
+            state.savedFilter = workspace.savedFilters[id].map {
+                SearchFeature.State(saved: $0, workspace: workspace, now: now, timeZone: timeZone)
+            }
+        }
+        guard case .scope(let scope) = item, let workspace = state.workspace else { return closesChat }
+        let avenue = AvenueFeature.State(scope: scope, workspace: workspace, now: now, timeZone: timeZone)
+        state.avenue = avenue
+        state.board = BoardFeature.State(
+            scope: scope, title: avenue.title, workspace: workspace, now: now, timeZone: timeZone)
+        return closesChat
+    }
+
     private func reportingBugs(_ state: inout State, _ action: Action) -> Effect<Action> {
         switch action {
         case .shaken:
@@ -1485,7 +1529,8 @@ extension RootFeature.Action {
         switch self {
         case .newTaskTapped, .newTaskInTapped, .newAvenueTapped, .newProjectTapped, .newSubtaskTapped,
             .statusShortcut, .undoTapped, .syncReviewTapped, .apiSwitched, .reportBugTapped, .recordStepsTapped,
-            .redoTapped, .goTo, .priorityShortcut, .dueShortcut, .goToTaskTapped, .shortcutsTapped, .syncNowTapped:
+            .redoTapped, .goTo, .priorityShortcut, .dueShortcut, .goToTaskTapped, .shortcutsTapped, .syncNowTapped,
+            .backTapped, .forwardTapped:
             true
         default:
             false

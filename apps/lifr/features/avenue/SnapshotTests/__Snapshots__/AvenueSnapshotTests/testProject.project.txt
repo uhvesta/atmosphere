@@ -4,5 +4,6 @@
 [button, notEnabled] "Complete Project"
 [button] "Archive Project"
 [text] "Complete the Project once its tasks are closed."
+[button, toggle] "Show Completed" value: "1"
 [header, text] "To Do"
 [button] "Buy running shoes" value: "To Do, High priority, Nov 4, HEALTH-0017"

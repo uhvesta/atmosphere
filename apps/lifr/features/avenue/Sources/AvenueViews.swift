@@ -140,6 +140,12 @@ package struct AvenueView: View {
                 ForEach(store.groupings, id: \.self) { Text($0.title).tag($0) }
             }
             .pickerStyle(.menu)
+            // Only status groups show closed tasks.
+            if store.grouping == .status {
+                Toggle(
+                    "Show Completed",
+                    isOn: Binding(get: { store.showsCompleted }, set: { store.send(.showsCompletedToggled($0)) }))
+            }
         }
         .emptyBelowHeader(store.project != nil)
         .navigationTitle(store.title)

@@ -98,7 +98,6 @@ final class RootFeatureTests: XCTestCase {
 
         let task = await store.send(.task)
         await store.receive(\.loaded)
-        await store.receive(\.selected)
         await store.receive(\.reopen)
         await store.skipReceivedActions(strict: false)
 
@@ -370,6 +369,56 @@ final class RootFeatureTests: XCTestCase {
         await store.send(.selected(.today))
         XCTAssertNil(store.state.avenue)
         XCTAssertNil(store.state.board)
+        await task.cancel()
+    }
+
+    func testBackAndForwardRetraceTheMacsPlaces() async {
+        records.task("Run", in: health)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.selected(.upcoming))
+        await store.send(.selected(.scope(.avenue(health.id))))
+
+        await store.send(.backTapped)
+        XCTAssertEqual(store.state.selection, .upcoming)
+        XCTAssertNil(store.state.avenue)
+        await store.send(.backTapped)
+        XCTAssertEqual(store.state.selection, .today)
+        await store.send(.backTapped)
+        XCTAssertEqual(store.state.selection, .today)
+
+        await store.send(.forwardTapped)
+        await store.send(.forwardTapped)
+        XCTAssertEqual(store.state.selection, .scope(.avenue(health.id)))
+        XCTAssertEqual(store.state.avenue?.list.rows.map(\.title), ["Run"])
+
+        await store.send(.backTapped)
+        await store.send(.selected(.logbook))
+        await store.send(.forwardTapped)
+        XCTAssertEqual(store.state.selection, .logbook)
+        await task.cancel()
+    }
+
+    func testBackSkipsASavedFilterSinceDeleted() async {
+        let urgent = records.savedFilter("Urgent", TaskFilter(priorities: [.high]))
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.selected(.savedFilter(urgent.id)))
+        await store.send(.selected(.upcoming))
+        await store.send(.selected(.calendar))
+        await store.send(.selected(.savedFilter(urgent.id)))
+        await store.send(.savedFilter(.presented(.editSavedFilterTapped)))
+        await store.send(.savedFilter(.presented(.editor(.presented(.deleteTapped)))))
+        await store.send(.savedFilter(.presented(.editor(.presented(.confirm(.presented(.delete)))))))
+        await store.skipReceivedActions(strict: false)
+
+        await store.send(.backTapped)
+        XCTAssertEqual(store.state.selection, .calendar)
+        await store.send(.backTapped)
+        await store.send(.backTapped)
+        XCTAssertEqual(store.state.selection, .today)
         await task.cancel()
     }
 

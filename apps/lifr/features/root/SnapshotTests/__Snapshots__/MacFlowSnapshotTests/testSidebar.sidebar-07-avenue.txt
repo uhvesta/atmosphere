@@ -39,6 +39,8 @@
       [StaticText] "" value: "Group by"
       [PopUpButton] "" value: "Status"
     [Row/OutlineRow] ""
+      [CheckBox] "Show Completed" value: "1"
+    [Row/OutlineRow] ""
       [Heading] "Procrastinated"
     [Row/OutlineRow] ""
       [Button] "Plan long runs" value: "Procrastinated, HEALTH-0013" id: 0013

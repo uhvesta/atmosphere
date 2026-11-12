@@ -56,6 +56,23 @@ package struct RootCommands: Commands {
             }
             Button("Trash") { store.send(.goTo(.trash)) }
             Divider()
+            Toggle(
+                "Show Completed",
+                isOn: Binding(
+                    get: { store.avenue?.showsCompleted ?? true },
+                    set: { store.send(.avenue(.showsCompletedToggled($0))) })
+            )
+            // Only status groups show closed tasks, and the board always
+            // has a column for each status.
+            .disabled(store.avenue?.grouping != .status || store.content == .board)
+            Divider()
+            Button("Back") { store.send(.backTapped) }
+                .keyboardShortcut("[")
+                .disabled(store.back.isEmpty)
+            Button("Forward") { store.send(.forwardTapped) }
+                .keyboardShortcut("]")
+                .disabled(store.forward.isEmpty)
+            Divider()
         }
         CommandMenu("Task") {
             Menu("Status") {

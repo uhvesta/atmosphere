@@ -58,6 +58,8 @@
       [StaticText] "" value: "Group by"
       [PopUpButton] "" value: "Status"
     [Row/OutlineRow] ""
+      [CheckBox] "Show Completed" value: "1"
+    [Row/OutlineRow] ""
       [Heading] "To Do"
     [Row/OutlineRow] ""
       [Button] "Buy running shoes" value: "To Do, High priority, Nov 4, HEALTH-0017" id: 0017

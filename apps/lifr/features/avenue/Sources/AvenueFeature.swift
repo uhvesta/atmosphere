@@ -19,6 +19,8 @@ package struct AvenueFeature {
         /// How the list is grouped, remembered per Avenue or Project on this
         /// device.
         @Shared package var grouping: Grouping
+        /// Whether closed tasks show, on this device for every Avenue.
+        @Shared(.showsCompleted) package var showsCompleted
         package var list: TaskListFeature.State
         package var newProjectName: String?
         /// The Project's fields, when the scope is a Project.
@@ -39,8 +41,10 @@ package struct AvenueFeature {
             if case .project = scope, shared.wrappedValue == .project { shared.withLock { $0 = .status } }
             _grouping = shared
             title = Self.title(of: scope, in: workspace)
+            @Shared(.showsCompleted) var showsCompleted
             list = TaskListFeature.State(
-                query: .scope(scope, by: shared.wrappedValue), workspace: workspace, now: now, timeZone: timeZone)
+                query: .scope(scope, by: shared.wrappedValue, showsCompleted: showsCompleted), workspace: workspace,
+                now: now, timeZone: timeZone)
             if case .project(let id) = scope {
                 project = ProjectDetailFeature.State(id: id, workspace: workspace)
             }
@@ -69,6 +73,15 @@ package struct AvenueFeature {
             }
         }
 
+        /// Lists the tasks again, after the grouping or Show Completed
+        /// changed.
+        mutating func requery(now: Date, timeZone: TimeZone) {
+            list.query = .scope(scope, by: grouping, showsCompleted: showsCompleted)
+            if let snapshot = list.snapshot {
+                list.show(snapshot, now: now, timeZone: timeZone)
+            }
+        }
+
         /// Grouping by Project only makes sense for a whole Avenue.
         package var canGroupByProject: Bool {
             if case .avenue = scope { true } else { false }
@@ -84,6 +97,8 @@ package struct AvenueFeature {
         case binding(BindingAction<State>)
         case list(TaskListFeature.Action)
         case groupingPicked(Grouping)
+        /// Show Completed, on or off.
+        case showsCompletedToggled(Bool)
         case newProjectTapped
         /// The iPhone's Add Task: Quick Add, in this Avenue or Project.
         case addTaskTapped
@@ -113,10 +128,12 @@ package struct AvenueFeature {
             switch action {
             case .groupingPicked(let grouping):
                 state.$grouping.withLock { $0 = grouping }
-                state.list.query = .scope(state.scope, by: grouping)
-                if let snapshot = state.list.snapshot {
-                    state.list.show(snapshot, now: now, timeZone: timeZone)
-                }
+                state.requery(now: now, timeZone: timeZone)
+                return .none
+
+            case .showsCompletedToggled(let shows):
+                state.$showsCompleted.withLock { $0 = shows }
+                state.requery(now: now, timeZone: timeZone)
                 return .none
 
             case .newProjectTapped:
@@ -433,5 +450,13 @@ package struct NewAvenueFeature {
                 return .none
             }
         }
+    }
+}
+
+extension SharedKey where Self == AppStorageKey<Bool>.Default {
+    /// Whether Avenue and Project lists show closed tasks. This device
+    /// only; on unless the person turns it off.
+    package static var showsCompleted: Self {
+        Self[.appStorage("lifrShowsCompleted"), default: true]
     }
 }

@@ -117,6 +117,19 @@ final class AvenueFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.list.sections.map { $0.rows.map(\.title) }, [["Buy running shoes"], ["Stretch"]])
     }
 
+    func testShowCompletedOffHidesClosedTasks() async {
+        records.task("Stretch", in: health)
+        records.task("Done already", in: health, status: .done)
+        records.task("Gave up", in: health, status: .wontDo)
+        let store = avenue(.avenue(health.id))
+
+        await store.send(.showsCompletedToggled(false))
+        XCTAssertEqual(store.state.list.rows.map(\.title), ["Stretch"])
+
+        await store.send(.showsCompletedToggled(true))
+        XCTAssertEqual(store.state.list.sections.map(\.title), ["To Do", "Done", "Won't Do"])
+    }
+
     func testAProjectShowsOnlyItsTasks() async {
         let marathon = records.project("Half marathon", in: health)
         records.task("Buy running shoes", in: health, project: marathon)
