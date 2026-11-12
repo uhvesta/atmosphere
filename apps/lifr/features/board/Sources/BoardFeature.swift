@@ -37,6 +37,7 @@ extension TaskQuery {
                 let rows = column.map { task in
                     var row = TaskRowData(task, in: workspace, now: now, timeZone: timeZone)
                     row.code = task.code.rawValue
+                    row.avenueColor = nil
                     return row
                 }
                 return TaskSection(id: status.rawValue, title: status.title, rows: rows, notes: notes)

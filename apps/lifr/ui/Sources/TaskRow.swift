@@ -39,6 +39,23 @@ package struct TaskRow: View {
                     HStack(spacing: 8) { details }
                     VStack(alignment: .leading, spacing: 4) { details }
                 }
+                if !row.labels.isEmpty {
+                    // As many chips as fit on one line; VoiceOver reads them all.
+                    ViewThatFits(in: .horizontal) {
+                        ForEach((1...row.labels.count).reversed(), id: \.self) { count in
+                            HStack(spacing: 4) {
+                                ForEach(row.labels.prefix(count), id: \.name) { LabelChip($0) }
+                                if count < row.labels.count {
+                                    Text("+\(row.labels.count - count)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize()
+                                }
+                            }
+                        }
+                        EmptyView()
+                    }
+                }
             }
         }
         .accessibilityElement(children: .ignore)
@@ -53,8 +70,15 @@ package struct TaskRow: View {
     /// line.
     @ViewBuilder
     private var details: some View {
-        TaskCodeLabel(row.code)
-            .fixedSize()
+        HStack(spacing: 4) {
+            if let color = row.avenueColor {
+                Circle()
+                    .fill(Color(avenue: color))
+                    .frame(width: 6, height: 6)
+            }
+            TaskCodeLabel(row.code)
+        }
+        .fixedSize()
         if let starts = row.starts {
             Text("Starts \(starts.formatted(locale))")
                 .font(.caption)
@@ -84,6 +108,25 @@ package struct TaskRow: View {
             .fixedSize()
         }
         PriorityBadge(row.priority)
+            .fixedSize()
+    }
+}
+
+/// A label's name on a soft tint of its color.
+private struct LabelChip: View {
+    var chip: TaskRowData.Chip
+
+    init(_ chip: TaskRowData.Chip) {
+        self.chip = chip
+    }
+
+    var body: some View {
+        Text(chip.name)
+            .font(.caption2)
+            .lineLimit(1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Color(avenue: chip.color).opacity(0.18), in: Capsule())
             .fixedSize()
     }
 }

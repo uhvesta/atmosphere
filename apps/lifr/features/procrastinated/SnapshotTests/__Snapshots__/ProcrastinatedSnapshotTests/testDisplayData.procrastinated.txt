@@ -11,10 +11,13 @@
     ▿ rows: 2 elements
       ▿ TaskRowData
         - avenue: "Health"
+        ▿ avenueColor: Optional<String>
+          - some: "green"
         - code: "HEALTH-0013"
         - due: Optional<Due>.none
         - fullCode: "HEALTH-0013"
         - id: 00000000-0000-0000-0000-000000001301
+        - labels: 0 elements
         - priority: Priority.none
         - repeats: false
         - starts: Optional<CalendarDate>.none
@@ -23,6 +26,8 @@
         - title: "Plan long runs"
       ▿ TaskRowData
         - avenue: "Home"
+        ▿ avenueColor: Optional<String>
+          - some: "orange"
         - code: "HOME-0011"
         ▿ due: Optional<Due>
           ▿ some: Due
@@ -34,6 +39,7 @@
               - .1: Optional<TimeOfDay>.none
         - fullCode: "HOME-0011"
         - id: 00000000-0000-0000-0000-000000001101
+        - labels: 0 elements
         - priority: Priority.low
         - repeats: false
         - starts: Optional<CalendarDate>.none

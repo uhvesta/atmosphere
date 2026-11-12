@@ -16,6 +16,12 @@ package struct TaskRowData: Identifiable, Hashable, Sendable {
         package var total: Int
     }
 
+    /// A label the task carries, as its chip shows it.
+    package struct Chip: Hashable, Sendable {
+        package var name: String
+        package var color: String
+    }
+
     package var id: UUID
     /// The code shown, such as HEALTH-7K2Q, or 7K2Q where the Avenue is
     /// plain from the screen.
@@ -28,6 +34,11 @@ package struct TaskRowData: Identifiable, Hashable, Sendable {
     package var priority: Priority
     package var due: Due?
     package var avenue: String
+    /// The Avenue's color, for lists that mix Avenues; nil where every row
+    /// shares one.
+    package var avenueColor: String?
+    /// Its labels by name.
+    package var labels: [Chip] = []
     package var subtasks: Progress?
     /// Whether closing it brings the next one.
     package var repeats = false
@@ -43,6 +54,10 @@ package struct TaskRowData: Identifiable, Hashable, Sendable {
         status = task.effectiveStatus(now: now, settings: workspace.settings)
         priority = task.priority
         avenue = workspace.avenues[task.avenueID]?.name ?? ""
+        avenueColor = workspace.avenues[task.avenueID]?.color
+        labels = task.labelIDs.compactMap { workspace.labels[$0] }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .map { Chip(name: $0.name, color: $0.color) }
         repeats = task.recurrence != nil
         if let start = task.startDate, start > today { starts = start }
         if let dueDate = task.dueDate {

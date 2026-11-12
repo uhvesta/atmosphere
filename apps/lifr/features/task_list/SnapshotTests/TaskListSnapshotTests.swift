@@ -56,6 +56,22 @@ final class TaskListSnapshotTests: XCTestCase {
         assertScreenImages(of: screen(state(.sample(now: now, timeZone: .gmt))), named: "open")
     }
 
+    /// Rows with labels show them as chips, as many as fit.
+    func testLabelImages() throws {
+        var workspace = Workspace.sample(now: now, timeZone: .gmt)
+        let context = Context(actor: .user(device: "iPhone", surface: .iPhone), now: now)
+        let names = ["Errands", "Outdoors", "Quick", "Weekend", "Waiting on someone"]
+        let colors = ["orange", "green", "blue", "purple", "gray"]
+        let labels = zip(names, colors).map { workspace.createLabel(name: $0, color: $1, in: context) }
+        let open = workspace.tasks.values.filter { $0.deletedAt == nil && $0.isOpen && !$0.isSubtask }
+            .sorted { $0.title < $1.title }
+        for (index, task) in open.prefix(3).enumerated() {
+            let picked = index == 0 ? labels : Array(labels.prefix(index))
+            _ = try workspace.edit(task.id, Workspace.TaskEdit(labelIDs: Set(picked.map(\.id))), in: context)
+        }
+        assertScreenImages(of: screen(state(workspace)), named: "labels")
+    }
+
     func testEmptyImage() {
         assertSnapshot(
             of: screen(state(Workspace())), as: .image(layout: .device(config: .iPhoneSe)), named: "empty")

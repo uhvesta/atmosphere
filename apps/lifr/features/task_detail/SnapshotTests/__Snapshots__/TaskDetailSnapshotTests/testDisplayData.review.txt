@@ -12,6 +12,8 @@
       - id: 00000000-0000-0000-0000-000000001801
   ▿ row: TaskRowData
     - avenue: "Work"
+    ▿ avenueColor: Optional<String>
+      - some: "blue"
     - code: "WORK-0006"
     ▿ due: Optional<Due>
       ▿ some: Due
@@ -23,6 +25,7 @@
           - .1: Optional<TimeOfDay>.none
     - fullCode: "WORK-0006"
     - id: 00000000-0000-0000-0000-000000000601
+    - labels: 0 elements
     - priority: Priority.urgent
     - repeats: false
     - starts: Optional<CalendarDate>.none
@@ -35,10 +38,13 @@
   ▿ subtasks: 3 elements
     ▿ TaskRowData
       - avenue: "Work"
+      ▿ avenueColor: Optional<String>
+        - some: "blue"
       - code: "WORK-0007"
       - due: Optional<Due>.none
       - fullCode: "WORK-0007"
       - id: 00000000-0000-0000-0000-000000000701
+      - labels: 0 elements
       - priority: Priority.none
       - repeats: false
       - starts: Optional<CalendarDate>.none
@@ -47,10 +53,13 @@
       - title: "Read the draft"
     ▿ TaskRowData
       - avenue: "Work"
+      ▿ avenueColor: Optional<String>
+        - some: "blue"
       - code: "WORK-0008"
       - due: Optional<Due>.none
       - fullCode: "WORK-0008"
       - id: 00000000-0000-0000-0000-000000000801
+      - labels: 0 elements
       - priority: Priority.none
       - repeats: false
       - starts: Optional<CalendarDate>.none
@@ -59,10 +68,13 @@
       - title: "Leave comments"
     ▿ TaskRowData
       - avenue: "Work"
+      ▿ avenueColor: Optional<String>
+        - some: "blue"
       - code: "WORK-0009"
       - due: Optional<Due>.none
       - fullCode: "WORK-0009"
       - id: 00000000-0000-0000-0000-000000000901
+      - labels: 0 elements
       - priority: Priority.none
       - repeats: false
       - starts: Optional<CalendarDate>.none

@@ -5,6 +5,8 @@
     ▿ rows: 1 element
       ▿ TaskRowData
         - avenue: "Work"
+        ▿ avenueColor: Optional<String>
+          - some: "blue"
         - code: "WORK-0006"
         ▿ due: Optional<Due>
           ▿ some: Due
@@ -16,6 +18,7 @@
               - .1: Optional<TimeOfDay>.none
         - fullCode: "WORK-0006"
         - id: 00000000-0000-0000-0000-000000000601
+        - labels: 0 elements
         - priority: Priority.urgent
         - repeats: false
         - starts: Optional<CalendarDate>.none
@@ -38,6 +41,8 @@
     ▿ rows: 2 elements
       ▿ TaskRowData
         - avenue: "Home"
+        ▿ avenueColor: Optional<String>
+          - some: "orange"
         - code: "HOME-0011"
         ▿ due: Optional<Due>
           ▿ some: Due
@@ -49,6 +54,7 @@
               - .1: Optional<TimeOfDay>.none
         - fullCode: "HOME-0011"
         - id: 00000000-0000-0000-0000-000000001101
+        - labels: 0 elements
         - priority: Priority.low
         - repeats: false
         - starts: Optional<CalendarDate>.none
@@ -57,10 +63,13 @@
         - title: "Fix the bike\'s back brake"
       ▿ TaskRowData
         - avenue: "Health"
+        ▿ avenueColor: Optional<String>
+          - some: "green"
         - code: "HEALTH-0013"
         - due: Optional<Due>.none
         - fullCode: "HEALTH-0013"
         - id: 00000000-0000-0000-0000-000000001301
+        - labels: 0 elements
         - priority: Priority.none
         - repeats: false
         - starts: Optional<CalendarDate>.none
@@ -74,6 +83,8 @@
     ▿ rows: 8 elements
       ▿ TaskRowData
         - avenue: "Health"
+        ▿ avenueColor: Optional<String>
+          - some: "green"
         - code: "HEALTH-0004"
         ▿ due: Optional<Due>
           ▿ some: Due
@@ -88,6 +99,7 @@
                   - minute: 0
         - fullCode: "HEALTH-0004"
         - id: 00000000-0000-0000-0000-000000000401
+        - labels: 0 elements
         - priority: Priority.high
         - repeats: false
         - starts: Optional<CalendarDate>.none
@@ -96,6 +108,8 @@
         - title: "Long run, 10 km"
       ▿ TaskRowData
         - avenue: "Health"
+        ▿ avenueColor: Optional<String>
+          - some: "green"
         - code: "HEALTH-0017"
         ▿ due: Optional<Due>
           ▿ some: Due
@@ -107,6 +121,7 @@
               - .1: Optional<TimeOfDay>.none
         - fullCode: "HEALTH-0017"
         - id: 00000000-0000-0000-0000-000000001701
+        - labels: 0 elements
         - priority: Priority.high
         - repeats: false
         - starts: Optional<CalendarDate>.none
@@ -115,6 +130,8 @@
         - title: "Buy running shoes"
       ▿ TaskRowData
         - avenue: "Health"
+        ▿ avenueColor: Optional<String>
+          - some: "green"
         - code: "HEALTH-0005"
         ▿ due: Optional<Due>
           ▿ some: Due
@@ -126,6 +143,7 @@
               - .1: Optional<TimeOfDay>.none
         - fullCode: "HEALTH-0005"
         - id: 00000000-0000-0000-0000-000000000501
+        - labels: 0 elements
         - priority: Priority.medium
         - repeats: false
         - starts: Optional<CalendarDate>.none
@@ -134,6 +152,8 @@
         - title: "Book physio appointment"
       ▿ TaskRowData
         - avenue: "Home"
+        ▿ avenueColor: Optional<String>
+          - some: "orange"
         - code: "HOME-0012"
         ▿ due: Optional<Due>
           ▿ some: Due
@@ -145,6 +165,7 @@
               - .1: Optional<TimeOfDay>.none
         - fullCode: "HOME-0012"
         - id: 00000000-0000-0000-0000-000000001201
+        - labels: 0 elements
         - priority: Priority.medium
         - repeats: false
         - starts: Optional<CalendarDate>.none
@@ -153,12 +174,15 @@
         - title: "Renew passport"
       ▿ TaskRowData
         - avenue: "Home"
+        ▿ avenueColor: Optional<String>
+          - some: "orange"
         - code: "HOME-0010"
         ▿ due: Optional<Due>
           ▿ some: Due
             - today: Optional<TimeOfDay>.none
         - fullCode: "HOME-0010"
         - id: 00000000-0000-0000-0000-000000001001
+        - labels: 0 elements
         - priority: Priority.none
         - repeats: false
         - starts: Optional<CalendarDate>.none
@@ -167,6 +191,8 @@
         - title: "Water the plants"
       ▿ TaskRowData
         - avenue: "Home"
+        ▿ avenueColor: Optional<String>
+          - some: "orange"
         - code: "HOME-0014"
         ▿ due: Optional<Due>
           ▿ some: Due
@@ -178,6 +204,7 @@
               - .1: Optional<TimeOfDay>.none
         - fullCode: "HOME-0014"
         - id: 00000000-0000-0000-0000-000000001401
+        - labels: 0 elements
         - priority: Priority.none
         - repeats: false
         - starts: Optional<CalendarDate>.none
@@ -186,10 +213,13 @@
         - title: "Call the plumber"
       ▿ TaskRowData
         - avenue: "Inbox"
+        ▿ avenueColor: Optional<String>
+          - some: "gray"
         - code: "INBOX-0019"
         - due: Optional<Due>.none
         - fullCode: "INBOX-0019"
         - id: 00000000-0000-0000-0000-000000001901
+        - labels: 0 elements
         - priority: Priority.none
         - repeats: false
         - starts: Optional<CalendarDate>.none
@@ -198,10 +228,13 @@
         - title: "Pick up a birthday card"
       ▿ TaskRowData
         - avenue: "Home"
+        ▿ avenueColor: Optional<String>
+          - some: "orange"
         - code: "HOME-0015"
         - due: Optional<Due>.none
         - fullCode: "HOME-0015"
         - id: 00000000-0000-0000-0000-000000001501
+        - labels: 0 elements
         - priority: Priority.none
         - repeats: false
         ▿ starts: Optional<CalendarDate>

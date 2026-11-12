@@ -73,6 +73,7 @@ extension TaskRowData {
         if let due { parts.append(due.text(locale)) }
         if repeats { parts.append(String(localized: "Repeats")) }
         if let subtasks { parts.append("\(subtasks.closed) of \(subtasks.total) Sub tasks closed") }
+        if !labels.isEmpty { parts.append(labels.map(\.name).formatted(.list(type: .and))) }
         parts.append(fullCode)
         return parts.joined(separator: ", ")
     }
