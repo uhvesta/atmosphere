@@ -2,25 +2,40 @@ import HumataDaemonClient
 import SwiftUI
 
 /// Every session waiting on you, across projects: approvals first, then
-/// failures, then replies to read. Picking one opens it.
+/// failures, then replies to read. Picking one opens it; a request for
+/// permission can be answered from its row.
 package struct InboxView: View {
     var entries: [InboxEntry]
     var open: (Session.ID) -> Void
+    var answer: (Session.ID, _ request: String, _ approved: Bool) -> Void
 
-    package init(entries: [InboxEntry], open: @escaping (Session.ID) -> Void) {
+    package init(
+        entries: [InboxEntry], open: @escaping (Session.ID) -> Void,
+        answer: @escaping (Session.ID, _ request: String, _ approved: Bool) -> Void
+    ) {
         self.entries = entries
         self.open = open
+        self.answer = answer
     }
 
     package var body: some View {
         List {
             ForEach(entries) { entry in
-                Button {
-                    open(entry.session.id)
-                } label: {
-                    InboxRow(entry: entry)
+                HStack(spacing: 12) {
+                    Button {
+                        open(entry.session.id)
+                    } label: {
+                        InboxRow(entry: entry)
+                    }
+                    .buttonStyle(.plain)
+                    if entry.reason == .approval, let request = entry.session.pending.first {
+                        Button("Deny") { answer(entry.session.id, request.requestID, false) }
+                            .help("Deny: \(request.summary)")
+                        Button("Allow") { answer(entry.session.id, request.requestID, true) }
+                            .buttonStyle(.borderedProminent)
+                            .help("Allow: \(request.summary)")
+                    }
                 }
-                .buttonStyle(.plain)
             }
         }
         .overlay {
@@ -44,6 +59,17 @@ private struct InboxRow: View {
                 .frame(width: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.session.title)
+                if entry.reason == .approval, let request = entry.session.pending.first {
+                    Text(request.summary)
+                        .font(.callout.monospaced())
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    if entry.session.pending.count > 1 {
+                        Text("and \(entry.session.pending.count - 1) more")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Text(place)
                     .font(.caption)
                     .foregroundStyle(.secondary)

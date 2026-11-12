@@ -454,6 +454,15 @@ package final class InMemoryDaemon: Sendable {
             if let index = state.sessions.firstIndex(where: { $0.id == session }) {
                 state.sessions[index].state = Self.state(after: kind, waiting: state.paused[session] != nil)
                 if kind.endsTurn { state.sessions[index].turns += 1 }
+                switch kind {
+                case .turnStarted, .turnEnded: state.sessions[index].pending = []
+                case .permissionRequested(let request, let permission, let summary):
+                    state.sessions[index].pending.append(
+                        PendingPermission(requestID: request, kind: permission, summary: summary))
+                case .permissionCompleted(let request, _, _):
+                    state.sessions[index].pending.removeAll { $0.requestID == request }
+                default: break
+                }
             }
             return (event, Array((state.watchers[session] ?? [:]).values))
         }

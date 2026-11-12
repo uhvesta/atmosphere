@@ -326,7 +326,7 @@ struct ToolCallView: View {
                         ProgressView().controlSize(.mini)
                     }
                     Spacer()
-                    if call.output != nil {
+                    if call.output != nil || call.change != nil {
                         Image(systemName: "chevron.right")
                             .font(.caption.weight(.semibold))
                             .rotationEffect(.degrees(expanded ? 90 : 0))
@@ -336,7 +336,11 @@ struct ToolCallView: View {
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .disabled(call.output == nil)
+            .disabled(call.output == nil && call.change == nil)
+            // A write waiting on the person shows what it would change.
+            if let change = call.change, expanded || (call.permission != nil && call.permission?.answer == nil) {
+                ChangeView(change: change)
+            }
             if let permission = call.permission {
                 PermissionCard(permission: permission, answer: answer)
             }
@@ -368,6 +372,36 @@ struct ToolCallView: View {
         case false?: .red
         case nil: .secondary
         }
+    }
+}
+
+/// The lines a write takes out, in red, and puts in, in green.
+struct ChangeView: View {
+    let change: ToolCall.Change
+    /// Lines past this are left out, with a note, to keep the chat quick.
+    private static let shown = 300
+
+    var body: some View {
+        let lines = change.removed.map { ("-", $0) } + change.added.map { ("+", $0) }
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(lines.prefix(Self.shown).enumerated()), id: \.offset) { _, line in
+                Text("\(line.0) \(line.1)")
+                    .font(.caption.monospaced())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 6)
+                    .background(line.0 == "-" ? Color.red.opacity(0.15) : Color.green.opacity(0.15))
+            }
+            if lines.count > Self.shown {
+                Text("\(lines.count - Self.shown) more lines")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(6)
+            }
+        }
+        .textSelection(.enabled)
+        .clipShape(.rect(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(change.removed.count) lines removed, \(change.added.count) added")
     }
 }
 

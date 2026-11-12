@@ -94,6 +94,8 @@ package struct Session: Identifiable, Hashable, Sendable {
     package var turns: Int
     /// How many of its finished turns the person has seen.
     package var seenTurns: Int
+    /// The requests for permission its running turn waits on, oldest first.
+    package var pending: [PendingPermission]
     /// Its host can't be reached, so this is as it last was.
     package var hostOffline: Bool
 
@@ -102,7 +104,7 @@ package struct Session: Identifiable, Hashable, Sendable {
         state: SessionState = .idle, parentID: String? = nil, forkedBeforeEventID: String? = nil, host: String? = nil,
         approvalMode: ApprovalMode = .askEveryTime, projectID: String? = nil, archived: Bool = false,
         keeper: Bool = false, itemID: String? = nil, turns: Int = 0, seenTurns: Int = 0,
-        hostOffline: Bool = false
+        pending: [PendingPermission] = [], hostOffline: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -120,6 +122,7 @@ package struct Session: Identifiable, Hashable, Sendable {
         self.itemID = itemID
         self.turns = turns
         self.seenTurns = seenTurns
+        self.pending = pending
         self.hostOffline = hostOffline
     }
 }
@@ -562,6 +565,20 @@ package enum PermissionKind: Hashable, Sendable {
     case write
     case read
     case other
+}
+
+/// A request for permission a session's running turn waits on.
+package struct PendingPermission: Hashable, Sendable {
+    package var requestID: String
+    package var kind: PermissionKind
+    /// What the agent wants to do, for the person deciding.
+    package var summary: String
+
+    package init(requestID: String, kind: PermissionKind, summary: String) {
+        self.requestID = requestID
+        self.kind = kind
+        self.summary = summary
+    }
 }
 
 /// One thing that happened in a session. Its id stays the same for the life

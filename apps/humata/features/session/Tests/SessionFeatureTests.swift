@@ -232,6 +232,38 @@ final class SessionFeatureTests: XCTestCase {
         SessionEvent(id: id, time: Date(timeIntervalSince1970: 0), kind: kind)
     }
 
+    func testAWriteShowsWhatItWouldChangeBeforeItIsAllowed() async {
+        let store = store()
+        await store.send(.received(event("e1", .turnStarted)))
+        await store.send(
+            .received(
+                event(
+                    "e2",
+                    .toolStarted(
+                        callID: "c1", tool: "Edit",
+                        argumentsJSON: #"{"file_path":"a.swift","old_string":"let a = 1","new_string":"let a = 2\nlet b = 3"}"#
+                    ))))
+        await store.send(
+            .received(
+                event(
+                    "e3",
+                    .toolStarted(
+                        callID: "c2", tool: "write_file", argumentsJSON: ##"{"path":"b.md","contents":"# B"}"##))))
+        await store.send(
+            .received(event("e4", .toolStarted(callID: "c3", tool: "shell", argumentsJSON: #"{"command":"ls"}"#))))
+        let changes = store.state.items.compactMap { item -> ToolCall.Change?? in
+            guard case .tool(let call) = item else { return nil }
+            return .some(call.change)
+        }
+        XCTAssertEqual(
+            changes,
+            [
+                ToolCall.Change(removed: ["let a = 1"], added: ["let a = 2", "let b = 3"]),
+                ToolCall.Change(removed: [], added: ["# B"]),
+                nil,
+            ])
+    }
+
     func testAReplyStreamsUntilItsMessageArrives() async {
         let store = store()
         await store.send(.received(event("e1", .turnStarted)))

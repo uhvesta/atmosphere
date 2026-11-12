@@ -425,6 +425,35 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertNil(state.backendConfig)
     }
 
+    func testARequestIsAllowedFromTheInbox() async throws {
+        let daemon = InMemoryDaemon { _ in [.run(command: "make", output: ""), .say("Built.")] }
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        try await daemon.client.send(session.id, "hi", .enqueue)
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        let entry = try XCTUnwrap(store.state.inbox.first { $0.id == session.id })
+        XCTAssertEqual(entry.reason, .approval)
+        let request = try XCTUnwrap(entry.session.pending.first)
+
+        await store.send(.inboxAnswered(session.id, request: request.requestID, approved: true))
+        await store.receive(\.loaded)
+        let history = try await daemon.client.history(session.id)
+        XCTAssertTrue(
+            history.contains {
+                $0.kind == .permissionCompleted(requestID: request.requestID, approved: true, automatic: false)
+            })
+        XCTAssertFalse(
+            store.state.inbox.contains { $0.id == session.id && $0.session.pending.contains(request) })
+    }
+
     func testASessionMovesToATaskAndBackToTheProject() async throws {
         let daemon = InMemoryDaemon()
         let project = try await daemon.client.createProject("code", [Repository(path: "/code")], "")

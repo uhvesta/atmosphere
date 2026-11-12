@@ -35,6 +35,61 @@ package struct ToolCall: Hashable, Sendable {
     package var output: String?
     package var succeeded: Bool?
     package var permission: Permission?
+    /// What it writes to its file, when its arguments say; nil for calls
+    /// that write nothing.
+    package var change: Change?
+
+    package init(
+        id: String, tool: String, subject: String? = nil, output: String? = nil, succeeded: Bool? = nil,
+        permission: Permission? = nil, change: Change? = nil
+    ) {
+        self.id = id
+        self.tool = tool
+        self.subject = subject
+        self.output = output
+        self.succeeded = succeeded
+        self.permission = permission
+        self.change = change
+    }
+
+    /// The lines a write takes out and puts in, so it can be judged before
+    /// it is allowed. A whole-file write puts every line in.
+    package struct Change: Hashable, Sendable {
+        package var removed: [String]
+        package var added: [String]
+
+        package init(removed: [String], added: [String]) {
+            self.removed = removed
+            self.added = added
+        }
+    }
+
+    /// Reads a write's change from its arguments: a replacement (Claude's
+    /// Edit and MultiEdit, Copilot's edit) or a whole file (Write, create,
+    /// write_file).
+    static func change(of argumentsJSON: String) -> Change? {
+        guard let data = argumentsJSON.data(using: .utf8),
+            let arguments = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        func lines(_ text: String?) -> [String] {
+            guard let text, !text.isEmpty else { return [] }
+            return text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        }
+        func replacement(_ edit: [String: Any]) -> Change? {
+            let old = (edit["old_string"] ?? edit["old_str"]) as? String
+            let new = (edit["new_string"] ?? edit["new_str"]) as? String
+            guard old != nil || new != nil else { return nil }
+            return Change(removed: lines(old), added: lines(new))
+        }
+        if let edits = arguments["edits"] as? [[String: Any]] {
+            let changes = edits.compactMap(replacement)
+            guard !changes.isEmpty else { return nil }
+            return Change(removed: changes.flatMap(\.removed), added: changes.flatMap(\.added))
+        }
+        if let change = replacement(arguments) { return change }
+        let whole = ["content", "contents", "file_text"].lazy.compactMap { arguments[$0] as? String }.first
+        return whole.map { Change(removed: [], added: lines($0)) }
+    }
 
     /// Reads the command or path from a call's arguments.
     static func subject(of argumentsJSON: String) -> String? {
@@ -115,7 +170,10 @@ extension ChatItem {
                 calls[callID] = items.count
                 running = callID
                 items.append(
-                    .tool(ToolCall(id: callID, tool: tool, subject: ToolCall.subject(of: arguments))))
+                    .tool(
+                        ToolCall(
+                            id: callID, tool: tool, subject: ToolCall.subject(of: arguments),
+                            change: ToolCall.change(of: arguments))))
             case .toolCompleted(let callID, let success, let output):
                 if running == callID { running = nil }
                 guard let index = calls[callID], case .tool(var call) = items[index] else { continue }

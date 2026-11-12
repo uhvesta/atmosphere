@@ -94,6 +94,9 @@ package struct ProjectsFeature {
         case compareTapped(Session.ID, with: Session.ID)
         case updated(Session)
         case updateFailed(String)
+        /// The person allowed or denied a request from the inbox.
+        case inboxAnswered(Session.ID, request: String, approved: Bool)
+        case answerFailed(String)
         /// The person clicked the notification for a session.
         case notificationClicked(Session.ID)
         case destination(PresentationAction<Destination.Action>)
@@ -222,6 +225,28 @@ package struct ProjectsFeature {
                 case .rename, .move: state.destination = nil
                 default: break
                 }
+                return .none
+
+            case .inboxAnswered(let id, let request, let approved):
+                // Gone from the row at once; the refresh says what's next.
+                if let index = state.inbox.firstIndex(where: { $0.id == id }) {
+                    state.inbox[index].session.pending.removeAll { $0.requestID == request }
+                }
+                return .run { send in
+                    try await daemon.approve(id, request, approved)
+                    await send(await load())
+                } catch: { error, send in
+                    await send(.answerFailed(error.localizedDescription))
+                    await send(await load())
+                }
+
+            case .answerFailed(let message):
+                state.destination = .alert(
+                    AlertState {
+                        TextState("Couldn't answer the request")
+                    } message: {
+                        TextState(message)
+                    })
                 return .none
 
             case .updateFailed(let message):

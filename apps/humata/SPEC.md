@@ -79,7 +79,7 @@ hosts.
 
 ## Architecture
 
-```
+```text
 Your Mac
   Swift app (SwiftUI and TCA features)  --+
   humata (scripts, e2e tests)            --+--> protobuf over ~/.humata/daemon.sock (0600)
@@ -237,8 +237,8 @@ Kept short; the code and its tests are the record.
 **Outcome:** the app is pleasant to live in all day: you can act on what waits
 for you without hunting, land work, and find your way around.
 
-- [ ] Approve or deny from the inbox: each approval row shows what the agent asks, with Allow and Deny
-- [ ] Approvals show the diff of a write, not only its path
+- [x] Approve or deny from the inbox: each approval row shows what the agent asks, with Allow and Deny
+- [x] Approvals show the diff of a write, not only its path
 - [ ] A draft per session, kept when you switch away; queued messages shown above the box, each removable
 - [ ] History cost: each turn's tokens and premium requests, and the session's total
 - [ ] Sessions stay readable offline from the Mac's copy of their history

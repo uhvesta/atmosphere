@@ -112,6 +112,9 @@ extension Session {
             approvalMode: ApprovalMode(info.approvalMode), projectID: optional(info.projectID),
             archived: info.archived, keeper: info.keeper, itemID: optional(info.itemID), turns: Int(info.turns),
             seenTurns: Int(info.seenTurns),
+            pending: info.pending.map {
+                PendingPermission(requestID: $0.requestID, kind: PermissionKind($0.kind), summary: $0.summary)
+            },
             hostOffline: info.hostOffline)
     }
 }
@@ -229,14 +232,8 @@ extension SessionEvent {
         case .toolCompleted(let tool):
             kind = .toolCompleted(callID: tool.callID, success: tool.success, output: tool.output)
         case .permissionRequested(let request):
-            let permission: PermissionKind =
-                switch request.kind {
-                case .shell: .shell
-                case .write: .write
-                case .read: .read
-                case .other, .unspecified, .UNRECOGNIZED: .other
-                }
-            kind = .permissionRequested(requestID: request.requestID, kind: permission, summary: request.summary)
+            kind = .permissionRequested(
+                requestID: request.requestID, kind: PermissionKind(request.kind), summary: request.summary)
         case .permissionCompleted(let completed):
             kind = .permissionCompleted(
                 requestID: completed.requestID, approved: completed.approved, automatic: completed.automatic)
@@ -439,5 +436,17 @@ extension ChatFile {
         self.init(
             path: file.path, size: file.size,
             modified: Date(timeIntervalSince1970: TimeInterval(file.modifiedUnixMs) / 1000))
+    }
+}
+
+extension PermissionKind {
+    init(_ kind: Humata_V1_PermissionKind) {
+        self =
+            switch kind {
+            case .shell: .shell
+            case .write: .write
+            case .read: .read
+            case .other, .unspecified, .UNRECOGNIZED: .other
+            }
     }
 }

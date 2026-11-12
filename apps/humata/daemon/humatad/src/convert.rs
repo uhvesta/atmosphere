@@ -156,7 +156,32 @@ pub fn session(record: &SessionRecord, backend: pb::Backend, history: &[Event]) 
         )
         .unwrap_or(u32::MAX),
         seen_turns: 0,
+        pending: pending(history),
     }
+}
+
+/// The running turn's requests for permission that aren't answered yet.
+fn pending(history: &[Event]) -> Vec<pb::PermissionRequested> {
+    let mut pending: Vec<pb::PermissionRequested> = Vec::new();
+    for event in history {
+        match &event.kind {
+            EventKind::TurnStarted | EventKind::TurnEnded { .. } => pending.clear(),
+            EventKind::PermissionRequested {
+                request_id,
+                kind,
+                summary,
+            } => pending.push(pb::PermissionRequested {
+                request_id: request_id.clone(),
+                kind: permission_kind(*kind).into(),
+                summary: summary.clone(),
+            }),
+            EventKind::PermissionCompleted { request_id, .. } => {
+                pending.retain(|request| &request.request_id != request_id);
+            }
+            _ => {}
+        }
+    }
+    pending
 }
 
 pub fn approval_mode(mode: pb::ApprovalMode) -> ApprovalMode {
@@ -309,5 +334,59 @@ fn line(line: &Line) -> pb::DiffLine {
         old: line.old.unwrap_or(0),
         new: line.new.unwrap_or(0),
         text: line.text.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use humata_agent::EventId;
+
+    use super::*;
+
+    fn event(kind: EventKind) -> Event {
+        Event {
+            id: EventId::new(format!("{kind:?}")),
+            time_unix_ms: 0,
+            kind,
+        }
+    }
+
+    fn asked(request: &str) -> Event {
+        event(EventKind::PermissionRequested {
+            request_id: request.into(),
+            kind: PermissionKind::Write,
+            summary: format!("write {request}"),
+        })
+    }
+
+    fn answered(request: &str) -> Event {
+        event(EventKind::PermissionCompleted {
+            request_id: request.into(),
+            approved: true,
+            automatic: false,
+        })
+    }
+
+    fn ids(history: &[Event]) -> Vec<String> {
+        pending(history)
+            .into_iter()
+            .map(|request| request.request_id)
+            .collect()
+    }
+
+    #[test]
+    fn only_the_running_turns_unanswered_requests_are_pending() {
+        let first = [
+            event(EventKind::TurnStarted),
+            asked("a"),
+            asked("b"),
+            answered("a"),
+        ];
+        assert_eq!(ids(&first), ["b"]);
+        let mut ended = first.to_vec();
+        ended.push(event(EventKind::TurnEnded { aborted: true }));
+        assert!(ids(&ended).is_empty());
+        ended.extend([event(EventKind::TurnStarted), asked("c")]);
+        assert_eq!(ids(&ended), ["c"]);
     }
 }

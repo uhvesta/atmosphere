@@ -27,7 +27,11 @@ package struct AppView: View {
             .navigationSplitViewColumnWidth(min: 220, ideal: 260)
         } detail: {
             if store.sidebar.selection == .inbox {
-                InboxView(entries: store.sidebar.inbox) { store.send(.sidebar(.selected(.session($0)))) }
+                InboxView(entries: store.sidebar.inbox) {
+                    store.send(.sidebar(.selected(.session($0))))
+                } answer: { session, request, approved in
+                    store.send(.sidebar(.inboxAnswered(session, request: request, approved: approved)))
+                }
             } else if let hosts = store.scope(state: \.hosts, action: \.hosts.presented) {
                 HostsView(store: hosts)
             } else if let board = store.scope(state: \.board, action: \.board.presented) {

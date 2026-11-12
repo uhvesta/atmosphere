@@ -695,6 +695,9 @@ message SessionInfo {
   // How many of its finished turns the person has seen. The daemon fills
   // it in; the inbox lists a reply only while turns is more.
   uint32 seen_turns = 18;
+  // The requests for permission the running turn waits on, oldest first,
+  // so they can be answered without opening the session.
+  repeated PermissionRequested pending = 19;
 }
 
 // A session's git worktree of one repository.
