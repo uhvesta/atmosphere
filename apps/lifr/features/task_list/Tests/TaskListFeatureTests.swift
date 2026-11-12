@@ -186,6 +186,20 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(reloaded.rows.map(\.title), ["Three", "One", "Two"])
     }
 
+    func testADragThatCantBeSavedPutsTheRowBack() async {
+        for title in ["One", "Two", "Three"] { records.task(title, in: health) }
+        var client = StoreClient.inMemory(records.workspace)
+        client.save = { _ in throw LifrError.notFound(.task, "LIFE-3") }
+        let store = await load(reordering: true, client: client)
+        await store.send(.sortPicked(.manual))
+
+        await store.send(.moved(section: "todo", from: [2], to: 0))
+        await store.receive(\.saved)
+
+        XCTAssertEqual(store.state.rows.map(\.title), ["One", "Two", "Three"])
+        XCTAssertNotNil(store.state.alert)
+    }
+
     func testDroppingATaskOntoAnotherMakesItASubTask() async throws {
         let plan = records.task("Plan long runs", in: health)
         let run = records.task("Long run", in: health)

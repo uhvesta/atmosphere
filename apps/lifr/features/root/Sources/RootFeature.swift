@@ -493,6 +493,7 @@ package struct RootFeature {
         case savedFilterTapped(UUID)
         /// A saved filter's Move Up or Move Down.
         case savedFilterMoved(UUID, up: Bool)
+        case savedFilterMoveFailed(any Error)
         /// Tasks dragged onto a sidebar item: an Avenue or Project moves
         /// them there, Today makes them due today and Upcoming tomorrow.
         case tasksDropped([UUID], on: SidebarItem)
@@ -855,10 +856,17 @@ package struct RootFeature {
                     : (index + 1 < ids.count ? ids[index + 1] : nil, index + 2 < ids.count ? ids[index + 2] : nil)
                 guard up ? before != nil : after != nil else { return .none }
                 return .run { [store] send in
-                    await send(
-                        .loaded(
-                            Result { try await store.reorder(savedFilter: id, after: after, before: before).snapshot }))
+                    do {
+                        let saved = try await store.reorder(savedFilter: id, after: after, before: before)
+                        await send(.loaded(.success(saved.snapshot)))
+                    } catch {
+                        await send(.savedFilterMoveFailed(error))
+                    }
                 }
+
+            case .savedFilterMoveFailed(let error):
+                state.notice = .failed("Couldn't move the saved filter", error)
+                return .none
 
             case .newTaskTapped:
                 showQuickAdd(.task, in: &state)

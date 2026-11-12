@@ -447,6 +447,8 @@ package struct TaskListFeature {
                 return isLatest ? .send(.delegate(.saved(saved.snapshot))) : .none
 
             case .saved(.failure(let error)):
+                // Rows moved ahead of the save, as by a drag, go back.
+                if let snapshot = state.snapshot { state.show(snapshot, now: now, timeZone: timeZone) }
                 let workspace = state.workspace
                 if let prompt = AlertState.forRefusal(
                     error, canShow: true, title: { workspace?.tasks[$0]?.title })
