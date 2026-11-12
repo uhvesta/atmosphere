@@ -194,6 +194,8 @@ package struct SessionFeature {
         case binding(BindingAction<State>)
         /// The view appeared; watches the session until it goes.
         case task
+        /// Humata came to the front, so the open reply is seen.
+        case becameActive
         case received(SessionEvent)
         case watchEnded(failure: String?)
         case sendTapped(SendMode)
@@ -249,12 +251,23 @@ package struct SessionFeature {
     @Dependency(\.daemon) var daemon
     @Dependency(\.continuousClock) var clock
 
-    private enum CancelID { case watch, seen }
+    @Dependency(\.appActivity) var activity
+    private enum CancelID { case watch, seen, activations }
 
     /// The longest wait before watching again.
     private static let longestRetry = 30
 
     package init() {}
+
+    /// The replies so far leave the inbox, as they're on screen; none
+    /// while Humata is behind another app, so the person is told of them.
+    private func markSeen(_ state: State) -> Effect<Action> {
+        guard activity.isActive() else { return .none }
+        let session = state.session.id
+        let seen = state.events.filter { if case .turnEnded = $0.kind { true } else { false } }.count
+        return .run { _ in try? await daemon.markSeen(session, seen) }
+            .cancellable(id: CancelID.seen, cancelInFlight: true)
+    }
 
     package var body: some ReducerOf<Self> {
         BindingReducer()
@@ -322,18 +335,27 @@ package struct SessionFeature {
                 // The history is sent again, and the reply with it.
                 state.streaming = ""
                 let session = state.session.id
-                return .run { send in
-                    do {
-                        for try await event in await daemon.watch(session) {
-                            await send(.received(event))
+                return .merge(
+                    .run { send in
+                        do {
+                            for try await event in await daemon.watch(session) {
+                                await send(.received(event))
+                            }
+                            await send(.watchEnded(failure: nil))
+                        } catch is CancellationError {
+                        } catch {
+                            await send(.watchEnded(failure: error.localizedDescription))
                         }
-                        await send(.watchEnded(failure: nil))
-                    } catch is CancellationError {
-                    } catch {
-                        await send(.watchEnded(failure: error.localizedDescription))
                     }
-                }
-                .cancellable(id: CancelID.watch, cancelInFlight: true)
+                    .cancellable(id: CancelID.watch, cancelInFlight: true),
+                    .run { [activity] send in
+                        for await _ in activity.activations() { await send(.becameActive) }
+                    }
+                    .cancellable(id: CancelID.activations, cancelInFlight: true)
+                )
+
+            case .becameActive:
+                return markSeen(state)
 
             case .received(let event):
                 state.watchRetries = 0
@@ -344,16 +366,12 @@ package struct SessionFeature {
                 // The agent may have answered the review, or changed the code
                 // or the files.
                 guard case .turnEnded = event.kind else { return .none }
-                // The reply is on screen, so it leaves the inbox.
-                let session = state.session.id
-                let seen = state.events.filter { if case .turnEnded = $0.kind { true } else { false } }.count
-                let markSeen: Effect<Action> = .run { _ in try? await daemon.markSeen(session, seen) }
-                    .cancellable(id: CancelID.seen, cancelInFlight: true)
+                let seen = markSeen(state)
                 switch state.tab {
-                case .chat: return markSeen
-                case .review: return .merge(markSeen, .send(.review(.refresh)))
-                case .files: return .merge(markSeen, .send(.docs(.refresh)))
-                case .terminal: return markSeen
+                case .chat: return seen
+                case .review: return .merge(seen, .send(.review(.refresh)))
+                case .files: return .merge(seen, .send(.docs(.refresh)))
+                case .terminal: return seen
                 }
 
             case .watchEnded:

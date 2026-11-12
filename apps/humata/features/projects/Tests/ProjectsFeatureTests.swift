@@ -402,6 +402,44 @@ final class ProjectsFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testWhileHumataIsBehindTheOpenSessionIsNotifiedAndTheDockCountsTheInbox() async throws {
+        let daemon = InMemoryDaemon()
+        let clock = TestClock()
+        let posted = LockIsolated<[Notice]>([])
+        let badges = LockIsolated<[Int]>([])
+        let notified = expectation(description: "a notification posted")
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.continuousClock = clock
+            $0.notifications = NotificationClient(
+                authorize: { true },
+                post: { notice in
+                    posted.withValue { $0.append(notice) }
+                    notified.fulfill()
+                },
+                clicks: { AsyncStream { $0.finish() } })
+            $0.appActivity = AppActivity(
+                isActive: { false }, activations: { AsyncStream { $0.finish() } },
+                setBadge: { count in badges.withValue { $0.append(count) } })
+        }
+        store.exhaustivity = .off
+
+        let open = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/open"))
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.selected(.session(open.id)))
+        try await daemon.client.send(open.id, "hi", .enqueue)
+        await clock.advance(by: .seconds(2))
+        await store.receive(\.loaded)
+        await fulfillment(of: [notified], timeout: 5)
+        XCTAssertEqual(posted.value.map(\.sessionID), [open.id])
+        XCTAssertEqual(badges.value, [0, 1])
+        await task.cancel()
+    }
+
     func testANewSessionCanRunOnAHost() async throws {
         let daemon = InMemoryDaemon()
         _ = try await daemon.client.addHost("far", "me@far")

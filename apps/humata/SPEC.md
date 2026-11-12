@@ -671,7 +671,7 @@ waiting on you. It kept these, in build order:
 - [x] A spec change tells only the sessions it should: only when the text
   changed; running or waiting sessions get the message, idle ones get a
   note with the person's next message, and the editing session nothing
-- [ ] The open session notifies when Humata isn't in front, and the poll and
+- [x] The open session notifies when Humata isn't in front, and the poll and
   badge live with the app, not the sidebar view
 - [ ] A slow or dead host never stalls the lists (a short deadline, then the
   cached list); offline sessions draw as last known, with no spinner and

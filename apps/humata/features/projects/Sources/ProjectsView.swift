@@ -44,12 +44,7 @@ package struct ProjectsView: View {
                     .help("Add a project for a repository on this Mac (⇧⌘N)")
                 }
             }
-            .task { await store.send(.task).finish() }
             .modifier(Sheets(store: store))
-            .onChange(of: store.inbox.count, initial: true) { _, waiting in
-                // The Dock says how many sessions wait on the person.
-                NSApp?.dockTile.badgeLabel = waiting == 0 ? nil : String(waiting)
-            }
     }
 
     private var list: some View {

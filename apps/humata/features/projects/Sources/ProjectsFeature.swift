@@ -180,6 +180,7 @@ package struct ProjectsFeature {
     static let refreshInterval = Duration.seconds(2)
 
     @Dependency(\.daemon) var daemon
+    @Dependency(\.appActivity) var activity
     @Dependency(\.continuousClock) var clock
     @Dependency(\.notifications) var notifications
     @Dependency(\.date) var date
@@ -214,14 +215,19 @@ package struct ProjectsFeature {
 
             case .loaded(let projects, let sessions, let inbox):
                 state.failure = nil
-                let notices = state.loadedOnce ? Self.notices(new: inbox, old: state.inbox, open: state.selection) : []
+                // The open session needs no notice only while it's on screen.
+                let open = activity.isActive() ? state.selection : nil
+                let notices = state.loadedOnce ? Self.notices(new: inbox, old: state.inbox, open: open) : []
+                let badge = !state.loadedOnce || inbox.count != state.inbox.count ? inbox.count : nil
                 state.loadedOnce = true
                 state.now = date.now
                 state.inbox = inbox
                 state.projects = IdentifiedArray(uniqueElements: projects)
                 state.sessions = IdentifiedArray(sessions, uniquingIDsWith: { _, last in last })
-                guard !notices.isEmpty else { return .none }
-                return .run { _ in
+                guard !notices.isEmpty || badge != nil else { return .none }
+                return .run { [activity] _ in
+                    // The Dock says how many sessions wait on the person.
+                    if let badge { activity.setBadge(badge) }
                     for notice in notices { await notifications.post(notice) }
                 }
 

@@ -58,7 +58,12 @@ package struct AppView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             DaemonBanner(store: store)
         }
-        .task { store.send(.task) }
+        .task {
+            store.send(.task)
+            // Not awaited, so the sidebar's poll, its notices and the Dock
+            // badge go on while the window is closed.
+            store.send(.sidebar(.task))
+        }
     }
 }
 

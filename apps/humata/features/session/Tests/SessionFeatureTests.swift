@@ -228,6 +228,38 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertEqual(seen.value.last, 2)
     }
 
+    func testAReplyWhileHumataIsBehindIsSeenOnlyOnceItComesToTheFront() async {
+        let seen = LockIsolated<[Int]>([])
+        let marked = expectation(description: "the reply marked seen")
+        let active = LockIsolated(false)
+        let (activations, activate) = AsyncStream.makeStream(of: Void.self)
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.markSeen = { _, turns in
+                seen.withValue { $0.append(turns) }
+                marked.fulfill()
+            }
+            $0.daemon.watch = { _ in AsyncThrowingStream { _ in } }
+            $0.appActivity = AppActivity(
+                isActive: { active.value }, activations: { activations }, setBadge: { _ in })
+        }
+        store.exhaustivity = .off
+        let task = await store.send(.task)
+        await store.send(.received(event("e1", .turnStarted)))
+        await store.send(.received(event("e2", .turnEnded(aborted: false))))
+        XCTAssertEqual(seen.value, [])
+
+        active.setValue(true)
+        activate.yield()
+        await store.receive(\.becameActive)
+        await fulfillment(of: [marked], timeout: 5)
+        XCTAssertEqual(seen.value, [1])
+        activate.finish()
+        await task.cancel()
+    }
+
     private func event(_ id: String, _ kind: SessionEvent.Kind) -> SessionEvent {
         SessionEvent(id: id, time: Date(timeIntervalSince1970: 0), kind: kind)
     }
