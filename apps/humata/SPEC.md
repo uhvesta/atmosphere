@@ -692,7 +692,7 @@ waiting on you. It kept these, in build order:
   rows sort by longest wait, and a reply that fails to send is kept
 - [x] Start Work on a card or task: one click, seeds the first message, stays
   on the board
-- [ ] Delete an archived session, freeing its folders, refs and copies; the
+- [x] Delete an archived session, freeing its folders, refs and copies; the
   Archived list folds away
 - [ ] Move a session to another machine, both ways, from its menu, with a
   fresh copy, removing the source

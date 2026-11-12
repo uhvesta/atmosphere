@@ -21,6 +21,10 @@ pub(crate) struct Links {
     pub(crate) fork: Option<PendingFork>,
     /// Our event and the backend's, in the order they happened.
     pub(crate) events: Vec<(EventId, String)>,
+    /// The backend's session this was imported from, started outside
+    /// Humata, so it is never deleted with ours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) imported: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +128,7 @@ impl Links {
                 session: None,
                 fork: Some(PendingFork { source }),
                 events,
+                imported: self.imported.clone(),
             },
             _ => Self::default(),
         }
@@ -173,6 +178,7 @@ mod tests {
         Links {
             session: Some(session.into()),
             fork: None,
+            imported: None,
             events: pairs
                 .iter()
                 .map(|(ours, theirs)| (EventId::new(*ours), (*theirs).to_owned()))

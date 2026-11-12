@@ -544,6 +544,36 @@ impl Store {
             .map_err(self.failed())
     }
 
+    /// Forgets everything kept of `session`, which was deleted.
+    pub fn forget_session(&self, session: &str) -> Result<(), StoreError> {
+        const FORGET: &[&str] = &[
+            "DELETE FROM review_comments WHERE thread_id IN
+                (SELECT id FROM review_threads WHERE session_id = ?1)",
+            "DELETE FROM review_threads WHERE session_id = ?1",
+            "DELETE FROM reviews WHERE session_id = ?1",
+            "DELETE FROM viewed_files WHERE session_id = ?1",
+            "DELETE FROM agent_requests WHERE session_id = ?1",
+            "DELETE FROM recoveries WHERE session_id = ?1",
+            "DELETE FROM moved_sessions WHERE session_id = ?1",
+            "DELETE FROM proposal_decisions WHERE session_id = ?1",
+            "DELETE FROM search_entries WHERE session = ?1",
+            "DELETE FROM search_sessions WHERE id = ?1",
+            "DELETE FROM pull_requests WHERE session_id = ?1",
+            "DELETE FROM cleaned_sessions WHERE session_id = ?1",
+            "DELETE FROM spec_notes WHERE session_id = ?1",
+            "DELETE FROM remote_sessions WHERE id = ?1",
+            "DELETE FROM sessions WHERE id = ?1",
+        ];
+        let mut connection = self.lock();
+        let transaction = connection.transaction().map_err(self.failed())?;
+        let forgotten = FORGET
+            .iter()
+            .try_for_each(|sql| transaction.execute(sql, [session]).map(drop));
+        forgotten
+            .and_then(|()| transaction.commit())
+            .map_err(self.failed())
+    }
+
     /// Keeps `sessions` as what `host` has now, forgetting any it no longer
     /// lists.
     pub fn cache_sessions(

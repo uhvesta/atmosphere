@@ -233,6 +233,7 @@ pub(crate) fn import_into(
         session: Some(external.to_owned()),
         fork: None,
         events: imported.links.clone(),
+        imported: Some(external.to_owned()),
     }
     .save(&Links::path(state, session.as_str()))?;
     Ok(imported)

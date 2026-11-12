@@ -7,6 +7,8 @@ import SwiftUI
 /// it is working or waiting on the person, and where it runs.
 package struct ProjectsView: View {
     @Bindable var store: StoreOf<ProjectsFeature>
+    /// Archived sessions stay folded away until opened, and as left.
+    @AppStorage("archivedShown") private var archivedShown = false
 
     package init(store: StoreOf<ProjectsFeature>) {
         self.store = store
@@ -159,7 +161,7 @@ package struct ProjectsView: View {
                 }
             }
             if !store.state.archived.isEmpty {
-                Section("Archived") {
+                Section("Archived (\(store.state.archived.count))", isExpanded: $archivedShown) {
                     ForEach(ProjectsFeature.State.sorted(store.state.archived)) { session in
                         row(session)
                     }
@@ -205,6 +207,7 @@ package struct ProjectsView: View {
                 Divider()
                 if session.archived {
                     Button("Unarchive") { store.send(.archiveTapped(session.id, archived: false)) }
+                    Button("Delete…", role: .destructive) { store.send(.deleteSessionTapped(session.id)) }
                 } else {
                     Button("Archive") { store.send(.archiveTapped(session.id, archived: true)) }
                         .disabled(session.state == .working || session.state == .waitingForApproval)

@@ -251,6 +251,61 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.archived, [])
     }
 
+    func testAnArchivedSessionIsDeletedOnlyOnceItsForksAreGone() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        let root = try await daemon.client.start(StartRequest(backend: .scripted, projectID: project.id))
+        let fork = try await daemon.client.fork(root.id, nil, "fork", false)
+        for id in [root.id, fork.id] { _ = try await daemon.client.update(id, SessionUpdate(archived: true)) }
+        var state = ProjectsFeature.State()
+        state.projects = [project]
+        state.sessions = IdentifiedArray(uniqueElements: try await daemon.client.sessions(nil))
+        state.selection = .session(root.id)
+        let store = TestStore(initialState: state) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.deleteSessionTapped(root.id))
+        XCTAssertNotNil(store.state.destination?.alert)
+        await store.send(.destination(.dismiss))
+
+        await store.send(.deleteSessionTapped(fork.id))
+        await store.send(.destination(.presented(.alert(.deleteSession(fork.id)))))
+        await store.receive(\.sessionDeleted)
+        await store.send(.deleteSessionTapped(root.id))
+        await store.send(.destination(.presented(.alert(.deleteSession(root.id)))))
+        await store.receive(\.sessionDeleted)
+
+        XCTAssertEqual(store.state.archived, [])
+        XCTAssertNil(store.state.selection)
+        let left = try await daemon.client.sessions(nil)
+        XCTAssertEqual(left, [])
+    }
+
+    func testDeletingAnUnarchivedSessionIsRefused() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        var state = ProjectsFeature.State()
+        state.sessions = [session]
+        let store = TestStore(initialState: state) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.deleteSessionTapped(session.id))
+        await store.send(.destination(.presented(.alert(.deleteSession(session.id)))))
+        await store.receive(\.sessionDeleteFailed)
+        XCTAssertNotNil(store.state.destination?.alert)
+        XCTAssertEqual(store.state.sessions.map(\.id), [session.id])
+    }
+
     func testARefusedArchiveSaysWhy() async throws {
         let daemon = InMemoryDaemon { _ in [.run(command: "make", output: "")] }
         let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))

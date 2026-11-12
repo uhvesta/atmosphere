@@ -424,6 +424,20 @@ impl Runner for CopilotRunner {
         Ok(files)
     }
 
+    fn forget(&self, record: &SessionRecord) -> Result<(), AgentError> {
+        let theirs = backup::forget_links(&self.options.state, record.id.as_str())?;
+        let Some(sessions) = self.session_state() else {
+            return Ok(());
+        };
+        for session in theirs
+            .iter()
+            .filter(|session| import::is_session_id(session))
+        {
+            backup::remove(&sessions.join(session))?;
+        }
+        Ok(())
+    }
+
     fn restore(&self, record: &SessionRecord, files: &[BackendFile]) -> Result<(), AgentError> {
         for file in files {
             if file.name == backup::LINKS {

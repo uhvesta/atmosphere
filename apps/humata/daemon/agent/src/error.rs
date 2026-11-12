@@ -134,6 +134,26 @@ pub enum AgentError {
     ArchiveWhileWorking { session: SessionId },
 
     #[error(
+        "session {session} isn't archived, so it can't be deleted; archive it first, which keeps its code to bring back, then delete it"
+    )]
+    DeleteUnarchived { session: SessionId },
+
+    #[error(
+        "session {session} can't be deleted while its fork {fork} exists, as the fork's history starts from its code; delete the fork first"
+    )]
+    DeleteForked { session: SessionId, fork: SessionId },
+
+    #[error(
+        "couldn't delete {path} of session {session}; check that it is writable, then delete the session again. Part of it may be gone already"
+    )]
+    DeleteSession {
+        session: SessionId,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
         "session {session} is working, so its changes can't be committed now; stop its turn or wait for it to finish, then land it"
     )]
     LandWhileWorking { session: SessionId },

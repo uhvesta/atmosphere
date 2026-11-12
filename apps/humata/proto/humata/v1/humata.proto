@@ -182,6 +182,7 @@ message Request {
     // 127.0.0.1, for local-model sessions on the Mac and, forwarded over
     // SSH, on its hosts.
     SetModelServer set_model_server = 85;
+    DeleteSession delete_session = 86;
   }
 }
 
@@ -268,6 +269,7 @@ message Response {
     IssuesImported issues_imported = 77;
     BranchesDeleted branches_deleted = 78;
     ModelServerSet model_server_set = 79;
+    SessionDeleted session_deleted = 80;
   }
 }
 
@@ -829,6 +831,15 @@ message UpdateSession {
 message SessionUpdated {
   SessionInfo session = 1;
 }
+
+// Deletes an archived session for good: its folder, its backend's files,
+// its worktrees, and its refs and branch. Refused while it isn't archived,
+// while a fork of it exists, or while its host can't be reached.
+message DeleteSession {
+  string session_id = 1;
+}
+
+message SessionDeleted {}
 
 // What a session changed in each repository over a range of its history.
 message ReadChanges {

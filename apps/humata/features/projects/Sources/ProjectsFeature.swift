@@ -121,6 +121,7 @@ package struct ProjectsFeature {
 
         package enum Alert: Equatable {
             case deleteProject(Project.ID)
+            case deleteSession(Session.ID)
         }
     }
 
@@ -150,6 +151,11 @@ package struct ProjectsFeature {
         case renameTapped(Session.ID)
         case moveTapped(Session.ID)
         case archiveTapped(Session.ID, archived: Bool)
+        /// Asks before deleting an archived session for good, or says what
+        /// to do first.
+        case deleteSessionTapped(Session.ID)
+        case sessionDeleted(Session.ID)
+        case sessionDeleteFailed(String)
         case keeperTapped(Session.ID, keeper: Bool)
         case compareTapped(Session.ID, with: Session.ID)
         case updated(Session)
@@ -376,6 +382,58 @@ package struct ProjectsFeature {
 
             case .archiveTapped(let id, let archived):
                 return update(id, SessionUpdate(archived: archived))
+
+            case .deleteSessionTapped(let id):
+                guard let session = state.sessions[id: id] else { return .none }
+                if let fork = state.sessions.first(where: { $0.parentID == id }) {
+                    state.destination = .alert(
+                        AlertState {
+                            TextState("Delete \(fork.title) First")
+                        } message: {
+                            TextState(
+                                "\(fork.title) was forked from \(session.title). Archive and delete it, then "
+                                    + "\(session.title).")
+                        })
+                    return .none
+                }
+                state.destination = .alert(
+                    AlertState {
+                        TextState("Delete \(session.title)?")
+                    } actions: {
+                        ButtonState(role: .destructive, action: .deleteSession(id)) {
+                            TextState("Delete Session")
+                        }
+                        ButtonState(role: .cancel) {
+                            TextState("Cancel")
+                        }
+                    } message: {
+                        TextState(
+                            "Its history, its copy of the code and its branch are deleted, and can't be brought "
+                                + "back. Its task stays on the board.")
+                    })
+                return .none
+
+            case .destination(.presented(.alert(.deleteSession(let id)))):
+                return .run { send in
+                    try await daemon.delete(id)
+                    await send(.sessionDeleted(id))
+                } catch: { error, send in
+                    await send(.sessionDeleteFailed(error.localizedDescription))
+                }
+
+            case .sessionDeleted(let id):
+                state.sessions.remove(id: id)
+                if state.selection == .session(id) { state.selection = nil }
+                return .none
+
+            case .sessionDeleteFailed(let message):
+                state.destination = .alert(
+                    AlertState {
+                        TextState("Couldn't delete the session")
+                    } message: {
+                        TextState(message)
+                    })
+                return .none
 
             case .keeperTapped(let id, let keeper):
                 return update(id, SessionUpdate(keeper: keeper))

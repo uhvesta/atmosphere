@@ -185,7 +185,9 @@ impl HostError {
                 | AgentError::SessionExists { .. }
                 | AgentError::MissingRepository { .. }
                 | AgentError::BadBackendFile { .. }
-                | AgentError::NoCodeToLand { .. },
+                | AgentError::NoCodeToLand { .. }
+                | AgentError::DeleteUnarchived { .. }
+                | AgentError::DeleteForked { .. },
             ) => pb::ErrorCode::InvalidRequest,
             Self::Agent(AgentError::Workspace {
                 source: WorkspaceError::ChangeGone { .. },
@@ -594,6 +596,31 @@ pub enum DaemonError {
     },
 
     #[error(
+        "{name:?} isn't archived, so it can't be deleted; archive it first. Deleting can't be undone"
+    )]
+    DeleteUnarchived { name: String },
+
+    #[error(
+        "{name:?} can't be deleted while {fork:?} was forked from it; delete that fork first, or keep both"
+    )]
+    DeleteForked { name: String, fork: String },
+
+    #[error(
+        "{name:?} can't be deleted while its host {host} can't be reached: its files there would be left behind. Try again once {host} is back"
+    )]
+    DeleteOffline { name: String, host: String },
+
+    #[error(
+        "couldn't delete session {session}'s recovery copy at {path}; check that the folder is writable and try again"
+    )]
+    DeleteRecovery {
+        session: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
         "couldn't keep session {session}'s code in its recovery copy at {path}; check that the disk has room and the folder is writable. Deleting the folder loses the code a restore needs"
     )]
     Mirror {
@@ -674,6 +701,11 @@ impl DaemonError {
             Self::Refused { code, .. } => *code,
             Self::GitHub(_) => pb::ErrorCode::Github,
             Self::ProjectInUse { .. } => pb::ErrorCode::Busy,
+            Self::DeleteUnarchived { .. } | Self::DeleteForked { .. } => {
+                pb::ErrorCode::InvalidRequest
+            }
+            Self::DeleteOffline { .. } => pb::ErrorCode::HostUnavailable,
+            Self::DeleteRecovery { .. } => pb::ErrorCode::StorageFailed,
             Self::NoFile
             | Self::NoComment
             | Self::LinesOutside { .. }

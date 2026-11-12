@@ -798,6 +798,44 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Archived sessions fold away under a count, and one is deleted for
+    /// good after a warning.
+    func testArchivedSessions() async throws {
+        let daemon = InMemoryDaemon()
+        let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
+        _ = try await daemon.client.start(StartRequest(backend: .scripted, name: "Sign in", projectID: project.id))
+        let old = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "Old spike", projectID: project.id))
+        let older = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "Older spike", projectID: project.id))
+        for id in [old.id, older.id] { _ = try await daemon.client.update(id, SessionUpdate(archived: true)) }
+        UserDefaults.standard.removeObject(forKey: "archivedShown")
+        defer { UserDefaults.standard.removeObject(forKey: "archivedShown") }
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("archived", AppView(store: store))
+
+        try await until { store.daemon == .running && store.sidebar.archived.count == 2 }
+        await flow.step("folded")
+
+        UserDefaults.standard.set(true, forKey: "archivedShown")
+        store.send(.sidebar(.deleteSessionTapped(old.id)))
+        try await until { store.sidebar.destination?.alert != nil }
+        await flow.step("delete")
+
+        store.send(.sidebar(.destination(.presented(.alert(.deleteSession(old.id))))))
+        try await until { store.sidebar.archived.count == 1 }
+        await flow.step("deleted")
+        flow.finish()
+    }
+
     /// Settings > Environments lists the SSH config's hosts; adding one
     /// installs Humata there, and its variables and setup script are edited
     /// beside it.

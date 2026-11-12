@@ -90,6 +90,14 @@ pub trait Runner: Send + Sync + 'static {
         Ok(())
     }
 
+    /// Deletes the backend's own state of `record`'s session, such as its
+    /// transcript, as the session is deleted. A backend that keeps none has
+    /// none to delete.
+    fn forget(&self, record: &SessionRecord) -> Result<(), AgentError> {
+        let _ = record;
+        Ok(())
+    }
+
     /// Reads the backend's session `external` as our history, and links it
     /// to our new session `session`, so its turns carry on the backend's.
     fn import(&self, external: &str, session: &SessionId) -> Result<Imported, AgentError> {
@@ -804,6 +812,58 @@ impl<R: Runner> Agent for LocalAgent<R> {
             }
         }
         skipped.remove(index);
+        Ok(())
+    }
+
+    async fn delete(&self, id: &SessionId) -> Result<(), AgentError> {
+        let session = self.session(id)?;
+        let record = session.lock().record.clone();
+        if !record.archived {
+            return Err(AgentError::DeleteUnarchived {
+                session: id.clone(),
+            });
+        }
+        let fork = self.lock().values().find_map(|other| {
+            let forked = other.lock().record.parent.as_ref()?.session == *id;
+            forked.then(|| other.id.clone())
+        });
+        if let Some(fork) = fork {
+            return Err(AgentError::DeleteForked {
+                session: id.clone(),
+                fork,
+            });
+        }
+        // Archived, so only a worktree an archive left part way is here.
+        let owned: Vec<_> = record
+            .checkouts
+            .iter()
+            .filter(|checkout| checkout.owner == id.as_str())
+            .cloned()
+            .collect();
+        if !owned.is_empty() {
+            self.workspaces(id)?
+                .remove(&owned)
+                .await
+                .map_err(workspace_failed(id))?;
+        }
+        for repository in &record.repositories {
+            humata_workspace::forget(&repository.path, id.as_str())
+                .await
+                .map_err(workspace_failed(id))?;
+        }
+        self.runner.forget(&record)?;
+        match std::fs::remove_dir_all(&session.dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(AgentError::DeleteSession {
+                    session: id.clone(),
+                    path: session.dir.clone(),
+                    source,
+                });
+            }
+        }
+        self.lock().remove(id);
         Ok(())
     }
 

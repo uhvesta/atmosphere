@@ -166,3 +166,44 @@ mod tests {
         }
     }
 }
+
+/// Deletes our session `session`'s links under `state`, giving the backend's
+/// sessions to delete with it: the one they name, unless it was imported
+/// from outside Humata or another of our sessions links it too.
+pub(crate) fn forget_links(state: &Path, session: &str) -> Result<Vec<String>, AgentError> {
+    let path = Links::path(state, session);
+    let links = Links::load(&path)?;
+    let shared: Vec<String> = Links::linked(state)?
+        .into_iter()
+        .filter(|(_, ours)| ours.as_str() != session)
+        .map(|(theirs, _)| theirs)
+        .collect();
+    let theirs: Vec<String> = links
+        .session
+        .into_iter()
+        .filter(|theirs| links.imported.as_ref() != Some(theirs) && !shared.contains(theirs))
+        .collect();
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => return Err(AgentError::Write { path, source }),
+    }
+    Ok(theirs)
+}
+
+/// Deletes the file or folder at `path`; one already gone is fine.
+pub(crate) fn remove(path: &Path) -> Result<(), AgentError> {
+    let removed = if path.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    };
+    match removed {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(AgentError::Write {
+            path: path.to_owned(),
+            source,
+        }),
+    }
+}

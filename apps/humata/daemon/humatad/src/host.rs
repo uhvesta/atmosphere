@@ -86,6 +86,7 @@ trait Backend: Send + Sync {
         name: Option<String>,
     ) -> BoxFuture<'a, SessionRecord>;
     fn backup<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Backup>;
+    fn delete<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()>;
     fn restore(
         &self,
         backup: Backup,
@@ -246,6 +247,9 @@ where
     }
     fn backup<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Backup> {
         Box::pin(async move { Agent::backup(self, session).await.map_err(Into::into) })
+    }
+    fn delete<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()> {
+        Box::pin(async move { Agent::delete(self, session).await.map_err(Into::into) })
     }
     fn restore(
         &self,
@@ -853,6 +857,15 @@ impl Host {
                 Response::SessionUpdated(pb::SessionUpdated {
                     session: Some(self.info(backend, agent.as_ref(), &record).await?),
                 })
+            }
+            Request::DeleteSession(delete) => {
+                let session = SessionId::new(delete.session_id);
+                self.owner(&session)?.1.delete(&session).await?;
+                self.owners
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&session);
+                Response::SessionDeleted(pb::SessionDeleted {})
             }
             Request::ReadChanges(read) => {
                 let session = SessionId::new(read.session_id.clone());

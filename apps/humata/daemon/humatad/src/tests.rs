@@ -903,6 +903,129 @@ async fn an_archived_session_is_put_away_and_refuses_messages() {
     assert_eq!(changes.repositories.len(), 1);
 }
 
+/// Whether a file or folder named `name` is anywhere under `folder`.
+fn found_under(folder: &Path, name: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return false;
+    };
+    entries
+        .filter_map(Result::ok)
+        .any(|entry| entry.file_name().to_str() == Some(name) || found_under(&entry.path(), name))
+}
+
+fn refs_of(repository: &Path, session: &str) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(["for-each-ref", "--format=%(refname)"])
+        .output()
+        .unwrap_or_else(|error| panic!("{error}"));
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|name| name.contains(&session[..8]))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn a_deleted_session_is_gone_with_its_files_and_refs() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let session = started(&client, start_in(&project.id)).await;
+    send(&client, &session.id, "hello").await;
+    after_turns(&client, &session.id, 1).await;
+    let delete = |id: &str| {
+        client.call(pb::request::Kind::DeleteSession(pb::DeleteSession {
+            session_id: id.to_owned(),
+        }))
+    };
+    let archive = |id: &str| {
+        update(
+            &client,
+            pb::UpdateSession {
+                session_id: id.to_owned(),
+                archived: Some(true),
+                ..Default::default()
+            },
+        )
+    };
+    assert!(!refs_of(repository.path(), &session.id).is_empty());
+
+    let unarchived = delete(&session.id).await;
+    assert!(
+        matches!(
+            unarchived,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::InvalidRequest,
+                ..
+            })
+        ),
+        "{unarchived:?}"
+    );
+
+    let fork = match client
+        .call(pb::request::Kind::ForkSession(pb::ForkSession {
+            session_id: session.id.clone(),
+            name: "fork".to_owned(),
+            ..Default::default()
+        }))
+        .await
+    {
+        Ok(pb::response::Kind::SessionForked(pb::SessionForked {
+            session: Some(fork),
+        })) => fork,
+        other => panic!("not forked: {other:?}"),
+    };
+    archive(&session.id)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let forked = delete(&session.id).await;
+    assert!(
+        matches!(
+            forked,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::InvalidRequest,
+                ..
+            })
+        ),
+        "{forked:?}"
+    );
+
+    archive(&fork.id)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    for id in [&fork.id, &session.id] {
+        let deleted = delete(id).await;
+        assert!(
+            matches!(deleted, Ok(pb::response::Kind::SessionDeleted(_))),
+            "{deleted:?}"
+        );
+    }
+
+    let listed = client
+        .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+        .await;
+    let Ok(pb::response::Kind::Sessions(sessions)) = listed else {
+        panic!("{listed:?}")
+    };
+    assert!(sessions.sessions.is_empty(), "{sessions:?}");
+    let recoveries = client
+        .call(pb::request::Kind::ListRecoveries(
+            pb::ListRecoveries::default(),
+        ))
+        .await;
+    let Ok(pb::response::Kind::Recoveries(recoveries)) = recoveries else {
+        panic!("{recoveries:?}")
+    };
+    assert!(recoveries.recoveries.is_empty(), "{recoveries:?}");
+    for id in [&session.id, &fork.id] {
+        assert!(!found_under(&state.path().join("host"), id), "{id}");
+        assert_eq!(refs_of(repository.path(), id), "");
+    }
+}
+
 #[tokio::test]
 async fn a_project_is_deleted_once_its_sessions_are_archived_and_they_are_kept() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));

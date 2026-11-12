@@ -260,6 +260,19 @@ impl Runner for ClaudeRunner {
         Ok(files)
     }
 
+    fn forget(&self, record: &SessionRecord) -> Result<(), AgentError> {
+        let theirs = backup::forget_links(&self.options.state, record.id.as_str())?;
+        let Some(projects) = self.transcripts() else {
+            return Ok(());
+        };
+        for session in theirs {
+            if let Ok(path) = import::claude_transcript(&projects, &session) {
+                backup::remove(&path)?;
+            }
+        }
+        Ok(())
+    }
+
     fn restore(&self, record: &SessionRecord, files: &[BackendFile]) -> Result<(), AgentError> {
         // Claude Code finds a session's transcript in its working
         // directory's project folder, which is the restored one's.

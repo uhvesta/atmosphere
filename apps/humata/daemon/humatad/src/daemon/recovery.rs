@@ -12,7 +12,7 @@ use humata_wire::{ClientError, pb};
 
 use super::Daemon;
 use crate::convert;
-use crate::error::DaemonError;
+use crate::error::{DaemonError, StoreError};
 
 impl Daemon {
     /// The folder of `session`'s mirrors: its project's, which its other
@@ -74,6 +74,56 @@ impl Daemon {
         self.backing_up
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Deletes an archived session: on its host, then its recovery copy
+    /// and everything the daemon kept of it.
+    pub(super) async fn delete_session(&self, id: &str) -> Result<(), DaemonError> {
+        let sessions = self.list("").await?.sessions;
+        let session = sessions
+            .iter()
+            .find(|session| session.id == id)
+            .ok_or_else(|| StoreError::UnknownSession { id: id.to_owned() })?;
+        let name = session.name.clone();
+        if !session.archived {
+            return Err(DaemonError::DeleteUnarchived { name });
+        }
+        if let Some(fork) = sessions.iter().find(|fork| fork.parent_id == id) {
+            let fork = fork.name.clone();
+            return Err(DaemonError::DeleteForked { name, fork });
+        }
+        if session.host_offline {
+            let host = session.host.clone();
+            return Err(DaemonError::DeleteOffline { name, host });
+        }
+        let project = convert::optional(session.project_id.clone());
+        let request = pb::request::Kind::DeleteSession(pb::DeleteSession {
+            session_id: id.to_owned(),
+        });
+        match self.ask(&session.host, request).await? {
+            pb::response::Kind::SessionDeleted(_) => {}
+            _ => return Err(unexpected(&session.host, "the session deleted")),
+        }
+        let folder = self.mirrors(id, project.as_deref());
+        if project.is_some() {
+            for (_, mirror) in mirrors_in(&folder) {
+                humata_agent::forget(&mirror, id)
+                    .await
+                    .map_err(|source| DaemonError::Mirror {
+                        session: id.to_owned(),
+                        path: mirror.clone(),
+                        source,
+                    })?;
+            }
+        } else if folder.exists() {
+            std::fs::remove_dir_all(&folder).map_err(|source| DaemonError::DeleteRecovery {
+                session: id.to_owned(),
+                path: folder.clone(),
+                source,
+            })?;
+        }
+        self.store.forget_session(id)?;
+        Ok(())
     }
 
     /// Takes `session`'s backup from `host`, its new commits into the

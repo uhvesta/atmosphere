@@ -41,7 +41,7 @@ pub use humata_workspace::bundle;
 pub use humata_workspace::{
     Action, Changes, Checkout, Edit, FileDiff, FileRef, FileStatus, Hunk, HunkAt, Landed, Line,
     LineKind, Merged, Query, Range, Repository, Snapshot, WorkspaceError, Workspaces,
-    delete_branch,
+    delete_branch, forget,
 };
 pub use import::{Importable, Imported};
 pub use local_model::{
@@ -136,6 +136,11 @@ pub trait Agent: Send + Sync {
 
     /// Deletes skipped session `id`'s folder, and its history with it.
     fn remove_skipped(&self, id: &str) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Deletes archived session `session` for good: its folder and history,
+    /// the backend's own state of it, and its snapshots and branch in its
+    /// repositories. Refused while it isn't archived or a fork of it is here.
+    fn delete(&self, session: &SessionId) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// The backend's own sessions on this host, started outside Humata, that
     /// can be imported, the most recently changed first.

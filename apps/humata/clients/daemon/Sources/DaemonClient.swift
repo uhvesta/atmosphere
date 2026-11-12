@@ -62,6 +62,10 @@ package struct DaemonClient: Sendable {
     package var declineProposal: @Sendable (_ session: String, _ proposal: String) async throws -> Void
     /// Renames, archives or unarchives, or marks the session as the keeper.
     package var update: @Sendable (_ session: String, _ update: SessionUpdate) async throws -> Session
+    /// Deletes an archived session for good, with its folders, refs and
+    /// branch. Refused unless it's archived, while a fork of it exists, or
+    /// while its host can't be reached.
+    package var delete: @Sendable (_ session: String) async throws -> Void
     /// Records that the person has seen the session's first `turns` finished
     /// turns, so its reply leaves the inbox until another turn ends.
     package var markSeen: @Sendable (_ session: String, _ turns: Int) async throws -> Void

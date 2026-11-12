@@ -1402,6 +1402,12 @@ impl Daemon {
                 }
                 host
             }
+            Request::DeleteSession(delete) => {
+                self.delete_session(&delete.session_id).await?;
+                return Ok(Reply::Response(Response::SessionDeleted(
+                    pb::SessionDeleted {},
+                )));
+            }
             Request::ReadChanges(read) => {
                 let host = self.host_of(&read.session_id).await?;
                 return self.read_changes(&host, std::mem::take(read)).await;

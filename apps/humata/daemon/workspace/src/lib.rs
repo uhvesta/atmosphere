@@ -221,6 +221,30 @@ impl Workspaces {
     }
 }
 
+/// Deletes `session`'s snapshot refs and the branch its worktrees were made
+/// on from the repository or mirror at `repository`, so git can drop what
+/// only they kept. One that is gone, or holds neither, is fine.
+pub async fn forget(repository: &Path, session: &str) -> Result<(), WorkspaceError> {
+    if !repository.exists() {
+        return Ok(());
+    }
+    let prefix = format!("refs/humata/{session}/");
+    let listed = git(
+        repository,
+        &["for-each-ref", "--format=%(refname)", &prefix],
+    )
+    .await?;
+    let deletes: String = listed
+        .lines()
+        .filter(|name| !name.is_empty())
+        .map(|name| format!("delete {name}\n"))
+        .collect();
+    if !deletes.is_empty() {
+        git_with_input(repository, &["update-ref", "--stdin"], &deletes).await?;
+    }
+    land::delete_branch(repository, &branch(session)).await
+}
+
 /// The branch a session's worktrees are on.
 fn branch(session: &str) -> String {
     let short: String = session.chars().take(8).collect();

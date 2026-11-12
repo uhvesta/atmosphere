@@ -438,6 +438,7 @@ package final class InMemoryDaemon: Sendable {
             },
             declineProposal: { session, proposal in try self.declineProposal(session, proposal) },
             update: { session, update in try self.update(session, update) },
+            delete: { session in try self.delete(session) },
             markSeen: { session, turns in try self.markSeen(session, turns) },
             changes: { session, query in try self.changes(session, query) },
             editChanges: { session, edit in try self.editChanges(session, edit) },
@@ -931,6 +932,30 @@ package final class InMemoryDaemon: Sendable {
         state.withValue { state in
             guard let index = state.sessions.firstIndex(where: { $0.id == session }) else { return }
             state.sessions[index].seenTurns = max(state.sessions[index].seenTurns, turns)
+        }
+    }
+
+    private func delete(_ session: String) throws {
+        try known(session)
+        try state.withValue { state in
+            guard let deleted = state.sessions.first(where: { $0.id == session }) else {
+                throw Self.unknown(session)
+            }
+            guard deleted.archived else {
+                throw DaemonError.refused(
+                    .invalidRequest, message: "\(deleted.name) isn't archived; archive it first.")
+            }
+            if let fork = state.sessions.first(where: { $0.parentID == session }) {
+                throw DaemonError.refused(
+                    .invalidRequest, message: "\(fork.name) was forked from \(deleted.name); delete it first.")
+            }
+            guard !deleted.hostOffline else {
+                throw DaemonError.refused(
+                    .hostUnavailable, message: "\(deleted.name)'s host can't be reached; try again once it's back.")
+            }
+            state.sessions.removeAll { $0.id == session }
+            state.histories[session] = nil
+            state.requests.removeAll { $0.sessionID == session }
         }
     }
 

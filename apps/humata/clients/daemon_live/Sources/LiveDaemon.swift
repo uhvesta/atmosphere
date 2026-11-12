@@ -237,6 +237,13 @@ extension DaemonClient {
                 }
                 return try Session(updated.session)
             },
+            delete: { session in
+                var request = Humata_V1_DeleteSession()
+                request.sessionID = session
+                guard case .sessionDeleted = try await daemon.call(.deleteSession(request)) else {
+                    throw DaemonError.unexpected("something other than the deleted session")
+                }
+            },
             markSeen: { session, turns in
                 var mark = Humata_V1_MarkSeen()
                 mark.sessionID = session
