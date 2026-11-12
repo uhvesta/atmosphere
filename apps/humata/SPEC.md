@@ -678,7 +678,7 @@ waiting on you. It kept these, in build order:
   no Allow that can only fail
 - [x] An agent's open question or move request counts as Waiting on You, on
   the board and in the sidebar
-- [ ] A host is updated only when idle, and only when its build really is old
+- [x] A host is updated only when idle, and only when its build really is old
   (a bundled build of another platform counts as current)
 - [ ] Agents on a host can ask and request moves while the Mac is away
   (queued on the host, sent on reconnect), and read the live spec when

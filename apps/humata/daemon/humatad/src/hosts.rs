@@ -238,6 +238,9 @@ pub struct Remote {
     config: Mutex<HostConfig>,
     connection: tokio::sync::Mutex<Option<(Arc<Client>, Child)>>,
     retry: Mutex<Option<Retry>>,
+    /// Its build is old but it was busy when connected, so it's updated
+    /// once it isn't.
+    update_pending: std::sync::atomic::AtomicBool,
     /// The app's model server on this Mac, forwarded to the host.
     model_server: ModelServer,
 }
@@ -270,6 +273,7 @@ impl Remote {
             config: Mutex::new(config),
             connection: tokio::sync::Mutex::new(None),
             retry: Mutex::new(None),
+            update_pending: std::sync::atomic::AtomicBool::new(false),
             model_server,
         }
     }
@@ -366,6 +370,21 @@ impl Remote {
         }
     }
 
+    /// Whether the host waits to be updated, and so reconnected, once its
+    /// sessions are idle.
+    pub fn update_pending(&self) -> bool {
+        self.update_pending
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Drops the connection, so the next request connects again, updating
+    /// the host if it's outdated.
+    pub async fn reconnect(&self) {
+        if let Some((_, mut child)) = self.connection.lock().await.take() {
+            let _ = child.kill().await;
+        }
+    }
+
     /// Lets the next request try to connect at once.
     pub fn retry_now(&self) {
         *self.retry.lock().unwrap_or_else(PoisonError::into_inner) = None;
@@ -378,10 +397,21 @@ impl Remote {
     ) -> Result<(Arc<Client>, Child), DaemonError> {
         let config = self.config();
         let (mut client, mut child) = self.connect(&config, hosts, build).await?;
+        let hello = &client.peer().program_version;
         let outdated = config
             .ssh
             .as_ref()
-            .filter(|_| client.peer().program_version != build);
+            .filter(|_| hello != build && !bundled_builds().contains(hello));
+        // A turn going on the host would be cut off, so the update waits
+        // until none is; the daemon reconnects then.
+        let outdated = match outdated {
+            Some(_) if busy(&client).await => {
+                self.update_pending
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                None
+            }
+            other => other,
+        };
         // Without a build for it, the host keeps the one it has.
         let reinstalled = match outdated {
             Some(ssh) => match self.install(ssh, None).await {
@@ -390,6 +420,10 @@ impl Remote {
             },
             None => false,
         };
+        if outdated.is_some() {
+            self.update_pending
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
         if reinstalled {
             // A host on its socket outlives this connection, so it is asked
             // to stop for the next one to start the new build. One on stdio
@@ -647,6 +681,54 @@ impl Remote {
 /// ones beside `humatad`: `humatad-<os>-<arch>` next to it or in `builds/`
 /// next to it, as in a Bazel output, or in the app, in `builds/` among its
 /// resources, as anything in `Contents/Helpers` must be signed Mac code.
+/// Whether any of the host's sessions has a turn going or waits on an
+/// approval; true when it can't say, so nothing is cut off.
+async fn busy(client: &Client) -> bool {
+    let listed = client
+        .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+        .await;
+    match listed {
+        Ok(pb::response::Kind::Sessions(sessions)) => sessions.sessions.iter().any(|session| {
+            matches!(
+                session.state(),
+                pb::SessionState::Working | pb::SessionState::WaitingForApproval
+            )
+        }),
+        _ => true,
+    }
+}
+
+/// The builds for other platforms that came with this humatad, as each
+/// says in its hello: a host running one of them is current.
+fn bundled_builds() -> &'static [String] {
+    static BUILDS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    BUILDS.get_or_init(|| {
+        let Ok(ours) = std::env::current_exe() else {
+            return Vec::new();
+        };
+        let Some(folder) = ours.parent() else {
+            return Vec::new();
+        };
+        let resources = folder
+            .parent()
+            .map(|contents| contents.join("Resources/builds"));
+        [
+            Some(folder.to_owned()),
+            Some(folder.join("builds")),
+            resources,
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|folder| std::fs::read_dir(folder).ok())
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("humatad-"))
+        .filter_map(|entry| std::fs::read(entry.path()).ok())
+        .map(|executable| crate::build_of(&executable))
+        .collect()
+    })
+}
+
 fn build_for(humatad: &Path, platform: &str) -> Option<PathBuf> {
     let name = format!("humatad-{}", build_name(platform)?);
     let folder = humatad.parent()?;

@@ -737,6 +737,26 @@ impl Daemon {
         Ok(self.store.delete_project(id)?)
     }
 
+    /// Reconnects `host` when it waits for an update and none of its
+    /// `sessions` is busy any more, which updates it.
+    fn update_once_idle(
+        &self,
+        host: &str,
+        sessions: &[pb::SessionInfo],
+    ) -> Result<(), DaemonError> {
+        let remote = self.remote(host)?;
+        let busy = sessions.iter().any(|session| {
+            matches!(
+                session.state(),
+                pb::SessionState::Working | pb::SessionState::WaitingForApproval
+            )
+        });
+        if remote.update_pending() && !busy {
+            tokio::spawn(async move { remote.reconnect().await });
+        }
+        Ok(())
+    }
+
     async fn list(&self, project: &str) -> Result<pb::Sessions, DaemonError> {
         let mut all = Vec::new();
         // Every host at once, each given a little while: a slow one shows
@@ -782,6 +802,7 @@ impl Daemon {
                 Some(pb::response::Kind::Sessions(sessions)) => {
                     if !host.is_empty() {
                         self.store.cache_sessions(&host, &sessions.sessions)?;
+                        self.update_once_idle(&host, &sessions.sessions)?;
                     }
                     sessions.sessions
                 }

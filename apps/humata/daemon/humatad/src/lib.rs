@@ -45,13 +45,15 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// an older build of itself from its own. Just [`VERSION`] if the executable
 /// can't be read.
 fn build() -> String {
-    let digest = std::env::current_exe()
+    std::env::current_exe()
         .and_then(std::fs::read)
-        .map(|executable| Sha256::digest(executable));
-    match digest {
-        Ok(digest) => format!("{VERSION}+{}", hex(&digest[..8])),
-        Err(_) => VERSION.to_owned(),
-    }
+        .map_or_else(|_| VERSION.to_owned(), |executable| build_of(&executable))
+}
+
+/// The build `executable` says it is in its hello: this version and a hash
+/// of its bytes.
+fn build_of(executable: &[u8]) -> String {
+    format!("{VERSION}+{}", hex(&Sha256::digest(executable)[..8]))
 }
 
 fn hex(bytes: &[u8]) -> String {
