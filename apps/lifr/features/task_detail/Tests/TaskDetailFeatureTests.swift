@@ -138,6 +138,48 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.row.status, .done)
     }
 
+    func testARefusedSubtaskTitleIsBackInItsField() async throws {
+        let shoes = records.task("Buy running shoes", in: health)
+        let store = try makeStore(shoes)
+        let long = String(repeating: "a", count: 201)
+
+        await store.send(.binding(.set(\.newSubtaskTitle, long)))
+        await store.send(.addSubtaskSubmitted)
+        await store.receive(\.typedSaveFailed)
+
+        XCTAssertEqual(store.state.newSubtaskTitle, long)
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertEqual(store.state.subtasks, [])
+    }
+
+    func testARefusedDescriptionIsWhatTheEditorOpensWithNext() async throws {
+        let stretch = records.task("Stretch", in: health)
+        let store = try makeStore(stretch)
+        store.dependencies.store.save = { _ in throw Refused() }
+
+        await store.send(.editDetailsTapped)
+        await store.send(.binding(.set(\.detailsDraft, "Hips, then back.")))
+        await store.send(.detailsSaved)
+        await store.receive(\.typedSaveFailed)
+        XCTAssertEqual(store.state.details, "")
+
+        await store.send(.editDetailsTapped)
+        XCTAssertEqual(store.state.detailsDraft, "Hips, then back.")
+    }
+
+    func testARefusedCommentIsBackInItsField() async throws {
+        let stretch = records.task("Stretch", in: health)
+        let store = try makeStore(stretch)
+        store.dependencies.store.save = { _ in throw Refused() }
+
+        await store.send(.binding(.set(\.newComment, "Felt good")))
+        await store.send(.commentSubmitted)
+        await store.receive(\.typedSaveFailed)
+
+        XCTAssertEqual(store.state.newComment, "Felt good")
+        XCTAssertNotNil(store.state.alert)
+    }
+
     func testABlankSubtaskTitleAddsNothing() async throws {
         let shoes = records.task("Buy running shoes", in: health)
         let store = try makeStore(shoes)
@@ -469,3 +511,5 @@ final class TaskDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.row.status, .inProgress)
     }
 }
+
+private struct Refused: Error {}

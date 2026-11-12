@@ -25,6 +25,9 @@ package struct TaskDetailFeature {
         package var title: String
         /// The description being edited, or `nil` when it's only shown.
         package var detailsDraft: String?
+        /// A description whose save was refused, to edit again instead of
+        /// typing it over.
+        package var refusedDetails: String?
         package var startDate: CalendarDate?
         package var dueDate: CalendarDate?
         package var dueTime: TimeOfDay?
@@ -207,6 +210,7 @@ package struct TaskDetailFeature {
             // Keep what's being typed over what was saved.
             if title != row.title { refreshed.title = title }
             refreshed.detailsDraft = detailsDraft
+            refreshed.refusedDetails = refusedDetails
             if var subtask, subtask.refresh(from: snapshot, now: now, timeZone: timeZone) {
                 refreshed.subtask = subtask
             }
@@ -266,6 +270,8 @@ package struct TaskDetailFeature {
         /// The reminder was saved, but notifications are off on this device.
         case notificationsOff
         case saved(Result<Saved, any Error>)
+        /// A save of what was typed was refused; it goes back in its field.
+        case typedSaveFailed(Typed, any Error)
         case bannerUndoTapped
         case bannerDismissed
         case prompt(PresentationAction<StatusPrompt>)
@@ -308,14 +314,17 @@ package struct TaskDetailFeature {
                 return edit(state, Workspace.TaskEdit(title: title))
 
             case .editDetailsTapped:
-                state.detailsDraft = state.details
+                state.detailsDraft = state.refusedDetails ?? state.details
+                state.refusedDetails = nil
                 return .none
 
             case .detailsSaved:
                 guard let draft = state.detailsDraft else { return .none }
                 state.detailsDraft = nil
                 guard draft != state.details else { return .none }
-                return edit(state, Workspace.TaskEdit(details: draft))
+                return save(restoring: .details(draft)) { [id = state.id] in
+                    try await $0.edit(id, Workspace.TaskEdit(details: draft))
+                }
 
             case .detailsCancelled:
                 state.detailsDraft = nil
@@ -378,7 +387,7 @@ package struct TaskDetailFeature {
                 let name = state.newLabelName.trimmingCharacters(in: .whitespacesAndNewlines)
                 state.newLabelName = ""
                 guard !name.isEmpty else { return .none }
-                return save { [id = state.id] in try await $0.addLabel(named: name, to: id) }
+                return save(restoring: .label(name)) { [id = state.id] in try await $0.addLabel(named: name, to: id) }
 
             case .subtaskTapped(let id):
                 return .run { [store] send in
@@ -411,7 +420,7 @@ package struct TaskDetailFeature {
                 let title = state.newSubtaskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !title.isEmpty, !state.isSubtask else { return .none }
                 state.newSubtaskTitle = ""
-                return save { [id = state.id] in
+                return save(restoring: .subtask(title)) { [id = state.id] in
                     try await $0.createTask(Workspace.NewTask(title: title, parentID: id))
                 }
 
@@ -419,7 +428,7 @@ package struct TaskDetailFeature {
                 let body = state.newComment
                 guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .none }
                 state.newComment = ""
-                return save { [id = state.id] in try await $0.addComment(body, to: id) }
+                return save(restoring: .comment(body)) { [id = state.id] in try await $0.addComment(body, to: id) }
 
             case .commentEditTapped(let id):
                 guard let entry = state.timeline.first(where: { $0.id == id && $0.isMine }) else { return .none }
@@ -433,7 +442,7 @@ package struct TaskDetailFeature {
                 guard !body.isEmpty else { return .none }
                 state.editingCommentID = nil
                 guard body != state.timeline.first(where: { $0.id == id })?.text else { return .none }
-                return save { try await $0.editComment(id, body: body) }
+                return save(restoring: .commentEdit(id, body)) { try await $0.editComment(id, body: body) }
 
             case .commentEditCancelled:
                 state.editingCommentID = nil
@@ -523,16 +532,12 @@ package struct TaskDetailFeature {
                 }
                 return isLatest ? .send(.delegate(.saved(saved.snapshot))) : .none
 
+            case .typedSaveFailed(let typed, let error):
+                state.restore(typed)
+                return failed(&state, error)
+
             case .saved(.failure(let error)):
-                let subtasks = state.subtasks
-                if let prompt = AlertState.forRefusal(
-                    error, canShow: false, title: { id in subtasks.first { $0.id == id }?.title })
-                {
-                    state.prompt = prompt
-                } else {
-                    state.alert = .failed("Couldn't change the task", error)
-                }
-                return .run { [feedback] _ in await feedback(.warning) }
+                return failed(&state, error)
 
             case .binding, .prompt, .alert, .statusPicker, .commentDeletion, .delegate, .subtask:
                 return .none
@@ -543,6 +548,18 @@ package struct TaskDetailFeature {
         .ifLet(\.$alert, action: \.alert)
         .ifLet(\.$commentDeletion, action: \.commentDeletion)
         .ifLet(\.$statusPicker, action: \.statusPicker)
+    }
+
+    private func failed(_ state: inout State, _ error: any Error) -> Effect<Action> {
+        let subtasks = state.subtasks
+        if let prompt = AlertState.forRefusal(
+            error, canShow: false, title: { id in subtasks.first { $0.id == id }?.title })
+        {
+            state.prompt = prompt
+        } else {
+            state.alert = .failed("Couldn't change the task", error)
+        }
+        return .run { [feedback] _ in await feedback(.warning) }
     }
 
     /// Saves the reminder, then asks for notifications if they haven't been
@@ -573,6 +590,19 @@ package struct TaskDetailFeature {
         }
     }
 
+    /// Saves what was typed, putting it back if the save is refused.
+    private func save(
+        restoring typed: Typed, _ operation: @escaping @Sendable (StoreClient) async throws -> Saved
+    ) -> Effect<Action> {
+        .run { [store] send in
+            do {
+                await send(.saved(.success(try await operation(store))))
+            } catch {
+                await send(.typedSaveFailed(typed, error))
+            }
+        }
+    }
+
     private func save(_ operation: @escaping @Sendable (StoreClient) async throws -> Saved) -> Effect<Action> {
         .run { [store] send in
             do {
@@ -596,4 +626,34 @@ package struct ProjectGroup: Identifiable, Hashable, Sendable {
     package var projects: [Choice]
 
     package var id: UUID { avenue.id }
+}
+
+/// Text typed into the detail whose save was refused.
+package enum Typed: Equatable, Sendable {
+    case subtask(String)
+    case comment(String)
+    case commentEdit(UUID, String)
+    case details(String)
+    case label(String)
+}
+
+extension TaskDetailFeature.State {
+    /// Puts refused text back where it was typed, unless something new has
+    /// been typed there since.
+    mutating func restore(_ typed: Typed) {
+        switch typed {
+        case .subtask(let title):
+            if newSubtaskTitle.isEmpty { newSubtaskTitle = title }
+        case .comment(let body):
+            if newComment.isEmpty { newComment = body }
+        case .commentEdit(let id, let body):
+            guard editingCommentID == nil, timeline.contains(where: { $0.id == id }) else { return }
+            editingCommentID = id
+            editedComment = body
+        case .details(let draft):
+            if detailsDraft == nil { refusedDetails = draft }
+        case .label(let name):
+            if newLabelName.isEmpty { newLabelName = name }
+        }
+    }
 }

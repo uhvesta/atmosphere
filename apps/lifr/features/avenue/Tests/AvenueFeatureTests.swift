@@ -181,6 +181,24 @@ final class AvenueFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.list.workspace?.projects.values.map(\.name), ["Half marathon"])
     }
 
+    func testARefusedProjectNameIsWhereTheNextNewProjectStarts() async {
+        _ = health
+        let store = avenue(.avenue(health.id))
+        let long = String(repeating: "a", count: 201)
+        store.dependencies.store.save = { _ in throw Refused() }
+
+        await store.send(.newProjectTapped)
+        await store.send(.binding(.set(\.newProjectName, long)))
+        await store.send(.newProjectSubmitted)
+        await store.receive(\.newProjectRefused)
+        await store.receive(\.list.saved)
+        XCTAssertNotNil(store.state.list.alert)
+
+        await store.send(.newProjectTapped)
+        XCTAssertEqual(store.state.newProjectName, long)
+        XCTAssertEqual(store.state.list.workspace?.projects.isEmpty, true)
+    }
+
     func testAddsAnAvenueAndShowsIt() async {
         _ = health
         let store = await avenues()
@@ -249,3 +267,5 @@ final class AvenueFeatureTests: XCTestCase {
         XCTAssertEqual(workspace.avenues[health.id]?.name, "Health")
     }
 }
+
+private struct Refused: Error {}

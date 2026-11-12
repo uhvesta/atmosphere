@@ -162,7 +162,7 @@ final class ProjectDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.status, .archived)
     }
 
-    func testAFailedSaveShowsAnAlertAndKeepsTheStoredName() async {
+    func testAFailedRenameShowsAnAlertAndKeepsWhatWasTyped() async {
         guard let store = detail() else { return }
         let id = marathon.id.uuidString
         store.dependencies.store.save = { _ in throw LifrError.notFound(.project, id) }
@@ -172,7 +172,8 @@ final class ProjectDetailFeatureTests: XCTestCase {
         await store.receive(\.saved.failure)
 
         XCTAssertNotNil(store.state.alert)
-        XCTAssertEqual(store.state.name, "Half marathon")
+        XCTAssertEqual(store.state.name, "Other")
+        XCTAssertEqual(store.state.savedName, "Half marathon")
     }
 
     func testSavesTheDetailsOnSubmit() async throws {

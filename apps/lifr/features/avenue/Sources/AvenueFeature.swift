@@ -23,6 +23,8 @@ package struct AvenueFeature {
         @Shared(.showsCompleted) package var showsCompleted
         package var list: TaskListFeature.State
         package var newProjectName: String?
+        /// A Project name whose save was refused, to start from next time.
+        package var refusedProjectName: String?
         /// The Project's fields, when the scope is a Project.
         package var project: ProjectDetailFeature.State?
         @Presents package var editAvenue: EditAvenueFeature.State?
@@ -104,6 +106,8 @@ package struct AvenueFeature {
         case addTaskTapped
         case newProjectCancelled
         case newProjectSubmitted
+        /// The new Project's name was refused; it's kept for the next try.
+        case newProjectRefused(String)
         case project(ProjectDetailFeature.Action)
         case editAvenueTapped
         case editAvenue(PresentationAction<EditAvenueFeature.Action>)
@@ -137,7 +141,12 @@ package struct AvenueFeature {
                 return .none
 
             case .newProjectTapped:
-                state.newProjectName = ""
+                state.newProjectName = state.refusedProjectName ?? ""
+                state.refusedProjectName = nil
+                return .none
+
+            case .newProjectRefused(let name):
+                state.refusedProjectName = name
                 return .none
 
             case .newProjectCancelled:
@@ -149,7 +158,9 @@ package struct AvenueFeature {
                 state.newProjectName = nil
                 guard !name.isEmpty, case .avenue(let avenueID) = state.scope else { return .none }
                 return .run { [store] send in
-                    await send(.list(.saved(Result { try await store.createProject(name, in: avenueID) })))
+                    let result = await Result { try await store.createProject(name, in: avenueID) }
+                    if case .failure = result { await send(.newProjectRefused(name)) }
+                    await send(.list(.saved(result)))
                 }
 
             case .list(.show), .list(.loaded(.success)):

@@ -152,7 +152,7 @@ package struct ProjectDetailFeature {
                 return .send(.delegate(.saved(saved.snapshot)))
 
             case .saved(.failure(let error)):
-                state.name = state.savedName
+                // What's typed stays, to shorten or try again.
                 state.alert = .failed("Couldn't change the Project", error)
                 return .none
 
