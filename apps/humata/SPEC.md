@@ -130,8 +130,8 @@ original spec; lettered ones were added since.
 | A Free chats and doc mode | Done (dfb6582) |
 | B Claude Code and MCP | Done (8f6091c) |
 | C Polish: blockers and quick wins | Done (059649d) |
-| C Polish: majors and minors | In progress |
-| D Durable hosts | Next |
+| C Polish: majors and minors | Done |
+| D Durable hosts | In progress |
 | E Terminals and files | After D |
 | 6 Plan with the agent | After E |
 | 7 Search across sessions | After 6 |
@@ -230,9 +230,7 @@ Kept short; the code and its tests are the record.
 - [x] Hosts show Claude Code's version and whether an Anthropic key is set
 - [x] Tool calls show their subject: the command, file, pattern or URL
 
-## Remaining milestones
-
-### Milestone C, part 2: polish majors and minors
+### Milestone C, part 2: polish majors and minors — done
 
 **Outcome:** the app is pleasant to live in all day: you can act on what waits
 for you without hunting, land work, and find your way around.
@@ -253,10 +251,12 @@ for you without hunting, land work, and find your way around.
 - [x] Claude and Copilot parity: model lists, approval modes, steering and usage behave the same
 - [x] Spec drafting: a task's spec edited in the app with a rendered preview
 - [x] A variables editor for This Mac, like the hosts have
-- [ ] Sessions skipped on load are listed with why, and can be removed
+- [x] Sessions skipped on load are listed with why, and can be removed
 
 **Done when:** a flow approves a write from the inbox and sees the session
 working again, and the review flow's snapshots show the new rows.
+
+## Remaining milestones
 
 ### Milestone D: durable hosts
 

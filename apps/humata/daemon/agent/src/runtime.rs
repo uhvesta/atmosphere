@@ -150,6 +150,19 @@ pub struct LocalAgent<R> {
     sessions: Mutex<HashMap<SessionId, Arc<Session>>>,
     /// Where sessions that work in repositories get their copies of them.
     workspaces: Option<Arc<Workspaces>>,
+    /// Sessions on disk that couldn't be opened, left as they are.
+    skipped: Mutex<Vec<Skipped>>,
+}
+
+/// A session on disk that couldn't be opened, so it is left as it is until
+/// it is fixed or removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skipped {
+    /// Its folder's name, which is its id.
+    pub id: String,
+    pub folder: PathBuf,
+    /// Why it couldn't be opened, and what fixing it would take.
+    pub reason: String,
 }
 
 struct Session {
@@ -254,7 +267,7 @@ impl<R: Runner> LocalAgent<R> {
     /// Opens the sessions under `root`, creating it if needed. A session
     /// whose turn was cut off, because the program stopped, is closed with an
     /// aborted turn. One that can't be read is skipped, its folder left as
-    /// it is, and why goes to the program's log.
+    /// it is, and listed with why by [`Agent::skipped`].
     pub fn open(root: impl Into<PathBuf>, runner: R) -> Result<Self, AgentError> {
         let root = root.into();
         let dir = root.join("sessions");
@@ -263,6 +276,7 @@ impl<R: Runner> LocalAgent<R> {
             source,
         })?;
         let mut sessions = HashMap::new();
+        let mut skipped = Vec::new();
         let entries = std::fs::read_dir(&dir).map_err(|source| AgentError::ReadDirectory {
             path: dir.clone(),
             source,
@@ -280,7 +294,13 @@ impl<R: Runner> LocalAgent<R> {
             let session = match load(&path) {
                 Ok(session) => session,
                 Err(error) => {
-                    eprintln!("humata: skipped a session: {}", describe(&error));
+                    let reason = describe(&error);
+                    eprintln!("humata: skipped a session: {reason}");
+                    skipped.push(Skipped {
+                        id: entry.file_name().to_string_lossy().into_owned(),
+                        folder: path,
+                        reason,
+                    });
                     continue;
                 }
             };
@@ -294,6 +314,7 @@ impl<R: Runner> LocalAgent<R> {
             runner: Arc::new(runner),
             sessions: Mutex::new(sessions),
             workspaces: None,
+            skipped: Mutex::new(skipped),
         })
     }
 
@@ -704,6 +725,38 @@ impl<R: Runner> Agent for LocalAgent<R> {
         self.runner.forked(id, &record, &events)?;
         self.create(record.clone(), events)?;
         Ok(record)
+    }
+
+    async fn skipped(&self) -> Result<Vec<Skipped>, AgentError> {
+        let mut skipped = self
+            .skipped
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        skipped.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(skipped)
+    }
+
+    async fn remove_skipped(&self, id: &str) -> Result<(), AgentError> {
+        let mut skipped = self.skipped.lock().unwrap_or_else(PoisonError::into_inner);
+        let index = skipped
+            .iter()
+            .position(|session| session.id == id)
+            .ok_or_else(|| AgentError::UnknownSkipped { id: id.to_owned() })?;
+        let folder = &skipped[index].folder;
+        match std::fs::remove_dir_all(folder) {
+            Ok(()) => {}
+            // Removed by hand already: nothing is left to remove.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(AgentError::RemoveSkipped {
+                    path: folder.clone(),
+                    source,
+                });
+            }
+        }
+        skipped.remove(index);
+        Ok(())
     }
 
     async fn importable(&self) -> Result<Vec<Importable>, AgentError> {

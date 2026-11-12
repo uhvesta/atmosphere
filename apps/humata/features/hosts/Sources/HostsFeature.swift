@@ -4,8 +4,8 @@ import HumataDaemonClient
 
 /// The machines sessions run on over SSH: each one's health, checked when
 /// the list shows and on request; adding one from ~/.ssh/config; installing
-/// Humata's program on one; its agents' variables and setup script; and
-/// removing one.
+/// Humata's program on one; its agents' variables and setup script; the
+/// sessions on it that couldn't be opened; and removing one.
 @Reducer
 package struct HostsFeature {
     @ObservableState
@@ -17,6 +17,8 @@ package struct HostsFeature {
         package var selection: RemoteHost.ID?
         /// The selected host's variables and setup script.
         package var editor: HostEditorFeature.State?
+        /// The selected host's sessions whose files couldn't be read.
+        package var skipped: IdentifiedArrayOf<SkippedSession> = []
         /// Why the hosts couldn't be read, and what to do about it.
         package var failure: String?
         @Presents package var destination: Destination.State?
@@ -42,6 +44,7 @@ package struct HostsFeature {
 
         package enum Alert: Equatable {
             case confirmRemove(RemoteHost.ID)
+            case confirmRemoveSkipped(SkippedSession.ID)
         }
     }
 
@@ -58,6 +61,9 @@ package struct HostsFeature {
         case installTapped(RemoteHost.ID)
         case removeTapped(RemoteHost.ID)
         case removed(RemoteHost.ID)
+        case skippedLoaded(RemoteHost.ID, [SkippedSession])
+        case removeSkippedTapped(SkippedSession.ID)
+        case skippedRemoved(RemoteHost.ID, SkippedSession.ID)
         case failed(title: String, message: String)
         case editor(HostEditorFeature.Action)
         case destination(PresentationAction<Destination.Action>)
@@ -81,8 +87,9 @@ package struct HostsFeature {
             case .loaded(let hosts):
                 state.failure = nil
                 state.hosts = IdentifiedArray(hosts, uniquingIDsWith: { _, last in last })
-                if state.selected == nil { select(state.hosts.first?.id ?? state.coordinator.id, in: &state) }
-                return .merge(hosts.map { check($0.id, in: &state) })
+                let selecting =
+                    state.selected == nil ? select(state.hosts.first?.id ?? state.coordinator.id, in: &state) : .none
+                return .merge([selecting] + hosts.map { check($0.id, in: &state) })
 
             case .coordinatorLoaded(let coordinator):
                 state.coordinator = coordinator
@@ -96,8 +103,7 @@ package struct HostsFeature {
                 return .none
 
             case .selected(let id):
-                select(id, in: &state)
-                return .none
+                return select(id, in: &state)
 
             case .addTapped:
                 state.destination = .add(AddHostFeature.State())
@@ -108,6 +114,41 @@ package struct HostsFeature {
 
             case .checked(let id, let health):
                 state.health[id] = .known(health)
+                // Reachable now, it can say what it skipped.
+                guard id == state.selection, case .reachable = health else { return .none }
+                return loadSkipped(id)
+
+            case .skippedLoaded(let id, let skipped):
+                guard id == state.selection else { return .none }
+                state.skipped = IdentifiedArray(skipped, uniquingIDsWith: { _, last in last })
+                return .none
+
+            case .removeSkippedTapped(let id):
+                guard let session = state.skipped[id: id] else { return .none }
+                state.destination = .alert(
+                    AlertState {
+                        TextState("Remove the session in \(session.folder)?")
+                    } actions: {
+                        ButtonState(role: .destructive, action: .confirmRemoveSkipped(id)) { TextState("Remove") }
+                        ButtonState(role: .cancel) { TextState("Cancel") }
+                    } message: {
+                        TextState(
+                            "Its folder and history are deleted, and can't be brought back. To keep the session "
+                                + "instead, fix what's damaged and restart Humata.")
+                    })
+                return .none
+
+            case .destination(.presented(.alert(.confirmRemoveSkipped(let id)))):
+                guard let host = state.selection, let session = state.skipped[id: id] else { return .none }
+                return .run { send in
+                    try await daemon.removeSkipped(session, host.isEmpty ? nil : host)
+                    await send(.skippedRemoved(host, id))
+                } catch: { error, send in
+                    await send(.failed(title: "Couldn't remove the session", message: error.localizedDescription))
+                }
+
+            case .skippedRemoved(let host, let id):
+                if host == state.selection { state.skipped.remove(id: id) }
                 return .none
 
             case .installTapped(let id):
@@ -144,8 +185,8 @@ package struct HostsFeature {
             case .removed(let id):
                 state.hosts.remove(id: id)
                 state.health[id] = nil
-                if state.selection == id { select(state.hosts.first?.id ?? state.coordinator.id, in: &state) }
-                return .none
+                guard state.selection == id else { return .none }
+                return select(state.hosts.first?.id ?? state.coordinator.id, in: &state)
 
             case .failed(let title, let message):
                 state.destination = .alert(
@@ -159,8 +200,7 @@ package struct HostsFeature {
             case .destination(.presented(.add(.delegate(.added(let host))))):
                 state.destination = nil
                 state.hosts.append(host)
-                select(host.id, in: &state)
-                return check(host.id, in: &state)
+                return .merge(select(host.id, in: &state), check(host.id, in: &state))
 
             case .editor(.delegate(.saved(let host))) where host.isCoordinator:
                 state.coordinator = host
@@ -179,9 +219,20 @@ package struct HostsFeature {
         .ifLet(\.$destination, action: \.destination)
     }
 
-    private func select(_ id: RemoteHost.ID?, in state: inout State) {
+    private func select(_ id: RemoteHost.ID?, in state: inout State) -> Effect<Action> {
         state.selection = id
         state.editor = state.selected.map(HostEditorFeature.State.init)
+        state.skipped = []
+        guard let id else { return .none }
+        return loadSkipped(id)
+    }
+
+    /// One that can't be reached has none to list until it can be.
+    private func loadSkipped(_ id: RemoteHost.ID) -> Effect<Action> {
+        .run { send in
+            await send(.skippedLoaded(id, (try? await daemon.skipped(id.isEmpty ? nil : id)) ?? []))
+        }
+        .cancellable(id: SkippedLoad.id, cancelInFlight: true)
     }
 
     private func check(_ id: RemoteHost.ID, in state: inout State) -> Effect<Action> {
@@ -193,6 +244,8 @@ package struct HostsFeature {
         }
     }
 }
+
+private enum SkippedLoad: Hashable { case id }
 
 extension HostsFeature.Destination.State: Equatable {}
 

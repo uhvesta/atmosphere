@@ -25,6 +25,20 @@ pub enum AgentError {
     UnknownQueuedMessage { session: SessionId, queued: String },
 
     #[error(
+        "{id} isn't a session this host skipped; list the skipped sessions again, as it may have been removed already"
+    )]
+    UnknownSkipped { id: String },
+
+    #[error(
+        "couldn't remove the skipped session's folder {path}; check that it is writable, or delete it by hand. Part of it may be gone already, so it can't be opened either way"
+    )]
+    RemoveSkipped {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
         "couldn't create the folder {path} for session state; check that it is writable and the disk has room"
     )]
     CreateDirectory {

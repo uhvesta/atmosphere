@@ -549,6 +549,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_damaged_session_is_listed_with_why_and_can_be_removed() {
+        let fixture = fixture(vec![rule("", vec![say("hi")])]);
+        let kept = fixture.start().await;
+        let damaged = fixture.start().await;
+        let folder = fixture.state.path().join("sessions").join(damaged.as_str());
+        std::fs::write(folder.join("session.json"), "{ not json").expect("damage the record");
+
+        let reopened =
+            LocalAgent::open(fixture.state.path(), ScriptedRunner::new(Script::default()))
+                .expect("one damaged session doesn't keep the rest closed");
+        let open: Vec<_> = reopened
+            .sessions()
+            .await
+            .expect("sessions")
+            .into_iter()
+            .map(|record| record.id)
+            .collect();
+        assert_eq!(open, vec![kept]);
+        let skipped = reopened.skipped().await.expect("skipped");
+        assert_eq!(
+            skipped
+                .iter()
+                .map(|skipped| skipped.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![damaged.as_str()]
+        );
+        assert!(!skipped[0].reason.is_empty());
+
+        assert!(matches!(
+            reopened.remove_skipped("not-one").await,
+            Err(AgentError::UnknownSkipped { .. })
+        ));
+        reopened
+            .remove_skipped(damaged.as_str())
+            .await
+            .expect("removed");
+        assert!(!folder.exists());
+        assert!(reopened.skipped().await.expect("skipped").is_empty());
+        assert!(matches!(
+            reopened.remove_skipped(damaged.as_str()).await,
+            Err(AgentError::UnknownSkipped { .. })
+        ));
+    }
+
+    #[tokio::test]
     async fn a_denied_write_leaves_the_file_alone() {
         let fixture = fixture(vec![rule("", vec![write_file("a.txt", "one")])]);
         let id = fixture.start().await;

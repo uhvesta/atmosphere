@@ -220,6 +220,78 @@ async fn sessions_survive_the_host_restarting() {
 }
 
 #[tokio::test]
+async fn a_session_that_cant_be_read_is_listed_with_why_and_can_be_removed() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let (kept, damaged) = {
+        let client = host(state.path()).await;
+        let kept = started(&client, start(state.path(), "")).await.id;
+        let damaged = started(&client, start(state.path(), "")).await.id;
+        (kept, damaged)
+    };
+    let folder = state
+        .path()
+        .join("scripted")
+        .join("sessions")
+        .join(&damaged);
+    std::fs::write(folder.join("session.json"), "{ not json")
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    let client = host(state.path()).await;
+    let listed = client
+        .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+        .await;
+    let Ok(pb::response::Kind::Sessions(sessions)) = listed else {
+        panic!("{listed:?}")
+    };
+    let open: Vec<_> = sessions
+        .sessions
+        .iter()
+        .map(|session| &session.id)
+        .collect();
+    assert_eq!(open, [&kept]);
+    let skipped = || async {
+        match client
+            .call(pb::request::Kind::ListSkipped(pb::ListSkipped::default()))
+            .await
+        {
+            Ok(pb::response::Kind::Skipped(skipped)) => skipped.sessions,
+            other => panic!("{other:?}"),
+        }
+    };
+    let found = skipped().await;
+    assert_eq!(
+        found.iter().map(|session| &session.id).collect::<Vec<_>>(),
+        [&damaged]
+    );
+    assert_eq!(found[0].backend(), pb::Backend::Scripted);
+    assert!(!found[0].reason.is_empty());
+
+    let remove = pb::request::Kind::RemoveSkipped(pb::RemoveSkipped {
+        backend: pb::Backend::Scripted.into(),
+        id: damaged.clone(),
+        ..Default::default()
+    });
+    let removed = client.call(remove.clone()).await;
+    assert!(
+        matches!(removed, Ok(pb::response::Kind::SkippedRemoved(_))),
+        "{removed:?}"
+    );
+    assert!(!folder.exists());
+    assert!(skipped().await.is_empty());
+    let again = client.call(remove).await;
+    assert!(
+        matches!(
+            again,
+            Err(ClientError::Refused {
+                code: pb::ErrorCode::UnknownSession,
+                ..
+            })
+        ),
+        "{again:?}"
+    );
+}
+
+#[tokio::test]
 async fn the_host_refuses_what_it_does_not_have() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let client = host(state.path()).await;

@@ -69,6 +69,7 @@ package struct HostsView: View {
         {
             Form {
                 HostEditorSections(store: editor)
+                SkippedSection(skipped: store.skipped) { store.send(.removeSkippedTapped($0)) }
             }
             .formStyle(.grouped)
             .id(host.id)
@@ -79,12 +80,59 @@ package struct HostsView: View {
                     check: { store.send(.checkTapped(host.id)) },
                     install: { store.send(.installTapped(host.id)) })
                 HostEditorSections(store: editor)
+                SkippedSection(skipped: store.skipped) { store.send(.removeSkippedTapped($0)) }
                 Section {
                     Button("Remove Host…", role: .destructive) { store.send(.removeTapped(host.id)) }
                 }
             }
             .formStyle(.grouped)
             .id(host.id)
+        }
+    }
+}
+
+/// The host's sessions whose files couldn't be read, with why; none shows
+/// nothing.
+private struct SkippedSection: View {
+    let skipped: IdentifiedArrayOf<SkippedSession>
+    let remove: (SkippedSession.ID) -> Void
+
+    var body: some View {
+        if !skipped.isEmpty {
+            Section {
+                ForEach(skipped) { session in
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(session.backend.agentName) · \(session.id)")
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text(session.reason)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                        Spacer()
+                        Button("Remove…", role: .destructive) { remove(session.id) }
+                    }
+                }
+            } header: {
+                Text("Sessions That Couldn't Be Opened")
+            } footer: {
+                Text(
+                    "Humata left these as they are. Fix what's damaged and restart Humata to open one again, "
+                        + "or remove it to delete its folder and history.")
+            }
+        }
+    }
+}
+
+extension Backend {
+    fileprivate var agentName: String {
+        switch self {
+        case .claude: "Claude Code"
+        case .copilot: "Copilot"
+        case .local: "Local Model"
+        case .scripted: "Scripted"
         }
     }
 }

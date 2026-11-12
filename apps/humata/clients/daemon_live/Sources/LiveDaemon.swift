@@ -111,6 +111,23 @@ extension DaemonClient {
                         id: $0.id, name: $0.name.isEmpty ? $0.id : $0.name, detail: $0.detail.isEmpty ? nil : $0.detail)
                 }
             },
+            skipped: { host in
+                var list = Humata_V1_ListSkipped()
+                list.host = host ?? ""
+                guard case .skipped(let found) = try await daemon.call(.listSkipped(list)) else {
+                    throw DaemonError.unexpected("something other than the skipped sessions")
+                }
+                return try found.sessions.map(SkippedSession.init)
+            },
+            removeSkipped: { session, host in
+                var remove = Humata_V1_RemoveSkipped()
+                remove.host = host ?? ""
+                remove.backend = session.backend.proto
+                remove.id = session.id
+                guard case .skippedRemoved = try await daemon.call(.removeSkipped(remove)) else {
+                    throw DaemonError.unexpected("something other than the skipped session removed")
+                }
+            },
             send: { session, text, mode in
                 var message = Humata_V1_SendMessage()
                 message.sessionID = session

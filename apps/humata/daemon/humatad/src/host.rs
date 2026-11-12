@@ -64,6 +64,8 @@ trait Backend: Send + Sync {
     ) -> BoxFuture<'a, Vec<humata_agent::Changes>>;
     fn edit_changes<'a>(&'a self, session: &'a SessionId, edit: &'a Edit) -> BoxFuture<'a, ()>;
     fn importable(&self) -> BoxFuture<'_, Vec<Importable>>;
+    fn skipped(&self) -> BoxFuture<'_, Vec<humata_agent::Skipped>>;
+    fn remove_skipped<'a>(&'a self, id: &'a str) -> BoxFuture<'a, ()>;
     fn models(&self, backend_config: Option<String>) -> BoxFuture<'_, Vec<humata_agent::Model>>;
     fn import<'a>(
         &'a self,
@@ -173,6 +175,12 @@ where
                 .await
                 .map_err(Into::into)
         })
+    }
+    fn skipped(&self) -> BoxFuture<'_, Vec<humata_agent::Skipped>> {
+        Box::pin(async move { Agent::skipped(self).await.map_err(Into::into) })
+    }
+    fn remove_skipped<'a>(&'a self, id: &'a str) -> BoxFuture<'a, ()> {
+        Box::pin(async move { Agent::remove_skipped(self, id).await.map_err(Into::into) })
     }
     fn importable(&self) -> BoxFuture<'_, Vec<Importable>> {
         Box::pin(async move { Agent::importable(self).await.map_err(Into::into) })
@@ -485,6 +493,34 @@ impl Host {
                 }
                 sessions.sort_by_key(|found| std::cmp::Reverse(found.updated_unix_ms));
                 Response::Importable(pb::Importable { sessions })
+            }
+            Request::ListSkipped(_) => {
+                let mut sessions = Vec::new();
+                for backend in [
+                    pb::Backend::Claude,
+                    pb::Backend::Copilot,
+                    pb::Backend::Local,
+                    pb::Backend::Scripted,
+                ] {
+                    let Some(agent) = self.backends.get(&backend) else {
+                        continue;
+                    };
+                    for skipped in agent.skipped().await? {
+                        sessions.push(pb::SkippedSession {
+                            backend: backend.into(),
+                            id: skipped.id,
+                            folder: skipped.folder.display().to_string(),
+                            reason: skipped.reason,
+                        });
+                    }
+                }
+                Response::Skipped(pb::Skipped { sessions })
+            }
+            Request::RemoveSkipped(remove) => {
+                self.backend(remove.backend())?
+                    .remove_skipped(&remove.id)
+                    .await?;
+                Response::SkippedRemoved(pb::SkippedRemoved {})
             }
             Request::ListModels(list) => {
                 let models = self

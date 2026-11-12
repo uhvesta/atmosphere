@@ -40,7 +40,7 @@ pub use humata_workspace::{
 };
 pub use import::{Importable, Imported};
 pub use local_model::{DEFAULT_BASE_URL, LocalModelConfig, LocalModelError, LocalModelRunner};
-pub use runtime::{LocalAgent, Runner, Turn};
+pub use runtime::{LocalAgent, Runner, Skipped, Turn};
 pub use scripted::{Rule, Script, ScriptedError, ScriptedRunner, Step};
 
 /// A model a backend offers, to pick for a session.
@@ -123,6 +123,12 @@ pub trait Agent: Send + Sync {
     -> impl Future<Output = Result<Watch, Self::Error>> + Send;
 
     fn sessions(&self) -> impl Future<Output = Result<Vec<SessionRecord>, Self::Error>> + Send;
+
+    /// Sessions on disk that couldn't be opened, with why.
+    fn skipped(&self) -> impl Future<Output = Result<Vec<Skipped>, Self::Error>> + Send;
+
+    /// Deletes skipped session `id`'s folder, and its history with it.
+    fn remove_skipped(&self, id: &str) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// The backend's own sessions on this host, started outside Humata, that
     /// can be imported, the most recently changed first.

@@ -878,6 +878,25 @@ package struct ImportableSession: Equatable, Identifiable, Sendable {
     }
 }
 
+/// A session on a host whose files couldn't be read, so it was left as it
+/// is. Removing it deletes its folder, with its history.
+package struct SkippedSession: Equatable, Identifiable, Sendable {
+    package var backend: Backend
+    /// Its folder's name, which is its id.
+    package var id: String
+    /// Its folder, on the host.
+    package var folder: String
+    /// Why it couldn't be opened, and what fixing it would take.
+    package var reason: String
+
+    package init(backend: Backend, id: String, folder: String, reason: String) {
+        self.backend = backend
+        self.id = id
+        self.folder = folder
+        self.reason = reason
+    }
+}
+
 /// A model a backend offers, to start a session with.
 package struct ModelChoice: Equatable, Identifiable, Sendable {
     /// What a session starts with as its model.

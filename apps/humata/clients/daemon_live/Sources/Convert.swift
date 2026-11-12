@@ -477,6 +477,15 @@ extension PermissionKind {
     }
 }
 
+extension SkippedSession {
+    init(_ session: Humata_V1_SkippedSession) throws {
+        guard let backend = Backend(session.backend) else {
+            throw DaemonError.unexpected("a skipped session on a backend this app doesn't know")
+        }
+        self.init(backend: backend, id: session.id, folder: session.folder, reason: session.reason)
+    }
+}
+
 extension ImportableSession {
     init(_ session: Humata_V1_ImportableSession) throws {
         guard let backend = Backend(session.backend) else {

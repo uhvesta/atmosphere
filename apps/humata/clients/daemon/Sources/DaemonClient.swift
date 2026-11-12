@@ -26,6 +26,11 @@ package struct DaemonClient: Sendable {
     /// can't be listed, and a typed model name still works then.
     package var models:
         @Sendable (_ host: String?, _ backend: Backend, _ backendConfig: String?) async throws -> [ModelChoice]
+    /// The sessions on `host`, or this Mac if nil, whose files couldn't be
+    /// read, so they were left as they are.
+    package var skipped: @Sendable (_ host: String?) async throws -> [SkippedSession]
+    /// Deletes a skipped session's folder, with its history.
+    package var removeSkipped: @Sendable (_ session: SkippedSession, _ host: String?) async throws -> Void
     package var send: @Sendable (_ session: String, _ text: String, _ mode: SendMode) async throws -> Void
     /// Answers a permission request.
     package var approve: @Sendable (_ session: String, _ request: String, _ approved: Bool) async throws -> Void

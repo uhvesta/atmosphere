@@ -168,6 +168,43 @@ final class HostsFeatureTests: XCTestCase {
         XCTAssertEqual(left, [])
     }
 
+    func testASessionThatCouldntBeOpenedIsListedAndRemovedAfterAsking() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        _ = try await daemon.client.installHost("far")
+        let damaged = SkippedSession(
+            backend: .claude, id: "5e1f", folder: "/home/me/.humata/claude/sessions/5e1f",
+            reason: "the session record is damaged")
+        daemon.addSkipped(damaged, on: "far")
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.skippedLoaded)
+        XCTAssertEqual(store.state.skipped.elements, [damaged])
+
+        // This Mac skipped none.
+        await store.send(.selected(store.state.coordinator.id))
+        XCTAssertEqual(store.state.skipped, [])
+        await store.receive(\.skippedLoaded)
+        XCTAssertEqual(store.state.skipped, [])
+
+        await store.send(.selected("far"))
+        await store.receive(\.skippedLoaded)
+        await store.send(.removeSkippedTapped(damaged.id))
+        let stillThere = try await daemon.client.skipped("far")
+        XCTAssertEqual(stillThere, [damaged])
+        await store.send(.destination(.presented(.alert(.confirmRemoveSkipped(damaged.id)))))
+        await store.receive(\.skippedRemoved)
+        XCTAssertEqual(store.state.skipped, [])
+        let left = try await daemon.client.skipped("far")
+        XCTAssertEqual(left, [])
+    }
+
     func testARefusedHostSaysWhy() async {
         let store = TestStore(initialState: AddHostFeature.State()) {
             AddHostFeature()

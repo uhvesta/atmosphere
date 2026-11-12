@@ -119,6 +119,9 @@ message Request {
     AnswerRequest answer_request = 49;
     // The models a backend on a host offers, to pick from when starting.
     ListModels list_models = 50;
+    // Sessions on a host that couldn't be opened, and removing one.
+    ListSkipped list_skipped = 51;
+    RemoveSkipped remove_skipped = 52;
   }
 }
 
@@ -171,6 +174,8 @@ message Response {
     RequestMade request_made = 44;
     RequestAnswered request_answered = 45;
     Models models = 46;
+    Skipped skipped = 47;
+    SkippedRemoved skipped_removed = 48;
   }
 }
 
@@ -343,6 +348,35 @@ message ListModels {
   // models are listed instead.
   string backend_config = 3;
 }
+
+message ListSkipped {
+  // The host to ask, as the daemon names it; empty for this machine.
+  string host = 1;
+}
+
+message Skipped {
+  repeated SkippedSession sessions = 1;
+}
+
+// A session on a host whose files couldn't be read, so it is left as it is.
+message SkippedSession {
+  Backend backend = 1;
+  // Its folder's name, which is its id.
+  string id = 2;
+  // Its folder, on the host.
+  string folder = 3;
+  // Why it couldn't be opened, and what fixing it would take.
+  string reason = 4;
+}
+
+// Deletes a skipped session's folder, with its history.
+message RemoveSkipped {
+  string host = 1;
+  Backend backend = 2;
+  string id = 3;
+}
+
+message SkippedRemoved {}
 
 message Models {
   repeated ModelChoice models = 1;

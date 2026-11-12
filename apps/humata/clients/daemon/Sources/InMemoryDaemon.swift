@@ -75,6 +75,7 @@ package final class InMemoryDaemon: Sendable {
         var threads: [Thread] = []
         /// The sessions started outside Humata, by host; "" for this Mac.
         var importable: [String: [ImportableSession]] = [:]
+        var skipped: [String: [SkippedSession]] = [:]
         /// What each backend offers; a backend missing here can't list them.
         var models: [Backend: [ModelChoice]] = [
             .claude: [
@@ -149,6 +150,12 @@ package final class InMemoryDaemon: Sendable {
         state.withValue { $0.importable[host ?? "", default: []].append(session) }
     }
 
+    /// Puts `session` on `host`, or this Mac if nil, as one whose files
+    /// couldn't be read.
+    package func addSkipped(_ session: SkippedSession, on host: String? = nil) {
+        state.withValue { $0.skipped[host ?? "", default: []].append(session) }
+    }
+
     /// Sets what `backend` offers; nil makes listing them fail, as on a
     /// Copilot account without the feature.
     package func setModels(_ models: [ModelChoice]?, for backend: Backend) {
@@ -215,6 +222,21 @@ package final class InMemoryDaemon: Sendable {
                         .backendFailed, message: "Couldn't list the models. Type the model's name instead.")
                 }
                 return models
+            },
+            skipped: { host in
+                try self.reachable(host)
+                return self.state.value.skipped[host ?? "", default: []]
+            },
+            removeSkipped: { session, host in
+                try self.reachable(host)
+                try self.state.withValue { state in
+                    guard state.skipped[host ?? "", default: []].contains(session) else {
+                        throw DaemonError.refused(
+                            .unknownSession,
+                            message: "\(session.id) isn't a skipped session; it may have been removed already.")
+                    }
+                    state.skipped[host ?? ""]?.removeAll { $0 == session }
+                }
             },
             send: { session, text, mode in try self.send(session, text, mode) },
             approve: { session, request, approved in try self.answer(session, request, approved: approved) },
