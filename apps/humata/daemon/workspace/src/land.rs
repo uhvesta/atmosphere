@@ -187,6 +187,22 @@ pub async fn branch_of(directory: &Path) -> Option<String> {
     (!branch.is_empty()).then(|| branch.to_owned())
 }
 
+/// Whether `checkout` holds nothing past `tip`: no changes left
+/// uncommitted, and its commit is `tip` or one before it. False when that
+/// can't be told, as when `tip` isn't in the repository.
+pub async fn holds_only(checkout: &Checkout, tip: &str) -> bool {
+    let clean = git(&checkout.path, &["status", "--porcelain"])
+        .await
+        .is_ok_and(|status| status.trim().is_empty());
+    clean
+        && git(
+            &checkout.path,
+            &["merge-base", "--is-ancestor", "HEAD", tip],
+        )
+        .await
+        .is_ok()
+}
+
 /// Deletes `branch` from the repository at `repository`; one already gone
 /// is fine.
 pub async fn delete_branch(repository: &Path, branch: &str) -> Result<(), WorkspaceError> {

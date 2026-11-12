@@ -77,18 +77,6 @@ impl Store {
             .map_err(self.failed())
     }
 
-    /// Whether `session` has a request that waits on the person.
-    pub fn asking(&self, session: &str) -> Result<bool, StoreError> {
-        self.lock()
-            .query_row(
-                "SELECT EXISTS (SELECT 1 FROM agent_requests
-                    WHERE session_id = ?1 AND answered_unix_ms IS NULL)",
-                [session],
-                |row| row.get(0),
-            )
-            .map_err(self.failed())
-    }
-
     /// The request `id`, if it still waits.
     pub fn open_request(&self, id: &str) -> Result<pb::AgentRequest, StoreError> {
         self.lock()

@@ -17,6 +17,8 @@ private actor ModelServing {
 
     /// The port tried first, and the one sessions find after a restart.
     private static let preferredPort: UInt16 = 47830
+    /// Where the port it last served on is kept.
+    private static let portKey = "modelServerPort"
 
     private var port: UInt16?
     private let server = ModelServer { ModelServing.models() }
@@ -25,11 +27,19 @@ private actor ModelServing {
         if let port { return port }
         do throws(ModelServerError) {
             let started: UInt16
+            // The port of the last launch next, if the preferred one was
+            // taken then: hosts forward the port they were connected with,
+            // and one that changes has them reconnected.
+            let remembered = UInt16(exactly: UserDefaults.standard.integer(forKey: Self.portKey))
+                .flatMap { $0 != 0 && $0 != Self.preferredPort ? $0 : nil }
             if let preferred = try? await server.start(port: Self.preferredPort) {
                 started = preferred
+            } else if let remembered, let again = try? await server.start(port: remembered) {
+                started = again
             } else {
                 started = try await server.start(port: 0)
             }
+            UserDefaults.standard.set(Int(started), forKey: Self.portKey)
             port = started
             probe(on: started)
             return started

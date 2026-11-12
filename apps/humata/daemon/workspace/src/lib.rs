@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 pub use error::WorkspaceError;
-pub use land::{Landed, Merged, base, branch_of, delete_branch, land, merge, upstream};
+pub use land::{Landed, Merged, base, branch_of, delete_branch, holds_only, land, merge, upstream};
 pub use review::{
     Action, Changes, Edit, FileDiff, FileRef, FileStatus, Hunk, HunkAt, Line, LineKind, Query,
     Range,

@@ -2413,11 +2413,22 @@ message IssuesImported {
 message LandedBranch {
   string repository = 1;
   string branch = 2;
+  // The commit the pull request merged; with `archive`, a branch whose
+  // checkout has moved past it, or has changes not committed, is work done
+  // since and keeps the session as it is.
+  string merged_tip = 3;
 }
 
 message DeleteBranches {
   string session_id = 1;
   repeated LandedBranch branches = 2;
+  // Archive the session first, which removes its worktrees, unless any
+  // branch has work past its `merged_tip`.
+  bool archive = 3;
 }
 
-message BranchesDeleted {}
+message BranchesDeleted {
+  // The session had work past what merged, so it was left as it was: not
+  // archived, and no branch deleted.
+  bool kept = 1;
+}

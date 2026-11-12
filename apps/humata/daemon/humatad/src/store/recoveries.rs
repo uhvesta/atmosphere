@@ -139,13 +139,14 @@ impl Store {
 
     /// Whether `session` was moved away from `host`.
     pub fn moved_away(&self, session: &str, host: &str) -> Result<bool, StoreError> {
-        self.lock()
-            .query_row(
-                "SELECT 1 FROM moved_sessions WHERE session_id = ?1 AND host = ?2",
-                params![session, host],
-                |_| Ok(()),
-            )
-            .optional()
+        let connection = self.lock();
+        connection
+            .prepare_cached("SELECT 1 FROM moved_sessions WHERE session_id = ?1 AND host = ?2")
+            .and_then(|mut statement| {
+                statement
+                    .query_row(params![session, host], |_| Ok(()))
+                    .optional()
+            })
             .map(|found| found.is_some())
             .map_err(self.failed())
     }

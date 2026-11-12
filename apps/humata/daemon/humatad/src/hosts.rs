@@ -238,9 +238,10 @@ pub struct Remote {
     config: Mutex<HostConfig>,
     connection: tokio::sync::Mutex<Option<(Arc<Client>, Child)>>,
     retry: Mutex<Option<Retry>>,
-    /// Its build is old but it was busy when connected, so it's updated
-    /// once it isn't.
-    update_pending: std::sync::atomic::AtomicBool,
+    /// It waits to be connected again once nothing on it is in use: its
+    /// build was old but it was busy when connected, or the model server's
+    /// port changed while it was.
+    reconnect_pending: std::sync::atomic::AtomicBool,
     /// The app's model server on this Mac, forwarded to the host.
     model_server: ModelServer,
 }
@@ -273,7 +274,7 @@ impl Remote {
             config: Mutex::new(config),
             connection: tokio::sync::Mutex::new(None),
             retry: Mutex::new(None),
-            update_pending: std::sync::atomic::AtomicBool::new(false),
+            reconnect_pending: std::sync::atomic::AtomicBool::new(false),
             model_server,
         }
     }
@@ -370,17 +371,43 @@ impl Remote {
         }
     }
 
-    /// Whether the host waits to be updated, and so reconnected, once its
-    /// sessions are idle.
-    pub fn update_pending(&self) -> bool {
-        self.update_pending
+    /// Whether the host waits to be connected again once nothing on it is
+    /// in use.
+    pub fn reconnect_pending(&self) -> bool {
+        self.reconnect_pending
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Drops the connection, so the next request connects again, updating
-    /// the host if it's outdated.
-    pub async fn reconnect(&self) {
-        if let Some((_, mut child)) = self.connection.lock().await.take() {
+    /// Drops the connection once no turn runs on the host and no terminal
+    /// is open there, which a host on stdio stops with, so the next request
+    /// connects again: updating the host if it's outdated, and forwarding
+    /// the model server's port as it is now. Until then it waits, and is
+    /// tried again as the host's sessions are listed.
+    pub async fn reconnect_when_idle(&self) {
+        self.reconnect_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let Some(client) = self
+            .connection
+            .lock()
+            .await
+            .as_ref()
+            .map(|(client, _)| Arc::clone(client))
+        else {
+            // Not connected: the next connection is new anyway.
+            self.reconnect_pending
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            return;
+        };
+        if busy(&client).await {
+            return;
+        }
+        let mut connection = self.connection.lock().await;
+        // Only the connection that was found idle.
+        if connection
+            .as_ref()
+            .is_some_and(|(current, _)| Arc::ptr_eq(current, &client))
+            && let Some((_, mut child)) = connection.take()
+        {
             let _ = child.kill().await;
         }
     }
@@ -402,11 +429,14 @@ impl Remote {
             .ssh
             .as_ref()
             .filter(|_| hello != build && !bundled_builds().contains(hello));
-        // A turn going on the host would be cut off, so the update waits
-        // until none is; the daemon reconnects then.
+        // This connection is new, so nothing waits for one any more...
+        self.reconnect_pending
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        // ...but a turn or terminal on the host would be cut off by an
+        // update, so it waits until none is; the daemon reconnects then.
         let outdated = match outdated {
             Some(_) if busy(&client).await => {
-                self.update_pending
+                self.reconnect_pending
                     .store(true, std::sync::atomic::Ordering::Relaxed);
                 None
             }
@@ -420,10 +450,6 @@ impl Remote {
             },
             None => false,
         };
-        if outdated.is_some() {
-            self.update_pending
-                .store(false, std::sync::atomic::Ordering::Relaxed);
-        }
         if reinstalled {
             // A host on its socket outlives this connection, so it is asked
             // to stop for the next one to start the new build. One on stdio
@@ -687,13 +713,27 @@ async fn busy(client: &Client) -> bool {
     let listed = client
         .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
         .await;
-    match listed {
+    let working = match listed {
         Ok(pb::response::Kind::Sessions(sessions)) => sessions.sessions.iter().any(|session| {
             matches!(
                 session.state(),
                 pb::SessionState::Working | pb::SessionState::WaitingForApproval
             )
         }),
+        _ => true,
+    };
+    if working {
+        return true;
+    }
+    let terminals = client
+        .call(pb::request::Kind::ListTerminals(
+            pb::ListTerminals::default(),
+        ))
+        .await;
+    match terminals {
+        Ok(pb::response::Kind::Terminals(terminals)) => {
+            terminals.terminals.iter().any(|terminal| !terminal.exited)
+        }
         _ => true,
     }
 }

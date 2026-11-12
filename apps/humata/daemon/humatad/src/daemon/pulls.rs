@@ -147,6 +147,7 @@ impl Daemon {
                 review: Standing::None,
                 checks: Checks::None,
                 read_unix_ms: now_unix_ms(),
+                head: pull.head.sha.clone(),
             };
             self.store.keep_pull(&kept)?;
             pulls.push(wire(&kept, item.as_deref()));
@@ -249,6 +250,7 @@ impl Daemon {
             checks: checks_state(&checks),
             url: read.html_url,
             read_unix_ms: now_unix_ms(),
+            head: read.head.sha,
             ..pull
         })?;
         Ok(())
@@ -301,7 +303,8 @@ impl Daemon {
     /// When every pull request of `session` has merged: its task to Done
     /// (once, so a task the person reopens stays open), then the session
     /// archived, which removes its worktrees, and its branches deleted on
-    /// its host, tried again until the host has done it.
+    /// its host, tried again until the host has done it. A session with
+    /// work since, committed or not, is left as it is, for the person.
     async fn finish_if_merged(&self, session: &str) -> Result<(), DaemonError> {
         let pulls = self.store.pulls(session)?;
         if pulls.is_empty() || pulls.iter().any(|pull| pull.state != PullState::Merged) {
@@ -342,19 +345,15 @@ impl Daemon {
 
     async fn clean_up(&self, session: &str, pulls: &[PullRequest]) -> Result<(), DaemonError> {
         let host = self.host_of(session).await?;
-        let archive = Request::UpdateSession(pb::UpdateSession {
-            session_id: session.to_owned(),
-            archived: Some(true),
-            ..pb::UpdateSession::default()
-        });
-        refused(self.forward(&host, archive).await?)?;
         let delete = Request::DeleteBranches(pb::DeleteBranches {
+            archive: true,
             session_id: session.to_owned(),
             branches: pulls
                 .iter()
                 .map(|pull| pb::LandedBranch {
                     repository: pull.repository.clone(),
                     branch: pull.branch.clone(),
+                    merged_tip: pull.head.clone(),
                 })
                 .collect(),
         });

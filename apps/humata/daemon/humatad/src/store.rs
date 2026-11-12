@@ -315,6 +315,15 @@ const MIGRATIONS: &[&str] = &["
     -- How many events the cached history holds, so it's known without
     -- reading the history; null for one cached before it was kept.
     ALTER TABLE remote_sessions ADD COLUMN history_events INTEGER;
+", "
+    -- The commit a pull request's branch was at when last read, so work
+    -- added after it merged is told from what merged; empty if unread.
+    ALTER TABLE pull_requests ADD COLUMN head TEXT NOT NULL DEFAULT '';
+", "
+    -- Whether a session waits on the person, read for every session each
+    -- time sessions are listed.
+    CREATE INDEX open_agent_requests_by_session ON agent_requests (session_id)
+        WHERE answered_unix_ms IS NULL;
 "];
 
 /// What reverting a board change did.
@@ -339,6 +348,17 @@ pub struct Project {
     pub created_unix_ms: i64,
     /// Read by every session in it, after its instructions.
     pub skills: Vec<Skill>,
+}
+
+/// What the daemon knows of a session, beyond what its host says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Known {
+    pub placement: Placement,
+    /// Its task's or subtask's title; None if it's on none, or that's gone.
+    pub item_title: Option<String>,
+    pub planning: bool,
+    /// Whether it waits on an answer from the person.
+    pub asking: bool,
 }
 
 /// Where a session is, as the daemon records it.
@@ -591,6 +611,39 @@ impl Store {
             )
             .optional()
             .map_err(self.failed())
+    }
+
+    /// What the daemon knows of `session`, in one read, as each listing of
+    /// sessions reads it for every session; None if it isn't placed.
+    pub fn known(&self, session: &str) -> Result<Option<Known>, StoreError> {
+        let connection = self.lock();
+        let read = (|| {
+            connection
+                .prepare_cached(
+                    "SELECT sessions.host, sessions.project_id, sessions.item_id,
+                         sessions.seen_turns, sessions.planning, items.title,
+                         EXISTS (SELECT 1 FROM agent_requests
+                             WHERE agent_requests.session_id = sessions.id
+                                 AND answered_unix_ms IS NULL)
+                     FROM sessions LEFT JOIN items ON items.id = sessions.item_id
+                     WHERE sessions.id = ?1",
+                )?
+                .query_row([session], |row| {
+                    Ok(Known {
+                        placement: Placement {
+                            host: row.get(0)?,
+                            project: row.get(1)?,
+                            item: row.get(2)?,
+                            seen_turns: row.get(3)?,
+                        },
+                        planning: row.get(4)?,
+                        item_title: row.get(5)?,
+                        asking: row.get(6)?,
+                    })
+                })
+                .optional()
+        })();
+        read.map_err(self.failed())
     }
 
     /// Records that the person has seen `turns` of the session's finished

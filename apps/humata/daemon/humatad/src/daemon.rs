@@ -133,8 +133,8 @@ impl Daemon {
 
     /// Points local-model sessions here and on the hosts at the app's
     /// model server on `port`. A host reached before forwards the old
-    /// port, so a change drops the connections; hosts on their sockets keep
-    /// running, and the next request reconnects with the new forward.
+    /// port, so a change reconnects it for the new forward, once no turn
+    /// or terminal there would be cut off by it.
     async fn set_model_server(&self, port: u32) -> Result<(), DaemonError> {
         let port = u16::try_from(port)
             .ok()
@@ -151,7 +151,7 @@ impl Daemon {
                 .cloned()
                 .collect();
             for remote in remotes {
-                remote.disconnect().await;
+                tokio::spawn(async move { remote.reconnect_when_idle().await });
             }
         }
         Ok(())
@@ -503,23 +503,31 @@ impl Daemon {
         project: Option<&str>,
         item: Option<&str>,
     ) -> Result<(), DaemonError> {
-        self.store.place(&session.id, host, project, item)?;
+        // Sessions are listed every two seconds and are seldom placed anew,
+        // so the placement is written only when it would change.
+        let known = self.store.known(&session.id)?;
+        let placed = known.as_ref().is_some_and(|known| {
+            known.placement.host == host
+                && (project.is_none() || known.placement.project.is_some())
+                && (item.is_none() || known.placement.item.is_some())
+        });
+        let known = if placed {
+            known
+        } else {
+            self.store.place(&session.id, host, project, item)?;
+            self.store.known(&session.id)?
+        };
         session.host = host.to_owned();
-        let placement = self.store.placement(&session.id)?;
-        let (project, item, seen) = placement
-            .map(|placement| (placement.project, placement.item, placement.seen_turns))
-            .unwrap_or_default();
-        session.project_id = project.unwrap_or_default();
+        let Some(known) = known else {
+            return Ok(());
+        };
+        session.project_id = known.placement.project.unwrap_or_default();
         // One deleted since shows no title.
-        session.item_title = item
-            .as_deref()
-            .and_then(|item| self.store.item(item).ok())
-            .map(|item| item.fields.title)
-            .unwrap_or_default();
-        session.item_id = item.unwrap_or_default();
-        session.seen_turns = seen;
-        session.planning = self.store.planning(&session.id)?;
-        session.asking = self.store.asking(&session.id)?;
+        session.item_title = known.item_title.unwrap_or_default();
+        session.item_id = known.placement.item.unwrap_or_default();
+        session.seen_turns = known.placement.seen_turns;
+        session.planning = known.planning;
+        session.asking = known.asking;
         Ok(())
     }
 
@@ -838,8 +846,8 @@ impl Daemon {
         Ok(self.store.delete_project(id)?)
     }
 
-    /// Reconnects `host` when it waits for an update and none of its
-    /// `sessions` is busy any more, which updates it.
+    /// Reconnects `host` when it waits to be and none of its `sessions` is
+    /// busy any more, which updates it if it's outdated.
     fn update_once_idle(
         &self,
         host: &str,
@@ -852,8 +860,8 @@ impl Daemon {
                 pb::SessionState::Working | pb::SessionState::WaitingForApproval
             )
         });
-        if remote.update_pending() && !busy {
-            tokio::spawn(async move { remote.reconnect().await });
+        if remote.reconnect_pending() && !busy {
+            tokio::spawn(async move { remote.reconnect_when_idle().await });
         }
         Ok(())
     }

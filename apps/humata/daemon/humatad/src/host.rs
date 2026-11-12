@@ -1014,7 +1014,29 @@ impl Host {
             }
             Request::DeleteBranches(delete) => {
                 let session = SessionId::new(delete.session_id);
-                let record = record(self.owner(&session)?.1.as_ref(), &session).await?;
+                let agent = self.owner(&session)?.1;
+                let record = record(agent.as_ref(), &session).await?;
+                if delete.archive {
+                    // Work since the merge, committed or not, is the
+                    // person's to keep or drop, so it stays where it is.
+                    for branch in &delete.branches {
+                        let checkout = record.checkouts.iter().find(|checkout| {
+                            checkout.name == branch.repository && checkout.branch == branch.branch
+                        });
+                        if let Some(checkout) = checkout
+                            && !humata_agent::holds_only(checkout, &branch.merged_tip).await
+                        {
+                            return Ok(Reply::Response(Response::BranchesDeleted(
+                                pb::BranchesDeleted { kept: true },
+                            )));
+                        }
+                    }
+                    let archive = SessionUpdate {
+                        archived: Some(true),
+                        ..SessionUpdate::default()
+                    };
+                    agent.update(&session, archive).await?;
+                }
                 for branch in delete.branches {
                     let Some(repository) = record
                         .repositories
@@ -1030,7 +1052,7 @@ impl Host {
                             source,
                         })?;
                 }
-                Response::BranchesDeleted(pb::BranchesDeleted {})
+                Response::BranchesDeleted(pb::BranchesDeleted { kept: false })
             }
             Request::EditChanges(edit) => {
                 let session = SessionId::new(edit.session_id.clone());

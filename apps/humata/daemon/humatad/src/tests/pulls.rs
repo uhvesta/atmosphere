@@ -20,8 +20,18 @@ const WRITES: &str = r#"{"rules": [
 #[derive(Default)]
 struct Hub {
     merged: bool,
+    /// The commit the pull request's branch is at; `abc` until set.
+    head: String,
     opened: u32,
     bodies: Vec<String>,
+}
+
+fn head(hub: &Hub) -> &str {
+    if hub.head.is_empty() {
+        "abc"
+    } else {
+        &hub.head
+    }
 }
 
 fn pull_json(hub: &Hub) -> String {
@@ -33,8 +43,9 @@ fn pull_json(hub: &Hub) -> String {
     format!(
         r#"{{"number": 7, "html_url": "https://github.test/acme/widgets/pull/7",
             "state": "{state}", "merged": {}, "merged_at": {merged_at},
-            "head": {{"sha": "abc"}}}}"#,
-        hub.merged
+            "head": {{"sha": "{}"}}}}"#,
+        hub.merged,
+        head(hub)
     )
 }
 
@@ -89,7 +100,10 @@ fn stand_in(hub: Arc<Mutex<Hub>>) -> String {
                     ("GET", "/repos/acme/widgets/pulls/7/reviews") => {
                         r#"[{"user": {"login": "sam"}, "state": "APPROVED"}]"#.to_owned()
                     }
-                    ("GET", "/repos/acme/widgets/commits/abc/check-runs") => {
+                    ("GET", path)
+                        if path
+                            == format!("/repos/acme/widgets/commits/{}/check-runs", head(&hub)) =>
+                    {
                         r#"{"check_runs": [{"status": "completed", "conclusion": "success"}]}"#
                             .to_owned()
                     }
@@ -145,8 +159,20 @@ async fn pulls_of(client: &Client, item: &str, refresh: bool) -> Vec<pb::PullReq
     pulls.pull_requests
 }
 
-#[tokio::test]
-async fn a_landed_task_opens_a_pull_request_and_finishes_when_it_merges() {
+/// A task's session that wrote a note and landed it as pull request 7 of
+/// `acme/widgets`, on the branch `keep-notes`.
+struct Landed {
+    _state: tempfile::TempDir,
+    repository: tempfile::TempDir,
+    _origins: tempfile::TempDir,
+    hub: Arc<Mutex<Hub>>,
+    client: Client,
+    project: pb::Project,
+    task: pb::Item,
+    session: pb::SessionInfo,
+}
+
+async fn land_a_task() -> Landed {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let repository = git_repository();
     git(repository.path(), &["config", "user.name", "Pat"]);
@@ -222,6 +248,41 @@ async fn a_landed_task_opens_a_pull_request_and_finishes_when_it_merges() {
         "the branch wasn't pushed"
     );
 
+    Landed {
+        _state: state,
+        repository,
+        _origins: origins,
+        hub,
+        client,
+        project,
+        task,
+        session,
+    }
+}
+
+/// Tells the stand-in GitHub the pull request merged at the branch's tip.
+fn merge(landed: &Landed) {
+    let tip = git(landed.repository.path(), &["rev-parse", "keep-notes"]);
+    let mut hub = landed
+        .hub
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    hub.head = tip;
+    hub.merged = true;
+}
+
+#[tokio::test]
+async fn a_landed_task_opens_a_pull_request_and_finishes_when_it_merges() {
+    let landed = land_a_task().await;
+    let Landed {
+        repository,
+        hub,
+        client,
+        project,
+        task,
+        session,
+        ..
+    } = &landed;
     // Landing again finds the pull request it opened.
     let again = client
         .call(pb::request::Kind::LandSession(pb::LandSession {
@@ -284,9 +345,7 @@ async fn a_landed_task_opens_a_pull_request_and_finishes_when_it_merges() {
     assert_eq!(threads.threads[0].comments.len(), 1);
 
     // Merged: the task is done, the worktree gone and the branch deleted.
-    hub.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .merged = true;
+    merge(&landed);
     let merged = pulls_of(&client, &task.id, true).await;
     assert_eq!(merged[0].state(), pb::PullRequestState::Merged);
     assert_eq!(
@@ -313,6 +372,32 @@ async fn a_landed_task_opens_a_pull_request_and_finishes_when_it_merges() {
         board(&client, &project.id).await,
         [("Keep notes".to_owned(), pb::ItemStatus::Todo)]
     );
+}
+
+#[tokio::test]
+async fn work_since_the_merge_keeps_the_session_as_it_is() {
+    let landed = land_a_task().await;
+    // Changes made after the pull request was opened, not committed.
+    let worktree = Path::new(&landed.session.working_directory);
+    std::fs::write(worktree.join("later.txt"), "later\n").unwrap_or_else(|error| panic!("{error}"));
+    merge(&landed);
+    pulls_of(&landed.client, &landed.task.id, true).await;
+    assert_eq!(
+        board(&landed.client, &landed.project.id).await,
+        [("Keep notes".to_owned(), pb::ItemStatus::Done)]
+    );
+    assert!(worktree.join("later.txt").exists());
+    assert!(
+        git(
+            landed.repository.path(),
+            &["branch", "--list", "keep-notes"]
+        )
+        .ends_with("keep-notes"),
+        "the branch was deleted"
+    );
+    // Read again, it is still left for the person.
+    pulls_of(&landed.client, &landed.task.id, true).await;
+    assert!(worktree.join("later.txt").exists());
 }
 
 #[tokio::test]

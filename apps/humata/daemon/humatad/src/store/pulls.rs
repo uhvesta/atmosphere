@@ -23,6 +23,8 @@ pub struct PullRequest {
     pub review: Standing,
     pub checks: Checks,
     pub read_unix_ms: i64,
+    /// The commit its branch was at on GitHub when last read.
+    pub head: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,7 +95,7 @@ named!(Standing {
 named!(Checks { None => "none", Pending => "pending", Passing => "passing", Failing => "failing" });
 
 const PULL_COLUMNS: &str = "SELECT session_id, repository, github, number, url, title, branch,
-    base, state, review, checks, read_unix_ms FROM pull_requests";
+    base, state, review, checks, read_unix_ms, head FROM pull_requests";
 
 fn pull(row: &Row<'_>) -> rusqlite::Result<PullRequest> {
     Ok(PullRequest {
@@ -109,6 +111,7 @@ fn pull(row: &Row<'_>) -> rusqlite::Result<PullRequest> {
         review: Standing::named(&row.get::<_, String>(9)?),
         checks: Checks::named(&row.get::<_, String>(10)?),
         read_unix_ms: row.get(11)?,
+        head: row.get(12)?,
     })
 }
 
@@ -119,13 +122,13 @@ impl Store {
         self.lock()
             .execute(
                 "INSERT INTO pull_requests (session_id, repository, github, number, url, title,
-                     branch, base, state, review, checks, read_unix_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                     branch, base, state, review, checks, read_unix_ms, head)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
                  ON CONFLICT (session_id, repository) DO UPDATE SET
                      github = excluded.github, number = excluded.number, url = excluded.url,
                      title = excluded.title, branch = excluded.branch, base = excluded.base,
                      state = excluded.state, review = excluded.review, checks = excluded.checks,
-                     read_unix_ms = excluded.read_unix_ms",
+                     read_unix_ms = excluded.read_unix_ms, head = excluded.head",
                 params![
                     pull.session,
                     pull.repository,
@@ -139,6 +142,7 @@ impl Store {
                     pull.review.name(),
                     pull.checks.name(),
                     pull.read_unix_ms,
+                    pull.head,
                 ],
             )
             .map(drop)
@@ -285,6 +289,7 @@ mod tests {
             review: Standing::None,
             checks: Checks::None,
             read_unix_ms: 1,
+            head: String::new(),
         }
     }
 
