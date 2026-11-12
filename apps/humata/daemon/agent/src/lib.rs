@@ -23,6 +23,7 @@ mod mcp_client;
 mod paths;
 mod runtime;
 mod scripted;
+mod summary;
 
 use std::future::Future;
 
@@ -49,6 +50,7 @@ pub use local_model::{
 };
 pub use runtime::{LocalAgent, Runner, Skipped, Turn};
 pub use scripted::{Rule, Script, ScriptedError, ScriptedRunner, Step};
+pub use summary::{Pending, Summary};
 
 /// A model a backend offers, to pick for a session.
 #[derive(Clone, Debug, PartialEq)]
@@ -125,6 +127,12 @@ pub trait Agent: Send + Sync {
         &self,
         session: &SessionId,
     ) -> impl Future<Output = Result<Vec<Event>, Self::Error>> + Send;
+
+    /// What the session's row shows, without reading its whole history.
+    fn summary(
+        &self,
+        session: &SessionId,
+    ) -> impl Future<Output = Result<Summary, Self::Error>> + Send;
 
     fn watch(&self, session: &SessionId)
     -> impl Future<Output = Result<Watch, Self::Error>> + Send;

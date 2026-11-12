@@ -11,7 +11,7 @@ use humata_agent::{
     CopilotOptions, CopilotProvider, CopilotRunner, Edit, Env, Event, EventId, ForkOptions,
     Importable, Landed, LocalAgent, LocalModelConfig, LocalModelRunner, McpServer, Merged,
     ModelServer, Query, Repository, Script, ScriptedRunner, SendMode, SessionId, SessionRecord,
-    SessionUpdate, StartOptions, Watch, Workspaces, bundle,
+    SessionUpdate, StartOptions, Summary, Watch, Workspaces, bundle,
 };
 use humata_wire::{Reply, Service, ServiceFuture, describe, error, pb};
 use tokio::sync::{broadcast, mpsc};
@@ -53,6 +53,7 @@ trait Backend: Send + Sync {
         options: ForkOptions,
     ) -> BoxFuture<'a, SessionRecord>;
     fn history<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Vec<Event>>;
+    fn summary<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Summary>;
     fn watch<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Watch>;
     fn sessions(&self) -> BoxFuture<'_, Vec<SessionRecord>>;
     fn update<'a>(
@@ -160,6 +161,9 @@ where
     }
     fn history<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Vec<Event>> {
         Box::pin(async move { Agent::history(self, session).await.map_err(Into::into) })
+    }
+    fn summary<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Summary> {
+        Box::pin(async move { Agent::summary(self, session).await.map_err(Into::into) })
     }
     fn watch<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Watch> {
         Box::pin(async move { Agent::watch(self, session).await.map_err(Into::into) })
@@ -486,8 +490,8 @@ impl Host {
         agent: &dyn Backend,
         record: &SessionRecord,
     ) -> Result<pb::SessionInfo, HostError> {
-        let history = agent.history(&record.id).await?;
-        Ok(convert::session(record, backend, &history))
+        let summary = agent.summary(&record.id).await?;
+        Ok(convert::session(record, backend, &summary))
     }
 
     /// The session's recovery copy, with its snapshots' commits in each

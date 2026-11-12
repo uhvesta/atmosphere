@@ -29,6 +29,7 @@ use crate::event::{
 };
 use crate::import::{Importable, Imported};
 use crate::log::EventLog;
+use crate::summary::Summary;
 use crate::{Agent, Model, Watch};
 
 const RECORD_FILE: &str = "session.json";
@@ -956,6 +957,10 @@ impl<R: Runner> Agent for LocalAgent<R> {
 
     async fn history(&self, id: &SessionId) -> Result<Vec<Event>, AgentError> {
         Ok(self.session(id)?.log.events())
+    }
+
+    async fn summary(&self, id: &SessionId) -> Result<Summary, AgentError> {
+        Ok(self.session(id)?.log.summary())
     }
 
     async fn watch(&self, id: &SessionId) -> Result<Watch, AgentError> {

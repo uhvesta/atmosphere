@@ -10,6 +10,7 @@ use tokio::sync::broadcast;
 
 use crate::error::AgentError;
 use crate::event::Event;
+use crate::summary::Summary;
 
 /// How many events a watcher can fall behind before it lags.
 const LIVE_CAPACITY: usize = 4096;
@@ -22,6 +23,8 @@ pub(crate) struct EventLog {
 
 struct Inner {
     events: Vec<Event>,
+    /// Kept up to date with `events`.
+    summary: Summary,
     file: File,
 }
 
@@ -114,7 +117,11 @@ impl EventLog {
         let (live, _) = broadcast::channel(LIVE_CAPACITY);
         Self {
             path,
-            inner: Mutex::new(Inner { events, file }),
+            inner: Mutex::new(Inner {
+                summary: Summary::of(&events),
+                events,
+                file,
+            }),
             live,
         }
     }
@@ -130,6 +137,7 @@ impl EventLog {
                 path: self.path.clone(),
                 source,
             })?;
+        inner.summary.add(&event);
         inner.events.push(event.clone());
         // No watchers is not an error.
         let _ = self.live.send(event.clone());
@@ -138,6 +146,10 @@ impl EventLog {
 
     pub(crate) fn events(&self) -> Vec<Event> {
         self.lock().events.clone()
+    }
+
+    pub(crate) fn summary(&self) -> Summary {
+        self.lock().summary.clone()
     }
 
     /// The events so far and a receiver for the rest, with none missed or
