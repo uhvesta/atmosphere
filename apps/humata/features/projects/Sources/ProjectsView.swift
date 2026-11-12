@@ -162,7 +162,7 @@ package struct ProjectsView: View {
             }
             if !store.state.archived.isEmpty {
                 Section("Archived (\(store.state.archived.count))", isExpanded: $archivedShown) {
-                    ForEach(ProjectsFeature.State.sorted(store.state.archived)) { session in
+                    ForEach(store.state.sorted(store.state.archived)) { session in
                         row(session)
                     }
                 }

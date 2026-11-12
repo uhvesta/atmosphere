@@ -958,6 +958,43 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(state.tree(in: "p2").map(\.id), ["e", "b", "d"])
     }
 
+    func testTheSidebarHoldsStillWhileAReplyStreamsAndMovesWhenATurnEnds() async {
+        let project = Project(id: "p1", name: "Humata", repositories: [], created: Self.at(0))
+        func session(_ id: String, _ state: SessionState, turns: Int, at minutes: Double) -> Session {
+            Session(
+                id: id, name: id, backend: .scripted, workingDirectory: "/", state: state, projectID: "p1",
+                turns: turns, lastActive: Self.at(minutes))
+        }
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Self.at(20))
+            $0.notifications = .previewValue
+        }
+        store.exhaustivity = .off
+        func load(_ sessions: [Session]) async {
+            await store.send(.loaded(projects: [project], sessions: sessions, inbox: []))
+        }
+
+        await load([session("a", .working, turns: 0, at: 2), session("b", .idle, turns: 1, at: 5)])
+        XCTAssertEqual(store.state.tree(in: "p1").map(\.id), ["b", "a"])
+
+        // a streams its reply: it was last active later, but stays put.
+        await load([session("a", .working, turns: 0, at: 8), session("b", .idle, turns: 1, at: 5)])
+        XCTAssertEqual(store.state.tree(in: "p1").map(\.id), ["b", "a"])
+
+        // Its turn ends, so it moves up.
+        await load([session("a", .idle, turns: 1, at: 9), session("b", .idle, turns: 1, at: 5)])
+        XCTAssertEqual(store.state.tree(in: "p1").map(\.id), ["a", "b"])
+
+        // A new session comes in at the top.
+        await load([
+            session("a", .idle, turns: 1, at: 9), session("b", .idle, turns: 1, at: 5),
+            session("c", .idle, turns: 0, at: 10),
+        ])
+        XCTAssertEqual(store.state.tree(in: "p1").map(\.id), ["c", "a", "b"])
+    }
+
     func testSearchFindsProjectsAndSessionsByName() {
         var state = ProjectsFeature.State()
         state.projects = [

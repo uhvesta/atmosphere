@@ -30,6 +30,10 @@ package struct ProjectsFeature {
         /// When the list was last read, for how long ago each session was
         /// active.
         package var now: Date?
+        /// Where each session sorts: when it was first seen, or last changed
+        /// its state or finished a turn. A reply streaming in doesn't move it,
+        /// so the row under the pointer stays put.
+        package var order: [Session.ID: Date] = [:]
         @Presents package var destination: Destination.State?
 
         package init() {}
@@ -38,7 +42,7 @@ package struct ProjectsFeature {
         /// it yet is new, so it comes first.
         package var sortedProjects: [Project] {
             let active = Dictionary(grouping: sessions.filter { $0.projectID != nil }) { $0.projectID ?? "" }
-                .mapValues { $0.map(Self.activity).max() ?? .distantFuture }
+                .mapValues { $0.map(activity).max() ?? .distantFuture }
             return newestFirst(Array(projects)) { active[$0.id] ?? .distantFuture }
         }
 
@@ -49,20 +53,41 @@ package struct ProjectsFeature {
             guard !text.isEmpty else { return nil }
             return (
                 sortedProjects.filter { $0.name.localizedStandardContains(text) },
-                Self.sorted(sessions.filter { $0.title.localizedStandardContains(text) })
+                sorted(sessions.filter { $0.title.localizedStandardContains(text) })
             )
         }
 
-        /// When anything last happened in `session`; one where nothing has
-        /// yet was just started.
-        static func activity(_ session: Session) -> Date {
-            session.lastActive ?? .distantFuture
+        /// Where `session` sorts: its kept order, or when anything last
+        /// happened in it. One where nothing has yet was just started.
+        func activity(_ session: Session) -> Date {
+            order[session.id] ?? session.lastActive ?? .distantFuture
+        }
+
+        /// Where a tree sorts: the latest of it and its forks.
+        func activity(_ node: SessionNode) -> Date {
+            ([activity(node.session)] + (node.children ?? []).map(activity)).max() ?? .distantFuture
         }
 
         /// `sessions`, the most recently active first, in the order given
         /// when as recent.
-        static func sorted(_ sessions: [Session]) -> [Session] {
+        package func sorted(_ sessions: [Session]) -> [Session] {
             newestFirst(sessions, by: activity)
+        }
+
+        /// The order of `sessions` as just read: a session new to the list,
+        /// or whose state or turns changed, sorts by when it was last active;
+        /// the rest keep where they were.
+        static func order(
+            of sessions: [Session], before: IdentifiedArrayOf<Session>, kept: [Session.ID: Date]
+        ) -> [Session.ID: Date] {
+            Dictionary(
+                sessions.map { session in
+                    let latest = session.lastActive ?? .distantFuture
+                    guard let old = before[id: session.id], old.state == session.state, old.turns == session.turns
+                    else { return (session.id, latest) }
+                    return (session.id, kept[session.id] ?? latest)
+                },
+                uniquingKeysWith: { _, last in last })
         }
 
         package func sessions(in project: Project.ID) -> [Session] {
@@ -84,15 +109,15 @@ package struct ProjectsFeature {
                 $0.parentID ?? ""
             }
             func node(_ session: Session) -> SessionNode {
-                let under = Self.sortedNodes((children[session.id] ?? []).map(node))
+                let under = sortedNodes((children[session.id] ?? []).map(node))
                 return SessionNode(session: session, children: under.isEmpty ? nil : under)
             }
-            return Self.sortedNodes(shown.filter { $0.parentID.map(ids.contains) != true }.map(node))
+            return sortedNodes(shown.filter { $0.parentID.map(ids.contains) != true }.map(node))
         }
 
         /// `nodes`, the one whose tree was most recently active first.
-        static func sortedNodes(_ nodes: [SessionNode]) -> [SessionNode] {
-            newestFirst(nodes, by: \.activity)
+        func sortedNodes(_ nodes: [SessionNode]) -> [SessionNode] {
+            newestFirst(nodes, by: activity)
         }
 
         /// Archived sessions in every project.
@@ -250,6 +275,7 @@ package struct ProjectsFeature {
                 state.now = date.now
                 state.inbox = inbox
                 state.projects = IdentifiedArray(uniqueElements: projects)
+                state.order = State.order(of: sessions, before: state.sessions, kept: state.order)
                 state.sessions = IdentifiedArray(sessions, uniquingIDsWith: { _, last in last })
                 guard !notices.isEmpty || badge != nil else { return .none }
                 return .run { [activity] _ in
@@ -727,11 +753,6 @@ package struct SessionNode: Identifiable, Hashable, Sendable {
     package var children: [SessionNode]?
 
     package var id: Session.ID { session.id }
-
-    /// When anything last happened in it or a fork of it.
-    var activity: Date {
-        ([ProjectsFeature.State.activity(session)] + (children ?? []).map(\.activity)).max() ?? .distantFuture
-    }
 }
 
 /// A new project: its name, its repositories' folders on this Mac and
