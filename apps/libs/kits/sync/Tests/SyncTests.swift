@@ -38,6 +38,47 @@ func itemTests() -> [TestCase] {
 
 func syncTests() -> [TestCase] {
     [
+        TestCase.async("given a change while a sync runs, when sync is asked for again, then the change is sent") {
+            let cloud = InMemoryCloud<Notebook>()
+            let stored = Mutexed(Notebook())
+            let first = Mutexed(true)
+            let (loading, loaded) = AsyncStream<Void>.makeStream()
+            let (gate, open) = AsyncStream<Void>.makeStream()
+            let store = SyncStore<Notebook>(
+                load: {
+                    let notebook = stored.value
+                    var isFirst = false
+                    first.update { was in
+                        isFirst = was
+                        was = false
+                    }
+                    if isFirst {
+                        loaded.yield()
+                        for await _ in gate {}
+                    }
+                    return notebook
+                },
+                importSynced: { synced in
+                    stored.update { notebook in for (id, value) in synced.records { notebook.items[id] = value } }
+                },
+                resolve: { _ in })
+            let syncer = Syncer(cloud: cloud.connection(device: "iPhone"), store: store, storage: .inMemory())
+
+            let running = Task { await syncer.sync() }
+            for await _ in loading { break }
+            stored.update { $0.put(shopping) }
+            let asked = Task { await syncer.sync() }
+            // Lets the second ask reach the syncer before the first run
+            // goes on.
+            for _ in 0..<100 { await Task.yield() }
+            open.finish()
+            _ = await running.value
+            _ = await asked.value
+
+            let mac = Device("Mac", cloud: cloud)
+            await mac.syncer.sync()
+            try expectEqual(try mac.records.note(shopping.id), shopping)
+        },
         TestCase.async("given a note on one device, when both sync, then the other has it") {
             _ = try await synced()
         },

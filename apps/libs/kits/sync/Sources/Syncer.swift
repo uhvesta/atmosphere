@@ -80,6 +80,9 @@ public actor Syncer<Snapshot: SyncSnapshot> {
     private var ledger: SyncLedger<Snapshot>?
     private var state = State()
     private var running: Task<State, Never>?
+    /// A sync was asked for while one ran: that run loaded the records
+    /// before, so it runs again to send what changed since.
+    private var runsAgain = false
     private let states = Locked<[UUID: AsyncStream<State>.Continuation]>([:])
 
     public init(
@@ -108,8 +111,18 @@ public actor Syncer<Snapshot: SyncSnapshot> {
     /// every record that isn't held.
     @discardableResult
     public func sync() async -> State {
-        if let running { return await running.value }
-        let task = Task { await run() }
+        if let running {
+            runsAgain = true
+            return await running.value
+        }
+        let task = Task {
+            var result = await run()
+            while runsAgain {
+                runsAgain = false
+                result = await run()
+            }
+            return result
+        }
         running = task
         let result = await task.value
         running = nil
