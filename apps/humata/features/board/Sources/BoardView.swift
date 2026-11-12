@@ -227,7 +227,11 @@ struct ItemView: View {
         Form {
             Section {
                 if let parent = store.parent {
-                    LabeledContent("Task", value: parent.title)
+                    LabeledContent("Task") {
+                        Button(parent.title) { store.send(.itemTapped(parent.id)) }
+                            .buttonStyle(.link)
+                            .help("Open \(parent.title)")
+                    }
                 }
                 Picker(
                     "Status",
@@ -264,13 +268,20 @@ struct ItemView: View {
                 } else {
                     SpecCommentsView(
                         store: store.scope(state: \.comments, action: \.comments), spec: store.item.spec,
-                        sessions: store.sessions)
+                        sessions: store.commentTargets)
                 }
             }
             if store.item.parentID == nil {
                 Section("Subtasks") {
                     ForEach(store.subtasks) { subtask in
-                        LabeledContent(subtask.title, value: subtask.status.title)
+                        Button {
+                            store.send(.itemTapped(subtask.id))
+                        } label: {
+                            LabeledContent(subtask.title, value: subtask.status.title)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help("Open \(subtask.title)")
                     }
                     Button("Add Subtask…", systemImage: "plus") { store.send(.addSubtaskTapped) }
                         .buttonStyle(.borderless)

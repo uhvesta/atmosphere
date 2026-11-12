@@ -700,7 +700,7 @@ waiting on you. It kept these, in build order:
 - [x] Delete a task, revertible from Board History
 - [x] A session shows its task and opens it
 - [x] Listing sessions reads a kept summary instead of copying every history
-- [ ] The task page's subtasks open, and spec comments go to a live session
+- [x] The task page's subtasks open, and spec comments go to a live session
 - [ ] The sidebar holds still while agents work
 
 Dropped by the judge: a driver panic (none reachable), the archive

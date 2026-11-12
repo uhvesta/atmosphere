@@ -231,6 +231,9 @@ package struct BoardFeature {
                 state.destination = nil
                 return .send(.refresh)
 
+            case .destination(.presented(.item(.delegate(.openItem(let id))))):
+                return .send(.cardTapped(id))
+
             case .logTapped:
                 state.destination = .log(BoardLogFeature.State(project: state.project, items: state.items))
                 return .none
@@ -310,6 +313,9 @@ package struct ItemFeature {
             self.subtasks = subtasks
             self.sessions = sessions
         }
+
+        /// The sessions spec comments can go to: archived ones don't work.
+        package var commentTargets: [Session] { sessions.filter { !$0.archived } }
     }
 
     package struct Draft: Equatable {
@@ -355,6 +361,8 @@ package struct ItemFeature {
         case startWorkFailed(String)
         case addSubtaskTapped
         case deleteTapped
+        /// A subtask, or the task above a subtask: its page opens instead.
+        case itemTapped(Item.ID)
         case comments(SpecCommentsFeature.Action)
         case destination(PresentationAction<Destination.Action>)
         case delegate(Delegate)
@@ -366,6 +374,7 @@ package struct ItemFeature {
             case openSession(Session)
             /// The item was deleted; the page closes.
             case deleted
+            case openItem(Item.ID)
         }
     }
 
@@ -463,6 +472,9 @@ package struct ItemFeature {
             case .deleteTapped:
                 state.destination = .alert(.deleting(state.item))
                 return .none
+
+            case .itemTapped(let id):
+                return .send(.delegate(.openItem(id)))
 
             case .destination(.presented(.alert(.delete(let id)))):
                 return .run { send in

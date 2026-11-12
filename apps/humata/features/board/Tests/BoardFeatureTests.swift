@@ -178,6 +178,39 @@ final class BoardFeatureTests: XCTestCase {
         XCTAssertEqual(titles(store.state.cards(in: .todo)), ["login", "form"])
     }
 
+    func testATasksPageOpensItsSubtasksAndBack() async throws {
+        let board = try await board()
+        let store = store(board)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.cardTapped(board.task.id))
+        await store.send(\.destination.item.itemTapped, board.subtask.id)
+        await store.receive(\.destination.item.delegate.openItem)
+        await store.receive(\.cardTapped)
+        XCTAssertEqual(store.state.destination?.item?.item.id, board.subtask.id)
+        XCTAssertEqual(store.state.destination?.item?.parent?.id, board.task.id)
+
+        await store.send(\.destination.item.itemTapped, board.task.id)
+        await store.receive(\.cardTapped)
+        XCTAssertEqual(store.state.destination?.item?.item.id, board.task.id)
+    }
+
+    func testSpecCommentsGoOnlyToSessionsStillWorking() async throws {
+        let board = try await board()
+        let old = try await board.daemon.client.start(StartRequest(backend: .scripted, itemID: board.task.id))
+        let live = try await board.daemon.client.start(StartRequest(backend: .scripted, itemID: board.task.id))
+        _ = try await board.daemon.client.update(old.id, SessionUpdate(archived: true))
+        let store = store(board)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.cardTapped(board.task.id))
+        let page = try XCTUnwrap(store.state.destination?.item)
+        XCTAssertEqual(Set(page.sessions.map(\.id)), [old.id, live.id])
+        XCTAssertEqual(page.commentTargets.map(\.id), [live.id])
+    }
+
     func testANewSubtaskShowsOnTheBoard() async throws {
         let board = try await board()
         let store = store(board)

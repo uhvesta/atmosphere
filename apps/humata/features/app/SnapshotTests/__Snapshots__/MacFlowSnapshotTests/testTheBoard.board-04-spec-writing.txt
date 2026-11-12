@@ -59,10 +59,8 @@
 1. A wrong password says so under the **password** field
 2."
     [Heading] "Subtasks"
-    [StaticText] "" value: "Login form"
-    [StaticText] "" value: "Waiting on You"
-    [StaticText] "" value: "Error copy"
-    [StaticText] "" value: "To Do"
+    [Button] "Login form, Waiting on You" help: "Open Login form"
+    [Button] "Error copy, To Do" help: "Open Error copy"
     [Button] "Add Subtask…"
     [Heading] "Sessions"
     [Button] "Start Work" help: "Start a session with your last New Session settings, told to do what the spec says"
