@@ -132,11 +132,16 @@ package struct AppFeature {
                 return .run { _ in service.openLoginItems() }
 
             case .sidebar(.loaded(_, let sessions, let inbox)):
-                if let open = state.session?.session.id {
-                    if let listed = sessions.first(where: { $0.id == open }) {
+                // Every two seconds: set only what changed, so the open
+                // session isn't drawn again for nothing.
+                if let open = state.session {
+                    if let listed = sessions.first(where: { $0.id == open.session.id }),
+                        listed.hostOffline != open.session.hostOffline
+                    {
                         state.session?.session.hostOffline = listed.hostOffline
                     }
-                    state.session?.request = Self.request(of: open, in: inbox)
+                    let request = Self.request(of: open.session.id, in: inbox)
+                    if request != open.request { state.session?.request = request }
                 }
                 let shown = show(&state)
                 guard state.daemon == .updatePending, !Self.anyBusy(sessions) else { return shown }

@@ -30,7 +30,25 @@ package struct SessionFeature {
         /// What the agent proposed for the board, shown as cards.
         package var proposals: ProposalsFeature.State
         /// Every event but the reply's parts as it streams, oldest first.
-        package var events: IdentifiedArrayOf<SessionEvent> = []
+        /// Setting it works out what the chat shows once, not on every
+        /// render or streamed word.
+        package var events: IdentifiedArrayOf<SessionEvent> {
+            get { log }
+            set {
+                log = newValue
+                derive()
+            }
+        }
+        private var log: IdentifiedArrayOf<SessionEvent> = []
+        /// What the chat shows, oldest first.
+        package private(set) var items: [ChatItem] = []
+        /// Requests for permission the agent is still waiting on.
+        package private(set) var pendingPermissions: [SessionEvent] = []
+        /// The failure row offering Try Again: the newest, while the last
+        /// turn failed and there's a message to send again.
+        package private(set) var retryableFailure: String?
+        /// What the session's turns have cost so far.
+        package private(set) var usage: Usage?
         /// The reply so far, until its whole message arrives.
         package var streaming = ""
         /// The message being written; it is kept per session, so it is
@@ -103,17 +121,7 @@ package struct SessionFeature {
 
         /// Messages sent while a turn ran, waiting for their own turn,
         /// first to run first.
-        package var queued: [QueuedMessage] {
-            var queued: [QueuedMessage] = []
-            for event in events {
-                switch event.kind {
-                case .messageQueued(let id, let text): queued.append(QueuedMessage(id: id, text: text))
-                case .dequeued(let id): queued.removeAll { $0.id == id }
-                default: continue
-                }
-            }
-            return queued
-        }
+        package private(set) var queued: [QueuedMessage] = []
 
         /// The views it has: a review only for a project's code, and no
         /// terminal once archived, when its folder is gone.
@@ -141,10 +149,37 @@ package struct SessionFeature {
             return false
         }
 
-        /// What the chat shows, oldest first.
-        package var items: [ChatItem] { ChatItem.items(events) }
-
-        package var usage: Usage? { Usage.total(events) }
+        /// Works out from the events what the chat shows, so views read it
+        /// instead of working it out again.
+        private mutating func derive() {
+            items = ChatItem.items(log)
+            usage = Usage.total(log)
+            var answered = Set<String>()
+            for event in log {
+                if case .permissionCompleted(let request, _, _) = event.kind { answered.insert(request) }
+            }
+            pendingPermissions = log.filter { event in
+                guard case .permissionRequested(let request, _, _) = event.kind else { return false }
+                return !answered.contains(request)
+            }
+            queued = []
+            for event in log {
+                switch event.kind {
+                case .messageQueued(let id, let text): queued.append(QueuedMessage(id: id, text: text))
+                case .dequeued(let id): queued.removeAll { $0.id == id }
+                default: continue
+                }
+            }
+            retryableFailure = nil
+            if lastTurnFailed, lastMessage != nil {
+                for item in items.reversed() {
+                    if case .failure(let id, _) = item {
+                        retryableFailure = id
+                        break
+                    }
+                }
+            }
+        }
 
         /// Whether the agent is waiting on the person to answer a request.
         package var isWaiting: Bool { !pendingPermissions.isEmpty }
@@ -194,19 +229,6 @@ package struct SessionFeature {
         package var waitReason: String? {
             guard streaming.isEmpty, case .waiting(let reason)? = events.last?.kind else { return nil }
             return reason
-        }
-
-        /// Requests for permission the agent is still waiting on.
-        package var pendingPermissions: [SessionEvent] {
-            let answered = Set(
-                events.compactMap { event -> String? in
-                    guard case .permissionCompleted(let request, _, _) = event.kind else { return nil }
-                    return request
-                })
-            return events.filter { event in
-                guard case .permissionRequested(let request, _, _) = event.kind else { return false }
-                return !answered.contains(request)
-            }
         }
 
         /// Whether `call` is the agent proposing a task or a spec edit.

@@ -197,15 +197,27 @@ package struct BoardFeature {
                 return .run { send in await send(await load(project)) }
 
             case .loaded(let items, let sessions):
-                state.failure = nil
-                state.items = IdentifiedArray(items, uniquingIDsWith: { _, last in last })
-                state.sessions = IdentifiedArray(sessions, uniquingIDsWith: { _, last in last })
+                // Read every two seconds and mostly the same: set only what
+                // changed, so the board isn't drawn again for nothing.
+                if state.failure != nil { state.failure = nil }
+                let items = IdentifiedArray(items, uniquingIDsWith: { _, last in last })
+                let sessions = IdentifiedArray(sessions, uniquingIDsWith: { _, last in last })
+                guard items != state.items || sessions != state.sessions else {
+                    if let opening = state.opening {
+                        state.opening = nil
+                        return .send(.cardTapped(opening))
+                    }
+                    return .none
+                }
+                state.items = items
+                state.sessions = sessions
                 if case .item(var page) = state.destination, let item = state.items[id: page.item.id] {
+                    let before = page
                     page.item = item
                     page.parent = state.parent(of: item)
                     page.subtasks = state.subtasks(of: item)
                     page.sessions = state.sessions(on: item)
-                    state.destination = .item(page)
+                    if page != before { state.destination = .item(page) }
                 }
                 if let opening = state.opening {
                     state.opening = nil

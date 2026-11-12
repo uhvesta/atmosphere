@@ -604,6 +604,14 @@ impl Store {
         host: &str,
         sessions: &[pb::SessionInfo],
     ) -> Result<(), StoreError> {
+        // Hosts are listed every two seconds and seldom change: write only
+        // when they did.
+        let mut listed: Vec<&pb::SessionInfo> = sessions.iter().collect();
+        listed.sort_by(|a, b| a.id.cmp(&b.id));
+        let cached = self.cached_sessions(host)?;
+        if cached.len() == listed.len() && cached.iter().zip(&listed).all(|(a, b)| a == *b) {
+            return Ok(());
+        }
         let mut connection = self.lock();
         let transaction = connection.transaction().map_err(self.failed())?;
         let kept = (|| {
@@ -1560,6 +1568,38 @@ mod tests {
         assert_eq!(cached(&reopened), ["a"]);
         assert_eq!(reopened.cached_history("a").ok().flatten(), Some(history));
         assert_eq!(reopened.cached_history("b").ok().flatten(), None);
+    }
+
+    #[test]
+    fn a_host_listing_the_same_sessions_again_keeps_them_and_a_change_is_kept() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let store = store(dir.path());
+        let session = |id: &str, name: &str| pb::SessionInfo {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            ..pb::SessionInfo::default()
+        };
+        let names = |store: &Store| -> Vec<String> {
+            store
+                .cached_sessions("build")
+                .unwrap_or_else(|error| panic!("{error}"))
+                .into_iter()
+                .map(|session| session.name)
+                .collect()
+        };
+
+        store
+            .cache_sessions("build", &[session("a", "A"), session("b", "B")])
+            .unwrap_or_else(|error| panic!("{error}"));
+        store
+            .cache_sessions("build", &[session("b", "B"), session("a", "A")])
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(names(&store), ["A", "B"]);
+
+        store
+            .cache_sessions("build", &[session("a", "A"), session("b", "Renamed")])
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(names(&store), ["A", "Renamed"]);
     }
 
     #[test]

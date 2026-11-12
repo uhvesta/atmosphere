@@ -56,7 +56,7 @@ package struct SessionView: View {
                 .foregroundStyle(.secondary)
                 .padding()
             } else if store.tab == .chat {
-                composer
+                SessionComposer(store: store)
                     .padding([.horizontal, .bottom])
             }
         }
@@ -244,15 +244,7 @@ package struct SessionView: View {
                             }
                             .id(item.id)
                     }
-                    if store.isWorking, let reason = store.waitReason {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            ProgressView().controlSize(.small)
-                            Text(reason).foregroundStyle(.secondary)
-                        }
-                    } else if store.isWorking, !store.isWaiting {
-                        ReplyInProgress(
-                            text: store.streaming, thinking: nil, showsThinking: false, toggleThinking: {})
-                    }
+                    TurnInProgress(store: store)
                 }
                 .padding()
             }
@@ -357,21 +349,13 @@ package struct SessionView: View {
                     .font(.footnote)
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
-                if store.lastTurnFailed, !store.isWorking, store.lastMessage != nil, id == lastFailure {
+                if id == store.retryableFailure, !store.isWorking {
                     Spacer()
                     Button("Try Again") { store.send(.retryTapped) }
                         .help("Send your last message again")
                 }
             }
         }
-    }
-
-    /// The newest failure in the chat, the one Try Again is on.
-    private var lastFailure: String? {
-        for item in store.items.reversed() {
-            if case .failure(let id, _) = item { return id }
-        }
-        return nil
     }
 
     /// The person's earlier message, open to change. Sending it forks, so
@@ -394,37 +378,6 @@ package struct SessionView: View {
                 Button("Send to a Fork") { store.send(.editSent) }
                     .buttonStyle(.borderedProminent)
                     .disabled(store.edited.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-    }
-
-    private var composer: some View {
-        ChatComposer(
-            text: $store.draft, prompt: Text(store.isWorking ? "Queue a message, or steer" : "Message the agent"),
-            model: nil,
-            send: SendButton(
-                canSend: !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                canStop: store.isWorking,
-                send: { store.send(.sendTapped(.enqueue)) },
-                stop: { store.send(.abortTapped) })
-        ) {
-            store.send(.sendTapped(.enqueue))
-        } top: {
-            ForEach(store.queued) { queued in
-                QueuedRow(queued: queued) { store.send(.unqueueTapped(queued.id)) }
-            }
-            if store.isWorking, !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                HStack {
-                    Text("Return queues it for after this turn.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Steer Now") { store.send(.sendTapped(.steer)) }
-                        .font(.caption.weight(.semibold))
-                        .keyboardShortcut(.return, modifiers: .command)
-                        .help("Send it to the running turn (⌘↩)")
-                }
-                .padding(.horizontal, 4)
             }
         }
     }
@@ -733,6 +686,61 @@ private struct WaitingStrip: View {
                 Text("and \(more) more")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// The turn under way at the chat's end: why it waits, or the reply as it
+/// streams. Its own view, so each streamed word redraws only this and not
+/// every row of the chat.
+private struct TurnInProgress: View {
+    let store: StoreOf<SessionFeature>
+
+    var body: some View {
+        if store.isWorking, let reason = store.waitReason {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(reason).foregroundStyle(.secondary)
+            }
+        } else if store.isWorking, !store.isWaiting {
+            ReplyInProgress(text: store.streaming, thinking: nil, showsThinking: false, toggleThinking: {})
+        }
+    }
+}
+
+/// The box to write in, with the messages queued over it. Its own view, so
+/// each key typed redraws only this and not the chat.
+private struct SessionComposer: View {
+    @Bindable var store: StoreOf<SessionFeature>
+
+    var body: some View {
+        ChatComposer(
+            text: $store.draft, prompt: Text(store.isWorking ? "Queue a message, or steer" : "Message the agent"),
+            model: nil,
+            send: SendButton(
+                canSend: !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                canStop: store.isWorking,
+                send: { store.send(.sendTapped(.enqueue)) },
+                stop: { store.send(.abortTapped) })
+        ) {
+            store.send(.sendTapped(.enqueue))
+        } top: {
+            ForEach(store.queued) { queued in
+                QueuedRow(queued: queued) { store.send(.unqueueTapped(queued.id)) }
+            }
+            if store.isWorking, !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                HStack {
+                    Text("Return queues it for after this turn.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Steer Now") { store.send(.sendTapped(.steer)) }
+                        .font(.caption.weight(.semibold))
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .help("Send it to the running turn (⌘↩)")
+                }
+                .padding(.horizontal, 4)
             }
         }
     }

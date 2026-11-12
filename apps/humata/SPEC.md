@@ -144,6 +144,7 @@ original spec; lettered ones were added since.
 | R Review pass | Done (9e2ac82e) |
 | J Agents ask, and a board journal | Done |
 | V Second review pass | Done |
+| P Performance pass | Done |
 | K Signed releases | In progress |
 
 ## Done milestones
@@ -854,6 +855,24 @@ on controls that are off during a turn. In build order:
   full on request
 - [x] Read-only review ranges say where comments go, with a button to get
   there
+
+### P Performance pass
+
+The owner, 2026-11-12: memory, stutters and CPU time are expensive; keep
+both the app and the daemon lean. The sidebar refreshes every two seconds,
+and the chat redraws on every streamed word, so those paths matter most.
+
+- [x] The chat works out its rows, waiting requests, usage and queue once
+  per event, not on every draw
+- [x] Typing and streaming redraw only the composer and the turn in
+  progress, not the whole chat
+- [x] A refresh that changes nothing sets nothing: the sidebar, the open
+  session and the board keep their state as it was
+- [x] A long diff is built lazily, one line per row, with its threads
+  grouped once
+- [x] The daemon writes a host's cached sessions only when they changed
+- [x] The waiting strip no longer sits beside the bottom-anchored chat,
+  which made SwiftUI lay it out without end
 
 ### Milestone K: signed releases
 

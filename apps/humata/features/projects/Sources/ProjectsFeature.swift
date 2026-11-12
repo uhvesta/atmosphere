@@ -275,7 +275,7 @@ package struct ProjectsFeature {
                 return .run { send in await send(await load()) }
 
             case .loaded(let projects, let sessions, let inbox):
-                state.failure = nil
+                if state.failure != nil { state.failure = nil }
                 // The open session needs no notice only while it's on screen.
                 let open = activity.isActive() ? state.selection : nil
                 let notices = state.loadedOnce ? Self.notices(new: inbox, old: state.inbox, open: open) : []
@@ -283,12 +283,17 @@ package struct ProjectsFeature {
                 // the person.
                 let blocked = inbox.count(where: \.reason.blocks)
                 let badge = !state.loadedOnce || blocked != state.blockedCount ? blocked : nil
-                state.loadedOnce = true
+                if !state.loadedOnce { state.loadedOnce = true }
                 state.now = date.now
-                state.inbox = inbox
-                state.projects = IdentifiedArray(uniqueElements: projects)
-                state.order = State.order(of: sessions, before: state.sessions, kept: state.order)
-                state.sessions = IdentifiedArray(sessions, uniquingIDsWith: { _, last in last })
+                // Read every two seconds and mostly the same: set only what
+                // changed, so the sidebar isn't drawn again for nothing.
+                if state.inbox != inbox { state.inbox = inbox }
+                let projects = IdentifiedArray(uniqueElements: projects)
+                if state.projects != projects { state.projects = projects }
+                let order = State.order(of: sessions, before: state.sessions, kept: state.order)
+                if state.order != order { state.order = order }
+                let sessions = IdentifiedArray(sessions, uniquingIDsWith: { _, last in last })
+                if state.sessions != sessions { state.sessions = sessions }
                 guard !notices.isEmpty || badge != nil else { return .none }
                 return .run { [activity] _ in
                     // The Dock says how many sessions wait on the person.

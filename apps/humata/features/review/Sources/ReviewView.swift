@@ -269,6 +269,7 @@ private struct DiffLines: View {
         let shown = Set(file.hunks.flatMap(\.lines).compactMap(\.new))
         let inline = store.canComment ? threads.filter { shown.contains($0.endLine) } : []
         let elsewhere = threads.filter { thread in !inline.contains { $0.id == thread.id } }
+        let byLine = Dictionary(grouping: inline, by: \.endLine)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if !store.canComment {
@@ -295,37 +296,45 @@ private struct DiffLines: View {
                     }
                     .padding()
                 }
-                ForEach(Array(file.hunks.enumerated()), id: \.offset) { _, hunk in
-                    // One view per hunk, so its first line's identity
-                    // doesn't collide with its header's in the lazy stack.
-                    VStack(alignment: .leading, spacing: 0) {
-                        hunkHeader(hunk)
-                        ForEach(Array(hunk.lines.enumerated()), id: \.offset) { _, line in
-                            LineRow(
-                                line: line, highlighter: highlighter, commentable: store.canComment,
-                                picked: line.new.map { store.commenting?.covers($0, in: ref) ?? false } ?? false
-                            )
-                            .onTapGesture {
-                                guard let new = line.new else { return }
-                                store.send(.lineTapped(new, extending: NSEvent.modifierFlags.contains(.shift)))
-                            }
-                            if let new = line.new {
-                                ForEach(inline.filter { $0.endLine == new }) { thread in
-                                    ThreadView(store: store, thread: thread, showsCode: thread.outdated)
-                                        .padding(.leading, 110)
-                                        .padding([.trailing, .vertical], 8)
-                                }
-                                if let picked = store.commenting, picked.file == ref, picked.endLine == new {
-                                    CommentEditor(store: store, commenting: picked)
-                                        .padding(.leading, 110)
-                                        .padding([.trailing, .vertical], 8)
-                                }
-                            }
-                        }
+                // Every line its own row, so a long file built lazily
+                // makes only the lines on screen.
+                ForEach(DiffRow.rows(of: file)) { row in
+                    switch row.line {
+                    case nil:
+                        hunkHeader(file.hunks[row.hunk])
+                    case let index?:
+                        lineRow(file.hunks[row.hunk].lines[index], highlighter: highlighter, inline: byLine)
                     }
                 }
             }
             .padding(.bottom)
+        }
+    }
+
+    /// A line, with the threads that end on it and the comment being
+    /// written there.
+    private func lineRow(_ line: DiffLine, highlighter: Highlighter?, inline: [Int: [ReviewThread]]) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            LineRow(
+                line: line, highlighter: highlighter, commentable: store.canComment,
+                picked: line.new.map { store.commenting?.covers($0, in: ref) ?? false } ?? false
+            )
+            .onTapGesture {
+                guard let new = line.new else { return }
+                store.send(.lineTapped(new, extending: NSEvent.modifierFlags.contains(.shift)))
+            }
+            if let new = line.new {
+                ForEach(inline[new] ?? []) { thread in
+                    ThreadView(store: store, thread: thread, showsCode: thread.outdated)
+                        .padding(.leading, 110)
+                        .padding([.trailing, .vertical], 8)
+                }
+                if let picked = store.commenting, picked.file == ref, picked.endLine == new {
+                    CommentEditor(store: store, commenting: picked)
+                        .padding(.leading, 110)
+                        .padding([.trailing, .vertical], 8)
+                }
+            }
         }
     }
 
@@ -679,5 +688,24 @@ private struct CommentEditor: View {
 extension ReviewFeature.Commenting {
     fileprivate func covers(_ line: Int, in ref: FileRef) -> Bool {
         file == ref && (startLine...endLine).contains(line)
+    }
+}
+
+/// A row of a file's diff: a hunk's header, or one of its lines.
+private struct DiffRow: Identifiable {
+    let hunk: Int
+    /// The line's index in its hunk; nil for the hunk's header.
+    let line: Int?
+
+    var id: String { line.map { "\(hunk).\($0)" } ?? "\(hunk)" }
+
+    static func rows(of file: FileDiff) -> [DiffRow] {
+        var rows: [DiffRow] = []
+        rows.reserveCapacity(file.hunks.reduce(file.hunks.count) { $0 + $1.lines.count })
+        for (hunk, lines) in file.hunks.enumerated().map({ ($0, $1.lines.count) }) {
+            rows.append(DiffRow(hunk: hunk, line: nil))
+            for line in 0..<lines { rows.append(DiffRow(hunk: hunk, line: line)) }
+        }
+        return rows
     }
 }
