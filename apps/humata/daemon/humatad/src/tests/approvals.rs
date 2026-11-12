@@ -349,3 +349,51 @@ async fn an_action_cut_short_by_a_restart_is_reported_so_and_not_run_again() {
         Some(pb::response::Kind::Error(_))
     ));
 }
+
+fn set_spec(item: &str, spec: &str) -> pb::request::Kind {
+    pb::request::Kind::UpdateItem(pb::UpdateItem {
+        item_id: item.to_owned(),
+        spec: Some(spec.to_owned()),
+        ..Default::default()
+    })
+}
+
+#[tokio::test]
+async fn an_edit_approved_after_the_text_changed_keeps_the_newer_text() {
+    let clients = clients().await;
+    let task = item(&clients.app, &clients.project, "", "Ship it").await;
+    let approval = asked(&clients.agent, set_spec(&task.id, "the agent's spec")).await;
+    // The person edits the spec while the agent's edit waits.
+    let edited = clients
+        .app
+        .call(set_spec(&task.id, "the person's spec"))
+        .await;
+    assert!(matches!(edited, Ok(pb::response::Kind::ItemUpdated(_))));
+
+    let decided = decide(&clients.app, &[&approval.id], true, &[], 0)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(matches!(
+        decided.approvals[0]
+            .result
+            .as_ref()
+            .and_then(|result| result.kind.as_ref()),
+        Some(pb::response::Kind::Error(refused)) if refused.code() == pb::ErrorCode::Changed
+    ));
+    // Unchanged, the same edit runs.
+    let again = asked(&clients.agent, set_spec(&task.id, "the agent's spec")).await;
+    let decided = decide(&clients.app, &[&again.id], true, &[], 0)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let Some(pb::response::Kind::ItemUpdated(updated)) = decided.approvals[0]
+        .result
+        .as_ref()
+        .and_then(|result| result.kind.clone())
+    else {
+        panic!("{decided:?}")
+    };
+    assert_eq!(
+        updated.item.map(|item| item.spec).as_deref(),
+        Some("the agent's spec")
+    );
+}

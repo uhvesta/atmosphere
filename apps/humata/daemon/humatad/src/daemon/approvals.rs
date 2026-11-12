@@ -444,7 +444,22 @@ impl Daemon {
                 if !self.store.decide_approval(&approval)? {
                     continue;
                 }
-                approval.result = Some(Box::new(self.run_approved(&approval, request.kind).await));
+                // The person approved the change from the text they were
+                // shown; text edited since would be overwritten unseen.
+                let now = match &request.kind {
+                    Some(kind) => self.describe_action(kind).await.1,
+                    None => String::new(),
+                };
+                approval.result = Some(Box::new(if now == approval.before {
+                    self.run_approved(&approval, request.kind).await
+                } else {
+                    pb::Response {
+                        kind: Some(error(
+                            pb::ErrorCode::Changed,
+                            "the text this changes was edited after it was asked for, so it didn't run, to keep that edit; read it again and ask for the change anew if it's still wanted",
+                        )),
+                    }
+                }));
                 approval.decided_unix_ms = now_unix_ms();
                 self.store.record_result(&approval)?;
             } else {

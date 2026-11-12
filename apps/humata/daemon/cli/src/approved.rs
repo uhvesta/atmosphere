@@ -100,7 +100,13 @@ impl Client {
                 got: "none".to_owned(),
             })?;
             let out_of_time = until.is_some_and(|until| tokio::time::Instant::now() >= until);
-            if approval.state() != pb::ApprovalState::Pending || out_of_time {
+            // Approved but not yet answered is still running.
+            let settled = match approval.state() {
+                pb::ApprovalState::Pending => false,
+                pb::ApprovalState::Approved => approval.result.is_some(),
+                _ => true,
+            };
+            if settled || out_of_time {
                 return Ok(approval);
             }
         }
@@ -117,9 +123,9 @@ pub fn outcome(approval: pb::Approval) -> Result<pb::response::Kind, ClientError
                 message: refused.message,
             }),
             Some(answer) => Ok(answer),
-            None => Err(ClientError::Unexpected {
-                expected: "what the approved action answered",
-                got: "none".to_owned(),
+            None => Err(ClientError::StillRunning {
+                id: approval.id,
+                summary: approval.summary,
             }),
         },
         pb::ApprovalState::Denied => Err(ClientError::Denied {

@@ -92,4 +92,9 @@ pub enum ClientError {
         "{summary} still waits for the person's approval in Humata's inbox (approval {id}); it runs once they approve it. Check on it with `humata approval status {id}`, or wait with `humata approval wait {id}`"
     )]
     AwaitingApproval { id: String, summary: String },
+
+    #[error(
+        "{summary} was approved in Humata and is still running (approval {id}); wait for it with `humata approval wait {id}` rather than asking again, which would run it twice"
+    )]
+    StillRunning { id: String, summary: String },
 }
