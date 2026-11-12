@@ -27,6 +27,9 @@ package struct RootView: View {
     @Bindable package var store: StoreOf<RootFeature>
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// How tall the bar along the bottom of the screen is, such as the bulk
+    /// bar while picking tasks, so banners sit above it.
+    @State private var bottomBar: CGFloat = 0
 
     package init(store: StoreOf<RootFeature>) {
         self.store = store
@@ -89,7 +92,7 @@ package struct RootView: View {
     /// tab bar or the toolbar.
     private var bannerInset: CGFloat {
         guard bannersAtBottom else { return 60 }
-        return store.platform == .phone ? 64 : 20
+        return (store.platform == .phone ? 64 : 20) + bottomBar
     }
 
     /// Where the banners show. In the Mac's assistant, over the chat at
@@ -106,6 +109,7 @@ package struct RootView: View {
             case .mac: MacRootView(store: store)
             }
         }
+        .environment(\.reportBottomBar) { bottomBar = $0 }
         .overlay(alignment: bannerAlignment) {
             // On iPhone above the tab bar, clear of every screen's own
             // controls, but under the title while a chat is open, whose

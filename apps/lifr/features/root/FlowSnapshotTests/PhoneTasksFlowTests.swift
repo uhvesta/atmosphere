@@ -148,6 +148,7 @@ final class PhoneTasksFlowTests: PhoneFlowTestCase {
         await flow.step("launch", image: false)
         let review = try task("Review Q4 roadmap", in: store)
         store.send(.today(.list(.rowTapped(review))))
+        await flow.step("detail", image: false)
         store.send(.today(.list(.detail(.presented(.trashTapped)))))
         await flow.step("trashed", image: false)
         store.tab = .avenues

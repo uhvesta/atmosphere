@@ -88,6 +88,7 @@ package struct TaskListView<Header: View>: View {
         .safeAreaInset(edge: .bottom) {
             if store.isSelecting {
                 BulkBar(store: store)
+                    .reportsBottomBar()
             }
         }
         .task { await store.send(.task).finish() }
