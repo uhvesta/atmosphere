@@ -2234,10 +2234,16 @@
     "New Sub Task" : {
 
     },
+    "New Tab" : {
+
+    },
     "New Task" : {
 
     },
     "New Task in %@" : {
+
+    },
+    "New Window" : {
 
     },
     "New conversation" : {
@@ -2466,6 +2472,9 @@
 
     },
     "Open Lifr to see the task." : {
+
+    },
+    "Open Task in New Window" : {
 
     },
     "Open a List" : {

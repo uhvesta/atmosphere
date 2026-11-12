@@ -33,11 +33,17 @@ package struct RootCommands: Commands {
                 .keyboardShortcut("n", modifiers: [.command, .option])
             #if os(macOS)
                 Divider()
-                Button("New Window") { openWindow(id: Place.windowID, value: Place(sidebar: store.selection)) }
-                    .keyboardShortcut("n", modifiers: [.command, .control])
+                Button("New Window") {
+                    openWindow(id: WindowPlace.sceneID, value: WindowPlace(Place(sidebar: store.selection)))
+                }
+                .keyboardShortcut("n", modifiers: [.command, .control])
+                .disabled(store.isLocked)
+                Button("New Tab") { WindowTabs.open(Place(sidebar: store.selection), with: openWindow) }
+                    .keyboardShortcut("t", modifiers: [.command, .option])
                     .disabled(store.isLocked)
                 Button("Open Task in New Window") {
-                    openWindow(id: Place.windowID, value: Place(sidebar: store.selection, task: store.openTaskID))
+                    let place = Place(sidebar: store.selection, task: store.openTaskID)
+                    openWindow(id: WindowPlace.sceneID, value: WindowPlace(place))
                 }
                 .disabled(store.isLocked || store.openTaskID == nil)
             #endif

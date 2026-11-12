@@ -357,7 +357,7 @@ private struct MacRootView: View {
             .focusedSceneValue(\.lifrWindow, store)
             #if os(macOS)
                 .environment(\.opensInNewWindow) { id in
-                    openWindow(id: Place.windowID, value: Place(sidebar: store.selection, task: id))
+                    openWindow(id: WindowPlace.sceneID, value: WindowPlace(Place(sidebar: store.selection, task: id)))
                 }
             #endif
     }

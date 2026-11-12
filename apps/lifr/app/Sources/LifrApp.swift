@@ -63,7 +63,7 @@ struct LifrApp: App {
                 // Room for the sidebar, a list and a task side by side.
                 .defaultSize(width: 1180, height: 760)
                 .commands { RootCommands(store: Storage.root) }
-            WindowGroup(id: Place.windowID, for: Place.self) { $place in
+            WindowGroup(id: WindowPlace.sceneID, for: WindowPlace.self) { $place in
                 if case .success = Storage.opened {
                     OtherWindow(main: Storage.root, place: $place, store: Storage.window(at:))
                 }
