@@ -459,6 +459,23 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testChoosingAnotherSidebarItemSavesTheOpenTasksTypedDescription() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.today(.list(.rowTapped(run.id))))
+        await store.send(.today(.list(.detail(.presented(.editDetailsTapped)))))
+        await store.send(.today(.list(.detail(.presented(.binding(.set(\.detailsDraft, "Five kilometres")))))))
+
+        await store.send(.selected(.logbook))
+        await store.receive(\.leftTaskSaved)
+
+        let saved = try await store.dependencies.store.load()
+        XCTAssertEqual(saved.tasks[run.id]?.details, "Five kilometres")
+        await task.cancel()
+    }
+
     func testBackAndForwardRetraceTheMacsPlaces() async {
         records.task("Run", in: health)
         let store = makeStore(.mac)

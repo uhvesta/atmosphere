@@ -483,6 +483,26 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.detail?.row.status, .inProgress)
     }
 
+    func testClickingTheOpenRowKeepsWhatsTypedAndAnotherRowSavesItFirst() async throws {
+        let stretch = records.task("Stretch", in: health)
+        let run = records.task("Long run", in: health)
+        let store = await load()
+        await store.send(.rowTapped(stretch.id))
+        await store.send(.detail(.presented(.editDetailsTapped)))
+        await store.send(.detail(.presented(.binding(.set(\.detailsDraft, "Ten minutes")))))
+        await store.send(.detail(.presented(.binding(.set(\.title, "Stretch calves")))))
+
+        await store.send(.rowTapped(stretch.id))
+        XCTAssertEqual(store.state.detail?.detailsDraft, "Ten minutes")
+
+        await store.send(.rowTapped(run.id))
+        await store.receive(\.saved)
+        XCTAssertEqual(store.state.detail?.id, run.id)
+        let saved = try await store.dependencies.store.load()
+        XCTAssertEqual(saved.tasks[stretch.id]?.details, "Ten minutes")
+        XCTAssertEqual(saved.tasks[stretch.id]?.title, "Stretch calves")
+    }
+
     func testTheOpenTaskClosesOnceItsTrashedHereOrElsewhere() async {
         let stretch = records.task("Stretch", in: health)
         let store = await load()

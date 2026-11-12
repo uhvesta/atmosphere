@@ -294,9 +294,16 @@ package struct TaskListFeature {
 
             case .rowTapped(let id):
                 if state.isSelecting { return .send(.selectionToggled(id)) }
-                guard let workspace = state.workspace else { return .none }
+                // The open task's row keeps what's typed in it.
+                guard state.detail?.id != id, let workspace = state.workspace else { return .none }
+                let leaving = state.detail
                 state.detail = TaskDetailFeature.State(id: id, workspace: workspace, now: now, timeZone: timeZone)
-                return .none
+                // Another task opens in its place: its typed title and
+                // description are saved first, as leaving the field does.
+                guard let leaving, let edit = leaving.unsavedEdit else { return .none }
+                return .run { [store] send in
+                    await send(.saved(Result { try await store.edit(leaving.id, edit) }))
+                }
 
             case .selectTapped, .selectionToggled, .selectionExtended, .selectAllTapped, .bulk, .bulkDue, .bulkSaved,
                 .bulkPrompt(.presented), .cursorMoved, .openCursorTapped, .cursorStatusTapped, .trashKeyPressed:

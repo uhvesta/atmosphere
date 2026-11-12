@@ -70,6 +70,17 @@ package struct TaskDetailFeature {
         package var editedComment = ""
         package var banner: Banner?
         @Presents package var subtask: TaskDetailFeature.State?
+
+        /// The title and description as typed but not saved yet, as one
+        /// edit, for saving when another task opens in this one's place.
+        /// `nil` when there's nothing to save.
+        package var unsavedEdit: Workspace.TaskEdit? {
+            let typed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = typed.isEmpty || typed == row.title ? nil : typed
+            let details = detailsDraft == details ? nil : detailsDraft
+            guard title != nil || details != nil else { return nil }
+            return Workspace.TaskEdit(title: title, details: details)
+        }
         @Presents package var prompt: AlertState<StatusPrompt>?
         @Presents package var alert: AlertState<Never>?
         /// Asks before a comment is deleted.

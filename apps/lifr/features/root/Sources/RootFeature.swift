@@ -403,6 +403,9 @@ package struct RootFeature {
         /// The toast's Undo, ⌘Z or a shake, for the change with this ID.
         case undoTapped(UUID)
         case undone(Result<Saved, any Error>)
+        /// The title and description typed in the task left by choosing
+        /// another sidebar item were saved, or couldn't be.
+        case leftTaskSaved(Result<Saved, any Error>)
         /// ⇧⌘Z, for the change Undo took back with this ID.
         case redoTapped(UUID)
         case redone(String, Result<Saved, any Error>)
@@ -1017,6 +1020,13 @@ package struct RootFeature {
                 state.notice = .failed("Couldn't undo", error)
                 return .none
 
+            case .leftTaskSaved(.success(let saved)):
+                return show(saved.snapshot, in: &state)
+
+            case .leftTaskSaved(.failure(let error)):
+                state.notice = .failed("Couldn't save the task", error)
+                return .none
+
             case .toastShown(let id):
                 return .run { [clock] send in
                     try await clock.sleep(for: Self.toastDuration)
@@ -1199,6 +1209,7 @@ package struct RootFeature {
     /// Shows `item` on the Mac, closing what the list left showed.
     private func select(_ item: SidebarItem?, in state: inout State) -> Effect<Action> {
         let left = state.selection
+        let leaving = state.currentList.flatMap { state[list: $0]?.detail }
         state.selection = item
         state.avenue = nil
         state.board = nil
@@ -1215,19 +1226,28 @@ package struct RootFeature {
             state.logbook.detail = nil
             state.savedFilter = nil
         }
-        let closesChat: Effect<Action> =
+        var effect: Effect<Action> =
             left == .conversations && item != .conversations ? .send(.conversations(.closed)) : .none
+        // Its typed title and description are saved first, as leaving the
+        // field does.
+        if left != item, let leaving, let edit = leaving.unsavedEdit {
+            effect = .merge(
+                effect,
+                .run { [store] send in
+                    await send(.leftTaskSaved(Result { try await store.edit(leaving.id, edit) }))
+                })
+        }
         if case .savedFilter(let id) = item, let workspace = state.workspace {
             state.savedFilter = workspace.savedFilters[id].map {
                 SearchFeature.State(saved: $0, workspace: workspace, now: now, timeZone: timeZone)
             }
         }
-        guard case .scope(let scope) = item, let workspace = state.workspace else { return closesChat }
+        guard case .scope(let scope) = item, let workspace = state.workspace else { return effect }
         let avenue = AvenueFeature.State(scope: scope, workspace: workspace, now: now, timeZone: timeZone)
         state.avenue = avenue
         state.board = BoardFeature.State(
             scope: scope, title: avenue.title, workspace: workspace, now: now, timeZone: timeZone)
-        return closesChat
+        return effect
     }
 
     private func reportingBugs(_ state: inout State, _ action: Action) -> Effect<Action> {
