@@ -398,6 +398,75 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.workspace.tasks.values.contains { $0.title == "Buy soil" && $0.deletedAt == nil })
     }
 
+    func testAddTappedTwiceAddsTheDraftOnce() async throws {
+        let (workspace, _) = home()
+        let plan = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])
+        let store = chat(workspace) { _ in AssistantReply(text: "Here's a plan.", plan: plan, isComplete: true) }
+        await send("Plan repotting", in: store)
+        // The first save waits until the second tap is in.
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        let saves = LockIsolated(0)
+        let save = store.dependencies.store.save
+        store.dependencies.store.save = { operation in
+            saves.withValue { $0 += 1 }
+            for await _ in gate {}
+            return try await save(operation)
+        }
+
+        await store.send(.addTapped)
+        await store.send(.addTapped)
+        open.finish()
+        await store.skipReceivedActions(strict: false)
+        await store.finish()
+
+        XCTAssertEqual(saves.value, 1)
+        XCTAssertEqual(store.state.conversation.added.count, 1)
+    }
+
+    func testUndoingAChangeEditedSinceSaysWhatWasKept() async throws {
+        let (workspace, rent) = home()
+        let code = workspace.displayCode(of: rent)
+        let store = chat(workspace) { request in
+            await Self.proposing([TaskChange(code: code, title: "Pay the rent")], in: request)
+        }
+        await send("Rename the rent task", in: store)
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+        try await applyLast(in: store)
+        let storeClient = store.dependencies.store
+        _ = try await withDependencies {
+            $0.uuid = UUIDGenerator { UUID() }
+        } operation: {
+            try await storeClient.edit(rent.id, Workspace.TaskEdit(title: "Pay the rent, late"))
+        }
+
+        await store.send(.undoTapped(messageID: reply.id))
+        await store.skipReceivedActions()
+
+        XCTAssertNotNil(store.state.alert)
+        let saved = try await storeClient.load()
+        XCTAssertEqual(saved.tasks[rent.id]?.title, "Pay the rent, late")
+    }
+
+    func testAnUndoThatFailsChangesNothingAndLeavesTheChatUsable() async throws {
+        let (workspace, rent) = home()
+        let code = workspace.displayCode(of: rent)
+        let store = chat(workspace) { request in
+            await Self.proposing([TaskChange(code: code, status: "done")], in: request)
+        }
+        await send("I paid the rent", in: store)
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+        try await applyLast(in: store)
+        store.dependencies.store.save = { _ in throw Unreadable() }
+
+        await store.send(.undoTapped(messageID: reply.id))
+        await store.skipReceivedActions()
+
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertNil(store.state.problem)
+        XCTAssertNotNil(store.state.conversation.changes[reply.id])
+        XCTAssertEqual(store.state.workspace.tasks[rent.id]?.status, .done)
+    }
+
     func testUndoingAnAddedDraftElsewherePutsTheDraftBack() async throws {
         let (workspace, _) = home()
         let plan = Plan(tasks: [Plan.TaskDraft(title: "Buy soil", place: "HOME")])

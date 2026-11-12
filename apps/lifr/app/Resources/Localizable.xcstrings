@@ -38,6 +38,9 @@
     "%@ Nothing changed. Send a message and the assistant will fix the draft." : {
 
     },
+    "%@ Nothing changed. Try it from Settings > Activity." : {
+
+    },
     "%@ Try again in a moment." : {
 
     },

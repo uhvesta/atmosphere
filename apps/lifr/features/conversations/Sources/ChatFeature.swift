@@ -70,6 +70,8 @@ package struct ChatFeature {
         package var editingProposal: ProposalEdit?
         /// The reply whose proposal is being applied or checked again.
         package var applying: UUID?
+        /// The draft is being added, so it can't be added again or changed.
+        package var addingDraft = false
         /// What the assistant's model reads besides text: the microphone
         /// records for one that listens, and dictates otherwise.
         package var inputs: Set<ModelInput> = []
@@ -200,7 +202,7 @@ package struct ChatFeature {
 
         /// Whether the draft can be added, edited or discarded: not while a
         /// reply is still writing it.
-        package var canChangeDraft: Bool { conversation.draft != nil && core.reply == nil }
+        package var canChangeDraft: Bool { conversation.draft != nil && core.reply == nil && !addingDraft }
 
         package var canAdd: Bool { canChangeDraft && problem == nil }
 
@@ -352,6 +354,8 @@ package struct ChatFeature {
         case undoDiscardTapped
         case addTapped
         case saved(Result<Saved, any Error>)
+        /// Changes of replies were undone, or couldn't be.
+        case undone(Result<Saved, any Error>)
         /// Goes to the point before the last one shown.
         case backTapped
         /// Goes to the point after the last one shown, the way it last went.
@@ -825,7 +829,7 @@ package struct ChatFeature {
                 state.conversation.go(to: id)
                 guard undo, !entries.isEmpty else { return .none }
                 return .run { [store] send in
-                    await send(.saved(Result { try await store.revert(entries: entries) }))
+                    await send(.undone(Result { try await store.revert(entries: entries) }))
                 }
 
             case .forkTapped(let id):
@@ -863,7 +867,7 @@ package struct ChatFeature {
             case .undoTapped(let messageID):
                 guard let entries = state.conversation.changes[messageID] else { return .none }
                 return .run { [store] send in
-                    await send(.saved(Result { try await store.revert(entries: entries) }))
+                    await send(.undone(Result { try await store.revert(entries: entries) }))
                 }
 
             case .applyTapped(let id):
@@ -1009,6 +1013,7 @@ package struct ChatFeature {
             case .addTapped:
                 guard state.canAdd, let plan = state.conversation.draft else { return .none }
                 let conversation = state.conversation.id
+                state.addingDraft = true
                 return .run { [store, timeZone] send in
                     await send(
                         .saved(
@@ -1024,41 +1029,69 @@ package struct ChatFeature {
                 }
 
             case .saved(.success(let saved)):
+                // The plan was added.
+                state.addingDraft = false
                 let isLatest = state.saves.isLatest(saved)
                 if isLatest {
                     state.workspace = saved.workspace
                 }
-                if !saved.change.reverts.isEmpty {
-                    let reverted = Set(saved.change.reverts)
-                    for (message, entries) in state.conversation.changes where reverted.isSuperset(of: entries) {
-                        state.conversation.changes[message] = nil
-                    }
-                    if state.conversation.draft == nil,
-                        let entry = saved.change.reverts.first(where: { state.addedDrafts[$0] != nil })
-                    {
-                        state.conversation.draft = state.addedDrafts.removeValue(forKey: entry)
-                    }
-                } else {
-                    // The plan was added.
-                    if let entry = saved.change.entry, let draft = state.conversation.draft {
-                        state.addedDrafts[entry] = draft
-                    }
-                    state.conversation.draft = nil
-                    state.editsDraft = false
-                    state.problem = nil
-                    if let entry = saved.change.entry {
-                        state.conversation.added.append(entry)
-                        // The reply that drafted it made it, for going back
-                        // past that reply to undo.
-                        if let reply = state.conversation.messages.last(where: { $0.role == .assistant }) {
-                            state.conversation.changes[reply.id, default: []].append(entry)
-                        }
+                if let entry = saved.change.entry, let draft = state.conversation.draft {
+                    state.addedDrafts[entry] = draft
+                }
+                state.conversation.draft = nil
+                state.editsDraft = false
+                state.problem = nil
+                if let entry = saved.change.entry {
+                    state.conversation.added.append(entry)
+                    // The reply that drafted it made it, for going back
+                    // past that reply to undo.
+                    if let reply = state.conversation.messages.last(where: { $0.role == .assistant }) {
+                        state.conversation.changes[reply.id, default: []].append(entry)
                     }
                 }
                 check(&state)
                 return isLatest ? .send(.delegate(.saved(saved.snapshot))) : .none
 
+            case .undone(.success(let saved)):
+                let isLatest = state.saves.isLatest(saved)
+                if isLatest {
+                    state.workspace = saved.workspace
+                }
+                let reverted = Set(saved.change.reverts)
+                for (message, entries) in state.conversation.changes where reverted.isSuperset(of: entries) {
+                    state.conversation.changes[message] = nil
+                }
+                if state.conversation.draft == nil,
+                    let entry = saved.change.reverts.first(where: { state.addedDrafts[$0] != nil })
+                {
+                    state.conversation.draft = state.addedDrafts.removeValue(forKey: entry)
+                }
+                let kept = saved.change.skipped.count
+                if kept > 0 {
+                    state.alert = AlertState {
+                        TextState("Some fields were kept")
+                    } message: {
+                        TextState(
+                            kept == 1
+                                ? String(localized: "One field was changed again since, so it stays as it is now.")
+                                : String(
+                                    localized: "\(kept) fields were changed again since, so they stay as they are now."
+                                ))
+                    }
+                }
+                check(&state)
+                return isLatest ? .send(.delegate(.saved(saved.snapshot))) : .none
+
+            case .undone(.failure(let error)):
+                state.alert = AlertState {
+                    TextState("Couldn't undo")
+                } message: {
+                    TextState("\(error.localizedDescription) Nothing changed. Try it from Settings > Activity.")
+                }
+                return .none
+
             case .saved(.failure(let error)):
+                state.addingDraft = false
                 state.problem = String(describing: error)
                 // The draft says what's wrong with its plan.
                 if case .plan? = error as? LifrError { return .none }
@@ -1321,7 +1354,7 @@ package struct ChatFeature {
         guard !entries.isEmpty else { return .send(next()) }
         return .run { [store] send in
             let result = await Result { try await store.revert(entries: entries) }
-            await send(.saved(result))
+            await send(.undone(result))
             if case .success = result { await send(next()) }
         }
     }
