@@ -730,6 +730,14 @@ package struct RemoteHost: Identifiable, Hashable, Sendable {
     /// Run on the host when it changes, or until it succeeds.
     package var setupScript: String
 
+    /// The coordinator, the Mac the daemon runs on: it has no name.
+    package static func coordinator(envNames: [String] = []) -> Self {
+        Self(name: "", sshDestination: nil, envNames: envNames)
+    }
+
+    /// Whether it's the coordinator rather than a remote host.
+    package var isCoordinator: Bool { name.isEmpty }
+
     package init(name: String, sshDestination: String?, envNames: [String] = [], setupScript: String = "") {
         self.name = name
         self.sshDestination = sshDestination

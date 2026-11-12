@@ -28,6 +28,9 @@ pub struct Daemon {
     /// Held while the hosts file is changed, so changes don't race.
     editing: tokio::sync::Mutex<()>,
     hosts_file: PathBuf,
+    /// The variables for the coordinator's own agents, those on the Mac the
+    /// daemon runs on, as saved in the hosts file.
+    coordinator_env: std::sync::Mutex<BTreeMap<String, String>>,
     store: Arc<Store>,
     /// This humatad's build, which managed hosts are kept at.
     build: String,
@@ -45,6 +48,8 @@ impl Daemon {
         build: String,
     ) -> Arc<Self> {
         let (tool_calls, calls) = mpsc::unbounded_channel();
+        local.set_env(hosts.coordinator_env.clone());
+        let coordinator_env = std::sync::Mutex::new(hosts.coordinator_env);
         let remotes = hosts
             .hosts
             .into_iter()
@@ -58,6 +63,7 @@ impl Daemon {
             remotes: RwLock::new(remotes),
             editing: tokio::sync::Mutex::new(()),
             hosts_file,
+            coordinator_env,
             store: Arc::new(store),
             build,
             tool_calls,
@@ -95,7 +101,55 @@ impl Daemon {
                 .iter()
                 .map(|(name, remote)| (name.clone(), remote.config()))
                 .collect(),
+            coordinator_env: self
+                .coordinator_env
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone(),
         }
+    }
+
+    /// The coordinator as a host: the names of its agents' variables, and no
+    /// name.
+    fn coordinator(&self) -> pb::HostInfo {
+        pb::HostInfo {
+            env_names: self
+                .coordinator_env
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .keys()
+                .cloned()
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Sets or unsets variables for the coordinator's agents. It has no
+    /// setup script: the person sets their Mac up themselves.
+    fn update_coordinator(&self, update: pb::UpdateHost) -> Result<pb::HostInfo, DaemonError> {
+        if update.setup_script.is_some() {
+            return Err(DaemonError::NoSetupHere);
+        }
+        let mut env = self
+            .coordinator_env
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        for var in update.set_env {
+            env.insert(var.name, var.value);
+        }
+        for name in update.unset_env {
+            env.remove(&name);
+        }
+        let mut hosts = self.hosts();
+        hosts.coordinator_env = env.clone();
+        hosts.save(&self.hosts_file)?;
+        self.local.set_env(env.clone());
+        *self
+            .coordinator_env
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = env;
+        Ok(self.coordinator())
     }
 
     fn add_host(&self, add: pb::AddHost) -> Result<pb::HostInfo, DaemonError> {
@@ -963,7 +1017,10 @@ impl Daemon {
                     .iter()
                     .map(|(name, config)| config.info(name))
                     .collect();
-                return Ok(Reply::Response(Response::Hosts(pb::Hosts { hosts })));
+                return Ok(Reply::Response(Response::Hosts(pb::Hosts {
+                    hosts,
+                    coordinator: Some(self.coordinator()),
+                })));
             }
             Request::AddHost(add) => {
                 let _editing = self.editing.lock().await;
@@ -974,7 +1031,12 @@ impl Daemon {
             }
             Request::UpdateHost(update) => {
                 let _editing = self.editing.lock().await;
-                let host = self.update_host(std::mem::take(update)).await?;
+                let update = std::mem::take(update);
+                let host = if update.name.is_empty() {
+                    self.update_coordinator(update)?
+                } else {
+                    self.update_host(update).await?
+                };
                 return Ok(Reply::Response(Response::HostSaved(pb::HostSaved {
                     host: Some(host),
                 })));

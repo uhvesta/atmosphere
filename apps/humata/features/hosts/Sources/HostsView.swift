@@ -13,9 +13,20 @@ package struct HostsView: View {
     package var body: some View {
         HStack(spacing: 0) {
             List(selection: $store.selection.sending(\.selected)) {
-                ForEach(store.hosts) { host in
-                    HostRow(host: host, health: store.health[host.id])
-                        .tag(host.id)
+                Section {
+                    Label("This Mac", systemImage: "laptopcomputer")
+                        .tag(store.coordinator.id)
+                }
+                Section("Remote") {
+                    ForEach(store.hosts) { host in
+                        HostRow(host: host, health: store.health[host.id])
+                            .tag(host.id)
+                    }
+                    if store.hosts.isEmpty {
+                        Button("Add Host…") { store.send(.addTapped) }
+                            .buttonStyle(.link)
+                            .help("Run sessions on another machine you reach with SSH")
+                    }
                 }
             }
             .frame(width: 220)
@@ -31,16 +42,6 @@ package struct HostsView: View {
                     Text(failure)
                 } actions: {
                     Button("Try Again") { store.send(.task) }
-                }
-            } else if store.hosts.isEmpty {
-                ContentUnavailableView {
-                    Label("No Hosts", systemImage: "server.rack")
-                } description: {
-                    Text(
-                        "Run sessions on another machine you reach with SSH. Humata installs itself there and "
-                            + "connects when a session needs it.")
-                } actions: {
-                    Button("Add Host…") { store.send(.addTapped) }
                 }
             }
         }
@@ -63,7 +64,15 @@ package struct HostsView: View {
     }
 
     @ViewBuilder private var detail: some View {
-        if let host = store.selected, let editor = store.scope(state: \.editor, action: \.editor) {
+        if let host = store.selected, host.isCoordinator,
+            let editor = store.scope(state: \.editor, action: \.editor)
+        {
+            Form {
+                HostEditorSections(store: editor)
+            }
+            .formStyle(.grouped)
+            .id(host.id)
+        } else if let host = store.selected, let editor = store.scope(state: \.editor, action: \.editor) {
             Form {
                 HealthSection(
                     host: host, health: store.health[host.id],
@@ -215,6 +224,16 @@ private struct HostEditorSections: View {
     @Bindable var store: StoreOf<HostEditorFeature>
 
     var body: some View {
+        Group {
+            variables
+            if !store.host.isCoordinator {
+                setupScript
+            }
+        }
+        .alert($store.scope(state: \.alert, action: \.alert))
+    }
+
+    @ViewBuilder private var variables: some View {
         Section {
             ForEach($store.variables) { $variable in
                 HStack {
@@ -239,7 +258,14 @@ private struct HostEditorSections: View {
                 }
                 .labelsHidden()
             }
-            Button("Add Variable") { store.send(.addVariableTapped) }
+            HStack {
+                Button("Add Variable") { store.send(.addVariableTapped) }
+                if store.host.isCoordinator {
+                    // This Mac has no setup script to save them with.
+                    Spacer()
+                    saveButton
+                }
+            }
             if !store.badNames.isEmpty {
                 Text(
                     "\(store.badNames.formatted(.list(type: .and))) can't be a variable's name: use letters, "
@@ -248,24 +274,34 @@ private struct HostEditorSections: View {
                 .foregroundStyle(.red)
             }
         } header: {
-            Text("Agents' Variables")
+            Text(store.host.isCoordinator ? "This Mac's Agents' Variables" : "Agents' Variables")
         } footer: {
             Text(
-                "Set for its agents and its setup script, such as GH_TOKEN for Copilot. Humata keeps them on "
-                    + "this Mac and sends them when it connects; they're never written on the host."
+                store.host.isCoordinator
+                    ? "Set for the agents on this Mac on top of your login shell's, such as GH_TOKEN for Copilot. "
+                        + "Humata keeps them in its hosts file, which only you can read."
+                    : "Set for its agents and its setup script, such as GH_TOKEN for Copilot. Humata keeps them on "
+                        + "this Mac and sends them when it connects; they're never written on the host."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
         }
+    }
+
+    private var saveButton: some View {
+        Button("Save") { store.send(.saveTapped) }
+            .keyboardShortcut("s")
+            .disabled(!store.canSave)
+    }
+
+    @ViewBuilder private var setupScript: some View {
         Section {
             TextEditor(text: $store.setupScript)
                 .font(.body.monospaced())
                 .frame(minHeight: 100)
             HStack {
                 Spacer()
-                Button("Save") { store.send(.saveTapped) }
-                    .keyboardShortcut("s")
-                    .disabled(!store.canSave)
+                saveButton
             }
         } header: {
             Text("Setup Script")
@@ -277,7 +313,6 @@ private struct HostEditorSections: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         }
-        .alert($store.scope(state: \.alert, action: \.alert))
     }
 }
 

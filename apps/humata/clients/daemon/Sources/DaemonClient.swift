@@ -83,6 +83,10 @@ package struct DaemonClient: Sendable {
     package var answerRequest: @Sendable (_ request: String, _ answer: RequestAnswer) async throws -> Void
     package var history: @Sendable (_ session: String) async throws -> [SessionEvent]
     package var hosts: @Sendable () async throws -> [RemoteHost]
+    /// The coordinator, the Mac the daemon runs on, as a host with no name:
+    /// the variables for its agents. `updateHost` with "" changes them; it
+    /// takes no setup script.
+    package var coordinator: @Sendable () async throws -> RemoteHost
     /// Adds a host Humata reaches with `ssh destination` and installs itself on.
     package var addHost: @Sendable (_ name: String, _ destination: String) async throws -> RemoteHost
     package var updateHost: @Sendable (_ host: String, _ update: HostUpdate) async throws -> RemoteHost

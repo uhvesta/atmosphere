@@ -1398,3 +1398,72 @@ async fn a_host_lists_the_models_its_backends_offer() {
     let listed = client.call(list(pb::Backend::Local, &unreachable)).await;
     assert!(listed.is_err(), "listed from nowhere: {listed:?}");
 }
+
+#[tokio::test]
+async fn the_coordinators_variables_are_kept_and_only_their_names_come_back() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let coordinator = |hosts: pb::response::Kind| match hosts {
+        pb::response::Kind::Hosts(hosts) => hosts.coordinator.unwrap_or_default().env_names,
+        other => panic!("not the hosts: {other:?}"),
+    };
+    let list = || pb::request::Kind::ListHosts(pb::ListHosts::default());
+    let client = daemon(state.path(), Hosts::default()).await;
+
+    let set = client
+        .call(pb::request::Kind::UpdateHost(pb::UpdateHost {
+            set_env: vec![
+                pb::EnvVar {
+                    name: "GH_TOKEN".to_owned(),
+                    value: "secret".to_owned(),
+                },
+                pb::EnvVar {
+                    name: "CARGO_HOME".to_owned(),
+                    value: "/opt/cargo".to_owned(),
+                },
+            ],
+            ..Default::default()
+        }))
+        .await;
+    assert!(set.is_ok(), "not set: {set:?}");
+    let listed = client
+        .call(list())
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(coordinator(listed.clone()), ["CARGO_HOME", "GH_TOKEN"]);
+    assert!(!format!("{listed:?}").contains("secret"));
+
+    let file = state.path().join("hosts.json");
+    let mode = std::fs::metadata(&file)
+        .unwrap_or_else(|error| panic!("{error}"))
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+
+    let script = client
+        .call(pb::request::Kind::UpdateHost(pb::UpdateHost {
+            setup_script: Some("brew install ripgrep".to_owned()),
+            ..Default::default()
+        }))
+        .await;
+    assert!(script.is_err(), "took a setup script: {script:?}");
+
+    client
+        .call(pb::request::Kind::UpdateHost(pb::UpdateHost {
+            unset_env: vec!["CARGO_HOME".to_owned()],
+            ..Default::default()
+        }))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let reopened = daemon(
+        state.path(),
+        Hosts::load(&file).unwrap_or_else(|error| panic!("{error}")),
+    )
+    .await;
+    let listed = reopened
+        .call(list())
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(coordinator(listed), ["GH_TOKEN"]);
+}

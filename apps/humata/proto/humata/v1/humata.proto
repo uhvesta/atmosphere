@@ -1189,6 +1189,10 @@ message ListHosts {}
 
 message Hosts {
   repeated HostInfo hosts = 1;
+  // The coordinator, the Mac the daemon runs on, with no name: the
+  // variables for its agents. `UpdateHost` with
+  // no name changes them; it takes no setup script.
+  HostInfo coordinator = 2;
 }
 
 message AddHost {

@@ -74,6 +74,12 @@ impl Machine {
         }
     }
 
+    /// Replaces the agents' variables; programs started from now on see
+    /// the new ones.
+    pub fn set_env(&self, env: BTreeMap<String, String>) {
+        self.env.replace(env);
+    }
+
     fn setup_file(&self) -> PathBuf {
         self.state.join("setup.json")
     }

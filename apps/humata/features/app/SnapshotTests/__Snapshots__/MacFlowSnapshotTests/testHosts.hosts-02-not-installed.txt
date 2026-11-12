@@ -17,6 +17,11 @@
     [Button] "Search"
   [Outline] ""
     [Row/OutlineRow] ""
+    [Row/OutlineRow] ""
+      [StaticText] "" value: "This Mac"
+    [Row/OutlineRow] ""
+      [Heading] "Remote"
+    [Row/OutlineRow] ""
       [StaticText] "" value: "build-box"
       [Image, selected] "Reachable" id: checkmark.circle.fill
       [StaticText] "" value: "build-box"

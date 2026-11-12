@@ -105,6 +105,35 @@ final class HostsFeatureTests: XCTestCase {
         XCTAssertEqual(status.setup?.succeeded, true)
     }
 
+    func testThisMacsVariablesAreEditedLikeAHostsWithNoSetupScript() async throws {
+        let daemon = InMemoryDaemon()
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        await store.receive(\.coordinatorLoaded)
+        // With no remote hosts, This Mac is what there is to edit.
+        XCTAssertEqual(store.state.selected?.isCoordinator, true)
+
+        await store.send(\.editor.addVariableTapped)
+        var variables = store.state.editor?.variables ?? []
+        let row = try XCTUnwrap(variables.last)
+        variables[id: row.id]?.name = "GH_TOKEN"
+        variables[id: row.id]?.value = "secret"
+        await store.send(\.editor.binding.variables, variables)
+        await store.send(\.editor.saveTapped)
+        await store.receive(\.editor.delegate.saved)
+        XCTAssertEqual(daemon.env(of: ""), ["GH_TOKEN": "secret"])
+        XCTAssertEqual(store.state.coordinator.envNames, ["GH_TOKEN"])
+        XCTAssertEqual(store.state.editor?.variables.map(\.value), [""])
+        XCTAssertTrue(store.state.hosts.isEmpty)
+    }
+
     func testAVariableNeedsAName() {
         var state = HostEditorFeature.State(host: RemoteHost(name: "far", sshDestination: "me@far"))
         state.variables = [HostEditorFeature.Variable(id: 0, name: "1BAD", value: "x")]
@@ -133,7 +162,8 @@ final class HostsFeatureTests: XCTestCase {
         await store.send(.destination(.presented(.alert(.confirmRemove("far")))))
         await store.receive(\.removed)
         XCTAssertEqual(store.state.hosts, [])
-        XCTAssertNil(store.state.editor)
+        // With the last remote host gone, This Mac is what's left selected.
+        XCTAssertEqual(store.state.selected?.isCoordinator, true)
         let left = try await daemon.client.hosts()
         XCTAssertEqual(left, [])
     }

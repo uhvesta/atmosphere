@@ -11,6 +11,8 @@ package struct HostsFeature {
     @ObservableState
     package struct State: Equatable {
         package var hosts: IdentifiedArrayOf<RemoteHost> = []
+        /// This Mac, the coordinator: its id, "", selects it.
+        package var coordinator = RemoteHost.coordinator()
         package var health: [RemoteHost.ID: Health] = [:]
         package var selection: RemoteHost.ID?
         /// The selected host's variables and setup script.
@@ -21,7 +23,9 @@ package struct HostsFeature {
 
         package init() {}
 
-        package var selected: RemoteHost? { selection.flatMap { hosts[id: $0] } }
+        package var selected: RemoteHost? {
+            selection.flatMap { $0 == coordinator.id ? coordinator : hosts[id: $0] }
+        }
     }
 
     /// What's known of a host's health.
@@ -45,6 +49,7 @@ package struct HostsFeature {
         /// The list appeared: reads the hosts and checks each.
         case task
         case loaded([RemoteHost])
+        case coordinatorLoaded(RemoteHost)
         case loadFailed(String)
         case selected(RemoteHost.ID?)
         case addTapped
@@ -68,6 +73,7 @@ package struct HostsFeature {
             case .task:
                 return .run { send in
                     await send(.loaded(try await daemon.hosts()))
+                    await send(.coordinatorLoaded(try await daemon.coordinator()))
                 } catch: { error, send in
                     await send(.loadFailed(error.localizedDescription))
                 }
@@ -75,8 +81,15 @@ package struct HostsFeature {
             case .loaded(let hosts):
                 state.failure = nil
                 state.hosts = IdentifiedArray(hosts, uniquingIDsWith: { _, last in last })
-                if state.selected == nil { select(state.hosts.first?.id, in: &state) }
+                if state.selected == nil { select(state.hosts.first?.id ?? state.coordinator.id, in: &state) }
                 return .merge(hosts.map { check($0.id, in: &state) })
+
+            case .coordinatorLoaded(let coordinator):
+                state.coordinator = coordinator
+                if state.selection == coordinator.id, state.editor?.update == nil {
+                    state.editor = HostEditorFeature.State(host: coordinator)
+                }
+                return .none
 
             case .loadFailed(let message):
                 state.failure = message
@@ -131,7 +144,7 @@ package struct HostsFeature {
             case .removed(let id):
                 state.hosts.remove(id: id)
                 state.health[id] = nil
-                if state.selection == id { select(state.hosts.first?.id, in: &state) }
+                if state.selection == id { select(state.hosts.first?.id ?? state.coordinator.id, in: &state) }
                 return .none
 
             case .failed(let title, let message):
@@ -148,6 +161,10 @@ package struct HostsFeature {
                 state.hosts.append(host)
                 select(host.id, in: &state)
                 return check(host.id, in: &state)
+
+            case .editor(.delegate(.saved(let host))) where host.isCoordinator:
+                state.coordinator = host
+                return .none
 
             case .editor(.delegate(.saved(let host))):
                 state.hosts[id: host.id] = host
@@ -385,7 +402,7 @@ package struct HostEditorFeature {
             case .failed(let message):
                 state.saving = false
                 state.alert = AlertState {
-                    TextState("Couldn't save \(state.host.name)")
+                    TextState("Couldn't save \(state.host.isCoordinator ? "This Mac" : state.host.name)")
                 } message: {
                     TextState(message)
                 }

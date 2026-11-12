@@ -344,6 +344,12 @@ extension DaemonClient {
                 }
                 return hosts.hosts.map(RemoteHost.init)
             },
+            coordinator: {
+                guard case .hosts(let hosts) = try await daemon.call(.listHosts(Humata_V1_ListHosts())) else {
+                    throw DaemonError.unexpected("something other than the hosts")
+                }
+                return RemoteHost(hosts.coordinator)
+            },
             addHost: { name, destination in
                 var add = Humata_V1_AddHost()
                 add.name = name

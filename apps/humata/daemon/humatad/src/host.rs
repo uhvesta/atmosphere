@@ -216,6 +216,12 @@ impl Host {
     /// Opens the sessions kept under `state`, one folder per backend. Their
     /// copies of the code they work in go under `worktrees`. Agents that
     /// take MCP servers are given `mcp`.
+    /// Sets the variables for this host's agents, as the daemon does for
+    /// the Mac it runs on.
+    pub fn set_env(&self, env: std::collections::BTreeMap<String, String>) {
+        self.machine.set_env(env);
+    }
+
     pub async fn open(
         state: &Path,
         worktrees: &Path,

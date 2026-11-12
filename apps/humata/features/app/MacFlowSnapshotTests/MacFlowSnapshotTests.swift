@@ -377,6 +377,7 @@ final class MacFlowSnapshotTests: XCTestCase {
                 setEnv: ["GH_TOKEN": "secret", "CARGO_HOME": "/opt/cargo"],
                 setupScript: "sudo apt-get install -y ripgrep\ncurl -fsSL https://gh.io/copilot-install | bash\n"))
         _ = try await daemon.client.addHost("gpu", "me@10.0.0.7")
+        _ = try await daemon.client.updateHost("", HostUpdate(setEnv: ["ANTHROPIC_API_KEY": "secret"]))
         let project = try await daemon.client.createProject("humata", [Repository(path: "/code/humata")], "")
         let session = try await daemon.client.start(
             StartRequest(backend: .copilot, name: "Profile the build", host: "build-box", projectID: project.id))
@@ -406,6 +407,10 @@ final class MacFlowSnapshotTests: XCTestCase {
         store.send(.hosts(.presented(.selected("gpu"))))
         try await until { store.hosts?.selection == "gpu" }
         await flow.step("not installed")
+
+        store.send(.hosts(.presented(.selected(RemoteHost.coordinator(envNames: []).id))))
+        try await until { store.hosts?.selected?.isCoordinator == true && store.hosts?.editor?.variables.count == 1 }
+        await flow.step("this mac")
 
         store.send(.hosts(.presented(.addTapped)))
         try await until { store.hosts?.destination?.add?.sshHosts.isEmpty == false }

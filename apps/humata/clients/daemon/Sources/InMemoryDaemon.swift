@@ -268,6 +268,7 @@ package final class InMemoryDaemon: Sendable {
                 return self.history(session)
             },
             hosts: { self.state.value.hosts },
+            coordinator: { RemoteHost.coordinator(envNames: (self.state.value.env[""] ?? [:]).keys.sorted()) },
             addHost: { name, destination in try self.addHost(name, destination) },
             updateHost: { host, update in try self.updateHost(host, update) },
             removeHost: { host in try self.removeHost(host) },
@@ -923,6 +924,18 @@ extension InMemoryDaemon {
 
     private func updateHost(_ name: String, _ update: HostUpdate) throws -> RemoteHost {
         try state.withValue { state in
+            if name.isEmpty {
+                guard update.setupScript == nil else {
+                    throw DaemonError.refused(
+                        .invalidRequest, message: "This Mac has no setup script; install what its agents need yourself."
+                    )
+                }
+                var env = state.env[""] ?? [:]
+                for unset in update.unsetEnv { env[unset] = nil }
+                env.merge(update.setEnv) { _, new in new }
+                state.env[""] = env
+                return RemoteHost.coordinator(envNames: env.keys.sorted())
+            }
             guard let index = state.hosts.firstIndex(where: { $0.name == name }) else { throw Self.unknownHost(name) }
             var env = state.env[name] ?? [:]
             for unset in update.unsetEnv { env[unset] = nil }

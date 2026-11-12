@@ -25,6 +25,11 @@ use crate::error::{DaemonError, StartError};
 pub struct Hosts {
     #[serde(default)]
     pub hosts: BTreeMap<String, HostConfig>,
+    /// Variables for the coordinator's own agents, those on the Mac the
+    /// daemon runs on, such as `GH_TOKEN`; set on top
+    /// of the login environment.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub coordinator_env: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]

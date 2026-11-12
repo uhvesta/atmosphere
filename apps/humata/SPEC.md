@@ -252,7 +252,7 @@ for you without hunting, land work, and find your way around.
   - requests are kept in the daemon's SQLite, so they survive restarts and work for remote sessions through the MCP relay; the Dock count and a notification remind you until each is answered
 - [x] Claude and Copilot parity: model lists, approval modes, steering and usage behave the same
 - [x] Spec drafting: a task's spec edited in the app with a rendered preview
-- [ ] A variables editor for This Mac, like the hosts have
+- [x] A variables editor for This Mac, like the hosts have
 - [ ] Sessions skipped on load are listed with why, and can be removed
 
 **Done when:** a flow approves a write from the inbox and sees the session

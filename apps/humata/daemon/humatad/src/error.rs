@@ -345,6 +345,11 @@ pub enum DaemonError {
     ForHostsOnly,
 
     #[error(
+        "this Mac has no setup script; Humata only runs one on remote hosts. Install what its agents need on this Mac yourself"
+    )]
+    NoSetupHere,
+
+    #[error(
         "an agent on {host} asked for {asked}, which is outside the projects of the sessions running there; its humata tools reach only those sessions' boards and review threads"
     )]
     OutOfScope { host: String, asked: &'static str },
@@ -515,6 +520,7 @@ impl DaemonError {
             | Self::NotAFolder { .. }
             | Self::NoRepositories
             | Self::ForHostsOnly
+            | Self::NoSetupHere
             | Self::OutOfScope { .. } => pb::ErrorCode::InvalidRequest,
             Self::Spawn { .. }
             | Self::Connect { .. }
