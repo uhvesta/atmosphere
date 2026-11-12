@@ -239,6 +239,35 @@ final class AssistantWriteTests: XCTestCase {
         let saved = try await apply(tools, to: store)
         XCTAssertEqual(saved.tasks[rent.id]?.dueDate?.description, "2026-11-09")
     }
+
+    func testRenamingOrReprioritisingKeepsTheDueDateAndTime() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let home = records.avenue("HOME", "Home")
+        let call = records.task("Call the bank", in: home, due: 2, at: "15:00")
+        let (tools, store) = tools(records.workspace)
+        let code = records.workspace.displayCode(of: call)
+
+        _ = try await tools.change(TaskChange(code: code, title: "Call the bank about the card", priority: "high"))
+
+        let saved = try await apply(tools, to: store).tasks[call.id]
+        XCTAssertEqual(saved?.title, "Call the bank about the card")
+        XCTAssertEqual(saved?.priority, .high)
+        XCTAssertEqual(saved?.dueDate, call.dueDate)
+        XCTAssertEqual(saved?.dueTime, call.dueTime)
+    }
+
+    func testNoDueDateClearsATimedTasksDateAndTime() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let home = records.avenue("HOME", "Home")
+        let call = records.task("Call the bank", in: home, due: 2, at: "15:00")
+        let (tools, store) = tools(records.workspace)
+
+        _ = try await tools.change(TaskChange(code: records.workspace.displayCode(of: call), due: "none"))
+
+        let saved = try await apply(tools, to: store).tasks[call.id]
+        XCTAssertNil(saved?.dueDate)
+        XCTAssertNil(saved?.dueTime)
+    }
 }
 
 /// Fails unless `body` throws `expected`.

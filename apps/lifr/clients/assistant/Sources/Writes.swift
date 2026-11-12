@@ -113,11 +113,11 @@ extension AssistantTools {
             guard let match = Priority(rawValue: priority.lowercased()) else { throw .unknownPriority(priority) }
             return match
         }.flatMap { $0 == task.priority ? nil : $0 }
-        let newDue = try change.due.nonEmpty.map { (due) throws(TaskChangeError) -> CalendarDate? in
-            if due.lowercased() == "none" { return nil }
+        let newDue = try change.due.nonEmpty.flatMap { (due) throws(TaskChangeError) -> Workspace.TaskEdit? in
+            if due.lowercased() == "none" { return task.dueDate == nil ? nil : Workspace.TaskEdit(dueDate: .some(nil)) }
             guard let date = CalendarDate.resolving(due, today: today) else { throw .invalidDate(due) }
-            return date
-        }.flatMap { $0 == task.dueDate ? nil : $0 }
+            return .due(date, for: task)
+        }
         let newTitle = change.title.nonEmpty.flatMap { $0 == task.title ? nil : $0 }
         let newPlace = try change.place.nonEmpty
             .map { (place) throws(TaskChangeError) in try self.place(place, of: task) }
@@ -134,7 +134,9 @@ extension AssistantTools {
         try apply(.task(asked), code: shown) { workspace, context throws(LifrError) in
             var saved = Change()
             if newTitle != nil || newPriority != nil || newDue != nil {
-                let edit = Workspace.TaskEdit(title: newTitle, priority: newPriority, dueDate: newDue)
+                var edit = newDue ?? Workspace.TaskEdit()
+                edit.title = newTitle
+                edit.priority = newPriority
                 saved.merge(try workspace.edit(id, edit, in: context))
             }
             if let newPlace {

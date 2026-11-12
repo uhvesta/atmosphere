@@ -425,7 +425,8 @@ package struct Workspace: Hashable, Codable, Sendable {
     }
 
     /// Changes to a task's own fields. `nil` leaves a field as it is; for the
-    /// optional fields, `.some(nil)` clears it.
+    /// optional fields, `.some(nil)` clears it. Clearing the due date clears
+    /// its time too, unless the edit sets one.
     package struct TaskEdit: Sendable {
         package var title: String?
         package var details: String?
@@ -474,7 +475,12 @@ package struct Workspace: Hashable, Codable, Sendable {
         if let priority = edit.priority { task.priority = priority }
         if let startDate = edit.startDate { task.startDate = startDate }
         if let dueDate = edit.dueDate { task.dueDate = dueDate }
-        if let dueTime = edit.dueTime { task.dueTime = dueTime }
+        if let dueTime = edit.dueTime {
+            task.dueTime = dueTime
+        } else if case .some(.none) = edit.dueDate {
+            // Taking the due date away takes its time with it.
+            task.dueTime = nil
+        }
         if let labelIDs = edit.labelIDs {
             try checkLabels(labelIDs)
             task.labelIDs = labelIDs

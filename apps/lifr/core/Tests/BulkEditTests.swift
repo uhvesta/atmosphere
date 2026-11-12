@@ -72,6 +72,24 @@ func bulkEditTests() -> [TestCase] {
             _ = try fixture.apply(.dueDate(nil), to: [run, swim])
             try expectEqual(try fixture.get(run).dueDate, nil)
         },
+        TestCase("given a timed task and one over days, when rescheduled and then none, then they move and clear") {
+            let fixture = try Fixture()
+            let call = try fixture.task("Call")
+            let trip = try fixture.task("Trip")
+            let start = try CalendarDate("2026-11-10")
+            let end = try CalendarDate("2026-11-12")
+            _ = try fixture.workspace.edit(
+                call.id, .init(dueDate: .some(start), dueTime: .some(try TimeOfDay("15:00"))),
+                in: fixture.context)
+            _ = try fixture.workspace.edit(
+                trip.id, .init(startDate: .some(start), dueDate: .some(end)), in: fixture.context)
+            _ = try fixture.apply(.dueDate(try CalendarDate("2026-11-15")), to: [call, trip])
+            try expectEqual(try fixture.get(trip).startDate, try CalendarDate("2026-11-13"))
+            try expectEqual(try fixture.get(call).dueTime, try TimeOfDay("15:00"))
+            _ = try fixture.apply(.dueDate(nil), to: [call, trip])
+            try expectEqual(try fixture.get(call).dueDate, nil)
+            try expectEqual(try fixture.get(call).dueTime, nil)
+        },
         TestCase("given tasks, one with the label, when it's added to all, then each has it once") {
             let fixture = try Fixture()
             let errand = fixture.workspace.createLabel(name: "Errand", in: fixture.context)

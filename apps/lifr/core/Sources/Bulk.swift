@@ -39,7 +39,9 @@ extension Workspace {
             case .priority(let priority):
                 change.merge(try self.edit(task.id, TaskEdit(priority: priority), in: context))
             case .dueDate(let date):
-                change.merge(try self.edit(task.id, TaskEdit(dueDate: .some(date)), in: context))
+                let dated = date.map { TaskEdit.due($0, for: task) } ?? TaskEdit(dueDate: .some(nil))
+                guard let dated else { continue }
+                change.merge(try self.edit(task.id, dated, in: context))
             case .addLabel(let label):
                 guard labels[label] != nil else { throw .notFound(.label, label.uuidString) }
                 guard !task.labelIDs.contains(label) else { continue }
