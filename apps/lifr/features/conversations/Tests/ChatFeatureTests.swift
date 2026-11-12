@@ -628,6 +628,38 @@ final class ChatFeatureTests: XCTestCase {
         XCTAssertNil(store.state.conversation.changes[reply.id])
     }
 
+    func testAProposalForATaskChangedSinceIsShownAgainBeforeItsSaved() async throws {
+        let (workspace, rent) = home()
+        let code = workspace.displayCode(of: rent)
+        let store = chat(workspace) { request in
+            await Self.proposing([TaskChange(code: code, status: "done")], in: request)
+        }
+        await send("I paid the rent", in: store)
+        let reply = try XCTUnwrap(store.state.conversation.messages.last)
+        let storeClient = store.dependencies.store
+        _ = try await withDependencies {
+            $0.uuid = UUIDGenerator { UUID() }
+        } operation: {
+            try await storeClient.edit(rent.id, Workspace.TaskEdit(title: "Pay the rent, late"))
+        }
+
+        await store.send(.applyTapped(messageID: reply.id))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertNotNil(store.state.alert)
+        XCTAssertNil(store.state.proposal(of: reply.id)?.decision)
+        var saved = try await store.dependencies.store.load()
+        XCTAssertEqual(saved.tasks[rent.id]?.status, .todo, "nothing is saved over the newer change")
+        guard case .task(let before)? = store.state.proposal(of: reply.id)?.steps.first?.before else {
+            return XCTFail("the card shows the task")
+        }
+        XCTAssertEqual(before.title, "Pay the rent, late")
+
+        try await applyLast(in: store)
+        saved = try await store.dependencies.store.load()
+        XCTAssertEqual(saved.tasks[rent.id]?.status, .done)
+        XCTAssertEqual(saved.tasks[rent.id]?.title, "Pay the rent, late")
+    }
+
     func testDecliningAProposalSavesNothing() async throws {
         let (workspace, rent) = home()
         let code = workspace.displayCode(of: rent)

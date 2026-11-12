@@ -336,6 +336,9 @@ package struct ChatFeature {
         /// are now, as one change.
         case applyTapped(messageID: UUID)
         case applied(messageID: UUID, Result<Saved, any Error>)
+        /// The records the proposal changes were changed since it was
+        /// made: here it is made again on them, for the person to check.
+        case changedSince(messageID: UUID, Proposal)
         case declineTapped(messageID: UUID)
         case editProposalTapped(messageID: UUID)
         /// Checks the edited proposal against the records, and keeps it
@@ -867,17 +870,35 @@ package struct ChatFeature {
                 state.applying = id
                 let conversation = state.conversation.id
                 return .run { [store, now, timeZone] send in
-                    await send(
-                        .applied(
-                            messageID: id,
-                            Result {
-                                let workspace = try await store.load()
-                                let made = try await Proposal.make(
-                                    proposal.actions, on: workspace, now: now, timeZone: timeZone,
-                                    conversation: conversation)
-                                return try await store.save(made.operation)
-                            }))
+                    do {
+                        let workspace = try await store.load()
+                        let made = try await Proposal.make(
+                            proposal.actions, on: workspace, now: now, timeZone: timeZone,
+                            conversation: conversation)
+                        guard made.proposal.steps.map(\.before) == proposal.steps.map(\.before) else {
+                            await send(.changedSince(messageID: id, made.proposal))
+                            return
+                        }
+                        await send(.applied(messageID: id, .success(try await store.save(made.operation))))
+                    } catch {
+                        await send(.applied(messageID: id, .failure(error)))
+                    }
                 }
+
+            case .changedSince(let id, let proposal):
+                state.applying = nil
+                state.setProposal(proposal, of: id)
+                state.alert = AlertState {
+                    TextState("Changed Since It Was Proposed")
+                } actions: {
+                    ButtonState(role: .cancel) { TextState("OK") }
+                } message: {
+                    TextState(
+                        "Something these changes touch was changed after the assistant proposed them, so nothing "
+                            + "was saved. The card now shows them on the records as they are. Check them, then tap "
+                            + "Apply again.")
+                }
+                return .none
 
             case .applied(let id, .success(let saved)):
                 state.applying = nil
