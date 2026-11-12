@@ -312,21 +312,22 @@ async fn a_chat_in_no_folder_gets_its_own_and_its_files_can_be_read() {
 }
 
 pub(crate) async fn daemon(state: &Path, hosts: Hosts) -> Client {
+    client_of(daemon_itself(state, hosts).await).await
+}
+
+async fn daemon_itself(state: &Path, hosts: Hosts) -> Arc<Daemon> {
     let store = match Store::open(&state.join("humata.sqlite3")) {
         Ok(store) => store,
         Err(error) => panic!("couldn't open the store: {error}"),
     };
     match Host::open(&state.join("host"), &state.join("worktrees"), None).await {
-        Ok(local) => {
-            client_of(Arc::new(Daemon::new(
-                local,
-                store,
-                hosts,
-                state.join("hosts.json"),
-                "test".to_owned(),
-            )))
-            .await
-        }
+        Ok(local) => Daemon::new(
+            local,
+            store,
+            hosts,
+            state.join("hosts.json"),
+            "test".to_owned(),
+        ),
         Err(error) => panic!("couldn't open the host: {error}"),
     }
 }
@@ -1233,4 +1234,136 @@ async fn a_claude_code_session_on_the_host_is_listed_and_imported_once() {
         ),
         "{again:?}"
     );
+}
+
+fn refused_with(result: &Result<pb::response::Kind, ClientError>, code: pb::ErrorCode) -> bool {
+    matches!(result, Err(ClientError::Refused { code: refused, .. }) if *refused == code)
+}
+
+#[tokio::test]
+async fn a_hosts_agents_tool_calls_wait_for_the_daemon_watching_and_get_its_answer() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let host = match Host::open(state.path(), &state.path().join("worktrees"), None).await {
+        Ok(host) => Arc::new(host),
+        Err(error) => panic!("couldn't open the host: {error}"),
+    };
+    let agent = Arc::new(client_of(host.relay()).await);
+    let daemon = client_of(host).await;
+    let list = || {
+        pb::request::Kind::ListItems(pb::ListItems {
+            project_id: "p".to_owned(),
+        })
+    };
+
+    let unwatched = agent.call(list()).await;
+    assert!(
+        refused_with(&unwatched, pb::ErrorCode::HostUnavailable),
+        "{unwatched:?}"
+    );
+
+    let watch = pb::request::Kind::WatchToolCalls(pb::WatchToolCalls {});
+    let (_, mut calls) = daemon
+        .stream(watch)
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let asking = tokio::spawn({
+        let agent = agent.clone();
+        async move { agent.call(list()).await }
+    });
+    let Some(Ok(pb::StreamItem {
+        kind: Some(pb::stream_item::Kind::ToolCall(call)),
+    })) = calls.next().await
+    else {
+        panic!("no tool call came")
+    };
+    let asked = call.request.and_then(|request| request.kind);
+    assert!(
+        matches!(asked, Some(pb::request::Kind::ListItems(_))),
+        "{asked:?}"
+    );
+    let items = pb::Items {
+        items: vec![pb::Item {
+            id: "i".to_owned(),
+            title: "the answer".to_owned(),
+            ..Default::default()
+        }],
+    };
+    let answer = pb::AnswerToolCall {
+        id: call.id,
+        response: Some(pb::Response {
+            kind: Some(pb::response::Kind::Items(items.clone())),
+        }),
+    };
+    daemon
+        .call(pb::request::Kind::AnswerToolCall(answer.clone()))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+    let answered = asking.await.unwrap_or_else(|error| panic!("{error}"));
+    assert!(matches!(answered, Ok(pb::response::Kind::Items(got)) if got == items));
+
+    // Answered once; the same answer again has no call to go to.
+    let again = daemon.call(pb::request::Kind::AnswerToolCall(answer)).await;
+    assert!(
+        refused_with(&again, pb::ErrorCode::InvalidRequest),
+        "{again:?}"
+    );
+    // Only the tools' requests go through.
+    let other = agent.call(start(state.path(), "")).await;
+    assert!(
+        refused_with(&other, pb::ErrorCode::InvalidRequest),
+        "{other:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_hosts_agents_reach_only_the_boards_and_sessions_of_that_host() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let (here, elsewhere) = (git_repository(), git_repository());
+    let daemon = daemon_itself(state.path(), Hosts::default()).await;
+    let client = client_of(daemon.clone()).await;
+    let ours = project(&client, here.path()).await;
+    let theirs = project(&client, elsewhere.path()).await;
+    let session = started(&client, start_in(&ours.id)).await;
+    let our_task = item(&client, &ours.id, "", "ours").await;
+    let their_task = item(&client, &theirs.id, "", "theirs").await;
+    let list = |project: &pb::Project| {
+        Some(pb::request::Kind::ListItems(pb::ListItems {
+            project_id: project.id.clone(),
+        }))
+    };
+    let update = |task: &pb::Item| {
+        Some(pb::request::Kind::UpdateItem(pb::UpdateItem {
+            item_id: task.id.clone(),
+            title: Some("renamed".to_owned()),
+            ..Default::default()
+        }))
+    };
+    // Sessions on this Mac are the host named "".
+    let allowed = |result: &Result<pb::response::Kind, crate::error::DaemonError>| result.is_ok();
+
+    let listed = daemon.tool_call("", list(&ours)).await;
+    assert!(matches!(&listed, Ok(pb::response::Kind::Items(items)) if items.items.len() == 1));
+    assert!(allowed(&daemon.tool_call("", update(&our_task)).await));
+    assert!(!allowed(&daemon.tool_call("", list(&theirs)).await));
+    assert!(!allowed(&daemon.tool_call("", update(&their_task)).await));
+    assert!(!allowed(&daemon.tool_call("other", list(&ours)).await));
+    let started_elsewhere = daemon.tool_call("", Some(start_in(&ours.id))).await;
+    assert!(!allowed(&started_elsewhere));
+
+    let sessions = |host: &'static str| {
+        let daemon = daemon.clone();
+        async move {
+            let request = pb::request::Kind::ListSessions(pb::ListSessions::default());
+            match daemon.tool_call(host, Some(request)).await {
+                Ok(pb::response::Kind::Sessions(sessions)) => sessions
+                    .sessions
+                    .into_iter()
+                    .map(|session| session.id)
+                    .collect::<Vec<_>>(),
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+    assert_eq!(sessions("").await, vec![session.id]);
+    assert!(sessions("other").await.is_empty());
 }

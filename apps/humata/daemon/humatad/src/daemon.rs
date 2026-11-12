@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, PoisonError, RwLock, Weak};
 
 use humata_wire::{ClientError, Reply, Service, ServiceFuture, describe, error, pb, streams};
 use tokio::sync::mpsc;
@@ -14,7 +14,7 @@ use crate::convert;
 use crate::error::DaemonError;
 use crate::error::StoreError;
 use crate::host::Host;
-use crate::hosts::{self, HostConfig, Hosts, Remote, Ssh};
+use crate::hosts::{self, HostConfig, Hosts, Remote, Ssh, ToolCall};
 use crate::store::Store;
 use humata_agent::Repository;
 
@@ -31,29 +31,39 @@ pub struct Daemon {
     store: Arc<Store>,
     /// This humatad's build, which managed hosts are kept at.
     build: String,
+    /// Hosts' agents' calls to the humata tools, for [`Daemon::answer_tool_calls`].
+    tool_calls: mpsc::UnboundedSender<ToolCall>,
 }
 
 impl Daemon {
+    /// The daemon, answering its hosts' agents' tool calls from now on.
     pub fn new(
         local: Host,
         store: Store,
         hosts: Hosts,
         hosts_file: PathBuf,
         build: String,
-    ) -> Self {
+    ) -> Arc<Self> {
+        let (tool_calls, calls) = mpsc::unbounded_channel();
         let remotes = hosts
             .hosts
             .into_iter()
-            .map(|(name, config)| (name.clone(), Arc::new(Remote::new(name, config))))
+            .map(|(name, config)| {
+                let remote = Remote::new(name.clone(), config, tool_calls.clone());
+                (name, Arc::new(remote))
+            })
             .collect();
-        Self {
+        let daemon = Arc::new(Self {
             local: Arc::new(local),
             remotes: RwLock::new(remotes),
             editing: tokio::sync::Mutex::new(()),
             hosts_file,
             store: Arc::new(store),
             build,
-        }
+            tool_calls,
+        });
+        tokio::spawn(answer_tool_calls(Arc::downgrade(&daemon), calls));
+        daemon
     }
 
     fn remote(&self, host: &str) -> Result<Arc<Remote>, DaemonError> {
@@ -123,7 +133,10 @@ impl Daemon {
         self.remotes
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(name.clone(), Arc::new(Remote::new(name, config)));
+            .insert(
+                name.clone(),
+                Arc::new(Remote::new(name, config, self.tool_calls.clone())),
+            );
         Ok(info)
     }
 
@@ -836,7 +849,9 @@ impl Daemon {
             }
             Request::ConfigureHost(_)
             | Request::ReadHostStatus(_)
-            | Request::CloneRepositories(_) => {
+            | Request::CloneRepositories(_)
+            | Request::WatchToolCalls(_)
+            | Request::AnswerToolCall(_) => {
                 return Err(DaemonError::ForHostsOnly);
             }
             Request::WatchSession(watch) => {
@@ -1013,6 +1028,81 @@ fn folder_name(wanted: Option<&str>, taken: &[&str]) -> String {
         name = format!("{base}-{count}");
     }
     name
+}
+
+/// Answers hosts' agents' tool calls, each on its own task, until the
+/// daemon is dropped.
+async fn answer_tool_calls(daemon: Weak<Daemon>, mut calls: mpsc::UnboundedReceiver<ToolCall>) {
+    while let Some(call) = calls.recv().await {
+        let Some(daemon) = daemon.upgrade() else {
+            return;
+        };
+        tokio::spawn(async move {
+            let response = match daemon.tool_call(&call.host, call.request).await {
+                Ok(response) => response,
+                Err(failure) => error(failure.code(), describe(&failure)),
+            };
+            let answer = pb::AnswerToolCall {
+                id: call.id,
+                response: Some(pb::Response {
+                    kind: Some(response),
+                }),
+            };
+            // A host gone since has no agent left waiting.
+            let _ = call
+                .client
+                .call(pb::request::Kind::AnswerToolCall(answer))
+                .await;
+        });
+    }
+}
+
+impl Daemon {
+    /// Answers a tool call from an agent on `host`, which reaches only the
+    /// sessions there and the boards of their projects.
+    pub(crate) async fn tool_call(
+        &self,
+        host: &str,
+        request: Option<pb::request::Kind>,
+    ) -> Result<pb::response::Kind, DaemonError> {
+        use pb::request::Kind as Request;
+        let out_of_scope = |asked| DaemonError::OutOfScope {
+            host: host.to_owned(),
+            asked,
+        };
+        let mut sessions = self.list("").await?;
+        sessions.sessions.retain(|session| session.host == host);
+        let in_project = |project: &str| {
+            !project.is_empty()
+                && sessions
+                    .sessions
+                    .iter()
+                    .any(|session| session.project_id == project)
+        };
+        let allowed = match &request {
+            Some(Request::ListSessions(_)) => {
+                return Ok(pb::response::Kind::Sessions(sessions));
+            }
+            Some(Request::ListItems(list)) => in_project(&list.project_id),
+            Some(Request::CreateItem(create)) => in_project(&create.project_id),
+            Some(Request::UpdateItem(update)) => self
+                .store
+                .item(&update.item_id)
+                .is_ok_and(|item| in_project(&item.project_id)),
+            Some(Request::ListThreads(list)) => sessions
+                .sessions
+                .iter()
+                .any(|session| session.id == list.session_id),
+            _ => return Err(out_of_scope("a request that isn't a humata tool's")),
+        };
+        let Some(request) = request.filter(|_| allowed) else {
+            return Err(out_of_scope("another project's board or session"));
+        };
+        match self.answer(request).await? {
+            Reply::Response(response) => Ok(response),
+            Reply::Stream { .. } => Err(out_of_scope("a stream")),
+        }
+    }
 }
 
 impl Service for Daemon {

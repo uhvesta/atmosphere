@@ -55,6 +55,11 @@ pub enum HostError {
     )]
     NotForHosts,
 
+    #[error(
+        "no agent's tool call {id} is waiting for an answer; it may have timed out, or the daemon reconnected since"
+    )]
+    UnknownToolCall { id: u64 },
+
     #[error("say which file: give its repository's name in the session and its path there")]
     NoFile,
 
@@ -142,6 +147,7 @@ impl HostError {
             Self::Agent(_) => pb::ErrorCode::StorageFailed,
             Self::UnknownBackend { .. } => pb::ErrorCode::UnknownBackend,
             Self::NotForHosts
+            | Self::UnknownToolCall { .. }
             | Self::NotInFolder { .. }
             | Self::FileTooLarge { .. }
             | Self::NotAName { .. }
@@ -315,6 +321,11 @@ pub enum DaemonError {
     ForHostsOnly,
 
     #[error(
+        "an agent on {host} asked for {asked}, which is outside the projects of the sessions running there; its humata tools reach only those sessions' boards and review threads"
+    )]
+    OutOfScope { host: String, asked: &'static str },
+
+    #[error(
         "{name} still has {working} sessions that aren't archived; archive them first. Its archived sessions are kept, under Archived"
     )]
     ProjectInUse { name: String, working: usize },
@@ -473,7 +484,8 @@ impl DaemonError {
             | Self::NoCommand { .. }
             | Self::NotAFolder { .. }
             | Self::NoRepositories
-            | Self::ForHostsOnly => pb::ErrorCode::InvalidRequest,
+            | Self::ForHostsOnly
+            | Self::OutOfScope { .. } => pb::ErrorCode::InvalidRequest,
             Self::Spawn { .. }
             | Self::Connect { .. }
             | Self::ConnectTimedOut { .. }
@@ -567,4 +579,32 @@ pub enum StartError {
         #[source]
         source: WireError,
     },
+}
+
+/// Why an agent's call to the humata tools on a host wasn't answered.
+#[derive(Debug, thiserror::Error)]
+pub enum RelayError {
+    #[error(
+        "the humata tools answer the board and review threads only, and this isn't one of their requests"
+    )]
+    NotATool,
+
+    #[error(
+        "Humata on the Mac isn't connected to this host, so the board and review threads can't be reached; open Humata on the Mac and try again, the session's work is kept"
+    )]
+    NotWatched,
+
+    #[error(
+        "Humata on the Mac didn't answer within {seconds}s; it may have lost its connection to this host, so try again"
+    )]
+    TimedOut { seconds: u64 },
+}
+
+impl RelayError {
+    pub fn code(&self) -> pb::ErrorCode {
+        match self {
+            Self::NotATool => pb::ErrorCode::InvalidRequest,
+            Self::NotWatched | Self::TimedOut { .. } => pb::ErrorCode::HostUnavailable,
+        }
+    }
 }

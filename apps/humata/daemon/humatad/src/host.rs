@@ -18,6 +18,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::convert;
 use crate::error::HostError;
 use crate::machine::Machine;
+use crate::relay::Relay;
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, HostError>> + Send + 'a>>;
 
@@ -199,6 +200,8 @@ pub struct Host {
     /// What this humatad is, read when it started, since an install may
     /// replace the executable while it runs.
     program_version: String,
+    /// Where this host's agents' humata tool calls wait for the daemon.
+    relay: Arc<Relay>,
 }
 
 impl Host {
@@ -274,7 +277,12 @@ impl Host {
             machine: Machine::new(state.to_owned(), env, copilot_program, claude_program),
             chats: state.join("chats"),
             program_version: crate::build(),
+            relay: Arc::default(),
         })
+    }
+
+    pub fn relay(&self) -> Arc<Relay> {
+        self.relay.clone()
     }
 
     /// A new empty folder for a chat that works in none of the person's.
@@ -546,6 +554,11 @@ impl Host {
                 }
                 sessions.sort_by(|a, b| a.id.cmp(&b.id));
                 Response::Sessions(pb::Sessions { sessions })
+            }
+            Request::WatchToolCalls(_) => return Ok(self.relay.watch()),
+            Request::AnswerToolCall(answer) => {
+                self.relay.answer(answer)?;
+                Response::ToolCallAnswered(pb::ToolCallAnswered {})
             }
             Request::WatchSession(watch) => {
                 let session = SessionId::new(watch.session_id);

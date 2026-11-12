@@ -15,6 +15,7 @@ use humata_wire::{Client, pb};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
+use tokio::sync::mpsc;
 
 use crate::error::{DaemonError, StartError};
 
@@ -205,9 +206,20 @@ const LONGEST_RETRY: Duration = Duration::from_secs(120);
 /// a while, so a machine that is off doesn't slow every request.
 pub struct Remote {
     name: String,
+    /// Where its agents' calls to the humata tools go to be answered.
+    tool_calls: mpsc::UnboundedSender<ToolCall>,
     config: Mutex<HostConfig>,
     connection: tokio::sync::Mutex<Option<(Arc<Client>, Child)>>,
     retry: Mutex<Option<Retry>>,
+}
+
+/// A call an agent on a host made to the humata tools, which the daemon
+/// answers over `client`, the host's connection.
+pub struct ToolCall {
+    pub host: String,
+    pub id: u64,
+    pub request: Option<pb::request::Kind>,
+    pub client: Arc<Client>,
 }
 
 struct Retry {
@@ -217,9 +229,14 @@ struct Retry {
 }
 
 impl Remote {
-    pub fn new(name: String, config: HostConfig) -> Self {
+    pub fn new(
+        name: String,
+        config: HostConfig,
+        tool_calls: mpsc::UnboundedSender<ToolCall>,
+    ) -> Self {
         Self {
             name,
+            tool_calls,
             config: Mutex::new(config),
             connection: tokio::sync::Mutex::new(None),
             retry: Mutex::new(None),
@@ -355,7 +372,34 @@ impl Remote {
                 }
             });
         }
+        self.watch_tool_calls(&client);
         Ok((client, child))
+    }
+
+    /// Passes on the host's agents' tool calls until the connection drops.
+    /// A host too old to relay them refuses, and its agents go without.
+    fn watch_tool_calls(&self, client: &Arc<Client>) {
+        let (client, calls, host) = (client.clone(), self.tool_calls.clone(), self.name.clone());
+        tokio::spawn(async move {
+            let watch = pb::request::Kind::WatchToolCalls(pb::WatchToolCalls {});
+            let Ok((_, mut stream)) = client.stream(watch).await else {
+                return;
+            };
+            while let Some(Ok(item)) = stream.next().await {
+                let Some(pb::stream_item::Kind::ToolCall(call)) = item.kind else {
+                    continue;
+                };
+                let call = ToolCall {
+                    host: host.clone(),
+                    id: call.id,
+                    request: call.request.and_then(|request| request.kind),
+                    client: client.clone(),
+                };
+                if calls.send(call).is_err() {
+                    return;
+                }
+            }
+        });
     }
 
     /// Drops the connection, so the next request makes a new one.

@@ -108,6 +108,10 @@ message Request {
     DeleteProject delete_project = 42;
     ListImportable list_importable = 43;
     ImportSession import_session = 44;
+    // From the daemon to a host: the host's agents' calls to the humata MCP
+    // tools, streamed for the daemon to answer. A daemon refuses both.
+    WatchToolCalls watch_tool_calls = 45;
+    AnswerToolCall answer_tool_call = 46;
   }
 }
 
@@ -155,6 +159,8 @@ message Response {
     Unqueued unqueued = 39;
     ProjectDeleted project_deleted = 40;
     Importable importable = 41;
+    ToolCallsWatched tool_calls_watched = 42;
+    ToolCallAnswered tool_call_answered = 43;
   }
 }
 
@@ -708,8 +714,28 @@ message TurnAborted {}
 message StreamItem {
   oneof kind {
     SessionEvent session_event = 1;
+    ToolCall tool_call = 2;
   }
 }
+
+message WatchToolCalls {}
+
+message ToolCallsWatched {}
+
+// A request an agent on the host made through `humatad mcp`, for the daemon,
+// which keeps the board and review threads, to answer.
+message ToolCall {
+  uint64 id = 1;
+  Request request = 2;
+}
+
+message AnswerToolCall {
+  uint64 id = 1;
+  // What the agent gets back, an error included.
+  Response response = 2;
+}
+
+message ToolCallAnswered {}
 
 message StreamEnd {
   // Unset when the stream ended normally.

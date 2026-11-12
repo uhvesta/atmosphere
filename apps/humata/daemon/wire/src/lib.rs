@@ -28,7 +28,10 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Whether a request is answered with a stream rather than one response.
 pub fn streams(request: &pb::request::Kind) -> bool {
-    matches!(request, pb::request::Kind::WatchSession(_))
+    matches!(
+        request,
+        pb::request::Kind::WatchSession(_) | pb::request::Kind::WatchToolCalls(_)
+    )
 }
 
 /// Sends our hello and reads the other side's.

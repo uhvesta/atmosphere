@@ -12,6 +12,7 @@ mod hosts;
 mod login_env;
 mod machine;
 mod mcp;
+mod relay;
 mod socket;
 mod store;
 
@@ -89,18 +90,66 @@ pub fn default_cache() -> Result<PathBuf, StartError> {
 /// Serves the host role on stdin and stdout until the daemon hangs up.
 /// Sessions' copies of their code go under `<cache>/worktrees`.
 pub async fn host_stdio(state: &Path, cache: &Path) -> Result<(), StartError> {
-    // The board is the daemon's, out of reach of a host's agents.
-    let host = Arc::new(Host::open(state, &cache.join("worktrees"), None).await?);
+    // The board is the daemon's: this host's agents reach it through the
+    // relay, which asks the daemon over this connection. Without the relay's
+    // socket they work on without the humata tools.
+    let build = build();
+    let socket = state.join("mcp.sock");
+    let mut listening = socket::listen(&socket).await;
+    if let Err(StartError::AlreadyRunning { .. }) = listening {
+        // A host from the last connection still on its way out; this one
+        // takes over its agents' tools.
+        let _ = std::fs::remove_file(&socket);
+        listening = socket::listen(&socket).await;
+    }
+    let listener = match listening {
+        Ok(listener) => Some(listener),
+        Err(error) => {
+            eprintln!(
+                "humatad: agents here get no humata tools: {}",
+                humata_wire::describe(&error)
+            );
+            None
+        }
+    };
+    let mcp = listener.as_ref().and_then(|_| mcp_server(&socket));
+    let host = Arc::new(Host::open(state, &cache.join("worktrees"), mcp).await?);
+    if let Some(listener) = listener {
+        let relay = host.relay();
+        let build = build.clone();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let (relay, build) = (relay.clone(), build.clone());
+                tokio::spawn(async move {
+                    let (reader, writer) = stream.into_split();
+                    let _ = humata_wire::serve(reader, writer, pb::Role::Host, &build, relay).await;
+                });
+            }
+        });
+    }
     humata_wire::serve(
         tokio::io::stdin(),
         tokio::io::stdout(),
         pb::Role::Host,
-        &build(),
+        &build,
         host,
     )
     .await
     .map(drop)
     .map_err(|source| StartError::Stdio { source })
+}
+
+/// `humatad mcp` talking to `socket`, for agents to start.
+fn mcp_server(socket: &Path) -> Option<McpServer> {
+    std::env::current_exe().ok().map(|program| McpServer {
+        command: program,
+        args: vec![
+            "mcp".into(),
+            "--socket".into(),
+            socket.display().to_string(),
+        ],
+        env: Vec::new(),
+    })
 }
 
 /// Serves the daemon on `socket` until stopped. Projects are kept in
@@ -115,25 +164,17 @@ pub async fn daemon(
 ) -> Result<(), StartError> {
     let store = Store::open(&state.join("humata.sqlite3"))?;
     // Agents here reach the board and review threads through `humatad mcp`.
-    let mcp = std::env::current_exe().ok().map(|program| McpServer {
-        command: program,
-        args: vec![
-            "mcp".into(),
-            "--socket".into(),
-            socket.display().to_string(),
-        ],
-        env: Vec::new(),
-    });
+    let mcp = mcp_server(socket);
     let local = Host::open(&state.join("host"), &cache.join("worktrees"), mcp).await?;
     // Read before serving: an update may replace the file while it runs.
     let build: Arc<str> = build().into();
-    let daemon = Arc::new(Daemon::new(
+    let daemon = Daemon::new(
         local,
         store,
         Hosts::load(hosts)?,
         hosts.to_owned(),
         build.to_string(),
-    ));
+    );
     let listener = socket::listen(socket).await?;
     let serving = async {
         loop {
