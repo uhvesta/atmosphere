@@ -218,6 +218,8 @@ package struct TaskListFeature {
         case searchChanged(String)
         /// Rows dragged within a section, as `onMove` reports them.
         case moved(section: String, from: IndexSet, to: Int)
+        /// Tasks dropped onto a row, to become its Sub tasks.
+        case droppedOnto(UUID, tasks: [UUID])
         case bannerDismissed
         /// Copy as Markdown: the task as a line of a checklist, with its code.
         case copyTapped(UUID)
@@ -377,6 +379,15 @@ package struct TaskListFeature {
                 let lower = to > 0 ? rows[to - 1].id : nil
                 let upper = to + 1 < rows.count ? rows[to + 1].id : nil
                 return save { try await $0.reorder(task: row.id, after: lower, before: upper) }
+
+            case .droppedOnto(let parent, let ids):
+                let ids = ids.filter { $0 != parent && state.workspace?.tasks[$0]?.parentID != parent }
+                guard let first = ids.first else { return .none }
+                return save { store in
+                    var saved = try await store.setParent(parent, of: first)
+                    for id in ids.dropFirst() { saved = try await store.setParent(parent, of: id) }
+                    return saved
+                }
 
             case .bannerDismissed:
                 state.banner = nil

@@ -186,6 +186,46 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(reloaded.rows.map(\.title), ["Three", "One", "Two"])
     }
 
+    func testDroppingATaskOntoAnotherMakesItASubTask() async throws {
+        let plan = records.task("Plan long runs", in: health)
+        let run = records.task("Long run", in: health)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = await load(client: client)
+
+        await store.send(.droppedOnto(plan.id, tasks: [run.id]))
+        await store.receive(\.saved)
+
+        let saved = try await client.load()
+        XCTAssertEqual(saved.tasks[run.id]?.parentID, plan.id)
+        XCTAssertNil(store.state.alert)
+    }
+
+    func testDroppingATaskOntoItselfChangesNothing() async throws {
+        let run = records.task("Long run", in: health)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = await load(client: client)
+
+        await store.send(.droppedOnto(run.id, tasks: [run.id]))
+
+        let saved = try await client.load()
+        XCTAssertNil(saved.tasks[run.id]?.parentID)
+    }
+
+    func testDroppingATaskOntoASubTaskSaysWhyItCant() async throws {
+        let plan = records.task("Plan long runs", in: health)
+        let week = records.task("Week one", in: health, parent: plan)
+        let run = records.task("Long run", in: health)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = await load(client: client)
+
+        await store.send(.droppedOnto(week.id, tasks: [run.id]))
+        await store.receive(\.saved)
+
+        let saved = try await client.load()
+        XCTAssertNil(saved.tasks[run.id]?.parentID)
+        XCTAssertTrue(store.state.alert != nil || store.state.prompt != nil)
+    }
+
     func testAnEmptyQueryIsEmpty() async {
         let store = await load()
 

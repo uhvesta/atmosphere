@@ -246,6 +246,16 @@ package struct TaskListRow: View {
         // Onto a day in the calendar, to move it there. A list in manual
         // order drags rows to reorder them instead.
         .modifier(DraggableTask(id: row.id, isOn: !store.canReorder))
+        #if os(iOS)
+            // Another task dropped onto this one becomes its Sub task. The
+            // Mac leaves drops to the list, which adds text from other apps.
+            .dropDestination(for: String.self) { items, _ in
+                let ids = items.compactMap(UUID.init(uuidString:))
+                guard !ids.isEmpty, ids.count == items.count else { return false }
+                store.send(.droppedOnto(row.id, tasks: ids))
+                return true
+            }
+        #endif
         .accessibilityElement(children: .combine)
         .accessibilityHint(note ?? "")
         .accessibilityAction { store.send(.rowTapped(row.id)) }
