@@ -34,11 +34,19 @@ package struct CalendarDate: Hashable, Comparable, Codable, Sendable, CustomStri
 
     /// The day `date` falls on in `timeZone`.
     package init(_ date: Date, in timeZone: TimeZone) {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = timeZone
-        year = calendar.component(.year, from: date)
-        month = calendar.component(.month, from: date)
-        day = calendar.component(.day, from: date)
+        // Worked out from the seconds rather than with a `Calendar`, which
+        // costs more to make than the rows that ask for a day each.
+        let local = date.timeIntervalSince1970 + TimeInterval(timeZone.secondsFromGMT(for: date))
+        // civil_from_days, the inverse of `noonUTC`.
+        let days = Int((local / 86_400).rounded(.down)) + 719_468
+        let era = (days >= 0 ? days : days - 146_096) / 146_097
+        let dayOfEra = days - era * 146_097
+        let yearOfEra = (dayOfEra - dayOfEra / 1_460 + dayOfEra / 36_524 - dayOfEra / 146_096) / 365
+        let dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100)
+        let shiftedMonth = (5 * dayOfYear + 2) / 153
+        day = dayOfYear - (153 * shiftedMonth + 2) / 5 + 1
+        month = shiftedMonth < 10 ? shiftedMonth + 3 : shiftedMonth - 9
+        year = yearOfEra + era * 400 + (month <= 2 ? 1 : 0)
     }
 
     /// Noon UTC on this day, so the weekday and calendar math don't depend
@@ -68,11 +76,11 @@ package struct CalendarDate: Hashable, Comparable, Codable, Sendable, CustomStri
     }
 
     /// A Gregorian calendar in UTC, for math on `noonUTC`.
-    package static var utcCalendar: Calendar {
+    package static let utcCalendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .gmt
         return calendar
-    }
+    }()
 
     package var description: String {
         "\(Self.pad(year, 4))-\(Self.pad(month, 2))-\(Self.pad(day, 2))"
@@ -133,10 +141,11 @@ package struct TimeOfDay: Hashable, Comparable, Codable, Sendable, CustomStringC
 
     /// The time `date` shows in `timeZone`, to the minute.
     package init(_ date: Date, in timeZone: TimeZone) {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = timeZone
-        hour = calendar.component(.hour, from: date)
-        minute = calendar.component(.minute, from: date)
+        let local = date.timeIntervalSince1970 + TimeInterval(timeZone.secondsFromGMT(for: date))
+        let seconds = local - (local / 86_400).rounded(.down) * 86_400
+        let minutes = Int(seconds) / 60
+        hour = minutes / 60
+        minute = minutes % 60
     }
 
     package var description: String {

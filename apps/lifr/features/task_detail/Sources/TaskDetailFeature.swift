@@ -188,34 +188,52 @@ package struct TaskDetailFeature {
         /// such as moved to the trash.
         package mutating func refresh(from snapshot: Snapshot, now: Date, timeZone: TimeZone) -> Bool {
             guard saves.isLatest(snapshot) else { return true }
-            let workspace = snapshot.workspace
-            guard var refreshed = State(id: id, workspace: workspace, now: now, timeZone: timeZone) else {
+            guard let shown = State(id: id, workspace: snapshot.workspace, now: now, timeZone: timeZone) else {
                 return false
             }
-            refreshed.showsCommentsOnly = showsCommentsOnly
-            refreshed.showsWholeTimeline = showsWholeTimeline
-            refreshed.newSubtaskTitle = newSubtaskTitle
-            refreshed.newComment = newComment
-            if let editingCommentID, refreshed.timeline.contains(where: { $0.id == editingCommentID }) {
-                refreshed.editingCommentID = editingCommentID
-                refreshed.editedComment = editedComment
-            }
-            refreshed.commentDeletion = commentDeletion
-            refreshed.newLabelName = newLabelName
-            refreshed.repeatDraft = repeatDraft
-            refreshed.reminderDraft = reminderDraft
-            refreshed.notificationsDenied = notificationsDenied
-            refreshed.banner = banner
-            refreshed.saves = saves
+            // Changed in place, field by field, so the open detail redraws
+            // only what the save or sync changed. Each field read from the
+            // workspace is listed; the ones only the person sets stay.
             // Keep what's being typed over what was saved.
-            if title != row.title { refreshed.title = title }
-            refreshed.detailsDraft = detailsDraft
-            refreshed.refusedDetails = refusedDetails
-            if var subtask, subtask.refresh(from: snapshot, now: now, timeZone: timeZone) {
-                refreshed.subtask = subtask
+            if title == row.title { adopt(\.title, from: shown) }
+            adopt(\.row, from: shown)
+            adopt(\.details, from: shown)
+            adopt(\.project, from: shown)
+            adopt(\.labels, from: shown)
+            adopt(\.startDate, from: shown)
+            adopt(\.dueDate, from: shown)
+            adopt(\.dueTime, from: shown)
+            adopt(\.recurrence, from: shown)
+            adopt(\.today, from: shown)
+            adopt(\.avenueID, from: shown)
+            adopt(\.projectID, from: shown)
+            adopt(\.labelIDs, from: shown)
+            adopt(\.avenueChoices, from: shown)
+            adopt(\.projectChoices, from: shown)
+            adopt(\.otherProjectChoices, from: shown)
+            adopt(\.labelChoices, from: shown)
+            adopt(\.parentChoices, from: shown)
+            adopt(\.createdAt, from: shown)
+            adopt(\.closedAt, from: shown)
+            adopt(\.isSubtask, from: shown)
+            adopt(\.subtasks, from: shown)
+            adopt(\.reminders, from: shown)
+            adopt(\.timeline, from: shown)
+            if let editingCommentID, !timeline.contains(where: { $0.id == editingCommentID }) {
+                self.editingCommentID = nil
+                editedComment = ""
             }
-            self = refreshed
+            if prompt != nil { prompt = nil }
+            if alert != nil { alert = nil }
+            if statusPicker != nil { statusPicker = nil }
+            if subtask?.refresh(from: snapshot, now: now, timeZone: timeZone) == false { subtask = nil }
             return true
+        }
+
+        /// Sets `field` to `other`'s value only when it differs, so the
+        /// views reading it aren't told it changed.
+        private mutating func adopt<Value: Equatable>(_ field: WritableKeyPath<Self, Value>, from other: Self) {
+            if self[keyPath: field] != other[keyPath: field] { self[keyPath: field] = other[keyPath: field] }
         }
     }
 

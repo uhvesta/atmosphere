@@ -19,6 +19,24 @@ func dateTests() -> [TestCase] {
                 CalendarDate(instant, in: TimeZone(identifier: "America/Los_Angeles").unwrap()),
                 try CalendarDate("2026-11-02"))
         },
+        TestCase("given instants across years and time zones, then the day and time are the calendar's") {
+            let zones = try ["UTC", "America/Los_Angeles", "Asia/Kolkata", "Pacific/Chatham", "Pacific/Kiritimati"]
+                .map { try TimeZone(identifier: $0).unwrap() }
+            // From 1930 to 2090, every 37 hours and 13 minutes, which lands on
+            // every hour of the day and both sides of each daylight saving change.
+            for instant in stride(from: -1_262_304_000.0, to: 3_786_825_600, by: 133_980) {
+                let date = Date(timeIntervalSince1970: instant)
+                for zone in zones {
+                    var calendar = Calendar(identifier: .gregorian)
+                    calendar.timeZone = zone
+                    let parts = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+                    let day = CalendarDate(date, in: zone)
+                    let time = TimeOfDay(date, in: zone)
+                    let expected = [parts.year, parts.month, parts.day, parts.hour, parts.minute].map { $0 ?? -1 }
+                    try expectEqual([day.year, day.month, day.day, time.hour, time.minute], expected)
+                }
+            }
+        },
         TestCase("given a time, then it must be 24-hour HH:MM") {
             try expectEqual(try TimeOfDay("09:30").description, "09:30")
             try expectError(.invalidTime("24:00")) { try TimeOfDay("24:00") }
