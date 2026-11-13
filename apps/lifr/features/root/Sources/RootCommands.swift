@@ -102,22 +102,25 @@ package struct RootCommands: Commands {
             Button("New Project") { store.send(.newProjectTapped(nil)) }
                 .keyboardShortcut("n", modifiers: [.command, .option])
             Button("New Avenue") { store.send(.newAvenueTapped) }
-            #if os(macOS)
+            // The iPhone has one window.
+            if store.platform.hasSidebar {
                 Divider()
                 Button("New Window") {
                     openWindow(id: WindowPlace.sceneID, value: WindowPlace(Place(sidebar: store.selection)))
                 }
                 .keyboardShortcut("n", modifiers: [.command, .control])
                 .disabled(store.isLocked)
-                Button("New Tab") { WindowTabs.open(Place(sidebar: store.selection), with: openWindow) }
-                    .keyboardShortcut("t", modifiers: [.command, .option])
-                    .disabled(store.isLocked)
+                #if os(macOS)
+                    Button("New Tab") { WindowTabs.open(Place(sidebar: store.selection), with: openWindow) }
+                        .keyboardShortcut("t", modifiers: [.command, .option])
+                        .disabled(store.isLocked)
+                #endif
                 Button("Open Task in New Window") {
                     let place = Place(sidebar: store.selection, task: store.openTaskID)
                     openWindow(id: WindowPlace.sceneID, value: WindowPlace(place))
                 }
                 .disabled(store.isLocked || store.openTaskID == nil)
-            #endif
+            }
         }
         #if os(macOS)
             CommandGroup(replacing: .printItem) {

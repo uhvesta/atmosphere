@@ -140,9 +140,32 @@ _PHONE_FLOWS = {
     for area, tests in _PHONE_FLOWS.items()
 ]
 
+# The iPad's flows, on the iPad runner.
+lifr_snapshot_test(
+    name = "flow_snapshot_test_ipad",
+    srcs = [
+        "FlowSnapshotTests/PadFlowTests.swift",
+        "FlowSnapshotTests/PhoneFlowTestCase.swift",
+    ],
+    hosted = True,
+    runner = "//apps/libs/kits/flow:ipad_pro_11",
+    deps = [
+        ":root",
+        "//apps/libs/features/chat",
+        "//apps/libs/kits/capture",
+        "//apps/lifr/clients/assistant",
+        "//apps/lifr/clients/assistant_live",
+        "//apps/lifr/clients/models",
+        "//apps/lifr/clients/search",
+        "//apps/lifr/features/shortcuts",
+        "//apps/lifr/widgets:views",
+        "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
+    ] + _DEPS,
+)
+
 test_suite(
     name = "flow_snapshot_test",
-    tests = [":flow_snapshot_test_" + area for area in _PHONE_FLOWS],
+    tests = [":flow_snapshot_test_" + area for area in _PHONE_FLOWS] + [":flow_snapshot_test_ipad"],
 )
 
 # The same flows on the Mac, in windows on this Mac: the accessibility tree

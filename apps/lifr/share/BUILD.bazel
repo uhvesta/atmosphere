@@ -33,7 +33,10 @@ ios_extension(
         "//apps/lifr:is_signed": ":ios_entitlements",
         "//conditions:default": None,
     }) if IOS_APP_GROUP else None,
-    families = ["iphone"],
+    families = [
+        "iphone",
+        "ipad",
+    ],
     infoplists = ["Extension/Info.plist"],
     minimum_os_version = "18.0",
     provisioning_profile = select({

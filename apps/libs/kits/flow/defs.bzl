@@ -104,20 +104,22 @@ def flow_snapshot_test(
         **(common | kwargs)
     )
 
-def flow_host_app(name, bundle_id, **kwargs):
+def flow_host_app(name, bundle_id, families = ["iphone"], **kwargs):
     """An empty iPhone app for hosted flow snapshot tests to run in.
 
     Args:
       name: the app's name.
       bundle_id: its bundle ID. It's only installed on simulators, so it
         needs no signing.
+      families: the devices it runs on as itself; add "ipad" for tests on
+        the iPad runner.
       **kwargs: passed to ios_application.
     """
     ios_application(
         name = name,
         testonly = True,
         bundle_id = bundle_id,
-        families = ["iphone"],
+        families = families,
         infoplists = ["//apps/libs/kits/flow:Host/Info.plist"],
         minimum_os_version = "18.0",
         target_compatible_with = ["//bazel/xcode"],

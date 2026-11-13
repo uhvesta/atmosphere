@@ -49,7 +49,7 @@ final class RootFeatureTests: XCTestCase {
         } withDependencies: { [now] in
             $0.store = client
             // Another window leaves connected apps to the first.
-            if platform == .mac, place == nil { $0.session = session.client }
+            if platform != .phone, place == nil { $0.session = session.client }
             $0.reminders = reminders.client
             $0.sync = sync
             $0.continuousClock = TestClock()
@@ -1671,6 +1671,21 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertTrue(phone.state.upcomingShowsCalendar)
         await phone.send(.goTo(.search))
         XCTAssertEqual(phone.state.tab, .search)
+    }
+
+    func testTheIPadHasTheMacsSidebarButNotItsConnectedApps() async {
+        let grant = Grant.agentDefault(client: "Claude Code", now: now)
+        let session = InMemorySession(apps: [ConnectedApp(id: "com.anthropic.claude-code", grant: grant)])
+        let store = makeStore(.pad, session: session)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.goTo(.calendar))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.selection, .calendar)
+        XCTAssertEqual(store.state.here, Place(sidebar: .calendar))
+        XCTAssertTrue(store.state.apps.isEmpty)
+        XCTAssertFalse(store.state.settings.showsAgents)
+        await task.cancel()
     }
 
     func testGoToTaskFindsByCodeOrWordsAndOpensThePick() async throws {

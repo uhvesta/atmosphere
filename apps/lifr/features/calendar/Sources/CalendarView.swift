@@ -217,11 +217,13 @@ private struct WeekdayHeader: View {
     }
 }
 
-/// The month's weeks of days: dots on the iPhone, chips on the Mac.
+/// The month's weeks of days: dots on the iPhone, chips on the Mac and
+/// iPad.
 private struct MonthGrid: View {
     var store: StoreOf<CalendarFeature>
     var add: () -> Void
     @Environment(\.calendar) private var calendar
+    @WideCalendar private var isWide
 
     var body: some View {
         VStack(spacing: 8) {
@@ -230,11 +232,11 @@ private struct MonthGrid: View {
                 ForEach(Array(store.weeks.enumerated()), id: \.offset) { _, week in
                     HStack(spacing: 0) {
                         ForEach(week) { day in
-                            #if os(macOS)
+                            if isWide {
                                 ChipDayCell(day: day, isSelected: day.date == store.selected, store: store, add: add)
-                            #else
+                            } else {
                                 DayCell(day: day, isSelected: day.date == store.selected, store: store, add: add)
-                            #endif
+                            }
                         }
                     }
                     // Seven days to a row leave no room past the first
@@ -249,26 +251,27 @@ private struct MonthGrid: View {
 }
 
 /// The selected day's week: a strip of days on the iPhone, over the day's
-/// tasks, and seven columns of chips by time on the Mac.
+/// tasks, and seven columns of chips by time on the Mac and iPad.
 private struct WeekGrid: View {
     var store: StoreOf<CalendarFeature>
     var add: () -> Void
     @Environment(\.calendar) private var calendar
+    @WideCalendar private var isWide
 
     var body: some View {
         VStack(spacing: 8) {
             WeekdayHeader(calendar: calendar)
             Group {
-                #if os(macOS)
+                if isWide {
                     WeekColumns(week: store.week, store: store, add: add)
-                #else
+                } else {
                     HStack(spacing: 0) {
                         ForEach(store.week) { day in
                             DayCell(day: day, isSelected: day.date == store.selected, store: store, add: add)
                         }
                     }
                     .dynamicTypeSize(...DynamicTypeSize.accessibility1)
-                #endif
+                }
             }
             .modifier(SwipePaging(page: store.week.first?.date, store: store))
         }
@@ -374,246 +377,244 @@ private struct DayCell: View {
     }
 }
 
-#if os(macOS)
-    /// A day of the Mac's month: its number, its tasks as chips up to three,
-    /// then how many more, which shows the day. Double-clicking it adds a
-    /// task to it.
-    private struct ChipDayCell: View {
-        var day: CalendarDay
-        var isSelected: Bool
-        var store: StoreOf<CalendarFeature>
-        var add: () -> Void
-        @State private var isTargeted = false
-        @Environment(\.locale) private var locale
+/// A day of the Mac's and iPad's month: its number, its tasks as chips up to three,
+/// then how many more, which shows the day. Double-clicking it adds a
+/// task to it.
+private struct ChipDayCell: View {
+    var day: CalendarDay
+    var isSelected: Bool
+    var store: StoreOf<CalendarFeature>
+    var add: () -> Void
+    @State private var isTargeted = false
+    @Environment(\.locale) private var locale
 
-        private static let shown = 3
+    private static let shown = 3
 
-        var body: some View {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Spacer()
-                    Text("\(day.date.day)")
-                        .font(.callout.weight(day.isToday ? .bold : .regular))
-                        .monospacedDigit()
-                        .foregroundStyle(numberStyle)
-                        .frame(minWidth: 24, minHeight: 22)
-                        .background {
-                            if isSelected {
-                                Capsule().fill(day.isToday ? Color.red : Color.accentColor)
-                            } else if day.isToday {
-                                Capsule().strokeBorder(Color.red, lineWidth: 1.5)
-                            }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Spacer()
+                Text("\(day.date.day)")
+                    .font(.callout.weight(day.isToday ? .bold : .regular))
+                    .monospacedDigit()
+                    .foregroundStyle(numberStyle)
+                    .frame(minWidth: 24, minHeight: 22)
+                    .background {
+                        if isSelected {
+                            Capsule().fill(day.isToday ? Color.red : Color.accentColor)
+                        } else if day.isToday {
+                            Capsule().strokeBorder(Color.red, lineWidth: 1.5)
                         }
+                    }
+            }
+            SpanLanes(day: day)
+                .padding(.horizontal, -4)
+            ForEach(day.flags) { flag in
+                CalendarFlagView(flag: flag, store: store)
+            }
+            ForEach(day.chips.prefix(Self.shown)) { chip in
+                CalendarChipView(chip: chip, store: store)
+            }
+            ForEach(day.starts) { chip in
+                CalendarStartView(chip: chip, store: store)
+            }
+            if day.chips.count > Self.shown {
+                Button("\(day.chips.count - Self.shown) more") { store.send(.daySelected(day.date)) }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(4)
+        .frame(maxWidth: .infinity, minHeight: 96, alignment: .top)
+        .background(background)
+        .overlay(alignment: .top) { Rectangle().fill(.separator).frame(height: 1) }
+        .opacity(day.isInMonth ? 1 : 0.5)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            store.send(.daySelected(day.date))
+            add()
+        }
+        .onTapGesture { store.send(.daySelected(day.date)) }
+        .modifier(DayDrop(day: day.date, isTargeted: $isTargeted, store: store))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text(day.date.readable(locale)))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityAction(named: "Show Day") { store.send(.daySelected(day.date)) }
+        .accessibilityAction(named: "Add a Task") {
+            store.send(.daySelected(day.date))
+            add()
+        }
+    }
+
+    private var background: Color {
+        if isTargeted { return Color.accentColor.opacity(0.2) }
+        if isSelected { return Color.accentColor.opacity(0.08) }
+        return day.isWeekend ? Color.secondary.opacity(0.06) : .clear
+    }
+
+    private var numberStyle: Color {
+        if isSelected { return .white }
+        return day.hasOverdue ? .red : .primary
+    }
+}
+
+/// The Mac's and iPad's week: a column a day, its tasks due any time on top, then
+/// those due at a time against the hours that have any. Dropping on the
+/// top takes the time away; dropping on an hour sets it.
+private struct WeekColumns: View {
+    var week: [CalendarDay]
+    var store: StoreOf<CalendarFeature>
+    var add: () -> Void
+    @Environment(\.locale) private var locale
+    /// One chip's height, which every row makes room for.
+    @ScaledMetric(relativeTo: .caption) private var chipHeight = 19.0
+
+    var body: some View {
+        let layout = WeekLayout(week, chipHeight: chipHeight)
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .trailing, spacing: 0) {
+                Color.clear.frame(height: 28 + layout.allDayHeight)
+                ForEach(layout.hours, id: \.hour) { row in
+                    Text(TimeOfDay(clampingHour: row.hour, minute: 0).formatted(locale))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(height: row.height, alignment: .top)
                 }
+            }
+            .frame(width: 52)
+            .accessibilityHidden(true)
+            ForEach(week) { day in
+                WeekColumn(
+                    day: day, layout: layout, isSelected: day.date == store.selected, store: store, add: add)
+            }
+        }
+    }
+}
+
+/// How tall the week's rows are, the same in every column so the hours
+/// line up: tall enough for the day with the most in each.
+private struct WeekLayout {
+    var allDayHeight: CGFloat
+    /// Only the hours that have a task due in them.
+    var hours: [HourRow]
+
+    struct HourRow: Hashable {
+        var hour: Int
+        var height: CGFloat
+    }
+
+    init(_ week: [CalendarDay], chipHeight: CGFloat) {
+        let untimed =
+            week.map { day in
+                day.spans.count + (day.moreSpans > 0 ? 1 : 0) + day.flags.count + day.starts.count
+                    + day.chips.count { $0.dueTime == nil }
+            }
+            .max() ?? 0
+        allDayHeight = max(chipHeight * 3, CGFloat(untimed) * chipHeight + 6)
+        var counts: [Int: Int] = [:]
+        for day in week {
+            var inDay: [Int: Int] = [:]
+            for chip in day.chips { if let hour = chip.dueTime?.hour { inDay[hour, default: 0] += 1 } }
+            counts.merge(inDay, uniquingKeysWith: max)
+        }
+        hours = counts.keys.sorted().map { hour in
+            HourRow(hour: hour, height: max(chipHeight * 2, CGFloat(counts[hour] ?? 1) * chipHeight + 4))
+        }
+    }
+}
+
+private struct WeekColumn: View {
+    var day: CalendarDay
+    var layout: WeekLayout
+    var isSelected: Bool
+    var store: StoreOf<CalendarFeature>
+    var add: () -> Void
+    @State private var targetsAllDay = false
+    @State private var targetedHour: Int?
+    @Environment(\.locale) private var locale
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                store.send(.daySelected(day.date))
+            } label: {
+                Text("\(day.date.day)")
+                    .font(.callout.weight(day.isToday ? .bold : .regular))
+                    .monospacedDigit()
+                    .foregroundStyle(isSelected ? .white : day.isToday ? .red : .primary)
+                    .frame(minWidth: 24, minHeight: 22)
+                    .background {
+                        if isSelected {
+                            Capsule().fill(day.isToday ? Color.red : Color.accentColor)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 28)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(day.date.readable(locale)))
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+            VStack(alignment: .leading, spacing: 2) {
                 SpanLanes(day: day)
-                    .padding(.horizontal, -4)
+                    .padding(.horizontal, -3)
                 ForEach(day.flags) { flag in
                     CalendarFlagView(flag: flag, store: store)
                 }
-                ForEach(day.chips.prefix(Self.shown)) { chip in
+                ForEach(day.chips.filter { $0.dueTime == nil }) { chip in
                     CalendarChipView(chip: chip, store: store)
                 }
                 ForEach(day.starts) { chip in
                     CalendarStartView(chip: chip, store: store)
                 }
-                if day.chips.count > Self.shown {
-                    Button("\(day.chips.count - Self.shown) more") { store.send(.daySelected(day.date)) }
-                        .buttonStyle(.plain)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
                 Spacer(minLength: 0)
             }
-            .padding(4)
-            .frame(maxWidth: .infinity, minHeight: 96, alignment: .top)
-            .background(background)
-            .overlay(alignment: .top) { Rectangle().fill(.separator).frame(height: 1) }
-            .opacity(day.isInMonth ? 1 : 0.5)
+            .padding(3)
+            .frame(maxWidth: .infinity, alignment: .top)
+            .frame(height: layout.allDayHeight, alignment: .top)
+            .background(targetsAllDay ? Color.accentColor.opacity(0.2) : .clear)
             .contentShape(Rectangle())
             .onTapGesture(count: 2) {
                 store.send(.daySelected(day.date))
                 add()
             }
-            .onTapGesture { store.send(.daySelected(day.date)) }
-            .modifier(DayDrop(day: day.date, isTargeted: $isTargeted, store: store))
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(Text(day.date.readable(locale)))
-            .accessibilityAddTraits(isSelected ? .isSelected : [])
-            .accessibilityAction(named: "Show Day") { store.send(.daySelected(day.date)) }
-            .accessibilityAction(named: "Add a Task") {
-                store.send(.daySelected(day.date))
-                add()
+            .modifier(DayDrop(day: day.date, time: .some(nil), isTargeted: $targetsAllDay, store: store))
+            ForEach(layout.hours, id: \.hour) { row in
+                HourSlot(
+                    day: day.date, hour: row.hour, chips: day.chips.filter { $0.dueTime?.hour == row.hour },
+                    height: row.height, store: store)
             }
         }
-
-        private var background: Color {
-            if isTargeted { return Color.accentColor.opacity(0.2) }
-            if isSelected { return Color.accentColor.opacity(0.08) }
-            return day.isWeekend ? Color.secondary.opacity(0.06) : .clear
-        }
-
-        private var numberStyle: Color {
-            if isSelected { return .white }
-            return day.hasOverdue ? .red : .primary
-        }
+        .background(day.isWeekend ? Color.secondary.opacity(0.06) : .clear)
+        .overlay(alignment: .leading) { Rectangle().fill(.separator).frame(width: 1) }
     }
+}
 
-    /// The Mac's week: a column a day, its tasks due any time on top, then
-    /// those due at a time against the hours that have any. Dropping on the
-    /// top takes the time away; dropping on an hour sets it.
-    private struct WeekColumns: View {
-        var week: [CalendarDay]
-        var store: StoreOf<CalendarFeature>
-        var add: () -> Void
-        @Environment(\.locale) private var locale
-        /// One chip's height, which every row makes room for.
-        @ScaledMetric(relativeTo: .caption) private var chipHeight = 19.0
+/// An hour of a day in the week, with the tasks due in it; dropping a
+/// task on it sets the time to the quarter hour it lands on.
+private struct HourSlot: View {
+    var day: CalendarDate
+    var hour: Int
+    var chips: [CalendarChip]
+    var height: CGFloat
+    var store: StoreOf<CalendarFeature>
+    @State private var isTargeted = false
 
-        var body: some View {
-            let layout = WeekLayout(week, chipHeight: chipHeight)
-            HStack(alignment: .top, spacing: 0) {
-                VStack(alignment: .trailing, spacing: 0) {
-                    Color.clear.frame(height: 28 + layout.allDayHeight)
-                    ForEach(layout.hours, id: \.hour) { row in
-                        Text(TimeOfDay(clampingHour: row.hour, minute: 0).formatted(locale))
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(height: row.height, alignment: .top)
-                    }
-                }
-                .frame(width: 52)
-                .accessibilityHidden(true)
-                ForEach(week) { day in
-                    WeekColumn(
-                        day: day, layout: layout, isSelected: day.date == store.selected, store: store, add: add)
-                }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            ForEach(chips) { chip in
+                CalendarChipView(chip: chip, showsTime: true, store: store)
             }
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, 3)
+        .frame(maxWidth: .infinity, alignment: .top)
+        .frame(height: height, alignment: .top)
+        .background(isTargeted ? Color.accentColor.opacity(0.2) : .clear)
+        .overlay(alignment: .top) { Rectangle().fill(.separator.opacity(0.5)).frame(height: 1) }
+        .modifier(
+            DayDrop(
+                day: day, time: .some(TimeOfDay(clampingHour: hour, minute: 0)), hourHeight: height,
+                isTargeted: $isTargeted, store: store))
     }
-
-    /// How tall the week's rows are, the same in every column so the hours
-    /// line up: tall enough for the day with the most in each.
-    private struct WeekLayout {
-        var allDayHeight: CGFloat
-        /// Only the hours that have a task due in them.
-        var hours: [HourRow]
-
-        struct HourRow: Hashable {
-            var hour: Int
-            var height: CGFloat
-        }
-
-        init(_ week: [CalendarDay], chipHeight: CGFloat) {
-            let untimed =
-                week.map { day in
-                    day.spans.count + (day.moreSpans > 0 ? 1 : 0) + day.flags.count + day.starts.count
-                        + day.chips.count { $0.dueTime == nil }
-                }
-                .max() ?? 0
-            allDayHeight = max(chipHeight * 3, CGFloat(untimed) * chipHeight + 6)
-            var counts: [Int: Int] = [:]
-            for day in week {
-                var inDay: [Int: Int] = [:]
-                for chip in day.chips { if let hour = chip.dueTime?.hour { inDay[hour, default: 0] += 1 } }
-                counts.merge(inDay, uniquingKeysWith: max)
-            }
-            hours = counts.keys.sorted().map { hour in
-                HourRow(hour: hour, height: max(chipHeight * 2, CGFloat(counts[hour] ?? 1) * chipHeight + 4))
-            }
-        }
-    }
-
-    private struct WeekColumn: View {
-        var day: CalendarDay
-        var layout: WeekLayout
-        var isSelected: Bool
-        var store: StoreOf<CalendarFeature>
-        var add: () -> Void
-        @State private var targetsAllDay = false
-        @State private var targetedHour: Int?
-        @Environment(\.locale) private var locale
-
-        var body: some View {
-            VStack(alignment: .leading, spacing: 0) {
-                Button {
-                    store.send(.daySelected(day.date))
-                } label: {
-                    Text("\(day.date.day)")
-                        .font(.callout.weight(day.isToday ? .bold : .regular))
-                        .monospacedDigit()
-                        .foregroundStyle(isSelected ? .white : day.isToday ? .red : .primary)
-                        .frame(minWidth: 24, minHeight: 22)
-                        .background {
-                            if isSelected {
-                                Capsule().fill(day.isToday ? Color.red : Color.accentColor)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 28)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(Text(day.date.readable(locale)))
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-                VStack(alignment: .leading, spacing: 2) {
-                    SpanLanes(day: day)
-                        .padding(.horizontal, -3)
-                    ForEach(day.flags) { flag in
-                        CalendarFlagView(flag: flag, store: store)
-                    }
-                    ForEach(day.chips.filter { $0.dueTime == nil }) { chip in
-                        CalendarChipView(chip: chip, store: store)
-                    }
-                    ForEach(day.starts) { chip in
-                        CalendarStartView(chip: chip, store: store)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(3)
-                .frame(maxWidth: .infinity, alignment: .top)
-                .frame(height: layout.allDayHeight, alignment: .top)
-                .background(targetsAllDay ? Color.accentColor.opacity(0.2) : .clear)
-                .contentShape(Rectangle())
-                .onTapGesture(count: 2) {
-                    store.send(.daySelected(day.date))
-                    add()
-                }
-                .modifier(DayDrop(day: day.date, time: .some(nil), isTargeted: $targetsAllDay, store: store))
-                ForEach(layout.hours, id: \.hour) { row in
-                    HourSlot(
-                        day: day.date, hour: row.hour, chips: day.chips.filter { $0.dueTime?.hour == row.hour },
-                        height: row.height, store: store)
-                }
-            }
-            .background(day.isWeekend ? Color.secondary.opacity(0.06) : .clear)
-            .overlay(alignment: .leading) { Rectangle().fill(.separator).frame(width: 1) }
-        }
-    }
-
-    /// An hour of a day in the week, with the tasks due in it; dropping a
-    /// task on it sets the time to the quarter hour it lands on.
-    private struct HourSlot: View {
-        var day: CalendarDate
-        var hour: Int
-        var chips: [CalendarChip]
-        var height: CGFloat
-        var store: StoreOf<CalendarFeature>
-        @State private var isTargeted = false
-
-        var body: some View {
-            VStack(alignment: .leading, spacing: 1) {
-                ForEach(chips) { chip in
-                    CalendarChipView(chip: chip, showsTime: true, store: store)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 3)
-            .frame(maxWidth: .infinity, alignment: .top)
-            .frame(height: height, alignment: .top)
-            .background(isTargeted ? Color.accentColor.opacity(0.2) : .clear)
-            .overlay(alignment: .top) { Rectangle().fill(.separator.opacity(0.5)).frame(height: 1) }
-            .modifier(
-                DayDrop(
-                    day: day, time: .some(TimeOfDay(clampingHour: hour, minute: 0)), hourHeight: height,
-                    isTargeted: $isTargeted, store: store))
-        }
-    }
-#endif
+}

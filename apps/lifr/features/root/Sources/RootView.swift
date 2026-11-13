@@ -48,7 +48,7 @@ package struct RootView: View {
             } else {
                 content
             }
-            if store.platform == .phone, store.locksApp, !store.isLocked, scenePhase != .active {
+            if store.platform != .mac, store.locksApp, !store.isLocked, scenePhase != .active {
                 // What the app switcher shows: nothing to read. Locked, the
                 // lock screen already shows nothing.
                 PrivacyCover()
@@ -93,7 +93,7 @@ package struct RootView: View {
     private var bannersAtBottom: Bool {
         switch store.platform {
         case .phone: !(store.tab == .conversations && store.conversations.openID != nil)
-        case .mac: store.selection != .conversations
+        case .mac, .pad: store.selection != .conversations
         }
     }
 
@@ -101,21 +101,21 @@ package struct RootView: View {
     /// tab bar or the toolbar.
     private var bannerInset: CGFloat {
         guard bannersAtBottom else { return 60 }
-        return (store.platform == .phone ? 64 : 20) + bottomBar
+        return (store.platform.hasSidebar ? 20 : 64) + bottomBar
     }
 
     /// Where the banners show. In the Mac's assistant, over the chat at
     /// the right, clear of the list of conversations.
     private var bannerAlignment: Alignment {
         if bannersAtBottom { return .bottom }
-        return store.platform == .mac ? .topTrailing : .top
+        return store.platform.hasSidebar ? .topTrailing : .top
     }
 
     private var content: some View {
         Group {
             switch store.platform {
             case .phone: PhoneRootView(store: store)
-            case .mac: MacRootView(store: store)
+            case .mac, .pad: MacRootView(store: store)
             }
         }
         .environment(\.reportBottomBar) { bottomBar = $0 }
@@ -173,7 +173,7 @@ package struct RootView: View {
                     .transition(edgeTransition)
                 }
             }
-            .frame(maxWidth: store.platform == .phone ? .infinity : 440)
+            .frame(maxWidth: store.platform.hasSidebar ? 440 : .infinity)
             .onGeometryChange(for: CGFloat.self) { proxy in
                 proxy.size.height
             } action: { height in
@@ -248,23 +248,7 @@ private struct PhoneRootView: View {
                     .safeAreaInset(edge: .top) { SyncReviewBanner(store: store) }
                     .toolbar {
                         ToolbarItem(placement: .navigation) {
-                            Button {
-                                store.isSettingsShown = true
-                            } label: {
-                                Label {
-                                    Text("Settings")
-                                } icon: {
-                                    Image(systemName: "gear")
-                                        .overlay(alignment: .topTrailing) {
-                                            if SyncStatusText.needsAttention(store.sync) {
-                                                Circle().fill(.red).frame(width: 7, height: 7)
-                                            }
-                                        }
-                                }
-                            }
-                            .accessibilityValue(
-                                SyncStatusText.needsAttention(store.sync)
-                                    ? String(localized: "Sync needs attention") : "")
+                            SettingsButton(store: store)
                         }
                         syncTrouble
                         newTask
@@ -384,14 +368,7 @@ private struct PhoneRootView: View {
                 }
             }
         }
-        .sheet(isPresented: $store.isSettingsShown) {
-            NavigationStack {
-                SettingsView(store: store.scope(state: \.settings, action: \.settings))
-                    .toolbar {
-                        Button("Done") { store.isSettingsShown = false }
-                    }
-            }
-        }
+        .modifier(SettingsSheet(store: store))
     }
 
     private var newTask: some ToolbarContent {
@@ -463,12 +440,15 @@ private struct SyncFooter: View {
             .help(Text("Sync Now"))
             .accessibilityLabel(Text("Sync: \(status)"))
             .accessibilityHint(Text("Syncs now"))
-            #if os(macOS)
-                if SyncStatusText.needsFix(store.sync) {
+            if SyncStatusText.needsFix(store.sync) {
+                #if os(macOS)
                     SettingsLink { Text("Fix") }
                         .buttonStyle(.borderless)
-                }
-            #endif
+                #else
+                    Button("Fix") { store.isSettingsShown = true }
+                        .buttonStyle(.borderless)
+                #endif
+            }
         }
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -504,16 +484,21 @@ private struct MacRootView: View {
     @Bindable var store: StoreOf<RootFeature>
     @State private var toolbar = ToolbarSlot()
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
 
     var body: some View {
         columns
             // The menus act on the window in front.
             .focusedSceneValue(\.lifrWindow, store)
-            #if os(macOS)
-                .environment(\.opensInNewWindow) { id in
-                    openWindow(id: WindowPlace.sceneID, value: WindowPlace(Place(sidebar: store.selection, task: id)))
-                }
-            #endif
+            .environment(\.opensInNewWindow, opensInNewWindow)
+    }
+
+    /// Open in New Window, where there can be more than one.
+    private var opensInNewWindow: (@MainActor (UUID) -> Void)? {
+        guard supportsMultipleWindows else { return nil }
+        return { [openWindow, selection = store.selection] id in
+            openWindow(id: WindowPlace.sceneID, value: WindowPlace(Place(sidebar: selection, task: id)))
+        }
     }
 
     @ViewBuilder private var columns: some View {
@@ -534,17 +519,17 @@ private struct MacRootView: View {
                     .toolbar(id: toolbar.id) { addMenu }
                     #if os(macOS)
                         .onPasteCommand(of: [.utf8PlainText]) { _ in store.send(.pasteCommanded) }
-                        // Text from another app lands like ⌘V; a task
-                        // dragged within the list is left to the list.
-                        .dropDestination(for: String.self) { items, _ in
-                            guard !items.allSatisfy({ UUID(uuidString: $0) != nil }), !OrderDrag.isAmong(items)
-                            else { return false }
-                            store.send(.textPasted(items.joined(separator: "\n")))
-                            return true
-                        }
-                        // Rows take tasks dropped onto them, and hand text on.
-                        .environment(\.droppedText) { store.send(.textPasted($0)) }
                     #endif
+                    // Text from another app lands like ⌘V; a task dragged
+                    // within the list is left to the list.
+                    .dropDestination(for: String.self) { items, _ in
+                        guard !items.allSatisfy({ UUID(uuidString: $0) != nil }), !OrderDrag.isAmong(items)
+                        else { return false }
+                        store.send(.textPasted(items.joined(separator: "\n")))
+                        return true
+                    }
+                    // Rows take tasks dropped onto them, and hand text on.
+                    .environment(\.droppedText) { store.send(.textPasted($0)) }
             } detail: {
                 NavigationStack {
                     if store.selection == .conversations {
@@ -650,6 +635,47 @@ private struct MacRootView: View {
     }
 }
 
+/// The gear that opens Settings over the window, with a dot while sync
+/// needs attention. The Mac's Settings are a window of their own.
+private struct SettingsButton: View {
+    var store: StoreOf<RootFeature>
+
+    var body: some View {
+        Button {
+            store.isSettingsShown = true
+        } label: {
+            Label {
+                Text("Settings")
+            } icon: {
+                Image(systemName: "gear")
+                    .overlay(alignment: .topTrailing) {
+                        if SyncStatusText.needsAttention(store.sync) {
+                            Circle().fill(.red).frame(width: 7, height: 7)
+                        }
+                    }
+            }
+        }
+        .accessibilityValue(
+            SyncStatusText.needsAttention(store.sync) ? String(localized: "Sync needs attention") : "")
+    }
+}
+
+/// Settings over the window, on iPhone and iPad.
+private struct SettingsSheet: ViewModifier {
+    @Bindable var store: StoreOf<RootFeature>
+
+    func body(content: Content) -> some View {
+        content.sheet(isPresented: $store.isSettingsShown) {
+            NavigationStack {
+                SettingsView(store: store.scope(state: \.settings, action: \.settings))
+                    .toolbar {
+                        Button("Done") { store.isSettingsShown = false }
+                    }
+            }
+        }
+    }
+}
+
 private struct Sidebar: View {
     @Bindable var store: StoreOf<RootFeature>
 
@@ -710,11 +736,23 @@ private struct Sidebar: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
+            #if os(iOS)
+                // The iPad's sidebar list scrolls under this footer, so it needs its own backing.
+                .background(.bar)
+            #endif
         }
         .sheet(item: $store.scope(state: \.avenues.newAvenue, action: \.avenues.newAvenue)) { store in
             NavigationStack { NewAvenueView(store: store) }
                 .sheetLayout(height: 260)
         }
+        #if os(iOS)
+            .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    SettingsButton(store: store)
+                }
+            }
+            .modifier(SettingsSheet(store: store))
+        #endif
     }
 
     @ViewBuilder private var lists: some View {

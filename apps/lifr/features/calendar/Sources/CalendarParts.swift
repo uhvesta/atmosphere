@@ -296,6 +296,7 @@ struct DayDrop: ViewModifier {
 struct SpanLanes: View {
     var day: CalendarDay
     @Environment(\.colorSchemeContrast) private var contrast
+    @WideCalendar private var isWide
 
     var body: some View {
         if !day.spans.isEmpty || day.moreSpans > 0 {
@@ -315,11 +316,7 @@ struct SpanLanes: View {
     }
 
     @ViewBuilder private func piece(_ span: CalendarSpan?) -> some View {
-        #if os(macOS)
-            let height: CGFloat = 14
-        #else
-            let height: CGFloat = 3
-        #endif
+        let height: CGFloat = isWide ? 14 : 3
         if let span {
             let shape = UnevenRoundedRectangle(
                 topLeadingRadius: span.startsHere ? 3 : 0, bottomLeadingRadius: span.startsHere ? 3 : 0,
@@ -328,14 +325,12 @@ struct SpanLanes: View {
                 .fill(Color(avenue: span.color).opacity(contrast == .increased ? 0.6 : 0.35))
                 .frame(height: height)
                 .overlay(alignment: .leading) {
-                    #if os(macOS)
-                        if span.isFirst {
-                            Text(span.title)
-                                .font(.caption2)
-                                .lineLimit(1)
-                                .padding(.horizontal, 3)
-                        }
-                    #endif
+                    if isWide, span.isFirst {
+                        Text(span.title)
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .padding(.horizontal, 3)
+                    }
                 }
         } else {
             Color.clear.frame(height: height)
@@ -389,5 +384,26 @@ struct UnscheduledTray: View {
             }
         }
         .navigationTitle("Unscheduled")
+    }
+}
+
+/// Whether the calendar has room for chips with titles and a column a day:
+/// on the Mac, and on an iPad at a regular width, not in a narrow split.
+@propertyWrapper
+struct WideCalendar: DynamicProperty {
+    #if os(iOS)
+        @Environment(\.horizontalSizeClass) private var sizeClass
+    #endif
+
+    init() {}
+
+    @MainActor var wrappedValue: Bool {
+        #if os(iOS)
+            // A large iPhone on its side is regular width too, but too
+            // short for a column a day.
+            UIDevice.current.userInterfaceIdiom == .pad && sizeClass == .regular
+        #else
+            true
+        #endif
     }
 }

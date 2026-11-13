@@ -34,6 +34,16 @@ ios_xctestrun_runner(
     visibility = ["//apps:__subpackages__"],
 )
 
+# The simulator for iPad snapshot tests, pinned the same way.
+ios_xctestrun_runner(
+    name = "ipad_pro_11",
+    clean_up_simulator_action = ":return_simulator",
+    create_simulator_action = ":lend_simulator",
+    device_type = "iPad Pro 11-inch (M5)",
+    os_version = "26.2",
+    visibility = ["//apps:__subpackages__"],
+)
+
 # Lend iOS tests one of four booted simulators and take it back: see
 # simulators/lend.sh.
 sh_binary(

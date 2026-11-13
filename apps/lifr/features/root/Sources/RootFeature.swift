@@ -49,6 +49,13 @@ package struct RootFeature {
         case phone
         /// A sidebar, the list or board, and the task detail.
         case mac
+        /// The Mac's sidebar layout, without what only the Mac runs: its
+        /// agents and printing.
+        case pad
+
+        /// Whether it shows a sidebar beside the list and the task, rather
+        /// than tabs.
+        package var hasSidebar: Bool { self != .phone }
     }
 
     package enum Tab: Hashable, Codable, Sendable {
@@ -283,13 +290,13 @@ package struct RootFeature {
             settings = SettingsFeature.State(showsAgents: platform == .mac)
         }
 
-        /// Another Mac window, opening at `place`; where it goes after is
-        /// its own, not kept for the next launch.
-        package init(window place: Place) {
-            platform = .mac
+        /// Another Mac or iPad window, opening at `place`; where it goes
+        /// after is its own, not kept for the next launch.
+        package init(window place: Place, platform: Platform = .mac) {
+            self.platform = platform
             isWindow = true
             today = TodayFeature.State()
-            settings = SettingsFeature.State(showsAgents: true)
+            settings = SettingsFeature.State(showsAgents: platform == .mac)
             _place = Shared(value: place)
         }
 
@@ -297,7 +304,11 @@ package struct RootFeature {
 
         /// This device, as the review names it.
         package var thisDevice: String {
-            platform == .phone ? String(localized: "This iPhone") : String(localized: "This Mac")
+            switch platform {
+            case .phone: String(localized: "This iPhone")
+            case .pad: String(localized: "This iPad")
+            case .mac: String(localized: "This Mac")
+            }
         }
 
         /// The list the person is looking at, which keyboard shortcuts act on.
@@ -312,7 +323,7 @@ package struct RootFeature {
                 case .search: .search
                 case .conversations: nil
                 }
-            case .mac:
+            case .mac, .pad:
                 switch selection {
                 case .today: .today
                 case .upcoming: .upcoming
@@ -394,7 +405,7 @@ package struct RootFeature {
         /// Whether an Avenue or Project is on screen, which can show as a
         /// list or a board.
         package var showsScope: Bool {
-            if case .scope = selection { platform == .mac } else { false }
+            if case .scope = selection { platform.hasSidebar } else { false }
         }
 
         /// Whether Move Up and Move Down apply: a row the keyboard is on, in
@@ -418,8 +429,8 @@ package struct RootFeature {
 
         /// Where the person is now.
         package var here: Place {
-            platform == .phone
-                ? Place(tab: tab, task: openTaskID) : Place(sidebar: selection, task: openTaskID)
+            platform.hasSidebar
+                ? Place(sidebar: selection, task: openTaskID) : Place(tab: tab, task: openTaskID)
         }
     }
 
@@ -743,7 +754,7 @@ package struct RootFeature {
                 state.biometry = lock.biometry()
                 if state.place != Place() {
                     state.restoring = state.place
-                    if state.platform == .phone, let tab = state.place.tab { state.tab = tab }
+                    if !state.platform.hasSidebar, let tab = state.place.tab { state.tab = tab }
                 }
                 if state.locksApp {
                     state.isLocked = true
@@ -771,7 +782,7 @@ package struct RootFeature {
                 state.restoring = nil
                 // Where Lifr opens isn't a step to go back from.
                 let selects: Effect<Action> =
-                    if state.platform == .mac, let item = place.sidebar, item != state.selection {
+                    if state.platform.hasSidebar, let item = place.sidebar, item != state.selection {
                         select(item, in: &state)
                     } else {
                         .none
@@ -821,7 +832,7 @@ package struct RootFeature {
                 guard state.workspace != nil else {
                     // Still opening: go there once the records load.
                     let place =
-                        state.platform == .phone ? Place(tab: .today, task: id) : Place(sidebar: .today, task: id)
+                        state.platform.hasSidebar ? Place(sidebar: .today, task: id) : Place(tab: .today, task: id)
                     state.$place.withLock { $0 = place }
                     if state.restoring != nil { state.restoring = place }
                     return .none
@@ -831,7 +842,7 @@ package struct RootFeature {
                 case .phone:
                     state.tab = .today
                     return .send(.reopen(id))
-                case .mac:
+                case .mac, .pad:
                     return .concatenate(.send(.selected(.today)), .send(.reopen(id)))
                 }
 
@@ -1064,7 +1075,7 @@ package struct RootFeature {
                 // Find puts the cursor in the search field.
                 if item == .search { state.search.isFieldFocused = true }
                 switch state.platform {
-                case .mac:
+                case .mac, .pad:
                     return .send(.selected(item))
                 case .phone:
                     switch item {
@@ -1099,7 +1110,7 @@ package struct RootFeature {
                 state.$seenRelease.withLock { $0 = WhatsNew.release }
                 state.onboarding = nil
                 let shown = snapshot.map { show($0, in: &state) } ?? .none
-                guard state.platform == .mac else {
+                guard state.platform.hasSidebar else {
                     state.tab = .today
                     return shown
                 }
@@ -1413,7 +1424,7 @@ package struct RootFeature {
                 return .send(.newTaskInTapped(scope))
 
             case .today(.delegate(.planFromAnytime)):
-                if state.platform == .mac { return .send(.selected(.anytime)) }
+                if state.platform.hasSidebar { return .send(.selected(.anytime)) }
                 state.tab = .avenues
                 state.shownShelf = .anytime
                 return .none
@@ -1427,7 +1438,7 @@ package struct RootFeature {
 
             case .calendar(.delegate(.openProject(let id))):
                 guard state.workspace?.projects[id] != nil else { return .none }
-                if state.platform == .mac { return .send(.selected(.scope(.project(id)))) }
+                if state.platform.hasSidebar { return .send(.selected(.scope(.project(id)))) }
                 state.tab = .avenues
                 return .send(.avenues(.opened(.project(id))))
 
@@ -1748,7 +1759,7 @@ package struct RootFeature {
     /// have it, without its title while the lock is on, and ends it once
     /// the task is closed, deleted or no longer In Progress.
     private func updateFocus(_ state: State) -> Effect<Action> {
-        guard state.platform == .phone, let workspace = state.workspace else { return .none }
+        guard state.platform != .mac, let workspace = state.workspace else { return .none }
         return .run { [focusActivity, now, locked = state.locksApp] _ in
             for id in await focusActivity.running() {
                 await focusActivity.update(id, Self.focus(on: id, in: workspace, now: now, locked: locked))
@@ -2093,7 +2104,7 @@ package struct RootFeature {
             guard state.workspace?.avenues[id].map({ $0.archivedAt == nil }) == true else {
                 return .send(.goTo(.today))
             }
-            if state.platform == .mac { return .send(.selected(.scope(.avenue(id)))) }
+            if state.platform.hasSidebar { return .send(.selected(.scope(.avenue(id)))) }
             state.tab = .avenues
             return .send(.avenues(.opened(.avenue(id))))
         case .project(let id):
@@ -2101,12 +2112,12 @@ package struct RootFeature {
             guard state.workspace?.projects[id].map({ $0.status != .archived }) == true else {
                 return .send(.goTo(.today))
             }
-            if state.platform == .mac { return .send(.selected(.scope(.project(id)))) }
+            if state.platform.hasSidebar { return .send(.selected(.scope(.project(id)))) }
             state.tab = .avenues
             return .send(.avenues(.opened(.project(id))))
         case .filter(let id):
             guard state.workspace?.savedFilters[id] != nil else { return .send(.goTo(.today)) }
-            if state.platform == .mac { return .send(.selected(.savedFilter(id))) }
+            if state.platform.hasSidebar { return .send(.selected(.savedFilter(id))) }
             return .send(.savedFilterTapped(id))
         case .calendar(let date):
             return .concatenate(.send(.goTo(.calendar)), .send(.calendar(.daySelected(date))))

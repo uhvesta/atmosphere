@@ -82,7 +82,10 @@ ios_application(
     }) if IOS_APP_GROUP or ICLOUD_CONTAINER else None,
     # Today on the Home Screen.
     extensions = ["//apps/lifr/widgets:ios"],
-    families = ["iphone"],
+    families = [
+        "iphone",
+        "ipad",
+    ],
     infoplists = [
         "Info.plist",
         "Info-iOS.plist",

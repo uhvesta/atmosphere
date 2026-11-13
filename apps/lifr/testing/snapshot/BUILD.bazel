@@ -6,6 +6,11 @@ load("//apps/libs/kits/flow:defs.bzl", "flow_host_app")
 flow_host_app(
     name = "host",
     bundle_id = FLOW_HOST_BUNDLE_ID,
+    # The iPad flows run in it on the iPad runner.
+    families = [
+        "iphone",
+        "ipad",
+    ],
     visibility = ["//apps/lifr:__subpackages__"],
 )
 

@@ -56,7 +56,8 @@ class PhoneFlowTestCase: XCTestCase {
         assistant: AssistantClient? = nil,
         photos: PhotoLibraryClient = .denied, files: [String: PickedFile] = [:],
         tab: RootFeature.Tab = .today, style: UIUserInterfaceStyle = .light, speech: SpeechClient = .inMemory,
-        tips: Bool = false, textSize: DynamicTypeSize = .large
+        tips: Bool = false, textSize: DynamicTypeSize = .large, platform: RootFeature.Platform = .phone,
+        size: CGSize = CGSize(width: 402, height: 874)
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         // The gesture tips show only in a flow about them.
         for tip in GestureTip.allCases {
@@ -70,7 +71,7 @@ class PhoneFlowTestCase: XCTestCase {
         self.library = library
         let (client, records) = StoreClient.inMemorySyncing(workspace, actor: .user(device: "iPhone", surface: .iPhone))
         self.records = records
-        var state = RootFeature.State(platform: .phone)
+        var state = RootFeature.State(platform: platform)
         // The tab the app opens on: Search opens with its field in the tab bar.
         state.tab = tab
         let store = Store(initialState: state) {
@@ -116,8 +117,8 @@ class PhoneFlowTestCase: XCTestCase {
             }
         }
         let flow = FlowRecorder(
-            name, RootView(store: store).environment(\.timeZone, .gmt).dynamicTypeSize(textSize), style: style,
-            audits: true)
+            name, RootView(store: store).environment(\.timeZone, .gmt).dynamicTypeSize(textSize), size: size,
+            style: style, audits: true)
         store.send(.task)
         return (store, flow)
     }

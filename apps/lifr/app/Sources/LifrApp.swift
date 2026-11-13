@@ -88,6 +88,7 @@ struct LifrApp: App {
             }
         #else
             window
+                .commands { RootCommands(store: Storage.root) }
                 // Woken for downloads the system finished while Lifr was away.
                 .backgroundTask(.urlSession(ModelLibrary.backgroundSession)) {
                     _ = Storage.models
@@ -98,6 +99,12 @@ struct LifrApp: App {
                 .backgroundTask(.appRefresh(Storage.refreshID)) {
                     await Storage.refresh()
                 }
+            // The iPad's other windows; the iPhone opens none.
+            WindowGroup(id: WindowPlace.sceneID, for: WindowPlace.self) { $place in
+                if case .success = Storage.opened {
+                    OtherWindow(main: Storage.root, place: $place, store: Storage.window(at:))
+                }
+            }
         #endif
     }
 
@@ -254,9 +261,9 @@ private enum Storage {
         static let capture = CapturePanel(store: root)
     #endif
 
-    /// Another Mac window's own store, which shares the records.
+    /// Another Mac or iPad window's own store, which shares the records.
     static func window(at place: Place) -> StoreOf<RootFeature> {
-        Store(initialState: RootFeature.State(window: place)) {
+        Store(initialState: RootFeature.State(window: place, platform: platform)) {
             RootFeature()
         } withDependencies: {
             dependencies(&$0)
@@ -385,7 +392,7 @@ private enum Storage {
     /// one window shows in the others.
     static let client: StoreClient =
         if case .success(let store) = opened {
-            .live(store, actor: actor, announces: platform == .mac)
+            .live(store, actor: actor, announces: platform.hasSidebar)
         } else {
             StoreClient()
         }
@@ -394,7 +401,7 @@ private enum Storage {
         #if os(macOS)
             .mac
         #else
-            .phone
+            UIDevice.current.userInterfaceIdiom == .pad ? .pad : .phone
         #endif
     }
 
