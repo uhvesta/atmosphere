@@ -2,7 +2,7 @@
 [button] "Add"
 [button] "More"
 [header] "Today"
-[button] "2 changes need review, Review"
+[button] "2 changes to review, Review"
 [text] "Nothing due today"
 [text] "Tasks due today, and overdue ones, show up here."
 [button] "Add a Task for Today"

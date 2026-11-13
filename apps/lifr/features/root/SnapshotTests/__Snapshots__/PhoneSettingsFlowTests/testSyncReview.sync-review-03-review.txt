@@ -6,7 +6,7 @@
 [header] "Review Changes"
 [header] "Today"
 [text] "These changed here and on another device in ways that can't both stand. Choose what to keep; you can undo it like any change."
-[button] "2 changes need review, Review"
+[button] "2 changes to review, Review"
 [header, text] "Task “Buy race gels and salt”"
 [header, text] "Title"
 [button, selected] "This iPhone: Buy race gels and salt, Changed Nov 2 at 8:00 AM"

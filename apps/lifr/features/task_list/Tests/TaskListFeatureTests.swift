@@ -192,6 +192,39 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(reloaded.rows.map(\.title), ["Three", "One", "Two"])
     }
 
+    func testMovingARowOnePlaceDownAndBackUpWithoutDragging() async {
+        for title in ["One", "Two", "Three"] { records.task(title, in: health) }
+        let store = await load(reordering: true)
+        await store.send(.sortPicked(.manual))
+        let one = store.state.rows[0].id
+
+        await store.send(.movedOnePlace(one, up: false))
+        await store.receive(\.moved)
+        XCTAssertEqual(store.state.rows.map(\.title), ["Two", "One", "Three"])
+        await store.receive(\.saved)
+
+        await store.send(.movedOnePlace(one, up: true))
+        await store.receive(\.moved)
+        XCTAssertEqual(store.state.rows.map(\.title), ["One", "Two", "Three"])
+        await store.receive(\.saved)
+
+        // Already at the top.
+        await store.send(.movedOnePlace(one, up: true))
+        XCTAssertEqual(store.state.rows.map(\.title), ["One", "Two", "Three"])
+    }
+
+    func testTrashingOneRowByNameTrashesOnlyIt() async {
+        records.task("Run", in: health)
+        records.task("Swim", in: health)
+        let store = await load()
+        let ids = store.state.rows.map(\.id)
+
+        await store.send(.trashRowTapped(ids[0]))
+        await store.receive(\.bulkSaved)
+        await store.receive(\.delegate.saved)
+        XCTAssertEqual(store.state.rows.map(\.id), [ids[1]])
+    }
+
     func testADragThatCantBeSavedPutsTheRowBack() async {
         for title in ["One", "Two", "Three"] { records.task(title, in: health) }
         var client = StoreClient.inMemory(records.workspace)

@@ -753,6 +753,16 @@ private struct SyncReviewBanner: View {
     let store: StoreOf<RootFeature>
 
     var body: some View {
+        banner
+            // It arrives without the person doing anything, so VoiceOver
+            // says so wherever focus is.
+            .onChange(of: store.sync.review.count) { before, after in
+                if after > before { AccessibilityNotification.Announcement(message).post() }
+            }
+    }
+
+    @ViewBuilder
+    private var banner: some View {
         if !store.sync.review.isEmpty {
             Button {
                 store.send(.syncReviewTapped)
@@ -775,7 +785,7 @@ private struct SyncReviewBanner: View {
 
     private var message: String {
         let count = store.sync.review.count
-        return String(AttributedString(localized: "^[\(count) change](inflect: true) needs review").characters)
+        return String(AttributedString(localized: "^[\(count) change](inflect: true) to review").characters)
     }
 }
 

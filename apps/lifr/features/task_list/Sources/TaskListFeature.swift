@@ -232,6 +232,11 @@ package struct TaskListFeature {
         case searchChanged(String)
         /// Rows dragged within a section, as `onMove` reports them.
         case moved(section: String, from: IndexSet, to: Int)
+        /// A row moved one place up or down by a named action, such as
+        /// VoiceOver's, where a drag isn't to hand.
+        case movedOnePlace(UUID, up: Bool)
+        /// A row moved to the Trash by a named action.
+        case trashRowTapped(UUID)
         /// Tasks dropped onto a row, to become its Sub tasks.
         case droppedOnto(UUID, tasks: [UUID])
         case bannerDismissed
@@ -331,6 +336,19 @@ package struct TaskListFeature {
 
             case .rowAction(let id, .status(let status)):
                 return setStatus(status, id, in: &state)
+
+            case .movedOnePlace(let id, let up):
+                guard state.canReorder,
+                    let section = state.sections.first(where: { $0.rows.contains { $0.id == id } }),
+                    let index = section.rows.firstIndex(where: { $0.id == id })
+                else { return .none }
+                // `onMove` counts the place to go before the row moves.
+                let to = up ? index - 1 : index + 2
+                guard to >= 0, to <= section.rows.count else { return .none }
+                return .send(.moved(section: section.id, from: [index], to: to))
+
+            case .trashRowTapped(let id):
+                return bulk(.trash, [id])
 
             case .rowAction(let id, .reschedule):
                 guard let row = state.rows.first(where: { $0.id == id }) else { return .none }

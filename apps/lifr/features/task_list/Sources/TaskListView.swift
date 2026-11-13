@@ -289,6 +289,17 @@ package struct TaskListRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityHint(note ?? "")
         .accessibilityAction { store.send(.rowTapped(row.id)) }
+        // What swipes and drags do, by name, for VoiceOver and Voice Control.
+        .accessibilityActions {
+            if !store.isSelecting {
+                Button("Reschedule") { store.send(.rowAction(row.id, .reschedule)) }
+                if store.canReorder {
+                    Button("Move Up") { store.send(.movedOnePlace(row.id, up: true)) }
+                    Button("Move Down") { store.send(.movedOnePlace(row.id, up: false)) }
+                }
+                Button("Move to Trash") { store.send(.trashRowTapped(row.id)) }
+            }
+        }
         .swipeActions(edge: .leading, allowsFullSwipe: false) {
             if !store.isSelecting, row.status != .inProgress {
                 Button(
