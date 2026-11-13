@@ -123,7 +123,18 @@ public struct Book: Identifiable, Hashable, Codable, Sendable {
 
     public var paragraphs: [Paragraph] { chapters.flatMap(\.paragraphs) }
 
-    public func paragraph(_ id: UUID) -> Paragraph? { paragraphs.first { $0.id == id } }
+    public func paragraph(_ id: UUID) -> Paragraph? {
+        chapters.lazy.flatMap(\.paragraphs).first { $0.id == id }
+    }
+
+    /// What the model said of `word`, in any case, in a sentence it was
+    /// looked up in: the same one each time.
+    public func note(for word: String) -> WordNote? {
+        let word = word.lowercased()
+        return words.filter { $0.key.word.lowercased() == word }
+            .min { $0.key.paragraph.uuidString < $1.key.paragraph.uuidString }?
+            .value
+    }
 
     /// How many words it has, counting each character of a script written
     /// without spaces as one.

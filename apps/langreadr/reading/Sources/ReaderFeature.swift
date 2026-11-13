@@ -30,6 +30,10 @@ package struct ReaderFeature {
         /// Why the model couldn't write for a paragraph.
         package var problems: [UUID: String] = [:]
         @Presents package var destination: Destination.State?
+        @Presents package var alert: AlertState<Alert>?
+        /// Whether the book has paragraphs in a script with letters other
+        /// than Latin, found once when it opens: its text doesn't change.
+        package let canTransliterate: Bool
 
         package var id: UUID { book.id }
 
@@ -39,6 +43,7 @@ package struct ReaderFeature {
             self.book = book
             showsTranslation = book.translates ?? false
             showsTransliteration = book.transliterates ?? false
+            canTransliterate = book.chapters.contains { $0.paragraphs.contains { !Script.isLatin($0.text) } }
         }
 
         /// The words looked up, in the order they're read, each with the
@@ -71,9 +76,6 @@ package struct ReaderFeature {
         package func transliteration(of paragraph: UUID) -> String? {
             book.annotations[paragraph]?.transliteration ?? transforms[paragraph]
         }
-
-        /// Whether the book is in a script with letters other than Latin.
-        package var canTransliterate: Bool { !Script.isLatin(book.paragraphs.first?.text ?? "") }
 
         /// The chat about a passage, open over the text.
         fileprivate func chatting(_ chat: AnchoredChat, compact: Bool, reader: Language) -> Destination.State {
@@ -117,7 +119,9 @@ package struct ReaderFeature {
         case paragraphsShown([UUID])
         case lookedUpWordTapped(WordKey)
         case retryTapped(UUID)
-        case annotated(UUID, Result<Annotation, ModelRuntimeError>)
+        /// What the model wrote for a paragraph, and why it couldn't write
+        /// the rest.
+        case annotated(UUID, Annotation, ModelRuntimeError?)
         case languagePicked(Language)
         case wordTapped(paragraph: UUID, WordSpan)
         case askTapped
@@ -125,6 +129,13 @@ package struct ReaderFeature {
         case chatsTapped
         case chatBubbleTapped(paragraph: UUID)
         case destination(PresentationAction<Destination.Action>)
+        case alert(PresentationAction<Alert>)
+    }
+
+    package enum Alert: Equatable {
+        /// Drops what was written for the book, which is for the language
+        /// it was read in, and reads it as `language`.
+        case changeLanguage(Language)
     }
 
     @Dependency(\.tutor) private var tutor
@@ -170,21 +181,21 @@ package struct ReaderFeature {
             case .retryTapped(let id):
                 state.problems[id] = nil
                 return .send(.paragraphAppeared(id))
-            case .annotated(let id, .success(let annotation)):
+            case .annotated(let id, let annotation, let problem):
                 state.book.annotate(
                     id, translation: annotation.translation, transliteration: annotation.transliteration)
-                return next(after: id, &state)
-            case .annotated(let id, .failure(let error)):
-                state.problems[id] = error.description
+                if let problem { state.problems[id] = problem.reading }
                 return next(after: id, &state)
             case .languagePicked(let language):
                 guard language != state.book.language else { return .none }
-                state.book.language = language
-                state.book.annotations = [:]
-                state.book.words = [:]
-                state.problems = [:]
-                state.writing = []
-                findWords(&state)
+                guard state.book.annotations.isEmpty, state.book.words.isEmpty else {
+                    state.alert = Self.changing(to: language, state.book)
+                    return .none
+                }
+                read(as: language, &state)
+                return .none
+            case .alert(.presented(.changeLanguage(let language))):
+                read(as: language, &state)
                 return .none
             case .wordTapped(let id, let word):
                 guard let paragraph = state.book.paragraph(id) else { return .none }
@@ -199,7 +210,7 @@ package struct ReaderFeature {
                         sentence: Self.sentence(around: word, in: paragraph.text),
                         transliteration: Script.transliteration(for: state.book.language) == .transform
                             ? services.transliterate(word.text) : nil,
-                        note: state.book.words[key]))
+                        note: state.book.words[key], known: state.book.note(for: word.text)))
                 // Read aloud through the card, which says why if it can't.
                 return .send(.destination(.presented(.word(.sayTapped))))
             case .askTapped:
@@ -237,11 +248,37 @@ package struct ReaderFeature {
                 guard let chat = state.book.chats.first(where: { $0.id == id }) else { return .none }
                 state.destination = state.chatting(chat, compact: false, reader: tutor.reader)
                 return .none
-            case .destination:
+            case .destination, .alert:
                 return .none
             }
         }
         .ifLet(\.$destination, action: \.destination)
+        .ifLet(\.$alert, action: \.alert)
+    }
+
+    private static func changing(to language: Language, _ book: Book) -> AlertState<Alert> {
+        let (old, new) = (book.language.name(), language.name())
+        let written = "The translations and readings written for \(old) are deleted and written again as \(new)."
+        let words = book.words.isEmpty ? "" : " The \(book.words.count) words looked up are forgotten."
+        return AlertState {
+            TextState("Read it as \(language.name())?")
+        } actions: {
+            ButtonState(role: .destructive, action: .changeLanguage(language)) { TextState("Change") }
+            ButtonState(role: .cancel) { TextState("Cancel") }
+        } message: {
+            TextState(written + words)
+        }
+    }
+
+    /// Reads the book as `language`, dropping what was written for the
+    /// one before.
+    private func read(as language: Language, _ state: inout State) {
+        state.book.language = language
+        state.book.annotations = [:]
+        state.book.words = [:]
+        state.problems = [:]
+        state.writing = []
+        findWords(&state)
     }
 
     private func findWords(_ state: inout State) {
@@ -262,12 +299,25 @@ package struct ReaderFeature {
         let translate = state.needsTranslation(paragraph.id)
         let read = state.needsReading(paragraph)
         return .run { [tutor, language = state.book.language] send in
-            let written = await outcome { () throws(ModelRuntimeError) in
-                Annotation(
-                    translation: translate ? try await tutor.translate(paragraph.text, from: language) : nil,
-                    transliteration: read ? try await tutor.romanize(paragraph.text, from: language) : nil)
+            // Each is kept when the other fails, so a good reading isn't lost
+            // to a failed translation.
+            var written = Annotation()
+            var problem: ModelRuntimeError?
+            if translate {
+                do throws(ModelRuntimeError) {
+                    written.translation = try await tutor.translate(paragraph.text, from: language)
+                } catch {
+                    problem = error
+                }
             }
-            await send(.annotated(paragraph.id, written))
+            if read {
+                do throws(ModelRuntimeError) {
+                    written.transliteration = try await tutor.romanize(paragraph.text, from: language)
+                } catch {
+                    problem = problem ?? error
+                }
+            }
+            await send(.annotated(paragraph.id, written, problem))
         }
     }
 

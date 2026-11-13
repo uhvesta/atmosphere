@@ -19,7 +19,13 @@ package struct WordCardFeature {
         /// Its reading by the transform, shown until the model's.
         package var transliteration: String?
         package var note: WordNote?
+        /// What the model said of the word in another sentence of the
+        /// book, shown instead of looking it up again until the person
+        /// asks what it means here.
+        package var known: WordNote?
         package var problem: String?
+        /// Whether the model is looking it up now.
+        package var isLookingUp = false
         /// Why it couldn't be read aloud.
         package var speechProblem: String?
 
@@ -27,7 +33,7 @@ package struct WordCardFeature {
 
         package init(
             key: WordKey, word: WordSpan, language: Language, sentence: String, transliteration: String? = nil,
-            note: WordNote? = nil
+            note: WordNote? = nil, known: WordNote? = nil
         ) {
             self.key = key
             self.word = word
@@ -35,11 +41,15 @@ package struct WordCardFeature {
             self.sentence = sentence
             self.transliteration = transliteration
             self.note = note
+            self.known = note == nil ? known : nil
         }
     }
 
     package enum Action: Equatable {
         case task
+        /// Looks it up, for its sentence here, after a failure or when only
+        /// another sentence's meaning is known.
+        case lookUpTapped
         case sayTapped
         case saySentenceTapped
         case spoke(SpeechError?)
@@ -67,15 +77,11 @@ package struct WordCardFeature {
         Reduce { state, action in
             switch action {
             case .task:
+                guard state.note == nil, state.known == nil else { return .none }
+                return lookUp(&state)
+            case .lookUpTapped:
                 guard state.note == nil else { return .none }
-                state.problem = nil
-                return .run { [word = state.word.text, sentence = state.sentence, language = state.language] send in
-                    await send(
-                        .lookedUp(
-                            outcome { () throws(ModelRuntimeError) in
-                                try await tutor.lookUp(word, in: sentence, language: language)
-                            }))
-                }
+                return lookUp(&state)
             case .sayTapped:
                 return say(state.word.text, &state)
             case .saySentenceTapped:
@@ -88,14 +94,29 @@ package struct WordCardFeature {
             case .doneTapped:
                 return .run { _ in await dismiss() }
             case .lookedUp(.success(let note)):
+                state.isLookingUp = false
                 state.note = note
+                state.known = nil
                 return .send(.delegate(.lookedUp(note)))
             case .lookedUp(.failure(let error)):
-                state.problem = error.description
+                state.isLookingUp = false
+                state.problem = error.reading
                 return .none
             case .delegate:
                 return .none
             }
+        }
+    }
+
+    private func lookUp(_ state: inout State) -> Effect<Action> {
+        state.problem = nil
+        state.isLookingUp = true
+        return .run { [word = state.word.text, sentence = state.sentence, language = state.language] send in
+            await send(
+                .lookedUp(
+                    outcome { () throws(ModelRuntimeError) in
+                        try await tutor.lookUp(word, in: sentence, language: language)
+                    }))
         }
     }
 

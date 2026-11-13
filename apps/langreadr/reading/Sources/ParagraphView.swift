@@ -96,7 +96,10 @@ struct ParagraphView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .task(id: [store.showsTranslation, store.showsTransliteration]) { store.send(.paragraphAppeared(paragraph.id)) }
+        // Asks for what's missing again when a switch or the language changes.
+        .task(id: Writing(store.showsTranslation, store.showsTransliteration, store.book.language)) {
+            store.send(.paragraphAppeared(paragraph.id))
+        }
     }
 
     private func highlight(_ word: WordSpan, picked: Passage?, chats: [AnchoredChat]) -> some View {
@@ -104,5 +107,18 @@ struct ParagraphView: View {
         let isAsked = chats.contains { $0.passage.contains(word.start) }
         return RoundedRectangle(cornerRadius: 3)
             .fill(isPicked ? Color.accentColor.opacity(0.3) : isAsked ? Color.yellow.opacity(0.25) : .clear)
+    }
+}
+
+/// What the model is asked to write under a paragraph.
+private struct Writing: Hashable {
+    let translation: Bool
+    let transliteration: Bool
+    let language: Language
+
+    init(_ translation: Bool, _ transliteration: Bool, _ language: Language) {
+        self.translation = translation
+        self.transliteration = transliteration
+        self.language = language
     }
 }

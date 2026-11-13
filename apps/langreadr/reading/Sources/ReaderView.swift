@@ -40,6 +40,7 @@ struct ReaderView: View {
         .safeAreaInset(edge: .bottom) {
             if store.isHighlighting { highlightBar }
         }
+        .alert($store.scope(state: \.alert, action: \.alert))
         .sheet(item: $store.scope(state: \.destination, action: \.destination)) { destination in
             ReaderSheetView(store: destination)
         }

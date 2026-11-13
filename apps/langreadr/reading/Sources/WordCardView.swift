@@ -12,7 +12,7 @@ struct WordCardView: View {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(store.word.text).font(.largeTitle)
-                        if let reading = store.note?.transliteration ?? store.transliteration {
+                        if let reading {
                             Text(reading).font(.title3).foregroundStyle(.secondary)
                         }
                     }
@@ -32,10 +32,25 @@ struct WordCardView: View {
                         Text(note.inSentence)
                     }
                 }
+            } else if let known = store.known {
+                Section("Meaning") {
+                    Text(known.meaning)
+                }
+                Section("Here") {
+                    if store.isLookingUp {
+                        lookingUp
+                    } else if let problem = store.problem {
+                        failed(problem)
+                    } else {
+                        Button("What it means here", systemImage: "text.magnifyingglass") {
+                            store.send(.lookUpTapped)
+                        }
+                    }
+                }
             } else if let problem = store.problem {
-                Section { Text(problem).foregroundStyle(.red) }
+                Section { failed(problem) }
             } else {
-                Section { Label("Looking it up…", systemImage: "ellipsis") }
+                Section { lookingUp }
             }
             Section {
                 Text(store.sentence).foregroundStyle(.secondary)
@@ -53,6 +68,23 @@ struct WordCardView: View {
         .task { await store.send(.task).finish() }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Done") { store.send(.doneTapped) } }
+        }
+    }
+
+    /// How it's read: the model's, or else the transform's.
+    private var reading: String? {
+        store.note?.transliteration ?? store.known?.transliteration ?? store.transliteration
+    }
+
+    private var lookingUp: some View {
+        Label("Looking it up…", systemImage: "ellipsis")
+    }
+
+    private func failed(_ problem: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(problem).foregroundStyle(.red)
+            Button("Try again", systemImage: "arrow.clockwise") { store.send(.lookUpTapped) }
+                .buttonStyle(.borderless)
         }
     }
 }

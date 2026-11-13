@@ -121,9 +121,9 @@ final class ReaderFeatureTests: XCTestCase {
 
         await store.send(.destination(.presented(.word(.task))))
         await store.receive(\.destination.presented.word.delegate.lookedUp)
-        let card = try store.state.destination?.word.unwrap()
-        XCTAssertEqual(card?.note?.meaning, "friend")
-        XCTAssertNil(card?.note?.transliteration, "a reading that's the word itself isn't shown")
+        let card = try (store.state.destination?.word).unwrap()
+        XCTAssertEqual(card.note?.meaning, "friend")
+        XCTAssertNil(card.note?.transliteration, "a reading that's the word itself isn't shown")
         XCTAssertEqual(store.state.book.words[WordKey(paragraph: paragraph, word: "amigo")]?.meaning, "friend")
     }
 
@@ -239,7 +239,73 @@ final class ReaderFeatureTests: XCTestCase {
         book.annotate(paragraph.id, translation: "Hi.")
         let store = await reader(book)
         await store.send(.languagePicked(Language("it")))
+        XCTAssertEqual(store.state.book.language, Language("es"), "it asks first, as what was written is lost")
+        XCTAssertNotNil(store.state.alert)
+
+        await store.send(.alert(.presented(.changeLanguage(Language("it")))))
         XCTAssertEqual(store.state.book.language, Language("it"))
         XCTAssertTrue(store.state.book.annotations.isEmpty)
+    }
+
+    func testAnotherLanguageForABookWithNothingWrittenNeedsNoAsking() async throws {
+        let store = await reader(try spanish("Ciao."))
+        await store.send(.languagePicked(Language("it")))
+        XCTAssertEqual(store.state.book.language, Language("it"))
+        XCTAssertNil(store.state.alert)
+    }
+
+    func testCancellingAnotherLanguageKeepsWhatWasWritten() async throws {
+        var book = try spanish("Hola amigo.")
+        let paragraph = try book.paragraphs.first.unwrap()
+        book.words[WordKey(paragraph: paragraph.id, word: "amigo")] = WordNote(
+            word: "amigo", transliteration: nil, meaning: "friend", inSentence: "")
+        let store = await reader(book)
+        await store.send(.languagePicked(Language("it")))
+        await store.send(.alert(.dismiss))
+        XCTAssertEqual(store.state.book.language, Language("es"))
+        XCTAssertEqual(store.state.book.words.count, 1)
+    }
+
+    func testAReadingIsKeptWhenTheTranslationFailsAndTryingAgainOnlyTranslates() async throws {
+        let book = try Importer.text("こんにちは。", title: "話").book(in: Language("ja"), at: epoch)
+        let paragraph = try book.paragraphs.first.unwrap()
+        let store = await reader(
+            book,
+            steps: [
+                ScriptedRuntime.fail(.busy), ScriptedRuntime.answer("Konnichiwa."), ScriptedRuntime.answer("Hello."),
+            ])
+        await store.send(.binding(.set(\.showsTranslation, true)))
+        await store.send(.binding(.set(\.showsTransliteration, true)))
+        await store.send(.paragraphAppeared(paragraph.id))
+        await store.receive(\.annotated)
+        XCTAssertEqual(store.state.book.annotations[paragraph.id]?.transliteration, "Konnichiwa.")
+        XCTAssertNil(store.state.book.annotations[paragraph.id]?.translation)
+        XCTAssertNotNil(store.state.problems[paragraph.id])
+
+        await store.send(.retryTapped(paragraph.id))
+        await store.receive(\.annotated)
+        XCTAssertEqual(store.state.book.annotations[paragraph.id]?.translation, "Hello.")
+        XCTAssertEqual(store.state.book.annotations[paragraph.id]?.transliteration, "Konnichiwa.")
+        XCTAssertNil(store.state.problems[paragraph.id])
+    }
+
+    func testTransliterateIsOfferedWhenAnyParagraphIsInAnotherScript() async throws {
+        let mixed = try Importer.text("Chapter One\n\nこんにちは。", title: "話").book(in: Language("ja"), at: epoch)
+        XCTAssertTrue(ReaderFeature.State(book: mixed).canTransliterate)
+        XCTAssertFalse(ReaderFeature.State(book: try spanish()).canTransliterate)
+    }
+
+    func testAWordLookedUpElsewhereShowsItsMeaningWithoutAskingTheModel() async throws {
+        var book = try spanish("Hola amigo.\n\nAdiós amigo.")
+        let first = try book.paragraphs.first.unwrap().id
+        book.words[WordKey(paragraph: first, word: "amigo")] = WordNote(
+            word: "amigo", transliteration: nil, meaning: "friend", inSentence: "Who's greeted.")
+        let store = await reader(book)
+        let second = try book.paragraphs.last.unwrap()
+        let amigo = try store.state.words[second.id].unwrap().first { $0.text == "amigo" }.unwrap()
+        await store.send(.wordTapped(paragraph: second.id, amigo))
+        let card = try (store.state.destination?.word).unwrap()
+        XCTAssertEqual(card.known?.meaning, "friend")
+        XCTAssertNil(card.note, "what it means in this sentence is looked up only when asked")
     }
 }
