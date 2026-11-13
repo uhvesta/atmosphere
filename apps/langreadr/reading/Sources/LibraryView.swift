@@ -107,6 +107,7 @@ struct LibraryView: View {
             }
         }
         .alert($store.scope(state: \.alert, action: \.alert))
+        .alert($store.scope(state: \.deleting, action: \.deleting))
     }
 
     private var selection: Binding<UUID?> {

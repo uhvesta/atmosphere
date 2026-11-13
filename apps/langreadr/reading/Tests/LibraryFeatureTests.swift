@@ -89,7 +89,10 @@ final class LibraryFeatureTests: XCTestCase {
         let first = library(shelf: shelf)
         await submit(.text, "Uno.", in: first)
         await submit(.text, "Dos.", in: first)
-        await first.send(.deleteTapped(try first.state.books.last.unwrap().id))
+        let uno = try first.state.books.last.unwrap().id
+        await first.send(.deleteTapped(uno))
+        XCTAssertEqual(first.state.books.count, 2, "nothing is deleted until the person says so")
+        await first.send(.deleting(.presented(.delete(uno))))
         await first.finish()
 
         let next = library(shelf: shelf)
@@ -136,6 +139,32 @@ final class LibraryFeatureTests: XCTestCase {
         await clock.advance(by: .seconds(1))
         await store.finish()
         XCTAssertEqual(saved.value.map(\.lastRead), [book.paragraphs.last?.id])
+    }
+
+    func testABookThatCantBeDeletedStaysOnTheShelfAndSaysWhy() async throws {
+        let book = try spanish()
+        var shelf = ShelfClient.inMemory([book])
+        shelf.delete = { book throws(ShelfError) in
+            throw .delete(book: book.title, underlying: CocoaError(.fileWriteNoPermission))
+        }
+        let store = library(books: [book], shelf: shelf)
+        await store.send(.deleteTapped(book.id))
+        await store.send(.deleting(.presented(.delete(book.id))))
+        await store.receive(\.deleteFailed)
+        XCTAssertEqual(store.state.books.map(\.id), [book.id])
+        XCTAssertNotNil(store.state.alert)
+    }
+
+    func testTheShelfIsReadOnceSoReturningKeepsWhatWasChanged() async throws {
+        let book = try spanish()
+        // The change is still waiting to be saved when the library is back.
+        let store = library(shelf: .inMemory([book]), clock: TestClock())
+        await store.send(.task)
+        await store.send(.bookTapped(book.id))
+        await store.send(.reader(.presented(.binding(.set(\.showsTranslation, true)))))
+        await store.send(.reader(.dismiss))
+        await store.send(.task)
+        XCTAssertEqual(store.state.books.first?.translates, true)
     }
 
     func testABookThatCantBeSavedSaysWhy() async {

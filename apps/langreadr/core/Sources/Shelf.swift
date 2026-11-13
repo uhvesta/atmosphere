@@ -5,6 +5,8 @@ import Foundation
 public enum ShelfError: Error, CustomStringConvertible {
     case write(book: String, underlying: any Error)
     case read(file: String, underlying: BlobError)
+    /// The file couldn't be read off the device at all.
+    case load(file: String, underlying: any Error)
     case delete(book: String, underlying: any Error)
 
     public var description: String {
@@ -15,6 +17,9 @@ public enum ShelfError: Error, CustomStringConvertible {
         case .read(let file, let error):
             "The book in \(file) couldn't be opened: \(error). It stays on the device, so a newer version of the "
                 + "app may open it; delete it to import it again."
+        case .load(let file, let error):
+            "The book in \(file) couldn't be read: \(error.localizedDescription). It stays on the device; open "
+                + "the app again to try again."
         case .delete(let book, let error):
             "\(book) couldn't be deleted: \(error.localizedDescription). Try again."
         }
@@ -53,7 +58,13 @@ public struct Shelf: Sendable {
         var books: [Book] = []
         var unreadable: [ShelfError] = []
         for file in files {
-            guard let data = try? Data(contentsOf: file) else { continue }
+            let data: Data
+            do {
+                data = try Data(contentsOf: file)
+            } catch {
+                unreadable.append(.load(file: file.lastPathComponent, underlying: error))
+                continue
+            }
             do {
                 books.append(try Blob.decode(Book.self, from: data))
             } catch {

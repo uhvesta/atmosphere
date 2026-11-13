@@ -82,6 +82,7 @@ enum Sample {
             $0.models = InMemoryModelLibrary(installed: [ModelCatalog.qwen35Small]).client
             $0.date.now = Date(timeIntervalSince1970: 1_793_700_000)
             $0.uuid = .incrementing
+            $0.continuousClock = ImmediateClock()
             $0.dictation = .scripted()
             $0.fileReader = .scripted(files)
         }

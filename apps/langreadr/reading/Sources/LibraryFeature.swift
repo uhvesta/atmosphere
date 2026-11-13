@@ -11,11 +11,15 @@ package struct LibraryFeature {
     @ObservableState
     package struct State: Equatable {
         package var books: IdentifiedArrayOf<Book> = []
+        /// Whether the shelf was read: once, as what's on it after that
+        /// is what the app kept there.
+        package var loaded = false
         package var isImporting = false
         @Presents package var importing: ImportFeature.State?
         /// The book being read.
         @Presents package var reader: ReaderFeature.State?
         @Presents package var alert: AlertState<Never>?
+        @Presents package var deleting: AlertState<Deleting>?
         @Presents package var settings: SettingsFeature.State?
 
         package init(books: IdentifiedArrayOf<Book> = []) { self.books = books }
@@ -31,12 +35,19 @@ package struct LibraryFeature {
         case drafted(Result<Draft, ImportFailure>)
         case bookTapped(Book.ID)
         case deleteTapped(Book.ID)
+        case deleting(PresentationAction<Deleting>)
+        case deleteFailed(Book, ShelfError)
         case saveFailed(ShelfError)
         case importing(PresentationAction<ImportFeature.Action>)
         case reader(PresentationAction<ReaderFeature.Action>)
         case alert(PresentationAction<Never>)
         case settingsTapped
         case settings(PresentationAction<SettingsFeature.Action>)
+    }
+
+    /// What the person can say to deleting a book.
+    package enum Deleting: Equatable {
+        case delete(Book.ID)
     }
 
     @Dependency(\.shelf) private var shelf
@@ -56,9 +67,19 @@ package struct LibraryFeature {
         Reduce { state, action in
             switch action {
             case .task:
+                // Read again on each return, the shelf could bring back a
+                // copy older than one still waiting to be saved.
+                guard !state.loaded else { return .none }
+                state.loaded = true
                 let read = shelf.books()
                 state.books = IdentifiedArray(uniqueElements: read.books)
-                if let unreadable = read.unreadable.first { state.alert = Self.alert(unreadable.description) }
+                if let unreadable = read.unreadable.first {
+                    let more = read.unreadable.count - 1
+                    state.alert = Self.alert(
+                        more == 0
+                            ? unreadable.description
+                            : unreadable.description + " " + String(localized: "\(more) more couldn't be opened."))
+                }
                 return .none
             case .importTapped(let kind):
                 state.importing = ImportFeature.State(kind: kind)
@@ -129,15 +150,35 @@ package struct LibraryFeature {
                 state.reader = ReaderFeature.State(book: book)
                 return .none
             case .deleteTapped(let id):
+                guard let book = state.books[id: id] else { return .none }
+                state.deleting = AlertState {
+                    TextState("Delete “\(book.title)”?")
+                } actions: {
+                    ButtonState(role: .destructive, action: .delete(id)) { TextState("Delete") }
+                    ButtonState(role: .cancel) { TextState("Cancel") }
+                } message: {
+                    TextState("Its looked-up words and chats go with it.")
+                }
+                return .none
+            case .deleting(.presented(.delete(let id))):
                 guard let book = state.books.remove(id: id) else { return .none }
                 if state.reader?.book.id == id { state.reader = nil }
-                return .run { send in
-                    do throws(ShelfError) {
-                        try shelf.delete(book)
-                    } catch {
-                        await send(.saveFailed(error))
-                    }
-                }
+                // A save still waiting would write the book back.
+                return .merge(
+                    .cancel(id: Settling(book: id)),
+                    .run { send in
+                        do throws(ShelfError) {
+                            try shelf.delete(book)
+                        } catch {
+                            await send(.deleteFailed(book, error))
+                        }
+                    })
+            case .deleteFailed(let book, let error):
+                // It's still on the device, so it stays on the shelf.
+                let index = state.books.firstIndex { $0.importedAt < book.importedAt } ?? state.books.endIndex
+                state.books.insert(book, at: index)
+                state.alert = Self.alert(error.description)
+                return .none
             case .saveFailed(let error):
                 state.alert = Self.alert(error.description)
                 return .none
@@ -149,7 +190,7 @@ package struct LibraryFeature {
                 }
                 state.settings = SettingsFeature.State(languages: languages)
                 return .none
-            case .importing, .reader, .alert, .settings:
+            case .importing, .reader, .alert, .settings, .deleting:
                 return .none
             }
         }
@@ -174,6 +215,7 @@ package struct LibraryFeature {
             }
         }
         .ifLet(\.$alert, action: \.alert)
+        .ifLet(\.$deleting, action: \.deleting)
     }
 
     /// Reads a draft with `read`, sending what it came to.
