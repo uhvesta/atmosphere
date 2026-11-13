@@ -18,11 +18,21 @@ package struct ReviewView: View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            if store.files.isEmpty {
+            if store.files.isEmpty, store.loading {
+                ProgressView("Reading the changes…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if store.files.isEmpty, let failure = store.loadFailure {
                 ContentUnavailableView {
-                    Label(
-                        store.loading ? "Reading the changes…" : "No changes",
-                        systemImage: "doc.text.magnifyingglass")
+                    Label("Couldn’t Read the Changes", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(failure)
+                } actions: {
+                    Button("Try Again") { store.send(.refresh) }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if store.files.isEmpty {
+                ContentUnavailableView {
+                    Label("No changes", systemImage: "doc.text.magnifyingglass")
                 } description: {
                     Text(empty)
                 }
@@ -116,6 +126,11 @@ package struct ReviewView: View {
                 .toggleStyle(.button)
                 .help("Show resolved threads too")
             Spacer()
+            if store.sending {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Sending the review")
+            }
             Button(store.pending == 0 ? "Send Review" : "Send Review (\(store.pending))") {
                 store.send(.sendTapped)
             }
@@ -252,6 +267,7 @@ package struct ReviewView: View {
                 EmptyView()
             }
         }
+        .disabled(store.editing)
         .controlSize(.small)
         .padding(.horizontal)
         .padding(.vertical, 6)
@@ -324,6 +340,10 @@ private struct DiffLines: View {
                 guard let new = line.new else { return }
                 store.send(.lineTapped(new, extending: NSEvent.modifierFlags.contains(.shift)))
             }
+            .accessibilityAction(named: "Comment") {
+                guard let new = line.new, store.canComment else { return }
+                store.send(.lineTapped(new, extending: false))
+            }
             if let new = line.new {
                 ForEach(inline[new] ?? []) { thread in
                     ThreadView(store: store, thread: thread, showsCode: thread.outdated)
@@ -359,6 +379,7 @@ private struct DiffLines: View {
                 EmptyView()
             }
         }
+        .disabled(store.editing)
         .buttonStyle(.borderless)
         .controlSize(.small)
         .padding(.horizontal)
@@ -394,6 +415,17 @@ private struct LineRow: View {
         .background(background)
         .contentShape(Rectangle())
         .help(line.new == nil || !commentable ? "" : "Click to comment on this line; Shift-click to comment on several")
+        // One element a line, read as what happened to it, where and what.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(spoken)
+    }
+
+    private var spoken: String {
+        switch line.kind {
+        case .added: String(localized: "Added, line \(line.new ?? 0): \(line.text)")
+        case .removed: String(localized: "Removed, line \(line.old ?? 0): \(line.text)")
+        case .context: String(localized: "Line \(line.new ?? line.old ?? 0): \(line.text)")
+        }
     }
 
     private var marker: String {
@@ -434,7 +466,8 @@ extension Highlighter {
         switch kind {
         case .plain: nil
         case .keyword: Color(nsColor: .systemPurple)
-        case .string: Color(nsColor: .systemRed)
+        // Not red, which reads as removed in a diff.
+        case .string: Color(nsColor: .systemBrown)
         case .comment: Color(nsColor: .systemGreen)
         case .number: Color(nsColor: .systemBlue)
         case .type: Color(nsColor: .systemTeal)
@@ -470,6 +503,12 @@ private struct RenderedMarkdown: View {
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
+                            store.send(
+                                .blockTapped(
+                                    startLine: block.startLine, endLine: block.endLine,
+                                    quote: String(block.text.prefix(200))))
+                        }
+                        .accessibilityAction(named: "Comment") {
                             store.send(
                                 .blockTapped(
                                     startLine: block.startLine, endLine: block.endLine,

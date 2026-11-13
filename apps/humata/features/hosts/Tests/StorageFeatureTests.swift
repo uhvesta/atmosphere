@@ -28,6 +28,25 @@ final class StorageFeatureTests: XCTestCase {
         XCTAssertEqual(saved.days, 90)
     }
 
+    func testAnAutoDeleteThatWasntSavedTurnsBackOff() async throws {
+        let daemon = InMemoryDaemon()
+        let store = TestStore(initialState: StorageFeature.State()) {
+            StorageFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.setStorageSettings = { _, _ in throw DaemonError.disconnected }
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.receive(\.loaded)
+
+        await store.send(.autoDeleteToggled(true))
+        XCTAssertEqual(store.state.storage?.autoDelete, true)
+        await store.receive(\.settingsFailed)
+        XCTAssertEqual(store.state.storage?.autoDelete, false)
+        XCTAssertNotNil(store.state.failure)
+    }
+
     func testACleanupInProgressIsReadAgainUntilItsDone() async throws {
         let daemon = InMemoryDaemon()
         daemon.startCleanup(Storage.Job(step: "Packing repositories", done: 2, total: 5))

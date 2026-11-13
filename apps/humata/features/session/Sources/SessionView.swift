@@ -49,7 +49,9 @@ package struct SessionView: View {
             }
             if store.disconnected, !store.session.hostOffline {
                 ChatNotice(
-                    "Lost the connection to Humata's daemon. Reconnecting…", systemImage: "bolt.horizontal.circle",
+                    store.watchFailure.map { LocalizedStringKey("Stopped watching the session: \($0) Reconnecting…") }
+                        ?? "Lost the connection to Humata's daemon. Reconnecting…",
+                    systemImage: "bolt.horizontal.circle",
                     action: "Reconnect Now"
                 ) { store.send(.task) }
             }
@@ -78,9 +80,9 @@ package struct SessionView: View {
         .alert($store.scope(state: \.alert, action: \.alert))
         .confirmationDialog($store.scope(state: \.rewindDialog, action: \.rewindDialog))
         .overlay(alignment: .top) {
-            if store.rewinding {
+            if let progress {
                 Label {
-                    Text("Rewinding…")
+                    Text(progress)
                 } icon: {
                     ProgressView().controlSize(.small)
                 }
@@ -96,6 +98,14 @@ package struct SessionView: View {
         .sheet(isPresented: editingProposal) {
             ProposalEditor(store: store.scope(state: \.proposals, action: \.proposals))
         }
+    }
+
+    /// What's under way that the person waits on, shown over the view.
+    private var progress: LocalizedStringKey? {
+        if store.rewinding { return "Rewinding…" }
+        if store.forking { return "Forking…" }
+        if store.updating { return "Updating from the base branch…" }
+        return nil
     }
 
     private var editingProposal: Binding<Bool> {
@@ -197,6 +207,7 @@ package struct SessionView: View {
             } label: {
                 Label("Fork", systemImage: "arrow.triangle.branch")
             }
+            .disabled(store.forking)
             .fixedSize()
             .help("Try something else from here, while this session stays as it is")
             if store.ships {
@@ -387,9 +398,11 @@ package struct SessionView: View {
                     Button("Fork Before This With the Code") {
                         store.send(.forkTapped(before: id, chatOnly: false))
                     }
+                    .disabled(store.forking)
                     Button("Fork Before This, Chat Only") {
                         store.send(.forkTapped(before: id, chatOnly: true))
                     }
+                    .disabled(store.forking)
                 }
             }
         case .reply(_, let text):
@@ -406,11 +419,7 @@ package struct SessionView: View {
                     canStartWork: store.session.planning
                 ) { store.send(.proposals($0)) }
             } else {
-                ToolCallView(
-                    call: call, select: { selecting = TextToSelect(text: $0) },
-                    answer: { request, approved in
-                        store.send(.answerPermission(requestID: request, approved: approved))
-                    })
+                ToolCallView(call: call, select: { selecting = TextToSelect(text: $0) })
                 if let failure = store.proposals.listFailure, store.state.proposes(call.id) {
                     Label("Couldn’t read this proposal: \(failure)", systemImage: "exclamationmark.triangle")
                         .font(.caption)
@@ -418,9 +427,7 @@ package struct SessionView: View {
                 }
             }
         case .permission(_, let permission):
-            PermissionCard(permission: permission) { request, approved in
-                store.send(.answerPermission(requestID: request, approved: approved))
-            }
+            PermissionCard(permission: permission)
         case .cost(_, let usage):
             Label(Self.describe(usage), systemImage: "gauge.with.dots.needle.33percent")
                 .font(.caption)
@@ -467,6 +474,7 @@ package struct SessionView: View {
                 if id == store.retryableFailure, !store.isWorking {
                     Spacer()
                     Button("Try Again") { store.send(.retryTapped) }
+                        .disabled(store.retrying)
                         .help("Send your last message again")
                 }
             }
@@ -492,7 +500,7 @@ package struct SessionView: View {
                 Button("Cancel") { store.send(.editCancelled) }
                 Button("Send to a Fork") { store.send(.editSent) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(store.edited.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(store.forking || store.edited.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
     }
@@ -521,7 +529,6 @@ struct ToolCallView: View {
     let call: ToolCall
     /// Opens text to select from, for output too long to show in the chat.
     var select: (String) -> Void = { _ in }
-    let answer: (String, Bool) -> Void
     @State private var expanded = false
 
     /// Output longer than this many lines scrolls in a box of its own, so
@@ -563,7 +570,7 @@ struct ToolCallView: View {
                     .simultaneousGesture(collapse)
             }
             if let permission = call.permission {
-                PermissionCard(permission: permission, answer: answer)
+                PermissionCard(permission: permission)
             }
             if expanded, let output = call.output {
                 outputView(output)
@@ -644,6 +651,8 @@ struct ChangeView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 6)
                     .background(line.0 == "-" ? Color.red.opacity(0.15) : Color.green.opacity(0.15))
+                    // Colour and glyph don't reach VoiceOver; the words do.
+                    .accessibilityLabel(line.0 == "-" ? "Removed: \(line.1)" : "Added: \(line.1)")
             }
             if lines.count > Self.shown {
                 Text("\(lines.count - Self.shown) more lines")
@@ -654,28 +663,29 @@ struct ChangeView: View {
         }
         .textSelection(.enabled)
         .clipShape(.rect(cornerRadius: 8))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("\(change.removed.count) lines removed, \(change.added.count) added")
     }
 }
 
-/// A request for permission: Approve and Deny while the agent waits, then
-/// how it was answered.
+/// A request for permission: the command while the agent waits, answered
+/// from the strip over the box, so it's asked in one place; then how it
+/// was answered.
 struct PermissionCard: View {
     let permission: Permission
-    let answer: (String, Bool) -> Void
 
     var body: some View {
         switch permission.answer {
         case nil:
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "hand.raised")
-                FullCommand(text: permission.summary)
-                Button("Deny") { answer(permission.requestID, false) }
-                // No Return shortcut: Return in the composer sends the
-                // message, and must never approve. ⇧⌘A and ⇧⌘D answer.
-                Button("Approve") { answer(permission.requestID, true) }
-                    .buttonStyle(.borderedProminent)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "hand.raised")
+                        .accessibilityHidden(true)
+                    FullCommand(text: permission.summary)
+                }
+                Text("Waiting for you: Approve or Deny over the message box (⇧⌘A, ⇧⌘D).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             .padding(8)
             .background(.orange.opacity(0.12), in: .rect(cornerRadius: 8))
@@ -1031,12 +1041,18 @@ private struct WaitingStrip: View {
                     .lineLimit(3)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                let answering = store.answering.contains(id)
+                if answering {
+                    ProgressView().controlSize(.small)
+                }
                 Button("Deny") { store.send(.answerPermission(requestID: id, approved: false)) }
                     .keyboardShortcut("d", modifiers: [.command, .shift])
+                    .disabled(answering)
                     .help("Deny (⇧⌘D)")
                 Button("Approve") { store.send(.answerPermission(requestID: id, approved: true)) }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut("a", modifiers: [.command, .shift])
+                    .disabled(answering)
                     .help("Approve (⇧⌘A)")
                 Menu {
                     let widened: ApprovalMode = kind == .write ? .allowEdits : .allowEverything
@@ -1045,6 +1061,7 @@ private struct WaitingStrip: View {
                     }
                 } label: {
                     Image(systemName: "chevron.down")
+                        .accessibilityLabel("More Answers")
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)

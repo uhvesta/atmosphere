@@ -109,8 +109,14 @@ package struct ProposalCard: View {
             if canStartWork, proposal.kind == .task {
                 HStack {
                     Spacer()
-                    Button("Start Work on It") { send(.startWorkTapped(itemID: item)) }
-                        .help("A new session on this task, with this chat and its own copy of the code")
+                    if deciding {
+                        ProgressView().controlSize(.small)
+                    }
+                    Button(deciding ? "Starting Work…" : "Start Work on It") {
+                        send(.startWorkTapped(itemID: item))
+                    }
+                    .disabled(deciding)
+                    .help("A new session on this task, with this chat and its own copy of the code")
                 }
             }
         case .declined:

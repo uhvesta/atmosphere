@@ -153,7 +153,7 @@ package struct HostsFeature {
                 return .none
 
             case .checkTapped(let id):
-                return check(id, in: &state)
+                return check(id, in: &state, again: true)
 
             case .checked(let id, let health):
                 state.health[id] = .known(health)
@@ -311,7 +311,7 @@ package struct HostsFeature {
             case .destination(.presented(.add(.delegate(.added(let host))))):
                 state.destination = nil
                 state.hosts.append(host)
-                return .merge(select(host.id, in: &state), check(host.id, in: &state))
+                return .merge(select(host.id, in: &state), check(host.id, in: &state, again: true))
 
             case .editor(.delegate(.saved(let host))) where host.isCoordinator:
                 state.coordinator = host
@@ -320,7 +320,7 @@ package struct HostsFeature {
             case .editor(.delegate(.saved(let host))):
                 state.hosts[id: host.id] = host
                 // Saving sets it up again, which the check reports on.
-                return check(host.id, in: &state)
+                return check(host.id, in: &state, again: true)
 
             case .paneSelected(let pane):
                 state.pane = pane
@@ -403,8 +403,11 @@ package struct HostsFeature {
         .cancellable(id: SkippedLoad.host(id), cancelInFlight: true)
     }
 
-    private func check(_ id: RemoteHost.ID, in state: inout State) -> Effect<Action> {
-        state.health[id] = .checking
+    /// Checks the host's health. Shown again, a host keeps what was known
+    /// until the check answers; `again`, as the person asked or its setup
+    /// changed, it shows it's checking.
+    private func check(_ id: RemoteHost.ID, in state: inout State, again: Bool = false) -> Effect<Action> {
+        if again || state.health[id] == nil { state.health[id] = .checking }
         return .run { send in
             await send(.checked(id, try await daemon.checkHost(id)))
         } catch: { error, send in

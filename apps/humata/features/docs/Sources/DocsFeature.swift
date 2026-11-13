@@ -61,6 +61,8 @@ package struct DocsFeature {
         package var drafts: IdentifiedArrayOf<Draft> = []
         package var loading = false
         package var sending = false
+        /// Why the selected file couldn't be read, until it is.
+        package var readFailure: String?
         @Presents package var alert: AlertState<Never>?
 
         package init(sessionID: String) {
@@ -113,7 +115,7 @@ package struct DocsFeature {
         case refresh
         case listed(ChatFiles)
         case read(FileContents)
-        case failed(String)
+        case failed(Doing, String)
         case fileSelected(String)
         case renderedToggled
         /// A line of the source, by number; extending picks the lines from
@@ -129,6 +131,13 @@ package struct DocsFeature {
         case sendTapped
         case sent
         case alert(PresentationAction<Never>)
+    }
+
+    /// What was being done when something failed.
+    package enum Doing: Equatable, Sendable {
+        case listing
+        case reading(path: String)
+        case sending
     }
 
     @Dependency(\.daemon) var daemon
@@ -147,11 +156,12 @@ package struct DocsFeature {
 
             case .refresh:
                 state.loading = true
+                state.readFailure = nil
                 let session = state.sessionID
                 let list: Effect<Action> = .run { send in
                     await send(.listed(try await daemon.files(session)))
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.listing, error.localizedDescription))
                 }
                 return .merge(list.cancellable(id: CancelID.list, cancelInFlight: true), read(state))
 
@@ -171,14 +181,23 @@ package struct DocsFeature {
 
             case .read(let contents):
                 guard contents.path == state.selected else { return .none }
+                state.readFailure = nil
                 state.show(contents)
                 return .none
 
-            case .failed(let message):
+            case .failed(.reading(let path), let message):
+                // Said where the file would show, with Try Again.
+                if path == state.selected { state.readFailure = message }
+                return .none
+
+            case .failed(let doing, let message):
                 state.loading = false
                 state.sending = false
                 state.alert = AlertState {
-                    TextState("Something went wrong")
+                    TextState(
+                        doing == .sending
+                            ? String(localized: "Couldn’t send the comments")
+                            : String(localized: "Couldn’t list the chat’s files"))
                 } message: {
                     TextState(message)
                 }
@@ -188,6 +207,7 @@ package struct DocsFeature {
                 guard state.selected != path else { return .none }
                 state.selected = path
                 state.show(nil)
+                state.readFailure = nil
                 state.picked = nil
                 return read(state)
 
@@ -241,7 +261,7 @@ package struct DocsFeature {
                     try await daemon.send(session, message, .enqueue)
                     await send(.sent)
                 } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
+                    await send(.failed(.sending, error.localizedDescription))
                 }
 
             case .sent:
@@ -260,7 +280,7 @@ package struct DocsFeature {
         return .run { send in
             await send(.read(try await daemon.readFile(session, path)))
         } catch: { error, send in
-            await send(.failed(error.localizedDescription))
+            await send(.failed(.reading(path: path), error.localizedDescription))
         }
         // Not cancelled by the next read: effects start out of the order
         // they're asked in, so an older read could cancel a newer one.

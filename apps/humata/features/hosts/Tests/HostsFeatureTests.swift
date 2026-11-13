@@ -88,6 +88,28 @@ final class HostsFeatureTests: XCTestCase {
         }
     }
 
+    func testShowingTheListAgainKeepsWhatWasKnownUntilTheCheckAnswers() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("b", "me@b")
+        _ = try await daemon.client.installHost("b")
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+        await store.send(.task)
+        await store.receive(\.loaded)
+        await store.receive(\.checked)
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        guard case .known(.reachable) = store.state.health["b"] else {
+            return XCTFail("\(store.state.health)")
+        }
+        await store.receive(\.checked)
+    }
+
     func testVariablesAreSentButTheirValuesNeverShown() async throws {
         let daemon = InMemoryDaemon()
         _ = try await daemon.client.addHost("far", "me@far")

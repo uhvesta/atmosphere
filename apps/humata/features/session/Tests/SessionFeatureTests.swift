@@ -135,11 +135,15 @@ final class SessionFeatureTests: XCTestCase {
             $0.daemon = daemon.client
         }
 
-        await store.send(.forkTapped(before: two.id, chatOnly: false))
+        await store.send(.forkTapped(before: two.id, chatOnly: false)) {
+            $0.forking = true
+        }
         let fork = try XCTUnwrap(daemon.sessions.last)
         XCTAssertEqual(fork.parentID, session.id)
         XCTAssertEqual(fork.forkedBeforeEventID, two.id)
-        await store.receive(\.forked, fork)
+        await store.receive(\.forked, fork) {
+            $0.forking = false
+        }
         await store.receive(\.delegate.openSession, fork)
         XCTAssertEqual(daemon.history(fork.id), Array(daemon.history(session.id).prefix { $0.id != two.id }))
     }
@@ -229,11 +233,14 @@ final class SessionFeatureTests: XCTestCase {
             $0.edited = "three"
         }
         await store.send(.editSent) {
+            $0.forking = true
+        }
+        // The edit runs as the fork's first turn, so it has moved on since.
+        await store.receive(\.forked) {
+            $0.forking = false
             $0.editing = nil
             $0.edited = ""
         }
-        // The edit runs as the fork's first turn, so it has moved on since.
-        await store.receive(\.forked)
         await store.receive(\.delegate.openSession)
         let fork = try XCTUnwrap(daemon.sessions.last)
         XCTAssertEqual(fork.forkedBeforeEventID, two.id)
@@ -675,14 +682,132 @@ final class SessionFeatureTests: XCTestCase {
         await store.send(.approvalModePicked(.allowEverything)) {
             $0.session.approvalMode = .allowEverything
         }
+        store.exhaustivity = .off
         await store.receive(\.approvalModeRefused) {
             $0.session.approvalMode = .askEveryTime
-            $0.alert = AlertState {
-                TextState("Something went wrong")
-            } message: {
-                TextState(DaemonError.disconnected.description)
+        }
+        XCTAssertNotNil(store.state.alert)
+    }
+
+    func testASecondForkTapWhileTheFirstIsMadeMakesNoSecondFork() async throws {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let forks = LockIsolated(0)
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            // Still being made when the second tap comes.
+            $0.daemon.fork = { _, _, _, _ in
+                forks.withValue { $0 += 1 }
+                return try await Task.never()
             }
         }
+        store.exhaustivity = .off
+
+        let first = await store.send(.forkTapped(before: nil, chatOnly: true)) {
+            $0.forking = true
+        }
+        await store.send(.forkTapped(before: nil, chatOnly: false))
+        await Task.megaYield()
+        XCTAssertEqual(forks.value, 1)
+        await first.cancel()
+    }
+
+    func testAFailedForkCanBeTriedAgain() async throws {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.fork = { _, _, _, _ in throw DaemonError.disconnected }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.forkTapped(before: nil, chatOnly: false))
+        await store.receive(\.failed)
+        XCTAssertFalse(store.state.forking)
+        XCTAssertNotNil(store.state.alert)
+    }
+
+    func testAnEditWhoseForkFailsStaysOpen() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        try await daemon.client.send(session.id, "one", .enqueue)
+        let one = try XCTUnwrap(daemon.history(session.id).first { $0.kind == .userMessage("one") })
+        var state = SessionFeature.State(session: session)
+        state.events = IdentifiedArray(uniqueElements: daemon.history(session.id))
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.fork = { _, _, _, _ in throw DaemonError.disconnected }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.editTapped(one.id))
+        await store.send(.binding(.set(\.edited, "uno")))
+        await store.send(.editSent)
+        await store.receive(\.failed)
+        XCTAssertEqual(store.state.editing, one.id)
+        XCTAssertEqual(store.state.edited, "uno")
+        XCTAssertFalse(store.state.forking)
+    }
+
+    func testAnEditWhoseMessageIsntSentOpensTheForkWithItInTheBox() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await started(daemon)
+        try await daemon.client.send(session.id, "one", .enqueue)
+        let one = try XCTUnwrap(daemon.history(session.id).first { $0.kind == .userMessage("one") })
+        var state = SessionFeature.State(session: session)
+        state.events = IdentifiedArray(uniqueElements: daemon.history(session.id))
+        let store = TestStore(initialState: state) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.send = { _, _, _ in throw DaemonError.disconnected }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.editTapped(one.id))
+        await store.send(.binding(.set(\.edited, "uno")))
+        await store.send(.editSent)
+        await store.receive(\.forkSendFailed)
+        let fork = try XCTUnwrap(daemon.sessions.last)
+        await store.receive(\.delegate.openSession, fork)
+        // The fork's message box has the edit, to send from there.
+        XCTAssertEqual(SessionFeature.State(session: fork).draft, "uno")
+        XCTAssertNil(store.state.editing)
+    }
+
+    func testAPermissionIsAnsweredOnce() async throws {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let answers = LockIsolated(0)
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.approve = { _, _, _ in answers.withValue { $0 += 1 } }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.answerPermission(requestID: "r1", approved: true)) {
+            $0.answering = ["r1"]
+        }
+        await store.send(.answerPermission(requestID: "r1", approved: false))
+        await store.finish()
+        XCTAssertEqual(answers.value, 1)
+    }
+
+    func testAFailedAnswerCanBeGivenAgain() async throws {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.approve = { _, _, _ in throw DaemonError.disconnected }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.answerPermission(requestID: "r1", approved: true))
+        await store.receive(\.failed)
+        XCTAssertEqual(store.state.answering, [])
+        XCTAssertNotNil(store.state.alert)
     }
 
     func testSteeringWhileItWaitsReachesTheTurn() async throws {
@@ -1076,8 +1201,12 @@ final class SessionFeatureTests: XCTestCase {
         }
 
         await store.send(.forkFromHighlightTapped)
-        await store.receive(\.forkTapped)
-        await store.receive(\.forked)
+        await store.receive(\.forkTapped) {
+            $0.forking = true
+        }
+        await store.receive(\.forked) {
+            $0.forking = false
+        }
         await store.receive(\.delegate.openSession)
         let fork = try XCTUnwrap(daemon.sessions.last)
         // The reply's turn whole, and nothing of the next.

@@ -75,7 +75,6 @@ package struct SkillsFeature {
         Reduce { state, action in
             switch action {
             case .task, .refreshTapped:
-                state.list = nil
                 state.failure = nil
                 return load()
 

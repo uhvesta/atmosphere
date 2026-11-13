@@ -30,7 +30,8 @@ package struct ProposalsFeature {
         package var projectID: String?
         package var proposals: IdentifiedArrayOf<Proposal> = []
         package var editing: Editing?
-        /// The proposals being applied or declined, so their buttons wait.
+        /// The proposals being applied or declined, or having work started
+        /// on their task, so their buttons wait.
         package var deciding: Set<String> = []
         @Presents package var alert: AlertState<Never>?
         /// Why they couldn't be listed, shown where they go; listing is
@@ -64,10 +65,13 @@ package struct ProposalsFeature {
         case declineTapped(String)
         /// Forks the planning session onto the task applying it made.
         case startWorkTapped(itemID: String)
+        /// The session on the task was started.
+        case workStarted(proposal: String, Session)
         case decided(String, Proposal.State)
         /// They couldn't be listed.
         case listFailed(String)
-        case failed(id: String?, message: String)
+        case failed(id: String, message: String)
+        case startWorkFailed(proposal: String, message: String)
         case alert(PresentationAction<Never>)
         case delegate(Delegate)
 
@@ -156,22 +160,39 @@ package struct ProposalsFeature {
                 return .none
 
             case .startWorkTapped(let item):
+                // Keyed by its proposal, which shows it's starting; by the item
+                // when the proposal isn't listed yet.
+                let key = state.proposals.first(where: { $0.state == .applied(itemID: item) })?.id ?? item
+                guard state.deciding.insert(key).inserted else { return .none }
                 let session = state.sessionID
                 return .run { send in
-                    await send(.delegate(.openSession(try await daemon.startWork(session, item))))
+                    await send(.workStarted(proposal: key, try await daemon.startWork(session, item)))
                 } catch: { error, send in
-                    await send(.failed(id: nil, message: error.localizedDescription))
+                    await send(.startWorkFailed(proposal: key, message: error.localizedDescription))
                 }
 
-            case .failed(let id, let message):
-                if let id { state.deciding.remove(id) }
+            case .workStarted(let proposal, let session):
+                state.deciding.remove(proposal)
+                return .send(.delegate(.openSession(session)))
+
+            case .startWorkFailed(let proposal, let message):
+                state.deciding.remove(proposal)
                 state.alert = AlertState {
-                    TextState(id == nil ? "Couldn’t Start Work on the Task" : "Couldn’t Decide on the Proposal")
+                    TextState("Couldn’t start work on the task")
+                } message: {
+                    TextState(message)
+                }
+                return .none
+
+            case .failed(let id, let message):
+                state.deciding.remove(id)
+                state.alert = AlertState {
+                    TextState("Couldn’t decide on the proposal")
                 } message: {
                     TextState(message)
                 }
                 // Another window may have decided it; show how it stands.
-                return id == nil ? .none : .send(.refresh)
+                return .send(.refresh)
             }
         }
         .ifLet(\.$alert, action: \.alert)

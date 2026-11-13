@@ -41,6 +41,8 @@ package struct StorageFeature {
         case loaded(Storage)
         case modelsLoaded([ModelFiles.Model])
         case failed(String)
+        /// The settings weren't saved; the switch and days go back to these.
+        case settingsFailed(autoDelete: Bool, days: Int, String)
         /// The cleanup didn't start.
         case cleanupFailed(String)
         case modelDeleteFailed(String)
@@ -117,15 +119,21 @@ package struct StorageFeature {
                 state.deletingModel = nil
                 return .none
 
+            case .settingsFailed(let autoDelete, let days, let message):
+                state.failure = message
+                state.storage?.autoDelete = autoDelete
+                state.storage?.days = days
+                return .none
+
             case .autoDeleteToggled(let on):
                 guard let storage = state.storage else { return .none }
                 state.storage?.autoDelete = on
-                return set(autoDelete: on, days: storage.days)
+                return set(autoDelete: on, days: storage.days, was: storage)
 
             case .daysPicked(let days):
                 guard let storage = state.storage else { return .none }
                 state.storage?.days = days
-                return set(autoDelete: storage.autoDelete, days: days)
+                return set(autoDelete: storage.autoDelete, days: days, was: storage)
 
             case .deleteArchivedTapped:
                 guard let days = state.storage?.days else { return .none }
@@ -224,11 +232,11 @@ package struct StorageFeature {
         .run { send in await send(.modelsLoaded(await modelFiles.installed())) }
     }
 
-    private func set(autoDelete: Bool, days: Int) -> Effect<Action> {
+    private func set(autoDelete: Bool, days: Int, was: Storage) -> Effect<Action> {
         .run { send in
             await send(.loaded(try await daemon.setStorageSettings(autoDelete, days)))
         } catch: { error, send in
-            await send(.failed(error.localizedDescription))
+            await send(.settingsFailed(autoDelete: was.autoDelete, days: was.days, error.localizedDescription))
         }
     }
 

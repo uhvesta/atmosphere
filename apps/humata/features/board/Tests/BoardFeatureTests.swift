@@ -211,6 +211,87 @@ final class BoardFeatureTests: XCTestCase {
         XCTAssertEqual(titles(store.state.cards(in: .inReview)), [])
     }
 
+    func testADroppedCardShowsInItsColumnThroughAnOlderRead() async throws {
+        let board = try await board()
+        // The daemon answers the drop only once the older read is in.
+        let (answer, release) = AsyncStream<Void>.makeStream()
+        let store = TestStore(initialState: BoardFeature.State(project: board.project)) {
+            BoardFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+            $0.daemon.updateItem = { id, update in
+                for await _ in answer { break }
+                return try await board.daemon.client.updateItem(id, update)
+            }
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        let before = try await board.daemon.client.items(board.project.id)
+
+        await store.send(.dropped(board.other.id, on: .inProgress))
+        XCTAssertEqual(store.state.items[id: board.other.id]?.fields.status, .inProgress)
+        let sessions = Array(store.state.sessions)
+        await store.send(.loaded(items: before, sessions: sessions))
+        XCTAssertEqual(store.state.items[id: board.other.id]?.fields.status, .inProgress)
+        release.yield()
+        await store.receive(\.moved)
+        XCTAssertEqual(store.state.moving, [:])
+    }
+
+    func testARefusedDropPutsTheCardBack() async throws {
+        let board = try await board()
+        let store = TestStore(initialState: BoardFeature.State(project: board.project)) {
+            BoardFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+            $0.daemon.updateItem = { _, _ in throw DaemonError.disconnected }
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        let was = try XCTUnwrap(store.state.items[id: board.other.id]?.fields.status)
+
+        await store.send(.dropped(board.other.id, on: .done))
+        await store.receive(\.moveFailed)
+        XCTAssertEqual(store.state.items[id: board.other.id]?.fields.status, was)
+        XCTAssertNotNil(store.state.actionFailure)
+        XCTAssertEqual(store.state.moving, [:])
+    }
+
+    func testASecondUndoWhileTheFirstRunsUndoesNothingMore() async throws {
+        let board = try await board()
+        let reverts = LockIsolated(0)
+        let store = TestStore(initialState: BoardFeature.State(project: board.project)) {
+            BoardFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+            // The first undo is still going when the second tap comes.
+            $0.daemon.revert = { _ in
+                reverts.withValue { $0 += 1 }
+                return try await Task.never()
+            }
+            $0.continuousClock = ImmediateClock()
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        let newest = try await board.daemon.client.boardLog(board.project.id).first?.id
+        await store.send(.logStarted(newest: newest))
+        await store.send(.dropped(board.task.id, on: .inProgress))
+        await store.receive(\.moved)
+        await store.send(.dropped(board.other.id, on: .done))
+        await store.receive(\.moved)
+        await store.skipReceivedActions(strict: false)
+
+        let first = await store.send(.undoTapped)
+        XCTAssertTrue(store.state.undoing)
+        await store.send(.undoTapped)
+        await Task.megaYield()
+        XCTAssertEqual(reverts.value, 1)
+        await first.cancel()
+    }
+
     func testClosingACardOffersToStopAndArchiveItsSessions() async throws {
         let board = try await board { _ in [.run(command: "make", output: "")] }
         let working = try await board.daemon.client.start(StartRequest(backend: .scripted, itemID: board.task.id))

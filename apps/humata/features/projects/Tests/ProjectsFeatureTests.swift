@@ -926,6 +926,118 @@ final class ProjectsFeatureTests: XCTestCase {
         return store
     }
 
+    func testAnAnsweredPermissionDoesntComeBackFromAReadBegunBeforeTheAnswer() async throws {
+        let daemon = InMemoryDaemon { _ in [.run(command: "make", output: ""), .say("Built.")] }
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        try await daemon.client.send(session.id, "hi", .enqueue)
+        let answers = LockIsolated<[Bool]>([])
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            // The answer is still on its way when the older read comes in.
+            $0.daemon.approve = { _, _, approved in
+                answers.withValue { $0.append(approved) }
+                try await Task.never()
+            }
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        let stale = store.state.inbox
+        let request = try XCTUnwrap(stale.first { $0.reason == .approval }?.session.pending.first)
+
+        let first = await store.send(.inboxAnswered(session.id, request: request.requestID, approved: true))
+        XCTAssertFalse(store.state.inbox.contains { $0.reason == .approval })
+        // A second click sends no second answer.
+        await store.send(.inboxAnswered(session.id, request: request.requestID, approved: false))
+        await store.send(.loaded(projects: [], sessions: [session], inbox: stale, approvals: []))
+        XCTAssertFalse(store.state.inbox.contains { $0.reason == .approval })
+        await Task.megaYield()
+        XCTAssertEqual(answers.value, [true])
+        await first.cancel()
+    }
+
+    func testAPermissionWhoseAnswerFailedComesBack() async throws {
+        let daemon = InMemoryDaemon { _ in [.run(command: "make", output: ""), .say("Built.")] }
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        try await daemon.client.send(session.id, "hi", .enqueue)
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemon.approve = { _, _, _ in throw DaemonError.disconnected }
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        let request = try XCTUnwrap(store.state.inbox.first { $0.reason == .approval }?.session.pending.first)
+
+        await store.send(.inboxAnswered(session.id, request: request.requestID, approved: true))
+        await store.receive(\.answerFailed)
+        await store.receive(\.loaded)
+        XCTAssertNotNil(store.state.destination?.alert)
+        XCTAssertTrue(store.state.inbox.contains { $0.session.pending.contains(request) })
+    }
+
+    func testASessionBeingArchivedTakesNoSecondArchive() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        var state = ProjectsFeature.State()
+        state.sessions = [session]
+        let updates = LockIsolated(0)
+        let store = TestStore(initialState: state) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            // The first archive is still going when the second tap comes.
+            $0.daemon.update = { _, _ in
+                updates.withValue { $0 += 1 }
+                return try await Task.never()
+            }
+        }
+        store.exhaustivity = .off
+
+        let first = await store.send(.archiveTapped(session.id, archived: true))
+        XCTAssertEqual(store.state.busy, [session.id])
+        await store.send(.archiveTapped(session.id, archived: true))
+        await Task.megaYield()
+        XCTAssertEqual(updates.value, 1)
+        await first.cancel()
+    }
+
+    func testTryingAgainFromTheInboxTwiceSendsOnce() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        try await daemon.client.send(session.id, "build it", .enqueue)
+        let sent = LockIsolated<[String]>([])
+        let store = TestStore(initialState: ProjectsFeature.State()) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            // The first retry is still being sent when the second tap comes.
+            $0.daemon.send = { _, text, _ in
+                sent.withValue { $0.append(text) }
+                return try await Task.never()
+            }
+            $0.notifications.post = { _ in }
+        }
+        store.exhaustivity = .off
+
+        let first = await store.send(.inboxRetryTapped(session.id))
+        XCTAssertEqual(store.state.retrying, [session.id])
+        await store.send(.inboxRetryTapped(session.id))
+        await Task.megaYield()
+        XCTAssertEqual(sent.value, ["build it"])
+        await first.cancel()
+    }
+
     func testAllowingEverythingFromTheInboxLetsTheWaitingCommandRun() async throws {
         let daemon = InMemoryDaemon { _ in [.run(command: "make", output: ""), .say("Built.")] }
         let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))

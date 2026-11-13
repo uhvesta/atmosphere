@@ -199,6 +199,57 @@ final class ReviewFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.files, [sum])
     }
 
+    func testAStageWaitsForTheOneBeforeIt() async throws {
+        let (daemon, session) = try await session()
+        let edits = LockIsolated(0)
+        let store = TestStore(initialState: ReviewFeature.State(sessionID: session.id, turns: 1)) {
+            ReviewFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            // The first stage is still going when the second tap comes.
+            $0.daemon.editChanges = { _, _ in
+                edits.withValue { $0 += 1 }
+                try await Task.never()
+            }
+        }
+        store.exhaustivity = .off
+        await store.send(.rangePicked(.unstaged))
+        await store.receive(\.loaded)
+
+        let first = await store.send(.editTapped(ChangeEdit(file: sum, action: .stage)))
+        XCTAssertTrue(store.state.editing)
+        await store.send(.editTapped(ChangeEdit(file: sum, action: .stage)))
+        await Task.megaYield()
+        XCTAssertEqual(edits.value, 1)
+        await first.cancel()
+    }
+
+    func testChangesThatCouldntBeReadSaySoUntilTheyAre() async throws {
+        let (daemon, session) = try await session()
+        let reachable = LockIsolated(false)
+        let store = TestStore(initialState: ReviewFeature.State(sessionID: session.id, turns: 1)) {
+            ReviewFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.changes = { session, query in
+                guard reachable.value else { throw DaemonError.disconnected }
+                return try await daemon.client.changes(session, query)
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.loadFailed)
+        XCTAssertNotNil(store.state.loadFailure)
+        XCTAssertFalse(store.state.loading)
+
+        reachable.setValue(true)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        XCTAssertNil(store.state.loadFailure)
+        XCTAssertEqual(store.state.files, [sum])
+    }
+
     func testMarkingViewedKeepsTheMarkWhenReadAgain() async throws {
         let (daemon, session) = try await session()
         let store = store(daemon, session)

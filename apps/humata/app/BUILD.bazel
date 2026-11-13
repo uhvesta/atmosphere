@@ -20,6 +20,7 @@ swift_library(
         "//apps/humata/features/app",
         "//apps/humata/features/diagram",
         "//apps/humata/features/projects",
+        "//apps/humata/features/session",
         "//apps/libs/kits/chatui",
         "//apps/libs/kits/inference",
         "//apps/libs/kits/inference/live",

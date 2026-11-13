@@ -135,7 +135,7 @@ private struct HitRow: View {
                         .help("Found by a related word, not the search's own")
                 }
                 Spacer()
-                Text(hit.time, format: .relative(presentation: .named))
+                Text(hit.time, format: .relative(presentation: .numeric, unitsStyle: .abbreviated))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
