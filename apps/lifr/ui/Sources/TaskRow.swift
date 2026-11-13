@@ -50,6 +50,8 @@ package struct TaskRow: View {
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
                                         .fixedSize()
+                                        // On a Mac, pointing at it names the rest.
+                                        .help(row.labels.dropFirst(count).map { "#\($0.name)" }.joined(separator: " "))
                                 }
                             }
                         }
