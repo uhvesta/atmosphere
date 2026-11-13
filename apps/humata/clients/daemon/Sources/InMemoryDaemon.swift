@@ -66,7 +66,7 @@ package final class InMemoryDaemon: Sendable {
         var copies: [String: [Write]] = [:]
         /// The copy each session works in, by session id.
         var copyOf: [String: String] = [:]
-        var watchers: [String: [UUID: AsyncThrowingStream<SessionEvent, any Error>.Continuation]] = [:]
+        var watchers: [String: [UUID: AsyncThrowingStream<WatchItem, any Error>.Continuation]] = [:]
         /// Items as given, in the order they were added.
         var items: [Item] = []
         /// Board changes, oldest first.
@@ -1062,7 +1062,7 @@ package final class InMemoryDaemon: Sendable {
             return (event, Array((state.watchers[session] ?? [:]).values))
         }
         for watcher in watchers {
-            watcher.yield(event)
+            watcher.yield(.event(event))
         }
         return event.id
     }
@@ -1180,13 +1180,13 @@ package final class InMemoryDaemon: Sendable {
         }
     }
 
-    private func watch(_ session: String) -> AsyncThrowingStream<SessionEvent, any Error> {
+    private func watch(_ session: String) -> AsyncThrowingStream<WatchItem, any Error> {
         AsyncThrowingStream { continuation in
             let id = UUID()
             let known = state.withValue { state -> Bool in
                 guard let history = state.histories[session] else { return false }
                 for event in history {
-                    continuation.yield(event)
+                    continuation.yield(.event(event))
                 }
                 state.watchers[session, default: [:]][id] = continuation
                 return true

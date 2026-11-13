@@ -237,9 +237,10 @@ package struct DaemonClient: Sendable {
     /// Makes a task of each open GitHub issue of the project's repositories
     /// not imported before.
     package var importIssues: @Sendable (_ project: String) async throws -> ImportedIssues
-    /// The session's history, then each new event. Ends when the calling task
-    /// is cancelled; throws if the connection drops.
-    package var watch: @Sendable (_ session: String) async -> AsyncThrowingStream<SessionEvent, any Error> = { _ in
+    /// How much of the session's history is read while it's read from disk,
+    /// the history, then each new event. Ends when the calling task is
+    /// cancelled; throws if the connection drops.
+    package var watch: @Sendable (_ session: String) async -> AsyncThrowingStream<WatchItem, any Error> = { _ in
         AsyncThrowingStream { $0.finish() }
     }
 }

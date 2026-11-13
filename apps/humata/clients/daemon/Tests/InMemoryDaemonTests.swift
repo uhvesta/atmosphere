@@ -67,7 +67,7 @@ final class InMemoryDaemonTests: XCTestCase {
 
         var seen: [SessionEvent] = []
         for _ in 0..<10 {
-            if let event = try await events.next() { seen.append(event) }
+            if case .event(let event)? = try await events.next() { seen.append(event) }
         }
         XCTAssertEqual(said(seen), ["user: one", "agent: You said: one", "user: two", "agent: You said: two"])
     }

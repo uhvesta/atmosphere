@@ -867,8 +867,12 @@ extension DaemonClient {
                             var watch = Humata_V1_WatchSession()
                             watch.sessionID = session
                             for try await item in try await daemon.stream(.watchSession(watch)) {
-                                if case .sessionEvent(let event) = item.kind, let event = SessionEvent(event) {
-                                    continuation.yield(event)
+                                switch item.kind {
+                                case .sessionEvent(let event):
+                                    if let event = SessionEvent(event) { continuation.yield(.event(event)) }
+                                case .historyLoading(let loading):
+                                    continuation.yield(.loading(read: loading.read, total: loading.total))
+                                default: break
                                 }
                             }
                             continuation.finish()

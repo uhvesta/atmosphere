@@ -266,6 +266,35 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.alert?.message, TextState(refusal.description))
     }
 
+    func testAHistoryReadFromDiskShowsHowMuchIsReadUntilItComes() async throws {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let said = SessionEvent(id: "e1", time: Date(timeIntervalSince1970: 0), kind: .userMessage("hi"))
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.watch = { _ in
+                AsyncThrowingStream { continuation in
+                    continuation.yield(.loading(read: 0, total: 0))
+                    continuation.yield(.loading(read: 40, total: 100))
+                    continuation.yield(.event(said))
+                }
+            }
+            $0.daemon.markSeen = { _, _ in }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.historyLoading)
+        XCTAssertNil(store.state.historyLoading?.fraction)
+        await store.receive(\.historyLoading)
+        XCTAssertEqual(store.state.historyLoading?.fraction, 0.4)
+        XCTAssertFalse(store.state.historyLoaded)
+        await store.receive(\.receivedAll)
+        XCTAssertNil(store.state.historyLoading)
+        XCTAssertTrue(store.state.historyLoaded)
+        await store.skipInFlightEffects()
+    }
+
     func testALostConnectionIsShownAndWatchedAgainAfterAWait() async throws {
         let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
         let clock = TestClock()
@@ -304,7 +333,7 @@ final class SessionFeatureTests: XCTestCase {
         } withDependencies: {
             $0.daemon.watch = { _ in
                 AsyncThrowingStream { continuation in
-                    for event in kept { continuation.yield(event) }
+                    for event in kept { continuation.yield(.event(event)) }
                     continuation.finish()
                 }
             }

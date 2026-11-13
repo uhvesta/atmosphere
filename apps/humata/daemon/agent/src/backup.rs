@@ -29,19 +29,26 @@ pub struct BackendFile {
 pub(crate) const LINKS: &str = "links.json";
 
 /// The session's links file under `state`, if it has one, as a backend file.
+/// Pairs appended since it was last written whole are in it.
 pub(crate) fn links_file(state: &Path, session: &str) -> Result<Option<BackendFile>, AgentError> {
-    Ok(
-        read_optional(&Links::path(state, session))?.map(|contents| BackendFile {
-            name: LINKS.to_owned(),
-            contents,
-        }),
-    )
+    let path = Links::path(state, session);
+    if !path.exists() && !crate::links::pairs_path(&path).exists() {
+        return Ok(None);
+    }
+    let contents =
+        serde_json::to_vec(&Links::load(&path)?).map_err(|source| AgentError::Encode { source })?;
+    Ok(Some(BackendFile {
+        name: LINKS.to_owned(),
+        contents,
+    }))
 }
 
 /// Puts back the session's links under `state`, as [`links_file`] read them.
 pub(crate) fn write_links(state: &Path, session: &str, contents: &[u8]) -> Result<(), AgentError> {
     let name = Links::path(Path::new(""), session);
-    write_under(state, &name.to_string_lossy(), contents)
+    write_under(state, &name.to_string_lossy(), contents)?;
+    // Pairs appended before were in the links read, so they are in these.
+    crate::links::remove_appended(&Links::path(state, session))
 }
 
 /// The backend sessions the links of `files` name: the session's own and,
@@ -194,6 +201,7 @@ pub(crate) fn forget_links(state: &Path, session: &str) -> Result<Vec<String>, A
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(source) => return Err(AgentError::Write { path, source }),
     }
+    crate::links::remove_appended(&path)?;
     remove(&rewound_dir)?;
     Ok(theirs)
 }

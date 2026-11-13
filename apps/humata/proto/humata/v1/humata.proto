@@ -1521,7 +1521,16 @@ message StreamItem {
     ToolCall tool_call = 2;
     TerminalOutput terminal_output = 3;
     PortData port_data = 4;
+    HistoryLoading history_loading = 5;
   }
+}
+
+// How much of a session's history kept on disk is read, sent while a watch
+// reads it, before the history's events. A total of 0 means its size isn't
+// known.
+message HistoryLoading {
+  uint64 read = 1;
+  uint64 total = 2;
 }
 
 message WatchToolCalls {}

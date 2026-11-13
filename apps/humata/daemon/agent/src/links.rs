@@ -77,24 +77,94 @@ impl Links {
         Ok(linked)
     }
 
-    /// The links in `path`; none if there is no file.
+    /// The links in `path`; none if there is no file. Pairs linked since it
+    /// was last written whole follow its own.
     pub(crate) fn load(path: &Path) -> Result<Self, AgentError> {
-        match std::fs::read(path) {
+        let mut links: Self = match std::fs::read(path) {
             Ok(json) => {
                 serde_json::from_slice(&json).map_err(|source| AgentError::CorruptBackendState {
                     path: path.to_owned(),
                     source,
-                })
+                })?
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(source) => Err(AgentError::Read {
-                path: path.to_owned(),
-                source,
-            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(source) => {
+                return Err(AgentError::Read {
+                    path: path.to_owned(),
+                    source,
+                });
+            }
+        };
+        let appended = pairs_path(path);
+        let bytes = match std::fs::read(&appended) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(links),
+            Err(source) => {
+                return Err(AgentError::Read {
+                    path: appended,
+                    source,
+                });
+            }
+        };
+        // A crash after writing them whole but before removing the appended
+        // pairs leaves some in both: each is read once.
+        let mut known: HashSet<EventId> =
+            links.events.iter().map(|(ours, _)| ours.clone()).collect();
+        let mut lines = bytes.split(|byte| *byte == b'\n').peekable();
+        while let Some(line) = lines.next() {
+            if line.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            match serde_json::from_slice::<(EventId, String)>(line) {
+                Ok(pair) => {
+                    if known.insert(pair.0.clone()) {
+                        links.events.push(pair);
+                    }
+                }
+                // The last line, cut short by a crash mid-write.
+                Err(_) if lines.peek().is_none_or(|rest| rest.is_empty()) => break,
+                Err(source) => {
+                    return Err(AgentError::CorruptBackendState {
+                        path: appended,
+                        source,
+                    });
+                }
+            }
         }
+        Ok(links)
     }
 
-    /// Writes the links to `path`, all or nothing.
+    /// Links our event `ours` to the backend's `theirs`, appending the pair
+    /// to the file instead of writing every link again, which a long
+    /// session would make slow.
+    pub(crate) fn link(
+        &mut self,
+        path: &Path,
+        ours: EventId,
+        theirs: String,
+    ) -> Result<(), AgentError> {
+        use std::io::Write as _;
+        let mut line = serde_json::to_vec(&(&ours, &theirs))
+            .map_err(|source| AgentError::Encode { source })?;
+        line.push(b'\n');
+        self.events.push((ours, theirs));
+        if !path.exists() {
+            return self.save(path);
+        }
+        let appended = pairs_path(path);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&appended)
+            .and_then(|mut file| file.write_all(&line))
+            .map_err(|source| AgentError::Write {
+                path: appended,
+                source,
+            })
+    }
+
+    /// Writes the links to `path`, all or nothing, the pairs appended since
+    /// it was last written included.
     pub(crate) fn save(&self, path: &Path) -> Result<(), AgentError> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|source| AgentError::CreateDirectory {
@@ -111,7 +181,8 @@ impl Links {
         std::fs::rename(&partial, path).map_err(|source| AgentError::Write {
             path: path.to_owned(),
             source,
-        })
+        })?;
+        remove_appended(path)
     }
 
     /// Where the links a session had before its rewind `rewind` are kept,
@@ -176,13 +247,16 @@ impl Links {
             return self.save(path);
         }
         match std::fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(source) => Err(AgentError::Write {
-                path: path.to_owned(),
-                source,
-            }),
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(AgentError::Write {
+                    path: path.to_owned(),
+                    source,
+                });
+            }
         }
+        remove_appended(path)
     }
 
     /// The backend's event of the last event linked: where a fork that
@@ -235,6 +309,25 @@ impl Links {
                 .get(last + 1)
                 .map_or(Cut::All, |next| Cut::Before(next.clone())),
         }
+    }
+}
+
+/// Where the pairs linked since the links at `path` were last written whole
+/// are appended, one JSON line each.
+pub(crate) fn pairs_path(path: &Path) -> PathBuf {
+    path.with_extension("jsonl")
+}
+
+/// Removes the pairs appended to the links at `path`, once they are in it.
+pub(crate) fn remove_appended(path: &Path) -> Result<(), AgentError> {
+    let appended = pairs_path(path);
+    match std::fs::remove_file(&appended) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(AgentError::Write {
+            path: appended,
+            source,
+        }),
     }
 }
 
@@ -301,6 +394,45 @@ mod tests {
         let grandchild = child.fork(&[event("a")]);
         assert_eq!(grandchild.fork, Some(PendingFork { source: "c".into() }));
         assert_eq!(grandchild.events.len(), 1);
+    }
+
+    #[test]
+    fn linked_pairs_are_appended_and_read_back_in_order() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let path = Links::path(dir.path(), "s");
+        let mut written = links("c", &[("a", "1")]);
+        written.save(&path).expect("saved");
+        written
+            .link(&path, EventId::new("b"), "2".into())
+            .expect("linked");
+        written
+            .link(&path, EventId::new("c"), "3".into())
+            .expect("linked");
+        let read = Links::load(&path).expect("read");
+        assert_eq!(read, written);
+        assert_eq!(read.last(), Some("3"));
+
+        // Written whole again, the appended pairs are in it once.
+        written.save(&path).expect("saved");
+        assert_eq!(Links::load(&path).expect("read"), written);
+    }
+
+    #[test]
+    fn a_pair_cut_short_or_already_written_whole_is_read_once() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let path = Links::path(dir.path(), "s");
+        links("c", &[("a", "1"), ("b", "2")])
+            .save(&path)
+            .expect("saved");
+        // A crash between writing them whole and removing the appended ones,
+        // and another mid-append.
+        std::fs::write(
+            pairs_path(&path),
+            "[\"b\",\"2\"]\n[\"c\",\"3\"]\n[\"d\",\"4",
+        )
+        .expect("written");
+        let read = Links::load(&path).expect("read");
+        assert_eq!(read, links("c", &[("a", "1"), ("b", "2"), ("c", "3")]));
     }
 
     #[test]

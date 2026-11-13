@@ -5,12 +5,20 @@
 //! that starts watching part way through it. They're never written to the
 //! file and are dropped from memory once the reply they make up is whole,
 //! so a history read again doesn't carry every reply twice.
+//!
+//! A session at rest keeps only its summary in memory, written beside the
+//! history, and reads its events again when something needs them. An old
+//! history can be sealed: what's in the plain file then is compressed onto
+//! the end of `events.sealed.zst`, one length-prefixed zstd frame each
+//! time, and the plain file starts again empty, so the live tail stays
+//! plain and appends never touch the sealed part.
 
 use std::fs::{File, OpenOptions};
-use std::io::Write;
-use std::path::PathBuf;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use crate::error::AgentError;
@@ -27,12 +35,35 @@ pub(crate) struct EventLog {
 }
 
 struct Inner {
+    /// Kept up to date with the events, loaded or not.
+    summary: Summary,
+    /// None while the log is at rest.
+    loaded: Option<Loaded>,
+}
+
+struct Loaded {
     events: Vec<Event>,
     /// Where the parts of the reply streaming now start in `events`.
     streaming: Option<usize>,
-    /// Kept up to date with `events`.
-    summary: Summary,
     file: File,
+}
+
+/// What a log at rest keeps beside its history, so opening it reads none
+/// of it. Kept only while the files are as long as it says.
+#[derive(Serialize, Deserialize)]
+struct Resting {
+    summary: Summary,
+    plain: u64,
+    sealed: u64,
+}
+
+/// What [`EventLog::rest`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Rested {
+    /// It's at rest, sealed if it was asked to be.
+    Resting { sealed: bool },
+    /// Someone watches it, a reply streams, or its turn isn't closed.
+    Busy,
 }
 
 impl EventLog {
@@ -56,6 +87,8 @@ impl EventLog {
                 path: path.clone(),
                 source,
             })?;
+        remove(&sealed_path(&path))?;
+        remove(&resting_path(&path))?;
         Ok(Self::with(path, events, file))
     }
 
@@ -63,71 +96,33 @@ impl EventLog {
     /// as a crash mid-write leaves it, is dropped from the file; a damaged
     /// line before it is an error, as dropping it would lose the rest.
     pub(crate) fn open(path: PathBuf) -> Result<Self, AgentError> {
-        let bytes = std::fs::read(&path).map_err(|source| AgentError::Read {
-            path: path.clone(),
-            source,
-        })?;
-        let mut events = Vec::new();
-        let mut kept = 0;
-        let mut start = 0;
-        let mut number = 0;
-        while start < bytes.len() {
-            number += 1;
-            let (end, complete) = match bytes[start..].iter().position(|byte| *byte == b'\n') {
-                Some(at) => (start + at, true),
-                None => (bytes.len(), false),
-            };
-            let line = &bytes[start..end];
-            start = end + 1;
-            if line.iter().all(u8::is_ascii_whitespace) {
-                kept = start.min(bytes.len());
-                continue;
-            }
-            // Written before parts of replies were left out; they're
-            // dropped as they're read.
-            match serde_json::from_slice::<Event>(line) {
-                Ok(event) if complete => {
-                    if !streamed(&event) {
-                        events.push(event);
-                    }
-                    kept = start;
-                }
-                // Whole but for its newline: the write was cut after it.
-                Ok(event) => {
-                    if !streamed(&event) {
-                        events.push(event);
-                    }
-                    kept = bytes.len();
-                }
-                Err(_) if !complete => break,
-                Err(source) => {
-                    return Err(AgentError::CorruptHistory {
-                        path: path.clone(),
-                        line: number,
-                        source,
-                    });
-                }
-            }
+        let loaded = read_all(&path, &mut |_, _| {})?;
+        let (live, _) = broadcast::channel(LIVE_CAPACITY);
+        Ok(Self {
+            path,
+            inner: Mutex::new(Inner {
+                summary: Summary::of(&loaded.events),
+                loaded: Some(loaded),
+            }),
+            live,
+        })
+    }
+
+    /// Opens the log at rest if it was left at rest and its files haven't
+    /// changed since, reading only its summary; otherwise as [`Self::open`].
+    pub(crate) fn open_resting(path: PathBuf) -> Result<Self, AgentError> {
+        if let Some(resting) = still_resting(&path) {
+            let (live, _) = broadcast::channel(LIVE_CAPACITY);
+            return Ok(Self {
+                path,
+                inner: Mutex::new(Inner {
+                    summary: resting.summary,
+                    loaded: None,
+                }),
+                live,
+            });
         }
-        let mut file = OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .map_err(|source| AgentError::Write {
-                path: path.clone(),
-                source,
-            })?;
-        let repair = if kept < bytes.len() {
-            file.set_len(kept as u64)
-        } else if bytes.last().is_some_and(|byte| *byte != b'\n') {
-            file.write_all(b"\n")
-        } else {
-            Ok(())
-        };
-        repair.map_err(|source| AgentError::Write {
-            path: path.clone(),
-            source,
-        })?;
-        Ok(Self::with(path, events, file))
+        Self::open(path)
     }
 
     fn with(path: PathBuf, events: Vec<Event>, file: File) -> Self {
@@ -136,25 +131,48 @@ impl EventLog {
             path,
             inner: Mutex::new(Inner {
                 summary: Summary::of(&events),
-                events,
-                streaming: None,
-                file,
+                loaded: Some(Loaded {
+                    events,
+                    streaming: None,
+                    file,
+                }),
             }),
             live,
         }
+    }
+
+    /// Whether the events are in memory, as they are unless the log is at
+    /// rest.
+    pub(crate) fn is_loaded(&self) -> bool {
+        self.lock().loaded.is_some()
+    }
+
+    fn loaded<'a>(
+        &self,
+        inner: &'a mut Inner,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<&'a mut Loaded, AgentError> {
+        if inner.loaded.is_none() {
+            inner.loaded = Some(read_all(&self.path, progress)?);
+        }
+        inner.loaded.as_mut().ok_or_else(|| AgentError::Read {
+            path: self.path.clone(),
+            source: std::io::Error::other("the history wasn't loaded"),
+        })
     }
 
     /// Writes the event, then tells watchers. Part of a reply as it
     /// streams is kept only until the reply is whole, or its turn ends.
     pub(crate) fn append(&self, event: Event) -> Result<Event, AgentError> {
         let mut inner = self.lock();
+        let loaded = self.loaded(&mut inner, &mut |_, _| {})?;
         if streamed(&event) {
-            if inner.streaming.is_none() {
-                inner.streaming = Some(inner.events.len());
+            if loaded.streaming.is_none() {
+                loaded.streaming = Some(loaded.events.len());
             }
         } else {
             let line = encode(&event)?;
-            inner
+            loaded
                 .file
                 .write_all(line.as_bytes())
                 .map_err(|source| AgentError::Write {
@@ -164,16 +182,16 @@ impl EventLog {
             if matches!(
                 event.kind,
                 EventKind::AssistantMessage { .. } | EventKind::TurnEnded { .. }
-            ) && let Some(from) = inner.streaming.take()
+            ) && let Some(from) = loaded.streaming.take()
             {
-                let tail = inner.events.split_off(from);
-                inner
+                let tail = loaded.events.split_off(from);
+                loaded
                     .events
                     .extend(tail.into_iter().filter(|kept| !streamed(kept)));
             }
         }
+        loaded.events.push(event.clone());
         inner.summary.add(&event);
-        inner.events.push(event.clone());
         // No watchers is not an error.
         let _ = self.live.send(event.clone());
         Ok(event)
@@ -191,6 +209,7 @@ impl EventLog {
         for event in &events {
             text.push_str(&encode(event)?);
         }
+        let mut inner = self.lock();
         let partial = self.path.with_extension("jsonl.partial");
         let written = File::create(&partial)
             .and_then(|mut file| {
@@ -202,27 +221,28 @@ impl EventLog {
             path: self.path.clone(),
             source,
         })?;
-        let file = OpenOptions::new()
-            .append(true)
-            .open(&self.path)
-            .map_err(|source| AgentError::Write {
-                path: self.path.clone(),
-                source,
-            })?;
-        let mut inner = self.lock();
-        inner.file = file;
-        inner.streaming = None;
+        // The plain file is whole now. Were this cut short here, opening
+        // it again tells so by its first event, which the sealed part
+        // starts with too.
+        remove(&sealed_path(&self.path))?;
+        remove(&resting_path(&self.path))?;
+        let file = append_to(&self.path)?;
         inner.summary = Summary::of(&events);
         let last = events.last().cloned();
-        inner.events = events;
+        inner.loaded = Some(Loaded {
+            events,
+            streaming: None,
+            file,
+        });
         if let Some(last) = last {
             let _ = self.live.send(last);
         }
         Ok(())
     }
 
-    pub(crate) fn events(&self) -> Vec<Event> {
-        self.lock().events.clone()
+    pub(crate) fn events(&self) -> Result<Vec<Event>, AgentError> {
+        let mut inner = self.lock();
+        Ok(self.loaded(&mut inner, &mut |_, _| {})?.events.clone())
     }
 
     pub(crate) fn summary(&self) -> Summary {
@@ -230,10 +250,105 @@ impl EventLog {
     }
 
     /// The events so far and a receiver for the rest, with none missed or
-    /// repeated between them.
-    pub(crate) fn watch(&self) -> (Vec<Event>, broadcast::Receiver<Event>) {
-        let inner = self.lock();
-        (inner.events.clone(), self.live.subscribe())
+    /// repeated between them. A log at rest is read first, telling
+    /// `progress` the bytes read of the total.
+    pub(crate) fn watch(
+        &self,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<(Vec<Event>, broadcast::Receiver<Event>), AgentError> {
+        let mut inner = self.lock();
+        let events = self.loaded(&mut inner, progress)?.events.clone();
+        Ok((events, self.live.subscribe()))
+    }
+
+    /// Puts the log at rest, its events dropped from memory and its summary
+    /// kept beside it, if no one watches, no reply streams and `closed`
+    /// says its turn is closed. With `seal`, what's in the plain file is
+    /// sealed first.
+    pub(crate) fn rest(
+        &self,
+        seal: bool,
+        closed: impl FnOnce(&[Event]) -> bool,
+    ) -> Result<Rested, AgentError> {
+        let mut inner = self.lock();
+        if self.live.receiver_count() > 0 {
+            return Ok(Rested::Busy);
+        }
+        if let Some(loaded) = &inner.loaded
+            && (loaded.streaming.is_some() || !closed(&loaded.events))
+        {
+            return Ok(Rested::Busy);
+        }
+        let sealed = seal && self.seal(&mut inner)?;
+        let resting = Resting {
+            summary: inner.summary.clone(),
+            plain: length(&self.path)?,
+            sealed: length(&sealed_path(&self.path))?,
+        };
+        let json = serde_json::to_vec(&resting).map_err(|source| AgentError::Encode { source })?;
+        let kept = resting_path(&self.path);
+        let partial = kept.with_extension("json.partial");
+        std::fs::write(&partial, json)
+            .and_then(|()| std::fs::rename(&partial, &kept))
+            .map_err(|source| AgentError::Write {
+                path: kept.clone(),
+                source,
+            })?;
+        inner.loaded = None;
+        Ok(Rested::Resting { sealed })
+    }
+
+    /// Compresses what's in the plain file onto the end of the sealed one
+    /// and empties the plain one, unless it's empty or ends cut short.
+    /// With the lock held, so nothing appends meanwhile.
+    fn seal(&self, inner: &mut Inner) -> Result<bool, AgentError> {
+        let plain = std::fs::read(&self.path).map_err(|source| AgentError::Read {
+            path: self.path.clone(),
+            source,
+        })?;
+        if plain.iter().all(u8::is_ascii_whitespace) || plain.last() != Some(&b'\n') {
+            return Ok(false);
+        }
+        let frame = ruzstd::encoding::compress_to_vec(
+            plain.as_slice(),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        let sealed = sealed_path(&self.path);
+        let mut bytes = match std::fs::read(&sealed) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(source) => {
+                return Err(AgentError::Read {
+                    path: sealed,
+                    source,
+                });
+            }
+        };
+        bytes.extend_from_slice(&(frame.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&frame);
+        let partial = sealed.with_extension("zst.partial");
+        let written = File::create(&partial)
+            .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_data()))
+            .and_then(|()| std::fs::rename(&partial, &sealed));
+        written.map_err(|source| AgentError::Write {
+            path: sealed.clone(),
+            source,
+        })?;
+        // Were this cut short here, opening it again tells so: the plain
+        // file starts as the last sealed frame does.
+        let emptied = self.path.with_extension("jsonl.partial");
+        File::create(&emptied)
+            .and_then(|file| file.sync_data())
+            .and_then(|()| std::fs::rename(&emptied, &self.path))
+            .map_err(|source| AgentError::Write {
+                path: self.path.clone(),
+                source,
+            })?;
+        // The loaded log, if it is, appends to the new, empty file.
+        if let Some(loaded) = inner.loaded.as_mut() {
+            loaded.file = append_to(&self.path)?;
+        }
+        Ok(true)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -243,6 +358,204 @@ impl EventLog {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+/// Where the sealed part of the history at `plain` is.
+fn sealed_path(plain: &Path) -> PathBuf {
+    plain.with_extension("sealed.zst")
+}
+
+/// Where a log at rest keeps its summary.
+fn resting_path(plain: &Path) -> PathBuf {
+    plain.with_extension("resting.json")
+}
+
+/// Removes the file at `path`, if there is one.
+fn remove(path: &Path) -> Result<(), AgentError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(AgentError::Write {
+            path: path.to_owned(),
+            source,
+        }),
+    }
+}
+
+/// How long the file at `path` is; 0 if it isn't there.
+fn length(path: &Path) -> Result<u64, AgentError> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.len()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(source) => Err(AgentError::Read {
+            path: path.to_owned(),
+            source,
+        }),
+    }
+}
+
+fn append_to(path: &Path) -> Result<File, AgentError> {
+    OpenOptions::new()
+        .append(true)
+        .open(path)
+        .map_err(|source| AgentError::Write {
+            path: path.to_owned(),
+            source,
+        })
+}
+
+/// What the log at `plain` kept when it was put at rest, if its files are
+/// still as they were then.
+fn still_resting(plain: &Path) -> Option<Resting> {
+    let json = std::fs::read(resting_path(plain)).ok()?;
+    let resting: Resting = serde_json::from_slice(&json).ok()?;
+    let unchanged =
+        length(plain).ok()? == resting.plain && length(&sealed_path(plain)).ok()? == resting.sealed;
+    unchanged.then_some(resting)
+}
+
+/// Reads the whole history at `plain`, its sealed part first, telling
+/// `progress` the bytes read of the total, and repairs what a crash left.
+fn read_all(plain: &Path, progress: &mut dyn FnMut(u64, u64)) -> Result<Loaded, AgentError> {
+    let sealed_at = sealed_path(plain);
+    let total = length(plain)? + length(&sealed_at)?;
+    progress(0, total);
+    let (mut events, last_frame) = match std::fs::read(&sealed_at) {
+        Ok(bytes) => unseal(&sealed_at, &bytes, &mut |read| progress(read, total))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (Vec::new(), None),
+        Err(source) => {
+            return Err(AgentError::Read {
+                path: sealed_at,
+                source,
+            });
+        }
+    };
+    let bytes = std::fs::read(plain).map_err(|source| AgentError::Read {
+        path: plain.to_owned(),
+        source,
+    })?;
+    let (mut recent, kept) = parse(plain, &bytes)?;
+    let mut file = append_to(plain)?;
+    let repair = if kept < bytes.len() {
+        file.set_len(kept as u64)
+    } else if bytes.last().is_some_and(|byte| *byte != b'\n') {
+        file.write_all(b"\n")
+    } else {
+        Ok(())
+    };
+    repair.map_err(|source| AgentError::Write {
+        path: plain.to_owned(),
+        source,
+    })?;
+    if let Some(first) = recent.first() {
+        if events.first().is_some_and(|sealed| sealed.id == first.id) {
+            // A replace was cut short after it wrote the plain file whole.
+            events.clear();
+            remove(&sealed_at)?;
+        } else if last_frame
+            .and_then(|at| events.get(at))
+            .is_some_and(|sealed| sealed.id == first.id)
+        {
+            // A seal was cut short before it emptied the plain file.
+            recent.clear();
+            file.set_len(0).map_err(|source| AgentError::Write {
+                path: plain.to_owned(),
+                source,
+            })?;
+        }
+    }
+    events.append(&mut recent);
+    progress(total, total);
+    Ok(Loaded {
+        events,
+        streaming: None,
+        file,
+    })
+}
+
+/// The events in the sealed file at `path`, and where its last frame's
+/// start in them, telling `progress` the bytes read so far.
+fn unseal(
+    path: &Path,
+    bytes: &[u8],
+    progress: &mut dyn FnMut(u64),
+) -> Result<(Vec<Event>, Option<usize>), AgentError> {
+    let damaged = |source: std::io::Error| AgentError::CorruptSealedHistory {
+        path: path.to_owned(),
+        source,
+    };
+    let cut = || damaged(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+    let mut events = Vec::new();
+    let mut last = None;
+    let mut at = 0;
+    while at < bytes.len() {
+        let header: [u8; 8] = bytes
+            .get(at..at + 8)
+            .and_then(|header| header.try_into().ok())
+            .ok_or_else(cut)?;
+        let start = at + 8;
+        let end = usize::try_from(u64::from_le_bytes(header))
+            .ok()
+            .and_then(|length| start.checked_add(length))
+            .ok_or_else(cut)?;
+        let frame = bytes.get(start..end).ok_or_else(cut)?;
+        let mut decoder = ruzstd::decoding::StreamingDecoder::new(frame)
+            .map_err(|error| damaged(std::io::Error::other(error.to_string())))?;
+        let mut text = Vec::new();
+        decoder.read_to_end(&mut text).map_err(damaged)?;
+        let (kept, parsed) = parse(path, &text)?;
+        if parsed < text.len() {
+            return Err(cut());
+        }
+        last = Some(events.len());
+        events.extend(kept);
+        at = end;
+        progress(at as u64);
+    }
+    Ok((events, last))
+}
+
+/// The events in the JSON lines `bytes`, and how many of the bytes they
+/// take: a last line cut short isn't counted. A damaged line before it is
+/// an error.
+fn parse(path: &Path, bytes: &[u8]) -> Result<(Vec<Event>, usize), AgentError> {
+    let mut events = Vec::new();
+    let mut kept = 0;
+    let mut start = 0;
+    let mut number = 0;
+    while start < bytes.len() {
+        number += 1;
+        let (end, complete) = match bytes[start..].iter().position(|byte| *byte == b'\n') {
+            Some(at) => (start + at, true),
+            None => (bytes.len(), false),
+        };
+        let line = &bytes[start..end];
+        start = end + 1;
+        if line.iter().all(u8::is_ascii_whitespace) {
+            kept = start.min(bytes.len());
+            continue;
+        }
+        // Written before parts of replies were left out; they're
+        // dropped as they're read.
+        match serde_json::from_slice::<Event>(line) {
+            Ok(event) => {
+                if !streamed(&event) {
+                    events.push(event);
+                }
+                // Whole but for its newline: the write was cut after it.
+                kept = start.min(bytes.len());
+            }
+            Err(_) if !complete => break,
+            Err(source) => {
+                return Err(AgentError::CorruptHistory {
+                    path: path.to_owned(),
+                    line: number,
+                    source,
+                });
+            }
+        }
+    }
+    Ok((events, kept))
 }
 
 /// Whether `event` is part of a reply as it streams.
@@ -269,6 +582,7 @@ mod tests {
 
     fn texts(log: &EventLog) -> Vec<String> {
         log.events()
+            .unwrap_or_else(|error| panic!("{error}"))
             .into_iter()
             .filter_map(|event| match event.kind {
                 EventKind::UserMessage { text, .. } => Some(text),
@@ -318,7 +632,9 @@ mod tests {
         let path = folder.path().join("events.jsonl");
         let log = EventLog::create(path.clone(), vec![said("hi")])
             .unwrap_or_else(|error| panic!("{error}"));
-        let (_, mut live) = log.watch();
+        let (_, mut live) = log
+            .watch(&mut |_, _| {})
+            .unwrap_or_else(|error| panic!("{error}"));
         let append = |kind| {
             log.append(Event::now(kind))
                 .unwrap_or_else(|error| panic!("{error}"))
@@ -326,7 +642,7 @@ mod tests {
         append(EventKind::AssistantDelta { text: "hel".into() });
         append(EventKind::AssistantDelta { text: "lo".into() });
         // One who starts watching now sees the reply so far.
-        assert_eq!(log.events().len(), 3);
+        assert_eq!(log.events().map(|events| events.len()).ok(), Some(3));
         append(EventKind::AssistantMessage {
             text: "hello".into(),
         });
@@ -342,7 +658,10 @@ mod tests {
                 text: "hello".into(),
             },
         ];
-        assert_eq!(kinds(log.events()), whole);
+        assert_eq!(
+            kinds(log.events().unwrap_or_else(|error| panic!("{error}"))),
+            whole
+        );
         // Those watching got every part.
         let mut streamed = 0;
         while let Ok(event) = live.try_recv() {
@@ -351,6 +670,143 @@ mod tests {
         assert_eq!(streamed, 2);
         drop(log);
         let reopened = EventLog::open(path).unwrap_or_else(|error| panic!("{error}"));
-        assert_eq!(kinds(reopened.events()), whole);
+        assert_eq!(
+            kinds(reopened.events().unwrap_or_else(|error| panic!("{error}"))),
+            whole
+        );
+    }
+
+    fn ok<T>(result: Result<T, AgentError>) -> T {
+        result.unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    fn sealed_log(path: &Path) -> EventLog {
+        let log = ok(EventLog::create(
+            path.to_owned(),
+            vec![said("one"), said("two")],
+        ));
+        assert_eq!(
+            ok(log.rest(true, |_| true)),
+            Rested::Resting { sealed: true }
+        );
+        log
+    }
+
+    #[test]
+    fn a_sealed_history_reads_as_it_was_and_goes_on_in_the_plain_file() {
+        let folder = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = folder.path().join("events.jsonl");
+        let log = sealed_log(&path);
+        assert_eq!(texts(&log), ["one", "two"]);
+        ok(log.append(said("three")));
+        assert_eq!(texts(&log), ["one", "two", "three"]);
+        drop(log);
+        let log = ok(EventLog::open(path.clone()));
+        assert_eq!(texts(&log), ["one", "two", "three"]);
+        // Sealed again, the new frame follows the first.
+        assert_eq!(
+            ok(log.rest(true, |_| true)),
+            Rested::Resting { sealed: true }
+        );
+        ok(log.append(said("four")));
+        drop(log);
+        let log = ok(EventLog::open(path));
+        assert_eq!(texts(&log), ["one", "two", "three", "four"]);
+    }
+
+    #[test]
+    fn a_log_left_at_rest_opens_with_its_summary_and_reads_its_events_when_asked() {
+        let folder = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = folder.path().join("events.jsonl");
+        let log = ok(EventLog::create(path.clone(), vec![said("one")]));
+        let summary = log.summary();
+        assert_eq!(
+            ok(log.rest(false, |_| true)),
+            Rested::Resting { sealed: false }
+        );
+        drop(log);
+        let log = ok(EventLog::open_resting(path.clone()));
+        assert!(!log.is_loaded());
+        assert_eq!(log.summary(), summary);
+        let mut told = Vec::new();
+        drop(ok(log.watch(&mut |read, total| told.push((read, total)))));
+        assert!(log.is_loaded());
+        assert_eq!(told.last().map(|(read, total)| read == total), Some(true));
+        assert_eq!(texts(&log), ["one"]);
+    }
+
+    #[test]
+    fn a_log_changed_after_it_was_put_at_rest_is_read_whole() {
+        let folder = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = folder.path().join("events.jsonl");
+        let log = ok(EventLog::create(path.clone(), vec![said("one")]));
+        ok(log.rest(false, |_| true));
+        ok(log.append(said("two")));
+        drop(log);
+        let log = ok(EventLog::open_resting(path));
+        assert!(log.is_loaded());
+        assert_eq!(texts(&log), ["one", "two"]);
+    }
+
+    #[test]
+    fn a_log_watched_or_mid_turn_isnt_put_at_rest() {
+        let folder = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = folder.path().join("events.jsonl");
+        let log = ok(EventLog::create(path, vec![said("one")]));
+        assert_eq!(ok(log.rest(true, |_| false)), Rested::Busy);
+        let watching = ok(log.watch(&mut |_, _| {}));
+        assert_eq!(ok(log.rest(true, |_| true)), Rested::Busy);
+        drop(watching);
+        assert_eq!(
+            ok(log.rest(true, |_| true)),
+            Rested::Resting { sealed: true }
+        );
+    }
+
+    #[test]
+    fn a_seal_cut_short_before_the_plain_file_was_emptied_repeats_nothing() {
+        let folder = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = folder.path().join("events.jsonl");
+        let log = sealed_log(&path);
+        ok(log.append(said("three")));
+        ok(log.rest(true, |_| true));
+        drop(log);
+        // As if the second seal stopped after writing its frame.
+        let frame_text = {
+            let log = ok(EventLog::open(path.clone()));
+            let events = ok(log.events());
+            ok(encode(&events[2]))
+        };
+        std::fs::write(&path, &frame_text).unwrap_or_else(|e| panic!("{e}"));
+        let log = ok(EventLog::open(path));
+        assert_eq!(texts(&log), ["one", "two", "three"]);
+    }
+
+    #[test]
+    fn a_replace_cut_short_before_the_sealed_part_was_removed_keeps_the_new_history() {
+        let folder = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = folder.path().join("events.jsonl");
+        let log = sealed_log(&path);
+        let first = ok(log.events()).remove(0);
+        drop(log);
+        // As if a rewind to after the first message wrote the plain file
+        // and stopped.
+        std::fs::write(&path, ok(encode(&first))).unwrap_or_else(|e| panic!("{e}"));
+        let log = ok(EventLog::open(path));
+        assert_eq!(texts(&log), ["one"]);
+    }
+
+    #[test]
+    fn a_damaged_sealed_part_is_an_error() {
+        let folder = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = folder.path().join("events.jsonl");
+        drop(sealed_log(&path));
+        let sealed = sealed_path(&path);
+        let bytes = std::fs::read(&sealed).unwrap_or_else(|e| panic!("{e}"));
+        std::fs::write(&sealed, &bytes[..bytes.len() - 3]).unwrap_or_else(|e| panic!("{e}"));
+        assert!(matches!(
+            EventLog::open(path),
+            Err(AgentError::CorruptSealedHistory { .. })
+        ));
     }
 }

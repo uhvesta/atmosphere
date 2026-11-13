@@ -813,8 +813,7 @@ impl Playing<'_> {
         let Some(theirs) = event["id"].as_str().filter(|_| !ephemeral) else {
             return Ok(());
         };
-        self.links.events.push((ours, theirs.to_owned()));
-        self.links.save(&self.path)
+        self.links.link(&self.path, ours, theirs.to_owned())
     }
 
     /// Links Copilot's record of a message to ours: the turn's own, or one

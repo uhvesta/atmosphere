@@ -11,6 +11,7 @@ rust_library(
     deps = [
         "//apps/humata/daemon/workspace",
         "@crates//:rustix",
+        "@crates//:ruzstd",
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:thiserror",

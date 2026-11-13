@@ -56,6 +56,10 @@ const BOARD_CHANGES_KEPT: u32 = 2_000;
 const AUTO_DELETE: &str = "storage.auto_delete";
 const DAYS: &str = "storage.days";
 const AUTO_CLEANED: &str = "storage.auto_cleaned_unix_ms";
+/// When old histories were last sealed, while nothing is auto-deleted.
+const AUTO_SEALED: &str = "storage.auto_sealed_unix_ms";
+/// How long a session is idle before its history is sealed.
+const SEAL_IDLE_DAYS: i64 = 3;
 /// Days an archived session is kept, once auto-delete is on.
 const DEFAULT_DAYS: u32 = 45;
 
@@ -191,12 +195,15 @@ impl Daemon {
 
     async fn clean_up_if_due(&self) -> Result<(), DaemonError> {
         let settings = self.storage_settings()?;
-        if !settings.auto_delete {
-            return Ok(());
-        }
+        let key = if settings.auto_delete {
+            AUTO_CLEANED
+        } else {
+            // Old histories are sealed every day all the same.
+            AUTO_SEALED
+        };
         let last: i64 = self
             .store
-            .setting(AUTO_CLEANED)?
+            .setting(key)?
             .and_then(|last| last.parse().ok())
             .unwrap_or(0);
         if now_unix_ms() - last < DAY_MS {
@@ -211,17 +218,21 @@ impl Daemon {
         if working {
             return Ok(());
         }
-        match self.start_cleanup(pb::CleanUpStorage {
-            delete_archived_after_days: settings.days,
-            compact: true,
-            ..Default::default()
-        }) {
+        let clean = if settings.auto_delete {
+            pb::CleanUpStorage {
+                delete_archived_after_days: settings.days,
+                compact: true,
+                ..Default::default()
+            }
+        } else {
+            pb::CleanUpStorage::default()
+        };
+        match self.start_cleanup(clean) {
             // One the person started counts.
             Ok(()) | Err(DaemonError::CleanupRunning) => {}
             Err(error) => return Err(error),
         }
-        self.store
-            .set_setting(AUTO_CLEANED, &now_unix_ms().to_string())?;
+        self.store.set_setting(key, &now_unix_ms().to_string())?;
         Ok(())
     }
 
@@ -258,6 +269,7 @@ impl Daemon {
         if clean.remove_unused_clones {
             self.remove_unused_clones().await?;
         }
+        self.seal_histories(&sessions).await?;
         if !clean.compact {
             return Ok(());
         }
@@ -489,6 +501,34 @@ impl Daemon {
                     .is_some_and(|extension| extension == "git")
             })
             .collect()
+    }
+
+    /// Seals the histories of this Mac's sessions that are archived or idle
+    /// for [`SEAL_IDLE_DAYS`], and drops every idle one no one watches from
+    /// memory, which reads it again when it's opened.
+    async fn seal_histories(&self, sessions: &[pb::SessionInfo]) -> Result<(), DaemonError> {
+        let before = now_unix_ms() - SEAL_IDLE_DAYS * DAY_MS;
+        let seal: std::collections::HashSet<String> = sessions
+            .iter()
+            .filter(|session| session.host.is_empty())
+            .filter(|session| session.archived || session.last_active_unix_ms < before)
+            .map(|session| session.id.clone())
+            .collect();
+        let step = "Sealing old histories";
+        self.step(step, 0, 0);
+        let me = self.me.clone();
+        let report = Arc::new(move |done: usize, total: usize| {
+            if let Some(daemon) = me.upgrade() {
+                daemon.step(step, done, total);
+            }
+        });
+        self.local
+            .rest(&seal, report)
+            .await
+            .map_err(|source| DaemonError::Seal {
+                source: Box::new(source),
+            })?;
+        Ok(())
     }
 
     fn step(&self, step: &str, done: usize, total: usize) {
