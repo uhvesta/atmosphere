@@ -43,7 +43,7 @@ final class DocsFeatureTests: XCTestCase {
         }
         XCTAssertEqual(store.state.files.map(\.path), ["notes.txt", "plan.md"])
         await store.receive(\.read) {
-            $0.contents = FileContents(path: "plan.md", text: self.plan)
+            $0.show(FileContents(path: "plan.md", text: self.plan))
         }
         XCTAssertEqual(store.state.lines?.first, "# Plan")
     }

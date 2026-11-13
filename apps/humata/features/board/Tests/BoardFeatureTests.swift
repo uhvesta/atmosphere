@@ -330,11 +330,30 @@ final class BoardFeatureTests: XCTestCase {
             \.destination.item.binding.draft,
             ItemFeature.Draft(title: "form", spec: "# Fields\n- email", previewing: true))
         await store.send(\.destination.item.saveTapped)
-        await store.receive(\.destination.item.updated)
+        await store.receive(\.destination.item.saved)
 
         XCTAssertNil(store.state.destination?.item?.draft)
         let items = try await board.daemon.client.items(board.project.id)
         XCTAssertEqual(items.first { $0.id == board.subtask.id }?.spec, "# Fields\n- email")
+    }
+
+    func testPickingAPriorityWhileEditingKeepsTheDraft() async throws {
+        let board = try await board()
+        var page = ItemFeature.State(
+            project: board.project, item: board.task, parent: nil, subtasks: [], sessions: [])
+        page.draft = ItemFeature.Draft(title: "login page", spec: "half written")
+        let store = TestStore(initialState: page) {
+            ItemFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.priorityPicked(.high))
+        await store.receive(\.updated)
+
+        XCTAssertEqual(store.state.item.priority, .high)
+        XCTAssertEqual(store.state.draft?.spec, "half written")
     }
 
     func testAnEmptyTitleIsNotSaved() async throws {

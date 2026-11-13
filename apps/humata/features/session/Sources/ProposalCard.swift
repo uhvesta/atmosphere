@@ -39,7 +39,7 @@ package struct ProposalCard: View {
                 .font(.headline)
                 .textSelection(.enabled)
             if let current = proposal.currentSpec, !proposal.spec.isEmpty {
-                ChangeView(change: .between(current, proposal.spec))
+                ChangeView(change: .cachedBetween(current, proposal.spec))
             } else if !proposal.spec.isEmpty {
                 Text(proposal.spec)
                     .font(.callout)

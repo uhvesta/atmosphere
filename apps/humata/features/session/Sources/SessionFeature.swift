@@ -206,8 +206,10 @@ package struct SessionFeature {
             session.projectID != nil && !session.planning && !session.archived
         }
 
-        /// Whether a turn has started and not yet ended.
-        package var isWorking: Bool {
+        /// Whether a turn has started and not yet ended. Kept, as views
+        /// read it on every key typed.
+        package private(set) var isWorking = false
+        private static func working(_ events: IdentifiedArrayOf<SessionEvent>) -> Bool {
             for event in events.reversed() {
                 switch event.kind {
                 case .turnStarted: return true
@@ -221,6 +223,9 @@ package struct SessionFeature {
         /// Works out from the events what the chat shows, so views read it
         /// instead of working it out again.
         private mutating func derive() {
+            isWorking = Self.working(log)
+            lastMessage = Self.lastMessage(log)
+            lastTurnFailed = Self.failed(log)
             usage = Usage.total(log)
             // A request waits until it's answered or its turn ends.
             var waiting: [SessionEvent] = []
@@ -275,7 +280,8 @@ package struct SessionFeature {
         }
 
         /// The person's last message, to send again after a failed turn.
-        package var lastMessage: String? {
+        package private(set) var lastMessage: String?
+        private static func lastMessage(_ events: IdentifiedArrayOf<SessionEvent>) -> String? {
             for event in events.reversed() {
                 if case .userMessage(let text, _) = event.kind { return text }
             }
@@ -283,7 +289,8 @@ package struct SessionFeature {
         }
 
         /// Whether the last turn failed and nothing has started since.
-        package var lastTurnFailed: Bool {
+        package private(set) var lastTurnFailed = false
+        private static func failed(_ events: IdentifiedArrayOf<SessionEvent>) -> Bool {
             for event in events.reversed() {
                 switch event.kind {
                 case .failed: return true
@@ -339,9 +346,6 @@ package struct SessionFeature {
                 case .assistantDelta(let text):
                     if streamed.insert(event.id).inserted { streaming += text }
                     continue
-                case .assistantMessage, .turnEnded:
-                    streaming = ""
-                    streamed = []
                 default: break
                 }
                 if let known = log[id: event.id] {
@@ -351,6 +355,20 @@ package struct SessionFeature {
                 } else {
                     log.append(event)
                     added.append(event)
+                    // Only a reply that's new ends the one being written: a
+                    // history sent again holds the replies before it.
+                    switch event.kind {
+                    case .assistantMessage, .turnEnded:
+                        streaming = ""
+                        streamed = []
+                    default: break
+                    }
+                }
+                // Code may have changed off the Review tab: it reads again
+                // when next shown.
+                switch event.kind {
+                case .toolCompleted, .turnEnded: review.stale = true
+                default: break
                 }
             }
             guard replaced || !added.isEmpty else { return }
@@ -390,6 +408,8 @@ package struct SessionFeature {
         case imagesAdded([URL])
         /// An image pasted into the box.
         case imagePasted(Data)
+        /// Paste Image was picked with no image on the clipboard.
+        case noImageToPaste
         /// An image in the box is ready to send, or couldn't be read.
         case imagePrepared(id: String, Result<PreparedImage, ImagePrepError>)
         case removeImageTapped(String)
@@ -663,6 +683,8 @@ package struct SessionFeature {
                 return state.terminals.listed ? .send(.terminals(.newTapped)) : .none
 
             case .tabPicked(let tab):
+                // What was typed in a terminal may have changed the code.
+                if state.tab == .terminal, tab != .terminal { state.review.stale = true }
                 state.tab = tab
                 switch tab {
                 // Review and Files read again as their views appear.
@@ -781,6 +803,12 @@ package struct SessionFeature {
                             await send(.imagePrepared(id: id, prepared))
                         }
                     })
+
+            case .noImageToPaste:
+                state.alert = Self.alert(
+                    "The clipboard has no image. Copy one, or take a screenshot to the clipboard with ⌃⇧⌘4, "
+                        + "then paste again.")
+                return .none
 
             case .imagePasted(let data):
                 guard state.takesImages else { return Self.refuseImages(&state) }

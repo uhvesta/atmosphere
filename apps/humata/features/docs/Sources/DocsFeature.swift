@@ -49,7 +49,11 @@ package struct DocsFeature {
         package var truncated = false
         package var selected: String?
         /// The selected file, once it's read.
-        package var contents: FileContents?
+        /// The selected file as read; set through `show`, which splits it
+        /// into lines once.
+        package private(set) var contents: FileContents?
+        /// The selected file's lines, once it's read and is text.
+        package private(set) var lines: [String]?
         /// Shows Markdown as it reads; otherwise its source.
         package var rendered = true
         package var picked: Picked?
@@ -67,12 +71,15 @@ package struct DocsFeature {
             files.first { $0.path == selected }?.isMarkdown ?? false
         }
 
-        /// The selected file's lines, once it's read and is text.
-        package var lines: [String]? {
-            guard let contents, contents.path == selected, let text = contents.text else { return nil }
+        package mutating func show(_ contents: FileContents?) {
+            self.contents = contents
+            guard let contents, let text = contents.text else {
+                lines = nil
+                return
+            }
             var lines = text.components(separatedBy: "\n")
             if lines.last == "" { lines.removeLast() }
-            return lines
+            self.lines = lines
         }
 
         /// The drafts as the one message they're sent as: each quote, where
@@ -158,13 +165,13 @@ package struct DocsFeature {
                 // The first Markdown file, as the chat's documents are most
                 // likely those.
                 state.selected = (files.files.first(where: \.isMarkdown) ?? files.files.first)?.path
-                state.contents = nil
+                state.show(nil)
                 state.picked = nil
                 return read(state)
 
             case .read(let contents):
                 guard contents.path == state.selected else { return .none }
-                state.contents = contents
+                state.show(contents)
                 return .none
 
             case .failed(let message):
@@ -180,7 +187,7 @@ package struct DocsFeature {
             case .fileSelected(let path):
                 guard state.selected != path else { return .none }
                 state.selected = path
-                state.contents = nil
+                state.show(nil)
                 state.picked = nil
                 return read(state)
 

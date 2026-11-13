@@ -78,6 +78,39 @@ final class SessionFeatureTests: XCTestCase {
         await watching.cancel()
     }
 
+    func testTheReviewIsReadAgainWhenATurnEndedWhileAnotherTabWasShown() async throws {
+        let daemon = InMemoryDaemon { text in [.write(path: "\(text).txt", contents: text)] }
+        let project = try await daemon.client.createProject("Humata", [Repository(path: "/code/humata")], "")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, approvalMode: .allowEverything, projectID: project.id))
+        try await daemon.client.send(session.id, "one", .enqueue)
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        let watching = await store.send(.task)
+        await store.send(.tabPicked(.review))
+        await store.send(.review(.appeared))
+        await store.receive(\.review.loaded)
+        await store.send(.tabPicked(.chat))
+
+        try await daemon.client.send(session.id, "two", .enqueue)
+        // Until the second turn has ended, on the Chat tab.
+        for _ in 0..<100
+        where store.state.events.filter({ if case .turnEnded = $0.kind { true } else { false } }).count < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(store.state.review.files.map(\.path), ["one.txt"])
+        await store.send(.tabPicked(.review))
+        await store.send(.review(.appeared))
+        await store.receive(\.review.loaded, timeout: .seconds(1))
+        XCTAssertEqual(store.state.review.files.map(\.path), ["one.txt", "two.txt"])
+        await watching.cancel()
+    }
+
     func testABlankMessageIsNotSent() async throws {
         let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
         var state = SessionFeature.State(session: session)
@@ -978,6 +1011,26 @@ final class SessionFeatureTests: XCTestCase {
         await store.send(.received(event("e5", .userMessage("hello"))))
         await store.send(.received(event("e6", .turnStarted)))
         XCTAssertFalse(store.state.isWaiting)
+    }
+
+    func testAHistorySentAgainInTwoBatchesKeepsTheReplyBeingWritten() async {
+        let store = store()
+        let before = [
+            event("e1", .userMessage("hi")),
+            event("e2", .turnStarted),
+            event("e3", .assistantMessage("Hello.")),
+            event("e4", .turnEnded(aborted: false)),
+            event("e5", .userMessage("more")),
+            event("e6", .turnStarted),
+        ]
+        await store.send(.receivedAll(before + [event("d1", .assistantDelta("Writ"))]))
+        XCTAssertEqual(store.state.streaming, "Writ")
+        // After a reconnect: the older replies come first, then the part.
+        await store.send(.receivedAll(Array(before.prefix(4))))
+        await store.send(.receivedAll(Array(before.suffix(2)) + [event("d1", .assistantDelta("Writ"))]))
+        XCTAssertEqual(store.state.streaming, "Writ")
+        await store.send(.received(event("d2", .assistantDelta("ing"))))
+        XCTAssertEqual(store.state.streaming, "Writing")
     }
 
     func testEventsTakenTogetherShowTheSameChatAsOneByOne() async {

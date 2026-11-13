@@ -7,7 +7,7 @@
 //! On disk, each session is a folder under `<root>/sessions/<id>` with
 //! `session.json` (its [`SessionRecord`]) and `events.jsonl`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -135,9 +135,15 @@ pub struct Turn {
     workspaces: Option<Arc<Workspaces>>,
     text: String,
     images: Vec<PathBuf>,
+    /// Calls running of tools that only read, whose end saves nothing.
+    reading: Mutex<HashSet<String>>,
 }
 
 impl Turn {
+    fn lock_reading(&self) -> MutexGuard<'_, HashSet<String>> {
+        self.reading.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// The message the turn replies to.
     pub fn text(&self) -> &str {
         &self.text
@@ -198,10 +204,19 @@ impl Turn {
     pub fn emit(&self, kind: EventKind) -> Result<Event, AgentError> {
         // A checkpoint after each change, and where the agent's context
         // is cut, so a rewind to there has the files as they were.
-        let saving = matches!(
-            kind,
-            EventKind::ToolCompleted { success: true, .. } | EventKind::Compacted
-        );
+        let saving = match &kind {
+            EventKind::ToolStarted { call_id, tool, .. } => {
+                if reads_only(tool) {
+                    self.lock_reading().insert(call_id.clone());
+                }
+                false
+            }
+            EventKind::ToolCompleted {
+                call_id, success, ..
+            } => !self.lock_reading().remove(call_id) && *success,
+            EventKind::Compacted => true,
+            _ => false,
+        };
         let event = self.session.log.append(Event::now(kind))?;
         if saving {
             save_soon(&self.session, self.workspaces.clone());
@@ -643,6 +658,7 @@ async fn drive<R: Runner>(
                         .iter()
                         .map(|name| crate::images::folder(&session.dir).join(name))
                         .collect(),
+                    reading: Mutex::default(),
                 })
                 .await
                 .map_err(|error| describe(&error)),
@@ -1560,6 +1576,34 @@ async fn prepare(session: &Session, workspaces: Option<&Workspaces>) -> Result<(
     Ok(())
 }
 
+/// Whether the tool named `tool` only reads, whatever backend's it is, so
+/// the code needn't be saved after it.
+fn reads_only(tool: &str) -> bool {
+    const READING: &[&str] = &[
+        // Claude Code's.
+        "Read",
+        "Grep",
+        "Glob",
+        "LS",
+        "WebFetch",
+        "WebSearch",
+        "TodoWrite",
+        "NotebookRead",
+        // Copilot's.
+        "view",
+        "grep",
+        "glob",
+        "web_fetch",
+        "report_intent",
+        "think",
+        // The local model's.
+        "read_file",
+        "list_folder",
+        "read_skill",
+    ];
+    READING.contains(&tool)
+}
+
 fn checkpoints(events: &[Event]) -> usize {
     events
         .iter()
@@ -1582,7 +1626,7 @@ async fn checkpoint(
     let _capturing = session.capturing.lock().await;
     // The checkpoint has whatever a save still waiting would have.
     session.unsaved.store(false, Ordering::SeqCst);
-    let turn = checkpoints(&session.log.events());
+    let turn = session.log.summary().checkpoints;
     workspaces
         .snapshot(session.id.as_str(), turn, &checkouts)
         .await
@@ -1608,17 +1652,19 @@ fn save_soon(session: &Arc<Session>, workspaces: Option<Arc<Workspaces>>) {
             return;
         }
         let checkouts = session.lock().record.checkouts.clone();
-        let saved = session
-            .log
-            .events()
-            .iter()
-            .filter(|event| matches!(event.kind, EventKind::Saved { .. }))
-            .count();
+        let summary = session.log.summary();
         match workspaces
-            .save(session.id.as_str(), saved, &checkouts)
+            .save(
+                session.id.as_str(),
+                summary.saves,
+                &checkouts,
+                &summary.code,
+            )
             .await
         {
-            Ok(snapshots) => session.note(EventKind::Saved { snapshots }),
+            Ok(Some(snapshots)) => session.note(EventKind::Saved { snapshots }),
+            // Nothing changed since the last save: there's nothing to keep.
+            Ok(None) => {}
             // The turn's end still checkpoints the code; a save that
             // couldn't be taken only loses the mid-turn copy.
             Err(source) => eprintln!(

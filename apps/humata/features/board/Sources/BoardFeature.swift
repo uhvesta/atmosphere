@@ -525,6 +525,8 @@ package struct ItemFeature {
         case statusPicked(ItemStatus)
         case priorityPicked(Priority)
         case updated(Item)
+        /// The draft's save answered: it closes.
+        case saved(Item)
         case failed(String)
         case sessionTapped(Session.ID)
         case startSessionTapped
@@ -630,7 +632,12 @@ package struct ItemFeature {
                 state.saving = true
                 // The spec only when it changed, so a rename reaches no agent.
                 let spec = draft.spec == state.item.spec ? nil : draft.spec
-                return update(state.item.id, ItemUpdate(title: title, spec: spec))
+                let id = state.item.id
+                return .run { send in
+                    await send(.saved(try await daemon.updateItem(id, ItemUpdate(title: title, spec: spec))))
+                } catch: { error, send in
+                    await send(.failed(error.localizedDescription))
+                }
 
             case .statusPicked(let status):
                 guard status != state.item.fields.status else { return .none }
@@ -675,6 +682,12 @@ package struct ItemFeature {
                 return update(state.item.id, ItemUpdate(priority: priority))
 
             case .updated(let item):
+                // A priority or status picked while editing keeps the draft.
+                state.item = item
+                state.comments.title = item.title
+                return .send(.delegate(.changed))
+
+            case .saved(let item):
                 state.item = item
                 state.comments.title = item.title
                 state.draft = nil

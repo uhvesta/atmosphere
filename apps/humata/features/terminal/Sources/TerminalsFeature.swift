@@ -146,6 +146,12 @@ package struct TerminalFeature {
         package var detached = false
         /// Why typing or attaching failed, and what to do about it.
         package var failure: String?
+        /// Keys typed while those before them are on their way, sent next
+        /// in one go, so they arrive in the order they were typed.
+        var pending = Data()
+        var sending = false
+        /// Reattaches since output last came, to wait longer each time.
+        var retries = 0
 
         package init(terminal: Terminal) {
             self.terminal = terminal
@@ -175,6 +181,9 @@ package struct TerminalFeature {
         case output(TerminalOutput)
         case detached(String?)
         case typed(Data)
+        /// The keys sent before reached the host.
+        case sent
+        case typingFailed(String)
         case resized(TerminalSize)
         case failed(String)
     }
@@ -191,6 +200,7 @@ package struct TerminalFeature {
             switch action {
             case .attach:
                 state.detached = false
+                state.failure = nil
                 let terminal = state.terminal
                 return .run { send in
                     for try await output in await daemon.attachTerminal(terminal) {
@@ -207,10 +217,16 @@ package struct TerminalFeature {
                 }
 
             case .output(let output):
+                state.failure = nil
+                state.retries = 0
                 if output.replay {
-                    state.screen.data = output.data
-                    state.screen.start = 0
-                    state.screen.generation += 1
+                    // A reattach replays what's already drawn: it stays,
+                    // with no redraw.
+                    if output.data != state.screen.data {
+                        state.screen.data = output.data
+                        state.screen.start = 0
+                        state.screen.generation += 1
+                    }
                 } else {
                     state.screen.data.append(output.data)
                 }
@@ -226,20 +242,29 @@ package struct TerminalFeature {
                 guard !state.exited else { return .none }
                 state.detached = true
                 state.failure = reason
-                // Reattaching replays what was missed.
+                // Reattaching replays what was missed; a host that stays
+                // away is asked less often, up to every 30 seconds.
+                let wait = min(2 << min(state.retries, 4), 30)
+                state.retries += 1
                 return .run { send in
-                    try await clock.sleep(for: .seconds(2))
+                    try await clock.sleep(for: .seconds(wait))
                     await send(.attach)
                 }
 
             case .typed(let data):
                 guard !state.exited else { return .none }
-                let terminal = state.terminal
-                return .run { _ in
-                    try await daemon.typeInTerminal(terminal, data)
-                } catch: { error, send in
-                    await send(.failed(error.localizedDescription))
-                }
+                state.pending.append(data)
+                return send(&state)
+
+            case .sent:
+                state.sending = false
+                return send(&state)
+
+            case .typingFailed(let message):
+                state.sending = false
+                state.pending = Data()
+                state.failure = message
+                return .none
 
             case .resized(let size):
                 guard !state.exited else { return .none }
@@ -257,6 +282,20 @@ package struct TerminalFeature {
                 state.failure = message
                 return .none
             }
+        }
+    }
+
+    /// Sends the keys waiting, unless some are already on their way.
+    private func send(_ state: inout State) -> Effect<Action> {
+        guard !state.sending, !state.pending.isEmpty, !state.exited else { return .none }
+        state.sending = true
+        let (terminal, data) = (state.terminal, state.pending)
+        state.pending = Data()
+        return .run { send in
+            try await daemon.typeInTerminal(terminal, data)
+            await send(.sent)
+        } catch: { error, send in
+            await send(.typingFailed(error.localizedDescription))
         }
     }
 }

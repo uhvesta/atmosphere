@@ -4,22 +4,38 @@ import Foundation
 /// chip so what's typed around it stays easy to read; it's sent after the
 /// typed text.
 package struct Paste: Identifiable, Hashable, Codable, Sendable {
-    package var id: String
-    package var text: String
+    package let id: String
+    package let text: String
+    /// How many lines it has: counted once, as a paste can be megabytes.
+    package let lineCount: Int
 
     package init(id: String, text: String) {
         self.id = id
         self.text = text
+        lineCount = Self.lines(in: text)
+    }
+
+    private enum CodingKeys: CodingKey { case id, text }
+
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(String.self, forKey: .id), text: try container.decode(String.self, forKey: .text))
+    }
+
+    package func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(text, forKey: .text)
+    }
+
+    private static func lines(in text: String) -> Int {
+        text.utf8.reduce(1) { $1 == UInt8(ascii: "\n") ? $0 + 1 : $0 }
     }
 
     /// Text at least this long, in characters or lines, becomes a chip.
     static let characters = 1_000
     static let lines = 20
-
-    /// How many lines it has.
-    package var lineCount: Int {
-        text.reduce(1) { $1 == "\n" ? $0 + 1 : $0 }
-    }
 
     /// "Pasted 12 KB, 340 lines".
     package var label: String {
@@ -38,7 +54,7 @@ package struct Paste: Identifiable, Hashable, Codable, Sendable {
         let end = new.index(new.endIndex, offsetBy: -suffix)
         guard start < end else { return nil }
         let pasted = String(new[start..<end])
-        let isLong = pasted.count >= characters || pasted.reduce(1) { $1 == "\n" ? $0 + 1 : $0 } >= lines
+        let isLong = pasted.count >= characters || Self.lines(in: pasted) >= lines
         guard isLong else { return nil }
         var draft = new
         draft.removeSubrange(start..<end)

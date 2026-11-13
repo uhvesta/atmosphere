@@ -451,10 +451,10 @@ private struct RenderedMarkdown: View {
     var body: some View {
         let lines = file.hunks.flatMap(\.lines).filter { $0.new != nil }
         let added = Set(lines.filter { $0.kind == .added }.compactMap(\.new))
-        let blocks = MarkdownBlock.blocks(lines.map(\.text))
+        let blocks = MarkdownBlock.cached(lines.map(\.text))
         let threads = store.state.shownThreads(on: ref)
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+            LazyVStack(alignment: .leading, spacing: 12) {
                 ForEach(blocks) { block in
                     MarkdownBlockView(block: block)
                         .padding(.leading, 10)
@@ -502,11 +502,11 @@ package struct MarkdownBlockView: View {
     package var body: some View {
         switch block.kind {
         case .heading(let level):
-            Text(Self.inline(block.text))
+            Text(block.inline)
                 .font(level == 1 ? .title : level == 2 ? .title2 : .title3)
                 .bold()
         case .paragraph:
-            Text(Self.inline(block.text))
+            Text(block.inline)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .code:
             Text(block.text)
@@ -516,16 +516,6 @@ package struct MarkdownBlockView: View {
                 .background(.fill.quaternary, in: .rect(cornerRadius: 6))
         }
     }
-
-    private static func inline(_ text: String) -> AttributedString {
-        inlineMarkdown(text)
-    }
-}
-
-/// `text` with its inline Markdown, such as emphasis and code, rendered.
-private func inlineMarkdown(_ text: String) -> AttributedString {
-    let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-    return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
 }
 
 /// A thread: where it is, its comments, the agent's answers, a reply and
@@ -643,7 +633,7 @@ private struct CommentRow: View {
                         .controlSize(.small)
                 }
             }
-            Text(inlineMarkdown(comment.text))
+            Text(MarkdownBlock.inlineMarkdown(comment.text))
                 .textSelection(.enabled)
         }
     }

@@ -23,6 +23,9 @@ const REWATCH_FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(1
 const REWATCH_LONGEST_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// How long a list waits for each host before showing it as it last was.
 const HOST_LIST_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+/// The least time between copies off a host made for saves part way
+/// through a turn.
+const SAVE_BACKUP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
 mod approvals;
 pub use approvals::Connection;
@@ -1104,6 +1107,10 @@ impl Daemon {
             // only those not sent before. A history drops the parts of a
             // reply once it is whole, so it can't be skipped by count.
             let mut sent = HashSet::new();
+            // Saves part way through a turn come after each change; their
+            // copies off the host are made at most once a minute, and the
+            // turn's end makes one anyway.
+            let mut backed_up_save: Option<std::time::Instant> = None;
             let mut keep = |events: &Vec<pb::SessionEvent>| {
                 if events.len() <= kept {
                     return;
@@ -1173,7 +1180,11 @@ impl Daemon {
                         keep(&events);
                     }
                     let replayed = events.len() <= known;
-                    if !replayed && matches!(event.kind, Some(pb::session_event::Kind::Saved(_))) {
+                    if !replayed
+                        && matches!(event.kind, Some(pb::session_event::Kind::Saved(_)))
+                        && backed_up_save.is_none_or(|at| at.elapsed() >= SAVE_BACKUP_EVERY)
+                    {
+                        backed_up_save = Some(std::time::Instant::now());
                         if let Some(daemon) = daemon.upgrade() {
                             daemon.back_up_soon(&host, &session, None);
                         }

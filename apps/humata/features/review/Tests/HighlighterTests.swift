@@ -51,7 +51,7 @@ final class MarkdownBlockTests: XCTestCase {
             [
                 MarkdownBlock(kind: .heading(level: 1), startLine: 1, endLine: 1, text: "Title"),
                 MarkdownBlock(kind: .paragraph, startLine: 3, endLine: 4, text: "One paragraph\nover two lines."),
-                MarkdownBlock(kind: .code, startLine: 6, endLine: 8, text: "let x = 1"),
+                MarkdownBlock(kind: .code, startLine: 6, endLine: 8, text: "let x = 1", language: "swift"),
                 MarkdownBlock(kind: .paragraph, startLine: 9, endLine: 9, text: "Last."),
             ])
     }

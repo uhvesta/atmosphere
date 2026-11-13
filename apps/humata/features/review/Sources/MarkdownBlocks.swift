@@ -16,21 +16,56 @@ package struct MarkdownBlock: Hashable, Sendable, Identifiable {
     package var endLine: Int
     /// The block's source, without a heading's marks or code's fences.
     package var text: String
+    /// A fenced block's language, as its opening fence names it, such as
+    /// "swift" or "mermaid"; empty when it names none.
+    package var language: String
+    /// A heading's or paragraph's text with its inline Markdown rendered,
+    /// worked out once when the block is made, not on every draw.
+    package let inline: AttributedString
 
     package var id: Int { startLine }
 
-    package init(kind: Kind, startLine: Int, endLine: Int, text: String) {
+    package init(kind: Kind, startLine: Int, endLine: Int, text: String, language: String = "") {
         self.kind = kind
         self.startLine = startLine
         self.endLine = endLine
         self.text = text
+        self.language = language
+        inline = kind == .code ? AttributedString(text) : Self.inlineMarkdown(text)
     }
+
+    /// `text` with its inline Markdown, such as emphasis and code, rendered.
+    package static func inlineMarkdown(_ text: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+    }
+
+    /// `lines` split into blocks, as `blocks` does, kept for the texts
+    /// shown lately: a view that draws again, on a click or a key, doesn't
+    /// parse its file again.
+    package static func cached(_ lines: [String]) -> [MarkdownBlock] {
+        let key = lines.joined(separator: "\n")
+        if let blocks = cache.blocks(for: key) { return blocks }
+        let made = Self.blocks(lines)
+        cache.keep(made, for: key)
+        return made
+    }
+
+    /// The same, for `text` whole.
+    package static func cached(_ text: String) -> [MarkdownBlock] {
+        if let blocks = cache.blocks(for: text) { return blocks }
+        let made = Self.blocks(text.components(separatedBy: "\n"))
+        cache.keep(made, for: text)
+        return made
+    }
+
+    private static let cache = BlockCache()
 
     /// `lines` split into blocks; blank lines separate them.
     package static func blocks(_ lines: [String]) -> [MarkdownBlock] {
         var blocks: [MarkdownBlock] = []
         var paragraph: (start: Int, lines: [String])?
-        var fence: (start: Int, marker: String, lines: [String])?
+        var fence: (start: Int, marker: String, language: String, lines: [String])?
         func endParagraph(at line: Int) {
             guard let open = paragraph else { return }
             blocks.append(
@@ -47,14 +82,15 @@ package struct MarkdownBlock: Hashable, Sendable, Identifiable {
                     blocks.append(
                         MarkdownBlock(
                             kind: .code, startLine: open.start, endLine: number,
-                            text: open.lines.joined(separator: "\n")))
+                            text: open.lines.joined(separator: "\n"), language: open.language))
                     fence = nil
                 } else {
                     fence?.lines.append(line)
                 }
             } else if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
                 endParagraph(at: number)
-                fence = (number, String(trimmed.prefix(3)), [])
+                let language = trimmed.dropFirst(3).prefix { !$0.isWhitespace && $0 != "{" }
+                fence = (number, String(trimmed.prefix(3)), language.lowercased(), [])
             } else if trimmed.isEmpty {
                 endParagraph(at: number)
             } else if let level = heading(trimmed) {
@@ -73,7 +109,7 @@ package struct MarkdownBlock: Hashable, Sendable, Identifiable {
             blocks.append(
                 MarkdownBlock(
                     kind: .code, startLine: open.start, endLine: lines.count,
-                    text: open.lines.joined(separator: "\n")))
+                    text: open.lines.joined(separator: "\n"), language: open.language))
         }
         endParagraph(at: lines.count + 1)
         return blocks
@@ -84,5 +120,30 @@ package struct MarkdownBlock: Hashable, Sendable, Identifiable {
         guard (1...6).contains(level) else { return nil }
         let rest = line.dropFirst(level)
         return rest.isEmpty || rest.first == " " ? level : nil
+    }
+}
+
+/// The blocks of the few texts shown last, by their text.
+private final class BlockCache: @unchecked Sendable {
+    /// Enough for the files and specs on screen at once.
+    private static let kept = 12
+    private let lock = NSLock()
+    private var entries: [(key: String, blocks: [MarkdownBlock])] = []
+
+    func blocks(for key: String) -> [MarkdownBlock]? {
+        lock.withLock {
+            guard let index = entries.firstIndex(where: { $0.key == key }) else { return nil }
+            let entry = entries.remove(at: index)
+            entries.append(entry)
+            return entry.blocks
+        }
+    }
+
+    func keep(_ blocks: [MarkdownBlock], for key: String) {
+        lock.withLock {
+            entries.removeAll { $0.key == key }
+            entries.append((key, blocks))
+            if entries.count > Self.kept { entries.removeFirst(entries.count - Self.kept) }
+        }
     }
 }

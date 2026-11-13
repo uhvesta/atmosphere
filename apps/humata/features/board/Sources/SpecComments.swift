@@ -136,7 +136,7 @@ struct SpecCommentsView: View {
     @State private var target: Session.ID?
 
     var body: some View {
-        let blocks = MarkdownBlock.blocks(spec.components(separatedBy: "\n"))
+        let blocks = MarkdownBlock.cached(spec)
         ForEach(blocks) { block in
             VStack(alignment: .leading, spacing: 6) {
                 Button {

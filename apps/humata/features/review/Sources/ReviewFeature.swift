@@ -58,9 +58,9 @@ package struct ReviewFeature {
         /// Replies being written, by thread.
         package var replies: [ReviewThread.ID: String] = [:]
         package var loading = false
-        /// The turns there had been when the changes were last read; nil
-        /// before they first are.
-        var loadedAt: Int?
+        /// The changes may have moved since they were last read, or never
+        /// were: they're read again when the review next appears.
+        package var stale = true
         /// Numbers each load, so only the latest one's changes show: effects
         /// can start out of the order they were asked in.
         var request = 0
@@ -184,7 +184,7 @@ package struct ReviewFeature {
                 return load(&state)
 
             case .appeared:
-                guard state.loadedAt != state.turns else { return .none }
+                guard state.stale else { return .none }
                 return load(&state)
 
             // A where clause holds for only the pattern before it, so each has one.
@@ -194,11 +194,11 @@ package struct ReviewFeature {
                 return .none
 
             case .loadFailed(_, let message):
+                state.stale = true
                 return .send(.failed(message))
 
             case .loaded(_, let repositories, let threads):
                 state.loading = false
-                state.loadedAt = state.turns
                 state.repositories = repositories
                 state.threads = IdentifiedArray(uniqueElements: threads)
                 if state.selected.map({ selected in !state.files.contains(selected) }) ?? true {
@@ -394,6 +394,8 @@ package struct ReviewFeature {
 
     private func load(_ state: inout State) -> Effect<Action> {
         state.loading = true
+        // A change during this read marks it stale again.
+        state.stale = false
         state.request += 1
         let (request, session) = (state.request, state.sessionID)
         let query = ChangesQuery(range: state.range, context: state.context)

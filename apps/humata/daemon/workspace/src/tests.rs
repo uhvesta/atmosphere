@@ -167,6 +167,40 @@ async fn changes_are_everything_since_the_copy_was_made_new_files_included() {
 }
 
 #[tokio::test]
+async fn a_save_with_nothing_changed_since_the_last_keeps_nothing() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let repository = repository(dir.path(), "app");
+    let workspaces = Workspaces::new(dir.path().join("worktrees"));
+    let checkouts = workspaces
+        .create("s", std::slice::from_ref(&repository), &[])
+        .await
+        .expect("created");
+    let base = workspaces
+        .snapshot("s", 0, &checkouts)
+        .await
+        .expect("snapshotted");
+
+    let unchanged = workspaces
+        .save("s", 0, &checkouts, &base)
+        .await
+        .expect("saved");
+    assert_eq!(unchanged, None);
+
+    std::fs::write(checkouts[0].path.join("NEW.md"), "added\n").expect("wrote");
+    let saved = workspaces
+        .save("s", 0, &checkouts, &base)
+        .await
+        .expect("saved")
+        .expect("a change is kept");
+    assert_ne!(saved[0].commit, base[0].commit);
+    let again = workspaces
+        .save("s", 1, &checkouts, &saved)
+        .await
+        .expect("saved");
+    assert_eq!(again, None);
+}
+
+#[tokio::test]
 async fn removing_a_copy_keeps_its_snapshots() {
     let dir = tempfile::tempdir().expect("a temporary folder");
     let repository = repository(dir.path(), "app");

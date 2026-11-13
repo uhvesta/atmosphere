@@ -147,7 +147,15 @@ impl Daemon {
             else {
                 continue;
             };
-            let events = history.events;
+            // Counted without the reply's streamed parts, which a later
+            // read may not hold once the reply has come whole.
+            let events: Vec<_> = history
+                .events
+                .into_iter()
+                .filter(|event| {
+                    !matches!(event.kind, Some(pb::session_event::Kind::AssistantDelta(_)))
+                })
+                .collect();
             if events.len() < from {
                 continue;
             }

@@ -180,8 +180,8 @@ private struct FileContentsView: View {
                 }
                 if rendered {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 12) {
-                            ForEach(MarkdownBlock.blocks(lines)) { block in
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(MarkdownBlock.cached(lines)) { block in
                                 MarkdownBlockView(block: block)
                             }
                         }

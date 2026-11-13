@@ -118,9 +118,9 @@ private struct RenderedFile: View {
     let lines: [String]
 
     var body: some View {
-        let blocks = MarkdownBlock.blocks(lines)
+        let blocks = MarkdownBlock.cached(lines)
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+            LazyVStack(alignment: .leading, spacing: 12) {
                 ForEach(blocks) { block in
                     MarkdownBlockView(block: block)
                         .padding(.leading, 10)

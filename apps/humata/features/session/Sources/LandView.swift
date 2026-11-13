@@ -28,10 +28,13 @@ struct LandView: View {
                 if store.landed == nil {
                     Button("Cancel") { store.send(.doneTapped) }
                         .keyboardShortcut(.cancelAction)
+                        .disabled(store.landing)
+                    // ⌘↩, so Return can start a new line of the message.
                     Button(store.openPullRequests ? "Land and Open Pull Requests" : "Land") {
                         store.send(.landTapped)
                     }
-                    .keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .buttonStyle(.borderedProminent)
                     .disabled(!store.canLand)
                 } else {
                     Button("Done") { store.send(.doneTapped) }
@@ -47,9 +50,13 @@ struct LandView: View {
         Form {
             TextField("Branch", text: $store.branch)
                 .help("A new branch in each repository the session changed")
-            TextField("Message", text: $store.message, axis: .vertical)
-                .lineLimit(3...8)
-                .help("The commit message; its first line titles the pull requests")
+            LabeledContent("Message") {
+                TextEditor(text: $store.message)
+                    .font(.body)
+                    .frame(minHeight: 60, maxHeight: 140)
+                    .accessibilityLabel("Message")
+            }
+            .help("The commit message; its first line titles the pull requests. ⌘↩ lands.")
             Toggle("Open pull requests on GitHub", isOn: $store.openPullRequests)
                 .help(
                     "Pushes each branch and opens a pull request for it, with This Mac's GitHub token. "

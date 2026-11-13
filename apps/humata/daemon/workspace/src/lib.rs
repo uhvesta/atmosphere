@@ -129,15 +129,44 @@ impl Workspaces {
     /// Saves each checkout as it is now, part way through a turn, as the
     /// session's `saved`th such save. These are kept apart from the turns'
     /// snapshots, so what a turn changed is still from one turn's end to the
-    /// next.
+    /// next. None when no checkout changed since `last`, the code as last
+    /// saved: nothing is committed then.
     pub async fn save(
         &self,
         session: &str,
         saved: usize,
         checkouts: &[Checkout],
-    ) -> Result<Vec<Snapshot>, WorkspaceError> {
-        self.take(session, &format!("saved/{saved}"), checkouts)
-            .await
+        last: &[Snapshot],
+    ) -> Result<Option<Vec<Snapshot>>, WorkspaceError> {
+        let label = format!("saved/{saved}");
+        let mut snapshots = Vec::with_capacity(checkouts.len());
+        let mut changed = false;
+        for (position, checkout) in checkouts.iter().enumerate() {
+            let before = last.iter().find(|snapshot| snapshot.name == checkout.name);
+            let (head, tree) = self.tree(&checkout.path).await?;
+            if let Some(before) = before
+                && before.head == head
+                && git(
+                    &checkout.path,
+                    &["rev-parse", &format!("{}^{{tree}}", before.commit)],
+                )
+                .await
+                .is_ok_and(|was| was.trim() == tree)
+            {
+                snapshots.push(before.clone());
+                continue;
+            }
+            changed = true;
+            let commit = commit(session, &checkout.path, &head, &tree).await?;
+            let name = format!("refs/humata/{session}/{label}/{position}");
+            git(&checkout.path, &["update-ref", &name, &commit]).await?;
+            snapshots.push(Snapshot {
+                name: checkout.name.clone(),
+                head,
+                commit,
+            });
+        }
+        Ok(changed.then_some(snapshots))
     }
 
     /// Saves each checkout as it is now as the session's `rewind`th rewind,
@@ -227,6 +256,14 @@ impl Workspaces {
         session: &str,
         path: &Path,
     ) -> Result<(String, String), WorkspaceError> {
+        let (head, tree) = self.tree(path).await?;
+        let commit = commit(session, path, &head, &tree).await?;
+        Ok((head, commit))
+    }
+
+    /// The HEAD of the worktree at `path`, and the tree of every file in it
+    /// that git doesn't ignore, written through an index of its own.
+    async fn tree(&self, path: &Path) -> Result<(String, String), WorkspaceError> {
         let head = git(path, &["rev-parse", "--verify", "HEAD"]).await?;
         let head = head.trim().to_owned();
         let index = self.root.join(format!(
@@ -244,18 +281,25 @@ impl Workspaces {
             }
             git_with_index(path, &index, &["add", "--all"]).await?;
             let tree = git_with_index(path, &index, &["write-tree"]).await?;
-            let message = format!("Humata snapshot of session {session}");
-            let commit = git(
-                path,
-                &["commit-tree", tree.trim(), "-p", &head, "-m", &message],
-            )
-            .await?;
-            Ok((head, commit.trim().to_owned()))
+            Ok((head, tree.trim().to_owned()))
         }
         .await;
         let _ = tokio::fs::remove_file(&index).await;
         captured
     }
+}
+
+/// Commits `tree` onto `head` in the repository at `path`, as a snapshot of
+/// `session`.
+async fn commit(
+    session: &str,
+    path: &Path,
+    head: &str,
+    tree: &str,
+) -> Result<String, WorkspaceError> {
+    let message = format!("Humata snapshot of session {session}");
+    let commit = git(path, &["commit-tree", tree, "-p", head, "-m", &message]).await?;
+    Ok(commit.trim().to_owned())
 }
 
 /// Deletes `session`'s snapshot refs and the branch its worktrees were made

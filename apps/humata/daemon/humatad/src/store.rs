@@ -360,6 +360,12 @@ const MIGRATIONS: &[&str] = &["
         effort TEXT NOT NULL,
         experimental INTEGER NOT NULL
     );
+", "
+    -- Sessions were indexed counting the reply's streamed parts, which a
+    -- history read later may not hold, so some were indexed at the wrong
+    -- place or no further: each is indexed again from its start.
+    DELETE FROM search_entries WHERE kind IN ('message', 'reply', 'tool_call', 'tool_output');
+    DELETE FROM search_sessions;
 "];
 
 /// What reverting a board change did.

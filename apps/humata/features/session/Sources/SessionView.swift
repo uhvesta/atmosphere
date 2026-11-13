@@ -620,9 +620,10 @@ struct PermissionCard: View {
                 Image(systemName: "hand.raised")
                 FullCommand(text: permission.summary)
                 Button("Deny") { answer(permission.requestID, false) }
+                // No Return shortcut: Return in the composer sends the
+                // message, and must never approve. ⇧⌘A and ⇧⌘D answer.
                 Button("Approve") { answer(permission.requestID, true) }
                     .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
             }
             .padding(8)
             .background(.orange.opacity(0.12), in: .rect(cornerRadius: 8))
@@ -696,6 +697,19 @@ private struct QueuedRow: View {
 
 /// The images sent with a message, as thumbnails, each read when it first
 /// shows.
+/// Thumbnails decoded once each, not on every draw of the chat.
+@MainActor
+private enum Thumbnails {
+    private static let cache = NSCache<NSData, NSImage>()
+
+    static func image(_ data: Data) -> NSImage? {
+        if let image = cache.object(forKey: data as NSData) { return image }
+        guard let image = NSImage(data: data) else { return nil }
+        cache.setObject(image, forKey: data as NSData)
+        return image
+    }
+}
+
 private struct SentImages: View {
     let names: [String]
     let thumbnails: [String: Data]
@@ -706,7 +720,7 @@ private struct SentImages: View {
             ForEach(names, id: \.self) { name in
                 Group {
                     if let data = thumbnails[name] {
-                        if let image = NSImage(data: data) {
+                        if let image = Thumbnails.image(data) {
                             Image(nsImage: image)
                                 .resizable()
                                 .scaledToFill()
@@ -744,7 +758,7 @@ private struct ImageChips: View {
                             if image.isPreparing {
                                 ProgressView().controlSize(.small)
                                     .help("Getting \(image.name) ready to send")
-                            } else if let data = image.thumbnail, let thumbnail = NSImage(data: data) {
+                            } else if let data = image.thumbnail, let thumbnail = Thumbnails.image(data) {
                                 Image(nsImage: thumbnail)
                                     .resizable()
                                     .scaledToFill()
@@ -1082,10 +1096,15 @@ private struct SessionComposer: View {
                 top
             } attach: {
                 Button("Choose Images…", systemImage: "photo") { choosing = true }
+                // Always on: the clipboard can change while the menu is
+                // closed, so it's read only when picked.
                 Button("Paste Image", systemImage: "doc.on.clipboard") {
-                    if let data = pastedImage { store.send(.imagePasted(data)) }
+                    if let data = pastedImage {
+                        store.send(.imagePasted(data))
+                    } else {
+                        store.send(.noImageToPaste)
+                    }
                 }
-                .disabled(NSPasteboard.general.availableType(from: [.png, .tiff]) == nil)
             }
         } else {
             ChatComposer(text: $store.draft, prompt: prompt, model: nil, send: sendButton) {

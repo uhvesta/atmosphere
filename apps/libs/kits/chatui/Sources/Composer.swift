@@ -225,6 +225,8 @@ public struct MessageField: View {
     @Binding var text: String
     let prompt: Text?
     @Environment(\.dynamicTypeSize) private var typeSize
+    /// Typing goes here as the chat appears, with no click first.
+    @FocusState private var focused: Bool
     let token: String?
     let removeToken: () -> Void
     let submit: () -> Void
@@ -256,6 +258,8 @@ public struct MessageField: View {
                 .textFieldStyle(.plain)
                 // At the largest text, three lines leave the thread room.
                 .lineLimit(typeSize.isAccessibilitySize ? 1...3 : 1...8)
+                .focused($focused)
+                .onAppear { focused = true }
                 .onSubmit(submit)
                 .overlay(alignment: .leading) {
                     // The mark keeps the field from showing its prompt.

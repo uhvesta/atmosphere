@@ -74,6 +74,24 @@ package struct ToolCall: Hashable, Sendable {
         }
 
         /// The lines going from `old` to `new` takes out and puts in.
+        /// The same as `between`, kept for the texts asked about lately, as
+        /// a card draws again with every change around it.
+        @MainActor
+        package static func cachedBetween(_ old: String, _ new: String) -> Change {
+            let key = "\(old)\u{0}\(new)" as NSString
+            if let kept = changes.object(forKey: key) { return kept.change }
+            let change = between(old, new)
+            changes.setObject(Kept(change: change), forKey: key)
+            return change
+        }
+
+        private final class Kept {
+            let change: Change
+            init(change: Change) { self.change = change }
+        }
+
+        @MainActor private static let changes = NSCache<NSString, Kept>()
+
         package static func between(_ old: String, _ new: String) -> Change {
             let old = old.isEmpty ? [] : old.components(separatedBy: "\n")
             let new = new.isEmpty ? [] : new.components(separatedBy: "\n")

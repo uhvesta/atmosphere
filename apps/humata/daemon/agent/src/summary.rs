@@ -1,6 +1,8 @@
 //! What a session's row shows, kept up to date as events come, so listing
 //! sessions doesn't read every session's whole history.
 
+use humata_workspace::Snapshot;
+
 use crate::event::{Event, EventKind, PermissionKind, SessionState};
 
 /// How much of the last message a row shows.
@@ -16,6 +18,11 @@ pub struct Summary {
     pub last_active_unix_ms: i64,
     /// The latest failure or reply, cut short.
     pub last_message: String,
+    /// Checkpoints taken at turns' ends, and saves part way through turns.
+    pub checkpoints: usize,
+    pub saves: usize,
+    /// The code as last checkpointed or saved; empty before it first is.
+    pub code: Vec<Snapshot>,
     /// The state as of the last turn's start or end.
     settled: SessionState,
     failed: bool,
@@ -37,6 +44,9 @@ impl Default for Summary {
             pending: Vec::new(),
             last_active_unix_ms: 0,
             last_message: String::new(),
+            checkpoints: 0,
+            saves: 0,
+            code: Vec::new(),
             settled: SessionState::Idle,
             failed: false,
             open: 0,
@@ -84,6 +94,14 @@ impl Summary {
                 self.last_message = cut(message);
             }
             EventKind::AssistantMessage { text } => self.last_message = cut(text),
+            EventKind::Checkpoint { snapshots } => {
+                self.checkpoints += 1;
+                self.code.clone_from(snapshots);
+            }
+            EventKind::Saved { snapshots } => {
+                self.saves += 1;
+                self.code.clone_from(snapshots);
+            }
             EventKind::TurnEnded { .. } => {
                 self.settled = if self.failed {
                     SessionState::Failed

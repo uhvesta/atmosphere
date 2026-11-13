@@ -36,7 +36,7 @@ final class TerminalsFeatureTests: XCTestCase {
         let attach = await store.send(.terminals(.element(id: id, action: .attach)))
         await store.receive(\.terminals)
         await store.send(.terminals(.element(id: id, action: .typed(Data("pwd\r".utf8)))))
-        await store.receive(\.terminals)
+        await store.receive(\.terminals[id: id].output)
         XCTAssertTrue(shown(store).contains(session.workingDirectory + "\r\n$ "), shown(store))
         await attach.cancel()
     }
@@ -72,8 +72,9 @@ final class TerminalsFeatureTests: XCTestCase {
         let attach = await store.send(.terminals(.element(id: id, action: .attach)))
         await store.receive(\.terminals)
         await store.send(.terminals(.element(id: id, action: .typed(Data("exit 3\r".utf8)))))
-        await store.receive(\.terminals)
-        await store.receive(\.terminals)
+        while store.state.current?.terminal.exitCode == nil {
+            await store.receive(\.terminals[id: id].output)
+        }
         XCTAssertEqual(store.state.current?.terminal.exitCode, 3)
         await attach.finish()
 
@@ -97,5 +98,46 @@ final class TerminalsFeatureTests: XCTestCase {
         await store.receive(\.terminals)
         XCTAssertTrue(store.state.current?.exited ?? false)
         XCTAssertFalse(store.state.current?.detached ?? true)
+    }
+
+    func testKeysTypedWhileEarlierOnesAreOnTheirWayArriveInOrder() async throws {
+        let daemon = InMemoryDaemon()
+        let terminal = try await daemon.client.openTerminal(HostPlace(), .standard)
+        let arrived = LockIsolated<[String]>([])
+        let store = TestStore(initialState: TerminalFeature.State(terminal: terminal)) {
+            TerminalFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.typeInTerminal = { _, data in
+                let keys = String(decoding: data, as: UTF8.self)
+                // The first is slow to arrive.
+                if keys == "a" { try await Task.sleep(for: .milliseconds(50)) }
+                arrived.withValue { $0.append(keys) }
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.typed(Data("a".utf8)))
+        await store.send(.typed(Data("b".utf8)))
+        await store.send(.typed(Data("c".utf8)))
+        await store.receive(\.sent, timeout: .seconds(1))
+        await store.receive(\.sent, timeout: .seconds(1))
+
+        XCTAssertEqual(arrived.value, ["a", "bc"])
+    }
+
+    func testAReattachThatReplaysWhatsDrawnDoesntRedraw() async throws {
+        let daemon = InMemoryDaemon()
+        let terminal = try await daemon.client.openTerminal(HostPlace(), .standard)
+        let store = TestStore(initialState: TerminalFeature.State(terminal: terminal)) {
+            TerminalFeature()
+        }
+        store.exhaustivity = .off
+
+        await store.send(.output(TerminalOutput(data: Data("$ ".utf8), replay: true)))
+        await store.send(.output(TerminalOutput(data: Data("$ ".utf8), replay: true)))
+        XCTAssertEqual(store.state.screen.generation, 1)
+        await store.send(.output(TerminalOutput(data: Data("$ ls".utf8), replay: true)))
+        XCTAssertEqual(store.state.screen.generation, 2)
     }
 }
