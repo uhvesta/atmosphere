@@ -152,6 +152,43 @@ final class ModelServerTests: XCTestCase {
         XCTAssertTrue(turn.prompt.contains("wrote notes.md"))
     }
 
+    func testAnImageSentAsADataURLReachesTheModel() async throws {
+        let seen = Locked<Data?>(nil)
+        let look: ScriptedRuntime.Step = { turn, _ throws(ModelRuntimeError) in
+            seen.setValue(turn.attachments.first.flatMap { try? Data(contentsOf: $0.file) })
+            return "A cat"
+        }
+        let runtime = ScriptedRuntime(inputs: [.image], steps: [look])
+        let base = try await serve([ServedModel(id: "m", runtime: runtime)])
+        let image = Data([1, 2, 3])
+        let message: JSONValue = [
+            "role": "user",
+            "content": [
+                [
+                    "type": "image_url",
+                    "image_url": ["url": .string("data:image/png;base64,\(image.base64EncodedString())")],
+                ],
+                ["type": "text", "text": "What is this?"],
+            ],
+        ]
+        let (status, _) = try await post(base, ["model": "m", "messages": [message]])
+        XCTAssertEqual(status, 200)
+        XCTAssertEqual(seen.value, image)
+        XCTAssertEqual(runtime.turns.first?.attachments.map(\.kind), [.image])
+        XCTAssertEqual(runtime.turns.first?.prompt, "What is this?")
+    }
+
+    func testTheListSaysWhichModelsReadImages() async throws {
+        let base = try await serve([
+            ServedModel(id: "sees", runtime: ScriptedRuntime(inputs: [.image], steps: [])),
+            ServedModel(id: "text", runtime: ScriptedRuntime(steps: [])),
+        ])
+        let (data, _) = try await URLSession.shared.data(from: base.appending(path: "models"))
+        let list = try Wire.decoder.decode(JSONValue.self, from: data)
+        XCTAssertEqual(field(list, "data", "0", "inputs"), ["image"])
+        XCTAssertNil(field(list, "data", "1", "inputs"))
+    }
+
     func testAModelItDoesNotHaveIsNotFound() async throws {
         let base = try await serve([ServedModel(id: "m", runtime: ScriptedRuntime(steps: []))])
         let (status, data) = try await post(base, ["model": "other", "messages": [user("Hi")], "stream": true])

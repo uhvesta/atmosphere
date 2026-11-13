@@ -28,7 +28,7 @@ enum ChatCompletions {
 
     struct Message: Decodable, Sendable {
         var role: String
-        /// A string, or parts of which only the text is read.
+        /// A string, or parts: text, and images as data URLs.
         var content: JSONValue?
         var toolCalls: [ToolCall]?
         var toolCallID: String?
@@ -98,7 +98,38 @@ enum ChatCompletions {
                 return ""
             }
         }
-        return ModelTurn(instructions: instructions, prompt: prompt(request.messages), tools: tools, schema: nil)
+        return ModelTurn(
+            instructions: instructions, prompt: prompt(request.messages), tools: tools, schema: nil,
+            attachments: images(in: request.messages))
+    }
+
+    /// The images in the person's messages, written to files the model
+    /// reads; an image that isn't a base64 data URL is skipped.
+    static func images(in messages: [Message]) -> [ModelAttachment] {
+        messages.filter { $0.role == "user" }.flatMap { message -> [ModelAttachment] in
+            guard case .array(let parts)? = message.content else { return [] }
+            return parts.compactMap { part -> ModelAttachment? in
+                guard case .object(let fields) = part, case .string("image_url")? = fields["type"],
+                    case .object(let image)? = fields["image_url"], case .string(let url)? = image["url"],
+                    let file = write(dataURL: url)
+                else { return nil }
+                return ModelAttachment(.image, file: file)
+            }
+        }
+    }
+
+    /// Writes the image in a `data:image/png;base64,…` URL to a file of
+    /// its own in the temporary folder.
+    private static func write(dataURL url: String) -> URL? {
+        guard url.hasPrefix("data:"), let comma = url.firstIndex(of: ",") else { return nil }
+        let header = url[url.index(url.startIndex, offsetBy: 5)..<comma]
+        guard header.hasSuffix(";base64"), let data = Data(base64Encoded: String(url[url.index(after: comma)...]))
+        else { return nil }
+        let type = header.dropLast(";base64".count)
+        let ext = type == "image/jpeg" ? "jpg" : type == "image/gif" ? "gif" : type == "image/webp" ? "webp" : "png"
+        let file = FileManager.default.temporaryDirectory.appending(path: "model-server-\(UUID().uuidString).\(ext)")
+        guard (try? data.write(to: file)) != nil else { return nil }
+        return file
     }
 
     /// The conversation after the instructions. A lone message from the
@@ -182,6 +213,8 @@ enum ChatCompletions {
             // cancelled, so the model doesn't go on without the result.
             while !Task.isCancelled { try? await Task.sleep(for: .seconds(60)) }
         }
+        let files = turn.attachments.map(\.file)
+        defer { for file in files { try? FileManager.default.removeItem(at: file) } }
         let speed = Locked<TurnSpeed?>(nil)
         turn.speed = { measured in speed.withValue { $0 = $0.map { $0.adding(measured) } ?? measured } }
         let written = Locked("")

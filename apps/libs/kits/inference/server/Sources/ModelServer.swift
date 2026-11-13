@@ -114,6 +114,10 @@ public final class ModelServer: Sendable {
                 models().map { model in
                     var fields: [String: JSONValue] = ["id": .string(model.id), "object": "model"]
                     if let detail = model.detail { fields["detail"] = .string(detail) }
+                    // What it reads besides text, such as "image"; a field
+                    // OpenAI's list doesn't have.
+                    let inputs = model.runtime.inputs.map(\.rawValue).sorted()
+                    if !inputs.isEmpty { fields["inputs"] = .array(inputs.map { .string($0) }) }
                     return .object(fields)
                 })
             try? await channel.respond(200, json: ["object": "list", "data": data])
