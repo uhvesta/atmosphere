@@ -74,4 +74,30 @@ final class SpecCommentsTests: XCTestCase {
         XCTAssertFalse(store.state.sending)
         XCTAssertNotNil(store.state.alert)
     }
+
+    func testTappingAnotherBlockMovesAHalfWrittenCommentThere() async throws {
+        let blocks = MarkdownBlock.blocks(spec.components(separatedBy: "\n"))
+        let store = store(InMemoryDaemon())
+
+        await store.send(.blockTapped(blocks[1]))
+        await store.send(\.binding.comment, "Add a magic link.")
+        await store.send(.blockTapped(blocks[2]))
+        XCTAssertEqual(store.state.picked, blocks[2])
+        XCTAssertEqual(store.state.comment, "Add a magic link.")
+    }
+
+    func testTappingThePickedBlockClosesOnlyAnEmptyComment() async throws {
+        let blocks = MarkdownBlock.blocks(spec.components(separatedBy: "\n"))
+        let store = store(InMemoryDaemon())
+
+        await store.send(.blockTapped(blocks[1]))
+        await store.send(\.binding.comment, "Add a magic link.")
+        await store.send(.blockTapped(blocks[1]))
+        XCTAssertEqual(store.state.picked, blocks[1])
+        XCTAssertEqual(store.state.comment, "Add a magic link.")
+
+        await store.send(\.binding.comment, "  ")
+        await store.send(.blockTapped(blocks[1]))
+        XCTAssertNil(store.state.picked)
+    }
 }

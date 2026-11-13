@@ -158,24 +158,27 @@ struct ProjectSettingsView: View {
             }
             Section {
                 ForEach($store.repositories) { $row in
-                    HStack {
-                        TextField("Folder", text: $row.name, prompt: Text("Named after it"))
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            TextField("Folder", text: $row.name, prompt: Text("Named after it"))
+                                .labelsHidden()
+                                .frame(maxWidth: 120)
+                            TextField(
+                                "Repository", text: $row.path,
+                                prompt: Text("/path/to/repository or https://github.com/owner/name")
+                            )
                             .labelsHidden()
-                            .frame(maxWidth: 120)
-                        TextField(
-                            "Repository", text: $row.path,
-                            prompt: Text("/path/to/repository or https://github.com/owner/name")
-                        )
-                        .labelsHidden()
-                        Button {
-                            store.send(.removeRepositoryTapped(row.id))
-                        } label: {
-                            Label("Remove", systemImage: "minus.circle")
-                                .labelStyle(.iconOnly)
+                            Button {
+                                store.send(.removeRepositoryTapped(row.id))
+                            } label: {
+                                Label("Remove", systemImage: "minus.circle")
+                                    .labelStyle(.iconOnly)
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(store.repositories.count == 1)
+                            .help("Leave this repository out of sessions started after")
                         }
-                        .buttonStyle(.borderless)
-                        .disabled(store.repositories.count == 1)
-                        .help("Leave this repository out of sessions started after")
+                        if row.needsFullPath { FullPathNote() }
                     }
                 }
                 Button("Add Repository") { store.send(.addRepositoryTapped) }

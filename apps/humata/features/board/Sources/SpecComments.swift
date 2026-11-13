@@ -76,8 +76,13 @@ package struct SpecCommentsFeature {
                 return .none
 
             case .blockTapped(let block):
-                state.picked = state.picked == block ? nil : block
-                state.comment = ""
+                // What's typed is kept: tapping another block moves it there,
+                // and tapping the picked one closes only an empty comment.
+                guard state.picked == block else {
+                    state.picked = block
+                    return .none
+                }
+                if state.comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { state.picked = nil }
                 return .none
 
             case .commentCancelled:

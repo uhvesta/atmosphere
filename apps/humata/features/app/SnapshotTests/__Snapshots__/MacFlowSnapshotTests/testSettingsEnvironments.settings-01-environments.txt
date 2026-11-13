@@ -23,9 +23,11 @@
       [RadioButton/Segment] "Environments" value: "1" id: server.rack
       [RadioButton/Segment] "Approvals" value: "0" id: lock.shield
       [RadioButton/Segment] "Storage" value: "0" id: internaldrive
+      [RadioButton/Segment] "GitHub" value: "0" id: arrow.triangle.pull
       [RadioButton/Segment] "Skills" value: "0" id: books.vertical
       [RadioButton/Segment] "Plugins" value: "0" id: puzzlepiece.extension
       [RadioButton/Segment] "Models" value: "0" id: cpu
+      [RadioButton/Segment] "Terminal" value: "0" id: terminal
   [Button/CloseButton] ""
   [Button/ZoomButton] ""
   [Button/MinimizeButton] ""

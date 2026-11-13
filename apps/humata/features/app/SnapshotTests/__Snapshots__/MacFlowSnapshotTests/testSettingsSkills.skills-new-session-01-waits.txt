@@ -9,7 +9,6 @@
   [PopUpButton] "" value: "Scripted"
   [StaticText] "" value: "Model"
   [TextField] "Model"
-  [MenuButton] "Models" help: "Pick one of the models the agent offers"
   [StaticText] "" value: "Approvals"
   [PopUpButton] "" value: "Ask Every Time"
   [StaticText] "" value: "It works in its own copy of humata."

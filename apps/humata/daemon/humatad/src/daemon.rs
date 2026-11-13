@@ -22,6 +22,7 @@ use crate::store::{Placement, Store};
 const REWATCH_FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 const REWATCH_LONGEST_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// How long a list waits for each host before showing it as it last was.
+/// A host that didn't answer its last listing isn't waited for at all.
 const HOST_LIST_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 /// How long a host's listing of its sessions is given to every caller
 /// after it was made, as the app, the board and search list at once.
@@ -34,6 +35,12 @@ type Listed = Option<(std::time::Instant, Option<pb::Sessions>)>;
 /// A host's listing of its sessions, shared by every caller meanwhile.
 struct Listing {
     answer: tokio::sync::watch::Receiver<Listed>,
+    /// The host's sessions may have changed since, so the next list asks
+    /// it again.
+    forgotten: bool,
+    /// The host didn't answer the listing before this one, so a list
+    /// takes this one's answer only if it's there already.
+    impatient: bool,
 }
 /// The least time between copies off a host made for saves part way
 /// through a turn.
@@ -937,16 +944,25 @@ impl Daemon {
     /// `host`'s listing of its sessions: the one under way or made in the
     /// last [`LISTING_KEPT`], or a new one. The listing gives up at
     /// [`HOST_LIST_WAIT`], and keeps what it got as the host's sessions.
-    fn listing(&self, host: &str) -> Result<tokio::sync::watch::Receiver<Listed>, DaemonError> {
+    /// With it, whether the host didn't answer the listing before, so this
+    /// one isn't worth waiting for.
+    fn listing(
+        &self,
+        host: &str,
+    ) -> Result<(tokio::sync::watch::Receiver<Listed>, bool), DaemonError> {
         let mut listings = self.listings.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut impatient = false;
         if let Some(listing) = listings.get(host) {
-            let fresh = match &*listing.answer.borrow() {
-                None => true,
-                Some((at, _)) => at.elapsed() < LISTING_KEPT,
+            // One still under way says nothing new of the host.
+            let (fresh, failed) = match &*listing.answer.borrow() {
+                None => (true, listing.impatient),
+                Some((at, sessions)) => (at.elapsed() < LISTING_KEPT, sessions.is_none()),
             };
-            if fresh {
-                return Ok(listing.answer.clone());
+            if fresh && !listing.forgotten {
+                return Ok((listing.answer.clone(), listing.impatient));
             }
+            // A listing forgotten is forgotten once the host has answered.
+            impatient = failed && !listing.forgotten;
         }
         let remote = self.remote(host)?;
         let (hosts_file, build) = (self.hosts_file.clone(), self.build.clone());
@@ -991,20 +1007,28 @@ impl Daemon {
             host.to_owned(),
             Listing {
                 answer: answer.clone(),
+                forgotten: false,
+                impatient,
             },
         );
-        Ok(answer)
+        Ok((answer, impatient))
     }
 
-    /// Drops `host`'s kept listing, so the next one asks it again.
+    /// Makes the next listing of `host` ask it again, as its sessions may
+    /// have changed. It is forgotten once the host answered, so the next
+    /// listing waits for it again.
     fn forget_listing(&self, host: &str) {
         if host.is_empty() {
             return;
         }
-        self.listings
+        if let Some(listing) = self
+            .listings
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .remove(host);
+            .get_mut(host)
+        {
+            listing.forgotten = true;
+        }
     }
 
     async fn list(&self, project: &str) -> Result<pb::Sessions, DaemonError> {
@@ -1020,14 +1044,15 @@ impl Daemon {
         let mut all = Vec::new();
         // Every host at once, each given a little while: a slow one shows
         // as it last was, offline, and its connection goes on meanwhile,
-        // so the next list may have it.
+        // so the next list may have it. One that didn't answer last time
+        // is given no while at all, so a host that's off slows one list.
         let mut asking = Vec::new();
         for host in self.remote_names() {
             if only.is_some_and(|only| only != host) {
                 continue;
             }
-            let listing = self.listing(&host)?;
-            asking.push((host, listing));
+            let (listing, impatient) = self.listing(&host)?;
+            asking.push((host, listing, impatient));
         }
         let deadline = tokio::time::Instant::now() + HOST_LIST_WAIT;
         let mut answers = Vec::new();
@@ -1046,12 +1071,17 @@ impl Daemon {
                 },
             ));
         }
-        for (host, mut listing) in asking {
-            let answer = tokio::time::timeout_at(deadline, listing.wait_for(Option::is_some))
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .and_then(|listed| listed.as_ref().and_then(|(_, sessions)| sessions.clone()));
+        for (host, mut listing, impatient) in asking {
+            let answer = if impatient {
+                let listed = listing.borrow();
+                listed.as_ref().and_then(|(_, sessions)| sessions.clone())
+            } else {
+                tokio::time::timeout_at(deadline, listing.wait_for(Option::is_some))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .and_then(|listed| listed.as_ref().and_then(|(_, sessions)| sessions.clone()))
+            };
             answers.push((host, answer.map(pb::response::Kind::Sessions)));
         }
         let mut listed = Vec::new();
@@ -1899,9 +1929,24 @@ impl Daemon {
         let imported = matches!(request, Request::ImportSession(_));
         let forked = matches!(request, Request::ForkSession(_));
         let planning = matches!(&request, Request::StartSession(start) if start.planning);
+        let rewound = match &request {
+            Request::RewindSession(rewind) => Some(rewind.session_id.clone()),
+            Request::UndoRewind(undo) => Some(undo.session_id.clone()),
+            _ => None,
+        };
         let mut reply = self.forward(&host, request).await?;
         // What was sent may have changed the host's sessions.
         self.forget_listing(&host);
+        if let Some(session) = &rewound
+            && matches!(
+                reply,
+                Reply::Response(Response::SessionRewound(_) | Response::RewindUndone(_))
+            )
+        {
+            // Its history is another one now, with no more turns than the
+            // copy has, so the copy is made again whatever it holds.
+            self.back_up_changed(&host, session);
+        }
         if let Reply::Response(
             Response::SessionStarted(pb::SessionStarted {
                 session: Some(session),

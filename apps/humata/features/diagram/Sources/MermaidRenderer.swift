@@ -66,6 +66,7 @@ package final class MermaidRenderer {
     package init(resources: URL?) {
         self.resources = resources
         cache.countLimit = 200
+        cache.totalCostLimit = 256 * 1024 * 1024
     }
 
     /// The image of `source` drawn before, if it was.
@@ -87,8 +88,17 @@ package final class MermaidRenderer {
         queue = Task { _ = await task.value }
         let result = await task.value
         drawing[key] = nil
-        if case .success(let image) = result { cache.setObject(image, forKey: Self.name(key)) }
+        if case .success(let image) = result {
+            cache.setObject(image, forKey: Self.name(key), cost: Self.bytes(of: image))
+        }
         return try result.get()
+    }
+
+    /// The memory `image`'s largest bitmap takes, at four bytes a pixel;
+    /// by its size in points when none says how many pixels it has.
+    private static func bytes(of image: NSImage) -> Int {
+        let pixels = image.representations.map { $0.pixelsWide * $0.pixelsHigh }.max() ?? 0
+        return (pixels > 0 ? pixels : Int(image.size.width * image.size.height)) * 4
     }
 
     private static func name(_ key: Key) -> NSString {

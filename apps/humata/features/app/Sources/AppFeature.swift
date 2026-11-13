@@ -57,16 +57,21 @@ package struct AppFeature {
             search = nil
         }
 
-        /// Opens `project`'s board as it was left, or anew to open `item`.
+        /// Opens `project`'s board as it was left, to open `item` once it's
+        /// read if one is given.
         mutating func openBoard(_ project: Project, at item: String? = nil) {
             putAway()
-            if item == nil, var kept = keptBoards.removeValue(forKey: project.id) {
-                kept.project = project
-                board = kept
-            } else {
-                keptBoards[project.id] = nil
-                board = BoardFeature.State(project: project, opening: item)
-            }
+            var next = keptBoards.removeValue(forKey: project.id) ?? BoardFeature.State(project: project)
+            next.project = project
+            if let item { next.opening = item }
+            board = next
+        }
+
+        /// Shows the chat if the open session no longer has the view it
+        /// showed, as once it's archived or leaves its project.
+        mutating func keepTab() {
+            guard let open = session, !open.tabs.contains(open.tab) else { return }
+            session?.tab = .chat
         }
 
         /// Opens `next` in place of the open session, keeping what the one
@@ -188,10 +193,21 @@ package struct AppFeature {
                 // Every two seconds: set only what changed, so the open
                 // session isn't drawn again for nothing.
                 if let open = state.session {
-                    if let listed = sessions.first(where: { $0.id == open.session.id }),
-                        listed.hostOffline != open.session.hostOffline
-                    {
-                        state.session?.session.hostOffline = listed.hostOffline
+                    if let listed = sessions.first(where: { $0.id == open.session.id }) {
+                        // What changes outside its chat: its host is lost or
+                        // it's moved, put on another task or archived.
+                        if listed.hostOffline != open.session.hostOffline {
+                            state.session?.session.hostOffline = listed.hostOffline
+                        }
+                        if listed.host != open.session.host { state.session?.session.host = listed.host }
+                        if listed.itemID != open.session.itemID { state.session?.session.itemID = listed.itemID }
+                        if listed.itemTitle != open.session.itemTitle {
+                            state.session?.session.itemTitle = listed.itemTitle
+                        }
+                        if listed.archived != open.session.archived {
+                            state.session?.session.archived = listed.archived
+                            state.keepTab()
+                        }
                     }
                     let request = Self.request(of: open.session.id, in: inbox)
                     if request != open.request { state.session?.request = request }
@@ -201,9 +217,32 @@ package struct AppFeature {
                 return .merge(shown, restart(&state))
 
             case .sidebar(.updated(let session)),
+                .sidebar(.sessionMoved(let session)),
                 .sidebar(.destination(.presented(.rename(.delegate(.renamed(let session)))))),
+                .sidebar(.destination(.presented(.move(.delegate(.moved(let session)))))),
                 .sidebar(.destination(.presented(.compare(.delegate(.updated(let session)))))):
-                if state.session?.session.id == session.id { state.session?.session = session }
+                if state.session?.session.id == session.id {
+                    state.session?.session = session
+                    state.keepTab()
+                }
+                return .none
+
+            case .sidebar(.sessionDeleted(let id)):
+                // Closed without keeping what it showed: it won't open again.
+                state.left[id] = nil
+                if state.session?.session.id == id { state.session = nil }
+                return .none
+
+            case .sidebar(.projectDeleted(let id)):
+                state.keptBoards[id] = nil
+                if state.board?.project.id == id { state.board = nil }
+                // Its sessions stay, on no project.
+                if state.session?.session.projectID == id {
+                    state.session?.session.projectID = nil
+                    state.session?.session.itemID = nil
+                    state.session?.session.itemTitle = nil
+                    state.keepTab()
+                }
                 return .none
 
             case .sidebar(.delegate(.openSession(let session))):
@@ -238,7 +277,12 @@ package struct AppFeature {
                 state.keptSearch = nil
                 search.projects = Array(state.sidebar.projects)
                 state.search = search
-                return .none
+                // Text left before it was searched is searched now, as
+                // nothing else would.
+                guard !search.searched, !search.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return .none
+                }
+                return .send(.search(.presented(.submitted)))
 
             case .search(.presented(.delegate(.openSession(let id, let event)))):
                 guard let session = state.sidebar.sessions[id: id] else { return .none }
@@ -253,7 +297,8 @@ package struct AppFeature {
                 state.sidebar.selection = .board(projectID)
                 state.show(nil)
                 state.openBoard(project, at: itemID)
-                return .none
+                // A board kept isn't waiting to be read; read it to open the item.
+                return .send(.board(.presented(.refresh)))
 
             case .opened(let url):
                 guard let link = HumataLink(url) else { return .none }
@@ -316,7 +361,7 @@ package struct AppFeature {
             state.sidebar.selection = .board(projectID)
             state.show(nil)
             state.openBoard(project, at: itemID)
-            return .none
+            return .send(.board(.presented(.refresh)))
         }
     }
 

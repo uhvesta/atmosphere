@@ -22,13 +22,12 @@
     [Button] "Search"
   [StaticText] "" value: "Profile the build"
   [PopUpButton] "View" value: "Chat" help: "The chat, the session's changes to review, the files in its folder, the specs it reads, or a terminal there (⌘1 to ⌘5)"
-  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is"
+  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is" id: arrow.triangle.branch
   [MenuButton] "Ship" help: "Land the work on a branch or as pull requests, or merge the base branch's new commits in"
   [MenuButton] "Folder" help: "The folder it works in on build-box"
   [PopUpButton] "Approvals" value: "Ask Every Time" help: "What the agent may do without asking"
   [CheckBox/Toggle] "Experimental" value: "0" help: "Copilot's features still being tried out, from the next message. Fusion needs them to pick local models." id: flask
   [StaticText] "" value: "Copilot on build-box"
-  [BusyIndicator] "Loading the chat…" value: "0" id: chat.loading
   [OpaqueProviderGroup/OpaqueProviderList] ""
   [StaticText] "" value: "Can't reach build-box, so this is the session as it last was. Humata reconnects when you send a message; check build-box in Hosts if it doesn't."
   [TextField] ""

@@ -22,7 +22,6 @@
   [StaticText] "" value: "Approvals"
   [PopUpButton] "" value: "Ask Every Time" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
-  [BusyIndicator] "Loading the chat…" value: "0" id: chat.loading
   [OpaqueProviderGroup/OpaqueProviderList] ""
   [Button] "Pasted image" help: "Take it out of the message"
   [TextField] "" value: "What is in this picture?"

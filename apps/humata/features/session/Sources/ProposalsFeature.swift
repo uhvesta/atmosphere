@@ -137,7 +137,8 @@ package struct ProposalsFeature {
                 }
                 let title = editing.title.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard proposal.kind == .specEdit || !title.isEmpty else { return .none }
-                state.editing = nil
+                // The edit stays open until it's applied, so a failure
+                // doesn't lose it.
                 return apply(
                     &state, editing.id, title: title == proposal.title ? nil : title,
                     spec: editing.spec == proposal.spec ? nil : editing.spec)
@@ -157,6 +158,7 @@ package struct ProposalsFeature {
             case .decided(let id, let decision):
                 state.deciding.remove(id)
                 state.proposals[id: id]?.state = decision
+                if state.editing?.id == id { state.editing = nil }
                 return .none
 
             case .startWorkTapped(let item):

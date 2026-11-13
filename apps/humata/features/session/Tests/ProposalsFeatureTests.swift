@@ -105,4 +105,37 @@ final class ProposalsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.proposals.first?.state, .declined)
         XCTAssertNotNil(store.state.alert)
     }
+
+    func testAnEditThatCouldntBeAppliedStaysOpenUntilItIs() async throws {
+        let (daemon, project, session) = try await planning()
+        let proposals = try await daemon.client.proposals(session.id)
+        let reachable = LockIsolated(false)
+        let store = TestStore(initialState: ProposalsFeature.State(sessionID: session.id)) {
+            ProposalsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemon.applyProposal = { session, id, title, spec in
+                guard reachable.value else { throw DaemonError.disconnected }
+                return try await daemon.client.applyProposal(session, id, title, spec)
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.refresh)
+        await store.receive(\.listed)
+        await store.send(.editTapped(proposals[0].id))
+        let edited = ProposalsFeature.Editing(id: proposals[0].id, title: "Sign-in form", spec: "With a passkey.")
+        await store.send(\.binding.editing, edited)
+        await store.send(.editApplied)
+        await store.receive(\.failed)
+        await store.receive(\.listed)
+        XCTAssertEqual(store.state.editing, edited)
+
+        reachable.setValue(true)
+        await store.send(.editApplied)
+        await store.receive(\.decided)
+        XCTAssertNil(store.state.editing)
+        let board = try await daemon.client.items(project.id)
+        XCTAssertEqual(board.map(\.title), ["Sign-in form"])
+    }
 }

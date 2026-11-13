@@ -50,8 +50,38 @@ package struct ProjectsFeature {
         /// so the row under the pointer stays put.
         package var order: [Session.ID: Date] = [:]
         @Presents package var destination: Destination.State?
+        /// An alert about something that finished while a sheet was open,
+        /// shown once the sheet goes.
+        var heldAlert: AlertState<Destination.Alert>?
 
         package init() {}
+
+        /// Shows `alert` now, or once the sheet that's open goes, so a late
+        /// result doesn't take away what the person is filling in.
+        mutating func present(_ alert: AlertState<Destination.Alert>) {
+            switch destination {
+            case nil, .alert: destination = .alert(alert)
+            default: heldAlert = alert
+            }
+        }
+
+        /// What ⇧⌘A and ⇧⌘D answer in the inbox: the first admin action, or
+        /// with none waiting the first blocked row that can be answered from
+        /// where it is. It names the request, so the next request of the same
+        /// session is another target.
+        package var inboxShortcut: InboxShortcut? {
+            if let approval = approvals.first { return .approval(approval.id) }
+            for entry in inbox where entry.reason.blocks {
+                if let request = entry.request {
+                    if case .move = request.kind { return .request(entry: entry.id, request.id) }
+                } else if entry.reason == .approval, !entry.session.hostOffline,
+                    let permission = entry.session.pending.first
+                {
+                    return .permission(entry: entry.id, requestID: permission.requestID)
+                }
+            }
+            return nil
+        }
 
         /// The sessions in the inbox that can't go on without the person,
         /// as the Dock counts them.
@@ -455,7 +485,7 @@ package struct ProjectsFeature {
                 return .none
 
             case .deleteFailed(let message):
-                state.destination = .alert(
+                state.present(
                     AlertState {
                         TextState("Couldn't delete the project")
                     } message: {
@@ -552,7 +582,7 @@ package struct ProjectsFeature {
 
             case .sessionDeleteFailed(let id, let message):
                 state.busy.remove(id)
-                state.destination = .alert(
+                state.present(
                     AlertState {
                         TextState("Couldn't delete the session")
                     } message: {
@@ -573,7 +603,7 @@ package struct ProjectsFeature {
                 let here = session.host ?? ""
                 let targets = ([""] + hosts).filter { $0 != here }
                 guard !targets.isEmpty else {
-                    state.destination = .alert(
+                    state.present(
                         AlertState {
                             TextState("No Host to Move To")
                         } message: {
@@ -581,7 +611,7 @@ package struct ProjectsFeature {
                         })
                     return .none
                 }
-                state.destination = .alert(
+                state.present(
                     AlertState {
                         TextState("Move \(session.title) to…")
                     } actions: {
@@ -617,7 +647,7 @@ package struct ProjectsFeature {
 
             case .sessionMoveFailed(let id, let message):
                 state.busy.remove(id)
-                state.destination = .alert(
+                state.present(
                     AlertState {
                         TextState("Couldn't move the session")
                     } message: {
@@ -797,7 +827,7 @@ package struct ProjectsFeature {
                 case .answeringRequest:
                     title = "Couldn't answer the request"
                 }
-                state.destination = .alert(
+                state.present(
                     AlertState {
                         TextState(title)
                     } message: {
@@ -807,7 +837,7 @@ package struct ProjectsFeature {
 
             case .updateFailed(let id, let message):
                 state.busy.remove(id)
-                state.destination = .alert(
+                state.present(
                     AlertState {
                         TextState("Couldn't change the session")
                     } message: {
@@ -832,6 +862,13 @@ package struct ProjectsFeature {
             }
         }
         .ifLet(\.$destination, action: \.destination)
+        // A held alert shows once the sheet it waited behind is gone.
+        Reduce { state, _ in
+            guard state.destination == nil, let alert = state.heldAlert else { return .none }
+            state.heldAlert = nil
+            state.destination = .alert(alert)
+            return .none
+        }
     }
 
     private func update(_ id: Session.ID, _ update: SessionUpdate) -> Effect<Action> {
@@ -928,6 +965,15 @@ package enum SidebarItem: Hashable, Sendable {
     case search
     case board(Project.ID)
     case session(Session.ID)
+}
+
+/// What ⇧⌘A and ⇧⌘D answer in the inbox, by the request rather than its row.
+package enum InboxShortcut: Hashable, Sendable {
+    case approval(AdminApproval.ID)
+    /// The first permission request of the session in row `entry`.
+    case permission(entry: InboxEntry.ID, requestID: String)
+    /// An agent's request to move its item, in row `entry`.
+    case request(entry: InboxEntry.ID, AgentRequest.ID)
 }
 
 /// A session in the sidebar's tree, with the forks made from it.
@@ -1066,6 +1112,10 @@ package struct RepositoryRow: Identifiable, Hashable, Sendable {
         if Repository.isURL(path) { return Repository(name: name, url: path) }
         return path.hasPrefix("/") ? Repository(name: name, path: path) : nil
     }
+
+    /// Whether something is typed that is neither a URL nor a path from /,
+    /// which keeps the project from being saved.
+    package var needsFullPath: Bool { !path.trimmed.isEmpty && repository == nil }
 }
 
 extension NewProjectFeature.State {

@@ -113,11 +113,20 @@ impl Daemon {
                     && pull.state == PullState::Open
             });
             // Only a pull request opened now gets Humata's description;
-            // one there already keeps what people wrote in it since.
+            // one there already keeps what people wrote in it since. One
+            // Humata doesn't know yet that says no more than it was opened
+            // with was opened by a land that failed before describing it.
             let (pull, new) = match before {
                 Some(before) => (github.pull(&repo, before.number).await?, false),
                 None => match github.open_pull_from(&repo, &repository.branch).await? {
-                    Some(pull) => (pull, false),
+                    Some(pull) => {
+                        let undescribed = pull
+                            .body
+                            .as_deref()
+                            .map(str::trim)
+                            .is_none_or(|body| body.is_empty() || body == details);
+                        (pull, undescribed)
+                    }
                     None => (
                         github
                             .open_pull(&repo, title, &repository.branch, &repository.base, details)
@@ -162,6 +171,14 @@ impl Daemon {
             };
             self.store.keep_pull(&kept)?;
             pulls.push(wire(&kept, item.as_deref()));
+        }
+        // A session that merged before and has a pull request open again
+        // is finished again when that one merges.
+        if pulls
+            .iter()
+            .any(|pull| pull.state() == pb::PullRequestState::Open)
+        {
+            self.store.forget_merged(session)?;
         }
         Ok(pulls)
     }
@@ -414,8 +431,9 @@ impl Daemon {
     /// When every pull request of `session` has merged: its task to Done
     /// (once, so a task the person reopens stays open), then the session
     /// archived, which removes its worktrees, and its branches deleted on
-    /// its host, tried again until the host has done it. A session with
-    /// work since, committed or not, is left as it is, for the person.
+    /// its host, tried again until the host has done it or is no longer
+    /// one of the hosts. A session with work since, committed or not, is
+    /// left as it is, for the person.
     async fn finish_if_merged(&self, session: &str) -> Result<(), DaemonError> {
         let pulls = self.store.pulls(session)?;
         if pulls.is_empty() || pulls.iter().any(|pull| pull.state != PullState::Merged) {
@@ -431,7 +449,11 @@ impl Daemon {
         {
             return Ok(());
         }
-        self.clean_up(session, &pulls).await?;
+        match self.clean_up(session, &pulls).await {
+            // A host that was removed has nothing left to clean up.
+            Ok(()) | Err(DaemonError::UnknownHost { .. }) => {}
+            Err(error) => return Err(error),
+        }
         self.store.mark_cleaned(session)?;
         Ok(())
     }
@@ -591,7 +613,7 @@ fn next_read(refresh: &pb::PullRefresh, since_last: Duration) -> Option<Duration
 }
 
 /// Whether reading more pull requests would fail the same way: no token, a
-/// token GitHub refuses, or the rate limit.
+/// token GitHub refuses, the rate limit, or GitHub out of reach.
 fn stops_reading(error: &DaemonError) -> bool {
     matches!(
         error,
@@ -599,6 +621,7 @@ fn stops_reading(error: &DaemonError) -> bool {
             GitHubError::NoToken
                 | GitHubError::Unauthorized { .. }
                 | GitHubError::RateLimited { .. }
+                | GitHubError::Unreachable { .. }
         )
     )
 }

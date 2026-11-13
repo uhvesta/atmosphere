@@ -35,7 +35,7 @@
       [Button, disabled] "Send Feedback"
       [Button] "Open Changes"
       [MenuButton] "Move To"
-      [Button] "Move to In Review" help: "Move it as the agent asks (⇧⌘A)"
+      [Button] "Move to In Review"
   [Toolbar] ""
     [Button] "Add Project"
     [Button] "Hide Sidebar"

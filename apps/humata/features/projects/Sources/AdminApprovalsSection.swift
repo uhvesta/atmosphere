@@ -48,6 +48,20 @@ struct AdminApprovalsSection: View {
     }
 }
 
+/// Marks the row ⇧⌘A and ⇧⌘D answer, so the person sees which one a press
+/// goes to before pressing.
+struct ShortcutHint: View {
+    /// Whether the row can be denied with ⇧⌘D as well.
+    var deny = true
+
+    var body: some View {
+        Text(verbatim: deny ? "⇧⌘D  ⇧⌘A" : "⇧⌘A")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityHidden(true)
+    }
+}
+
 /// Deny, Approve, and a menu to approve and let actions of `scopes` run
 /// without asking for a while.
 private struct DecideButtons: View {
@@ -61,6 +75,7 @@ private struct DecideButtons: View {
     var body: some View {
         HStack {
             if shortcuts {
+                ShortcutHint()
                 Button(deny) { decide(false, nil) }
                     .keyboardShortcut("d", modifiers: [.command, .shift])
                     .help("\(deny) (⇧⌘D)")

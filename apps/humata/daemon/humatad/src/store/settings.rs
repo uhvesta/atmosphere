@@ -166,9 +166,22 @@ impl Store {
             transaction.commit()
         })();
         trimmed.map_err(self.failed())?;
-        connection
-            .execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
-            .map_err(self.failed())
+        // VACUUM rewrites the whole file while it holds the one connection,
+        // which stalls every other call to the store, so it runs only when
+        // an eighth or more of the file is free. The log is cut back either
+        // way, which is quick.
+        let pages = |pragma: &str| -> rusqlite::Result<i64> {
+            connection.query_row(&format!("PRAGMA {pragma}"), [], |row| row.get(0))
+        };
+        let sparse = pages("freelist_count")
+            .and_then(|free| Ok(free.saturating_mul(8) >= pages("page_count")?))
+            .map_err(self.failed())?;
+        let tidy = if sparse {
+            "VACUUM; PRAGMA wal_checkpoint(TRUNCATE);"
+        } else {
+            "PRAGMA wal_checkpoint(TRUNCATE);"
+        };
+        connection.execute_batch(tidy).map_err(self.failed())
     }
 }
 

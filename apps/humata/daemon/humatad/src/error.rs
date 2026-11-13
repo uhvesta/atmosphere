@@ -125,6 +125,20 @@ pub enum HostError {
     },
 
     #[error(
+        "git didn't answer within {minutes} minutes while pushing the branch {branch} of {repository} to its origin, and was stopped. The commit is made in the session's copy, so nothing is lost. Check the host's network and its git credentials for the remote, then land again, which pushes the same commit"
+    )]
+    PushTimedOut {
+        repository: String,
+        branch: String,
+        minutes: u64,
+    },
+
+    #[error(
+        "git didn't answer within {minutes} minutes while fetching {repository}'s origin, and was stopped, so nothing was merged. Check the host's network and its git credentials for the remote, then update from the base branch again"
+    )]
+    FetchTimedOut { repository: String, minutes: u64 },
+
+    #[error(
         "couldn't push the branch {branch} of {repository} to its origin (git said: {output}). Check that the host's GitHub token can write to the repository. If the branch is on the remote already with other commits, don't force-push over them: land on a new branch name instead"
     )]
     Push {
@@ -283,7 +297,9 @@ impl HostError {
             | Self::Clone { .. }
             | Self::CloneTimedOut { .. }
             | Self::Push { .. }
+            | Self::PushTimedOut { .. }
             | Self::Fetch { .. }
+            | Self::FetchTimedOut { .. }
             | Self::Snapshots { .. } => pb::ErrorCode::BackendFailed,
             Self::EncodeBackup { .. }
             | Self::ScanSkills { .. }

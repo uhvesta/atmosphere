@@ -1512,4 +1512,95 @@ final class ProjectsFeatureTests: XCTestCase {
         XCTAssertEqual(daemon.sessions.count, 1)
         XCTAssertEqual(daemon.sessions.first?.host, "far")
     }
+
+    private func waiting(_ id: String, requests: [String], hostOffline: Bool = false) -> InboxEntry {
+        InboxEntry(
+            session: Session(
+                id: id, name: id, backend: .scripted, workingDirectory: "/", state: .waitingForApproval,
+                pending: requests.map { PendingPermission(requestID: $0, kind: .shell, summary: "make") },
+                hostOffline: hostOffline),
+            reason: .approval)
+    }
+
+    func testAnsweringARequestMovesTheInboxShortcutToTheSessionsNextOne() async throws {
+        var state = ProjectsFeature.State()
+        state.inbox = [waiting("s1", requests: ["r1", "r2"])]
+        let store = TestStore(initialState: state) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = InMemoryDaemon().client
+            $0.daemon.approve = { _, _, _ in try await Task.never() }
+        }
+        store.exhaustivity = .off
+        XCTAssertEqual(store.state.inboxShortcut, .permission(entry: "s1", requestID: "r1"))
+
+        let answer = await store.send(.inboxAnswered("s1", request: "r1", approved: true))
+        XCTAssertEqual(store.state.inboxShortcut, .permission(entry: "s1", requestID: "r2"))
+        await answer.cancel()
+    }
+
+    func testTheInboxShortcutAnswersAdminActionsFirstThenTheFirstRowThatCanBeAnswered() {
+        let asked = Date(timeIntervalSince1970: 1_794_000_000)
+        let session = Session(id: "s0", name: "s0", backend: .scripted, workingDirectory: "/")
+        let question = InboxEntry(
+            session: session, reason: .question,
+            request: AgentRequest(id: "q1", sessionID: "s0", kind: .question, text: "Email or phone?", created: asked))
+        let move = InboxEntry(
+            session: session, reason: .move,
+            request: AgentRequest(
+                id: "m1", sessionID: "s0", kind: .move(item: "i1", status: .done), text: "Done.", created: asked))
+        let unanswerable = [
+            waiting("far", requests: ["r0"], hostOffline: true), InboxEntry(session: session, reason: .failed),
+            question,
+        ]
+        var state = ProjectsFeature.State()
+
+        state.inbox = unanswerable + [InboxEntry(session: session, reason: .reply)]
+        XCTAssertNil(state.inboxShortcut)
+
+        state.inbox = unanswerable + [waiting("s1", requests: ["r1"]), move]
+        XCTAssertEqual(state.inboxShortcut, .permission(entry: "s1", requestID: "r1"))
+
+        state.inbox = unanswerable + [move, waiting("s1", requests: ["r1"])]
+        XCTAssertEqual(state.inboxShortcut, .request(entry: "m1", "m1"))
+
+        state.approvals = [
+            AdminApproval(id: "a1", client: "humata mcp", scope: .board, summary: "Add a task", asked: asked),
+            AdminApproval(id: "a2", client: "humata mcp", scope: .board, summary: "Add another", asked: asked),
+        ]
+        XCTAssertEqual(state.inboxShortcut, .approval("a1"))
+    }
+
+    func testAFailureThatArrivesWhileASheetIsOpenShowsOnceItCloses() async throws {
+        let daemon = InMemoryDaemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, workingDirectory: "/work"))
+        var state = ProjectsFeature.State()
+        state.sessions = [session]
+        let store = TestStore(initialState: state) {
+            ProjectsFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.renameTapped(session.id))
+        await store.send(.sessionDeleteFailed(session.id, "It is still working."))
+        XCTAssertNotNil(store.state.destination?.rename)
+
+        await store.send(.destination(.dismiss))
+        XCTAssertNotNil(store.state.destination?.alert)
+        await store.send(.destination(.dismiss))
+        XCTAssertNil(store.state.destination)
+    }
+
+    func testARepositoryRowSaysWhenItNeedsAFullPath() {
+        XCTAssertFalse(RepositoryRow(id: 0).needsFullPath)
+        XCTAssertFalse(RepositoryRow(id: 0, path: "  ").needsFullPath)
+        XCTAssertFalse(RepositoryRow(id: 0, path: "/code/humata").needsFullPath)
+        XCTAssertFalse(RepositoryRow(id: 0, path: "https://github.com/owner/name").needsFullPath)
+        XCTAssertTrue(RepositoryRow(id: 0, path: "~/code/humata").needsFullPath)
+        XCTAssertTrue(RepositoryRow(id: 0, path: "code/humata").needsFullPath)
+    }
 }

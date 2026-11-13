@@ -19,9 +19,9 @@
     [Button] "Search"
   [StaticText] "" value: "Fix the login redirect after the session times out"
   [PopUpButton] "View" value: "Chat" help: "The chat, the session's changes to review, the files in its folder, the specs it reads, or a terminal there (⌘1 to ⌘5)"
-  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is"
-  [MenuButton] "Ship" help: "Land the work on a branch or as pull requests, or merge the base branch's new commits in"
-  [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself"
+  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is" id: arrow.triangle.branch
+  [MenuButton] "Ship" help: "Land the work on a branch or as pull requests, or merge the base branch's new commits in" id: shippingbox
+  [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself" id: folder
   [PopUpButton] "Approvals" value: "Ask Every Time" help: "What the agent may do without asking"
   [StaticText] "" value: "Claude Code"
   [OpaqueProviderGroup/OpaqueProviderList] ""

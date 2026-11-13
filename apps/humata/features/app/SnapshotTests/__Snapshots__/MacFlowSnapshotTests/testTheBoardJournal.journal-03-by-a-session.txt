@@ -51,5 +51,5 @@
         [Button] "Revert" help: "Put back what this change changed; fields changed again since are kept"
         [StaticText] "" value: "Plan sign in, approved by you"
         [StaticText] "" value: "·"
-        [StaticText] "" value: "Nov 6 at 1:36 PM"
+        [StaticText] "" value: "Nov 6, 2026 at 1:36 PM"
     [Button] "Done"

@@ -29,6 +29,15 @@ pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11434/v1";
 /// How often a turn waiting for the app's model server asks again.
 const SERVER_RETRY: Duration = Duration::from_secs(2);
 
+/// How long a model server may send nothing of a reply before the turn is
+/// stopped. Long, as a slow model takes minutes to read a long prompt
+/// before its first word.
+const STALL: Duration = Duration::from_secs(10 * 60);
+
+/// How long a server may take to list its models, which it does from
+/// memory.
+const LISTING_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Where the Humata app serves the Mac's models while it runs: a port on
 /// 127.0.0.1, on the Mac or forwarded to a host over SSH. Kept in a file, so
 /// sessions still find it, and wait for it, after humatad restarts while
@@ -164,6 +173,15 @@ pub enum LocalModelError {
     },
 
     #[error(
+        "the model server at {url} sent nothing of {model}'s reply for {minutes} minutes, so the turn was stopped. Check that the server is still running and hasn't run out of memory, restart it if it hangs, then send the message again. A very long prompt on a slow model can take this long before its first word: if the server is only busy, a shorter request or a smaller model answers sooner"
+    )]
+    Stalled {
+        url: String,
+        model: String,
+        minutes: u64,
+    },
+
+    #[error(
         "the model server at {url} sent a reply this backend can't read; check that base_url points at an OpenAI-compatible API (it usually ends in /v1)"
     )]
     Decode {
@@ -190,6 +208,9 @@ pub struct LocalModelRunner {
     env: Env,
     /// Humata's tools, started for each turn and offered to the model.
     mcp: Option<McpServer>,
+    /// How long a server may send nothing of a reply before the turn is
+    /// stopped.
+    stall: Duration,
 }
 
 impl LocalModelRunner {
@@ -206,7 +227,16 @@ impl LocalModelRunner {
             http,
             env: Env::default(),
             mcp: None,
+            stall: STALL,
         }
+    }
+
+    /// Stops a turn whose server sends nothing for `stall`, for a test
+    /// that can't wait as long as a person would.
+    #[cfg(test)]
+    fn with_stall(mut self, stall: Duration) -> Self {
+        self.stall = stall;
+        self
     }
 
     /// Uses the app's model server, when it has one, for sessions that name
@@ -439,14 +469,26 @@ impl LocalModelRunner {
         let api_key = request.api_key.clone();
         // ureq blocks, so the reply is read on its own thread. If the turn is
         // stopped, `received` is dropped and the thread stops at its next part.
+        // A server that never starts its answer is given up on there too,
+        // after this has said so; one that stalls part way holds the thread
+        // until its connection closes, as when it's restarted.
+        let patience = self.stall.saturating_mul(2);
         let reading = tokio::task::spawn_blocking(move || {
-            stream(&http, &url, &model, api_key.as_deref(), &body, &parts)
+            stream(
+                &http,
+                &url,
+                &model,
+                api_key.as_deref(),
+                &body,
+                patience,
+                &parts,
+            )
         });
 
         let mut text = String::new();
         let mut reasoning = String::new();
         let mut calls: Vec<Call> = Vec::new();
-        while let Some(part) = received.recv().await {
+        while let Some(part) = next_part(&mut received, request, self.stall).await? {
             match part {
                 Part::Text(delta) => {
                     text.push_str(&delta);
@@ -602,7 +644,12 @@ fn listed_context(listed: &Value, model: &str) -> Option<u64> {
 
 /// The server's `/models` answer.
 fn listing(http: &ureq::Agent, url: &str, api_key: Option<&str>) -> Result<Value, LocalModelError> {
-    let mut request = http.get(url).header("Accept", "application/json");
+    let mut request = http
+        .get(url)
+        .config()
+        .timeout_global(Some(LISTING_TIMEOUT))
+        .build()
+        .header("Accept", "application/json");
     if let Some(key) = api_key {
         request = request.header("Authorization", format!("Bearer {key}"));
     }
@@ -665,18 +712,40 @@ fn list_models(listed: &Value) -> Vec<Model> {
     models
 }
 
+/// The next part of the reply to `request`, None once it's whole. A server
+/// that sends nothing for `stall` is given up on: it would leave the turn
+/// working for good.
+async fn next_part(
+    received: &mut mpsc::Receiver<Part>,
+    request: &Request,
+    stall: Duration,
+) -> Result<Option<Part>, LocalModelError> {
+    tokio::time::timeout(stall, received.recv())
+        .await
+        .map_err(|_| LocalModelError::Stalled {
+            url: request.url.clone(),
+            model: request.model.clone(),
+            minutes: stall.as_secs().div_ceil(60),
+        })
+}
+
 /// Sends the request and passes on each part of the streamed reply, until it
-/// ends or nobody is listening.
+/// ends or nobody is listening. A server that hasn't started its answer
+/// within `patience` is given up on.
 fn stream(
     http: &ureq::Agent,
     url: &str,
     model: &str,
     api_key: Option<&str>,
     body: &str,
+    patience: Duration,
     parts: &mpsc::Sender<Part>,
 ) -> Result<(), LocalModelError> {
     let mut request = http
         .post(url)
+        .config()
+        .timeout_recv_response(Some(patience))
+        .build()
         .header("Content-Type", "application/json")
         .header("Accept", "text/event-stream");
     if let Some(key) = api_key {
@@ -2130,7 +2199,15 @@ mod tests {
         let (parts, _received) = mpsc::channel(8);
         let http = runner.http.clone();
         let result = tokio::task::spawn_blocking(move || {
-            stream(&http, &request.url, &request.model, None, "{}", &parts)
+            stream(
+                &http,
+                &request.url,
+                &request.model,
+                None,
+                "{}",
+                STALL,
+                &parts,
+            )
         })
         .await
         .expect("the thread finishes");
@@ -2170,6 +2247,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_server_that_takes_the_request_and_sends_nothing_has_stalled() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("listens");
+        let port = listener.local_addr().expect("an address").port();
+        // Takes the connection and never answers.
+        let silent = std::thread::spawn(move || listener.accept().map(|(stream, _)| stream));
+        let runner = LocalModelRunner::new(LocalModelConfig::default())
+            .with_stall(Duration::from_millis(200));
+        let request = Request {
+            url: format!("http://127.0.0.1:{port}/v1/chat/completions"),
+            api_key: None,
+            model: "m".into(),
+        };
+        let (parts, mut received) = mpsc::channel(8);
+        let http = runner.http.clone();
+        let url = request.url.clone();
+        // Its thread gives up a little later, so the test's runtime can end.
+        let patience = runner.stall.saturating_mul(2);
+        let reading = tokio::task::spawn_blocking(move || {
+            stream(&http, &url, "m", None, "{}", patience, &parts)
+        });
+
+        let next = next_part(&mut received, &request, runner.stall).await;
+
+        assert!(matches!(
+            next,
+            Err(LocalModelError::Stalled { model, .. }) if model == "m"
+        ));
+        assert!(reading.await.expect("the thread finishes").is_err());
+        drop(silent);
+    }
+
+    #[tokio::test]
     async fn a_server_that_is_not_there_is_a_connect_error() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("listens");
         let port = listener.local_addr().expect("an address").port();
@@ -2178,7 +2287,7 @@ mod tests {
         let (parts, _received) = mpsc::channel(8);
         let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
         let result = tokio::task::spawn_blocking(move || {
-            stream(&runner.http, &url, "m", None, "{}", &parts)
+            stream(&runner.http, &url, "m", None, "{}", STALL, &parts)
         })
         .await
         .expect("the thread finishes");

@@ -97,6 +97,8 @@ package struct ReviewFeature {
             }
             set {
                 range = newValue.range
+                // The branch's field shows the one compared with.
+                if case .branch(let name) = newValue.range { branch = name }
                 selected = newValue.selected
                 wholeFile = newValue.wholeFile
                 rendered = newValue.rendered
@@ -216,7 +218,13 @@ package struct ReviewFeature {
         case blockTapped(startLine: Int, endLine: Int, quote: String)
         case commentCancelled
         case commentSaved
+        /// The comment wasn't saved; it goes back on its lines unless
+        /// another was started since.
+        case commentFailed(Commenting, text: String, message: String)
         case threadSaved(ReviewThread)
+        /// The reply wasn't sent; it goes back in its box unless another
+        /// was started since.
+        case replyFailed(ReviewThread.ID, text: String, message: String)
         case replyChanged(ReviewThread.ID, String)
         case replySent(ReviewThread.ID)
         case resolveToggled(ReviewThread.ID)
@@ -408,8 +416,15 @@ package struct ReviewFeature {
                 return .run { send in
                     await send(.threadSaved(try await daemon.createThread(session, thread)))
                 } catch: { error, send in
-                    await send(.failed(.commenting, error.localizedDescription))
+                    await send(.commentFailed(picked, text: text, message: error.localizedDescription))
                 }
+
+            case .commentFailed(let picked, let text, let message):
+                if state.commenting == nil, state.comment.isEmpty {
+                    state.commenting = picked
+                    state.comment = text
+                }
+                return .send(.failed(.commenting, message))
 
             case .threadSaved(let thread):
                 state.threads[id: thread.id] = thread
@@ -426,8 +441,12 @@ package struct ReviewFeature {
                 return .run { send in
                     await send(.threadSaved(try await daemon.replyToThread(id, text)))
                 } catch: { error, send in
-                    await send(.failed(.replying, error.localizedDescription))
+                    await send(.replyFailed(id, text: text, message: error.localizedDescription))
                 }
+
+            case .replyFailed(let id, let text, let message):
+                if state.replies[id] == nil { state.replies[id] = text }
+                return .send(.failed(.replying, message))
 
             case .resolveToggled(let id):
                 guard let thread = state.threads[id: id] else { return .none }

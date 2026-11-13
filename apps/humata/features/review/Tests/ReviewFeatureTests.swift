@@ -269,4 +269,75 @@ final class ReviewFeatureTests: XCTestCase {
         await store.send(.sendTapped)
         XCTAssertFalse(store.state.sending)
     }
+
+    func testACommentThatCouldntBeSavedGoesBackOnItsLines() async {
+        var state = ReviewFeature.State(sessionID: "s1")
+        let picked = ReviewFeature.Commenting(file: sum, startLine: 1, endLine: 2)
+        state.commenting = picked
+        state.comment = "Call it total."
+        let store = TestStore(initialState: state) {
+            ReviewFeature()
+        } withDependencies: {
+            $0.daemon.createThread = { _, _ in throw DaemonError.disconnected }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.commentSaved)
+        await store.receive(\.commentFailed)
+        await store.receive(\.failed)
+        XCTAssertEqual(store.state.commenting, picked)
+        XCTAssertEqual(store.state.comment, "Call it total.")
+        XCTAssertNotNil(store.state.alert)
+    }
+
+    func testAFailedCommentDoesntReplaceOneStartedSince() async {
+        var state = ReviewFeature.State(sessionID: "s1")
+        state.selected = sum
+        state.commenting = ReviewFeature.Commenting(file: sum, startLine: 1, endLine: 1)
+        state.comment = "Call it total."
+        let failing = AsyncStream<Void>.makeStream()
+        let store = TestStore(initialState: state) {
+            ReviewFeature()
+        } withDependencies: {
+            $0.daemon.createThread = { _, _ in
+                for await _ in failing.stream { break }
+                throw DaemonError.disconnected
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.commentSaved)
+        await store.send(.lineTapped(2, extending: false))
+        failing.continuation.yield()
+        await store.receive(\.commentFailed)
+        await store.receive(\.failed)
+        XCTAssertEqual(store.state.commenting, ReviewFeature.Commenting(file: sum, startLine: 2, endLine: 2))
+        XCTAssertEqual(store.state.comment, "")
+    }
+
+    func testAReplyThatCouldntBeSentGoesBackInItsBox() async {
+        let store = TestStore(initialState: ReviewFeature.State(sessionID: "s1")) {
+            ReviewFeature()
+        } withDependencies: {
+            $0.daemon.replyToThread = { _, _ in throw DaemonError.disconnected }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.replyChanged("t1", "Why not sum?"))
+        await store.send(.replySent("t1"))
+        XCTAssertNil(store.state.replies["t1"])
+        await store.receive(\.replyFailed)
+        await store.receive(\.failed)
+        XCTAssertEqual(store.state.replies["t1"], "Why not sum?")
+        XCTAssertNotNil(store.state.alert)
+    }
+
+    func testAKeptBranchRangeShowsItsBranchInTheField() {
+        var left = ReviewFeature.State(sessionID: "s1")
+        left.range = .branch("develop")
+        var opened = ReviewFeature.State(sessionID: "s1")
+        opened.kept = left.kept
+        XCTAssertEqual(opened.range, .branch("develop"))
+        XCTAssertEqual(opened.branch, "develop")
+    }
 }

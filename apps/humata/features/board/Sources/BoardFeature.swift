@@ -47,11 +47,23 @@ package struct BoardFeature {
         /// Spec comments not sent yet, by item, kept when its page closes
         /// so opening it again shows them.
         var keptComments: [Item.ID: SpecCommentsFeature.State] = [:]
+        /// An alert about something that finished while a page or sheet was
+        /// open, shown once it goes.
+        var heldAlert: AlertState<BoardAlert>?
 
         package init(project: Project, opening: Item.ID? = nil) {
             self.project = project
             self.opening = opening
             self.proposals = ProposalsFeature.State(outsideAgentsOf: project.id)
+        }
+
+        /// Shows `alert` now, or once the page or sheet that's open goes, so
+        /// a late result doesn't take away what the person is doing there.
+        mutating func present(_ alert: AlertState<BoardAlert>) {
+            switch destination {
+            case nil, .alert: destination = .alert(alert)
+            default: heldAlert = alert
+            }
         }
 
         /// The items the board shows in `status`'s column, in the board's order.
@@ -101,6 +113,7 @@ package struct BoardFeature {
             kept.importing = false
             kept.undoing = false
             kept.moving = [:]
+            kept.heldAlert = nil
             switch kept.destination {
             case .item(var item):
                 item.settle()
@@ -200,6 +213,11 @@ package struct BoardFeature {
             if let open, state.destination?.item?.item.id != open.item.id {
                 state.keepComments(of: open)
             }
+            // A held alert shows once what it waited behind is gone.
+            if state.destination == nil, let alert = state.heldAlert {
+                state.heldAlert = nil
+                state.destination = .alert(alert)
+            }
             return effect
         }
     }
@@ -279,7 +297,7 @@ package struct BoardFeature {
             case .undone(let reverted):
                 state.undoing = false
                 if !reverted.kept.isEmpty {
-                    state.destination = .alert(BoardLogFeature.keptAlert(reverted.kept))
+                    state.present(BoardLogFeature.keptAlert(reverted.kept))
                 }
                 return .send(.refresh)
 
@@ -354,7 +372,7 @@ package struct BoardFeature {
                 state.importing = false
                 let made = imported.items.count
                 let before = imported.skipped == 0 ? "" : " \(imported.skipped) were imported before."
-                state.destination = .alert(
+                state.present(
                     AlertState {
                         TextState(
                             made == 0 ? "No New Issues" : made == 1 ? "Imported 1 Issue" : "Imported \(made) Issues")
@@ -372,6 +390,9 @@ package struct BoardFeature {
                 return .none
 
             case .cardTapped(let id):
+                // Its page is open already; opening it again would drop what
+                // is being written there.
+                if case .item(let page)? = state.destination, page.item.id == id { return .none }
                 guard let item = state.items[id: id] else { return .none }
                 state.destination = .item(state.page(of: item))
                 return .none
@@ -381,9 +402,7 @@ package struct BoardFeature {
                 let project = state.project
                 state.starting.insert(id)
                 return .run { send in
-                    var settings = NewSessionFeature.State(project: project, item: item)
-                    // Every project's, with the project's over them.
-                    if let every = try? await daemon.sessionDefaults() { settings.applyDefaults(every) }
+                    let settings = await startWorkSettings(project: project, item: item, with: daemon)
                     guard !settings.needsModel else {
                         await send(.startFinished(id))
                         await send(.startNeedsModel(id, settings))
@@ -521,6 +540,17 @@ package struct BoardFeature {
 
 extension BoardFeature.Destination.State: Equatable {}
 
+/// What Start Work starts a session on `item` with: every project's
+/// defaults with the project's over them, as New Session starts from, or
+/// only the project's when every project's can't be read.
+private func startWorkSettings(
+    project: Project, item: Item, with daemon: DaemonClient
+) async -> NewSessionFeature.State {
+    var settings = NewSessionFeature.State(project: project, item: item)
+    if let every = try? await daemon.sessionDefaults() { settings.applyDefaults(every) }
+    return settings
+}
+
 /// A task's or subtask's page: its spec, shown as Markdown and edited in
 /// place; its status and priority; its subtasks; and its sessions with how
 /// many files each changed. Starts a session on it, with the specs it reads.
@@ -550,6 +580,9 @@ package struct ItemFeature {
         /// Comments on the spec's blocks, to send to one of its sessions.
         package var comments: SpecCommentsFeature.State
         @Presents package var destination: Destination.State?
+        /// An alert about something that finished while a sheet was open,
+        /// shown once the sheet goes.
+        var heldAlert: AlertState<BoardAlert>?
 
         package init(project: Project, item: Item, parent: Item?, subtasks: [Item], sessions: [Session]) {
             self.project = project
@@ -586,12 +619,22 @@ package struct ItemFeature {
             return draft.title != item.title || draft.spec != item.spec
         }
 
+        /// Shows `alert` now, or once the sheet that's open goes, so a late
+        /// failure doesn't take away what the person is filling in.
+        mutating func present(_ alert: AlertState<BoardAlert>) {
+            switch destination {
+            case nil, .alert: destination = .alert(alert)
+            default: heldAlert = alert
+            }
+        }
+
         /// Clears what was in progress when its board was put away.
         fileprivate mutating func settle() {
             saving = false
             startingWork = false
             readingPullRequests = false
             comments.sending = false
+            heldAlert = nil
             if case .newSubtask(var new) = destination {
                 new.creating = false
                 destination = .newSubtask(new)
@@ -643,6 +686,9 @@ package struct ItemFeature {
         /// and has it start, staying on the page.
         case startWorkTapped
         case workStarted
+        /// Start Work's defaults leave a local model to pick; New Session
+        /// asks.
+        case startNeedsModel(NewSessionFeature.State)
         case startWorkFailed(String)
         case addSubtaskTapped
         case deleteTapped
@@ -688,11 +734,18 @@ package struct ItemFeature {
                     if let refresh = try? await daemon.pullRefresh() {
                         await send(.pullRefreshRead(refresh))
                     }
-                    for session in sessions {
-                        // A session whose copy is gone, or whose host is away,
-                        // just shows no count.
-                        guard let changes = try? await daemon.changes(session, ChangesQuery()) else { continue }
-                        await send(.changesRead(session, files: changes.map(\.files.count).reduce(0, +)))
+                    // Only the files are counted, so no lines around each
+                    // change are read, and the sessions are read side by side.
+                    await withTaskGroup(of: Void.self) { group in
+                        for session in sessions {
+                            group.addTask {
+                                // A session whose copy is gone, or whose host
+                                // is away, just shows no count.
+                                guard let changes = try? await daemon.changes(session, ChangesQuery(context: 0))
+                                else { return }
+                                await send(.changesRead(session, files: changes.map(\.files.count).reduce(0, +)))
+                            }
+                        }
                     }
                 }
 
@@ -818,7 +871,7 @@ package struct ItemFeature {
                     : String(localized: "Couldn't change \(state.item.title)")
                 state.saving = false
                 state.readingPullRequests = false
-                state.destination = .alert(
+                state.present(
                     AlertState {
                         TextState(title)
                     } message: {
@@ -836,13 +889,15 @@ package struct ItemFeature {
 
             case .startWorkTapped:
                 guard !state.startingWork else { return .none }
-                let settings = NewSessionFeature.State(project: state.project, item: state.item)
-                guard !settings.needsModel else {
-                    state.destination = .newSession(settings)
-                    return .none
-                }
                 state.startingWork = true
+                let (project, item) = (state.project, state.item)
                 return .run { send in
+                    let settings = await startWorkSettings(project: project, item: item, with: daemon)
+                    guard !settings.needsModel else {
+                        await send(.workStarted)
+                        await send(.startNeedsModel(settings))
+                        return
+                    }
                     _ = try await daemon.startWork(settings.request)
                     await send(.workStarted)
                     await send(.delegate(.changed))
@@ -854,9 +909,13 @@ package struct ItemFeature {
                 state.startingWork = false
                 return .none
 
+            case .startNeedsModel(let settings):
+                state.destination = .newSession(settings)
+                return .none
+
             case .startWorkFailed(let message):
                 state.startingWork = false
-                state.destination = .alert(
+                state.present(
                     AlertState {
                         TextState("Couldn't start work on \(state.item.title)")
                     } message: {
@@ -882,6 +941,13 @@ package struct ItemFeature {
             }
         }
         .ifLet(\.$destination, action: \.destination)
+        // A held alert shows once the sheet it waited behind is gone.
+        Reduce { state, _ in
+            guard state.destination == nil, let alert = state.heldAlert else { return .none }
+            state.heldAlert = nil
+            state.destination = .alert(alert)
+            return .none
+        }
     }
 
     private func update(_ id: Item.ID, _ update: ItemUpdate) -> Effect<Action> {

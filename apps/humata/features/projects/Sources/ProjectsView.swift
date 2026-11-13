@@ -365,22 +365,25 @@ struct NewProjectView: View {
             }
             Section {
                 ForEach($store.repositories) { $row in
-                    HStack {
-                        TextField(
-                            "Repository", text: $row.path,
-                            prompt: Text("/path/to/repository or https://github.com/owner/name")
-                        )
-                        .labelsHidden()
-                        if store.repositories.count > 1 {
-                            Button {
-                                store.send(.removeRepositoryTapped(row.id))
-                            } label: {
-                                Label("Remove", systemImage: "minus.circle")
-                                    .labelStyle(.iconOnly)
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            TextField(
+                                "Repository", text: $row.path,
+                                prompt: Text("/path/to/repository or https://github.com/owner/name")
+                            )
+                            .labelsHidden()
+                            if store.repositories.count > 1 {
+                                Button {
+                                    store.send(.removeRepositoryTapped(row.id))
+                                } label: {
+                                    Label("Remove", systemImage: "minus.circle")
+                                        .labelStyle(.iconOnly)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Leave this repository out of the project")
                             }
-                            .buttonStyle(.borderless)
-                            .help("Leave this repository out of the project")
                         }
+                        if row.needsFullPath { FullPathNote() }
                     }
                 }
                 HStack {
@@ -434,6 +437,19 @@ extension NewProjectView {
         for url in urls {
             store.send(.folderPicked(url))
         }
+    }
+}
+
+/// Under a repository typed as neither a URL nor a path from /: why the
+/// project can't be saved with it.
+struct FullPathNote: View {
+    var body: some View {
+        Text(
+            "Give its full path, starting with /, or a URL to clone. A path that starts with ~ or is relative to "
+                + "another folder isn't followed."
+        )
+        .font(.caption)
+        .foregroundStyle(.red)
     }
 }
 

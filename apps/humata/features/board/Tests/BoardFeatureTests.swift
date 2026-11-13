@@ -785,4 +785,115 @@ final class BoardFeatureTests: XCTestCase {
         XCTAssertFalse(titles(Array(store.state.items)).contains("logout"))
         await store.finish()
     }
+
+    private func page(_ board: Board, sessions: [Session] = []) -> TestStoreOf<ItemFeature> {
+        let store = TestStore(
+            initialState: ItemFeature.State(
+                project: board.project, item: board.task, parent: nil, subtasks: [], sessions: sessions)
+        ) {
+            ItemFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    func testStartWorkOnATasksPageStartsFromEveryProjectsDefaults() async throws {
+        let board = try await board()
+        _ = try await board.daemon.client.setSessionDefaults(nil, SessionDefaults(backend: .scripted, model: "tiny"))
+        let store = page(board)
+
+        await store.send(.startWorkTapped)
+        XCTAssertTrue(store.state.startingWork)
+        await store.receive(\.workStarted)
+        await store.receive(\.delegate.changed)
+
+        XCTAssertFalse(store.state.startingWork)
+        XCTAssertEqual(board.daemon.sessions.count, 1)
+        let session = try XCTUnwrap(board.daemon.sessions.first)
+        XCTAssertEqual(session.itemID, board.task.id)
+        XCTAssertEqual(session.backend, .scripted)
+        XCTAssertEqual(session.model, "tiny")
+    }
+
+    func testStartWorkOnATasksPageAsksForAModelWhenTheDefaultAgentIsALocalOneWithNone() async throws {
+        let board = try await board()
+        _ = try await board.daemon.client.setSessionDefaults(nil, SessionDefaults(backend: .local))
+        let store = page(board)
+
+        await store.send(.startWorkTapped)
+        await store.receive(\.workStarted)
+        await store.receive(\.startNeedsModel)
+
+        XCTAssertTrue(board.daemon.sessions.isEmpty)
+        XCTAssertFalse(store.state.startingWork)
+        XCTAssertEqual(store.state.destination?.newSession?.backend, .local)
+    }
+
+    func testTappingTheCardOfTheOpenPageKeepsWhatIsBeingWrittenThere() async throws {
+        let board = try await board()
+        let store = store(board)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.cardTapped(board.task.id))
+        await store.send(\.destination.item.editTapped)
+        await store.send(.cardTapped(board.task.id))
+        XCTAssertNotNil(store.state.destination?.item?.draft)
+
+        await store.send(.cardTapped(board.subtask.id))
+        XCTAssertEqual(store.state.destination?.item?.item.id, board.subtask.id)
+    }
+
+    func testAnImportThatEndsWhileATasksPageIsOpenSaysSoOnceItCloses() async throws {
+        let board = try await board()
+        board.daemon.openIssues(
+            [.init(number: 3, title: "Crash on launch", body: "It crashes.")], in: board.project.id)
+        let store = store(board)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+
+        await store.send(.cardTapped(board.task.id))
+        await store.send(.importIssuesTapped)
+        await store.receive(\.imported)
+        await store.receive(\.loaded)
+        XCTAssertEqual(store.state.destination?.item?.item.id, board.task.id)
+
+        await store.send(.destination(.dismiss))
+        XCTAssertNotNil(store.state.destination?.alert)
+        await store.send(.destination(.dismiss))
+        XCTAssertNil(store.state.destination)
+    }
+
+    func testAFailureOnATasksPageWaitsForTheSheetOpenOverIt() async throws {
+        let board = try await board()
+        let store = page(board)
+
+        await store.send(.addSubtaskTapped)
+        await store.send(.startWorkFailed("The agent isn't installed."))
+        XCTAssertNotNil(store.state.destination?.newSubtask)
+
+        await store.send(.destination(.dismiss))
+        XCTAssertNotNil(store.state.destination?.alert)
+        await store.send(.destination(.dismiss))
+        XCTAssertNil(store.state.destination)
+
+        // With nothing open over the page, it shows at once.
+        await store.send(.failed("The daemon isn't running."))
+        XCTAssertNotNil(store.state.destination?.alert)
+    }
+
+    func testATaskPageCountsWhatEachOfItsSessionsChanged() async throws {
+        let board = try await board()
+        let first = try await board.daemon.client.start(StartRequest(backend: .scripted, itemID: board.task.id))
+        let second = try await board.daemon.client.start(StartRequest(backend: .scripted, itemID: board.task.id))
+        let store = page(board, sessions: [first, second])
+
+        await store.send(.task)
+        await store.receive(\.changesRead)
+        await store.receive(\.changesRead)
+        XCTAssertEqual(Set(store.state.changedFiles.keys), [first.id, second.id])
+        await store.finish()
+    }
 }

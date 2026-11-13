@@ -3956,3 +3956,202 @@ async fn a_session_reads_its_projects_skill_by_name_and_an_unknown_one_is_refuse
     assert_eq!(skill.text, "Tag it.");
     assert!(read("deploy").await.is_err());
 }
+
+/// A host serving on a socket in `dir`, and how a daemon reaches it: through
+/// a command, as it reaches one over SSH. `dir` must be short enough for a
+/// socket path.
+async fn host_reached_by_command(dir: &Path) -> HostConfig {
+    let (state, socket) = (dir.join("far"), dir.join("far.sock"));
+    tokio::spawn({
+        let socket = socket.clone();
+        async move { crate::host_socket(&state, &state.join("cache"), &socket).await }
+    });
+    drop(host_at(&socket).await);
+    HostConfig {
+        command: vec![
+            "nc".to_owned(),
+            "-U".to_owned(),
+            socket.display().to_string(),
+        ],
+        ..HostConfig::default()
+    }
+}
+
+/// Waits until the Mac's copy of `session` has `turns` turns.
+async fn backed_up(client: &Client, session: &str, turns: u32) {
+    let mut last = None;
+    for _ in 0..400 {
+        let recoveries = client
+            .call(pb::request::Kind::ListRecoveries(
+                pb::ListRecoveries::default(),
+            ))
+            .await;
+        let Ok(pb::response::Kind::Recoveries(recoveries)) = recoveries else {
+            panic!("{recoveries:?}")
+        };
+        last = recoveries
+            .recoveries
+            .into_iter()
+            .find(|recovery| recovery.session_id == session);
+        if last
+            .as_ref()
+            .is_some_and(|recovery| recovery.backed_up_turns == turns)
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("{session}'s copy never had {turns} turns: {last:?}")
+}
+
+#[tokio::test]
+async fn a_rewound_session_on_another_host_is_backed_up_as_rewound() {
+    let dir = tempfile::Builder::new()
+        .prefix("humata")
+        .tempdir_in("/tmp")
+        .unwrap_or_else(|error| panic!("{error}"));
+    let mut hosts = Hosts::default();
+    hosts
+        .hosts
+        .insert("far".to_owned(), host_reached_by_command(dir.path()).await);
+    let (mac, work) = (dir.path().join("mac"), dir.path().join("work"));
+    for folder in [&mac, &work] {
+        std::fs::create_dir_all(folder).unwrap_or_else(|error| panic!("{error}"));
+    }
+    let client = daemon(&mac, hosts).await;
+    let session = started(&client, start(&work, "far")).await;
+    send(&client, &session.id, "hello").await;
+    after_turns(&client, &session.id, 1).await;
+    send(&client, &session.id, "more").await;
+    let events = after_turns(&client, &session.id, 2).await;
+    backed_up(&client, &session.id, 2).await;
+
+    let rewound = client
+        .call(pb::request::Kind::RewindSession(pb::RewindSession {
+            session_id: session.id.clone(),
+            before_event_id: user_message(&events, "more"),
+            files: false,
+        }))
+        .await;
+    assert!(
+        matches!(rewound, Ok(pb::response::Kind::SessionRewound(_))),
+        "{rewound:?}"
+    );
+    // The copy has fewer turns than before, as the session does.
+    backed_up(&client, &session.id, 1).await;
+
+    let undone = client
+        .call(pb::request::Kind::UndoRewind(pb::UndoRewind {
+            session_id: session.id.clone(),
+        }))
+        .await;
+    assert!(
+        matches!(undone, Ok(pb::response::Kind::RewindUndone(_))),
+        "{undone:?}"
+    );
+    backed_up(&client, &session.id, 2).await;
+}
+
+#[tokio::test]
+async fn a_session_deleted_from_another_host_is_gone_from_the_next_list() {
+    let dir = tempfile::Builder::new()
+        .prefix("humata")
+        .tempdir_in("/tmp")
+        .unwrap_or_else(|error| panic!("{error}"));
+    let mut hosts = Hosts::default();
+    hosts
+        .hosts
+        .insert("far".to_owned(), host_reached_by_command(dir.path()).await);
+    let (mac, work) = (dir.path().join("mac"), dir.path().join("work"));
+    for folder in [&mac, &work] {
+        std::fs::create_dir_all(folder).unwrap_or_else(|error| panic!("{error}"));
+    }
+    let client = daemon(&mac, hosts).await;
+    let session = started(&client, start(&work, "far")).await;
+    send(&client, &session.id, "hello").await;
+    after_turns(&client, &session.id, 1).await;
+    // No backup is under way when it is deleted.
+    backed_up(&client, &session.id, 1).await;
+    update(&client, archiving(&session.id, true))
+        .await
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    let delete = || {
+        client.call(pb::request::Kind::DeleteSession(pb::DeleteSession {
+            session_id: session.id.clone(),
+            only_if_held: false,
+        }))
+    };
+    let deleted = delete().await;
+    assert!(
+        matches!(deleted, Ok(pb::response::Kind::SessionDeleted(_))),
+        "{deleted:?}"
+    );
+    let listed = client
+        .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+        .await;
+    let Ok(pb::response::Kind::Sessions(sessions)) = listed else {
+        panic!("{listed:?}")
+    };
+    assert!(sessions.sessions.is_empty(), "{sessions:?}");
+    // Nothing of it is left to delete: the list didn't place it again.
+    let again = delete().await;
+    assert!(
+        refused_with(&again, pb::ErrorCode::UnknownSession),
+        "{again:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_host_that_didnt_answer_the_last_list_isnt_waited_for_by_the_next() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    // What the host listed when it last answered.
+    {
+        let store = Store::open(&state.path().join("humata.sqlite3"))
+            .unwrap_or_else(|error| panic!("couldn't open the store: {error}"));
+        let kept = pb::SessionInfo {
+            id: "kept".to_owned(),
+            name: "kept".to_owned(),
+            ..Default::default()
+        };
+        store
+            .cache_sessions("silent", &[kept])
+            .unwrap_or_else(|error| panic!("{error}"));
+    }
+    let mut hosts = Hosts::default();
+    hosts.hosts.insert(
+        "silent".to_owned(),
+        HostConfig {
+            // Starts, and never says a word.
+            command: vec!["sleep".to_owned(), "600".to_owned()],
+            ..HostConfig::default()
+        },
+    );
+    let client = daemon(state.path(), hosts).await;
+    let list = || async {
+        let listed = client
+            .call(pb::request::Kind::ListSessions(pb::ListSessions::default()))
+            .await;
+        let Ok(pb::response::Kind::Sessions(sessions)) = listed else {
+            panic!("{listed:?}")
+        };
+        sessions
+            .sessions
+            .into_iter()
+            .map(|session| (session.id, session.host, session.host_offline))
+            .collect::<Vec<_>>()
+    };
+    let offline = [("kept".to_owned(), "silent".to_owned(), true)];
+
+    // The first list waits for the host, and gives up on it.
+    assert_eq!(list().await, offline);
+    // Long enough for the next to ask the host again, not share that answer.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let asked = std::time::Instant::now();
+    assert_eq!(list().await, offline);
+    assert!(
+        asked.elapsed() < Duration::from_millis(1500),
+        "the list took {:?}",
+        asked.elapsed()
+    );
+}

@@ -146,15 +146,26 @@ final class GhosttySurfaceView: NSView {
         if read.paste {
             let text =
                 read.contents.first { $0.mime == "text/plain" }.map { String(decoding: $0.data, as: UTF8.self) } ?? ""
-            let shown = text.count > 300 ? String(text.prefix(300)) + "…" : text
+            let characters = text.count
+            let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).count
+            let hidden = max(0, characters - Self.pasteShown)
             alert.messageText = String(localized: "Paste text that could run commands?")
-            alert.informativeText = String(
+            var warning = String(
                 localized: """
                     What you’re pasting has line breaks or control characters, so the shell may run it as soon \
-                    as it’s typed. Paste only if you’ve read it and trust it:
-
-                    \(shown)
+                    as it’s typed. Paste only if you’ve read all of it below and trust it. Control characters \
+                    show as symbols such as ␛. Lines: \(lines). Characters: \(characters).
                     """)
+            if hidden > 0 {
+                warning += " "
+                warning += String(
+                    localized: """
+                        Only the first \(Self.pasteShown) characters are shown: \(hidden) more aren’t, and \
+                        would be pasted unread.
+                        """)
+            }
+            alert.informativeText = warning
+            alert.accessoryView = Self.pastePreview(String(text.prefix(Self.pasteShown)))
             alert.addButton(withTitle: String(localized: "Don’t Paste"))
             alert.addButton(withTitle: String(localized: "Paste"))
         } else {
@@ -177,6 +188,47 @@ final class GhosttySurfaceView: NSView {
                 self.answerClipboardRead(read, allowed: response == .alertSecondButtonReturn, request: request)
             }
         }
+    }
+
+    /// How much of a paste its confirmation shows, in characters.
+    private static let pasteShown = 200_000
+
+    /// `text` to read before pasting it: all of it, scrolling, with each
+    /// control character but line breaks and tabs shown as its symbol.
+    private static func pastePreview(_ text: String) -> NSView {
+        let scroll = NSTextView.scrollableTextView()
+        scroll.frame = NSRect(x: 0, y: 0, width: 460, height: 180)
+        scroll.borderType = .bezelBorder
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        if let view = scroll.documentView as? NSTextView {
+            view.isEditable = false
+            view.isSelectable = true
+            view.isRichText = false
+            view.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+            view.textContainerInset = NSSize(width: 4, height: 4)
+            view.string = visible(text)
+            view.setAccessibilityLabel(String(localized: "The text to paste"))
+        }
+        return scroll
+    }
+
+    /// `text` with what a terminal would act on unseen made visible: each
+    /// control character but a line break or tab becomes its picture, as ␛
+    /// for escape.
+    private static func visible(_ text: String) -> String {
+        var shown = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            let picture: UInt32? =
+                switch scalar.value {
+                case 0x0A, 0x09: nil
+                case 0..<0x20: 0x2400 + scalar.value
+                case 0x7F: 0x2421
+                default: nil
+                }
+            shown.append(picture.flatMap(Unicode.Scalar.init) ?? scalar)
+        }
+        return String(shown)
     }
 
     /// Completes Ghostty's request with what it would read, or denies it.

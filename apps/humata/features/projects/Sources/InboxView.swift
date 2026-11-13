@@ -9,6 +9,9 @@ import SwiftUI
 package struct InboxView: View {
     /// The sidebar's, so typing a reply here redraws only the inbox.
     let store: StoreOf<ProjectsFeature>
+    /// What ⇧⌘A and ⇧⌘D would answer, once it has been first for a moment:
+    /// a request that only just came first hasn't been read yet.
+    @State private var settled: InboxShortcut?
 
     package init(store: StoreOf<ProjectsFeature>) {
         self.store = store
@@ -63,6 +66,12 @@ package struct InboxView: View {
             }
         }
         .navigationTitle("Inbox")
+        .task(id: store.inboxShortcut) {
+            settled = nil
+            guard let target = store.inboxShortcut else { return }
+            try? await Task.sleep(for: Self.settleTime)
+            if !Task.isCancelled { settled = target }
+        }
         .toolbar {
             if askers.count > 1 {
                 Menu("Every Admin Action") {
@@ -74,21 +83,21 @@ package struct InboxView: View {
         }
     }
 
-    /// The admin action ⇧⌘A and ⇧⌘D answer, as they do in a session: the
-    /// first, which is shown first.
-    private var shortcutApproval: AdminApproval.ID? {
-        approvals.first.map(\.id)
+    /// How long a request is first before the shortcuts answer it, so a
+    /// second press meant for the one just answered doesn't answer the next.
+    private static let settleTime = Duration.milliseconds(700)
+
+    /// What ⇧⌘A and ⇧⌘D answer now: the first request, as in a session, once
+    /// it has stayed first for a moment; nil just after another took its
+    /// place.
+    private var shortcut: InboxShortcut? {
+        settled == store.inboxShortcut ? settled : nil
     }
 
-    /// The row ⇧⌘A and ⇧⌘D answer when no admin action waits: the first
-    /// blocked one that can be answered from its row.
-    private var shortcutEntry: InboxEntry.ID? {
-        guard approvals.isEmpty else { return nil }
-        return entries.first { entry in
-            guard entry.reason.blocks else { return false }
-            if case .move? = entry.request?.kind { return true }
-            return entry.reason == .approval && !entry.session.hostOffline && !entry.session.pending.isEmpty
-        }?.id
+    /// The admin action the shortcuts answer, if they answer one.
+    private var shortcutApproval: AdminApproval.ID? {
+        guard case .approval(let id)? = shortcut else { return nil }
+        return id
     }
 
     /// The programs that asked for admin actions, in the order they first asked.
@@ -102,7 +111,7 @@ package struct InboxView: View {
         if let request = entry.request {
             RequestRow(
                 entry: entry, request: request, now: now,
-                shortcuts: entry.id == shortcutEntry,
+                shortcuts: shortcut == .request(entry: entry.id, request.id),
                 reply: Binding(
                     get: { store.drafts[request.id] ?? "" }, set: { store.send(.draftChanged(request.id, $0)) }),
                 open: { open(entry.session.id) }, openChanges: { store.send(.changesTapped(entry.session.id)) },
@@ -126,7 +135,8 @@ package struct InboxView: View {
                     .foregroundStyle(.secondary)
                     .help("Its host isn't answering; you can answer once it's back")
             } else if entry.reason == .approval, let request = entry.session.pending.first {
-                if entry.id == shortcutEntry {
+                if shortcut == .permission(entry: entry.id, requestID: request.requestID) {
+                    ShortcutHint()
                     Button("Deny") { answer(entry.session.id, request.requestID, false) }
                         .keyboardShortcut("d", modifiers: [.command, .shift])
                         .help("Deny (⇧⌘D): \(request.summary)")
@@ -208,6 +218,7 @@ private struct RequestRow: View {
                     }
                     .fixedSize()
                     if shortcuts {
+                        ShortcutHint(deny: false)
                         Button("Move to \(status.title)") { answer(.approve) }
                             .buttonStyle(.borderedProminent)
                             .keyboardShortcut("a", modifiers: [.command, .shift])

@@ -469,6 +469,136 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertNotNil(store.state.alert)
     }
 
+    func testAMessageThatWasntSentGoesBackAheadOfWhatWasPutInTheBoxSince() async {
+        let session = Session(id: "send-failed", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = SessionFeature.State(session: session)
+        state.pastes = [Paste(id: "p2", text: "pasted since")]
+        state.images = [DraftImage(id: "i2", name: "since.png")]
+        let store = store(state)
+
+        await store.send(.binding(.set(\.draft, "and one more thing")))
+        await store.send(
+            .sendFailed(
+                text: "ship it", pastes: [Paste(id: "p1", text: "pasted before")],
+                images: [DraftImage(id: "i1", name: "before.png"), DraftImage(id: "i2", name: "since.png")],
+                message: "The daemon isn’t running."))
+        XCTAssertEqual(store.state.draft, "ship it\n\nand one more thing")
+        XCTAssertEqual(store.state.pastes.map(\.id), ["p1", "p2"])
+        XCTAssertEqual(store.state.images.map(\.id), ["i1", "i2"])
+        XCTAssertNotNil(store.state.alert)
+
+        // The draft is kept as it now is, for the session opened again.
+        XCTAssertEqual(SessionFeature.State(session: session).draft, "ship it\n\nand one more thing")
+    }
+
+    /// A store whose watch stays open and sends nothing, so a test says
+    /// what comes.
+    private func watching(_ state: SessionFeature.State? = nil) -> TestStoreOf<SessionFeature> {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let store = TestStore(initialState: state ?? SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.watch = { _ in AsyncThrowingStream { _ in } }
+            $0.daemon.markSeen = { _, _ in }
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    func testARewindInTheHistoryOfAChatJustOpenedIsntReadAgain() async {
+        let store = watching()
+        await store.send(.task)
+        await store.send(.receivedAll([event("e1", .userMessage("one"))]))
+        await store.send(.receivedAll([event("r1", .rewound(text: "two", files: false))]))
+        XCTAssertEqual(store.state.events.map(\.id), ["e1", "r1"])
+        await store.skipInFlightEffects()
+    }
+
+    func testARewindAfterTheHistoryCameIsReadAgainOnce() async {
+        let history = [event("e1", .userMessage("one"))]
+        let rewound = event("r1", .rewound(text: "two", files: false))
+        let store = watching()
+        await store.send(.task)
+        await store.send(.receivedAll(history))
+        await store.send(.historyReplayed)
+        await store.send(.receivedAll([rewound]))
+        await store.receive(\.task)
+        XCTAssertTrue(store.state.events.isEmpty)
+
+        // The history read again holds the rewind, and stays.
+        await store.send(.receivedAll(history + [rewound]))
+        await store.send(.historyReplayed)
+        XCTAssertEqual(store.state.events.map(\.id), ["e1", "r1"])
+        await store.skipInFlightEffects()
+    }
+
+    func testARewindInAHistorySentAgainToAChatAlreadyShownIsReadAgain() async {
+        let history = [event("e1", .userMessage("one")), event("e2", .userMessage("two"))]
+        let store = watching()
+        await store.send(.receivedAll(history))
+        await store.send(.task)
+        await store.send(.receivedAll([history[0], event("r1", .rewound(text: "two", files: false))]))
+        await store.receive(\.task)
+        XCTAssertTrue(store.state.events.isEmpty)
+        await store.skipInFlightEffects()
+    }
+
+    func testAWatchSaysWhenItsHistoryHasComeSoALaterRewindIsReadAgain() async {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        let (stream, continuation) = AsyncThrowingStream<WatchItem, any Error>.makeStream()
+        let watches = LockIsolated(0)
+        let store = TestStore(initialState: SessionFeature.State(session: session)) {
+            SessionFeature()
+        } withDependencies: {
+            $0.daemon.watch = { _ in
+                watches.withValue { $0 += 1 }
+                return watches.value == 1 ? stream : AsyncThrowingStream { _ in }
+            }
+            $0.daemon.markSeen = { _, _ in }
+        }
+        store.exhaustivity = .off
+        continuation.yield(.event(event("e1", .userMessage("one"))))
+        continuation.yield(.event(event("r1", .rewound(text: "two", files: false))))
+        continuation.yield(.event(event("u1", .rewindUndone)))
+        continuation.yield(.historyLoaded)
+
+        await store.send(.task)
+        await store.receive(\.historyReplayed)
+        XCTAssertEqual(store.state.events.map(\.id), ["e1", "r1", "u1"])
+
+        continuation.yield(.event(event("r2", .rewound(text: "one", files: false))))
+        await store.receive(\.task)
+        XCTAssertTrue(store.state.events.isEmpty)
+        await store.skipInFlightEffects()
+    }
+
+    func testWhatWasBeingWrittenIsKeptWhenASessionIsLeft() async {
+        let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
+        var state = SessionFeature.State(session: session)
+        state.tab = .files
+        state.specs.pages = [SpecsFeature.Page(id: "i1", kind: .task, title: "Log in", text: "With email.")]
+        state.docs.selected = "notes.md"
+        state.docs.comment = "Say which one."
+        state.editingQueued = "q1"
+        state.queuedEdit = "and add tests"
+        let store = store(state)
+        await store.send(.specs(.editTapped("i1")))
+        await store.send(.specs(.draftChanged("With a passkey.")))
+        await store.send(.docs(.lineTapped(2, extending: false)))
+
+        var opened = SessionFeature.State(session: session)
+        opened.left = store.state.left
+        XCTAssertEqual(opened.left, store.state.left)
+        XCTAssertEqual(opened.tab, .files)
+        XCTAssertEqual(opened.specs.draft?.pageID, "i1")
+        XCTAssertEqual(opened.specs.draft?.text, "With a passkey.")
+        XCTAssertEqual(opened.docs.selected, "notes.md")
+        XCTAssertEqual(opened.docs.picked?.startLine, 2)
+        XCTAssertEqual(opened.docs.comment, "Say which one.")
+        XCTAssertEqual(opened.editingQueued, "q1")
+        XCTAssertEqual(opened.queuedEdit, "and add tests")
+    }
+
     private func store() -> TestStoreOf<SessionFeature> {
         let session = Session(id: "s1", name: "first", backend: .scripted, workingDirectory: "/work")
         let store = TestStore(initialState: SessionFeature.State(session: session)) {

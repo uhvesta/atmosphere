@@ -419,6 +419,19 @@ const MIGRATIONS: &[&str] = &["
     ALTER TABLE pull_requests ADD COLUMN problem TEXT NOT NULL DEFAULT '';
     ALTER TABLE pull_requests ADD COLUMN pull_etag TEXT NOT NULL DEFAULT '';
     ALTER TABLE pull_requests ADD COLUMN checks_etag TEXT NOT NULL DEFAULT '';
+", "
+    -- Which session and kind each search entry is of, by its rowid there:
+    -- the index can't look an entry up by either, so taking a session's
+    -- entries out read every entry. Each entry has one row here.
+    CREATE TABLE search_rows (
+        id INTEGER PRIMARY KEY,
+        session TEXT NOT NULL,
+        kind TEXT NOT NULL
+    );
+    CREATE INDEX search_rows_session ON search_rows (session, kind);
+    CREATE INDEX search_rows_kind ON search_rows (kind);
+    INSERT INTO search_rows (id, session, kind)
+        SELECT rowid, session, kind FROM search_entries;
 "];
 
 /// What reverting a board change did.
@@ -909,7 +922,9 @@ impl Store {
             "DELETE FROM recovery_files WHERE session_id = ?1",
             "DELETE FROM moved_sessions WHERE session_id = ?1",
             "DELETE FROM proposal_decisions WHERE session_id = ?1",
-            "DELETE FROM search_entries WHERE session = ?1",
+            "DELETE FROM search_entries WHERE rowid IN
+                (SELECT id FROM search_rows WHERE session = ?1)",
+            "DELETE FROM search_rows WHERE session = ?1",
             "DELETE FROM search_sessions WHERE id = ?1",
             "DELETE FROM pull_requests WHERE session_id = ?1",
             "DELETE FROM cleaned_sessions WHERE session_id = ?1",

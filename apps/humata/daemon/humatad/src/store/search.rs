@@ -214,7 +214,13 @@ impl Store {
             let transaction = connection.transaction()?;
             // Its review comments are indexed apart and stay.
             transaction.execute(
-                "DELETE FROM search_entries WHERE session = ?1
+                "DELETE FROM search_entries WHERE rowid IN (
+                    SELECT id FROM search_rows WHERE session = ?1
+                    AND kind IN ('message', 'reply', 'tool_call', 'tool_output'))",
+                params![session],
+            )?;
+            transaction.execute(
+                "DELETE FROM search_rows WHERE session = ?1
                  AND kind IN ('message', 'reply', 'tool_call', 'tool_output')",
                 params![session],
             )?;
@@ -263,8 +269,25 @@ impl Store {
                     continue;
                 }
                 let transaction = connection.transaction()?;
-                transaction.execute("DELETE FROM search_entries WHERE kind = ?1", [part.kind])?;
+                transaction.execute(
+                    "DELETE FROM search_entries WHERE rowid IN
+                        (SELECT id FROM search_rows WHERE kind = ?1)",
+                    [part.kind],
+                )?;
+                transaction.execute("DELETE FROM search_rows WHERE kind = ?1", [part.kind])?;
+                // Every entry has its row, so the ones added now are those
+                // after the last row.
+                let last: i64 = transaction.query_row(
+                    "SELECT coalesce(max(id), 0) FROM search_rows",
+                    [],
+                    |row| row.get(0),
+                )?;
                 transaction.execute(part.insert, [])?;
+                transaction.execute(
+                    "INSERT INTO search_rows (id, session, kind)
+                     SELECT rowid, session, kind FROM search_entries WHERE rowid > ?1",
+                    [last],
+                )?;
                 transaction.execute(
                     "INSERT INTO settings (key, value) VALUES (?1, ?2)
                      ON CONFLICT (key) DO UPDATE SET value = excluded.value",
@@ -387,19 +410,30 @@ const SPECS: Indexes = Indexes {
         FROM items",
 };
 
+/// Adds `entry` of `session` to the index, and its row to `search_rows`,
+/// which says whose each entry is.
 fn insert(transaction: &Transaction<'_>, session: &str, entry: &Entry) -> rusqlite::Result<()> {
-    transaction.execute(
-        "INSERT INTO search_entries (text, kind, session, event, turn, time, project, item, thread)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, '', '', 0)",
-        params![
+    transaction
+        .prepare_cached(
+            "INSERT INTO search_entries
+                (text, kind, session, event, turn, time, project, item, thread)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, '', '', 0)",
+        )?
+        .execute(params![
             entry.text,
             entry.kind.name(),
             session,
             entry.event,
             entry.turn,
             entry.time_unix_ms,
-        ],
-    )?;
+        ])?;
+    transaction
+        .prepare_cached("INSERT INTO search_rows (id, session, kind) VALUES (?1, ?2, ?3)")?
+        .execute(params![
+            transaction.last_insert_rowid(),
+            session,
+            entry.kind.name()
+        ])?;
     Ok(())
 }
 
@@ -642,6 +676,126 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn forgetting_a_session_takes_only_its_entries_out() {
+        let (_dir, store) = store();
+        let said = [entry("e1", EntryKind::Message, 1_000, "rename the crate")];
+        for session in ["s1", "s2"] {
+            store
+                .index(session, &whereabouts("p1"), 0, &indexed(1), &said)
+                .expect("indexed");
+        }
+
+        store.forget_session("s1").expect("forgotten");
+
+        let found = store.search(&query("\"rename\"")).expect("searched");
+        assert_eq!(
+            found
+                .iter()
+                .map(|found| found.session.as_str())
+                .collect::<Vec<_>>(),
+            ["s2"]
+        );
+        assert_eq!(store.indexed("s1").expect("read"), None);
+        // Indexed again, as a session with the same id would be, it has
+        // its entries once.
+        store
+            .index("s1", &whereabouts("p1"), 0, &indexed(1), &said)
+            .expect("indexed");
+        assert_eq!(
+            store.search(&query("\"rename\"")).expect("searched").len(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_session_indexed_afresh_twice_has_each_entry_once() {
+        let (_dir, store) = store();
+        let said = [
+            entry("e1", EntryKind::Message, 1_000, "rename the crate"),
+            entry("e2", EntryKind::Reply, 2_000, "the crate has its new name"),
+        ];
+        store
+            .index("s1", &whereabouts("p1"), 0, &indexed(2), &said)
+            .expect("indexed");
+        for _ in 0..2 {
+            store
+                .index_afresh("s1", &whereabouts("p1"), &indexed(2), &said)
+                .expect("indexed");
+        }
+
+        let found = store.search(&query("\"crate\"")).expect("searched");
+        let mut events: Vec<&str> = found.iter().map(|found| found.event.as_str()).collect();
+        events.sort_unstable();
+        assert_eq!(events, ["e1", "e2"]);
+    }
+
+    #[test]
+    fn comments_and_specs_indexed_twice_are_each_found_once() {
+        use crate::board::{Author, ItemFields, ItemPatch, Priority, Status};
+        let (_dir, store) = store();
+        let project = store
+            .add_project(
+                "one".into(),
+                vec![humata_agent::Repository {
+                    name: "one".into(),
+                    path: "/code/one".into(),
+                }],
+                std::collections::BTreeMap::new(),
+                String::new(),
+                Vec::new(),
+            )
+            .expect("added");
+        let author = Author::on(humata_wire::pb::ChangeSurface::Mcp);
+        let fields = |title: &str, spec: &str| ItemFields {
+            parent_id: None,
+            status: Status::Todo,
+            priority: Priority::None,
+            title: title.into(),
+            spec: spec.into(),
+        };
+        let first = store
+            .add_item(&project.id, fields("Tidy", "rename the schema"), &author)
+            .expect("added");
+        store
+            .add_item(&project.id, fields("Ship", "publish the schema"), &author)
+            .expect("added");
+        // A session's entries are in the index with them, and stay.
+        store
+            .index(
+                "s1",
+                &whereabouts("p1"),
+                0,
+                &indexed(1),
+                &[entry("e1", EntryKind::Message, 1_000, "draw the schema")],
+            )
+            .expect("indexed");
+        store.index_comments_and_specs().expect("indexed");
+        // A change has them all indexed again.
+        store
+            .update_item(
+                &first.id,
+                ItemPatch {
+                    title: Some("Tidy up".into()),
+                    ..ItemPatch::default()
+                },
+                &author,
+            )
+            .expect("updated");
+        assert_eq!(store.index_comments_and_specs().expect("indexed"), 1);
+
+        let found = store.search(&query("\"schema\"")).expect("searched");
+        let specs = found
+            .iter()
+            .filter(|found| found.kind == EntryKind::Spec)
+            .count();
+        let messages = found
+            .iter()
+            .filter(|found| found.kind == EntryKind::Message)
+            .count();
+        assert_eq!((specs, messages), (2, 1));
     }
 
     #[test]

@@ -224,6 +224,19 @@ impl Store {
             .map_err(self.failed())
     }
 
+    /// Forgets that the session's pull requests merged and whether it was
+    /// cleaned up, as one of them is open again: when they have all merged
+    /// once more, [`Store::mark_merged`] is true again.
+    pub fn forget_merged(&self, session: &str) -> Result<(), StoreError> {
+        self.lock()
+            .execute(
+                "DELETE FROM cleaned_sessions WHERE session_id = ?1",
+                [session],
+            )
+            .map(drop)
+            .map_err(self.failed())
+    }
+
     /// The merged sessions whose host hasn't archived them and deleted their
     /// branches yet.
     pub fn cleanups_pending(&self) -> Result<Vec<String>, StoreError> {
@@ -383,6 +396,20 @@ mod tests {
         store.mark_cleaned("s").expect("cleaned");
         assert!(store.cleanups_pending().expect("read").is_empty());
         assert!(!store.mark_merged("s").expect("marked"));
+    }
+
+    #[test]
+    fn a_session_forgotten_as_merged_is_merged_anew() {
+        let (_dir, store) = store();
+        assert!(store.mark_merged("s").expect("marked"));
+        assert!(store.mark_merged("other").expect("marked"));
+        store.mark_cleaned("s").expect("cleaned");
+
+        store.forget_merged("s").expect("forgotten");
+        assert!(store.mark_merged("s").expect("marked"));
+        assert_eq!(store.cleanups_pending().expect("read"), ["other", "s"]);
+        // The other session is still merged.
+        assert!(!store.mark_merged("other").expect("marked"));
     }
 
     #[test]

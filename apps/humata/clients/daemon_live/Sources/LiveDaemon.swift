@@ -955,6 +955,9 @@ private actor LiveDaemon {
     private let socket: String
     private let programVersion: String
     private var connection: Connection?
+    /// The connection being opened, which calls made meanwhile wait for
+    /// instead of each opening their own.
+    private var opening: Task<Connection, any Error>?
 
     init(socket: String, programVersion: String) {
         self.socket = socket
@@ -963,7 +966,13 @@ private actor LiveDaemon {
 
     private func connected() async throws -> Connection {
         if let connection, !connection.isClosed { return connection }
-        let opened = try await Connection.open(path: socket, programVersion: programVersion)
+        if let opening { return try await opening.value }
+        let (socket, programVersion) = (socket, programVersion)
+        let task = Task { try await Connection.open(path: socket, programVersion: programVersion) }
+        opening = task
+        // Cleared whether it opened or not, so the next call tries again.
+        defer { opening = nil }
+        let opened = try await task.value
         connection = opened
         return opened
     }

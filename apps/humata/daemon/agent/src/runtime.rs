@@ -1518,13 +1518,14 @@ impl<R: Runner> Agent for LocalAgent<R> {
         if record.repositories.is_empty() {
             return Ok(Vec::new());
         }
-        let checkpoints: Vec<Vec<Snapshot>> = session.log.with_events(|events| {
+        let checkpoints: Vec<Vec<Snapshot>> = peek(&session, |events| {
             events
                 .iter()
                 .filter_map(|event| event.kind.snapshots())
                 .map(<[Snapshot]>::to_vec)
                 .collect()
-        })?;
+        })
+        .await?;
         self.workspaces(id)?
             .changes(
                 id.as_str(),
@@ -1616,16 +1617,16 @@ impl<R: Runner> Agent for LocalAgent<R> {
         let Some((repository, path)) = in_repository(&repositories, path) else {
             return Ok(Vec::new());
         };
-        let (times, checkpoints): (Vec<i64>, Vec<Vec<Snapshot>>) =
-            session.log.with_events(|events| {
-                events
-                    .iter()
-                    .filter_map(|event| {
-                        let snapshots = event.kind.snapshots()?;
-                        Some((event.time_unix_ms, snapshots.to_vec()))
-                    })
-                    .unzip()
-            })?;
+        let (times, checkpoints): (Vec<i64>, Vec<Vec<Snapshot>>) = peek(&session, |events| {
+            events
+                .iter()
+                .filter_map(|event| {
+                    let snapshots = event.kind.snapshots()?;
+                    Some((event.time_unix_ms, snapshots.to_vec()))
+                })
+                .unzip()
+        })
+        .await?;
         let turns = humata_workspace::versions(repository, &checkpoints, path)
             .await
             .map_err(workspace_failed(id))?;
@@ -1646,13 +1647,14 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 session: id.clone(),
                 path: path.to_owned(),
             })?;
-        let checkpoints: Vec<Vec<Snapshot>> = session.log.with_events(|events| {
+        let checkpoints: Vec<Vec<Snapshot>> = peek(&session, |events| {
             events
                 .iter()
                 .filter_map(|event| event.kind.snapshots())
                 .map(<[Snapshot]>::to_vec)
                 .collect()
-        })?;
+        })
+        .await?;
         humata_workspace::file_at(repository, &checkpoints, turn, relative)
             .await
             .map_err(workspace_failed(id))
@@ -2194,5 +2196,80 @@ pub(crate) mod tests {
         ];
         assert!(closing(&events).is_empty());
         assert!(closing(&[]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_history_at_rest_stays_at_rest_when_its_changes_and_files_are_read() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let path = dir.path().join("app");
+        std::fs::create_dir_all(&path).expect("made the folder");
+        std::fs::write(path.join("README.md"), "hello\n").expect("wrote");
+        for arguments in [
+            &["init", "--quiet", "--initial-branch=main"][..],
+            &["add", "README.md"],
+            &["commit", "--quiet", "-m", "first"],
+        ] {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&path)
+                .args(arguments)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@localhost")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@localhost")
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {arguments:?}");
+        }
+        let script = crate::Script {
+            rules: vec![crate::Rule {
+                when: String::new(),
+                steps: vec![crate::Step::WriteFile {
+                    path: "a.txt".into(),
+                    contents: "one".into(),
+                }],
+            }],
+        };
+        let agent = LocalAgent::open(dir.path().join("state"), crate::ScriptedRunner::new(script))
+            .expect("the agent opens")
+            .with_workspaces(Workspaces::new(dir.path().join("worktrees")));
+        let options = StartOptions {
+            name: "test".into(),
+            approval: ApprovalMode::AllowEverything,
+            repositories: vec![Repository {
+                name: "app".into(),
+                path,
+            }],
+            ..StartOptions::default()
+        };
+        let id = agent.start(options).await.expect("starts").id;
+        agent
+            .send(&id, "one".into(), SendMode::Enqueue)
+            .await
+            .expect("sent");
+        wait_for(&agent, &id, idle_turns(1)).await;
+        let session = agent.session(&id).expect("the session exists");
+        // The turn is still being closed for a moment after its last event.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while session.log.is_loaded() {
+            assert!(tokio::time::Instant::now() < deadline, "never came to rest");
+            agent
+                .rest(HashSet::new(), Box::new(|_, _| {}))
+                .await
+                .expect("rested");
+            tokio::task::yield_now().await;
+        }
+
+        let changes = agent
+            .changes(&id, &Query::default())
+            .await
+            .expect("compared");
+        let versions = agent.file_versions(&id, "a.txt").await.expect("listed");
+        let last = versions.last().expect("the turn left a version").turn;
+        let file = agent.file_at(&id, "a.txt", last).await.expect("read");
+
+        assert!(changes[0].patch.contains("+one"), "{changes:?}");
+        assert_eq!(file, "one");
+        assert!(!session.log.is_loaded());
     }
 }

@@ -150,6 +150,28 @@ pub enum GitHubError {
     )]
     NotFound { url: String },
 
+    #[error(
+        "GitHub wouldn't allow {what} at {url} (it said: {message}). The token either lacks access to this repository or isn't authorized for the organization's single sign-on. For access, use a token with read and write access to pull requests, contents and issues of this repository, or ask one of its owners to give your account write access. For single sign-on, authorize the token for the organization on GitHub under Settings › Developer settings › Personal access tokens › Configure SSO, or for the GitHub command line's, run `gh auth refresh`. A new token only helps if it has that access"
+    )]
+    Forbidden {
+        what: String,
+        url: String,
+        message: String,
+    },
+
+    #[error(
+        "GitHub couldn't take {what} as asked (it said: {message}). If it says there are no commits between the branches, there's nothing to open a pull request for until the session has changes its base branch doesn't. If it says a pull request already exists, land again: Humata picks up the one that's open"
+    )]
+    Invalid { what: String, message: String },
+
+    #[error(
+        "a request to GitHub stopped part way, so its answer is unknown; try again, and check on GitHub first if it was opening a pull request"
+    )]
+    Stopped {
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
     #[error("GitHub refused {what} (status {status}): {message}")]
     Refused {
         what: String,
@@ -222,6 +244,9 @@ pub struct Pull {
     pub merged: bool,
     #[serde(default)]
     pub merged_at: Option<String>,
+    /// Its description.
+    #[serde(default)]
+    pub body: Option<String>,
     pub head: Head,
 }
 
@@ -498,7 +523,7 @@ impl GitHub {
             decode(&url, answer.text.as_deref().unwrap_or_default())
         })
         .await
-        .unwrap_or_else(|_| Err(stopped()))
+        .unwrap_or_else(|source| Err(GitHubError::Stopped { source }))
     }
 
     /// GitHub's answer to reading `url`, sent `If-None-Match: etag` unless
@@ -508,7 +533,7 @@ impl GitHub {
         let etag = etag.to_owned();
         tokio::task::spawn_blocking(move || github.call("GET", &url, None, "reading", &etag))
             .await
-            .unwrap_or_else(|_| Err(stopped()))
+            .unwrap_or_else(|source| Err(GitHubError::Stopped { source }))
     }
 
     fn call(
@@ -558,6 +583,7 @@ impl GitHub {
         let status = response.status().as_u16();
         let remaining = header(&response, "x-ratelimit-remaining");
         let reset = header(&response, "x-ratelimit-reset");
+        let retry_after = header(&response, "retry-after");
         let tag = header(&response, "etag");
         let next = header(&response, "link").and_then(|link| next_link(&link));
         if status == 304 {
@@ -592,18 +618,35 @@ impl GitHub {
                     message: message(&text),
                 })
             }
-            403 | 429 if remaining.as_deref() == Some("0") || status == 429 => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|elapsed| elapsed.as_secs())
-                    .unwrap_or_default();
-                let reset = reset
-                    .and_then(|reset| reset.parse::<u64>().ok())
-                    .unwrap_or(now + 60);
+            403 | 429
+                if retry_after.is_some() || remaining.as_deref() == Some("0") || status == 429 =>
+            {
+                // GitHub's secondary limits say how long to wait in seconds;
+                // its primary one says when it resets.
+                let seconds = retry_after
+                    .and_then(|seconds| seconds.trim().parse::<u64>().ok())
+                    .unwrap_or_else(|| {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|elapsed| elapsed.as_secs())
+                            .unwrap_or_default();
+                        reset
+                            .and_then(|reset| reset.parse::<u64>().ok())
+                            .map_or(60, |reset| reset.saturating_sub(now))
+                    });
                 Err(GitHubError::RateLimited {
-                    wait_minutes: reset.saturating_sub(now).div_ceil(60).max(1),
+                    wait_minutes: seconds.div_ceil(60).max(1),
                 })
             }
+            403 => Err(GitHubError::Forbidden {
+                what: what.to_owned(),
+                url: url.to_owned(),
+                message: message(&text),
+            }),
+            422 => Err(GitHubError::Invalid {
+                what: what.to_owned(),
+                message: message(&text),
+            }),
             404 => Err(GitHubError::NotFound {
                 url: url.to_owned(),
             }),
@@ -638,15 +681,6 @@ fn decode<T: DeserializeOwned>(url: &str, text: &str) -> Result<T, GitHubError> 
         url: url.to_owned(),
         source,
     })
-}
-
-/// A call whose thread ended before it did.
-fn stopped() -> GitHubError {
-    GitHubError::Refused {
-        what: "the request".to_owned(),
-        status: 0,
-        message: "it stopped part way".to_owned(),
-    }
 }
 
 /// The `rel="next"` URL of a `Link` header, if there's one.

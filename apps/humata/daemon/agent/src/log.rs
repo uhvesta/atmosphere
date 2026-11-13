@@ -17,6 +17,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -31,12 +32,18 @@ const LIVE_CAPACITY: usize = 4096;
 pub(crate) struct EventLog {
     path: PathBuf,
     inner: Mutex<Inner>,
+    /// Kept up to date with the events, loaded or not. Apart from `inner`,
+    /// which is held while a history at rest is read from disk, so reading
+    /// the summary never waits for that. Locked only for a moment, and
+    /// when both are held, after `inner`.
+    summary: Mutex<Summary>,
+    /// Whether `inner` has the events loaded, kept beside it for the same
+    /// reason.
+    is_loaded: AtomicBool,
     live: broadcast::Sender<Event>,
 }
 
 struct Inner {
-    /// Kept up to date with the events, loaded or not.
-    summary: Summary,
     /// None while the log is at rest.
     loaded: Option<Loaded>,
 }
@@ -100,10 +107,11 @@ impl EventLog {
         let (live, _) = broadcast::channel(LIVE_CAPACITY);
         Ok(Self {
             path,
+            summary: Mutex::new(Summary::of(&loaded.events)),
             inner: Mutex::new(Inner {
-                summary: Summary::of(&loaded.events),
                 loaded: Some(loaded),
             }),
+            is_loaded: AtomicBool::new(true),
             live,
         })
     }
@@ -115,10 +123,9 @@ impl EventLog {
             let (live, _) = broadcast::channel(LIVE_CAPACITY);
             return Ok(Self {
                 path,
-                inner: Mutex::new(Inner {
-                    summary: resting.summary,
-                    loaded: None,
-                }),
+                inner: Mutex::new(Inner { loaded: None }),
+                summary: Mutex::new(resting.summary),
+                is_loaded: AtomicBool::new(false),
                 live,
             });
         }
@@ -129,22 +136,23 @@ impl EventLog {
         let (live, _) = broadcast::channel(LIVE_CAPACITY);
         Self {
             path,
+            summary: Mutex::new(Summary::of(&events)),
             inner: Mutex::new(Inner {
-                summary: Summary::of(&events),
                 loaded: Some(Loaded {
                     events,
                     streaming: None,
                     file,
                 }),
             }),
+            is_loaded: AtomicBool::new(true),
             live,
         }
     }
 
     /// Whether the events are in memory, as they are unless the log is at
-    /// rest.
+    /// rest. Doesn't wait for a history being read.
     pub(crate) fn is_loaded(&self) -> bool {
-        self.lock().loaded.is_some()
+        self.is_loaded.load(Ordering::Acquire)
     }
 
     fn loaded<'a>(
@@ -154,6 +162,7 @@ impl EventLog {
     ) -> Result<&'a mut Loaded, AgentError> {
         if inner.loaded.is_none() {
             inner.loaded = Some(read_all(&self.path, progress)?);
+            self.is_loaded.store(true, Ordering::Release);
         }
         inner.loaded.as_mut().ok_or_else(|| AgentError::Read {
             path: self.path.clone(),
@@ -191,7 +200,7 @@ impl EventLog {
             }
         }
         loaded.events.push(event.clone());
-        inner.summary.add(&event);
+        self.lock_summary().add(&event);
         // No watchers is not an error.
         let _ = self.live.send(event.clone());
         Ok(event)
@@ -227,13 +236,15 @@ impl EventLog {
         remove(&sealed_path(&self.path))?;
         remove(&resting_path(&self.path))?;
         let file = append_to(&self.path)?;
-        inner.summary = Summary::of(&events);
+        let summary = Summary::of(&events);
         let last = events.last().cloned();
         inner.loaded = Some(Loaded {
             events,
             streaming: None,
             file,
         });
+        self.is_loaded.store(true, Ordering::Release);
+        *self.lock_summary() = summary;
         if let Some(last) = last {
             let _ = self.live.send(last);
         }
@@ -272,8 +283,10 @@ impl EventLog {
         Ok(read(&self.loaded(&mut inner, &mut |_, _| {})?.events))
     }
 
+    /// The summary of the events so far. Doesn't wait for a history being
+    /// read.
     pub(crate) fn summary(&self) -> Summary {
-        self.lock().summary.clone()
+        self.lock_summary().clone()
     }
 
     /// The events so far and a receiver for the rest, with none missed or
@@ -308,7 +321,7 @@ impl EventLog {
         }
         let sealed = seal && self.seal(&mut inner)?;
         let resting = Resting {
-            summary: inner.summary.clone(),
+            summary: self.summary(),
             plain: length(&self.path)?,
             sealed: length(&sealed_path(&self.path))?,
         };
@@ -322,6 +335,7 @@ impl EventLog {
                 source,
             })?;
         inner.loaded = None;
+        self.is_loaded.store(false, Ordering::Release);
         Ok(Rested::Resting { sealed })
     }
 
@@ -382,6 +396,14 @@ impl EventLog {
         // A panic while holding the lock leaves the events as they were: each
         // change is one push after a successful write.
         self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// For a moment only: never held while taking `inner` or reading the
+    /// disk.
+    fn lock_summary(&self) -> std::sync::MutexGuard<'_, Summary> {
+        self.summary
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -760,6 +782,35 @@ mod tests {
         assert!(log.is_loaded());
         assert_eq!(told.last().map(|(read, total)| read == total), Some(true));
         assert_eq!(texts(&log), ["one"]);
+    }
+
+    #[test]
+    fn the_summary_follows_what_is_appended_replaced_and_put_at_rest() {
+        let folder = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = folder.path().join("events.jsonl");
+        let log = ok(EventLog::create(path, vec![said("one")]));
+        let of_events = |log: &EventLog| Summary::of(&ok(log.events()));
+        assert_eq!(log.summary(), of_events(&log));
+
+        ok(log.append(said("two")));
+        assert_eq!(log.summary(), of_events(&log));
+
+        ok(log.replace(vec![said("three")]));
+        assert_eq!(log.summary(), of_events(&log));
+        assert!(log.is_loaded());
+
+        assert_eq!(
+            ok(log.rest(false, |_| true)),
+            Rested::Resting { sealed: false }
+        );
+        assert!(!log.is_loaded());
+        assert_eq!(log.summary(), of_events(&log));
+
+        // Appending to a log at rest loads it, and is counted.
+        ok(log.append(said("four")));
+        assert!(log.is_loaded());
+        assert_eq!(log.summary(), of_events(&log));
+        assert_eq!(texts(&log), ["three", "four"]);
     }
 
     #[test]

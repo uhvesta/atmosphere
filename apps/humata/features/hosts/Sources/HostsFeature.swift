@@ -22,6 +22,9 @@ package struct HostsFeature {
         package var selection: RemoteHost.ID?
         /// The selected host's variables and setup script.
         package var editor: HostEditorFeature.State?
+        /// The variables and setup script changed and not saved on hosts
+        /// looked away from, to show again when they're selected.
+        var unsaved: [RemoteHost.ID: HostEditorFeature.State] = [:]
         /// The selected host's sessions whose files couldn't be read.
         package var skipped: IdentifiedArrayOf<SkippedSession> = []
         /// The Mac's copies of the selected host's sessions.
@@ -312,8 +315,14 @@ package struct HostsFeature {
             case .removed(let id):
                 state.hosts.remove(id: id)
                 state.health[id] = nil
-                guard state.selection == id else { return .none }
-                return select(state.hosts.first?.id ?? state.coordinator.id, in: &state)
+                guard state.selection == id else {
+                    state.unsaved[id] = nil
+                    return .none
+                }
+                let selecting = select(state.hosts.first?.id ?? state.coordinator.id, in: &state)
+                // Selecting another kept what was being changed on it.
+                state.unsaved[id] = nil
+                return selecting
 
             case .failed(let title, let message):
                 state.destination = .alert(
@@ -331,10 +340,12 @@ package struct HostsFeature {
 
             case .editor(.delegate(.saved(let host))) where host.isCoordinator:
                 state.coordinator = host
+                state.unsaved[host.id] = nil
                 return .none
 
             case .editor(.delegate(.saved(let host))):
                 state.hosts[id: host.id] = host
+                state.unsaved[host.id] = nil
                 // Saving sets it up again, which the check reports on.
                 return check(host.id, in: &state, again: true)
 
@@ -378,8 +389,18 @@ package struct HostsFeature {
     }
 
     private func select(_ id: RemoteHost.ID?, in state: inout State) -> Effect<Action> {
+        // What was changed on the host shown is kept until it's saved.
+        if var editor = state.editor, editor.update != nil {
+            editor.saving = false
+            editor.alert = nil
+            state.unsaved[editor.host.id] = editor
+        }
         state.selection = id
-        state.editor = state.selected.map(HostEditorFeature.State.init)
+        if let host = state.selected {
+            state.editor = state.unsaved.removeValue(forKey: host.id) ?? HostEditorFeature.State(host: host)
+        } else {
+            state.editor = nil
+        }
         state.terminals = id.map {
             TerminalsFeature.State(place: HostPlace(host: $0.isEmpty ? nil : $0), opensFirst: false)
         }

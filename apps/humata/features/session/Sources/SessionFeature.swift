@@ -118,6 +118,9 @@ package struct SessionFeature {
         /// The rewind the chat was last read again for, so reading it
         /// again doesn't start over once more.
         var restartedFor: String?
+        /// The history is being sent to a chat that opened empty: a rewind
+        /// in it happened before, and is no reason to read it again.
+        var replaying = false
         /// Landing the session, as a sheet.
         @Presents package var land: LandFeature.State?
         /// Merging the base in is under way.
@@ -271,26 +274,48 @@ package struct SessionFeature {
         var turnsEnded: Int { chat.turnsEnded }
 
         /// What's kept of a session looked away from while Humata runs:
-        /// the view it showed, the file comments not sent yet, the review
-        /// comment half written and the message being edited.
+        /// the view it showed, the file it showed with the comment being
+        /// written on it and those not sent yet, the review comment half
+        /// written, the spec being edited, and the message and the queued
+        /// message being edited.
         package struct Left: Equatable, Sendable {
             package var tab: Tab
             var drafts: IdentifiedArrayOf<DocsFeature.Draft>
+            /// The file shown, what was picked in it and the comment on it.
+            var file: String?
+            var picked: DocsFeature.Picked?
+            var comment: String
             var review: ReviewFeature.State.Kept
+            /// The spec being edited; a save under way isn't kept, as its
+            /// answer doesn't come to the session opened again.
+            var spec: SpecsFeature.Draft?
             var editing: String?
             var edited: String
+            var editingQueued: String?
+            var queuedEdit: String
         }
 
         package var left: Left {
             get {
-                Left(tab: tab, drafts: docs.drafts, review: review.kept, editing: editing, edited: edited)
+                var spec = specs.draft
+                spec?.saving = false
+                return Left(
+                    tab: tab, drafts: docs.drafts, file: docs.selected, picked: docs.picked, comment: docs.comment,
+                    review: review.kept, spec: spec, editing: editing, edited: edited,
+                    editingQueued: editingQueued, queuedEdit: queuedEdit)
             }
             set {
                 tab = newValue.tab
                 docs.drafts = newValue.drafts
+                docs.selected = newValue.file
+                docs.picked = newValue.picked
+                docs.comment = newValue.comment
                 review.kept = newValue.review
+                specs.draft = newValue.spec
                 editing = newValue.editing
                 edited = newValue.edited
+                editingQueued = newValue.editingQueued
+                queuedEdit = newValue.queuedEdit
             }
         }
 
@@ -392,12 +417,16 @@ package struct SessionFeature {
         /// Events that came together, such as the history when watching
         /// starts.
         case receivedAll([SessionEvent])
+        /// The history a watch starts with has all come; what comes after
+        /// is new.
+        case historyReplayed
         /// The history is read from disk first: `read` bytes of `total`.
         case historyLoading(read: UInt64, total: UInt64)
         case watchEnded(failure: String?)
         case sendTapped(SendMode)
-        /// The message wasn't sent; it goes back in the box if that is empty.
-        case sendFailed(text: String, images: [DraftImage], message: String)
+        /// The message wasn't sent; what was typed, pasted and added goes
+        /// back in the box, before anything put there since.
+        case sendFailed(text: String, pastes: [Paste], images: [DraftImage], message: String)
         /// The session's model can, or can't, see images.
         case readsImagesFound(Bool)
         /// Image files dropped on the box or chosen.
@@ -537,20 +566,22 @@ package struct SessionFeature {
         let new = events.filter { state.events[id: $0.id] == nil }
         if new.contains(where: \.kind.isLive) { state.watchRetries = 0 }
         // A rewind or its undo replaced the history: read it again from
-        // the start, once for each.
-        if !state.events.isEmpty,
-            let restart = new.last(where: { event in
-                switch event.kind {
-                case .rewound, .rewindUndone: true
-                default: false
-                }
-            }), restart.id != state.restartedFor
-        {
+        // the start, once for each. One in the history of a chat that
+        // opened empty happened before it was read, so that history
+        // already is what it left.
+        if let restart = new.last(where: { event in
+            switch event.kind {
+            case .rewound, .rewindUndone: true
+            default: false
+            }
+        }), restart.id != state.restartedFor {
             state.restartedFor = restart.id
-            state.events = []
-            state.streaming = ""
-            state.streamed = []
-            return .send(.task)
+            if !state.replaying, !state.events.isEmpty {
+                state.events = []
+                state.streaming = ""
+                state.streamed = []
+                return .send(.task)
+            }
         }
         state.receive(events)
         var effects: [Effect<Action>] = []
@@ -723,6 +754,7 @@ package struct SessionFeature {
             case .task:
                 state.disconnected = false
                 state.watchFailure = nil
+                state.replaying = state.events.isEmpty
                 // The history is sent again, and the reply's parts with it;
                 // those already shown are skipped, so the reply stays.
                 let session = state.session.id
@@ -754,7 +786,9 @@ package struct SessionFeature {
                         defer { reader.cancel() }
                         while let batch = await batches.next() {
                             switch batch {
-                            case .events(let events): await send(.receivedAll(events))
+                            case .events(let events, let replayed):
+                                await send(.receivedAll(events))
+                                if replayed { await send(.historyReplayed) }
                             case .ended(let failure):
                                 await send(.watchEnded(failure: failure))
                                 return
@@ -781,11 +815,16 @@ package struct SessionFeature {
                 guard !events.isEmpty else { return .none }
                 return received(events, &state)
 
+            case .historyReplayed:
+                state.replaying = false
+                return .none
+
             case .historyLoading(let read, let total):
                 state.historyLoading = HistoryLoading(read: read, total: total)
                 return .none
 
             case .watchEnded(let failure):
+                state.replaying = false
                 state.historyLoaded = true
                 state.historyLoading = nil
                 state.watchFailure = failure
@@ -803,7 +842,9 @@ package struct SessionFeature {
 
             case .sendTapped(let mode):
                 guard state.canSend else { return .none }
-                let text = Paste.message(draft: state.draft, pastes: state.pastes)
+                let typed = state.draft
+                let pastes = state.pastes
+                let text = Paste.message(draft: typed, pastes: pastes)
                 let drafted = Array(state.images)
                 let images = drafted.compactMap(\.image)
                 state.draft = ""
@@ -819,15 +860,28 @@ package struct SessionFeature {
                         try await daemon.sendImages(session, text, images, mode)
                     }
                 } catch: { error, send in
-                    await send(.sendFailed(text: text, images: drafted, message: error.localizedDescription))
+                    await send(
+                        .sendFailed(
+                            text: typed, pastes: pastes, images: drafted, message: error.localizedDescription))
                 }
 
-            case .sendFailed(let text, let images, let message):
-                if state.draft.isEmpty {
-                    state.draft = text
-                    state.$savedDraft.withLock { $0 = text }
+            case .sendFailed(let text, let pastes, let images, let message):
+                // Ahead of what was typed and added since, in the order
+                // it would have been sent.
+                if !text.isEmpty {
+                    state.draft = state.draft.isEmpty ? text : text + "\n\n" + state.draft
+                    state.$savedDraft.withLock { $0 = state.draft }
                 }
-                if state.images.isEmpty { state.images = IdentifiedArray(uniqueElements: images) }
+                let failedPastes = pastes.filter { paste in !state.pastes.contains { $0.id == paste.id } }
+                if !failedPastes.isEmpty {
+                    state.pastes = failedPastes + state.pastes
+                    let kept = Paste.encode(state.pastes)
+                    state.$savedPastes.withLock { $0 = kept }
+                }
+                let failedImages = images.filter { state.images[id: $0.id] == nil }
+                if !failedImages.isEmpty {
+                    state.images = IdentifiedArray(uniqueElements: failedImages + state.images)
+                }
                 state.alert = Self.alert("Couldn’t send the message", message)
                 return .none
 
@@ -1260,15 +1314,17 @@ extension SessionEvent.Kind {
 /// last batch was taken goes as one.
 private actor EventBatches {
     enum Batch {
-        case events([SessionEvent])
+        /// `replayed` when they end the history the watch starts with.
+        case events([SessionEvent], replayed: Bool)
         /// The watch ended, with why if it failed.
         case ended(failure: String?)
     }
 
     private var pending: [SessionEvent] = []
-    /// The history is all sent and no batch has said so yet: the next one
-    /// does, even with no events.
-    private var loaded = false
+    /// How many of the pending events the history ends after, when it's
+    /// all sent and no batch has said so yet: the next one holds those and
+    /// says so, even with no events.
+    private var historyEnd: Int?
     private var ended: Batch?
     private var cancelled = false
     private var waiter: CheckedContinuation<Void, Never>?
@@ -1280,7 +1336,7 @@ private actor EventBatches {
 
     /// The history's events have all been added, if it had any.
     func historyLoaded() {
-        loaded = true
+        historyEnd = pending.count
         wake()
     }
 
@@ -1291,7 +1347,7 @@ private actor EventBatches {
 
     /// The next batch, waiting for one; nil once cancelled.
     func next() async -> Batch? {
-        if pending.isEmpty, !loaded, ended == nil, !cancelled {
+        if pending.isEmpty, historyEnd == nil, ended == nil, !cancelled {
             await withTaskCancellationHandler {
                 await withCheckedContinuation { waiter = $0 }
             } onCancel: {
@@ -1299,12 +1355,16 @@ private actor EventBatches {
             }
         }
         if cancelled || Task.isCancelled { return nil }
-        if !pending.isEmpty || loaded {
-            defer {
-                pending = []
-                loaded = false
-            }
-            return .events(pending)
+        if let end = historyEnd {
+            // What came after the history's end is new, and goes next.
+            let history = Array(pending.prefix(end))
+            pending.removeFirst(min(end, pending.count))
+            historyEnd = nil
+            return .events(history, replayed: true)
+        }
+        if !pending.isEmpty {
+            defer { pending = [] }
+            return .events(pending, replayed: false)
         }
         return ended
     }

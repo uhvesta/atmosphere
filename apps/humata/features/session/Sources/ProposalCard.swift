@@ -189,7 +189,7 @@ package struct ProposalEditor: View {
     }
 
     package var body: some View {
-        if store.editing != nil {
+        if let editing = store.editing {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Edit the Proposal")
                     .font(.headline)
@@ -207,6 +207,7 @@ package struct ProposalEditor: View {
                     Button("Apply") { store.send(.editApplied) }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
+                        .disabled(store.deciding.contains(editing.id))
                 }
             }
             .padding()

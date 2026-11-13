@@ -70,15 +70,17 @@ impl Daemon {
     }
 
     /// Backs up `session` on `host` in the background, unless its copy
-    /// already has `turns` turns. A backup asked for while one runs runs
-    /// again after it, so the copy ends up with the last.
+    /// already has `turns` turns and no backup asked for whatever its
+    /// turns still fails. A backup asked for while one runs runs again
+    /// after it, so the copy ends up with the last.
     pub(super) fn back_up_soon(&self, host: &str, session: &str, turns: Option<u32>) {
         if host.is_empty() {
             return;
         }
         if let Some(turns) = turns {
             let kept = self.store.recovery_turns(session).ok().flatten();
-            if kept.is_some_and(|kept| kept >= turns) {
+            if kept.is_some_and(|kept| kept >= turns) && !self.lock_backup_failures().owed(session)
+            {
                 return;
             }
         }
@@ -131,6 +133,14 @@ impl Daemon {
         });
     }
 
+    /// Backs up `session` on `host` in the background whatever its copy
+    /// has and however lately a backup of it failed: its history was
+    /// rewound, or a rewind undone, so the copy holds another.
+    pub(super) fn back_up_changed(&self, host: &str, session: &str) {
+        self.lock_backup_failures().succeeded(session);
+        self.back_up_soon(host, session, None);
+    }
+
     fn lock_backup_failures(&self) -> std::sync::MutexGuard<'_, BackupFailures> {
         self.backup_failures
             .lock()
@@ -180,6 +190,8 @@ impl Daemon {
             Err(error) => return Err(error),
             Ok(_) => return Err(unexpected(&session.host, "the session deleted")),
         }
+        // The listing made above still has it.
+        self.forget_listing(&session.host);
         self.clean_up_deleted(id, project.as_deref()).await?;
         Ok(true)
     }
@@ -210,6 +222,7 @@ impl Daemon {
         if listed.iter().any(|session| session.id == id) {
             return Err(unknown());
         }
+        self.forget_listing(&placement.host);
         self.clean_up_deleted(id, placement.project.as_deref())
             .await
     }
@@ -232,10 +245,12 @@ impl Daemon {
                     })?;
             }
         } else if folder.exists() {
-            std::fs::remove_dir_all(&folder).map_err(|source| DaemonError::DeleteRecovery {
-                session: id.to_owned(),
-                path: folder.clone(),
-                source,
+            tokio::fs::remove_dir_all(&folder).await.map_err(|source| {
+                DaemonError::DeleteRecovery {
+                    session: id.to_owned(),
+                    path: folder.clone(),
+                    source,
+                }
             })?;
         }
         self.store.forget_session(id)?;
@@ -709,17 +724,29 @@ pub(super) struct BackupFailures(HashMap<String, BackupFailure>);
 struct BackupFailure {
     host: String,
     turns: Option<u32>,
+    /// A backup asked for whatever the copy's turns has failed since the
+    /// last that was kept, so the copy may be behind with as many turns.
+    owed: bool,
     at: Instant,
     problem: String,
 }
 
 impl BackupFailures {
-    /// Whether a backup of `session` at `turns` waits, having just failed.
+    /// Whether a backup of `session` at `turns` waits, having just failed
+    /// at that turn or a later one. One that doesn't say its turn waits
+    /// too, as does any after a failure that didn't.
     fn waits(&self, session: &str, turns: Option<u32>, now: Instant) -> bool {
         self.0.get(session).is_some_and(|failure| {
-            failure.turns == turns && now.duration_since(failure.at) < BACKUP_RETRY
+            let later = match (turns, failure.turns) {
+                (Some(turns), Some(failed)) => turns > failed,
+                _ => false,
+            };
+            !later && now.duration_since(failure.at) < BACKUP_RETRY
         })
     }
+
+    /// Records that `session`'s backup failed at `turns`; one that doesn't
+    /// say its turn keeps the turn of the failure before it.
 
     fn failed(
         &mut self,
@@ -729,11 +756,15 @@ impl BackupFailures {
         problem: String,
         now: Instant,
     ) {
+        let before = self.0.get(session);
+        let owed = turns.is_none() || before.is_some_and(|failure| failure.owed);
+        let turns = turns.or_else(|| before.and_then(|failure| failure.turns));
         self.0.insert(
             session.to_owned(),
             BackupFailure {
                 host: host.to_owned(),
                 turns,
+                owed,
                 at: now,
                 problem,
             },
@@ -742,6 +773,12 @@ impl BackupFailures {
 
     fn succeeded(&mut self, session: &str) {
         self.0.remove(session);
+    }
+
+    /// Whether a backup of `session` asked for whatever its copy's turns
+    /// failed, and none was kept since.
+    fn owed(&self, session: &str) -> bool {
+        self.0.get(session).is_some_and(|failure| failure.owed)
     }
 
     fn problem(&self, session: &str) -> Option<&str> {
@@ -895,8 +932,22 @@ mod tests {
         assert_eq!(failures.problem("s"), Some("too big"));
         assert_eq!(failures.failing().count(), 1);
 
+        // Asked for without a turn, it waits like the turn that failed, and
+        // failing so again leaves that turn as it was, but is owed however
+        // many turns the copy has.
+        assert!(failures.waits("s", None, now));
+        assert!(failures.waits("s", Some(1), now));
+        assert!(!failures.owed("s"));
+        failures.failed("s", "build", None, "too big".to_owned(), now);
+        assert!(failures.waits("s", Some(2), now));
+        assert!(!failures.waits("s", Some(3), now));
+        assert!(failures.owed("s"));
+        failures.failed("s", "build", Some(3), "too big".to_owned(), now);
+        assert!(failures.owed("s"));
+
         failures.succeeded("s");
         assert!(!failures.waits("s", Some(2), now));
+        assert!(!failures.owed("s"));
         assert_eq!(failures.problem("s"), None);
     }
 }

@@ -192,6 +192,40 @@ final class HostsFeatureTests: XCTestCase {
         XCTAssertFalse(state.canSave)
     }
 
+    func testWhatWasChangedOnAHostIsStillThereAfterLookingAtAnother() async throws {
+        let daemon = InMemoryDaemon()
+        _ = try await daemon.client.addHost("far", "me@far")
+        _ = try await daemon.client.addHost("near", "me@near")
+        let store = TestStore(initialState: HostsFeature.State()) {
+            HostsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.selected("far"))
+        await store.send(\.editor.binding.setupScript, "apt-get install -y ripgrep\n")
+
+        await store.send(.selected("near"))
+        XCTAssertEqual(store.state.editor?.host.id, "near")
+        XCTAssertNil(store.state.editor?.update)
+
+        await store.send(.selected("far"))
+        XCTAssertEqual(store.state.editor?.host.id, "far")
+        XCTAssertEqual(store.state.editor?.setupScript, "apt-get install -y ripgrep\n")
+
+        // Saved, there's nothing left to bring back.
+        await store.send(\.editor.saveTapped)
+        await store.receive(\.editor.delegate.saved)
+        await store.send(.selected("near"))
+        await store.send(.selected("far"))
+        XCTAssertNil(store.state.editor?.update)
+        XCTAssertEqual(store.state.editor?.setupScript, "apt-get install -y ripgrep\n")
+        await store.skipReceivedActions(strict: false)
+    }
+
     func testRemovingAHostAsksFirst() async throws {
         let daemon = InMemoryDaemon()
         _ = try await daemon.client.addHost("far", "me@far")

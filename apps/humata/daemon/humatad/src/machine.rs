@@ -27,6 +27,9 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// the session's start forever.
 const CLONE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
+/// How long a push or a fetch may take before git is stopped.
+const REMOTE_GIT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
 /// How long `copilot --version` may take.
 const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -301,7 +304,7 @@ impl Machine {
                     return Err(HostError::CloneTimedOut {
                         url: repository.url,
                         path,
-                        minutes: patience.as_secs().div_ceil(60),
+                        minutes: minutes(patience),
                     });
                 }
             };
@@ -379,12 +382,26 @@ impl Machine {
         repository: &str,
         branch: &str,
     ) -> Result<(), HostError> {
-        let output = self
-            .remote_git(
-                directory,
-                &["push", "--quiet", "--set-upstream", "origin", branch],
-            )
-            .await?;
+        self.push_within(directory, repository, branch, REMOTE_GIT_TIMEOUT)
+            .await
+    }
+
+    /// [`Self::push`], stopping git when it takes longer than `patience`.
+    async fn push_within(
+        &self,
+        directory: &Path,
+        repository: &str,
+        branch: &str,
+        patience: Duration,
+    ) -> Result<(), HostError> {
+        let arguments = ["push", "--quiet", "--set-upstream", "origin", branch];
+        let Some(output) = self.remote_git(directory, &arguments, patience).await? else {
+            return Err(HostError::PushTimedOut {
+                repository: repository.to_owned(),
+                branch: branch.to_owned(),
+                minutes: minutes(patience),
+            });
+        };
         if output.status.success() {
             return Ok(());
         }
@@ -397,12 +414,27 @@ impl Machine {
 
     /// Fetches the worktree at `directory`'s `origin`, if it has one.
     pub async fn fetch(&self, directory: &Path, repository: &str) -> Result<(), HostError> {
+        self.fetch_within(directory, repository, REMOTE_GIT_TIMEOUT)
+            .await
+    }
+
+    /// [`Self::fetch`], stopping git when it takes longer than `patience`.
+    async fn fetch_within(
+        &self,
+        directory: &Path,
+        repository: &str,
+        patience: Duration,
+    ) -> Result<(), HostError> {
         if origin(directory).await.is_empty() {
             return Ok(());
         }
-        let output = self
-            .remote_git(directory, &["fetch", "--quiet", "origin"])
-            .await?;
+        let arguments = ["fetch", "--quiet", "origin"];
+        let Some(output) = self.remote_git(directory, &arguments, patience).await? else {
+            return Err(HostError::FetchTimedOut {
+                repository: repository.to_owned(),
+                minutes: minutes(patience),
+            });
+        };
         if output.status.success() {
             return Ok(());
         }
@@ -414,26 +446,41 @@ impl Machine {
 
     /// Runs git in `directory` with the host's variables, answering
     /// GitHub's request for a password with the host's token if it has one.
+    /// None if it took longer than `patience` and was stopped: a remote
+    /// that takes the connection and never answers would hold it forever.
     async fn remote_git(
         &self,
         directory: &Path,
         arguments: &[&str],
-    ) -> Result<std::process::Output, HostError> {
+        patience: Duration,
+    ) -> Result<Option<std::process::Output>, HostError> {
         let mut git = Command::new("git");
         let vars = self.env.vars();
         if vars.iter().any(|(name, _)| TOKENS.contains(&name.as_str())) {
             git.args(GITHUB_CREDENTIALS);
         }
-        git.envs(vars)
+        let running = git
+            .envs(vars)
             .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(Stdio::null())
             .arg("-C")
             .arg(directory)
             .args(arguments)
-            .output()
-            .await
-            .map_err(|source| HostError::RunGit { source })
+            // Dropping it when time is up stops git.
+            .kill_on_drop(true)
+            .output();
+        match tokio::time::timeout(patience, running).await {
+            Ok(output) => output
+                .map(Some)
+                .map_err(|source| HostError::RunGit { source }),
+            Err(_) => Ok(None),
+        }
     }
+}
+
+/// `patience` in whole minutes, for a message, rounded up.
+fn minutes(patience: Duration) -> u64 {
+    patience.as_secs().div_ceil(60)
 }
 
 /// The URL of the `origin` remote of the repository at `directory`; empty
@@ -684,6 +731,63 @@ mod tests {
             panic!("the clone wasn't stopped: {cloned:?}");
         };
         assert!(!path.exists());
+        drop(silent);
+    }
+
+    #[tokio::test]
+    async fn a_push_and_a_fetch_that_take_too_long_are_stopped() {
+        let state = scratch();
+        // A git server that takes each connection and never answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap_or_else(|error| panic!("couldn't listen: {error}"));
+        let port = listener
+            .local_addr()
+            .unwrap_or_else(|error| panic!("{error}"))
+            .port();
+        let silent = std::thread::spawn(move || {
+            let first = listener.accept().map(|(stream, _)| stream);
+            let second = listener.accept().map(|(stream, _)| stream);
+            (first, second)
+        });
+        let copy = state.path().join("copy");
+        let copy_path = copy.display().to_string();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@localhost")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@localhost")
+                .status()
+                .unwrap_or_else(|error| panic!("{error}"));
+            assert!(status.success());
+        };
+        git(&["init", "-q", "-b", "work", &copy_path]);
+        git(&[
+            "-C",
+            &copy_path,
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "first",
+        ]);
+        let url = format!("git://127.0.0.1:{port}/app.git");
+        git(&["-C", &copy_path, "remote", "add", "origin", &url]);
+        let machine = machine(&state.path().join("host"));
+        let patience = Duration::from_secs(1);
+
+        let pushed = machine.push_within(&copy, "app", "work", patience).await;
+        let fetched = machine.fetch_within(&copy, "app", patience).await;
+
+        assert!(
+            matches!(&pushed, Err(HostError::PushTimedOut { branch, .. }) if branch == "work"),
+            "the push wasn't stopped: {pushed:?}"
+        );
+        assert!(
+            matches!(&fetched, Err(HostError::FetchTimedOut { .. })),
+            "the fetch wasn't stopped: {fetched:?}"
+        );
         drop(silent);
     }
 }

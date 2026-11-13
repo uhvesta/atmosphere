@@ -112,7 +112,7 @@ struct HumataApp: App {
             .disabled(session == nil || session?.forking == true)
         Divider()
         Button("Land…") { send(.landTapped) }
-            .disabled(session?.ships != true)
+            .disabled(session?.ships != true || session?.isWorking == true)
         Button("Update from the Base Branch") { send(.updateFromBaseTapped) }
             .keyboardShortcut("u", modifiers: [.command, .option])
             .disabled(session?.ships != true || session?.updating == true || session?.isWorking == true)

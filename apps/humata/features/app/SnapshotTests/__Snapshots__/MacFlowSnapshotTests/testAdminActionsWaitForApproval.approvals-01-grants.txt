@@ -1,7 +1,7 @@
 [Window/StandardWindow] ""
   [Heading] "Grants in Force"
   [StaticText] "" value: "Board Changes and Deletions and Reverts"
-  [StaticText] "" value: "Until 2:20 PM · 0 actions ran under it"
+  [StaticText] "" value: "Until Nov 6, 2026 at 2:20 PM · 0 actions ran under it"
   [Button] "Revoke" help: "Have every admin action ask you again from now on"
   [StaticText] "" value: "Admin actions are what the humata command and agents' humata mcp ask to do as you, such as applying proposals or changing tasks. You grant leave from the Inbox, when you approve one."
   [Heading] "Asked Lately"
