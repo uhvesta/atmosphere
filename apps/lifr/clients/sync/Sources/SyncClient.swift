@@ -15,13 +15,37 @@ package struct SyncClient: Sendable {
     package var resolve: @Sendable (_ choices: Review.Choices) async -> SyncState = { _ in SyncState() }
     /// This device changed the records: sync soon, once the changes settle.
     package var changed: @Sendable () async -> Void
+    /// Syncs what's waiting now, instead of once the changes settle, such
+    /// as before Lifr leaves the screen.
+    package var flush: @Sendable () async -> SyncState = { SyncState() }
+    /// Each time the network comes back after being away. Ends when the
+    /// calling task is cancelled.
+    package var reconnected: @Sendable () async -> AsyncStream<Void> = { AsyncStream { $0.finish() } }
+}
+
+extension SyncClient {
+    /// A client with nothing waiting to flush past `sync`, and no network
+    /// to watch.
+    package init(
+        states: @escaping @Sendable () async -> AsyncStream<SyncState>,
+        sync: @escaping @Sendable () async -> SyncState,
+        resolve: @escaping @Sendable (_ choices: Review.Choices) async -> SyncState,
+        changed: @escaping @Sendable () async -> Void
+    ) {
+        self.init(
+            states: states, sync: sync, resolve: resolve, changed: changed, flush: sync,
+            reconnected: { AsyncStream { $0.finish() } })
+    }
 }
 
 extension SyncClient {
     /// Syncs through `syncer`. `changed` waits `settle` for more changes
     /// before syncing; by default a second while Lifr syncs continuously,
     /// and five otherwise.
-    package static func syncing(_ syncer: Syncer, settle: Duration? = nil) -> Self {
+    package static func syncing(
+        _ syncer: Syncer, settle: Duration? = nil,
+        reconnected: @escaping @Sendable () async -> AsyncStream<Void> = { AsyncStream { $0.finish() } }
+    ) -> Self {
         let soon = LockIsolated<Task<Void, Never>?>(nil)
         return SyncClient(
             states: { await syncer.stream() },
@@ -37,7 +61,16 @@ extension SyncClient {
                         await syncer.sync()
                     }
                 }
-            })
+            },
+            flush: {
+                // The wait ends here, so it doesn't sync a second time.
+                soon.withValue { task in
+                    task?.cancel()
+                    task = nil
+                }
+                return await syncer.sync()
+            },
+            reconnected: reconnected)
     }
 
     /// Never syncs, such as in previews.

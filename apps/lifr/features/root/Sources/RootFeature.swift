@@ -1135,7 +1135,7 @@ package struct RootFeature {
                 // What changed here reaches the other devices before Lifr
                 // is suspended.
                 guard state.syncsContinuously, state.sync.status != .syncing else { return .none }
-                return .run { [sync] _ in _ = await sync.sync() }
+                return .run { [sync] _ in _ = await sync.flush() }
 
             case .unlockTapped, .unlocked, .lockMirrored, .appActivated:
                 return .none
@@ -1306,13 +1306,21 @@ package struct RootFeature {
         }
     }
 
-    /// Syncs every so often while the app runs, more often while it syncs
-    /// continuously. Starting it again replaces the one running.
+    /// Syncs every so often while the app runs; while it syncs
+    /// continuously, more often and also when the network comes back.
+    /// Starting it again replaces the one running.
     private func syncTimer(_ state: State) -> Effect<Action> {
-        let interval = state.syncsContinuously ? Self.continuousSyncInterval : Self.syncInterval
-        return .run { [sync, clock] _ in
-            for await _ in clock.timer(interval: interval) { _ = await sync.sync() }
-        }
+        let continuous = state.syncsContinuously
+        let interval = continuous ? Self.continuousSyncInterval : Self.syncInterval
+        return .merge(
+            .run { [sync, clock] _ in
+                for await _ in clock.timer(interval: interval) { _ = await sync.sync() }
+            },
+            .run { [sync] _ in
+                guard continuous else { return }
+                for await _ in await sync.reconnected() { _ = await sync.sync() }
+            }
+        )
         .cancellable(id: CancelID.syncTimer, cancelInFlight: true)
     }
 

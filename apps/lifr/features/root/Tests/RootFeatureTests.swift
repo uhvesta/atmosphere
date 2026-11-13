@@ -1500,7 +1500,11 @@ final class RootFeatureTests: XCTestCase {
     // MARK: Sync
 
     /// A sync client that counts its syncs and reports `review`.
-    private func counting(_ syncs: LockIsolated<Int>, review: [Review.Item] = []) -> SyncClient {
+    /// A flush counts as a sync; `reconnected` is the network's returns.
+    private func counting(
+        _ syncs: LockIsolated<Int>, review: [Review.Item] = [],
+        reconnected: AsyncStream<Void> = AsyncStream { $0.finish() }
+    ) -> SyncClient {
         let state = SyncState(lastSynced: now, review: review)
         return SyncClient(
             states: { AsyncStream { $0.yield(state) } },
@@ -1509,7 +1513,12 @@ final class RootFeatureTests: XCTestCase {
                 return state
             },
             resolve: { [now] _ in SyncState(lastSynced: now) },
-            changed: { syncs.withValue { $0 += 100 } })
+            changed: { syncs.withValue { $0 += 100 } },
+            flush: {
+                syncs.withValue { $0 += 1 }
+                return state
+            },
+            reconnected: { reconnected })
     }
 
     func testLaunchSyncsAndShowsWhatWaitsForReview() async {
@@ -1846,6 +1855,27 @@ final class RootFeatureTests: XCTestCase {
         await store.send(.backgrounded)
         await store.finish()
         XCTAssertEqual(syncs.value, 1)
+    }
+
+    func testTheNetworkComingBackSyncsOnlyWhileContinuous() async {
+        let syncs = LockIsolated(0)
+        let (returns, network) = AsyncStream<Void>.makeStream()
+        let store = makeStore(.phone, sync: counting(syncs, reconnected: returns))
+        let clock = TestClock()
+        store.dependencies.continuousClock = clock
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        let launched = syncs.value
+
+        network.yield()
+        for _ in 0..<50 where syncs.value == launched { await Task.megaYield() }
+        XCTAssertEqual(syncs.value, launched + 1)
+
+        await store.send(.settings(.syncContinuouslyToggled(false)))
+        network.yield()
+        await Task.megaYield()
+        XCTAssertEqual(syncs.value, launched + 1)
+        await task.cancel()
     }
 
     func testSyncNowOnTheMacSyncs() async {

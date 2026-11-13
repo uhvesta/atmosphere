@@ -11,9 +11,15 @@ extension SyncClient {
     /// every sync says it isn't set up.
     package static func live(container: String, store: StoreClient, device: String) -> Self {
         do {
-            return .syncing(
+            var client = SyncClient.syncing(
                 try CloudKitSync.syncer(
-                    container: container, zone: "Lifr", device: device, subsystem: "lifr", store: .lifr(store)))
+                    container: container, zone: "Lifr", device: device, subsystem: "lifr", store: .lifr(store)),
+                reconnected: networkReturns)
+            let flush = client.flush
+            let sync = client.sync
+            client.flush = { await awake { await finishingInBackground(flush) } }
+            client.sync = { await awake(sync) }
+            return client
         } catch {
             return failing(error)
         }
