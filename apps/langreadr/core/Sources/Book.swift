@@ -100,8 +100,14 @@ public struct Book: Identifiable, Hashable, Codable, Sendable {
     public var words: [WordKey: WordNote] = [:]
     /// The conversations about passages of it.
     public var chats: [AnchoredChat] = []
-    /// The paragraph the person read last.
+    /// The paragraph the person read last: the topmost on screen.
     public var lastRead: UUID?
+    /// Whether the person reads it with translations under each paragraph;
+    /// nil, off, for books kept before it was kept.
+    public var translates: Bool?
+    /// Whether the person reads it with transliterations under each
+    /// paragraph; nil, off, for books kept before it was kept.
+    public var transliterates: Bool?
 
     public init(
         id: UUID = UUID(), title: String, language: Language, source: BookSource, importedAt: Date,
@@ -128,9 +134,12 @@ public struct Book: Identifiable, Hashable, Codable, Sendable {
 
     /// Translations into `language` from now on. Those into another are
     /// dropped; transliterations stay, as they don't depend on it.
+    /// Words looked up before the first translation stay: they were looked
+    /// up into the reader's language, as translations are.
     public mutating func translate(into language: Language) {
         guard language != translatedInto else { return }
-        translatedInto = language
+        defer { translatedInto = language }
+        guard translatedInto != nil else { return }
         for id in annotations.keys { annotations[id]?.translation = nil }
         words = [:]
     }

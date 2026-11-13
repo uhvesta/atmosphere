@@ -55,6 +55,42 @@ final class ReaderFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.writing.isEmpty)
     }
 
+    func testTheSwitchesAreKeptWithTheBookForItsNextOpening() async throws {
+        let store = await reader(try spanish())
+        await store.send(.binding(.set(\.showsTranslation, true)))
+        await store.send(.binding(.set(\.showsTransliteration, true)))
+
+        let reopened = ReaderFeature.State(book: store.state.book)
+        XCTAssertTrue(reopened.showsTranslation)
+        XCTAssertTrue(reopened.showsTransliteration)
+        XCTAssertFalse(ReaderFeature.State(book: try spanish()).showsTranslation, "a new book opens with them off")
+    }
+
+    func testTheTopParagraphOnScreenIsWhereTheBookOpensNext() async throws {
+        let book = try spanish("Hola amigo.\n\nBuenos días.\n\nAdiós.")
+        let ids = book.paragraphs.map(\.id)
+        let store = await reader(book)
+        await store.send(.paragraphsShown(Array(ids[1...])))
+        XCTAssertEqual(store.state.book.lastRead, ids[1])
+        await store.send(.paragraphsShown([UUID(), ids[2]]))
+        XCTAssertEqual(store.state.book.lastRead, ids[2], "what isn't a paragraph, such as a chapter title, is skipped")
+    }
+
+    func testLookedUpWordsAreListedInReadingOrderAndOpenTheirCard() async throws {
+        var book = try spanish()
+        let paragraph = try book.paragraphs.first.unwrap().id
+        for text in ["amigo", "Hola"] {
+            book.words[WordKey(paragraph: paragraph, word: text)] = WordNote(
+                word: text, transliteration: nil, meaning: "-", inSentence: "")
+        }
+        let store = await reader(book)
+        XCTAssertEqual(store.state.lookedUp.map(\.word.text), ["Hola", "amigo"])
+
+        await store.send(.lookedUpWordTapped(WordKey(paragraph: paragraph, word: "amigo")))
+        await store.receive(\.wordTapped)
+        XCTAssertEqual(store.state.destination?.word?.word.text, "amigo")
+    }
+
     func testAFailedParagraphSaysSoAndTryingAgainTranslatesIt() async throws {
         let book = try spanish("Hola.")
         let paragraph = try book.paragraphs.first.unwrap()

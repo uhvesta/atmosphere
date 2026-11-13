@@ -11,7 +11,8 @@ import XCTest
 @MainActor
 final class LibraryFeatureTests: XCTestCase {
     private func library(
-        books: [Book] = [], shelf: ShelfClient = .inMemory(), services: ReaderServices = .fake()
+        books: [Book] = [], shelf: ShelfClient = .inMemory(), services: ReaderServices = .fake(),
+        clock: any Clock<Duration> = ImmediateClock()
     ) -> TestStoreOf<LibraryFeature> {
         let store = TestStore(initialState: LibraryFeature.State(books: IdentifiedArray(uniqueElements: books))) {
             LibraryFeature()
@@ -20,6 +21,7 @@ final class LibraryFeatureTests: XCTestCase {
             $0.readerServices = services
             $0.tutor = tutor([])
             $0.date.now = epoch
+            $0.continuousClock = clock
         }
         store.exhaustivity = .off
         return store
@@ -115,6 +117,25 @@ final class LibraryFeatureTests: XCTestCase {
         await store.receive(\.importing.dismiss)
         XCTAssertNil(store.state.importing)
         XCTAssertTrue(store.state.books.isEmpty)
+    }
+
+    func testWhatChangesWhileReadingIsSavedOnceTheReaderSettles() async throws {
+        let book = try spanish("Hola.\n\nAdiós.")
+        let saved = LockIsolated<[Book]>([])
+        var shelf = ShelfClient.inMemory([book])
+        shelf.save = { book throws(ShelfError) in saved.withValue { $0.append(book) } }
+        let clock = TestClock()
+        let store = library(books: [book], shelf: shelf, clock: clock)
+        await store.send(.bookTapped(book.id))
+        await store.send(.reader(.presented(.task)))
+        for paragraph in book.paragraphs {
+            await store.send(.reader(.presented(.paragraphsShown([paragraph.id]))))
+        }
+        XCTAssertEqual(saved.value, [], "nothing is written while the place keeps changing")
+
+        await clock.advance(by: .seconds(1))
+        await store.finish()
+        XCTAssertEqual(saved.value.map(\.lastRead), [book.paragraphs.last?.id])
     }
 
     func testABookThatCantBeSavedSaysWhy() async {

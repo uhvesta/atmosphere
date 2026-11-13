@@ -27,6 +27,23 @@ func bookTests() -> [TestCase] {
             book.translate(into: Language("de"))
             try expectEqual(book.annotations[first], Annotation(transliteration: "wǒ shì xuéshēng."))
         },
+        TestCase("given words looked up before the first translation, then they stay") {
+            var book = sampleBook()
+            let key = WordKey(paragraph: try book.paragraphs.first.unwrap().id, word: "学生")
+            book.words[key] = WordNote(
+                word: "学生", transliteration: "xuéshēng", meaning: "student", inSentence: "")
+            book.translate(into: Language("en"))
+            try expectEqual(book.words[key]?.meaning, "student")
+            try expectEqual(book.translatedInto, Language("en"))
+        },
+        TestCase("given a book kept before its switches were, then it opens with them off") {
+            var fields = try JSONSerialization.jsonObject(with: JSONEncoder().encode(sampleBook())) as? [String: Any]
+            fields?["translates"] = nil
+            fields?["transliterates"] = nil
+            let old = try JSONDecoder().decode(
+                Book.self, from: JSONSerialization.data(withJSONObject: fields ?? [:]))
+            try expectEqual(old.translates, nil)
+        },
         TestCase("given the same language again, then translations stay") {
             var book = sampleBook()
             let first = try book.paragraphs.first.unwrap().id

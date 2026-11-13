@@ -33,7 +33,31 @@ package struct ReaderFeature {
 
         package var id: UUID { book.id }
 
-        package init(book: Book) { self.book = book }
+        /// Opens where the person left off, with the switches they read it
+        /// with.
+        package init(book: Book) {
+            self.book = book
+            showsTranslation = book.translates ?? false
+            showsTransliteration = book.transliterates ?? false
+        }
+
+        /// The words looked up, in the order they're read, each with the
+        /// paragraph it's in.
+        package var lookedUp: [(key: WordKey, word: WordSpan)] {
+            guard !book.words.isEmpty else { return [] }
+            var order: [UUID: Int] = [:]
+            for (index, paragraph) in book.paragraphs.enumerated() { order[paragraph.id] = index }
+            return book.words.keys
+                .compactMap { key -> (key: WordKey, word: WordSpan)? in
+                    guard order[key.paragraph] != nil,
+                        let word = words[key.paragraph]?.first(where: { $0.text == key.word })
+                    else { return nil }
+                    return (key, word)
+                }
+                .sorted {
+                    (order[$0.key.paragraph] ?? 0, $0.word.start) < (order[$1.key.paragraph] ?? 0, $1.word.start)
+                }
+        }
 
         /// The passage picked so far, which may be one word.
         package var picked: Passage? {
@@ -89,6 +113,9 @@ package struct ReaderFeature {
         case binding(BindingAction<State>)
         case task
         case paragraphAppeared(UUID)
+        /// The paragraphs on screen changed: these, top first.
+        case paragraphsShown([UUID])
+        case lookedUpWordTapped(WordKey)
         case retryTapped(UUID)
         case annotated(UUID, Result<Annotation, ModelRuntimeError>)
         case languagePicked(Language)
@@ -111,7 +138,11 @@ package struct ReaderFeature {
         Reduce { state, action in
             switch action {
             case .binding(\.showsTranslation):
+                state.book.translates = state.showsTranslation
                 if state.showsTranslation { state.book.translate(into: tutor.reader) }
+                return .none
+            case .binding(\.showsTransliteration):
+                state.book.transliterates = state.showsTransliteration
                 return .none
             case .binding(\.isHighlighting):
                 if !state.isHighlighting { clearSelection(&state) }
@@ -121,8 +152,16 @@ package struct ReaderFeature {
             case .task:
                 findWords(&state)
                 return .none
+            case .paragraphsShown(let ids):
+                guard let top = ids.first(where: { state.words[$0] != nil }), top != state.book.lastRead else {
+                    return .none
+                }
+                state.book.lastRead = top
+                return .none
+            case .lookedUpWordTapped(let key):
+                guard let word = state.lookedUp.first(where: { $0.key == key })?.word else { return .none }
+                return .send(.wordTapped(paragraph: key.paragraph, word))
             case .paragraphAppeared(let id):
-                state.book.lastRead = id
                 guard let paragraph = state.book.paragraph(id), state.needsModel(paragraph),
                     state.problems[id] == nil, !state.writing.contains(id)
                 else { return .none }

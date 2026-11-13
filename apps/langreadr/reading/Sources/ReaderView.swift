@@ -7,6 +7,9 @@ import SwiftUI
 struct ReaderView: View {
     @Bindable var store: StoreOf<ReaderFeature>
 
+    /// Where it opens: the paragraph the person read last.
+    @State private var position = ScrollPosition(idType: UUID.self)
+
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
@@ -19,9 +22,17 @@ struct ReaderView: View {
                     }
                 }
             }
+            .scrollTargetLayout()
             .padding()
             .frame(maxWidth: 720, alignment: .leading)
             .frame(maxWidth: .infinity)
+        }
+        .scrollPosition($position, anchor: .top)
+        .onScrollTargetVisibilityChange(idType: UUID.self, threshold: 0.5) { shown in
+            store.send(.paragraphsShown(shown))
+        }
+        .onAppear {
+            if let place = store.book.lastRead { position.scrollTo(id: place, anchor: .top) }
         }
         .navigationTitle(store.book.title)
         .task { await store.send(.task).finish() }
@@ -48,6 +59,14 @@ struct ReaderView: View {
                 ) {
                     ForEach(Self.languages(including: store.book.language), id: \.self) { language in
                         Text(language.name()).tag(language)
+                    }
+                }
+                let lookedUp = store.state.lookedUp
+                if !lookedUp.isEmpty {
+                    Menu("Words (\(lookedUp.count))", systemImage: "character.book.closed") {
+                        ForEach(lookedUp, id: \.key) { word in
+                            Button(word.word.text) { store.send(.lookedUpWordTapped(word.key)) }
+                        }
                     }
                 }
                 if !store.book.chats.isEmpty {

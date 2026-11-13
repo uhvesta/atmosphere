@@ -43,6 +43,12 @@ package struct LibraryFeature {
     @Dependency(\.tutor) private var tutor
     @Dependency(\.readerServices) private var services
     @Dependency(\.date.now) private var now
+    @Dependency(\.continuousClock) private var clock
+
+    /// A book's save that waits for the reader to settle.
+    private struct Settling: Hashable {
+        let book: UUID
+    }
 
     package init() {}
 
@@ -154,7 +160,17 @@ package struct LibraryFeature {
             Reduce { state, _ in
                 guard let book, state.books[id: book.id] != book else { return .none }
                 state.books[id: book.id] = book
-                return save(book)
+                // Saved once the reader settles, as scrolling changes the
+                // place many times a second and each save writes the book.
+                return .run { [clock] send in
+                    try await clock.sleep(for: .seconds(1))
+                    do throws(ShelfError) {
+                        try shelf.save(book)
+                    } catch {
+                        await send(.saveFailed(error))
+                    }
+                }
+                .cancellable(id: Settling(book: book.id), cancelInFlight: true)
             }
         }
         .ifLet(\.$alert, action: \.alert)

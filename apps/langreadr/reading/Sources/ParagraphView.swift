@@ -47,9 +47,16 @@ struct ParagraphView: View {
                         case .gap(let text, _):
                             Text(text).accessibilityHidden(true)
                         case .word(let word):
-                            Button(word.text) { store.send(.wordTapped(paragraph: paragraph.id, word)) }
-                                .buttonStyle(.plain)
-                                .background(highlight(word, picked: picked, chats: chats))
+                            Button {
+                                store.send(.wordTapped(paragraph: paragraph.id, word))
+                            } label: {
+                                // Underlined once looked up here.
+                                Text(word.text).underline(
+                                    book.words[WordKey(paragraph: paragraph.id, word: word.text)] != nil,
+                                    pattern: .dot)
+                            }
+                            .buttonStyle(.plain)
+                            .background(highlight(word, picked: picked, chats: chats))
                         }
                     }
                 }
