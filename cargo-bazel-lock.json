@@ -1,5 +1,5 @@
 {
-  "checksum": "fb1dadbe29b0cd5c1794ab5b34cb28bf6a2696daf8b83cf7f4fb24d7f5bf5521",
+  "checksum": "9a1f472da2d5e32c1883006375b8e9064501c870690b1d46ae073da566134eeb",
   "conditions": {
     "aarch64-apple-darwin": [
       "aarch64-apple-darwin"
@@ -3203,7 +3203,7 @@
             ],
             "cfg(windows)": [
               {
-                "id": "windows-sys 0.52.0",
+                "id": "windows-sys 0.61.2",
                 "target": "windows_sys"
               }
             ]
@@ -4673,6 +4673,10 @@
       "common_attrs": {
         "deps": [
           {
+            "id": "rustix 1.1.6",
+            "target": "rustix"
+          },
+          {
             "id": "serde 1.0.229",
             "target": "serde"
           },
@@ -4724,6 +4728,14 @@
           {
             "id": "clap 4.6.7",
             "target": "clap"
+          },
+          {
+            "id": "rustix 1.1.6",
+            "target": "rustix"
+          },
+          {
+            "id": "serde_json 1.0.154",
+            "target": "serde_json"
           },
           {
             "id": "thiserror 2.0.21",
@@ -4905,6 +4917,10 @@
           {
             "id": "tokio 1.54.1",
             "target": "tokio"
+          },
+          {
+            "id": "ureq 3.5.1",
+            "target": "ureq"
           },
           {
             "id": "uuid 1.29.2",
@@ -8744,7 +8760,7 @@
                 "target": "errno"
               },
               {
-                "id": "windows-sys 0.52.0",
+                "id": "windows-sys 0.61.2",
                 "target": "windows_sys"
               }
             ],
@@ -10680,7 +10696,7 @@
             ],
             "cfg(windows)": [
               {
-                "id": "windows-sys 0.52.0",
+                "id": "windows-sys 0.61.2",
                 "target": "windows_sys"
               }
             ]

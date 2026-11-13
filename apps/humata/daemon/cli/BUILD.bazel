@@ -27,6 +27,7 @@ rust_binary(
     deps = [
         "//apps/humata/daemon/wire",
         "@crates//:clap",
+        "@crates//:rustix",
         "@crates//:serde_json",
         "@crates//:thiserror",
         "@crates//:tokio",
@@ -50,6 +51,7 @@ rust_binary(
     deps = [
         "//apps/humata/daemon/wire",
         "@crates//:clap",
+        "@crates//:rustix",
         "@crates//:serde_json",
         "@crates//:thiserror",
         "@crates//:tokio",

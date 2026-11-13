@@ -990,6 +990,7 @@ name = "humata-agent"
 version = "0.0.0"
 dependencies = [
  "humata-workspace",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",
@@ -1004,6 +1005,7 @@ name = "humata-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "rustix",
  "serde_json",
  "thiserror",
  "tokio",
@@ -1063,6 +1065,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "ureq",
  "uuid",
 ]
 
@@ -1751,7 +1754,7 @@ dependencies = [
  "getrandom 0.2.17",
  "libc",
  "untrusted",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
