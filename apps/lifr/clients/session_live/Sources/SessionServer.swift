@@ -352,7 +352,9 @@
                 return .failure(
                     id: request.id,
                     APIError(
-                        .internalError, "Lifr couldn't read your tasks: \(error). Open Lifr to see why, then retry."))
+                        .internalError,
+                        "Lifr couldn't read your tasks: \(error.localizedDescription). Open Lifr to see why, "
+                            + "then retry."))
             }
             let asked = OSAllocatedUnfairLock<Confirmation?>(initialState: nil)
             var copy = loaded
@@ -407,7 +409,9 @@
             } catch {
                 return .failure(
                     id: request.id,
-                    APIError(.internalError, "Lifr couldn't save the change: \(error). Nothing changed; retry."))
+                    APIError(
+                        .internalError,
+                        "Lifr couldn't save the change: \(error.localizedDescription). Nothing changed; retry."))
             }
             return response.withLock { $0 } ?? first
         }

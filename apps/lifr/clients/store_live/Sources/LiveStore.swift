@@ -383,19 +383,19 @@ package enum LiveStoreError: Error, LocalizedError, CustomStringConvertible {
     package var description: String {
         switch self {
         case .openFailed(let error):
-            "Lifr couldn't open its data on this device: \(error). Check that this device has free storage, "
-                + "then reopen Lifr. Don't delete the app to fix this: that also deletes changes that haven't "
-                + "synced to iCloud yet."
+            "Lifr couldn't open its data on this device: \(error.localizedDescription). Check that this device "
+                + "has free storage, then reopen Lifr. Don't delete the app to fix this: that also deletes changes "
+                + "that haven't synced to iCloud yet."
         case .loadFailed(let error):
-            "Lifr couldn't read its data on this device: \(error). Quit and reopen Lifr. Don't delete the app "
-                + "to fix this: that also deletes changes that haven't synced to iCloud yet."
+            "Lifr couldn't read its data on this device: \(error.localizedDescription). Quit and reopen Lifr. "
+                + "Don't delete the app to fix this: that also deletes changes that haven't synced to iCloud yet."
         case .saveFailed(let error):
-            "Lifr couldn't save the change, so nothing changed: \(error). Check that this device has free "
-                + "storage, then try again."
+            "Lifr couldn't save the change, so nothing changed: \(error.localizedDescription). Check that this "
+                + "device has free storage, then try again."
         case .archiveFailed(let error):
-            "Lifr couldn't pack changes older than 90 days to save room: \(error). Nothing was removed, and "
-                + "they can still be undone; Lifr tries again the next time it opens. If this keeps happening, "
-                + "check that this device has free storage."
+            "Lifr couldn't pack changes older than 90 days to save room: \(error.localizedDescription). Nothing "
+                + "was removed, and they can still be undone; Lifr tries again the next time it opens. If this "
+                + "keeps happening, check that this device has free storage."
         }
     }
 

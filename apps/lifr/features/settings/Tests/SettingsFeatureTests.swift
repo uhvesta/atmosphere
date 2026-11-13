@@ -115,6 +115,19 @@ final class SettingsFeatureTests: XCTestCase {
         await store.skipInFlightEffects()
     }
 
+    func testAProcrastinatedDaysChangeThatIsntSavedGoesBack() async {
+        struct Full: Error {}
+        let store = await settings(InMemorySession())
+        let stored = store.state.procrastinatedAfterDays
+        store.dependencies.store.save = { _ in throw Full() }
+
+        await store.send(.procrastinatedDaysChanged(stored + 5))
+        await store.receive(\.saved)
+
+        XCTAssertEqual(store.state.procrastinatedAfterDays, stored)
+        XCTAssertNotNil(store.state.alert)
+    }
+
     func testHidesAnAvenueFromAgents() async {
         _ = health
         let store = await settings(InMemorySession())

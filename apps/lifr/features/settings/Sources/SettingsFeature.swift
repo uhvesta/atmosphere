@@ -354,6 +354,8 @@ package struct SettingsFeature {
                 return .none
 
             case .saved(.failure(let error)):
+                // Show the value that's saved, not the one that wasn't.
+                state.procrastinatedAfterDays = state.workspace.settings.procrastinatedAfterDays
                 state.alert = .failed("Couldn't change the setting", error)
                 return .none
 

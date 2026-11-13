@@ -324,4 +324,12 @@ final class LiveStoreTests: XCTestCase {
         XCTAssertEqual(later.tasks[task.id]?.title, "Arrived first")
         XCTAssertEqual(later.displayCode(of: try XCTUnwrap(later.tasks[task.id])), "HOME-7K2Q")
     }
+
+    func testAStorageErrorSaysWhatTheSystemSaidNotItsDump() {
+        let underlying = NSError(
+            domain: NSCocoaErrorDomain, code: 640, userInfo: [NSLocalizedDescriptionKey: "The disk is full."])
+        let message = LiveStoreError.saveFailed(underlying).description
+        XCTAssertTrue(message.contains("The disk is full."))
+        XCTAssertFalse(message.contains("Error Domain="))
+    }
 }
