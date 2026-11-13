@@ -32,7 +32,7 @@ use std::future::Future;
 
 use tokio::sync::broadcast;
 
-pub use backup::{BackendFile, Backup};
+pub use backup::{BackendFile, Backup, BackupSince, Held};
 pub use claude::{CLAUDE_VERSION, ClaudeError, ClaudeOptions, ClaudeRunner, McpServer};
 pub use copilot::{COPILOT_VERSION, CopilotError, CopilotOptions, CopilotProvider, CopilotRunner};
 pub use env::Env;
@@ -256,6 +256,14 @@ pub trait Agent: Send + Sync {
         &self,
         session: &SessionId,
     ) -> impl Future<Output = Result<Backup, Self::Error>> + Send;
+
+    /// As [`Self::backup`], for one who holds the first events of the
+    /// history: only the events after `held` are encoded, none copied.
+    fn backup_since(
+        &self,
+        session: &SessionId,
+        held: Held,
+    ) -> impl Future<Output = Result<BackupSince, Self::Error>> + Send;
 
     /// Sets up `backup`'s session on this host, working in `repositories`
     /// (by name, those of its record as cloned here) at its last snapshot,

@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use crate::backup::{BackendFile, Backup};
+use crate::backup::{BackendFile, Backup, BackupSince, Held};
 use crate::error::AgentError;
 use humata_workspace::{
     Changes, Checkout, Edit, Landed, Merged, Query, Repository, Snapshot, WorkspaceError,
@@ -647,6 +647,15 @@ async fn drive<R: Runner>(
     images: Vec<String>,
 ) {
     let (mut text, mut images) = (text, images);
+    // A session at rest is read here once; were the read to fail, the
+    // turn's first event fails the same way and says so.
+    if let Err(error) = load_history(&session).await {
+        eprintln!(
+            "humata: couldn't read session {}'s history before its turn: {}",
+            session.id,
+            describe(&error)
+        );
+    }
     loop {
         let prepared = prepare(&session, workspaces.as_deref()).await;
         {
@@ -1293,7 +1302,34 @@ impl<R: Runner> Agent for LocalAgent<R> {
         let backend = self.runner.backup(&record)?;
         Ok(Backup {
             record,
-            events: session.log.events()?,
+            events: peek(&session, <[Event]>::to_vec).await?,
+            backend,
+        })
+    }
+
+    async fn backup_since(&self, id: &SessionId, held: Held) -> Result<BackupSince, AgentError> {
+        let session = self.session(id)?;
+        let record = session.lock().record.clone();
+        let backend = self.runner.backup(&record)?;
+        // Encoded from the history where it is, so only what's sent is
+        // copied.
+        let (events, events_from, turns) = peek(&session, move |events| {
+            let turns = events
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::TurnEnded { .. }))
+                .count();
+            let from = match held.events.checked_sub(1).and_then(|last| events.get(last)) {
+                Some(last) if last.id.as_str() == held.last_event_id => held.events,
+                _ => 0,
+            };
+            (serde_json::to_vec(&events[from..]), from, turns)
+        })
+        .await?;
+        Ok(BackupSince {
+            record,
+            events: events.map_err(|source| AgentError::Encode { source })?,
+            events_from,
+            turns,
             backend,
         })
     }
@@ -1348,17 +1384,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
     }
 
     async fn history(&self, id: &SessionId) -> Result<Vec<Event>, AgentError> {
-        let session = self.session(id)?;
-        if session.log.is_loaded() {
-            return session.log.events();
-        }
-        // A history at rest is read from disk, off the executor.
-        tokio::task::spawn_blocking(move || session.log.events())
-            .await
-            .map_err(|source| AgentError::ReadStopped {
-                session: id.clone(),
-                source,
-            })?
+        peek(&self.session(id)?, <[Event]>::to_vec).await
     }
 
     async fn summary(&self, id: &SessionId) -> Result<Summary, AgentError> {
@@ -1693,6 +1719,40 @@ fn last_checkpoint(events: &[Event]) -> Vec<Snapshot> {
         .unwrap_or_default()
 }
 
+/// `read` given the session's events so far. A history at rest is read
+/// from disk for this alone, off the executor, and stays at rest.
+async fn peek<T: Send + 'static>(
+    session: &Arc<Session>,
+    read: impl FnOnce(&[Event]) -> T + Send + 'static,
+) -> Result<T, AgentError> {
+    if session.log.is_loaded() {
+        return session.log.peek(read);
+    }
+    let reading = session.clone();
+    tokio::task::spawn_blocking(move || reading.log.peek(read))
+        .await
+        .map_err(|source| AgentError::ReadStopped {
+            session: session.id.clone(),
+            source,
+        })?
+}
+
+/// Reads the session's history into memory if it's at rest, off the
+/// executor, so the turn about to add to it doesn't read the disk on an
+/// executor thread.
+async fn load_history(session: &Arc<Session>) -> Result<(), AgentError> {
+    if session.log.is_loaded() {
+        return Ok(());
+    }
+    let reading = session.clone();
+    tokio::task::spawn_blocking(move || reading.log.load())
+        .await
+        .map_err(|source| AgentError::ReadStopped {
+            session: session.id.clone(),
+            source,
+        })?
+}
+
 /// Makes the session's copy of its repositories, if it works in some and
 /// has none: from its last checkpoint, for a fork or a session unarchived,
 /// or else from each repository's HEAD, recorded as its first checkpoint.
@@ -1763,6 +1823,8 @@ fn reads_only(tool: &str) -> bool {
         "read_file",
         "list_folder",
         "read_skill",
+        "search_files",
+        "find_files",
     ];
     READING.contains(&tool)
 }

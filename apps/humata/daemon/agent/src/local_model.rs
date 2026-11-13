@@ -134,7 +134,7 @@ pub enum LocalModelError {
     },
 
     #[error(
-        "the chat no longer fits in the context of {model} (the server at {url} said: {body}). Fork the chat from a later message, start a new session, or load the model with a longer context"
+        "the chat no longer fits in the context of {model} (the server at {url} said: {body}). Fork the chat from an earlier message, start a new session, or load the model with a longer context"
     )]
     ContextFull {
         url: String,
@@ -830,6 +830,14 @@ fn messages(
         })
         .collect();
     let dropped = left_out(system.len(), history, budget);
+    // Where the step being answered starts: results after it are what the
+    // model asked for last, so they're never left out.
+    let current = history.iter().rposition(|event| {
+        matches!(
+            event.kind,
+            EventKind::Usage { .. } | EventKind::AssistantMessage { .. } | EventKind::TurnStarted
+        )
+    });
     let mut messages = vec![json!({"role": "system", "content": system})];
     // How much leaving out the calls so far saves, oldest first.
     let mut seen = 0_usize;
@@ -891,7 +899,10 @@ fn messages(
                 call_id, output, ..
             } => {
                 seen += output.len();
-                let content = if seen <= dropped {
+                // Replacing an output no longer than the note saves nothing,
+                // and the step being answered needs its results whole.
+                let old = current.is_none_or(|current| index < current);
+                let content = if old && output.len() > DROPPED.len() && seen <= dropped {
                     DROPPED.to_owned()
                 } else {
                     output.clone()
@@ -2410,6 +2421,44 @@ mod tests {
         };
         assert_eq!(results(&with("short")), [output.clone(), "new".to_owned()]);
         assert_eq!(results(&with(&"m".repeat(budget)))[0], DROPPED);
+    }
+
+    #[test]
+    fn the_newest_steps_results_and_short_ones_always_go_whole() {
+        let budget = 16 * 1024;
+        let output = "o".repeat(budget / 4);
+        let results = |history: &[Event]| -> Vec<String> {
+            messages(None, history, None, budget)
+                .iter()
+                .filter(|message| message["role"] == "tool")
+                .filter_map(|message| message["content"].as_str().map(str::to_owned))
+                .collect()
+        };
+        // Nothing is over the budget, so an empty result stays empty.
+        let small = [started("c0"), completed("c0", "")].map(Event::now);
+        assert_eq!(results(&small), [String::new()]);
+
+        // Far over the budget in chat text alone: the old step's long
+        // result goes, its short one and the newest step's stay.
+        let history = [
+            EventKind::TurnStarted,
+            user(&"m".repeat(4 * budget)),
+            started("c0"),
+            completed("c0", &output),
+            started("c1"),
+            completed("c1", "ok"),
+            EventKind::AssistantMessage {
+                text: "Next.".into(),
+            },
+            started("c2"),
+            completed("c2", &output),
+            started("c3"),
+            completed("c3", ""),
+        ]
+        .map(Event::now);
+        let sent = results(&history);
+        assert_ne!(sent[0], output);
+        assert_eq!(sent[1..], ["ok".to_owned(), output.clone(), String::new()]);
     }
 
     #[test]

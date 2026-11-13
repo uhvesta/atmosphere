@@ -118,23 +118,28 @@ impl Daemon {
     /// their checkouts. Returns what a session started from them should be
     /// told, as that one couldn't be fetched and is used as last fetched.
     pub(super) async fn refresh(&self, project: &Project) -> Vec<String> {
+        // All at once, each given only so long, so a session in several
+        // repositories waits for the slowest, not for their sum.
+        let fetching: Vec<_> = project
+            .repositories
+            .iter()
+            .map(|repository| {
+                let kind = if project.urls.contains_key(&repository.name) {
+                    fresh::Kind::Clone
+                } else {
+                    fresh::Kind::Folder
+                };
+                let (path, name) = (repository.path.clone(), repository.name.clone());
+                tokio::spawn(async move {
+                    let git = || tokio::process::Command::new("git");
+                    fresh::update(&git, &path, &name, kind, "on this Mac").await
+                })
+            })
+            .collect();
         let mut notices = Vec::new();
-        for repository in &project.repositories {
-            let kind = if project.urls.contains_key(&repository.name) {
-                fresh::Kind::Clone
-            } else {
-                fresh::Kind::Folder
-            };
-            let git = || tokio::process::Command::new("git");
-            let notice = fresh::update(
-                &git,
-                &repository.path,
-                &repository.name,
-                kind,
-                "on this Mac",
-            )
-            .await;
-            notices.extend(notice);
+        for fetched in fetching {
+            // One that panicked says nothing, as one that fetched does.
+            notices.extend(fetched.await.ok().flatten());
         }
         notices
     }

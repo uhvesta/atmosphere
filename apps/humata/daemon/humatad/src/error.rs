@@ -411,6 +411,35 @@ pub enum StoreError {
         "proposal {proposal} was applied or declined already; ask the agent for a new one to change it again"
     )]
     AlreadyDecided { proposal: String },
+
+    #[error(
+        "the recovery copy of session {session} in humatad's store is damaged, so the session can't be set up again from it. If its host still has the session, it is unharmed there: reach that host and use it there. If the host lost it, put humatad's store back from a backup of this Mac, such as Time Machine, then restore the session again"
+    )]
+    DamagedRecovery {
+        session: String,
+        #[source]
+        source: RecoveryDamage,
+    },
+}
+
+/// What is wrong with a recovery copy that can't be read.
+#[derive(Debug, thiserror::Error)]
+pub enum RecoveryDamage {
+    #[error("its {part} doesn't decompress")]
+    Compressed {
+        part: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("its record isn't one this humatad reads")]
+    Record {
+        #[source]
+        source: prost::DecodeError,
+    },
+
+    #[error("part {part} of its history isn't a list of events")]
+    History { part: usize },
 }
 
 /// What the daemon can fail at while reaching a host.
@@ -759,6 +788,16 @@ pub enum DaemonError {
     BadRepositoryName { host: String, name: String },
 
     #[error(
+        "host {host:?} sent a backup of session {session} whose history isn't a list of events, so its recovery copy stays as it was. The host may run another build of humatad: install this one on it, and the next turn's backup is tried again"
+    )]
+    BadBackupHistory {
+        host: String,
+        session: String,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    #[error(
         "there is no recovery copy of session {session}: one is kept after each turn while its host is reachable, so a session that never finished a turn while it was has none"
     )]
     NoRecovery { session: String },
@@ -894,7 +933,9 @@ impl DaemonError {
             | Self::NoProposedItem { .. }
             | Self::IncompleteProposal => pb::ErrorCode::InvalidRequest,
             Self::Listen { .. } => pb::ErrorCode::Busy,
-            Self::NotAPortStream { .. } => pb::ErrorCode::HostUnavailable,
+            Self::NotAPortStream { .. } | Self::BadBackupHistory { .. } => {
+                pb::ErrorCode::HostUnavailable
+            }
             Self::UnknownForward { .. } => pb::ErrorCode::UnknownForward,
             Self::Spawn { .. }
             | Self::Connect { .. }

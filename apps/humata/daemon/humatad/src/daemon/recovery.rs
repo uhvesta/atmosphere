@@ -245,8 +245,13 @@ impl Daemon {
             struct Id {
                 id: String,
             }
-            let events: Vec<Id> = serde_json::from_slice(&backup.events)
-                .map_err(|_| unexpected(host, "the session's history as JSON"))?;
+            let events: Vec<Id> = serde_json::from_slice(&backup.events).map_err(|source| {
+                DaemonError::BadBackupHistory {
+                    host: host.to_owned(),
+                    session: session.to_owned(),
+                    source,
+                }
+            })?;
             NewEvents {
                 count: u32::try_from(events.len()).unwrap_or(u32::MAX),
                 last_id: events
@@ -333,7 +338,14 @@ impl Daemon {
         if self.store.moved_away(session, target)? {
             self.remove_copy(target, session).await;
         }
-        let Some((from, mut backup)) = self.store.recovery(session)? else {
+        // Decompressing a long history is slow work: off the executor.
+        let kept = {
+            let session = session.to_owned();
+            self.store
+                .apart(move |store| store.recovery(&session))
+                .await?
+        };
+        let Some((from, mut backup)) = kept else {
             return Err(DaemonError::NoRecovery {
                 session: session.to_owned(),
             });

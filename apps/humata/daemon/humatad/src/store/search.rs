@@ -61,6 +61,9 @@ pub struct Indexed {
     /// How many of its events are indexed.
     pub events: usize,
     pub turns: u32,
+    /// The id of the last event indexed; empty when none is, or for a
+    /// session indexed before this was kept.
+    pub last_event: String,
 }
 
 /// A session as the index last saw it, and where it was then.
@@ -125,7 +128,8 @@ impl Store {
         let connection = self.lock();
         connection
             .prepare_cached(
-                "SELECT events, turns, host, project, item FROM search_sessions WHERE id = ?1",
+                "SELECT events, turns, host, project, item, last_event FROM search_sessions
+                 WHERE id = ?1",
             )
             .and_then(|mut statement| {
                 statement
@@ -134,6 +138,7 @@ impl Store {
                             indexed: Indexed {
                                 events: row.get::<_, i64>(0)?.try_into().unwrap_or(0),
                                 turns: row.get(1)?,
+                                last_event: row.get(5)?,
                             },
                             whereabouts: Whereabouts {
                                 host: row.get(2)?,
@@ -173,10 +178,11 @@ impl Store {
                 }
             }
             transaction.execute(
-                "INSERT INTO search_sessions (id, host, project, item, events, turns)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                "INSERT INTO search_sessions (id, host, project, item, events, turns, last_event)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT (id) DO UPDATE SET host = ?2, project = ?3, item = ?4,
-                    events = max(events, ?5), turns = ?6",
+                    events = max(events, ?5), turns = ?6,
+                    last_event = CASE WHEN ?5 >= events THEN ?7 ELSE last_event END",
                 params![
                     session,
                     whereabouts.host,
@@ -184,6 +190,50 @@ impl Store {
                     whereabouts.item,
                     i64::try_from(indexed.events).unwrap_or(i64::MAX),
                     indexed.turns,
+                    indexed.last_event,
+                ],
+            )?;
+            transaction.commit()
+        })();
+        indexing.map_err(self.failed())
+    }
+
+    /// Indexes `session` afresh: `entries`, all of its events', take the
+    /// place of every entry of its events, and it's recorded as indexed to
+    /// `indexed` outright, even if that is less than before. For a history
+    /// that no longer starts with what was indexed, as after a rewind.
+    pub fn index_afresh(
+        &self,
+        session: &str,
+        whereabouts: &Whereabouts,
+        indexed: &Indexed,
+        entries: &[Entry],
+    ) -> Result<(), StoreError> {
+        let mut connection = self.lock();
+        let indexing = (|| {
+            let transaction = connection.transaction()?;
+            // Its review comments are indexed apart and stay.
+            transaction.execute(
+                "DELETE FROM search_entries WHERE session = ?1
+                 AND kind IN ('message', 'reply', 'tool_call', 'tool_output')",
+                params![session],
+            )?;
+            for entry in entries {
+                insert(&transaction, session, entry)?;
+            }
+            transaction.execute(
+                "INSERT INTO search_sessions (id, host, project, item, events, turns, last_event)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT (id) DO UPDATE SET host = ?2, project = ?3, item = ?4,
+                    events = ?5, turns = ?6, last_event = ?7",
+                params![
+                    session,
+                    whereabouts.host,
+                    whereabouts.project,
+                    whereabouts.item,
+                    i64::try_from(indexed.events).unwrap_or(i64::MAX),
+                    indexed.turns,
+                    indexed.last_event,
                 ],
             )?;
             transaction.commit()
@@ -390,7 +440,11 @@ mod tests {
     }
 
     fn indexed(events: usize) -> Indexed {
-        Indexed { events, turns: 1 }
+        Indexed {
+            events,
+            turns: 1,
+            last_event: format!("e{events}"),
+        }
     }
 
     #[test]
@@ -483,6 +537,47 @@ mod tests {
         assert_eq!(
             store.search(&query("\"rename\"")).expect("searched").len(),
             1
+        );
+    }
+
+    #[test]
+    fn a_session_indexed_afresh_has_only_its_new_entries_and_counts_from_them() {
+        let (_dir, store) = store();
+        let before = [
+            entry("e1", EntryKind::Message, 1_000, "rename the crate"),
+            entry("e2", EntryKind::Reply, 2_000, "renamed it everywhere"),
+        ];
+        store
+            .index("s1", &whereabouts("p1"), 0, &indexed(2), &before)
+            .expect("indexed");
+        // Another session's entries stay.
+        store
+            .index("s2", &whereabouts("p1"), 0, &indexed(1), &before[..1])
+            .expect("indexed");
+        // Cut back to nothing, then a different message.
+        let after = [entry("e9", EntryKind::Message, 3_000, "delete the module")];
+        let now = Indexed {
+            events: 1,
+            turns: 1,
+            last_event: "e9".to_owned(),
+        };
+        store
+            .index_afresh("s1", &whereabouts("p1"), &now, &after)
+            .expect("indexed");
+        let found = |words: &str| -> Vec<String> {
+            store
+                .search(&query(words))
+                .expect("searched")
+                .into_iter()
+                .map(|found| found.session)
+                .collect()
+        };
+        assert_eq!(found("\"rename\""), ["s2"]);
+        assert!(found("\"renamed\"").iter().all(|session| session != "s1"));
+        assert_eq!(found("\"delete\""), ["s1"]);
+        assert_eq!(
+            store.indexed("s1").expect("read").map(|at| at.indexed),
+            Some(now)
         );
     }
 

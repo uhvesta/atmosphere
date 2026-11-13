@@ -3,7 +3,7 @@
 //! can't be.
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::process::Command;
 
@@ -14,7 +14,13 @@ enum GitError {
     Run { source: std::io::Error },
     #[error("{output}")]
     Failed { output: String },
+    #[error("git didn't answer within {seconds} seconds and was stopped")]
+    TimedOut { seconds: u64 },
 }
+
+/// How long a fetch may take before the session starts without it: a
+/// remote that doesn't answer mustn't hold up the session.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// What a session's repository is, which decides what fetching does to it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,7 +36,8 @@ pub(crate) enum Kind {
 /// Fetches `path`'s `origin` with git commands from `git`, and for a clone
 /// checks out the remote's default branch. `name` is the repository's name
 /// and `place` where it is, such as "on this Mac", for what the session is
-/// told: a notice when the fetch failed or a folder is behind its remote.
+/// told: a notice when the fetch failed, or didn't finish in
+/// [`FETCH_TIMEOUT`], or a folder is behind its remote.
 pub(crate) async fn update(
     git: &(dyn Fn() -> Command + Sync),
     path: &Path,
@@ -38,11 +45,36 @@ pub(crate) async fn update(
     kind: Kind,
     place: &str,
 ) -> Option<String> {
+    update_within(git, path, name, kind, place, FETCH_TIMEOUT).await
+}
+
+/// As [`update`], giving the fetch `patience` to finish.
+async fn update_within(
+    git: &(dyn Fn() -> Command + Sync),
+    path: &Path,
+    name: &str,
+    kind: Kind,
+    place: &str,
+    patience: Duration,
+) -> Option<String> {
     let in_repo = |args: &'static [&'static str]| run(git, path, args);
     if kind == Kind::Folder && in_repo(&["remote", "get-url", "origin"]).await.is_err() {
         return None;
     }
-    if let Err(problem) = in_repo(&["fetch", "--quiet", "--prune", "origin"]).await {
+    // The person's folder keeps the remote branches it has: pruning them is
+    // theirs to do.
+    let fetch: &'static [&'static str] = match kind {
+        Kind::Clone => &["fetch", "--quiet", "--prune", "origin"],
+        Kind::Folder => &["fetch", "--quiet", "origin"],
+    };
+    // Dropping the command when time is up stops git.
+    let fetched = match tokio::time::timeout(patience, in_repo(fetch)).await {
+        Ok(fetched) => fetched,
+        Err(_) => Err(GitError::TimedOut {
+            seconds: patience.as_secs(),
+        }),
+    };
+    if let Err(problem) = fetched {
         let age = age(git, path).await;
         return Some(format!(
             "Couldn't fetch {name} {place}, so this session starts from the code as last \
@@ -85,10 +117,37 @@ pub(crate) async fn update(
                 .ok()?;
             let behind: u64 = behind.trim().parse().ok().filter(|count| *count > 0)?;
             let commits = if behind == 1 { "commit" } else { "commits" };
+            // "origin/main"; pulling brings it in only on that branch.
+            let default = in_repo(&[
+                "symbolic-ref",
+                "--quiet",
+                "--short",
+                "refs/remotes/origin/HEAD",
+            ])
+            .await
+            .map_or_else(|_| "origin/HEAD".to_owned(), |name| name.trim().to_owned());
+            let branch = in_repo(&["symbolic-ref", "--quiet", "--short", "HEAD"])
+                .await
+                .ok()
+                .map(|branch| branch.trim().to_owned());
+            let fix = match branch {
+                Some(branch) if default.strip_prefix("origin/") == Some(branch.as_str()) => {
+                    "Pull in the folder".to_owned()
+                }
+                Some(branch) => format!(
+                    "The folder is on the branch {branch}, which pulling may not bring up to \
+                     date: merge {default} into {branch} or rebase {branch} onto {default} in \
+                     the folder"
+                ),
+                None => format!(
+                    "The folder has a commit checked out, not a branch: check out a branch \
+                     and merge {default} into it or rebase it onto {default}"
+                ),
+            };
             Some(format!(
                 "{name} is {behind} {commits} behind its remote's default branch, and this \
-                 session starts from the folder as it's checked out. Pull in the folder, then \
-                 start a new session, to work from the newest code."
+                 session starts from the folder as it's checked out. {fix}, then start a new \
+                 session, to work from the newest code."
             ))
         }
     }
@@ -105,6 +164,9 @@ async fn run(
         .args(args)
         .stdin(std::process::Stdio::null())
         .env("GIT_TERMINAL_PROMPT", "0")
+        // One whose caller stopped waiting, as when a fetch takes too
+        // long, is stopped too.
+        .kill_on_drop(true)
         .output()
         .await
         .map_err(|source| GitError::Run { source })?;
@@ -212,6 +274,77 @@ mod tests {
         assert_eq!(sh(&folder, &["rev-parse", "HEAD"]).await, checked_out);
         let fetched = sh(&folder, &["rev-parse", "origin/HEAD"]).await;
         assert_eq!(fetched, sh(&remote, &["rev-parse", "HEAD"]).await);
+    }
+
+    #[tokio::test]
+    async fn a_folder_behind_on_another_branch_is_told_its_branch() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (remote, folder) = remote_and_clone(root.path()).await;
+        commit(&remote, "two").await;
+        let on_default = update(&git, &folder, "app", Kind::Folder, "on this Mac")
+            .await
+            .expect("behind");
+        sh(&folder, &["checkout", "--quiet", "-b", "side-quest"]).await;
+        let on_branch = update(&git, &folder, "app", Kind::Folder, "on this Mac")
+            .await
+            .expect("behind");
+        assert!(on_branch.contains("side-quest"), "{on_branch}");
+        assert!(!on_default.contains("side-quest"), "{on_default}");
+        assert_ne!(on_default, on_branch);
+    }
+
+    #[tokio::test]
+    async fn a_folder_keeps_remote_branches_its_remote_deleted() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (remote, folder) = remote_and_clone(root.path()).await;
+        sh(&remote, &["branch", "topic"]).await;
+        sh(&folder, &["fetch", "--quiet", "origin"]).await;
+        sh(&remote, &["branch", "-D", "topic"]).await;
+        let seen = |repository: std::path::PathBuf| async move {
+            run(
+                &git,
+                &repository,
+                &["rev-parse", "--verify", "--quiet", "origin/topic"],
+            )
+            .await
+            .is_ok()
+        };
+        update(&git, &folder, "app", Kind::Folder, "on this Mac").await;
+        assert!(seen(folder.clone()).await);
+        // Humata's own clone follows its remote.
+        update(&git, &folder, "app", Kind::Clone, "on this Mac").await;
+        assert!(!seen(folder).await);
+    }
+
+    #[tokio::test]
+    async fn a_fetch_that_doesnt_finish_is_stopped_and_the_session_told() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let (remote, clone) = remote_and_clone(root.path()).await;
+        let fetched = sh(&clone, &["rev-parse", "HEAD"]).await;
+        commit(&remote, "two").await;
+        // Git, but for a fetch, which hangs: `-C <path> fetch …`.
+        let slow = || {
+            let mut git = Command::new("sh");
+            git.args([
+                "-c",
+                r#"case "$3" in fetch) sleep 30 ;; *) exec git "$@" ;; esac"#,
+                "sh",
+            ]);
+            git
+        };
+        let started = std::time::Instant::now();
+        let notice = update_within(
+            &slow,
+            &clone,
+            "app",
+            Kind::Clone,
+            "on this Mac",
+            Duration::from_millis(200),
+        )
+        .await;
+        assert!(notice.is_some());
+        assert!(started.elapsed() < Duration::from_secs(20));
+        assert_eq!(sh(&clone, &["rev-parse", "HEAD"]).await, fetched);
     }
 
     #[tokio::test]

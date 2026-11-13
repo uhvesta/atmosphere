@@ -17,6 +17,30 @@ pub struct Backup {
     pub backend: Vec<BackendFile>,
 }
 
+/// The first events of a session's history that whoever asks for its
+/// backup holds already: how many, and the id of the last of them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Held {
+    pub events: usize,
+    pub last_event_id: String,
+}
+
+/// A session's backup for one who holds the start of its history: as
+/// [`Backup`], with only the events they don't hold, encoded for sending.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BackupSince {
+    pub record: SessionRecord,
+    /// The events from `events_from` on, as a JSON array.
+    pub events: Vec<u8>,
+    /// How many events were left out as held: all those said to be held
+    /// when the last of them is still where it was, otherwise, as after a
+    /// rewind, 0.
+    pub events_from: usize,
+    /// How many turns the whole history has finished.
+    pub turns: usize,
+    pub backend: Vec<BackendFile>,
+}
+
 /// A file of the backend's own state of a session, named by a relative
 /// path the backend's runner chooses.
 #[derive(Clone, Debug, PartialEq, Eq)]

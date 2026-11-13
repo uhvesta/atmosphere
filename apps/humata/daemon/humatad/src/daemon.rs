@@ -1214,7 +1214,7 @@ impl Daemon {
                 let Some(history) = kept else {
                     return Err(failure);
                 };
-                let (items, receiver) = mpsc::channel(history.events.len().max(1));
+                let (items, receiver) = mpsc::channel(history.events.len() + 1);
                 for event in history.events {
                     let item = pb::StreamItem {
                         kind: Some(pb::stream_item::Kind::SessionEvent(event)),
@@ -1222,6 +1222,10 @@ impl Daemon {
                     // The channel holds every event, so this can't wait.
                     let _ = items.try_send(Ok(item));
                 }
+                // The copy is all there is until the host is back.
+                let _ = items.try_send(Ok(pb::StreamItem {
+                    kind: Some(pb::stream_item::Kind::HistoryLoaded(pb::HistoryLoaded {})),
+                }));
                 return Ok(Reply::Stream {
                     response: pb::response::Kind::Watching(pb::Watching {}),
                     items: receiver,

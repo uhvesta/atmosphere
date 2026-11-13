@@ -1717,7 +1717,9 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
             });
             let (_, mut stream) = client.stream(request).await?;
             while let Some(item) = stream.next().await {
-                println!("{}", print::event(&session_event(item)?));
+                if let Some(event) = session_event(item)? {
+                    println!("{}", print::event(&event));
+                }
             }
         }
         Command::Sessions { project } => match client
@@ -2429,7 +2431,9 @@ async fn call_and_wait(
     expect_ok(client.call(request).await?, answered, expected)?;
     let mut index = 0;
     while let Some(item) = stream.next().await {
-        let event = session_event(item)?;
+        let Some(event) = session_event(item)? else {
+            continue;
+        };
         index += 1;
         if index <= seen {
             continue;
@@ -2466,11 +2470,22 @@ async fn waits_for_a_person(
     Ok(!answered)
 }
 
-fn session_event(item: Result<pb::StreamItem, pb::Error>) -> Result<pb::SessionEvent, CliError> {
+/// The event a watch's item carries; None for its notes on how far the
+/// history is read.
+fn session_event(
+    item: Result<pb::StreamItem, pb::Error>,
+) -> Result<Option<pb::SessionEvent>, CliError> {
     match item {
         Ok(pb::StreamItem {
             kind: Some(pb::stream_item::Kind::SessionEvent(event)),
-        }) => Ok(event),
+        }) => Ok(Some(event)),
+        Ok(pb::StreamItem {
+            kind:
+                Some(
+                    pb::stream_item::Kind::HistoryLoading(_)
+                    | pb::stream_item::Kind::HistoryLoaded(_),
+                ),
+        }) => Ok(None),
         Ok(other) => Err(CliError::Wire(humata_wire::ClientError::Unexpected {
             expected: "a session event",
             got: format!("{other:?}"),

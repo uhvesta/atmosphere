@@ -8,7 +8,7 @@ use prost::Message;
 use rusqlite::{OptionalExtension, params};
 
 use super::{Store, now_unix_ms};
-use crate::error::StoreError;
+use crate::error::{RecoveryDamage, StoreError};
 
 /// A recovery copy as listed, without the copy itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,11 +31,38 @@ fn compress(bytes: &[u8]) -> Vec<u8> {
     ruzstd::encoding::compress_to_vec(bytes, ruzstd::encoding::CompressionLevel::Fastest)
 }
 
-fn decompress(compressed: &[u8]) -> Option<Vec<u8>> {
+fn decompress(compressed: &[u8], part: &'static str) -> Result<Vec<u8>, RecoveryDamage> {
+    let damaged = |source| RecoveryDamage::Compressed { part, source };
     let mut bytes = Vec::new();
-    let mut decoder = ruzstd::decoding::StreamingDecoder::new(compressed).ok()?;
-    std::io::Read::read_to_end(&mut decoder, &mut bytes).ok()?;
-    Some(bytes)
+    let mut decoder = ruzstd::decoding::StreamingDecoder::new(compressed)
+        .map_err(|error| damaged(std::io::Error::other(error.to_string())))?;
+    std::io::Read::read_to_end(&mut decoder, &mut bytes).map_err(damaged)?;
+    Ok(bytes)
+}
+
+/// The JSON arrays `chunks` as one array, spliced as bytes: the events in
+/// them are never parsed here. The index of a chunk that isn't an array
+/// is the error.
+fn joined(chunks: &[Vec<u8>]) -> Result<Vec<u8>, usize> {
+    let mut whole = Vec::with_capacity(chunks.iter().map(Vec::len).sum::<usize>() + 2);
+    whole.push(b'[');
+    for (index, chunk) in chunks.iter().enumerate() {
+        let inner = chunk
+            .trim_ascii()
+            .strip_prefix(b"[")
+            .and_then(|rest| rest.strip_suffix(b"]"))
+            .ok_or(index)?
+            .trim_ascii();
+        if inner.is_empty() {
+            continue;
+        }
+        if whole.len() > 1 {
+            whole.push(b',');
+        }
+        whole.extend_from_slice(inner);
+    }
+    whole.push(b']');
+    Ok(whole)
 }
 
 impl Store {
@@ -53,12 +80,17 @@ impl Store {
         backup: &pb::SessionBackup,
         new_events: &NewEvents,
     ) -> Result<bool, StoreError> {
+        // Without its events and files, which are kept apart: built from
+        // its other fields, so their bytes aren't copied to be dropped.
         let rest = pb::SessionBackup {
+            backend: backup.backend,
+            record: backup.record.clone(),
             events: Vec::new(),
-            events_from: 0,
             backend_files: Vec::new(),
+            bundles: backup.bundles.clone(),
+            turns: backup.turns,
+            events_from: 0,
             backend_unchanged: Vec::new(),
-            ..backup.clone()
         };
         let files: Vec<(&str, Vec<u8>, Vec<u8>)> = backup
             .backend_files
@@ -225,8 +257,8 @@ impl Store {
             .map_err(self.failed())
     }
 
-    /// `session`'s recovery copy and the host it is of; None without one,
-    /// or if this build can't read it.
+    /// `session`'s recovery copy and the host it is of; None without one.
+    /// A copy that can't be read is an error, not a missing copy.
     pub fn recovery(
         &self,
         session: &str,
@@ -258,26 +290,36 @@ impl Store {
         })();
         let (found, chunks, files) = read.map_err(self.failed())?;
         drop(connection);
-        Ok(found.and_then(|(host, compressed)| {
-            let mut backup = pb::SessionBackup::decode(decompress(&compressed)?.as_slice()).ok()?;
+        let Some((host, compressed)) = found else {
+            return Ok(None);
+        };
+        let whole: Result<pb::SessionBackup, RecoveryDamage> = (|| {
+            let record = decompress(&compressed, "record")?;
+            let mut backup = pb::SessionBackup::decode(record.as_slice())
+                .map_err(|source| RecoveryDamage::Record { source })?;
             if !chunks.is_empty() {
-                let mut events: Vec<serde_json::Value> = Vec::new();
-                for chunk in &chunks {
-                    let part: Vec<serde_json::Value> =
-                        serde_json::from_slice(&decompress(chunk)?).ok()?;
-                    events.extend(part);
-                }
-                backup.events = serde_json::to_vec(&events).ok()?;
+                let chunks = chunks
+                    .iter()
+                    .map(|chunk| decompress(chunk, "history"))
+                    .collect::<Result<Vec<_>, _>>()?;
+                backup.events = joined(&chunks).map_err(|part| RecoveryDamage::History { part })?;
             }
             // A copy kept before its files were apart has them in it.
-            for (name, contents) in &files {
+            for (name, contents) in files {
                 backup.backend_files.push(pb::BackendFile {
-                    name: name.clone(),
-                    contents: decompress(contents)?,
+                    name,
+                    contents: decompress(&contents, "backend file")?,
                 });
             }
-            Some((host, backup))
-        }))
+            Ok(backup)
+        })();
+        match whole {
+            Ok(backup) => Ok(Some((host, backup))),
+            Err(source) => Err(StoreError::DamagedRecovery {
+                session: session.to_owned(),
+                source,
+            }),
+        }
     }
 
     /// Records that `session` now runs on `to`, moved from `from`, whose
@@ -378,6 +420,27 @@ mod tests {
             .iter()
             .map(|event| event["id"].as_str().expect("an id").to_owned())
             .collect()
+    }
+
+    #[test]
+    fn a_copy_with_a_damaged_part_is_an_error_not_a_missing_copy() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let store = Store::open(&dir.path().join("humata.sqlite3")).expect("the store opens");
+        assert!(store.recovery("s").expect("read").is_none());
+        let (whole, new) = events(0, &["a", "b"]);
+        assert!(
+            store
+                .keep_recovery("s", "far", "chat", &whole, &new)
+                .expect("kept")
+        );
+        store
+            .lock()
+            .execute("UPDATE recovery_events SET chunk = x'0001'", [])
+            .expect("damaged");
+        assert!(matches!(
+            store.recovery("s"),
+            Err(StoreError::DamagedRecovery { .. })
+        ));
     }
 
     #[test]

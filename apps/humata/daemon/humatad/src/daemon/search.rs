@@ -182,6 +182,7 @@ impl Daemon {
                     let unchanged = Indexed {
                         events: from,
                         turns: session.turns,
+                        last_event: indexed.indexed.last_event.clone(),
                     };
                     let id = session.id.clone();
                     self.store
@@ -209,17 +210,29 @@ impl Daemon {
                     !matches!(event.kind, Some(pb::session_event::Kind::AssistantDelta(_)))
                 })
                 .collect();
-            if events.len() < from {
-                continue;
-            }
-            let indexed = Indexed {
+            let now = Indexed {
                 events: events.len(),
                 turns: session.turns,
+                last_event: events
+                    .last()
+                    .map(|event| event.id.clone())
+                    .unwrap_or_default(),
             };
-            let (id, entries) = (session.id.clone(), entries(&events, from));
-            self.store
-                .apart(move |store| store.index(&id, &whereabouts, from, &indexed, &entries))
-                .await?;
+            let had = indexed.as_ref().map(|indexed| &indexed.indexed);
+            let id = session.id.clone();
+            if follows_on(&events, had) {
+                let entries = entries(&events, from);
+                self.store
+                    .apart(move |store| store.index(&id, &whereabouts, from, &now, &entries))
+                    .await?;
+            } else {
+                // Cut back since, as by a rewind: what was indexed is no
+                // longer its history, so its entries are made again.
+                let entries = entries(&events, 0);
+                self.store
+                    .apart(move |store| store.index_afresh(&id, &whereabouts, &now, &entries))
+                    .await?;
+            }
         }
         let store = self.store.clone();
         store
@@ -251,6 +264,21 @@ fn hit(found: Found, session_name: String, related: bool) -> pb::SearchHit {
         thread_id: found.thread,
         snippet: found.snippet,
         related,
+    }
+}
+
+/// Whether `events` start with the events indexed as `had`, so only those
+/// after need indexing: the last one indexed is still where it was. A
+/// history cut back, as by a rewind, is shorter or has another event there.
+fn follows_on(events: &[pb::SessionEvent], had: Option<&Indexed>) -> bool {
+    let Some(had) = had else {
+        return true;
+    };
+    match had.events.checked_sub(1) {
+        None => true,
+        Some(last) => events
+            .get(last)
+            .is_some_and(|event| event.id == had.last_event),
     }
 }
 
@@ -436,6 +464,31 @@ mod tests {
         let (words, range) = time_range("the last thing");
         assert_eq!(words, ["the", "last", "thing"]);
         assert_eq!(range, None);
+    }
+
+    #[test]
+    fn a_history_cut_back_doesnt_follow_on_from_what_was_indexed() {
+        let events = |ids: &[&str]| -> Vec<pb::SessionEvent> {
+            ids.iter()
+                .map(|id| pb::SessionEvent {
+                    id: (*id).to_owned(),
+                    ..Default::default()
+                })
+                .collect()
+        };
+        let had = Indexed {
+            events: 2,
+            turns: 1,
+            last_event: "b".to_owned(),
+        };
+        // Grown, or as it was.
+        assert!(follows_on(&events(&["a", "b", "c"]), Some(&had)));
+        assert!(follows_on(&events(&["a", "b"]), Some(&had)));
+        // Never indexed.
+        assert!(follows_on(&events(&["a"]), None));
+        // Cut back, and cut back then grown past where it was.
+        assert!(!follows_on(&events(&["a"]), Some(&had)));
+        assert!(!follows_on(&events(&["a", "x", "y"]), Some(&had)));
     }
 
     #[test]

@@ -103,6 +103,13 @@ pub(crate) async fn after_turns(
             Ok(Some(Ok(pb::StreamItem {
                 kind: Some(pb::stream_item::Kind::SessionEvent(event)),
             }))) => events.push(event),
+            Ok(Some(Ok(pb::StreamItem {
+                kind:
+                    Some(
+                        pb::stream_item::Kind::HistoryLoading(_)
+                        | pb::stream_item::Kind::HistoryLoaded(_),
+                    ),
+            }))) => {}
             other => panic!("the watch ended with {other:?}; events so far: {events:#?}"),
         }
     }
@@ -141,6 +148,50 @@ async fn a_session_plays_its_script_on_the_host() {
     send(&client, &session.id, "hello").await;
     let events = after_turns(&client, &session.id, 1).await;
     assert_eq!(said(&events), ["user: hello", "agent: hi there"]);
+}
+
+#[tokio::test]
+async fn a_watch_marks_the_end_of_the_history_before_anything_new() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = host(state.path()).await;
+    let session = started(&client, start(state.path(), "")).await.id;
+    let request = pb::request::Kind::WatchSession(pb::WatchSession {
+        session_id: session.clone(),
+    });
+    let Ok((_, mut stream)) = client.stream(request).await else {
+        panic!("couldn't watch {session}")
+    };
+    // No turn has run: the marker comes anyway, once the history is sent.
+    let mut next = async || match tokio::time::timeout(Duration::from_secs(10), stream.next()).await
+    {
+        Ok(Some(Ok(item))) => item.kind,
+        other => panic!("the watch ended with {other:?}"),
+    };
+    loop {
+        match next().await {
+            Some(pb::stream_item::Kind::HistoryLoaded(_)) => break,
+            Some(pb::stream_item::Kind::SessionEvent(event)) => {
+                assert!(
+                    !matches!(event.kind, Some(pb::session_event::Kind::UserMessage(_))),
+                    "a message came before any was sent"
+                );
+            }
+            _ => {}
+        }
+    }
+    // What happens next follows it, and it isn't sent again.
+    send(&client, &session, "hello").await;
+    loop {
+        match next().await {
+            Some(pb::stream_item::Kind::HistoryLoaded(_)) => panic!("the history ended twice"),
+            Some(pb::stream_item::Kind::SessionEvent(event))
+                if matches!(event.kind, Some(pb::session_event::Kind::Idle(_))) =>
+            {
+                break;
+            }
+            _ => {}
+        }
+    }
 }
 
 #[tokio::test]

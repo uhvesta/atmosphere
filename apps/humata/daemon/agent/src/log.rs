@@ -240,9 +240,29 @@ impl EventLog {
         Ok(())
     }
 
+    /// A copy of the events so far. A log at rest stays at rest: see
+    /// [`Self::peek`].
     pub(crate) fn events(&self) -> Result<Vec<Event>, AgentError> {
+        self.peek(<[Event]>::to_vec)
+    }
+
+    /// `read` given the events so far, as [`Self::with_events`], but a log
+    /// at rest reads them from disk for this alone and stays at rest, so
+    /// looking at an old history doesn't keep it in memory.
+    pub(crate) fn peek<T>(&self, read: impl FnOnce(&[Event]) -> T) -> Result<T, AgentError> {
+        let inner = self.lock();
+        match &inner.loaded {
+            Some(loaded) => Ok(read(&loaded.events)),
+            None => Ok(read(&read_all(&self.path, &mut |_, _| {})?.events)),
+        }
+    }
+
+    /// Reads the events into memory if the log is at rest, so what needs
+    /// them next doesn't read the disk. It reads the disk itself, so it's
+    /// for a thread that may block.
+    pub(crate) fn load(&self) -> Result<(), AgentError> {
         let mut inner = self.lock();
-        Ok(self.loaded(&mut inner, &mut |_, _| {})?.events.clone())
+        self.loaded(&mut inner, &mut |_, _| {}).map(|_| ())
     }
 
     /// `read` given the events so far, without copying them; the log stays
@@ -740,6 +760,21 @@ mod tests {
         assert!(log.is_loaded());
         assert_eq!(told.last().map(|(read, total)| read == total), Some(true));
         assert_eq!(texts(&log), ["one"]);
+    }
+
+    #[test]
+    fn a_log_at_rest_stays_at_rest_when_its_events_are_only_read() {
+        let folder = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let path = folder.path().join("events.jsonl");
+        let log = sealed_log(&path);
+        assert_eq!(texts(&log), ["one", "two"]);
+        assert_eq!(ok(log.peek(<[Event]>::len)), 2);
+        assert!(!log.is_loaded());
+        // Loaded when asked to be, and what's appended then is read too.
+        ok(log.load());
+        assert!(log.is_loaded());
+        ok(log.append(said("three")));
+        assert_eq!(texts(&log), ["one", "two", "three"]);
     }
 
     #[test]

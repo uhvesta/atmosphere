@@ -8,11 +8,11 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use humata_agent::{
-    Agent, AgentError, ApprovalMode, BackendFile, Backup, Checkout, ClaudeOptions, ClaudeRunner,
-    CopilotOptions, CopilotProvider, CopilotRunner, Edit, Env, Event, EventId, ForkOptions, Image,
-    Importable, Landed, LocalAgent, LocalModelConfig, LocalModelRunner, McpServer, Merged, Message,
-    ModelServer, Query, Repository, Script, ScriptedRunner, SendMode, SessionId, SessionRecord,
-    SessionUpdate, StartOptions, Summary, Watch, Workspaces, bundle,
+    Agent, AgentError, ApprovalMode, BackendFile, Backup, BackupSince, Checkout, ClaudeOptions,
+    ClaudeRunner, CopilotOptions, CopilotProvider, CopilotRunner, Edit, Env, Event, EventId,
+    ForkOptions, Held, Image, Importable, Landed, LocalAgent, LocalModelConfig, LocalModelRunner,
+    McpServer, Merged, Message, ModelServer, Query, Repository, Script, ScriptedRunner, SendMode,
+    SessionId, SessionRecord, SessionUpdate, StartOptions, Summary, Watch, Workspaces, bundle,
 };
 use humata_wire::{Reply, Service, ServiceFuture, describe, error, pb};
 use tokio::sync::{broadcast, mpsc};
@@ -121,7 +121,8 @@ trait Backend: Send + Sync {
         external: &'a str,
         name: Option<String>,
     ) -> BoxFuture<'a, SessionRecord>;
-    fn backup<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Backup>;
+    fn backup_since<'a>(&'a self, session: &'a SessionId, held: Held)
+    -> BoxFuture<'a, BackupSince>;
     fn delete<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()>;
     fn restore(
         &self,
@@ -356,8 +357,16 @@ where
                 .map_err(Into::into)
         })
     }
-    fn backup<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Backup> {
-        Box::pin(async move { Agent::backup(self, session).await.map_err(Into::into) })
+    fn backup_since<'a>(
+        &'a self,
+        session: &'a SessionId,
+        held: Held,
+    ) -> BoxFuture<'a, BackupSince> {
+        Box::pin(async move {
+            Agent::backup_since(self, session, held)
+                .await
+                .map_err(Into::into)
+        })
     }
     fn delete<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, ()> {
         Box::pin(async move { Agent::delete(self, session).await.map_err(Into::into) })
@@ -669,7 +678,13 @@ impl Host {
     async fn back_up(&self, request: pb::BackupSession) -> Result<pb::SessionBackup, HostError> {
         let session = SessionId::new(request.session_id);
         let (backend, agent) = self.owner(&session)?;
-        let backup = agent.backup(&session).await?;
+        // Only the events after the ones the daemon has, when its last is
+        // still where it was; otherwise, as after a rewind, all of them.
+        let held = Held {
+            events: usize::try_from(request.events_have).unwrap_or(usize::MAX),
+            last_event_id: request.last_event_id,
+        };
+        let backup = agent.backup_since(&session, held).await?;
         let mut bundles = Vec::new();
         for repository in &backup.record.repositories {
             let haves = request
@@ -690,18 +705,6 @@ impl Host {
                 });
             }
         }
-        let turns = backup
-            .events
-            .iter()
-            .filter(|event| matches!(event.kind, humata_agent::EventKind::TurnEnded { .. }))
-            .count();
-        // Only the events after the ones the daemon has, when its last is
-        // still where it was; otherwise, as after a rewind, all of them.
-        let have = usize::try_from(request.events_have).unwrap_or(usize::MAX);
-        let events_from = match have.checked_sub(1).and_then(|last| backup.events.get(last)) {
-            Some(last) if last.id.as_str() == request.last_event_id => have,
-            _ => 0,
-        };
         // Backend files the daemon has the same of are only named.
         let (mut backend_files, mut backend_unchanged) = (Vec::new(), Vec::new());
         for file in backup.backend {
@@ -723,12 +726,12 @@ impl Host {
         Ok(pb::SessionBackup {
             backend: backend.into(),
             record: serde_json::to_vec(&backup.record).map_err(encode)?,
-            events: serde_json::to_vec(&backup.events[events_from..]).map_err(encode)?,
-            events_from: u32::try_from(events_from).unwrap_or(u32::MAX),
+            events: backup.events,
+            events_from: u32::try_from(backup.events_from).unwrap_or(u32::MAX),
             backend_files,
             backend_unchanged,
             bundles,
-            turns: u32::try_from(turns).unwrap_or(u32::MAX),
+            turns: u32::try_from(backup.turns).unwrap_or(u32::MAX),
         })
     }
 
@@ -1430,7 +1433,8 @@ impl Host {
 }
 
 /// How much of the history is read while it's read from disk, the history,
-/// then each new event, until the watcher goes away.
+/// a marker that the history is all sent, then each new event, until the
+/// watcher goes away.
 fn stream(backend: Arc<dyn Backend>, session: SessionId) -> Reply {
     let (items, receiver) = mpsc::channel(64);
     tokio::spawn(async move {
@@ -1464,6 +1468,15 @@ fn stream(backend: Arc<dyn Backend>, session: SessionId) -> Reply {
             if items.send(Ok(item(event))).await.is_err() {
                 return;
             }
+        }
+        drop(history);
+        // Sent for an empty history too, so the watcher knows nothing more
+        // is being read.
+        let loaded = pb::StreamItem {
+            kind: Some(pb::stream_item::Kind::HistoryLoaded(pb::HistoryLoaded {})),
+        };
+        if items.send(Ok(loaded)).await.is_err() {
+            return;
         }
         loop {
             let next = tokio::select! {

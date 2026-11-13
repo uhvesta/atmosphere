@@ -402,6 +402,12 @@ const MIGRATIONS: &[&str] = &["
         contents BLOB NOT NULL,
         PRIMARY KEY (session_id, name)
     );
+", "
+    -- The id of the last event indexed of each session, so a history cut
+    -- back, as by a rewind, and grown again is told from one that only
+    -- grew. A session indexed before has none, which no event's id is, so
+    -- it's indexed again from its start when it next changes.
+    ALTER TABLE search_sessions ADD COLUMN last_event TEXT NOT NULL DEFAULT '';
 "];
 
 /// What reverting a board change did.

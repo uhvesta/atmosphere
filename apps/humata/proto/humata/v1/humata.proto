@@ -1589,6 +1589,7 @@ message StreamItem {
     TerminalOutput terminal_output = 3;
     PortData port_data = 4;
     HistoryLoading history_loading = 5;
+    HistoryLoaded history_loaded = 6;
   }
 }
 
@@ -1599,6 +1600,11 @@ message HistoryLoading {
   uint64 read = 1;
   uint64 total = 2;
 }
+
+// Sent by a watch once after the history's events, even when there are
+// none: everything before it is the history, everything after is new. A
+// watch that connects to its host again sends it again after the replay.
+message HistoryLoaded {}
 
 message WatchToolCalls {}
 
