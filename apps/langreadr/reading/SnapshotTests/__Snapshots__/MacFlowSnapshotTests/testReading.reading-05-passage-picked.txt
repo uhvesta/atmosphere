@@ -13,7 +13,6 @@
   [Button] "Copy"
   [Button] "Cancel"
   [OpaqueProviderGroup/OpaqueProviderList] ""
-    [StaticText] "" value: "El mercado"
     [Button] "Hola"
     [Button] "amigo"
     [Button] "Vamos"

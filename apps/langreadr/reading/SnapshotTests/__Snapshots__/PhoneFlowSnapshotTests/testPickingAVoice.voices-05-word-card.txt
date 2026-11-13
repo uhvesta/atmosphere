@@ -3,7 +3,6 @@
 [button] "Highlight" value: "0"
 [button] "More"
 [header] "El mercado"
-[text] "El mercado"
 [button] "Hola"
 [button] "amigo"
 [button] "Vamos"

@@ -9,7 +9,6 @@
   [Button] "Web"
   [Button] "File"
   [OpaqueProviderGroup/OpaqueProviderList] ""
-    [StaticText] "" value: "El mercado"
     [Button] "Hola"
     [Button] "amigo"
     [Button] "Vamos"

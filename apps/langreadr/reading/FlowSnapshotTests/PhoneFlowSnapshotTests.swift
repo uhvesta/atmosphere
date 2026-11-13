@@ -42,7 +42,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.tap("Send")
         try await Sample.waitFor { reader.destination?.chat?.thread.reply == nil }
         await flow.step("replied")
-        flow.tap("Open in chat")
+        flow.tap("Enlarge")
         await flow.step("chat")
         flow.finish()
     }
@@ -69,7 +69,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         flow.tap("mercado")
         flow.tap("Ask")
         await flow.step("ask", image: false, testName: test)
-        flow.tap("Open in chat")
+        flow.tap("Enlarge")
         await flow.step("chat", testName: test)
         let chat = { (action: ChatThreadFeature.Action) in
             _ = reader.send(.destination(.presented(.chat(.thread(action)))))
@@ -113,7 +113,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         await flow.step("passage-picked")
         flow.tap("Ask")
         await flow.step("ask")
-        flow.tap("Open in chat")
+        flow.tap("Enlarge")
         reader.send(.destination(.presented(.chat(.thread(.modelTapped)))))
         try await Sample.waitFor { reader.destination?.chat?.thread.modelSheet?.models.isEmpty == false }
         await flow.step("chat-model")

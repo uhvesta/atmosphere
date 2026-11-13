@@ -13,7 +13,6 @@
 [header] "El mercado"
 [text] "“Hola amigo. ¿Vamos al mercado”"
 [text] "Vamos: we go. Al: to the. Mercado: market."
-[text] "El mercado"
 [button] "Hola"
 [button] "amigo"
 [button] "Vamos"

@@ -9,7 +9,6 @@
   [Button] "Web"
   [Button] "File"
   [OpaqueProviderGroup/OpaqueProviderList] ""
-    [StaticText] "" value: "El mercado"
     [Button] "Hola"
     [Button] "amigo"
     [Button] "Vamos"
@@ -39,7 +38,7 @@
   [StaticText] "" value: "El mercado"
   [StaticText] "" value: "El mercado"
   [Sheet] ""
-    [StaticText] "" value: "Ask"
+    [StaticText] "" value: "Chat"
     [StaticText] "" value: "El mercado"
     [StaticText] "" value: "“Hola amigo. ¿Vamos al mercado”"
     [Heading] "Tuesday, November 3 at 2:00 AM"
@@ -57,4 +56,4 @@
     [Button, disabled] "Send" id: arrow.up
     [Button] "Context Window" value: "4% used, 171 of 4,096 tokens" help: "4% used, 171 of 4,096 tokens"
     [Button] "Done"
-    [Button] "Open in chat"
+    [Button] "Enlarge"

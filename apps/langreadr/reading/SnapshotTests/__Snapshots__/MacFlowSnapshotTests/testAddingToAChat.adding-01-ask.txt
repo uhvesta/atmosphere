@@ -9,7 +9,6 @@
   [Button] "Web"
   [Button] "File"
   [OpaqueProviderGroup/OpaqueProviderList] ""
-    [StaticText] "" value: "El mercado"
     [Button] "Hola"
     [Button] "amigo"
     [Button] "Vamos"
@@ -37,7 +36,7 @@
   [StaticText] "" value: "El mercado"
   [StaticText] "" value: "El mercado"
   [Sheet] ""
-    [StaticText] "" value: "Ask"
+    [StaticText] "" value: "Chat"
     [StaticText] "" value: "El mercado"
     [StaticText] "" value: "“Hola amigo. ¿Vamos al mercado”"
     [StaticText] "" value: "Ask what it means, how it's said, or why it's written this way."
@@ -48,4 +47,4 @@
     [Button, disabled] "Send" id: arrow.up
     [Button] "Context Window" value: "Shows after the next reply" help: "Shows after the next reply"
     [Button] "Done"
-    [Button] "Open in chat"
+    [Button] "Enlarge"

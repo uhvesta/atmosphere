@@ -14,7 +14,7 @@ struct ReaderView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
                 ForEach(store.book.chapters) { chapter in
-                    if let title = chapter.title {
+                    if let title = chapter.title, !repeatsTheBooksTitle(chapter, title) {
                         Text(title).font(.title2.bold()).padding(.top, 6)
                     }
                     ForEach(chapter.paragraphs) { paragraph in
@@ -44,6 +44,13 @@ struct ReaderView: View {
         .sheet(item: $store.scope(state: \.destination, action: \.destination)) { destination in
             ReaderSheetView(store: destination)
         }
+    }
+
+    /// Whether `chapter` is the first and named as the book is, as a page
+    /// whose heading is its title, which the navigation bar already shows.
+    private func repeatsTheBooksTitle(_ chapter: Chapter, _ title: String) -> Bool {
+        chapter.id == store.book.chapters.first?.id
+            && title.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(store.book.title) == .orderedSame
     }
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
@@ -134,9 +141,20 @@ struct ReaderSheetView: View {
         #if os(iOS)
             .presentationDetents(isCompact ? [.medium, .large] : [.large])
         #else
-            .frame(minWidth: 420, minHeight: isCompact ? 360 : 560)
+            .frame(minWidth: 420, minHeight: minHeight)
         #endif
     }
+
+    #if os(macOS)
+        /// Tall enough for a word card's meaning, sentence and buttons.
+        private var minHeight: CGFloat {
+            switch store.state {
+            case .word: 480
+            case .chat(let chat): chat.compact ? 360 : 560
+            case .chats: 560
+            }
+        }
+    #endif
 
     private var isCompact: Bool {
         switch store.state {

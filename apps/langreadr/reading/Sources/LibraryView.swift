@@ -116,25 +116,35 @@ struct LibraryView: View {
             set: { id in if let id { store.send(.bookTapped(id)) } })
     }
 
+    private var importButtons: some View {
+        HStack {
+            Button("Text", systemImage: "doc.plaintext") { store.send(.importTapped(.text)) }
+            Button("Photo", systemImage: "photo") { choosingPhoto = true }
+            Button("Web", systemImage: "globe") { store.send(.importTapped(.web)) }
+            Button("File", systemImage: "folder") { choosingFile = true }
+        }
+        .buttonStyle(.bordered)
+        .lineLimit(1)
+    }
+
     private var importBar: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Import").font(.caption).foregroundStyle(.secondary)
                 if store.isImporting { ProgressView().controlSize(.small) }
             }
-            HStack {
-                Button("Text", systemImage: "doc.plaintext") { store.send(.importTapped(.text)) }
-                Button("Photo", systemImage: "photo") { choosingPhoto = true }
-                Button("Web", systemImage: "globe") { store.send(.importTapped(.web)) }
-                Button("File", systemImage: "folder") { choosingFile = true }
-            }
-            .buttonStyle(.bordered)
-            .lineLimit(1)
             #if os(macOS)
                 // The sidebar is too narrow for each icon and title.
-                .labelStyle(.titleOnly)
+                importButtons.labelStyle(.titleOnly).disabled(store.isImporting)
+            #else
+                // Each icon and title where they fit, else the titles alone,
+                // rather than a title cut short.
+                ViewThatFits(in: .horizontal) {
+                    importButtons
+                    importButtons.labelStyle(.titleOnly)
+                }
+                .disabled(store.isImporting)
             #endif
-            .disabled(store.isImporting)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)

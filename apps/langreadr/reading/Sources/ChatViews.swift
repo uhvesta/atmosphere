@@ -23,7 +23,7 @@ struct PassageChatView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .chatTitle(store.compact ? String(localized: "Ask") : String(localized: "Chat"), subtitle: store.book.title)
+        .chatTitle(String(localized: "Chat"), subtitle: store.book.title)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Done") { store.send(.doneTapped) } }
             ToolbarItem(placement: .automatic) {
@@ -32,7 +32,8 @@ struct PassageChatView: View {
             }
             if store.compact {
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Open in chat") { store.send(.openFullTapped) }
+                    // The same chat, taller, with the whole passage.
+                    Button("Enlarge") { store.send(.openFullTapped) }
                 }
             }
         }

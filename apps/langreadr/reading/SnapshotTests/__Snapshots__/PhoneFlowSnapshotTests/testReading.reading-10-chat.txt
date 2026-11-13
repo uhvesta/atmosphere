@@ -8,7 +8,6 @@
 [text] "El mercado"
 [header] "El mercado"
 [text] "“Hola amigo. ¿Vamos al mercado”"
-[text] "El mercado"
 [button] "Hola"
 [button] "amigo"
 [button] "Vamos"
