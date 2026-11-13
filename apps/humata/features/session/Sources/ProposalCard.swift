@@ -189,7 +189,7 @@ package struct ProposalEditor: View {
     }
 
     package var body: some View {
-        if let editing = store.editing {
+        if store.editing != nil {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Edit the Proposal")
                     .font(.headline)

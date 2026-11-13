@@ -1587,7 +1587,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
         };
         let (times, checkpoints): (Vec<i64>, Vec<Vec<Snapshot>>) = session
             .log
-            .events()
+            .events()?
             .iter()
             .filter_map(|event| {
                 let snapshots = event.kind.snapshots()?;
@@ -1616,7 +1616,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
             })?;
         let checkpoints: Vec<Vec<Snapshot>> = session
             .log
-            .events()
+            .events()?
             .iter()
             .filter_map(|event| event.kind.snapshots())
             .map(<[Snapshot]>::to_vec)

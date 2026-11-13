@@ -47,7 +47,7 @@ final class LongChatTests: XCTestCase {
         } withDependencies: {
             $0.daemon.watch = { _ in
                 AsyncThrowingStream { continuation in
-                    for event in history { continuation.yield(event) }
+                    for event in history { continuation.yield(.event(event)) }
                 }
             }
             $0.daemon.markSeen = { _, _ in }

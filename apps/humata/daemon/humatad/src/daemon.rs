@@ -970,6 +970,17 @@ impl Daemon {
         Ok(answer)
     }
 
+    /// Drops `host`'s kept listing, so the next one asks it again.
+    fn forget_listing(&self, host: &str) {
+        if host.is_empty() {
+            return;
+        }
+        self.listings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(host);
+    }
+
     async fn list(&self, project: &str) -> Result<pb::Sessions, DaemonError> {
         let mut all = Vec::new();
         // Every host at once, each given a little while: a slow one shows
@@ -1711,7 +1722,9 @@ impl Daemon {
             Request::RestoreSession(restore) => {
                 let session = self
                     .restore_session(&restore.session_id, &restore.host)
-                    .await?;
+                    .await;
+                self.forget_listing(&restore.host);
+                let session = session?;
                 return Ok(Reply::Response(Response::SessionRestored(
                     pb::SessionRestored {
                         session: Some(session),
@@ -1719,7 +1732,9 @@ impl Daemon {
                 )));
             }
             Request::RestoreHost(restore) => {
-                let restored = self.restore_host(&restore.host).await?;
+                let restored = self.restore_host(&restore.host).await;
+                self.forget_listing(&restore.host);
+                let restored = restored?;
                 return Ok(Reply::Response(Response::HostRestored(restored)));
             }
             Request::ListSshHosts(_) => {
@@ -1883,6 +1898,8 @@ impl Daemon {
         let forked = matches!(request, Request::ForkSession(_));
         let planning = matches!(&request, Request::StartSession(start) if start.planning);
         let mut reply = self.forward(&host, request).await?;
+        // What was sent may have changed the host's sessions.
+        self.forget_listing(&host);
         if let Reply::Response(
             Response::SessionStarted(pb::SessionStarted {
                 session: Some(session),

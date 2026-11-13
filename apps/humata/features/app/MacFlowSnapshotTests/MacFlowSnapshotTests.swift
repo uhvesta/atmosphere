@@ -293,7 +293,7 @@ final class MacFlowSnapshotTests: XCTestCase {
             // The history a restarted daemon sends, all at once.
             $0.daemon.watch = { _ in
                 AsyncThrowingStream { continuation in
-                    for event in history { continuation.yield(event) }
+                    for event in history { continuation.yield(.event(event)) }
                 }
             }
             $0.daemonService = .previewValue

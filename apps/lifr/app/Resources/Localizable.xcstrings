@@ -2916,6 +2916,15 @@
     "Only for this chat. When it's off, a message uses a skill only if you pick one." : {
 
     },
+    "Only its first 20,000 characters show here; open all of it to read and select" : {
+
+    },
+    "Only the first 20,000 characters show here; Copy takes all of it." : {
+
+    },
+    "Only the first 20,000 characters show here; open all of them to read and select" : {
+
+    },
     "Open" : {
 
     },
@@ -3115,10 +3124,19 @@
     "Put back recent changes." : {
 
     },
+    "Put this code in the message box as a quote" : {
+
+    },
     "Quit Lifr" : {
 
     },
     "Quit Lifr and open it again. If this keeps happening, share these details in a bug report." : {
+
+    },
+    "Quote" : {
+
+    },
+    "Quote Code in Message" : {
 
     },
     "Read a task" : {
@@ -3480,6 +3498,9 @@
     "Select All" : {
 
     },
+    "Select All of It" : {
+
+    },
     "Select Model" : {
 
     },
@@ -3532,6 +3553,9 @@
 
     },
     "Show" : {
+
+    },
+    "Show All" : {
 
     },
     "Show All (%lld More)" : {

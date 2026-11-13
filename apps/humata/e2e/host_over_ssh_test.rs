@@ -257,6 +257,8 @@ fn a_managed_host_is_installed_set_up_and_survives_dropped_connections() {
         pause_host(&folder, true),
         "no host was running on its socket"
     );
+    // A listing made in the last second is shared, so ask after it.
+    std::thread::sleep(std::time::Duration::from_millis(1_500));
     let asked = std::time::Instant::now();
     let line = session_line(&humata, session);
     let waited = asked.elapsed();

@@ -328,7 +328,6 @@ async fn write<O: AsyncWrite + Unpin>(output: &mut O, data: &[u8]) -> Result<(),
 /// so every key goes to the host as typed, and its size as it changes.
 #[cfg(unix)]
 pub mod pty {
-    use std::os::fd::BorrowedFd;
 
     use rustix::termios::{self, OptionalActions, Termios};
     use tokio::signal::unix::{SignalKind, signal};
@@ -345,12 +344,12 @@ pub mod pty {
     impl Raw {
         pub fn enter() -> Self {
             let stdin = stdin();
-            let Ok(saved) = termios::tcgetattr(stdin) else {
+            let Ok(saved) = termios::tcgetattr(&stdin) else {
                 return Self { saved: None };
             };
             let mut raw = saved.clone();
             raw.make_raw();
-            if termios::tcsetattr(stdin, OptionalActions::Now, &raw).is_err() {
+            if termios::tcsetattr(&stdin, OptionalActions::Now, &raw).is_err() {
                 return Self { saved: None };
             }
             Self { saved: Some(saved) }
@@ -365,8 +364,8 @@ pub mod pty {
         }
     }
 
-    fn stdin() -> BorrowedFd<'static> {
-        rustix::stdio::stdin()
+    fn stdin() -> std::io::Stdin {
+        std::io::stdin()
     }
 
     /// The terminal's size now, if standard input is one.

@@ -1686,6 +1686,7 @@ async fn run(arguments: Arguments) -> Result<(), CliError> {
                 path,
                 host: place.host,
                 root: place.root.unwrap_or_default(),
+                turn: None,
             });
             match client.call(request).await? {
                 Response::FileContents(contents) if contents.binary => {
