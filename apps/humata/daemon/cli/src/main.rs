@@ -3,6 +3,7 @@
 #[cfg(feature = "admin")]
 mod admin;
 mod approved;
+mod attach;
 mod control;
 mod error;
 mod print;
@@ -554,6 +555,14 @@ enum TerminalCommand {
         #[arg(long, default_value = "")]
         host: String,
     },
+    /// Be the terminal: what's typed here goes to its shell, and what it
+    /// prints shows here, until it exits. For a terminal app to run; exits
+    /// with the shell's exit code.
+    Attach {
+        terminal: String,
+        #[arg(long, default_value = "")]
+        host: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -908,7 +917,7 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    let arguments = Arguments::parse();
+    let mut arguments = Arguments::parse();
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -919,6 +928,17 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Command::Terminal(TerminalCommand::Attach { terminal, host }) = &mut arguments.command {
+        let target = attach::Target {
+            host: std::mem::take(host),
+            terminal: std::mem::take(terminal),
+        };
+        let code = runtime.block_on(attach_terminal(arguments.socket, target));
+        // Standard input is read on a thread that may be blocked in a read
+        // no one wants any more; don't wait for it.
+        runtime.shutdown_background();
+        return code;
+    }
     match runtime.block_on(run(arguments)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -933,6 +953,11 @@ async fn connect(
     wait: Wait,
     say_waiting: bool,
 ) -> Result<Client, CliError> {
+    let client = connect_wire(socket).await?;
+    Ok(Client::new(client, wait, say_waiting))
+}
+
+async fn connect_wire(socket: Option<PathBuf>) -> Result<humata_wire::Client, CliError> {
     let path = socket
         .or_else(humata_wire::default_socket)
         .ok_or(CliError::NoSocket)?;
@@ -940,8 +965,42 @@ async fn connect(
         .await
         .map_err(|source| CliError::Connect { path, source })?;
     let (reader, writer) = stream.into_split();
-    let client = humata_wire::Client::connect(reader, writer, pb::Role::Client, VERSION).await?;
-    Ok(Client::new(client, wait, say_waiting))
+    Ok(humata_wire::Client::connect(reader, writer, pb::Role::Client, VERSION).await?)
+}
+
+/// How long `humata terminal attach` waits before its first try to
+/// reattach after the connection drops.
+const REATTACH_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// `humata terminal attach`: this process's terminal, raw, piped to the
+/// host's until its shell exits, which gives the exit code.
+async fn attach_terminal(socket: Option<PathBuf>, target: attach::Target) -> ExitCode {
+    let sizes = match attach::pty::sizes() {
+        Ok(sizes) => sizes,
+        Err(error) => {
+            eprintln!("humata: couldn't watch the terminal's size: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let raw = attach::pty::Raw::enter();
+    let ended = attach::attach(
+        &target,
+        || connect_wire(socket.clone()),
+        tokio::io::stdin(),
+        tokio::io::stdout(),
+        sizes,
+        REATTACH_WAIT,
+    )
+    .await;
+    drop(raw);
+    match ended {
+        Ok(attach::Ended::Exited(code)) => ExitCode::from(attach::exit_status(code)),
+        Ok(attach::Ended::InputClosed) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("\r\nhumata: {}", humata_wire::describe(&error));
+            ExitCode::FAILURE
+        }
+    }
 }
 
 async fn run(arguments: Arguments) -> Result<(), CliError> {
@@ -1868,6 +1927,8 @@ async fn terminal(client: &Client, command: TerminalCommand) -> Result<(), CliEr
     use pb::request::Kind as Request;
     use pb::response::Kind as Response;
     match command {
+        // Run by main before it connects, since it reconnects on its own.
+        TerminalCommand::Attach { .. } => {}
         TerminalCommand::Open {
             session,
             host,
