@@ -77,7 +77,8 @@ extension TaskQuery {
             let later = TaskSection(id: "later", title: String(localized: "Later"), rows: rows(waiting))
             // Only grouping by status shows closed tasks, unless Show
             // Completed is off.
-            let tasks = all.filter { !waiting.contains($0) && (showsCompleted || $0.isOpen) }
+            let waitingIDs = Set(waiting.map(\.id))
+            let tasks = all.filter { !waitingIDs.contains($0.id) && (showsCompleted || $0.isOpen) }
             let open = tasks.filter(\.isOpen)
             switch grouping {
             case .status:
@@ -89,17 +90,18 @@ extension TaskQuery {
                             tasks.filter { $0.effectiveStatus(now: now, settings: workspace.settings) == status }))
                 } + [later]
             case .project:
+                let byProject = Dictionary(grouping: open, by: \.projectID)
                 let projects = workspace.projects.values
-                    .filter { project in open.contains { $0.projectID == project.id } }
+                    .filter { byProject[$0.id] != nil }
                     .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
                 return projects.map { project in
                     TaskSection(
                         id: project.id.uuidString, title: project.name,
-                        rows: rows(open.filter { $0.projectID == project.id }))
+                        rows: rows(byProject[project.id] ?? []))
                 } + [
                     TaskSection(
                         id: "none", title: String(localized: "No Project"),
-                        rows: rows(open.filter { $0.projectID == nil })),
+                        rows: rows(byProject[nil] ?? [])),
                     later,
                 ]
             case .priority:

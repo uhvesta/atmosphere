@@ -210,21 +210,27 @@ package struct AvenueRow: Identifiable, Hashable, Sendable {
 extension Workspace {
     /// Every Avenue that isn't archived, in order, with open task counts.
     package var avenueRows: [AvenueRow] {
-        let open = listedTasks.filter { $0.isOpen && !$0.isSubtask }
+        // One pass over the tasks, not one per Avenue and Project.
+        var byAvenue: [UUID: Int] = [:]
+        var byProject: [UUID: Int] = [:]
+        for task in listedTasks where task.isOpen && !task.isSubtask {
+            byAvenue[task.avenueID, default: 0] += 1
+            if let project = task.projectID { byProject[project, default: 0] += 1 }
+        }
         return avenues.values
             .filter { $0.archivedAt == nil }
             .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
             .map { avenue in
                 AvenueRow(
                     id: avenue.id, key: avenue.key.rawValue, name: avenue.name, color: avenue.color,
-                    symbol: avenue.symbol, openCount: open.count { $0.avenueID == avenue.id },
+                    symbol: avenue.symbol, openCount: byAvenue[avenue.id] ?? 0,
                     projects: projects.values
                         .filter { $0.avenueID == avenue.id && $0.status == .active }
                         .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
                         .map { project in
                             AvenueRow.ProjectRow(
                                 id: project.id, name: project.name,
-                                openCount: open.count { $0.projectID == project.id })
+                                openCount: byProject[project.id] ?? 0)
                         })
             }
     }

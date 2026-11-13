@@ -74,5 +74,18 @@ func dateTests() -> [TestCase] {
             let sorted = [undated, low, soon, urgent].sorted(by: LifrTask.listOrder).map(\.title)
             try expectEqual(sorted, ["Urgent", "Low", "Soon", "Undated"])
         },
+        TestCase("given many tasks, then the listed ones come in list order") {
+            let fixture = try Fixture()
+            let priorities: [Priority] = [.none, .low, .high, .urgent]
+            for index in 0..<40 {
+                let task = try fixture.task("Task \(index)")
+                let due = index % 3 == 0 ? nil : try CalendarDate("2026-11-0\(index % 9 + 1)")
+                _ = try fixture.workspace.edit(
+                    task.id, .init(priority: priorities[index % 4], dueDate: .some(due)), in: fixture.context)
+            }
+            let tasks = fixture.workspace.listedTasks
+            try expectEqual(tasks.count, 40)
+            try expectEqual(tasks.map(\.id), tasks.sorted(by: LifrTask.listOrder).map(\.id))
+        },
     ]
 }

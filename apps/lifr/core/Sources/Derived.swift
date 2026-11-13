@@ -43,9 +43,10 @@ extension Workspace {
     /// list; the rest, in list order.
     package var listedTasks: [LifrTask] {
         derived.listed {
-            tasks.values
-                .filter { $0.deletedAt == nil && avenues[$0.avenueID]?.archivedAt == nil }
-                .sorted(by: LifrTask.listOrder)
+            let live = tasks.values.filter { $0.deletedAt == nil && avenues[$0.avenueID]?.archivedAt == nil }
+            // Sorts small keys, not whole tasks: moving a task costs a copy
+            // of every field, and a sort of thousands moves each many times.
+            return live.indices.map { ListKey(live[$0], at: $0) }.sorted().map { live[$0.index] }
         }
     }
 
@@ -59,4 +60,31 @@ extension Workspace {
             return children.mapValues { $0.sorted(by: LifrTask.siblingOrder) }
         }
     }
+}
+
+/// Where a task falls in `LifrTask.listOrder`, without the rest of it.
+private struct ListKey: Comparable {
+    let priority: Int
+    /// The due day as one number, undated last.
+    let due: Int
+    let sortOrder: String
+    let id: UUID
+    let index: Int
+
+    init(_ task: LifrTask, at index: Int) {
+        priority = task.priority.rank
+        due = task.dueDate.map { $0.year * 10_000 + $0.month * 100 + $0.day } ?? .max
+        sortOrder = task.sortOrder
+        id = task.id
+        self.index = index
+    }
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        if lhs.priority != rhs.priority { return lhs.priority > rhs.priority }
+        if lhs.due != rhs.due { return lhs.due < rhs.due }
+        if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id }
 }

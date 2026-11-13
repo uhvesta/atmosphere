@@ -34,7 +34,8 @@ extension TaskQuery {
                 default: return false
                 }
             }
-        let dueToday = open.filter { $0.dueDate == today && !overdue.contains($0) }
+        let overdueIDs = Set(overdue.map(\.id))
+        let dueToday = open.filter { $0.dueDate == today && !overdueIDs.contains($0.id) }
         return [
             TaskSection(
                 id: "overdue", title: String(localized: "Overdue"),
