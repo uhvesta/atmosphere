@@ -328,3 +328,126 @@ extension Workspace {
         return TaskCode.random(using: &generator)
     }
 }
+
+extension Recurrence {
+    /// Reads how a task repeats, as `description` writes it, in any case:
+    /// "every day", "every 2 weeks on Mon, Thu", "every weekday", "every
+    /// month on day 15", "every month on the last Fri", "every year on Mar
+    /// 5", "3 days after closing", and "daily", "weekly", "monthly" and
+    /// "yearly". A week, month or year with no day takes `due`'s.
+    package static func resolving(_ text: String, due: CalendarDate) -> (rule: Rule, interval: Int)? {
+        var words = text.lowercased().replacingOccurrences(of: ",", with: " ")
+            .split(whereSeparator: \.isWhitespace).map(String.init)
+            .filter { $0 != "the" && $0 != "and" }
+        let aliases = ["daily": "day", "weekly": "week", "monthly": "month", "yearly": "year", "annually": "year"]
+        if let first = words.first, let unit = aliases[first] { words = ["every", unit] + words.dropFirst() }
+        let read: (rule: Rule, interval: Int)?
+        if words.suffix(2) == ["after", "closing"] {
+            read = afterClosing(Array(words.dropLast(2)))
+        } else if words.first == "every" {
+            read = every(Array(words.dropFirst()), due: due)
+        } else {
+            read = nil
+        }
+        guard let read, Recurrence(rule: read.rule, interval: read.interval, seriesID: UUID()).isValid else {
+            return nil
+        }
+        return read
+    }
+
+    /// "3 days", "a week" or "month", before "after closing".
+    private static func afterClosing(_ words: [String]) -> (rule: Rule, interval: Int)? {
+        var words = words[...]
+        var interval = 1
+        if let first = words.first, let count = Int(first) {
+            interval = count
+            words = words.dropFirst()
+        } else if words.first == "a" || words.first == "an" {
+            words = words.dropFirst()
+        }
+        guard words.count == 1, let unit = words.first.flatMap(Self.unit) else { return nil }
+        return (.afterClosing(unit), interval)
+    }
+
+    /// What follows "every".
+    private static func every(_ words: [String], due: CalendarDate) -> (rule: Rule, interval: Int)? {
+        var words = words[...]
+        var interval = 1
+        if let first = words.first, let count = Int(first) {
+            interval = count
+            words = words.dropFirst()
+        }
+        guard let first = words.first else { return nil }
+        words = words.dropFirst()
+        if words.first == "on" { words = words.dropFirst() }
+        let rest = Array(words)
+        if first == "weekday" || first == "weekdays" {
+            return interval == 1 && rest.isEmpty ? (.weekly(weekdays: [2, 3, 4, 5, 6]), 1) : nil
+        }
+        // "every monday" and "every mon, thu" are every week on those days.
+        if let day = weekday(first) {
+            let days = rest.map(weekday)
+            guard !days.contains(nil) else { return nil }
+            return (.weekly(weekdays: Set([day] + days.compactMap { $0 })), interval)
+        }
+        switch unit(first) {
+        case .day:
+            return rest.isEmpty ? (.daily, interval) : nil
+        case .week:
+            if rest.isEmpty { return (.weekly(weekdays: [due.weekday]), interval) }
+            let days = rest.map(weekday)
+            guard !days.contains(nil) else { return nil }
+            return (.weekly(weekdays: Set(days.compactMap { $0 })), interval)
+        case .month:
+            if rest.isEmpty { return (.monthly(day: due.day), interval) }
+            if rest.count == 2, rest[0] == "day", let day = Int(rest[1]) { return (.monthly(day: day), interval) }
+            if rest.count == 1, let day = dayNumber(rest[0]) { return (.monthly(day: day), interval) }
+            let ordinals = ["first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3, "fourth": 4, "4th": 4]
+            if rest.count == 2, let ordinal = ordinals[rest[0]] ?? (rest[0] == "last" ? -1 : nil),
+                let day = weekday(rest[1])
+            {
+                return (.monthlyWeekday(ordinal: ordinal, weekday: day), interval)
+            }
+            return nil
+        case .year:
+            if rest.isEmpty { return (.yearly(month: due.month, day: due.day), interval) }
+            guard rest.count == 2, let month = month(rest[0]), let day = dayNumber(rest[1]) else { return nil }
+            return (.yearly(month: month, day: day), interval)
+        case nil:
+            return nil
+        }
+    }
+
+    private static func unit(_ word: String) -> Unit? {
+        Unit(rawValue: word.hasSuffix("s") ? String(word.dropLast()) : word)
+    }
+
+    /// 1 for Sunday through 7 for Saturday, from its name or the first
+    /// three letters of it, or its plural.
+    private static func weekday(_ word: String) -> Int? {
+        let names = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
+        let word = word.hasSuffix("days") ? String(word.dropLast()) : word
+        guard word.count >= 3 else { return nil }
+        return names.firstIndex { $0.hasPrefix(word) }.map { $0 + 1 }
+    }
+
+    private static func month(_ word: String) -> Int? {
+        let names = [
+            "january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+            "november", "december",
+        ]
+        // The names `description` writes, which follow the calendar's locale.
+        let written = CalendarDate.utcCalendar.shortMonthSymbols.map { $0.lowercased() }
+        if let index = written.firstIndex(of: word) { return index + 1 }
+        guard word.count >= 3 else { return nil }
+        return names.firstIndex { $0.hasPrefix(word) }.map { $0 + 1 }
+    }
+
+    /// "15", "15th", "1st", "2nd" or "3rd".
+    private static func dayNumber(_ word: String) -> Int? {
+        let digits = word.prefix { $0.isNumber }
+        let suffix = word.dropFirst(digits.count)
+        guard !digits.isEmpty, ["", "st", "nd", "rd", "th"].contains(String(suffix)) else { return nil }
+        return Int(digits)
+    }
+}

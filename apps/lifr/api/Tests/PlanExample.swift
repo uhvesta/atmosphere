@@ -22,6 +22,6 @@ let examplePlan = Plan(
         .init(
             title: "Book physio", status: .procrastinated, priority: .high, start: "tomorrow", due: "next monday",
             dueTime: "17:30", reminders: ["tomorrow 08:00"], comments: ["Ask about the knee."], place: "HEALTH"),
-        .init(title: "Ice after runs", place: "HEALTH/Half marathon"),
+        .init(title: "Ice after runs", repeats: "every 2 weeks on Mon, Thu", place: "HEALTH/Half marathon"),
         .init(title: "Stretch", parent: "HEALTH-7001"),
     ])

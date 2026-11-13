@@ -307,6 +307,7 @@ extension Plan {
             first.start = first.start ?? task.start
             first.due = first.due ?? task.due
             first.dueTime = first.dueTime ?? task.dueTime
+            first.repeats = first.repeats ?? task.repeats
             first.labels += task.labels.filter { label in
                 !first.labels.contains { $0.caseInsensitiveCompare(label) == .orderedSame }
             }

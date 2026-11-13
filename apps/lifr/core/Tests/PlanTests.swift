@@ -123,6 +123,34 @@ func planTests() -> [TestCase] {
                 try fixture.workspace.apply(plan, timeZone: gmt, in: fixture.context)
             }
         },
+        TestCase("given a task that repeats every Monday, when applied, then its series is weekly on Mondays") {
+            let fixture = try Fixture()
+            let plan = Plan(tasks: [
+                .init(title: "Weigh in", due: "2026-11-09", repeats: "every monday", place: "HEALTH")
+            ])
+            _ = try fixture.workspace.apply(plan, timeZone: gmt, in: fixture.context)
+            let task = try fixture.workspace.tasks.values.first { $0.title == "Weigh in" }.unwrap()
+            try expectEqual(task.recurrence?.rule, .weekly(weekdays: [2]))
+            try expectEqual(task.recurrence?.interval, 1)
+        },
+        TestCase("given a repeat that can't be read, when applied, then invalidRepeat and nothing is added") {
+            let fixture = try Fixture()
+            let before = fixture.workspace.tasks.count
+            let plan = Plan(tasks: [.init(title: "Stretch", repeats: "now and then", place: "HEALTH")])
+            try expectError(.plan(at: "task 1 “Stretch”", .invalidRepeat("now and then"))) {
+                try fixture.workspace.apply(plan, timeZone: gmt, in: fixture.context)
+            }
+            try expectEqual(fixture.workspace.tasks.count, before)
+        },
+        TestCase("given a Sub task that repeats, when applied, then subtaskRepeats") {
+            let fixture = try Fixture()
+            let run = try fixture.task("Run")
+            let code = fixture.workspace.displayCode(of: run)
+            let plan = Plan(tasks: [.init(title: "Gels", repeats: "every week", parent: code)])
+            try expectError(.plan(at: "task 1 “Gels”", .subtaskRepeats)) {
+                try fixture.workspace.apply(plan, timeZone: gmt, in: fixture.context)
+            }
+        },
         TestCase("given a task with no place, when applied, then noPlace") {
             let fixture = try Fixture()
             try expectError(.plan(at: "task 1 “Lost”", .noPlace)) {

@@ -23,8 +23,11 @@ package enum PlanFile {
           [[task.subtask]]       task fields
 
         Task fields: title (required), details, status (todo, in_progress, procrastinated, done, wont_do),
-        priority (none, low, medium, high, urgent), start, due, due_time ("HH:MM"), labels, remind, comments.
+        priority (none, low, medium, high, urgent), start, due, due_time ("HH:MM"), repeats, labels, remind,
+        comments.
         Dates: YYYY-MM-DD, today, tomorrow, a weekday, next friday, +3d, +2w, +1m.
+        repeats (not on Sub tasks): "every day", "every weekday", "every 2 weeks on Mon, Thu",
+        "every month on day 15", "every month on the last Fri", "every year on Mar 5", "3 days after closing".
         remind: "1 day before due", "2 hours before due", or a date with a time, such as "tomorrow 09:00".
         """
 
@@ -65,6 +68,7 @@ package enum PlanFile {
         if let start = task.start { out.append(assignment(depth, "start", start)) }
         if let due = task.due { out.append(assignment(depth, "due", due)) }
         if let dueTime = task.dueTime { out.append(assignment(depth, "due_time", dueTime)) }
+        if let repeats = task.repeats { out.append(assignment(depth, "repeats", repeats)) }
         if !task.labels.isEmpty { out.append("\(indent)labels = \(array(task.labels))") }
         if !task.reminders.isEmpty { out.append("\(indent)remind = \(array(task.reminders))") }
         if !task.comments.isEmpty { out.append("\(indent)comments = \(array(task.comments))") }
@@ -132,8 +136,8 @@ package enum PlanFile {
     private static let labelKeys: Set<String> = ["name", "color"]
     private static let projectKeys: Set<String> = ["name", "avenue", "details", "due"]
     private static let taskKeys: Set<String> = [
-        "title", "in", "parent", "details", "status", "priority", "start", "due", "due_time", "labels",
-        "remind", "comments",
+        "title", "in", "parent", "details", "status", "priority", "start", "due", "due_time", "repeats",
+        "labels", "remind", "comments",
     ]
 
     private static func plan(from root: Node) throws(PlanFileError) -> Plan {
@@ -186,6 +190,7 @@ package enum PlanFile {
         task.start = try node.string("start")
         task.due = try node.string("due")
         task.dueTime = try node.string("due_time")
+        task.repeats = try node.string("repeats")
         task.labels = try node.strings("labels")
         task.reminders = try node.strings("remind")
         task.comments = try node.strings("comments")

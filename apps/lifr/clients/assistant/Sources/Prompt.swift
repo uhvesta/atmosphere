@@ -691,6 +691,7 @@ package enum AssistantPrompt {
         task.priority = value["priority"]?.text.flatMap(Priority.init(rawValue:)) ?? .none
         task.due = value["due"]?.text
         task.dueTime = value["dueTime"]?.text
+        if top { task.repeats = value["repeats"]?.text }
         task.labels = value["labels"]?.items.compactMap(\.text) ?? []
         task.reminders = value["remind"]?.items.compactMap(\.text) ?? []
         task.subtasks = value["subtasks"]?.items.compactMap { self.task($0, top: false) } ?? []

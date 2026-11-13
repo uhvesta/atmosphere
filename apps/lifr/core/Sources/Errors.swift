@@ -171,6 +171,10 @@ extension PlanProblem: CustomStringConvertible {
             "“\(text)” isn't a date Lifr reads. \(Plan.dateHelp)"
         case .invalidReminder(let text):
             "“\(text)” isn't a reminder Lifr reads. \(Plan.reminderHelp)"
+        case .invalidRepeat(let text):
+            "“\(text)” isn't a repeat Lifr reads. \(Plan.repeatHelp)"
+        case .subtaskRepeats:
+            "Sub tasks can't repeat. Make the task they belong to repeat, or make this a task of its own."
         case .closedWithOpenSubtasks:
             "the task is Done or Won't Do but has open Sub tasks. Close the Sub tasks too, or leave the task open."
         case .rule(let error):

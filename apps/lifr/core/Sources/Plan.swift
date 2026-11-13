@@ -77,6 +77,8 @@ package struct Plan: Hashable, Codable, Sendable {
         package var due: String?
         /// 24-hour HH:MM.
         package var dueTime: String?
+        /// How a top-level task repeats, as `Recurrence.resolving` reads it.
+        package var repeats: String?
         /// Label names, matched without regard to case.
         package var labels: [String]
         /// Reminders as `Reminder.Trigger.resolving` reads them.
@@ -91,7 +93,8 @@ package struct Plan: Hashable, Codable, Sendable {
 
         package init(
             title: String, details: String = "", status: TaskStatus = .todo, priority: Priority = .none,
-            start: String? = nil, due: String? = nil, dueTime: String? = nil, labels: [String] = [],
+            start: String? = nil, due: String? = nil, dueTime: String? = nil, repeats: String? = nil,
+            labels: [String] = [],
             reminders: [String] = [], comments: [String] = [], subtasks: [TaskDraft] = [],
             place: String? = nil, parent: String? = nil
         ) {
@@ -102,6 +105,7 @@ package struct Plan: Hashable, Codable, Sendable {
             self.start = start
             self.due = due
             self.dueTime = dueTime
+            self.repeats = repeats
             self.labels = labels
             self.reminders = reminders
             self.comments = comments
@@ -153,6 +157,9 @@ package indirect enum PlanProblem: Hashable, Sendable {
     case subtaskTooDeep
     case invalidDate(String)
     case invalidReminder(String)
+    case invalidRepeat(String)
+    /// A Sub task that says it repeats.
+    case subtaskRepeats
     /// A new Done or Won't Do task with open Sub tasks.
     case closedWithOpenSubtasks
     /// A Core rule refused one of the plan's records.
@@ -165,6 +172,9 @@ extension Plan {
     package static let reminderHelp =
         "Use \"1 day before due\" (minutes, hours, days or weeks), or a date and time such as "
         + "\"tomorrow 09:00\" or \"2026-11-18 17:30\"."
+    package static let repeatHelp =
+        "Use \"every day\", \"every weekday\", \"every 2 weeks on Mon, Thu\", \"every month on day 15\", "
+        + "\"every month on the last Fri\", \"every year on Mar 5\" or \"3 days after closing\"."
 }
 
 extension Workspace {
@@ -260,6 +270,7 @@ extension Workspace {
         timeZone: TimeZone, in context: Context, _ change: inout Change
     ) throws(LifrError) {
         if parent != nil, !draft.subtasks.isEmpty { throw .plan(at: at, .subtaskTooDeep) }
+        if parent != nil, draft.repeats != nil { throw .plan(at: at, .subtaskRepeats) }
         if draft.status.isClosed, draft.subtasks.contains(where: { !$0.status.isClosed }) {
             throw .plan(at: at, .closedWithOpenSubtasks)
         }
@@ -285,6 +296,15 @@ extension Workspace {
         guard let id = created.events.first(where: { $0.kind == .created })?.taskID else { return }
         change.added.append(.task(id))
 
+        if let text = draft.repeats {
+            guard let (rule, interval) = Recurrence.resolving(text, due: new.dueDate ?? new.startDate ?? today) else {
+                throw .plan(at: at, .invalidRepeat(text))
+            }
+            change.merge(
+                try Self.within(at) { () throws(LifrError) in
+                    try setRecurrence(rule, every: interval, of: id, in: context)
+                })
+        }
         for text in draft.reminders {
             let trigger = try Reminder.Trigger.resolving(text, today: today, timeZone: timeZone, at: at)
             let reminder = try Self.within(at) { () throws(LifrError) in try addReminder(trigger, to: id, in: context) }
@@ -561,6 +581,7 @@ extension Plan.TaskDraft {
             start: try container.decodeIfPresent(String.self, forKey: .start),
             due: try container.decodeIfPresent(String.self, forKey: .due),
             dueTime: try container.decodeIfPresent(String.self, forKey: .dueTime),
+            repeats: try container.decodeIfPresent(String.self, forKey: .repeats),
             labels: try container.decodeIfPresent([String].self, forKey: .labels) ?? [],
             reminders: try container.decodeIfPresent([String].self, forKey: .reminders) ?? [],
             comments: try container.decodeIfPresent([String].self, forKey: .comments) ?? [],

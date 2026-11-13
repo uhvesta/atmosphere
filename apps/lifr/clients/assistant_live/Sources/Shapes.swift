@@ -34,6 +34,8 @@ enum Shapes {
             optional("remind", "Only if the person asked: 1h before, 1d before, or YYYY-MM-DD HH:MM.", .array(.string)),
         ]
         if !sub {
+            properties.append(
+                optional("repeats", "Only if the person said it repeats: every day, every week on Mon, every month."))
             properties.append(optional("subtasks", "The steps of this task the person named.", .array(task(sub: true))))
         }
         return .object(name: sub ? "SubTask" : "Task", properties)

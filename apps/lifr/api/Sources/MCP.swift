@@ -193,7 +193,13 @@ package struct MCPTool: Hashable, Codable, Sendable {
                 "\"1 day before due\", \"2 hours before due\", or a date with a time, such as \"tomorrow 09:00\"."),
             "comments": array(["type": "string"], "Markdown comments."),
         ]
-        if let subtasks { properties["subtasks"] = array(subtasks, "Sub tasks.") }
+        if let subtasks {
+            properties["subtasks"] = array(subtasks, "Sub tasks.")
+            properties["repeats"] = string(
+                "How it repeats: \"every day\", \"every weekday\", \"every 2 weeks on Mon, Thu\", "
+                    + "\"every month on day 15\", \"every month on the last Fri\", \"every year on Mar 5\" or "
+                    + "\"3 days after closing\". Sub tasks can't repeat.")
+        }
         if placed {
             properties["place"] = string("An Avenue key, or \"KEY/Project name\" for an existing Project.")
             properties["parent"] = string("Code of an existing task to put this under, such as HEALTH-7K2Q.")

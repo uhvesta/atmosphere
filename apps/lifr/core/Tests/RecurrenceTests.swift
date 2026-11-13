@@ -86,6 +86,47 @@ func recurrenceTests() -> [TestCase] {
                 try expectEqual("\(recurrence) after \(from): \(next)", "\(recurrence) after \(from): \(expected)")
             }
         },
+        TestCase("given how a task repeats in words, then each reads as its schedule") {
+            let due = try day("2026-11-11")
+            let cases: [(String, Recurrence.Rule, Int)] = [
+                ("daily", .daily, 1),
+                ("Every 3 days", .daily, 3),
+                ("every weekday", .weekly(weekdays: [2, 3, 4, 5, 6]), 1),
+                ("every Monday", .weekly(weekdays: [2]), 1),
+                ("every 2 weeks on Mon, Thu", .weekly(weekdays: [2, 5]), 2),
+                ("weekly", .weekly(weekdays: [due.weekday]), 1),
+                ("every month on day 15", .monthly(day: 15), 1),
+                ("monthly", .monthly(day: 11), 1),
+                ("every month on the last Fri", .monthlyWeekday(ordinal: -1, weekday: 6), 1),
+                ("every month on the first mon", .monthlyWeekday(ordinal: 1, weekday: 2), 1),
+                ("every year on Mar 5", .yearly(month: 3, day: 5), 1),
+                ("3 days after closing", .afterClosing(.day), 3),
+                ("a month after closing", .afterClosing(.month), 1),
+            ]
+            for (text, rule, interval) in cases {
+                let read = try Recurrence.resolving(text, due: due).unwrap(text)
+                try expectEqual(read.rule, rule)
+                try expectEqual(read.interval, interval)
+            }
+        },
+        TestCase("given a schedule written out, then it reads back as the same schedule") {
+            let rules: [(Recurrence.Rule, Int)] = [
+                (.daily, 2), (.weekly(weekdays: [2, 5]), 2), (.monthly(day: 31), 1),
+                (.monthlyWeekday(ordinal: -1, weekday: 6), 1), (.yearly(month: 2, day: 29), 1),
+                (.afterClosing(.week), 3),
+            ]
+            for (rule, interval) in rules {
+                let recurrence = Recurrence(rule: rule, interval: interval, seriesID: UUID(sequence: 1))
+                let read = try Recurrence.resolving("\(recurrence)", due: day("2026-11-11")).unwrap("\(recurrence)")
+                try expectEqual(read.rule, rule)
+                try expectEqual(read.interval, interval)
+            }
+        },
+        TestCase("given words that aren't a schedule, then none is read") {
+            for text in ["now and then", "every", "every 0 days", "every month on day 40", "every fortnight"] {
+                try expectEqual(Recurrence.resolving(text, due: try day("2026-11-11")).map { "\($0.rule)" }, nil)
+            }
+        },
         TestCase("given a repeating task with Sub tasks and a reminder, then the next has them open and reminded") {
             let fixture = try Fixture()
             let task = try fixture.repeating("Long run", due: "2026-11-08", .weekly(weekdays: [1]))
