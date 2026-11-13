@@ -424,11 +424,22 @@ package enum SyncStatusText {
         // isn't signed in.
         case .failed(.notSetUp): return String(localized: "Off")
         case .failed(.noAccount): return String(localized: "Not signed in")
-        case .failed: return String(localized: "Didn't finish")
+        case .failed(.unreachable):
+            // Saved here all the same, and sent once the network is back.
+            guard sync.pending > 0 else { return String(localized: "Offline") }
+            return String(localized: "Offline, \(waiting(sync.pending))")
+        case .failed:
+            guard sync.pending > 0 else { return String(localized: "Didn't finish") }
+            return String(localized: "Didn't finish, \(waiting(sync.pending))")
         case .idle:
             guard let last = sync.lastSynced else { return String(localized: "Not synced yet") }
             return String(localized: "Synced \(last.formatted(date: .abbreviated, time: .shortened))")
         }
+    }
+
+    /// "1 change waiting", "3 changes waiting", in the person's language.
+    private static func waiting(_ count: Int) -> String {
+        String(AttributedString(localized: "^[\(count) change](inflect: true) waiting").characters)
     }
 }
 

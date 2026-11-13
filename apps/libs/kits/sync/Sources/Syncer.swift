@@ -14,11 +14,16 @@ public struct SyncState<Record: Journaled>: Hashable, Sendable {
     public var lastSynced: Date?
     /// Records that couldn't merge, for the person to review.
     public var review: [ReviewItem<Record>]
+    /// How many changes made here are still to send, as of the last sync.
+    public var pending: Int
 
-    public init(status: Status = .idle, lastSynced: Date? = nil, review: [ReviewItem<Record>] = []) {
+    public init(
+        status: Status = .idle, lastSynced: Date? = nil, review: [ReviewItem<Record>] = [], pending: Int = 0
+    ) {
         self.status = status
         self.lastSynced = lastSynced
         self.review = review
+        self.pending = pending
     }
 }
 
@@ -199,8 +204,11 @@ public actor Syncer<Snapshot: SyncSnapshot> {
                 self.ledger = ledger
             }
             state.lastSynced = ledger.lastSynced
+            state.pending = ledger.pending(snapshot).count
             publish(status: .idle, review: ledger.conflicts(snapshot))
         } catch {
+            // What's waiting is read from here, so it's known even offline.
+            if let ledger, let snapshot = try? await load() { state.pending = ledger.pending(snapshot).count }
             publish(status: .failed(Self.syncError(error)), review: state.review)
         }
         return state

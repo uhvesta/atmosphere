@@ -1409,6 +1409,9 @@
     "Didn't finish" : {
 
     },
+    "Didn't finish, %@" : {
+
+    },
     "Discard" : {
 
     },
@@ -2533,6 +2536,12 @@
 
     },
     "Off" : {
+
+    },
+    "Offline" : {
+
+    },
+    "Offline, %@" : {
 
     },
     "Older changes can be looked at but not reverted" : {
@@ -3905,6 +3914,12 @@
 
     },
     "^[%lld change](inflect: true)" : {
+
+    },
+    "^[%lld change](inflect: true) needs review" : {
+
+    },
+    "^[%lld change](inflect: true) waiting" : {
 
     },
     "another device" : {

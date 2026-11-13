@@ -259,8 +259,9 @@ func syncTests() -> [TestCase] {
             cloud.setOnline(false, device: "iPhone")
             let state = await phone.syncer.sync()
             try expectEqual(state.status, .failed(.unreachable("offline")))
+            try expectEqual(state.pending > 0, true)
             cloud.setOnline(true, device: "iPhone")
-            await phone.syncer.sync()
+            try expectEqual(await phone.syncer.sync().pending, 0)
             await mac.syncer.sync()
             try expectEqual(try mac.records.note(shopping.id), shopping)
         },

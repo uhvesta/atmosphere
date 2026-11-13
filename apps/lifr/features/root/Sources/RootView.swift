@@ -775,9 +775,7 @@ private struct SyncReviewBanner: View {
 
     private var message: String {
         let count = store.sync.review.count
-        return count == 1
-            ? String(localized: "1 change needs review")
-            : String(localized: "\(count) changes need review")
+        return String(AttributedString(localized: "^[\(count) change](inflect: true) needs review").characters)
     }
 }
 
