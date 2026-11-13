@@ -7,6 +7,7 @@ import LifrBugReport
 import LifrCalendar
 import LifrConversations
 import LifrCore
+import LifrOnboarding
 import LifrProcrastinated
 import LifrQuickAdd
 import LifrSearch
@@ -205,6 +206,12 @@ package struct RootView: View {
         .sheet(isPresented: $store.isShortcutsShown) {
             KeyboardShortcutsView()
         }
+        .sheet(
+            isPresented: $store.isWhatsNewShown,
+            onDismiss: { store.send(.whatsNewDismissed) },
+            content: { WhatsNewView { store.send(.whatsNewDismissed) } }
+        )
+        .modifier(PresentsOnboarding(store: store))
         .sheet(item: $store.scope(state: \.approval, action: \.approval)) { store in
             NavigationStack { ApprovalView(store: store) }
                 .sheetLayout()
@@ -1017,5 +1024,24 @@ private struct NothingSelected: View {
         }
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// Onboarding covers the iPhone's screen, and is a sheet on the Mac. It
+/// can't be swiped away; Skip is how to leave it.
+private struct PresentsOnboarding: ViewModifier {
+    @Bindable var store: StoreOf<RootFeature>
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+            content.fullScreenCover(item: $store.scope(state: \.onboarding, action: \.onboarding)) { store in
+                OnboardingView(store: store)
+            }
+        #else
+            content.sheet(item: $store.scope(state: \.onboarding, action: \.onboarding)) { store in
+                OnboardingView(store: store)
+                    .interactiveDismissDisabled()
+            }
+        #endif
     }
 }

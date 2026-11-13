@@ -12,6 +12,7 @@ import LifrGlance
 import LifrGlanceClient
 import LifrLists
 import LifrLockClient
+import LifrOnboarding
 import LifrPasteboardClient
 import LifrProcrastinated
 import LifrQuickAdd
@@ -236,6 +237,14 @@ package struct RootFeature {
         @Shared(.place) package var place
         /// The place to go back to, until the records are in.
         package var restoring: Place?
+        /// The first launch on this device, until it's finished or skipped.
+        @Presents package var onboarding: OnboardingFeature.State?
+        @Shared(.hasOnboarded) package var hasOnboarded
+        @Shared(.seenRelease) package var seenRelease
+        /// Whether this release's notes are up.
+        package var isWhatsNewShown = false
+        /// Whether the first records decided on onboarding or What's New.
+        package var introduced = false
 
         /// Whether `item` is still there to go to: a saved filter that
         /// wasn't deleted, an Avenue or Project that wasn't archived.
@@ -483,6 +492,8 @@ package struct RootFeature {
         /// The Recording bar's Stop, Help's Stop Recording, or a shake.
         case stopRecordingTapped
         case bugReport(PresentationAction<BugReportFeature.Action>)
+        case onboarding(PresentationAction<OnboardingFeature.Action>)
+        case whatsNewDismissed
         /// Opens the task the person had open when Lifr last ran.
         case reopen(UUID)
         /// The person opened a reminder's notification: show its task, from
@@ -659,6 +670,7 @@ package struct RootFeature {
                 return .merge(effects)
 
             case .loaded(.success(let snapshot)):
+                introduce(snapshot.workspace, in: &state)
                 var shown = show(snapshot, in: &state)
                 if !state.isLocked, let link = state.pendingLink {
                     // A link that came before the records: follow it now.
@@ -740,7 +752,12 @@ package struct RootFeature {
                 if !update.fixes.isEmpty {
                     state.syncBanner = SyncBanner(update.fixes, in: update.workspace)
                 }
-                return show(update.snapshot, in: &state)
+                // Another device's records arrived during onboarding:
+                // there's nothing left to set up.
+                let found: Effect<Action> =
+                    state.onboarding != nil && update.workspace.hasRecordsOfItsOwn
+                    ? .send(.onboarding(.presented(.foundExisting))) : .none
+                return .merge(show(update.snapshot, in: &state), found)
 
             case .appsLoaded(let apps), .sessionEvent(.appsChanged(let apps)):
                 state.apps = apps
@@ -944,6 +961,25 @@ package struct RootFeature {
             case .goToTask:
                 return .none
 
+            case .onboarding(.presented(.delegate(.finished(let snapshot)))):
+                state.$hasOnboarded.withLock { $0 = true }
+                state.$seenRelease.withLock { $0 = WhatsNew.release }
+                state.onboarding = nil
+                let shown = snapshot.map { show($0, in: &state) } ?? .none
+                guard state.platform == .mac else {
+                    state.tab = .today
+                    return shown
+                }
+                return .concatenate(shown, .send(.selected(.today)))
+
+            case .onboarding:
+                return .none
+
+            case .whatsNewDismissed:
+                state.isWhatsNewShown = false
+                state.$seenRelease.withLock { $0 = WhatsNew.release }
+                return .none
+
             case .shortcutsTapped:
                 state.isShortcutsShown = true
                 return .none
@@ -1070,6 +1106,7 @@ package struct RootFeature {
             case .syncChanged(let sync):
                 state.sync = sync
                 state.settings.sync = sync
+                state.onboarding?.sync = sync
                 switch sync.status {
                 case .failed(.notSetUp), .failed(.noAccount), .syncing:
                     break
@@ -1228,6 +1265,7 @@ package struct RootFeature {
         .ifLet(\.$lockAlert, action: \.lockAlert)
         .ifLet(\.$bugReport, action: \.bugReport) { BugReportFeature() }
         .ifLet(\.$goToTask, action: \.goToTask) { GoToTaskFeature() }
+        .ifLet(\.$onboarding, action: \.onboarding) { OnboardingFeature() }
     }
 
     /// The shake menu, recording the steps to a bug, and describing it.
@@ -1766,6 +1804,37 @@ package struct RootFeature {
         case .board: .board(.list(action))
         case .openAvenue: .avenues(.avenue(.presented(.list(action))))
         }
+    }
+}
+
+extension RootFeature {
+    /// Decides, once the first records are in, whether this device needs
+    /// onboarding or this release's notes. A device that finds records
+    /// already, such as a second one or an update, skips onboarding.
+    fileprivate func introduce(_ workspace: Workspace, in state: inout State) {
+        guard !state.isWindow, !state.introduced else { return }
+        state.introduced = true
+        if !state.hasOnboarded {
+            guard workspace.hasRecordsOfItsOwn else {
+                state.onboarding = OnboardingFeature.State(sync: state.sync)
+                return
+            }
+            state.$hasOnboarded.withLock { $0 = true }
+        }
+        if state.seenRelease == 0 {
+            // Nothing to compare with: the notes describe changes this
+            // device never saw before.
+            state.$seenRelease.withLock { $0 = WhatsNew.release }
+        } else if state.seenRelease < WhatsNew.release {
+            state.isWhatsNewShown = true
+        }
+    }
+}
+
+extension Workspace {
+    /// Whether there's more than the Inbox every workspace starts with.
+    fileprivate var hasRecordsOfItsOwn: Bool {
+        !tasks.isEmpty || avenues.keys.contains { $0 != Avenue.inboxID }
     }
 }
 

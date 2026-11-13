@@ -497,6 +497,9 @@
     "A closed task can't keep open Sub tasks, so they'll be marked Won't Do too." : {
 
     },
+    "A few choices" : {
+
+    },
     "A larger window keeps more of a conversation and uses more memory." : {
 
     },
@@ -510,6 +513,9 @@
 
     },
     "A new task with a due date gets this reminder on every device. The badge is per device." : {
+
+    },
+    "A part of your life, like Home" : {
 
     },
     "A soft sound when you finish a task. This device only." : {
@@ -694,6 +700,12 @@
     "All time" : {
 
     },
+    "Allow Notifications" : {
+
+    },
+    "Allowed" : {
+
+    },
     "Also searched for %@" : {
 
     },
@@ -731,6 +743,9 @@
 
     },
     "App icon badge" : {
+
+    },
+    "App lock" : {
 
     },
     "Appearance" : {
@@ -1090,6 +1105,9 @@
     "Context window" : {
 
     },
+    "Continue" : {
+
+    },
     "Control-click a change to revert it." : {
 
     },
@@ -1283,6 +1301,9 @@
     "Couldn't save the task" : {
 
     },
+    "Couldn't save your Avenues: %@. Try again, or skip and add them later from Avenues." : {
+
+    },
     "Couldn't show older changes" : {
 
     },
@@ -1371,6 +1392,9 @@
 
     },
     "Delete all conversations?" : {
+
+    },
+    "Delete all data" : {
 
     },
     "Delete this comment?" : {
@@ -1502,6 +1526,9 @@
     "Duplicate" : {
 
     },
+    "Each is optional. You can change them later in Settings." : {
+
+    },
     "Each piece of text from your tasks and chats becomes a placeholder, and screenshots are left out. What you write above is kept." : {
 
     },
@@ -1565,6 +1592,9 @@
     "Every point to go back or forward to." : {
 
     },
+    "Every task lives in an Avenue, and can belong to a Project there. A task without one goes to the Inbox. Each task has a status: To Do, In Progress, Done, Procrastinated or Won't Do." : {
+
+    },
     "Every version you save is kept on this device only. Tap one to use it again." : {
 
     },
@@ -1583,7 +1613,13 @@
     "Export Plan Prompt" : {
 
     },
+    "Face ID" : {
+
+    },
     "Failed" : {
+
+    },
+    "Family" : {
 
     },
     "Filter" : {
@@ -1673,6 +1709,9 @@
     "Found 1 task." : {
 
     },
+    "Found your tasks" : {
+
+    },
     "From Hugging Face" : {
 
     },
@@ -1754,6 +1793,9 @@
     "Group by" : {
 
     },
+    "Health" : {
+
+    },
     "Heart" : {
 
     },
@@ -1770,6 +1812,9 @@
 
     },
     "History" : {
+
+    },
+    "Home" : {
 
     },
     "Hours" : {
@@ -1933,6 +1978,9 @@
 
     },
     "Launch at login" : {
+
+    },
+    "Learning" : {
 
     },
     "Leave it empty to use the first message." : {
@@ -2197,6 +2245,9 @@
     "Models" : {
 
     },
+    "Money" : {
+
+    },
     "Month" : {
 
     },
@@ -2204,6 +2255,9 @@
 
     },
     "More" : {
+
+    },
+    "More with VoiceOver" : {
 
     },
     "Move" : {
@@ -2226,6 +2280,9 @@
 
     },
     "Move Up" : {
+
+    },
+    "Move a row up or down, reschedule it, trash it or set its status by name." : {
 
     },
     "Move between tasks" : {
@@ -2517,6 +2574,9 @@
     "Not signed in" : {
 
     },
+    "Not signed in, so your tasks stay on this device only. Sign in to iCloud to see them on your other devices." : {
+
+    },
     "Not synced yet" : {
 
     },
@@ -2559,10 +2619,16 @@
     "Off" : {
 
     },
+    "Off. Turn them on in the Settings app." : {
+
+    },
     "Offline" : {
 
     },
     "Offline, %@" : {
+
+    },
+    "Offline, Settings counts the changes waiting to send, and they go as soon as you're back." : {
 
     },
     "Older changes can be looked at but not reverted" : {
@@ -2581,6 +2647,9 @@
 
     },
     "One field was changed again since, so it stays as it is now." : {
+
+    },
+    "One step, like Book the van" : {
 
     },
     "Only downloaded formats are compared. Download one to add it; nothing downloads until you tap." : {
@@ -2640,6 +2709,12 @@
     "Opens the filters" : {
 
     },
+    "Optic ID" : {
+
+    },
+    "Or name your own" : {
+
+    },
     "Other formats" : {
 
     },
@@ -2687,6 +2762,9 @@
 
     },
     "Pick" : {
+
+    },
+    "Pick a few Avenues" : {
 
     },
     "Pick a list" : {
@@ -3159,6 +3237,9 @@
     "Settings" : {
 
     },
+    "Settings can now delete everything, here and in iCloud, once you type the word." : {
+
+    },
     "Settings…" : {
 
     },
@@ -3228,6 +3309,9 @@
     "Skills" : {
 
     },
+    "Skip" : {
+
+    },
     "Smart" : {
 
     },
@@ -3238,6 +3322,9 @@
 
     },
     "Some fields were kept" : {
+
+    },
+    "Something with an end, like Move house" : {
 
     },
     "Sort" : {
@@ -3270,10 +3357,16 @@
     "Starts %@" : {
 
     },
+    "Starts with only the Inbox" : {
+
+    },
     "Status" : {
 
     },
     "Status: %@" : {
+
+    },
+    "Statuses in one order" : {
 
     },
     "Steps" : {
@@ -3393,6 +3486,12 @@
     "Sync conversations" : {
 
     },
+    "Sync is off in this build, so your tasks stay on this device." : {
+
+    },
+    "Sync says what's waiting" : {
+
+    },
     "Sync: %@" : {
 
     },
@@ -3412,6 +3511,9 @@
 
     },
     "Tag" : {
+
+    },
+    "Tap the circle to pick a status" : {
 
     },
     "Task" : {
@@ -3463,6 +3565,9 @@
 
     },
     "That task isn't in Lifr any more. Pick another." : {
+
+    },
+    "The Inbox is already there. You can add, rename or archive Avenues any time." : {
 
     },
     "The assistant couldn't answer" : {
@@ -3559,6 +3664,9 @@
           }
         }
       }
+    },
+    "The status picker always lists Done, In Progress, To Do, Procrastinated, then Won't Do." : {
+
     },
     "The task changed again since, here or on another device, and undoing would lose that change. Open the task to change it back by hand." : {
 
@@ -3670,6 +3778,9 @@
     "Tomorrow at 9:00" : {
 
     },
+    "Touch ID" : {
+
+    },
     "Trash" : {
 
     },
@@ -3698,6 +3809,9 @@
 
     },
     "Tune for this device…" : {
+
+    },
+    "Turn On" : {
 
     },
     "Turn a brain dump into a plan." : {
@@ -3814,6 +3928,9 @@
     "Weeks" : {
 
     },
+    "Welcome to Lifr" : {
+
+    },
     "What did I finish this week?" : {
 
     },
@@ -3836,6 +3953,9 @@
 
     },
     "What the assistant does while this skill is attached." : {
+
+    },
+    "What's New in Lifr" : {
 
     },
     "What's on Today" : {
@@ -3889,6 +4009,9 @@
     "Won't Do + Finish" : {
 
     },
+    "Work" : {
+
+    },
     "Write how the assistant should behave, or use Lifr's default." : {
 
     },
@@ -3928,6 +4051,9 @@
     "You on %@" : {
 
     },
+    "Your Avenues and tasks from your other devices are here, and they keep syncing." : {
+
+    },
     "Your other devices keep their copies until they next sync, then delete them too. One that's offline deletes them when it's back. Past changes in Activity stay, since that record is never rewritten. Conversations aren't affected." : {
 
     },
@@ -3941,6 +4067,9 @@
 
     },
     "Your tasks stay on your devices and in your iCloud, encrypted end to end. To see or remove what iCloud keeps, open System Settings, click your name, then iCloud › Manage." : {
+
+    },
+    "Your tasks sync to your other devices through your iCloud, encrypted end to end." : {
 
     },
     "Yours" : {
@@ -3970,6 +4099,9 @@
     "flash on" : {
 
     },
+    "iCloud" : {
+
+    },
     "iCloud isn't available right now" : {
 
     },
@@ -3992,6 +4124,9 @@
 
     },
     "to" : {
+
+    },
+    "your passcode" : {
 
     },
     "·" : {

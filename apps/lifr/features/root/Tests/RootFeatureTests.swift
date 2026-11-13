@@ -58,6 +58,57 @@ final class RootFeatureTests: XCTestCase {
         return store
     }
 
+    func testAnEmptyWorkspaceOnboardsOnceAndFinishingShowsToday() async {
+        let store = makeStore(.phone, store: .inMemory(Workspace()))
+        store.state.$hasOnboarded.withLock { $0 = false }
+        await store.send(.binding(.set(\.tab, .avenues)))
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertNotNil(store.state.onboarding)
+        XCTAssertFalse(store.state.isWhatsNewShown)
+
+        await store.send(.onboarding(.presented(.delegate(.finished(nil)))))
+        XCTAssertNil(store.state.onboarding)
+        XCTAssertTrue(store.state.hasOnboarded)
+        XCTAssertEqual(store.state.tab, .today)
+        await task.cancel()
+    }
+
+    func testAWorkspaceWithRecordsSkipsOnboarding() async {
+        _ = health
+        let store = makeStore(.phone)
+        store.state.$hasOnboarded.withLock { $0 = false }
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        XCTAssertNil(store.state.onboarding)
+        XCTAssertTrue(store.state.hasOnboarded)
+        await task.cancel()
+    }
+
+    func testAnUpdateShowsWhatsNewOnceAndAFreshDeviceDoesNot() async {
+        _ = health
+        let updated = makeStore(.phone)
+        updated.state.$hasOnboarded.withLock { $0 = true }
+        updated.state.$seenRelease.withLock { $0 = WhatsNew.release - 1 }
+        var task = await updated.send(.task)
+        await updated.receive(\.loaded)
+        XCTAssertTrue(updated.state.isWhatsNewShown)
+        await updated.send(.whatsNewDismissed)
+        XCTAssertEqual(updated.state.seenRelease, WhatsNew.release)
+        await task.cancel()
+
+        let fresh = makeStore(.phone)
+        fresh.state.$seenRelease.withLock { $0 = 0 }
+        task = await fresh.send(.task)
+        await fresh.receive(\.loaded)
+        XCTAssertFalse(fresh.state.isWhatsNewShown)
+        XCTAssertEqual(fresh.state.seenRelease, WhatsNew.release)
+        await task.cancel()
+    }
+
     func testLoadingShowsTheRecordsOnEveryScreenAndSchedulesTheirReminders() async {
         let run = records.task("Run", in: health, due: 0)
         records.task("Stretch", in: health, due: 3)
