@@ -62,3 +62,4 @@
       [MenuButton] "Context Window" value: "8,192 tokens"
       [MenuButton] "Context Window" value: "8,192 tokens" id: chevron.up.chevron.down
       [StaticText] "" value: "A larger window remembers more of the chat and takes more memory."
+      [Button] "Close" id: xmark

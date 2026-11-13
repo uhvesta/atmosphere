@@ -53,3 +53,4 @@
       [Button, selected] "Apple Intelligence, Default, Built in, nothing to download"
       [Button] "Qwen3.5 2B, Small, thinks when asked"
       [StaticText] "" value: "Only for this chat. Download more models in Settings › Models."
+      [Button] "Close" id: xmark

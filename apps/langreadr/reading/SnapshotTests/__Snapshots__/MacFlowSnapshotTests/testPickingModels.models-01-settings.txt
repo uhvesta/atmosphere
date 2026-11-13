@@ -19,3 +19,4 @@
   [Sheet] ""
     [StaticText] "" value: "Settings"
     [Button] "Models"
+    [Button] "Done"

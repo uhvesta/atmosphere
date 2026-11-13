@@ -8,9 +8,12 @@ extension View {
     /// to fit its form, up to `height`, and scrolls past that.
     public func sheetLayout(width: CGFloat = 480, height: CGFloat = 640) -> some View {
         formStyle(.grouped)
-            // VoiceOver stays in the sheet, not the screen behind it.
-            .accessibilityAddTraits(.isModal)
-            #if os(macOS)
+            #if os(iOS)
+                // VoiceOver stays in the sheet, not the screen behind it. A
+                // Mac sheet is modal already, and the trait there shuts
+                // VoiceOver inside the form, away from the toolbar's buttons.
+                .accessibilityAddTraits(.isModal)
+            #else
                 .modifier(FitsForm(width: width, maxHeight: height))
                 .modifier(ClosesSheet())
             #endif
