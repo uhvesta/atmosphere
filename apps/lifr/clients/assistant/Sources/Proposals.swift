@@ -34,7 +34,8 @@ extension AssistantKit.Proposal where Action == AssistantAction, Step == Journal
         model: String? = nil
     ) async throws(ActionError) -> (proposal: Proposal, operation: AssistantOperation) {
         let tools = AssistantTools(
-            workspace: workspace, now: now, timeZone: timeZone, writes: AssistantWrites(conversation: conversation, model: model))
+            workspace: workspace, now: now, timeZone: timeZone,
+            writes: AssistantWrites(conversation: conversation, model: model))
         for action in actions {
             try await tools.run(action)
         }
