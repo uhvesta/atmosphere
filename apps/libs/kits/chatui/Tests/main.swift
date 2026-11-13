@@ -7,4 +7,5 @@ await runSuites([
     ("Code colors", codeColorsTests()),
     ("Time marks", timeMarkTests()),
     ("Math", mathTests()),
+    ("Text previews", textPreviewTests()),
 ])

@@ -1,3 +1,4 @@
+import ChatUI
 import ComposableArchitecture
 import HumataDaemonClient
 import SwiftUI
@@ -13,6 +14,9 @@ package struct ProposalCard: View {
     let canStartWork: Bool
     let send: (ProposalsFeature.Action) -> Void
     @State private var showsAll = false
+    /// Bumped when a change worked out off the main thread is kept, to draw
+    /// it.
+    @State private var diffs = 0
     /// Lines of the spec shown until the person asks for all of them.
     private static let shownLines = 8
 
@@ -39,14 +43,24 @@ package struct ProposalCard: View {
                 .font(.headline)
                 .textSelection(.enabled)
             if let current = proposal.currentSpec, !proposal.spec.isEmpty {
-                ChangeView(change: .cachedBetween(current, proposal.spec))
+                // Read so a change kept off the main thread draws.
+                let _ = diffs
+                if let change = Self.keptChange(proposal.id, current, proposal.spec) {
+                    ChangeView(change: change)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                        .task(id: Diffed(old: current, new: proposal.spec)) {
+                            await diff(current, proposal.spec)
+                        }
+                }
             } else if !proposal.spec.isEmpty {
                 Text(proposal.spec)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(showsAll ? nil : Self.shownLines)
                     .textSelection(.enabled)
-                if proposal.spec.components(separatedBy: "\n").count > Self.shownLines {
+                if TextPreview.lines(in: proposal.spec, atMost: Self.shownLines + 1) > Self.shownLines {
                     Button(showsAll ? "Show Less" : "Show All") { showsAll.toggle() }
                         .buttonStyle(.link)
                         .font(.caption)
@@ -66,6 +80,47 @@ package struct ProposalCard: View {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(.blue.opacity(proposal.state == .pending ? 0.3 : 0.1))
         }
+    }
+
+    /// The texts a change was worked out between, to work it out again
+    /// when either changes.
+    private struct Diffed: Equatable {
+        let old: String
+        let new: String
+    }
+
+    /// The change worked out for a proposal, with the texts it was worked
+    /// out between.
+    private final class KeptChange {
+        let old: String
+        let new: String
+        let change: ToolCall.Change
+
+        init(old: String, new: String, change: ToolCall.Change) {
+            self.old = old
+            self.new = new
+            self.change = change
+        }
+    }
+
+    /// The changes worked out lately, by proposal, as a card draws again
+    /// with every change around it.
+    @MainActor private static let changes = NSCache<NSString, KeptChange>()
+
+    /// The change kept for proposal `id`, if it was worked out between
+    /// these texts.
+    @MainActor private static func keptChange(_ id: String, _ old: String, _ new: String) -> ToolCall.Change? {
+        guard let kept = changes.object(forKey: id as NSString), kept.old == old, kept.new == new else { return nil }
+        return kept.change
+    }
+
+    /// Works out the change off the main thread, as a long spec's diff
+    /// would stall the chat, then keeps it and draws it.
+    private func diff(_ old: String, _ new: String) async {
+        let change = await Task.detached(priority: .userInitiated) { ToolCall.Change.between(old, new) }.value
+        guard !Task.isCancelled else { return }
+        Self.changes.setObject(KeptChange(old: old, new: new, change: change), forKey: proposal.id as NSString)
+        diffs += 1
     }
 
     private var kind: String {

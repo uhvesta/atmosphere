@@ -55,7 +55,7 @@ public struct MessageView<Attachments: View>: View {
                     // The skill starts the text, as it did in the field.
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         if let skill { SkillToken(skill) }
-                        if !text.isEmpty { PersonText(text: text) }
+                        if !text.isEmpty { PersonText(text: text, select: select) }
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
@@ -79,36 +79,68 @@ public struct MessageView<Attachments: View>: View {
 
 /// The person's words, with marks such as **bold** read as they are in a
 /// reply. A long message, such as pasted notes, shows its first lines,
-/// with Show More for the rest.
+/// with Show More for the rest: open, a long one scrolls in a box of its
+/// own, and past its first 20,000 characters it opens to select instead.
 struct PersonText: View {
     let text: String
+    /// Opens all of it to select from, for a message too long to show whole.
+    var select: ((String) -> Void)?
     @State private var expanded = false
 
     /// The lines a long message shows until it's opened.
     static let shownLines = 10
+    /// Bytes of a long message drawn while it's closed: more than its
+    /// first lines can hold.
+    private static let closedBytes = 2_000
 
-    /// Whether `text` is long enough to show only its first lines.
-    static func isLong(_ text: String) -> Bool {
-        text.count > 700 || text.split(separator: "\n", omittingEmptySubsequences: false).count > shownLines + 2
+    /// Whether `text` is long enough to show only its first lines. Reads
+    /// no further than it takes to know.
+    nonisolated static func isLong(_ text: String) -> Bool {
+        if TextPreview.lines(in: text, atMost: shownLines + 3) > shownLines + 2 { return true }
+        guard let end = text.index(text.startIndex, offsetBy: 700, limitedBy: text.endIndex) else { return false }
+        return end < text.endIndex
     }
 
     var body: some View {
         let long = Self.isLong(text)
+        let preview = TextPreview(text, limit: long && !expanded ? Self.closedBytes : 20_000)
         VStack(alignment: .leading, spacing: 6) {
-            Text(InlineText.styled(text))
-                .lineLimit(long && !expanded ? Self.shownLines : nil)
-                .selectableOnMac()
-                // Closes from anywhere in it, without scrolling back to the
-                // button; dragging still selects.
-                .simultaneousGesture(TapGesture(count: 2).onEnded { if expanded { expanded = false } })
-            if long {
-                Button(expanded ? "Show Less" : "Show More") {
-                    expanded.toggle()
+            Group {
+                if expanded, preview.isTall {
+                    ScrollView {
+                        styled(preview.shown)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(height: 320)
+                } else {
+                    styled(preview.shown)
+                        .lineLimit(long && !expanded ? Self.shownLines : nil)
                 }
-                .font(.callout.weight(.semibold))
-                .buttonStyle(.borderless)
+            }
+            // Closes from anywhere in it, without scrolling back to the
+            // button; dragging still selects.
+            .simultaneousGesture(TapGesture(count: 2).onEnded { if expanded { expanded = false } })
+            if long {
+                HStack(spacing: 12) {
+                    Button(expanded ? "Show Less" : "Show More") {
+                        expanded.toggle()
+                    }
+                    .font(.callout.weight(.semibold))
+                    .buttonStyle(.borderless)
+                    if expanded, preview.isCut, let select {
+                        Button("Select All of It") { select(text) }
+                            .font(.callout)
+                            .buttonStyle(.borderless)
+                            .help("Only its first 20,000 characters show here; open all of it to read and select")
+                    }
+                }
             }
         }
+    }
+
+    private func styled(_ text: String) -> some View {
+        Text(InlineText.cachedStyled(text))
+            .selectableOnMac()
     }
 }
 
@@ -157,6 +189,9 @@ public struct ThinkingDisclosure: View {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        // Only the chevron turns: the thoughts open at once,
+                        // as animating a tall change stalls the chat.
+                        .animation(.snappy(duration: 0.2), value: isExpanded)
                     Text(summary)
                     if isThinking { ProgressView().controlSize(.mini) }
                 }
@@ -169,24 +204,54 @@ public struct ThinkingDisclosure: View {
             .accessibilityHint(isExpanded ? Text("Hides the thinking") : Text("Shows the thinking"))
             .accessibilityAddTraits(isExpanded ? .isSelected : [])
             if isExpanded {
-                Text(thoughts)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .selectableOnMac()
-                    .contextMenu {
-                        if let select { TextMenu(text: thoughts, select: select) }
-                    }
-                    .simultaneousGesture(TapGesture(count: 2).onEnded { toggle() })
-                    .padding(.leading, 10)
-                    .overlay(alignment: .leading) {
-                        Rectangle().fill(.quaternary).frame(width: 2)
-                    }
+                thoughts
             }
         }
-        .animation(.snappy(duration: 0.2), value: isExpanded)
     }
 
-    private var thoughts: String { thinking.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+    /// The thoughts: their first 20,000 characters, scrolling in a box of
+    /// their own when long, with the rest a click away.
+    @ViewBuilder private var thoughts: some View {
+        let all = Self.trimmed(thinking.text)
+        let preview = TextPreview(all)
+        let text = Text(preview.shown)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .selectableOnMac()
+            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 4) {
+            Group {
+                if preview.isTall {
+                    ScrollView { text }
+                        .frame(height: 320)
+                } else {
+                    text
+                }
+            }
+            .contextMenu {
+                if let select { TextMenu(text: all, select: select) }
+            }
+            .simultaneousGesture(TapGesture(count: 2).onEnded { toggle() })
+            if preview.isCut, let select {
+                Button("Show All") { select(all) }
+                    .help("Only the first 20,000 characters show here; open all of them to read and select")
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
+        }
+        .padding(.leading, 10)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(.quaternary).frame(width: 2)
+        }
+    }
+
+    /// `text` without the space around it, read from its ends only.
+    private static func trimmed(_ text: String) -> String {
+        guard let first = text.firstIndex(where: { !$0.isWhitespace }),
+            let last = text.lastIndex(where: { !$0.isWhitespace })
+        else { return "" }
+        return String(text[first...last])
+    }
 
     private var summary: String {
         guard let duration = thinking.duration else {

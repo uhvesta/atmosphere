@@ -239,6 +239,102 @@ final class MacFlowSnapshotTests: XCTestCase {
         (["cat > CHANGELOG.md <<'EOF'", "# Changelog", ""]
         + (1...16).map { "- M\($0): shipped" } + ["EOF", "git status"]).joined(separator: "\n")
 
+    /// Long thoughts and a command too long to show whole: the thoughts,
+    /// open, scroll in a box of their own, and the command shows its start
+    /// with Show All for the rest.
+    func testLongThoughtsAndALongCommand() async throws {
+        let thoughts = (1...200).map { "Step \($0): check the fixture for month \($0) still parses." }
+            .joined(separator: "\n")
+        let command =
+            (["cat > fixtures.csv <<'EOF'"] + (1...1_500).map { "row-\($0),ok,2026" } + ["EOF"])
+            .joined(separator: "\n")
+        let daemon = InMemoryDaemon { _ in
+            [.think(thoughts), .run(command: command, output: "written"), .say("Wrote the fixtures.")]
+        }
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, name: "Fixtures"))
+        try await daemon.client.send(session.id, "Write the fixtures", .enqueue)
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("long", AppView(store: store))
+
+        try await until { store.sidebar.sessions.count == 1 && store.daemon == .running }
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { store.session?.isWaiting == true }
+        let thinking = store.session?.items.compactMap { item -> String? in
+            guard case .thinking(let id, _) = item else { return nil }
+            return id
+        }.first
+        guard let thinking else { return XCTFail("no thoughts in the chat") }
+        store.send(.session(.presented(.thinkingToggled(id: thinking))))
+        try await until { store.session?.expandedThinking.contains(thinking) == true }
+        await flow.step("waiting")
+        flow.finish()
+    }
+
+    /// A chat of 5,000 events, with pastes, thoughts and long command
+    /// output, opened after a restart: it shows its last turn at once.
+    func testALongChatAfterARestart() async throws {
+        let daemon = InMemoryDaemon { _ in [] }
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, name: "Fixtures"))
+        let history = Self.longHistory(turns: 500)
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            // The history a restarted daemon sends, all at once.
+            $0.daemon.watch = { _ in
+                AsyncThrowingStream { continuation in
+                    for event in history { continuation.yield(event) }
+                }
+            }
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder("long-chat", AppView(store: store))
+
+        try await until { store.sidebar.sessions.count == 1 && store.daemon == .running }
+        let start = ContinuousClock.now
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { store.session?.events.count == history.count }
+        await flow.step("opened")
+        print("A chat of \(history.count) events opened in \(ContinuousClock.now - start)")
+        flow.finish()
+    }
+
+    /// `turns` turns of ten events each: a message, every fifth a long
+    /// paste; thoughts; a command with long output; a reply and its usage.
+    private static func longHistory(turns: Int) -> [SessionEvent] {
+        let paste = String(repeating: "A pasted log line that goes on for a while.\n", count: 700)
+        let thoughts = String(repeating: "Check the fixture parses, then the next one.\n", count: 70)
+        let output = String(repeating: "row,ok,2026-11-13,a value long enough to wrap\n", count: 1_100)
+        var events: [SessionEvent] = []
+        func add(_ kind: SessionEvent.Kind) {
+            events.append(SessionEvent(id: "e\(events.count)", time: Date(timeIntervalSince1970: 0), kind: kind))
+        }
+        for turn in 0..<turns {
+            add(.userMessage(turn % 5 == 0 ? "Look at this:\n\(paste)" : "Check fixture \(turn)"))
+            add(.turnStarted)
+            add(.reasoning(thoughts))
+            add(.toolStarted(callID: "c\(turn)", tool: "shell", argumentsJSON: #"{"command":"cat fixtures.csv"}"#))
+            add(.permissionRequested(requestID: "p\(turn)", kind: .shell, summary: "cat fixtures.csv"))
+            add(.permissionCompleted(requestID: "p\(turn)", approved: true, automatic: true))
+            add(.toolCompleted(callID: "c\(turn)", success: true, output: output))
+            add(.assistantMessage("Fixture \(turn) parses; **all rows** are fine."))
+            add(.usage(model: "a", inputTokens: 100, outputTokens: 10, premiumRequests: 1))
+            add(.turnEnded(aborted: false))
+        }
+        return events
+    }
+
     /// A session is forked before its second turn: the fork shows under it
     /// in the sidebar with the chat up to there, and goes its own way.
     /// Rewinding cuts the chat back to before a message and puts it back

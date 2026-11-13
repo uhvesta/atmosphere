@@ -15,7 +15,6 @@ import UniformTypeIdentifiers
 /// with the field to send, steer or queue.
 package struct SessionView: View {
     @Bindable var store: StoreOf<SessionFeature>
-    @State private var selecting: TextToSelect?
 
     package init(store: StoreOf<SessionFeature>) {
         self.store = store
@@ -30,7 +29,9 @@ package struct SessionView: View {
 
     package var body: some View {
         VStack(spacing: 0) {
-            header
+            // In a view of its own, so what it reads, such as the usage,
+            // redraws only it.
+            Separately { header }
                 // The narrowest header fits; the window goes no narrower.
                 .frame(minWidth: 560)
             Divider()
@@ -43,7 +44,7 @@ package struct SessionView: View {
             } else if store.tab == .terminal {
                 TerminalsView(store: store.scope(state: \.terminals, action: \.terminals))
             } else {
-                chat
+                ChatList(store: store)
                     .alert($store.scope(state: \.proposals.alert, action: \.proposals.alert))
                     .environment(\.codeQuoter, store.session.archived ? nil : quoter)
             }
@@ -92,7 +93,6 @@ package struct SessionView: View {
             }
         }
         .sheet(item: $store.scope(state: \.land, action: \.land)) { LandView(store: $0) }
-        .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
         .sheet(isPresented: editingProposal) {
             ProposalEditor(store: store.scope(state: \.proposals, action: \.proposals))
         }
@@ -295,18 +295,48 @@ package struct SessionView: View {
         return backend + model + host
     }
 
-    private var chat: some View {
+    static func name(_ mode: ApprovalMode) -> String {
+        switch mode {
+        case .askEveryTime: "Ask Every Time"
+        case .allowEdits: "Allow Edits"
+        case .allowEverything: "Allow Everything"
+        case .auto: "Auto"
+        }
+    }
+
+    static func describe(_ usage: Usage) -> String {
+        let tokens =
+            "\(usage.inputTokens.formatted(.number.notation(.compactName))) in · "
+            + "\(usage.outputTokens.formatted(.number.notation(.compactName))) out"
+        guard usage.premiumRequests > 0 else { return "\(usage.model) · \(tokens)" }
+        return "\(usage.model) · \(tokens) · \(usage.premiumRequests.formatted()) premium"
+    }
+}
+
+/// Draws `content` in a body of its own, so what it reads of the store
+/// redraws only it and not the view around it.
+private struct Separately<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View { content() }
+}
+
+/// The chat's rows, with the turn under way at the end. Its own view, so
+/// a change to the chat redraws only this; and each row is drawn again only
+/// when what it shows changes.
+private struct ChatList: View {
+    let store: StoreOf<SessionFeature>
+    @State private var selecting: TextToSelect?
+
+    var body: some View {
+        let highlighted = store.highlightedItem
+        let select: (String) -> Void = { selecting = TextToSelect(text: $0) }
         ScrollViewReader { reader in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     ForEach(store.items) { item in
-                        row(item)
-                            .padding(item.id == store.highlightedItem ? 6 : 0)
-                            .background {
-                                if item.id == store.highlightedItem {
-                                    RoundedRectangle(cornerRadius: 8).fill(Color.yellow.opacity(0.18))
-                                }
-                            }
+                        ChatRow(item: item, shows: shows(item, highlighted: highlighted), store: store, select: select)
+                            .equatable()
                             .id(item.id)
                     }
                     TurnInProgress(store: store)
@@ -321,7 +351,7 @@ package struct SessionView: View {
                         .accessibilityIdentifier("chat.loading")
                 }
             }
-            .onChange(of: store.highlightedItem, initial: true) { _, item in
+            .onChange(of: highlighted, initial: true) { _, item in
                 guard let item else { return }
                 reader.scrollTo(item, anchor: .center)
             }
@@ -333,7 +363,7 @@ package struct SessionView: View {
         }
         .safeAreaInset(edge: .top) {
             if store.highlighted != nil {
-                highlightBanner
+                highlightBanner(found: highlighted != nil)
             }
         }
         // An inset, not a row over the box: in the stack beside the chat it
@@ -342,20 +372,49 @@ package struct SessionView: View {
         .safeAreaInset(edge: .bottom) {
             WaitingStrip(store: store)
         }
+        .sheet(item: $selecting) { SelectTextSheet(text: $0.text) }
+    }
+
+    /// What `item`'s row shows of the session besides the item, reading
+    /// only what that kind of row needs.
+    private func shows(_ item: ChatItem, highlighted: String?) -> ChatRow.Shows {
+        var shows = ChatRow.Shows(highlighted: item.id == highlighted)
+        switch item {
+        case .person(let id, _, let images):
+            shows.editing = store.editing == id
+            shows.rewinding = store.rewinding
+            shows.archived = store.session.archived
+            for name in images { shows.thumbnails[name] = store.thumbnails[name] }
+        case .thinking(let id, _):
+            shows.thinkingOpen = store.expandedThinking.contains(id)
+        case .tool(let call):
+            if let proposal = store.proposals.proposals[id: call.id] {
+                shows.proposal = proposal
+                shows.deciding = store.proposals.deciding.contains(call.id)
+                shows.canStartWork = store.session.planning
+            } else if let failure = store.proposals.listFailure, store.proposingCalls.contains(call.id) {
+                shows.proposalFailure = failure
+            }
+        case .rewound:
+            shows.rewinding = store.rewinding
+        case .failure(let id, _):
+            shows.retryable = id == store.retryableFailure && !store.isWorking
+        case .reply, .permission, .stopped, .notice, .cost, .compacted:
+            break
+        }
+        return shows
     }
 
     /// Over the chat while a search hit is highlighted: forks from it, or
     /// goes back to the chat as it is.
-    private var highlightBanner: some View {
+    private func highlightBanner(found: Bool) -> some View {
         HStack {
             Image(systemName: "text.magnifyingglass")
                 .foregroundStyle(.secondary)
-            Text(
-                store.highlightedItem == nil
-                    ? "Finding what the search found…" : "What the search found is highlighted.")
+            Text(found ? "What the search found is highlighted." : "Finding what the search found…")
             Spacer()
             Button("Fork from Here") { store.send(.forkFromHighlightTapped) }
-                .disabled(store.highlightedItem == nil)
+                .disabled(!found)
                 .help("A new session with this chat up to the end of that turn, and the code as it was then.")
             Button("Done") { store.send(.highlightDismissed) }
         }
@@ -363,26 +422,73 @@ package struct SessionView: View {
         .padding(.vertical, 8)
         .background(.bar)
     }
+}
+
+/// One row of the chat: a message, thoughts, a tool call or a note. Equal
+/// when its item and what it shows are, whatever its actions, so a change
+/// elsewhere in the session doesn't draw it again. It reads nothing from
+/// the store itself; the store only takes its actions.
+private struct ChatRow: View, Equatable {
+    /// What the row shows of the session besides its item.
+    struct Shows: Equatable {
+        var highlighted = false
+        /// The person's message is open to change.
+        var editing = false
+        /// The loaded thumbnails of the message's images, by name.
+        var thumbnails: [String: Data] = [:]
+        var thinkingOpen = false
+        /// The proposal the tool call made, shown as a card.
+        var proposal: Proposal?
+        var deciding = false
+        var canStartWork = false
+        /// Why the proposal the call made couldn't be read.
+        var proposalFailure: String?
+        var rewinding = false
+        var archived = false
+        /// The failure offers Try Again.
+        var retryable = false
+    }
+
+    let item: ChatItem
+    let shows: Shows
+    let store: StoreOf<SessionFeature>
+    let select: (String) -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.item == rhs.item && lhs.shows == rhs.shows
+    }
+
+    var body: some View {
+        content
+            .padding(shows.highlighted ? 6 : 0)
+            .background {
+                if shows.highlighted {
+                    RoundedRectangle(cornerRadius: 8).fill(Color.yellow.opacity(0.18))
+                }
+            }
+    }
 
     @ViewBuilder
-    private func row(_ item: ChatItem) -> some View {
+    private var content: some View {
         switch item {
         case .person(let id, let text, let images):
-            if store.editing == id {
-                editor
+            if shows.editing {
+                MessageEditor(store: store)
             } else {
                 MessageView(
-                    role: .person, text: text, select: { selecting = TextToSelect(text: $0) },
+                    role: .person, text: text, select: select,
                     attachments: {
                         if !images.isEmpty {
-                            SentImages(names: images, thumbnails: store.thumbnails) { store.send(.thumbnailNeeded($0)) }
+                            SentImages(names: images, thumbnails: shows.thumbnails) {
+                                store.send(.thumbnailNeeded($0))
+                            }
                         }
                     }
                 )
                 .contextMenu {
                     Button("Edit Message…") { store.send(.editTapped(id)) }
                     Button("Rewind to Before This…") { store.send(.rewindTapped(id)) }
-                        .disabled(store.rewinding || store.session.archived)
+                        .disabled(shows.rewinding || shows.archived)
                     Divider()
                     Button("Fork Before This With the Code") {
                         store.send(.forkTapped(before: id, chatOnly: false))
@@ -393,36 +499,34 @@ package struct SessionView: View {
                 }
             }
         case .reply(_, let text):
-            MessageView(role: .assistant, text: text, select: { selecting = TextToSelect(text: $0) })
+            MessageView(role: .assistant, text: text, select: select)
         case .thinking(let id, let text):
             ThinkingDisclosure(
-                thinking: ModelThinking(text: text), isExpanded: store.expandedThinking.contains(id),
-                toggle: { store.send(.thinkingToggled(id: id)) }, select: { selecting = TextToSelect(text: $0) },
-                answering: true)
+                thinking: ModelThinking(text: text), isExpanded: shows.thinkingOpen,
+                toggle: { store.send(.thinkingToggled(id: id)) }, select: select, answering: true)
         case .tool(let call):
-            if let proposal = store.proposals.proposals[id: call.id] {
-                ProposalCard(
-                    proposal: proposal, deciding: store.proposals.deciding.contains(call.id),
-                    canStartWork: store.session.planning
-                ) { store.send(.proposals($0)) }
+            if let proposal = shows.proposal {
+                ProposalCard(proposal: proposal, deciding: shows.deciding, canStartWork: shows.canStartWork) {
+                    store.send(.proposals($0))
+                }
             } else {
                 ToolCallView(
-                    call: call, select: { selecting = TextToSelect(text: $0) },
+                    call: call, select: select,
                     answer: { request, approved in
                         store.send(.answerPermission(requestID: request, approved: approved))
                     })
-                if let failure = store.proposals.listFailure, store.state.proposes(call.id) {
+                if let failure = shows.proposalFailure {
                     Label("Couldn’t read this proposal: \(failure)", systemImage: "exclamationmark.triangle")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
         case .permission(_, let permission):
-            PermissionCard(permission: permission) { request, approved in
+            PermissionCard(permission: permission, select: select) { request, approved in
                 store.send(.answerPermission(requestID: request, approved: approved))
             }
         case .cost(_, let usage):
-            Label(Self.describe(usage), systemImage: "gauge.with.dots.needle.33percent")
+            Label(SessionView.describe(usage), systemImage: "gauge.with.dots.needle.33percent")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, alignment: .trailing)
@@ -442,7 +546,7 @@ package struct SessionView: View {
                 if undoable {
                     Spacer()
                     Button("Undo") { store.send(.undoRewindTapped) }
-                        .disabled(store.rewinding)
+                        .disabled(shows.rewinding)
                         .help("Bring back what the rewind cut; possible until you send another message")
                 }
             }
@@ -458,13 +562,13 @@ package struct SessionView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
-        case .failure(let id, let message):
+        case .failure(_, let message):
             HStack(alignment: .firstTextBaseline) {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .font(.footnote)
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
-                if id == store.retryableFailure, !store.isWorking {
+                if shows.retryable {
                     Spacer()
                     Button("Try Again") { store.send(.retryTapped) }
                         .help("Send your last message again")
@@ -472,10 +576,15 @@ package struct SessionView: View {
             }
         }
     }
+}
 
-    /// The person's earlier message, open to change. Sending it forks, so
-    /// this session stays as it was.
-    private var editor: some View {
+/// The person's earlier message, open to change. Sending it forks, so
+/// this session stays as it was. Its own view, so each key typed redraws
+/// only this.
+private struct MessageEditor: View {
+    @Bindable var store: StoreOf<SessionFeature>
+
+    var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
             TextEditor(text: $store.edited)
                 .font(.body)
@@ -496,23 +605,6 @@ package struct SessionView: View {
             }
         }
     }
-
-    static func name(_ mode: ApprovalMode) -> String {
-        switch mode {
-        case .askEveryTime: "Ask Every Time"
-        case .allowEdits: "Allow Edits"
-        case .allowEverything: "Allow Everything"
-        case .auto: "Auto"
-        }
-    }
-
-    static func describe(_ usage: Usage) -> String {
-        let tokens =
-            "\(usage.inputTokens.formatted(.number.notation(.compactName))) in · "
-            + "\(usage.outputTokens.formatted(.number.notation(.compactName))) out"
-        guard usage.premiumRequests > 0 else { return "\(usage.model) · \(tokens)" }
-        return "\(usage.model) · \(tokens) · \(usage.premiumRequests.formatted()) premium"
-    }
 }
 
 /// A tool the agent called: what it ran or wrote, the permission it asked
@@ -523,12 +615,6 @@ struct ToolCallView: View {
     var select: (String) -> Void = { _ in }
     let answer: (String, Bool) -> Void
     @State private var expanded = false
-
-    /// Output longer than this many lines scrolls in a box of its own, so
-    /// opening and closing it doesn't lay the whole chat out again.
-    private static let boxedLines = 24
-    /// Characters of output shown in the chat; the rest is a click away.
-    private static let shownCharacters = 20_000
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -563,10 +649,10 @@ struct ToolCallView: View {
                     .simultaneousGesture(collapse)
             }
             if let permission = call.permission {
-                PermissionCard(permission: permission, answer: answer)
+                PermissionCard(permission: permission, select: select, answer: answer)
             }
-            if expanded, let output = call.output {
-                outputView(output)
+            if expanded, let output = call.output, let preview = call.preview {
+                outputView(output, preview)
                     .simultaneousGesture(collapse)
             }
         }
@@ -580,27 +666,28 @@ struct ToolCallView: View {
         TapGesture(count: 2).onEnded { expanded = false }
     }
 
+    /// The output as the chat shows it, worked out when it came: its first
+    /// 20,000 characters, scrolling in a box of its own when long, so
+    /// opening and closing it doesn't lay the whole chat out again.
     @ViewBuilder
-    private func outputView(_ output: String) -> some View {
-        let cut = output.count > Self.shownCharacters
-        let shown = cut ? String(output.prefix(Self.shownCharacters)) : output
-        let text = Text(shown)
+    private func outputView(_ output: String, _ preview: TextPreview) -> some View {
+        let text = Text(preview.shown)
             .font(.caption.monospaced())
             .foregroundStyle(.secondary)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(8)
         VStack(alignment: .leading, spacing: 4) {
-            if shown.utf8.lazy.filter({ $0 == 10 }).count > Self.boxedLines {
+            if preview.isTall {
                 ScrollView { text }
                     .frame(height: 320)
                     .background(.fill.quinary, in: .rect(cornerRadius: 8))
             } else {
                 text.background(.fill.quinary, in: .rect(cornerRadius: 8))
             }
-            if cut {
+            if let length = preview.length {
                 HStack {
-                    Text("The first \(Self.shownCharacters.formatted()) of \(output.count.formatted()) characters")
+                    Text("The first \(preview.shown.count.formatted()) of \(length.formatted()) characters")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button("Show All") { select(output) }
@@ -634,19 +721,26 @@ struct ChangeView: View {
     let change: ToolCall.Change
     /// Lines past this are left out, with a note, to keep the chat quick.
     private static let shown = 300
+    /// Characters of a line shown: a minified file's one line can be
+    /// megabytes.
+    private static let lineLength = 500
+    /// Past this many lines the change scrolls in a box of its own.
+    private static let boxedLines = 24
 
     var body: some View {
-        let lines = change.removed.map { ("-", $0) } + change.added.map { ("+", $0) }
+        let count = change.removed.count + change.added.count
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(lines.prefix(Self.shown).enumerated()), id: \.offset) { _, line in
-                Text("\(line.0) \(line.1)")
-                    .font(.caption.monospaced())
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 6)
-                    .background(line.0 == "-" ? Color.red.opacity(0.15) : Color.green.opacity(0.15))
+            if count > Self.boxedLines {
+                // Lazy, so only the lines scrolled to are laid out.
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) { lines(min(count, Self.shown)) }
+                }
+                .frame(height: 320)
+            } else {
+                lines(count)
             }
-            if lines.count > Self.shown {
-                Text("\(lines.count - Self.shown) more lines")
+            if count > Self.shown {
+                Text("\(count - Self.shown) more lines")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(6)
@@ -657,12 +751,34 @@ struct ChangeView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(change.removed.count) lines removed, \(change.added.count) added")
     }
+
+    /// The first `count` lines, the removed ones first, each read only as
+    /// it's drawn.
+    private func lines(_ count: Int) -> some View {
+        ForEach(0..<count, id: \.self) { index in
+            let removed = index < change.removed.count
+            let line = removed ? change.removed[index] : change.added[index - change.removed.count]
+            Text(verbatim: "\(removed ? "-" : "+") \(Self.shortened(line))")
+                .font(.caption.monospaced())
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 6)
+                .background(removed ? Color.red.opacity(0.15) : Color.green.opacity(0.15))
+        }
+    }
+
+    private static func shortened(_ line: String) -> String {
+        guard line.utf8.count > lineLength else { return line }
+        let start = line.prefix(lineLength)
+        return start.endIndex < line.endIndex ? start + "…" : line
+    }
 }
 
 /// A request for permission: Approve and Deny while the agent waits, then
 /// how it was answered.
 struct PermissionCard: View {
     let permission: Permission
+    /// Opens text to read and select whole.
+    var select: ((String) -> Void)?
     let answer: (String, Bool) -> Void
 
     var body: some View {
@@ -670,7 +786,7 @@ struct PermissionCard: View {
         case nil:
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: "hand.raised")
-                FullCommand(text: permission.summary)
+                FullCommand(text: permission.summary, select: select)
                 Button("Deny") { answer(permission.requestID, false) }
                 // No Return shortcut: Return in the composer sends the
                 // message, and must never approve. ⇧⌘A and ⇧⌘D answer.
@@ -939,21 +1055,32 @@ private struct DroppedRow: View {
     }
 }
 
-/// What a request for permission would run or write, whole: monospaced,
+/// What a request for permission would run or write: monospaced,
 /// selectable, and scrolling past about twelve lines, so it can be read
-/// before it's allowed.
+/// before it's allowed. Past its first 20,000 characters the rest opens to
+/// read and select.
 struct FullCommand: View {
     let text: String
+    var select: ((String) -> Void)?
 
     var body: some View {
-        ScrollView {
-            Text(text)
-                .font(.callout.monospaced())
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        let preview = TextPreview(text)
+        VStack(alignment: .leading, spacing: 4) {
+            ScrollView {
+                Text(preview.shown)
+                    .font(.callout.monospaced())
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 12 * 17)
+            .fixedSize(horizontal: false, vertical: true)
+            if preview.isCut, let select {
+                Button("Show All") { select(text) }
+                    .help("Only the first 20,000 characters show here; open all of them to read before you answer")
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
         }
-        .frame(maxHeight: 12 * 17)
-        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
