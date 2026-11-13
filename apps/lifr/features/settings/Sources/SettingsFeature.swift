@@ -136,6 +136,7 @@ package struct SettingsFeature {
         case bugReportsTapped
         case bugReports(PresentationAction<BugReportsFeature.Action>)
         case loginItemFailed(any Error)
+        case cliInstallFailed(any Error)
         case saved(Result<Saved, any Error>)
         case sessionChanged(Result<Void, any Error>)
         case revoke(PresentationAction<Revoke>)
@@ -275,7 +276,7 @@ package struct SettingsFeature {
                     do {
                         await send(.cliLoaded(try await session.installCLI()))
                     } catch {
-                        await send(.sessionChanged(.failure(error)))
+                        await send(.cliInstallFailed(error))
                     }
                 }
 
@@ -357,6 +358,10 @@ package struct SettingsFeature {
                 // Show the value that's saved, not the one that wasn't.
                 state.procrastinatedAfterDays = state.workspace.settings.procrastinatedAfterDays
                 state.alert = .failed("Couldn't change the setting", error)
+                return .none
+
+            case .cliInstallFailed(let error):
+                state.alert = .failed("Couldn't install the command-line tool", error)
                 return .none
 
             case .appsLoaded(.failure(let error)), .sessionChanged(.failure(let error)):

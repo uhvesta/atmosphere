@@ -1180,6 +1180,9 @@
     "Couldn't dictate" : {
 
     },
+    "Couldn't install the command-line tool" : {
+
+    },
     "Couldn't keep the attachment on this device (%@). Check that this device has free storage, then attach it again." : {
 
     },

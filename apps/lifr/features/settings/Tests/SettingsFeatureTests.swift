@@ -190,7 +190,7 @@ final class SettingsFeatureTests: XCTestCase {
             InMemorySession(
                 installResult: .failure(.installFailed(path: "/usr/local/bin/lifr", reason: "Permission denied"))))
         await failing.send(.installCLITapped)
-        await failing.receive(\.sessionChanged)
+        await failing.receive(\.cliInstallFailed)
         XCTAssertNotNil(failing.state.alert)
         XCTAssertEqual(failing.state.cli, .notInstalled)
         await failing.skipInFlightEffects()
