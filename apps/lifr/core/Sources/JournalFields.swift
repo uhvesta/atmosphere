@@ -9,7 +9,7 @@ package enum Field: String, Hashable, Codable, Sendable, CaseIterable {
     case status, priority, agentAccess
     case startDate, dueDate, dueTime
     case avenue, project, parent, task, labels
-    case author, trigger, procrastinatedAfterDays, filter
+    case author, trigger, procrastinatedAfterDays, defaultReminder, filter
     case sortOrder, archivedAt, completedAt, closedAt, editedAt, deletedAt
     case recurrence
 
@@ -38,6 +38,7 @@ package enum Field: String, Hashable, Codable, Sendable, CaseIterable {
         case .author: "Author"
         case .trigger: "Reminder"
         case .procrastinatedAfterDays: "Procrastinated after"
+        case .defaultReminder: "Default reminder"
         case .filter: "Filter"
         case .sortOrder: "Order"
         case .archivedAt: "Archived"
@@ -169,7 +170,8 @@ extension Reminder {
 
 extension Settings {
     static let fields: [RecordField<Settings>] = [
-        .init(.procrastinatedAfterDays, \.procrastinatedAfterDays) { .number($0) }
+        .init(.procrastinatedAfterDays, \.procrastinatedAfterDays) { .number($0) },
+        .init(.defaultReminder, \.defaultReminder) { .text($0.rawValue) },
     ]
 }
 

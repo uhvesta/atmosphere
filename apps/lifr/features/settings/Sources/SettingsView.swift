@@ -19,7 +19,6 @@ package struct SettingsView: View {
     private let page: SettingsPage
     @Shared(.namesConversations) private var namesConversations
     @Shared(.picksSkills) private var picksSkills
-    @Shared(.defaultReminder) private var defaultReminder
     @Shared(.badgeCount) private var badgeCount
     @Shared(.completionSound) private var completionSound
     @Shared(.compactsConversations) private var compactsConversations
@@ -117,7 +116,10 @@ package struct SettingsView: View {
             Text("An In Progress task with no activity for longer than this counts as Procrastinated.")
         }
         Section {
-            Picker("Remind me", selection: Binding($defaultReminder)) {
+            Picker(
+                "Remind me",
+                selection: Binding(get: { store.defaultReminder }, set: { store.send(.defaultReminderPicked($0)) })
+            ) {
                 ForEach(DefaultReminder.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             Picker("App icon badge", selection: Binding($badgeCount)) {
@@ -126,9 +128,7 @@ package struct SettingsView: View {
         } header: {
             Text("Reminders")
         } footer: {
-            Text(
-                "A new task with a due date gets the reminder, and the badge counts open tasks. This device only."
-            )
+            Text("A new task with a due date gets this reminder on every device. The badge is per device.")
         }
         AppearanceSection()
         Section {

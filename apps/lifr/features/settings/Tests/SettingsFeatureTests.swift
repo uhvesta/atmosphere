@@ -115,6 +115,25 @@ final class SettingsFeatureTests: XCTestCase {
         await store.skipInFlightEffects()
     }
 
+    func testPickingADefaultReminderSyncsItAndKeepsTheOtherSettings() async {
+        let store = await settings(InMemorySession())
+        await store.send(.procrastinatedDaysChanged(14))
+        await store.receive(\.delegate.saved)
+
+        await store.send(.defaultReminderPicked(.dueDayMorning))
+        await store.receive(\.delegate.saved)
+
+        XCTAssertEqual(store.state.defaultReminder, .dueDayMorning)
+        let saved = try? await store.dependencies.store.load()
+        XCTAssertEqual(saved?.settings, Settings(procrastinatedAfterDays: 14, defaultReminder: .dueDayMorning))
+
+        await store.send(.procrastinatedDaysChanged(10))
+        await store.receive(\.delegate.saved)
+        let resaved = try? await store.dependencies.store.load()
+        XCTAssertEqual(resaved?.settings.defaultReminder, .dueDayMorning)
+        await store.skipInFlightEffects()
+    }
+
     func testAProcrastinatedDaysChangeThatIsntSavedGoesBack() async {
         struct Full: Error {}
         let store = await settings(InMemorySession())

@@ -161,6 +161,8 @@ final class StoredHistoryEvent {
 final class StoredSettings {
     var id = UUID()
     var procrastinatedAfterDays = 7
+    /// A `DefaultReminder` raw value; nil until someone picks one.
+    var defaultReminder: String?
     var createdAt = Date.distantPast
 
     init(id: UUID) { self.id = id }

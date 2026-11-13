@@ -77,6 +77,29 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testADefaultReminderPickedOnAnotherDeviceIsUsedOnThisOne() async {
+        var workspace = records.workspace
+        workspace.settings.defaultReminder = .dueDayMorning
+        let store = makeStore(.phone, store: .inMemory(workspace))
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        XCTAssertEqual(store.state.defaultReminder, .dueDayMorning)
+        await task.cancel()
+    }
+
+    func testThisDevicesDefaultReminderStaysWhenNoDeviceHasSyncedOne() async {
+        let store = makeStore(.phone)
+        store.state.$defaultReminder.withLock { $0 = .atDue }
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+
+        XCTAssertEqual(store.state.defaultReminder, .atDue)
+        await task.cancel()
+    }
+
     func testRemindersThatCantBeScheduledAreToldOnceUnlessNotificationsAreOff() async {
         struct Refused: Error {}
         let run = records.task("Run", in: health, due: 0)

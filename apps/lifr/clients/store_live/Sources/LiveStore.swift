@@ -212,8 +212,11 @@ package actor LiveStore: ModelActor {
                     $0.createdAt != $1.createdAt ? $0.createdAt < $1.createdAt : $0.id.uuidString < $1.id.uuidString
                 },
             journal: journal(index),
-            settings: settings.first.map { Settings(procrastinatedAfterDays: $0.procrastinatedAfterDays) }
-                ?? Settings())
+            settings: settings.first.map {
+                Settings(
+                    procrastinatedAfterDays: $0.procrastinatedAfterDays,
+                    defaultReminder: $0.defaultReminder.flatMap(DefaultReminder.init(rawValue:)))
+            } ?? Settings())
         workspace.unreadable = index.unreadable
         return workspace
     }
@@ -260,7 +263,9 @@ package actor LiveStore: ModelActor {
                 index.journal[entry.id] = model
             }
             if before.settings != after.settings {
-                try storedSettings().procrastinatedAfterDays = after.settings.procrastinatedAfterDays
+                let stored = try storedSettings()
+                stored.procrastinatedAfterDays = after.settings.procrastinatedAfterDays
+                stored.defaultReminder = after.settings.defaultReminder?.rawValue
             }
             try modelContext.save()
         } catch {

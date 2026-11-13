@@ -1,7 +1,7 @@
 [header, text] "Procrastinated"
 [text] "An In Progress task with no activity for longer than this counts as Procrastinated."
 [header, text] "Reminders"
-[text] "A new task with a due date gets the reminder, and the badge counts open tasks. This device only."
+[text] "A new task with a due date gets this reminder on every device. The badge is per device."
 [header, text] "Appearance"
 [header, text] "App Icon"
 [button, selected] "Ocean"

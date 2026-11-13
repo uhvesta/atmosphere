@@ -57,5 +57,10 @@ func savedFormatTests() -> [TestCase] {
             try expectEqual(bases.keys.map(\.kind), [.label])
             try expectEqual(written, savedBases)
         },
+        TestCase("given settings saved before the default reminder synced, then none is picked") {
+            let (settings, written) = try roundTrip(Settings.self, #"{"procrastinatedAfterDays":3}"#)
+            try expectEqual(settings, Settings(procrastinatedAfterDays: 3, defaultReminder: nil))
+            try expectEqual(written, #"{"procrastinatedAfterDays":3}"#)
+        },
     ]
 }

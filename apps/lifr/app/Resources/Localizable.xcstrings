@@ -509,6 +509,9 @@
     "A new task with a due date gets the reminder, and the badge counts open tasks. This device only." : {
 
     },
+    "A new task with a due date gets this reminder on every device. The badge is per device." : {
+
+    },
     "A soft sound when you finish a task. This device only." : {
 
     },

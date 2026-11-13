@@ -54,6 +54,9 @@ package struct SettingsFeature {
         /// Whether Lifr locks when it opens. Changed only once the person
         /// confirms it's them.
         @Shared(.locksApp) package var locksApp
+        /// The reminder a new task with a due date gets. Synced; this is
+        /// the device's copy.
+        @Shared(.defaultReminder) package var defaultReminder
         /// The chat's experiments, kept on this device and off until turned
         /// on.
         @Shared(.chatShowsSpeed) package var showsSpeed
@@ -114,6 +117,7 @@ package struct SettingsFeature {
         case lockConfirmed(Bool, Result<Void, any Error>)
         case event(SessionEvent)
         case procrastinatedDaysChanged(Int)
+        case defaultReminderPicked(DefaultReminder)
         case agentAccessPicked(UUID, AgentAccess)
         case writePicked(String, Bool)
         case renewTapped(String)
@@ -234,8 +238,18 @@ package struct SettingsFeature {
             case .procrastinatedDaysChanged(let days):
                 let days = min(max(days, 1), 90)
                 state.procrastinatedAfterDays = days
-                return .run { [store] send in
-                    await send(.saved(Result { try await store.setSettings(Settings(procrastinatedAfterDays: days)) }))
+                var settings = state.workspace.settings
+                settings.procrastinatedAfterDays = days
+                return .run { [store, settings] send in
+                    await send(.saved(Result { try await store.setSettings(settings) }))
+                }
+
+            case .defaultReminderPicked(let picked):
+                state.$defaultReminder.withLock { $0 = picked }
+                var settings = state.workspace.settings
+                settings.defaultReminder = picked
+                return .run { [store, settings] send in
+                    await send(.saved(Result { try await store.setSettings(settings) }))
                 }
 
             case .agentAccessPicked(let id, let access):

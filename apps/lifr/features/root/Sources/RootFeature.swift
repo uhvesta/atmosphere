@@ -199,6 +199,9 @@ package struct RootFeature {
         @Shared(.locksApp) package var locksApp
         /// What the number on the app icon counts.
         @Shared(.badgeCount) package var badgeCount
+        /// This device's copy of the synced default reminder, for Quick Add,
+        /// widgets and Shortcuts.
+        @Shared(.defaultReminder) package var defaultReminder
         /// A task to show the statuses for once it opens, as Change Status…
         /// on its reminder asks.
         package var statusPickPending: UUID?
@@ -1410,6 +1413,9 @@ package struct RootFeature {
         guard state.saves.isLatest(snapshot) else { return .none }
         let workspace = snapshot.workspace
         state.workspace = workspace
+        if let picked = workspace.settings.defaultReminder, picked != state.defaultReminder {
+            state.$defaultReminder.withLock { $0 = picked }
+        }
         var effects: [Effect<Action>] = []
         if sender != .today {
             effects.append(TodayFeature().reduce(into: &state.today, action: .list(.show(snapshot))).map(Action.today))
