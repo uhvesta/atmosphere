@@ -22,3 +22,4 @@
 [button] "Upcoming"
 [button, selected] "Avenues"
 [button] "Assistant"
+[button] "Add a Task"

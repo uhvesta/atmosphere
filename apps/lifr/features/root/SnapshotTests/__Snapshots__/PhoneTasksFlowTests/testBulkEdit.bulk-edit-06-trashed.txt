@@ -6,6 +6,7 @@
 [text] "Nothing due today"
 [text] "Tasks due today, and overdue ones, show up here."
 [button] "Add a Task for Today"
+[button] "Plan from Anytime"
 [text] "Moved 5 tasks to the Trash"
 [button] "Undo"
 [button] "Search"

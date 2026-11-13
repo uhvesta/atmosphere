@@ -23,3 +23,4 @@
 [button, selected] "Avenues"
 [button] "Assistant"
 [text] "Tasks you add here, or move here, show up in this list."
+[button] "Add a Task"
