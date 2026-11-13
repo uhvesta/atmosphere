@@ -1096,7 +1096,13 @@
     "Copied %lld tasks" : {
 
     },
+    "Copied a prompt to plan %@. Paste it into a chat assistant, then paste its reply into a Lifr chat with /paste." : {
+
+    },
     "Copied “%@”" : {
+
+    },
+    "Copies a prompt asking another chat assistant for a plan Lifr can read. It names your Avenues, Projects and labels, but no tasks. Paste the reply into a Lifr chat with /paste." : {
 
     },
     "Copy" : {
