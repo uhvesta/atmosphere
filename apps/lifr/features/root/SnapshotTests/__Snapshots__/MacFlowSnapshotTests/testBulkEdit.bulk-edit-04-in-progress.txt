@@ -35,7 +35,7 @@
     [Row/OutlineRow] ""
       [StaticText] "Home" value: "5"
   [Button] "New Avenue"
-  [StaticText] "" value: "Sync: Not synced yet"
+  [Button] "Sync: Not synced yet" help: "Syncs now"
   [Outline] ""
     [Row/OutlineRow] ""
     [Row/OutlineRow] ""

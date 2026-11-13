@@ -397,6 +397,9 @@ package struct Workspace: Hashable, Codable, Sendable {
     package mutating func createTask(_ new: NewTask, in context: Context) throws(LifrError) -> Change {
         let title = try Self.validTitle(new.title)
         if new.dueTime != nil, new.dueDate == nil { throw .dueTimeWithoutDueDate }
+        if let start = new.startDate, let due = new.dueDate, start > due {
+            throw .startsAfterDue(start: start, due: due)
+        }
         try checkLabels(new.labelIDs)
 
         let avenueID: UUID
@@ -511,6 +514,13 @@ package struct Workspace: Hashable, Codable, Sendable {
             task.labelIDs = labelIDs
         }
         if task.dueTime != nil, task.dueDate == nil { throw .dueTimeWithoutDueDate }
+        // Only when the dates change, so a task saved before the rule can
+        // still be renamed.
+        if task.startDate != old.startDate || task.dueDate != old.dueDate, let start = task.startDate,
+            let due = task.dueDate, start > due
+        {
+            throw .startsAfterDue(start: start, due: due)
+        }
 
         var change = Change()
         let fields: [(HistoryEvent.Field, String?, String?)] = [

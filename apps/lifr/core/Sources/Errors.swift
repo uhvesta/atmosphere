@@ -20,6 +20,8 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
     case invalidDate(String)
     case invalidTime(String)
     case dueTimeWithoutDueDate
+    /// A task can't start after the day it's due.
+    case startsAfterDue(start: CalendarDate, due: CalendarDate)
     /// Only top-level tasks repeat; a Sub task comes back with its parent.
     case subtaskCannotRepeat(UUID)
     /// The rule never falls on a day, such as weekly on no weekdays.
@@ -79,6 +81,9 @@ package enum LifrError: Error, Hashable, Sendable, CustomStringConvertible {
             "\"\(time)\" isn't a time of day. Use 24-hour HH:MM, such as 09:30."
         case .dueTimeWithoutDueDate:
             "A due time needs a due date. Set the due date too, or clear the time."
+        case .startsAfterDue(let start, let due):
+            "This task would start on \(start), after it's due on \(due). Move the start date to \(due) or earlier, "
+                + "or the due date to \(start) or later."
         case .subtaskCannotRepeat:
             "A Sub task can't repeat on its own. Make its parent repeat: each new occurrence brings its Sub tasks back."
         case .invalidRecurrence:

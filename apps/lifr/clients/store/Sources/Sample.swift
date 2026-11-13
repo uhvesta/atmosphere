@@ -74,10 +74,17 @@ package struct RecordsBuilder {
                 symbol: "tray", sortOrder: "", agentAccess: .full, createdAt: now, archivedAt: nil)
     }
 
-    package mutating func project(_ name: String, in avenue: Avenue) -> Project {
+    /// `due` counts days from `now`'s day, as for tasks.
+    package mutating func project(_ name: String, in avenue: Avenue, due days: Int? = nil) -> Project {
         let context = context()
         do {
-            return try workspace.createProject(name: name, inAvenue: avenue.id, in: context)
+            var project = try workspace.createProject(name: name, inAvenue: avenue.id, in: context)
+            if let days {
+                let due = CalendarDate(now, in: timeZone).adding(days: days)
+                try workspace.edit(project: project.id, .init(dueDate: .some(due)))
+                project.dueDate = due
+            }
+            return project
         } catch {
             reportIssue(error)
             return Project(

@@ -33,7 +33,7 @@
     [Row/OutlineRow] ""
       [StaticText] "Home" value: "5"
   [Button] "New Avenue"
-  [StaticText] "" value: "Sync: Not synced yet"
+  [Button] "Sync: Not synced yet" help: "Syncs now"
   [Outline] ""
     [Row/OutlineRow] ""
       [Button] "Move my run to Friday, Nov 3 at 10:00 AM, Here's a plan with both tasks and their Sub tasks. Change anything, or tap Add., Draft to review"

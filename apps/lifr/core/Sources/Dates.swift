@@ -139,6 +139,12 @@ package struct TimeOfDay: Hashable, Comparable, Codable, Sendable, CustomStringC
         self.minute = minute
     }
 
+    /// `hour` and `minute`, each held inside a day.
+    package init(clampingHour hour: Int, minute: Int) {
+        self.hour = min(max(hour, 0), 23)
+        self.minute = min(max(minute, 0), 59)
+    }
+
     /// The time `date` shows in `timeZone`, to the minute.
     package init(_ date: Date, in timeZone: TimeZone) {
         let local = date.timeIntervalSince1970 + TimeInterval(timeZone.secondsFromGMT(for: date))

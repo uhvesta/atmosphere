@@ -33,7 +33,7 @@
     [Row/OutlineRow] ""
       [StaticText] "Home" value: "5"
   [Button] "New Avenue"
-  [StaticText] "" value: "Sync: Not synced yet"
+  [Button] "Sync: Not synced yet" help: "Syncs now"
   [StaticText] "" value: "No conversations"
   [StaticText] "" value: "Ask about your tasks, change them, or plan what to add."
   [Button] "New conversation"
@@ -45,7 +45,7 @@
   [Button] "What's overdue?"
   [Button] "What did I finish this week?"
   [Unknown] "Skill: review"
-  [TextField] "" value: "what slipped"
+  [TextField] "Message" value: "what slipped"
   [Button] "Add" help: "Add photos or files" id: plus
   [Button] "Model" value: "Apple Intelligence" help: "Model, Thinking and Context Window"
   [Button] "Dictate" help: "Dictate, on this device" id: mic

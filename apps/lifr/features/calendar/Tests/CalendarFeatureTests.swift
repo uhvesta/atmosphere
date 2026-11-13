@@ -141,11 +141,11 @@ final class CalendarFeatureTests: XCTestCase {
     func testAnotherMonthSelectsItsFirstDayAndTodayComesBack() async throws {
         let store = await load()
 
-        await store.send(.monthStepped(1))
+        await store.send(.stepped(1))
         XCTAssertEqual(store.state.month, try day("2026-12-01"))
         XCTAssertEqual(store.state.selected, try day("2026-12-01"))
 
-        await store.send(.monthStepped(-2))
+        await store.send(.stepped(-2))
         XCTAssertEqual(store.state.selected, try day("2026-10-01"))
 
         await store.send(.todayTapped)
@@ -157,7 +157,7 @@ final class CalendarFeatureTests: XCTestCase {
         let run = records.task("Run", in: health, due: 0, at: "09:00")
         let store = await load()
 
-        await store.send(.dropped(run.id, on: try day("2026-11-10")))
+        await store.send(.dropped([run.id], on: try day("2026-11-10")))
         await store.receive(\.list.saved)
 
         let task = store.state.list.workspace?.tasks[run.id]
@@ -181,7 +181,7 @@ final class CalendarFeatureTests: XCTestCase {
         let run = records.task("Run", in: health, due: 0)
         let store = await load()
 
-        await store.send(.dropped(run.id, on: try day("2026-11-10")))
+        await store.send(.dropped([run.id], on: try day("2026-11-10")))
         await store.receive(\.list.saved)
 
         XCTAssertFalse(store.state.showsDragTip)
@@ -192,7 +192,7 @@ final class CalendarFeatureTests: XCTestCase {
         let store = await load()
         let before = store.state.list.workspace
 
-        await store.send(.dropped(run.id, on: try day("2026-11-03")))
+        await store.send(.dropped([run.id], on: try day("2026-11-03")))
         await store.finish()
 
         XCTAssertEqual(store.state.list.workspace, before)
@@ -202,11 +202,177 @@ final class CalendarFeatureTests: XCTestCase {
         let trip = records.task("Pack for the trip", in: health, due: 2, starts: 0)
         let store = await load()
 
-        await store.send(.dropped(trip.id, on: try day("2026-11-12")))
+        await store.send(.dropped([trip.id], on: try day("2026-11-12")))
         await store.receive(\.list.saved)
 
         let task = store.state.list.workspace?.tasks[trip.id]
         XCTAssertEqual(task?.startDate, try day("2026-11-10"))
         XCTAssertEqual(task?.dueDate, try day("2026-11-12"))
+    }
+
+    func testTheWeekShowsTheSelectedDaysSevenDaysAndStepsByAWeek() async throws {
+        records.task("Run", in: health, due: 2, at: "18:00")
+        records.task("Stretch", in: health, due: 2)
+        let store = await load()
+
+        await store.send(.modePicked(.week))
+        XCTAssertEqual(store.state.week.map(\.date.day), [1, 2, 3, 4, 5, 6, 7])
+        let thursday = store.state.week.first { $0.date == (try? day("2026-11-05")) }
+        XCTAssertEqual(thursday?.chips.map(\.title), ["Stretch", "Run"])
+
+        await store.send(.stepped(1))
+        XCTAssertEqual(store.state.selected, try day("2026-11-10"))
+        XCTAssertEqual(store.state.week.first?.date, try day("2026-11-08"))
+
+        await store.send(.stepped(-2))
+        XCTAssertEqual(store.state.week.first?.date, try day("2026-10-25"))
+        XCTAssertEqual(store.state.month, try day("2026-10-01"))
+        await store.send(.modePicked(.month))
+    }
+
+    func testTheFilterShowsOnlyTheAvenuesPicked() async throws {
+        let work = records.avenue("WORK", "Work", color: "orange")
+        records.task("Run", in: health, due: 0)
+        records.task("Report", in: work, due: 0)
+        let store = await load()
+        XCTAssertEqual(dueCount(store, on: try day("2026-11-03")), 2)
+
+        await store.send(.avenueToggled(work.id))
+        XCTAssertEqual(dueCount(store, on: try day("2026-11-03")), 1)
+        XCTAssertEqual(store.state.list.rows.map(\.title), ["Report"])
+
+        await store.send(.allAvenuesShown)
+        XCTAssertEqual(store.state.list.rows.count, 2)
+    }
+
+    func testClosedTasksShowOnlyWithShowCompleted() async throws {
+        records.task("Done", in: health, status: .done, due: 0)
+        let store = await load()
+        XCTAssertEqual(store.state.list.rows.map(\.title), [])
+
+        await store.send(.showsCompletedToggled)
+
+        let today = store.state.weeks.joined().first { $0.date == (try? day("2026-11-03")) }
+        XCTAssertEqual(today?.chips.map(\.isClosed), [true])
+        // Its dot is for open tasks only.
+        XCTAssertEqual(today?.colors, [])
+        XCTAssertEqual(store.state.list.rows.map(\.title), ["Done"])
+        await store.send(.showsCompletedToggled)
+    }
+
+    func testAProjectDueOnADayShowsAFlagThatOpensIt() async throws {
+        let launch = records.project("Launch", in: health, due: 17)
+        let store = await load()
+
+        let flags = store.state.weeks.joined().first { $0.date == (try? day("2026-11-20")) }?.flags
+        XCTAssertEqual(flags?.map(\.name), ["Launch"])
+
+        await store.send(.projectTapped(launch.id))
+        await store.receive(\.delegate.openProject)
+    }
+
+    func testDroppingSeveralTasksMovesThemAllInOneSave() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let stretch = records.task("Stretch", in: health, due: 1)
+        let store = await load()
+
+        await store.send(.dropped([run.id, stretch.id], on: try day("2026-11-10")))
+        await store.receive(\.list.saved)
+
+        XCTAssertEqual(dueCount(store, on: try day("2026-11-10")), 2)
+        XCTAssertEqual(store.state.list.workspace?.tasks[stretch.id]?.dueDate, try day("2026-11-10"))
+    }
+
+    func testDroppingOnAnHourSetsTheTimeAndOnTheDayTakesItAway() async throws {
+        let run = records.task("Run", in: health, due: 0, at: "09:00")
+        let store = await load()
+
+        await store.send(.dropped([run.id], on: try day("2026-11-03"), time: .some(try TimeOfDay("14:15"))))
+        await store.receive(\.list.saved)
+        XCTAssertEqual(store.state.list.workspace?.tasks[run.id]?.dueTime, try TimeOfDay("14:15"))
+        XCTAssertEqual(store.state.list.workspace?.tasks[run.id]?.dueDate, try day("2026-11-03"))
+
+        await store.send(.dropped([run.id], on: try day("2026-11-04"), time: .some(nil)))
+        await store.receive(\.list.saved)
+        XCTAssertNil(store.state.list.workspace?.tasks[run.id]?.dueTime)
+        XCTAssertEqual(store.state.list.workspace?.tasks[run.id]?.dueDate, try day("2026-11-04"))
+    }
+
+    func testMovingByKeyboardShiftsTheDueDateByDaysOrAWeek() async throws {
+        let trip = records.task("Pack", in: health, due: 2, starts: 0)
+        let store = await load()
+
+        await store.send(.moved(trip.id, days: 7))
+        await store.receive(\.dropped)
+        await store.receive(\.list.saved)
+
+        let task = store.state.list.workspace?.tasks[trip.id]
+        XCTAssertEqual(task?.dueDate, try day("2026-11-12"))
+        XCTAssertEqual(task?.startDate, try day("2026-11-10"))
+    }
+
+    func testATaskWithNoDueDateDoesNotMoveByKeyboard() async {
+        let run = records.task("Run", in: health)
+        let store = await load()
+
+        await store.send(.moved(run.id, days: 1))
+        await store.finish()
+    }
+
+    private func startWeeks() throws -> [[CalendarDay]] {
+        records.workspace.calendarWeeks(
+            month: try day("2026-11-01"), firstWeekday: 1, filter: CalendarFilter(showsStartDates: true), now: now,
+            timeZone: .gmt)
+    }
+
+    func testABarCrossingAWeekBreaksIntoAPieceEachWeek() throws {
+        let trip = records.task("Trip", in: health, due: 7, starts: 2)
+        let weeks = try startWeeks()
+
+        let first = weeks[0].compactMap { $0.spans.first ?? nil }
+        let second = weeks[1].compactMap { $0.spans.first ?? nil }
+        XCTAssertEqual(first.map(\.id), [trip.id, trip.id, trip.id])
+        XCTAssertEqual(second.map(\.id), [trip.id, trip.id, trip.id])
+        XCTAssertEqual(first.filter(\.isFirst).count, 1)
+        XCTAssertEqual(second.filter(\.isFirst).count, 1)
+        XCTAssertTrue(first.first?.startsHere == true)
+        XCTAssertTrue(second.last?.endsHere == true)
+    }
+
+    func testOverlappingBarsTakeTheirOwnLanesAndOthersShareOne() throws {
+        let long = records.task("Long", in: health, due: 3, starts: -1)
+        let overlapping = records.task("Overlap", in: health, due: 2, starts: 1)
+        let later = records.task("Later", in: health, due: 5, starts: 4)
+        let week = try startWeeks()[0]
+
+        func lane(of id: UUID) -> Int? {
+            week.lazy.compactMap { $0.spans.firstIndex { $0?.id == id } }.first
+        }
+        XCTAssertNotEqual(lane(of: long.id), lane(of: overlapping.id))
+        XCTAssertEqual(lane(of: later.id), lane(of: long.id))
+    }
+
+    func testATaskWithOnlyAStartDateShowsOnTheDayItStarts() throws {
+        let read = records.task("Read", in: health, starts: 2)
+        let days = try startWeeks().joined()
+
+        XCTAssertEqual(days.first { $0.date == (try? day("2026-11-05")) }?.starts.map(\.id), [read.id])
+        XCTAssertEqual(days.filter { !$0.starts.isEmpty }.count, 1)
+        let hidden = records.workspace.calendarWeeks(
+            month: try day("2026-11-01"), firstWeekday: 1, now: now, timeZone: .gmt)
+        XCTAssertTrue(hidden.joined().allSatisfy { $0.starts.isEmpty && $0.spans.isEmpty })
+    }
+
+    func testTheTrayHoldsOpenTasksWithNoDueDate() async throws {
+        let read = records.task("Read", in: health)
+        records.task("Run", in: health, due: 0)
+        let store = await load()
+
+        await store.send(.trayToggled)
+        XCTAssertEqual(store.state.tray.map(\.id), [read.id])
+
+        await store.send(.dropped([read.id], on: try day("2026-11-05")))
+        await store.receive(\.list.saved)
+        XCTAssertTrue(store.state.tray.isEmpty)
     }
 }

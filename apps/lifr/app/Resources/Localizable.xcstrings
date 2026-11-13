@@ -294,12 +294,42 @@
         }
       }
     },
+    "%@, %@, %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, %2$@, %3$@"
+          }
+        }
+      }
+    },
+    "%@, %@, %@, overdue" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, %2$@, %3$@, overdue"
+          }
+        }
+      }
+    },
     "%@, %@, overdue" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
             "value" : "%1$@, %2$@, overdue"
+          }
+        }
+      }
+    },
+    "%@, %lld Projects due" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, %2$lld Projects due"
           }
         }
       }
@@ -315,6 +345,9 @@
       }
     },
     "%@, 1 task" : {
+
+    },
+    "%@, starts" : {
 
     },
     "%@:" : {
@@ -355,6 +388,9 @@
 
     },
     "%lld filters" : {
+
+    },
+    "%lld more" : {
 
     },
     "%lld of %lld" : {
@@ -734,6 +770,9 @@
 
     },
     "All Checkpoints" : {
+
+    },
+    "All tasks" : {
 
     },
     "All time" : {
@@ -1711,6 +1750,9 @@
     "Every month on day %lld" : {
 
     },
+    "Every open task has a due date." : {
+
+    },
     "Every point to go back or forward to" : {
 
     },
@@ -1757,6 +1799,9 @@
 
     },
     "Filter" : {
+
+    },
+    "Filtered" : {
 
     },
     "Filters" : {
@@ -1895,6 +1940,9 @@
 
     },
     "Go through what's overdue and suggest new dates." : {
+
+    },
+    "Go to" : {
 
     },
     "Go to Calendar" : {
@@ -2473,6 +2521,15 @@
     "Move to %@" : {
 
     },
+    "Move to Next Day" : {
+
+    },
+    "Move to Next Week" : {
+
+    },
+    "Move to Previous Day" : {
+
+    },
     "Move to Trash" : {
 
     },
@@ -2964,6 +3021,9 @@
     "Pick the model, thinking and context window." : {
 
     },
+    "Picks a day to go to" : {
+
+    },
     "Picks another skill" : {
 
     },
@@ -2988,6 +3048,9 @@
     "Previous Version" : {
 
     },
+    "Previous Week" : {
+
+    },
     "Print…" : {
 
     },
@@ -3004,6 +3067,9 @@
 
     },
     "Project" : {
+
+    },
+    "Project %@, due" : {
 
     },
     "Project details" : {
@@ -3458,6 +3524,9 @@
     "Show Completed" : {
 
     },
+    "Show Day" : {
+
+    },
     "Show Less" : {
 
     },
@@ -3467,7 +3536,13 @@
     "Show Prompt" : {
 
     },
+    "Show Start Dates" : {
+
+    },
     "Show Them" : {
+
+    },
+    "Show Unscheduled" : {
 
     },
     "Show as" : {
@@ -4056,6 +4131,19 @@
     "Under each reply: its model, tokens a second, time to first token, tokens in and out." : {
 
     },
+    "Under way: %@" : {
+
+    },
+    "Under way: %@, and %lld more" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Under way: %1$@, and %2$lld more"
+          }
+        }
+      }
+    },
     "Undo" : {
 
     },
@@ -4084,6 +4172,9 @@
 
     },
     "Unlocking was cancelled. Tap Unlock to try again." : {
+
+    },
+    "Unscheduled" : {
 
     },
     "Upcoming" : {

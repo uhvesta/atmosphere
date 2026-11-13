@@ -62,6 +62,24 @@ func dateTests() -> [TestCase] {
                 try fixture.workspace.edit(task.id, .init(dueTime: .some(try TimeOfDay("09:00"))), in: fixture.context)
             }
         },
+        TestCase("given a start date after the due date, then it's refused, and moving both together isn't") {
+            let fixture = try Fixture()
+            let task = try fixture.task("Pack")
+            let start = try CalendarDate("2026-11-05")
+            let due = try CalendarDate("2026-11-04")
+            _ = try fixture.workspace.edit(task.id, .init(dueDate: .some(due)), in: fixture.context)
+            try expectError(.startsAfterDue(start: start, due: due)) {
+                try fixture.workspace.edit(task.id, .init(startDate: .some(start)), in: fixture.context)
+            }
+            _ = try fixture.workspace.edit(
+                task.id, .init(startDate: .some(due), dueDate: .some(start)), in: fixture.context)
+            let moved = try CalendarDate("2026-11-01")
+            if let edit = Workspace.TaskEdit.due(moved, start: due, due: start) {
+                _ = try fixture.workspace.edit(task.id, edit, in: fixture.context)
+            }
+            try expectEqual(fixture.workspace.tasks[task.id]?.dueDate, moved)
+            try expectEqual(fixture.workspace.tasks[task.id]?.startDate, try CalendarDate("2026-10-31"))
+        },
         TestCase("given tasks of mixed priority and due dates, then lists sort by priority then due date") {
             let fixture = try Fixture()
             var low = try fixture.task("Low")

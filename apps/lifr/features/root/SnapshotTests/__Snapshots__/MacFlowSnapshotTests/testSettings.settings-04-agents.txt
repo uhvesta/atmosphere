@@ -13,9 +13,7 @@
   [StaticText] "" value: "No apps yet. When an agent first runs lifr, Lifr asks you to approve it."
   [Heading] "Command line"
   [Button] "Install lifr"
-  [StaticText] "" value: "Launch at login"
-  [CheckBox/Switch] "" value: "0"
-  [StaticText] "" value: "Then connect Claude Code with: claude mcp add lifr -- lifr mcp. Launch at login keeps Lifr in the menu bar, so lifr never waits for it to start."
+  [StaticText] "" value: "Then connect Claude Code with: claude mcp add lifr -- lifr mcp"
   [Toolbar] ""
     [RadioGroup] "Navigation Tab Bar"
       [RadioButton/Segment] "General" value: "0" id: gearshape

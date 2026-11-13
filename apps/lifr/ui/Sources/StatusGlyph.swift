@@ -5,14 +5,16 @@ import SwiftUI
 /// their accessibility value.
 package struct StatusGlyph: View {
     package var status: TaskStatus
+    package var font: Font
 
-    package init(_ status: TaskStatus) {
+    package init(_ status: TaskStatus, font: Font = .title3) {
         self.status = status
+        self.font = font
     }
 
     package var body: some View {
         Image(systemName: symbol)
-            .font(.title3)
+            .font(font)
             .foregroundStyle(color)
             .contentTransition(.symbolEffect(.replace))
             .animation(.default, value: status)

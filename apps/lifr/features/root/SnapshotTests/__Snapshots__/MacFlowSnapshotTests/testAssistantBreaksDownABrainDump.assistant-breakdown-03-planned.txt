@@ -33,7 +33,7 @@
     [Row/OutlineRow] ""
       [StaticText] "Home" value: "5"
   [Button] "New Avenue"
-  [StaticText] "" value: "Sync: Not synced yet"
+  [Button] "Sync: Not synced yet" help: "Syncs now"
   [Outline] ""
     [Row/OutlineRow] ""
       [Button] "ugh I have to move flat, get the deposi…, Nov 3 at 10:00 AM, Here's the move as a Project, in order, and calling your mum on its own., Draft to review"

@@ -33,7 +33,7 @@
     [Row/OutlineRow] ""
       [StaticText] "Home" value: "5"
   [Button] "New Avenue"
-  [StaticText] "" value: "Sync: Not synced yet"
+  [Button] "Sync: Not synced yet" help: "Syncs now"
   [Outline] ""
     [Row/OutlineRow] ""
       [Button] "How do I plant the seedlings?, Nov 3 at 10:00 AM, Planting the seedlings Start with Buy soil, then plant them. Skip the shed for now; see the guide or run water --morning. Steps Dig a hole Plant Tomat"

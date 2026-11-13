@@ -37,7 +37,7 @@
     [Row/OutlineRow, selected] ""
       [StaticText] "Half marathon" value: "Health"
   [Button] "New Avenue"
-  [StaticText] "" value: "Sync: Not synced yet"
+  [Button] "Sync: Not synced yet" help: "Syncs now"
   [Outline] ""
     [Row/OutlineRow] ""
     [Row/OutlineRow] ""

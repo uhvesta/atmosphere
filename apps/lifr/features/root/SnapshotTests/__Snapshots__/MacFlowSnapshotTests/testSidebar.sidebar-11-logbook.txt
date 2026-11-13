@@ -33,7 +33,7 @@
     [Row/OutlineRow] ""
       [StaticText] "Home" value: "5"
   [Button] "New Avenue"
-  [StaticText] "" value: "Sync: Not synced yet"
+  [Button] "Sync: Not synced yet" help: "Syncs now"
   [StaticText] "" value: "Nothing closed yet"
   [StaticText] "" value: "Tasks you mark Done or Won’t Do show up here."
   [Outline] ""

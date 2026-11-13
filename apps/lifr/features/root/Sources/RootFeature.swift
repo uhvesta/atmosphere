@@ -1276,6 +1276,12 @@ package struct RootFeature {
             case .shaken, .reportBugTapped, .recordStepsTapped, .stopRecordingTapped, .bugReport:
                 return .none
 
+            case .calendar(.delegate(.openProject(let id))):
+                guard state.workspace?.projects[id] != nil else { return .none }
+                if state.platform == .mac { return .send(.selected(.scope(.project(id)))) }
+                state.tab = .avenues
+                return .send(.avenues(.opened(.project(id))))
+
             case .upcomingCalendarShown(let shown):
                 state.$upcomingShowsCalendar.withLock { $0 = shown }
                 return .none

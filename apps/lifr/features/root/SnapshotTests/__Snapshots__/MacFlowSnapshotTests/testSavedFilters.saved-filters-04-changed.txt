@@ -37,7 +37,7 @@
     [Row/OutlineRow] ""
       [StaticText] "Home" value: "5"
   [Button] "New Avenue"
-  [StaticText] "" value: "Sync: Not synced yet"
+  [Button] "Sync: Not synced yet" help: "Syncs now"
   [StaticText] "" value: "No matches"
   [StaticText] "" value: "Try other words, or clear the filters."
   [Button] "Clear Filters"

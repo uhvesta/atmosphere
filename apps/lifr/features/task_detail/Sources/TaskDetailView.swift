@@ -121,7 +121,7 @@ package struct TaskDetailView: View {
     @ViewBuilder
     private var dates: some View {
         Section {
-            dateRow("Due", store.dueDate) { store.send(.dueDatePicked($0)) }
+            dateRow("Due", store.dueDate, from: store.startDate) { store.send(.dueDatePicked($0)) }
             if let due = store.dueDate {
                 if let time = store.dueTime {
                     HStack {
@@ -139,7 +139,7 @@ package struct TaskDetailView: View {
                     }
                 }
             }
-            dateRow("Start", store.startDate) { store.send(.startDatePicked($0)) }
+            dateRow("Start", store.startDate, through: store.dueDate) { store.send(.startDatePicked($0)) }
             if !store.isSubtask {
                 repeatRow
             }
@@ -205,19 +205,29 @@ package struct TaskDetailView: View {
     /// A date with a picker and a remove button, or a button that sets it
     /// to today.
     @ViewBuilder
+    /// A date that can't be before `lower` or after `upper`, so a task
+    /// never starts after it's due.
     private func dateRow(
-        _ title: String, _ day: CalendarDate?, _ pick: @escaping (CalendarDate?) -> Void
+        _ title: String, _ day: CalendarDate?, from lower: CalendarDate? = nil, through upper: CalendarDate? = nil,
+        _ pick: @escaping (CalendarDate?) -> Void
     ) -> some View {
         if let day {
             HStack {
                 DatePicker(
                     title,
                     selection: Binding(get: { date(day, at: nil) }, set: { pick(CalendarDate($0, in: timeZone)) }),
+                    in: (lower.map { date($0, at: nil) } ?? .distantPast)...(upper.map { date($0, at: nil) }
+                        ?? .distantFuture),
                     displayedComponents: .date)
                 clear("Remove \(title.lowercased()) date") { pick(nil) }
             }
         } else {
-            Button("Add a \(title.lowercased()) date") { pick(CalendarDate(Date(), in: timeZone)) }
+            Button("Add a \(title.lowercased()) date") {
+                var today = CalendarDate(Date(), in: timeZone)
+                if let lower, today < lower { today = lower }
+                if let upper, today > upper { today = upper }
+                pick(today)
+            }
         }
     }
 

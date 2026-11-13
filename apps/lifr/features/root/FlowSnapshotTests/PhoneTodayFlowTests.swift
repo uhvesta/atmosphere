@@ -69,9 +69,9 @@ final class PhoneTodayFlowTests: PhoneFlowTestCase {
             store.send(.calendar(.daySelected(day.date)))
         }
         await flow.step("day-selected")
-        store.send(.calendar(.monthStepped(1)))
+        store.send(.calendar(.stepped(1)))
         await flow.step("next-month")
-        store.send(.calendar(.monthStepped(-1)))
+        store.send(.calendar(.stepped(-1)))
         store.send(.calendar(.monthsTapped))
         await flow.step("months")
         flow.tap("Mon, Nov 9, 1 due")

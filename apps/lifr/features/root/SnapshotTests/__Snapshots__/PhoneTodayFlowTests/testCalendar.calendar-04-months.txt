@@ -79,7 +79,7 @@
 [button] "Thu, Oct 15, nothing due"
 [button] "Fri, Oct 16, nothing due"
 [button] "Sat, Oct 17, nothing due"
-[button] "Calendar" id: BackButton
+[button] "Unscheduled" id: BackButton
 [button] "Today"
 [header] "Months"
 [button] "Sun, Oct 18, nothing due"
