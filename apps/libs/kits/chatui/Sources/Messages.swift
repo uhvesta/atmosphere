@@ -98,9 +98,12 @@ struct PersonText: View {
             Text(InlineText.styled(text))
                 .lineLimit(long && !expanded ? Self.shownLines : nil)
                 .selectableOnMac()
+                // Closes from anywhere in it, without scrolling back to the
+                // button; dragging still selects.
+                .simultaneousGesture(TapGesture(count: 2).onEnded { if expanded { expanded = false } })
             if long {
                 Button(expanded ? "Show Less" : "Show More") {
-                    withAnimation(.snappy(duration: 0.25)) { expanded.toggle() }
+                    expanded.toggle()
                 }
                 .font(.callout.weight(.semibold))
                 .buttonStyle(.borderless)
@@ -173,6 +176,7 @@ public struct ThinkingDisclosure: View {
                     .contextMenu {
                         if let select { TextMenu(text: thoughts, select: select) }
                     }
+                    .simultaneousGesture(TapGesture(count: 2).onEnded { toggle() })
                     .padding(.leading, 10)
                     .overlay(alignment: .leading) {
                         Rectangle().fill(.quaternary).frame(width: 2)

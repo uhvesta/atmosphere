@@ -266,6 +266,18 @@ public struct MessageField: View {
                         focused = true
                     #endif
                 }
+                // Shift- or Option-Return starts a new line, where the cursor is;
+                // Return alone sends.
+                .onKeyPress(.return, phases: .down) { press in
+                    guard !press.modifiers.isDisjoint(with: [.shift, .option]) else { return .ignored }
+                    #if os(macOS)
+                        NSApp.sendAction(
+                            #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:)), to: nil, from: nil)
+                        return .handled
+                    #else
+                        return .ignored
+                    #endif
+                }
                 .onSubmit(submit)
                 .modifier(TokenAccessibility(hasToken: token != nil, text: text))
                 .overlay(alignment: .leading) {

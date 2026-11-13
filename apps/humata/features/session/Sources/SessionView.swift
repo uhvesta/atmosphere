@@ -406,7 +406,7 @@ package struct SessionView: View {
                     canStartWork: store.session.planning
                 ) { store.send(.proposals($0)) }
             } else {
-                ToolCallView(call: call) { request, approved in
+                ToolCallView(call: call, select: { selecting = TextToSelect(text: $0) }) { request, approved in
                     store.send(.answerPermission(requestID: request, approved: approved))
                 }
                 if let failure = store.proposals.listFailure, store.state.proposes(call.id) {
@@ -517,8 +517,16 @@ package struct SessionView: View {
 /// for, and its output, folded away until opened.
 struct ToolCallView: View {
     let call: ToolCall
+    /// Opens text to select from, for output too long to show in the chat.
+    var select: (String) -> Void = { _ in }
     let answer: (String, Bool) -> Void
     @State private var expanded = false
+
+    /// Output longer than this many lines scrolls in a box of its own, so
+    /// opening and closing it doesn't lay the whole chat out again.
+    private static let boxedLines = 24
+    /// Characters of output shown in the chat; the rest is a click away.
+    private static let shownCharacters = 20_000
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -550,22 +558,56 @@ struct ToolCallView: View {
             // A write waiting on the person shows what it would change.
             if let change = call.change, expanded || (call.permission != nil && call.permission?.answer == nil) {
                 ChangeView(change: change)
+                    .simultaneousGesture(collapse)
             }
             if let permission = call.permission {
                 PermissionCard(permission: permission, answer: answer)
             }
             if expanded, let output = call.output {
-                Text(output)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .background(.fill.quinary, in: .rect(cornerRadius: 8))
+                outputView(output)
+                    .simultaneousGesture(collapse)
             }
         }
         .padding(10)
         .background(.fill.quaternary.opacity(0.5), in: .rect(cornerRadius: 12))
+    }
+
+    /// A double-click on what's open closes it, wherever it was scrolled
+    /// to; dragging still selects.
+    private var collapse: some Gesture {
+        TapGesture(count: 2).onEnded { expanded = false }
+    }
+
+    @ViewBuilder
+    private func outputView(_ output: String) -> some View {
+        let cut = output.count > Self.shownCharacters
+        let shown = cut ? String(output.prefix(Self.shownCharacters)) : output
+        let text = Text(shown)
+            .font(.caption.monospaced())
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+        VStack(alignment: .leading, spacing: 4) {
+            if shown.utf8.lazy.filter({ $0 == 10 }).count > Self.boxedLines {
+                ScrollView { text }
+                    .frame(height: 320)
+                    .background(.fill.quinary, in: .rect(cornerRadius: 8))
+            } else {
+                text.background(.fill.quinary, in: .rect(cornerRadius: 8))
+            }
+            if cut {
+                HStack {
+                    Text("The first \(Self.shownCharacters.formatted()) of \(output.count.formatted()) characters")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Show All") { select(output) }
+                    .help("Open all of it to read and select; double-click the output to close it")
+                        .buttonStyle(.link)
+                        .font(.caption)
+                }
+            }
+        }
     }
 
     private var icon: String {
