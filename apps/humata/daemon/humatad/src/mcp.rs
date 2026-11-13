@@ -124,10 +124,14 @@ impl Server {
                     "protocolVersion": version,
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": "humata", "version": crate::VERSION},
-                    "instructions": "Humata is directing this session. Its board has the \
-                        project's tasks and their subtasks; keep the one you work on up to \
-                        date, and add subtasks as you find work. Answer each review thread \
-                        you're sent with reply_to_thread.",
+                    "instructions": "Humata is directing this session. board and read_item \
+                        show the project's tasks, subtasks and specs; you can't change them, \
+                        but propose_task and propose_spec_edit suggest changes the person \
+                        applies. ask_person asks them something and request_move asks them \
+                        to move your task once it's done. Answer each review thread you're \
+                        sent with reply_to_thread. search_sessions finds earlier work and \
+                        read_turn opens a hit; read_skill reads a project skill your \
+                        instructions list.",
                 })
             }
             "ping" => json!({}),
@@ -160,14 +164,65 @@ impl Server {
             "board" => self.board().await,
             "search_sessions" => {
                 let query = required(text("query"), "query")?;
+                // This session's project, unless asked for another or for
+                // every project.
+                let project_id = match text("project_id").filter(|id| !id.is_empty()) {
+                    Some(id) => id,
+                    None if arguments["everywhere"] == json!(true) => String::new(),
+                    None => self.session().await?.project_id,
+                };
                 let search = pb::Search {
                     query,
-                    project_id: text("project_id").unwrap_or_default(),
-                    limit: SEARCH_HITS,
+                    project_id,
+                    // One more than shown, to know if there are more.
+                    limit: SEARCH_HITS + 1,
                     ..pb::Search::default()
                 };
                 match self.ask(pb::request::Kind::Search(search)).await? {
-                    pb::response::Kind::SearchResults(results) => Ok(found(&results)),
+                    pb::response::Kind::SearchResults(mut results) => {
+                        let more = results.hits.len() > SEARCH_HITS as usize;
+                        results.hits.truncate(SEARCH_HITS as usize);
+                        let mut text = found(&results);
+                        if more {
+                            text.push_str(&format!(
+                                "There are more than {SEARCH_HITS} hits; add words or a time to narrow them.\n"
+                            ));
+                        }
+                        Ok(text)
+                    }
+                    other => Err(unexpected(&other)),
+                }
+            }
+            "read_turn" => {
+                let session_id = required(text("session_id"), "session_id")?;
+                let turn = arguments["turn"]
+                    .as_u64()
+                    .filter(|turn| *turn > 0)
+                    .ok_or_else(|| "give turn, a number from 1, from a search hit".to_owned())?;
+                let read = pb::ReadHistory {
+                    session_id: session_id.clone(),
+                };
+                match self.ask(pb::request::Kind::ReadHistory(read)).await? {
+                    pb::response::Kind::History(history) => {
+                        let event = text("event_id").unwrap_or_default();
+                        turn_text(&history.events, turn as u32, &event).ok_or_else(|| {
+                            format!(
+                                "session {session_id} has no turn {turn}; take it from a search hit"
+                            )
+                        })
+                    }
+                    other => Err(unexpected(&other)),
+                }
+            }
+            "read_skill" => {
+                let read = pb::ReadSkill {
+                    session_id: self.session.clone(),
+                    name: required(text("name"), "name")?,
+                };
+                match self.ask(pb::request::Kind::ReadSkill(read)).await? {
+                    pb::response::Kind::Skill(skill) => {
+                        Ok(format!("# Skill: {}\n\n{}", skill.name, skill.text.trim()))
+                    }
                     other => Err(unexpected(&other)),
                 }
             }
@@ -199,6 +254,9 @@ impl Server {
             // in Humata. So proposing works while the Mac is away.
             "propose_task" => {
                 let title = required(text("title"), "title")?;
+                if let Some(parent) = text("parent_id").filter(|id| !id.is_empty()) {
+                    self.check_item(&parent).await?;
+                }
                 Ok(format!(
                     "Proposed {title:?}. It reaches the board only if the person applies it, perhaps edited; don't work on it until then."
                 ))
@@ -208,10 +266,23 @@ impl Server {
                 let spec = arguments["spec"]
                     .as_str()
                     .is_some_and(|spec| !spec.trim().is_empty());
-                if !spec && text("title").is_none_or(|title| title.is_empty()) {
+                let replacements = replacements(arguments)?;
+                if spec && !replacements.is_empty() {
+                    return Err("give spec or replacements, not both".to_owned());
+                }
+                if !spec
+                    && replacements.is_empty()
+                    && text("title").is_none_or(|title| title.is_empty())
+                {
                     return Err(
-                        "give spec, the whole new spec in Markdown, or title, or both".to_owned(),
+                        "give spec, the whole new spec in Markdown, or replacements, or title"
+                            .to_owned(),
                     );
+                }
+                if let Some(current) = self.check_item(&item_id).await?
+                    && let Err(why) = replaced(&current, &replacements)
+                {
+                    return Err(why);
                 }
                 Ok(format!(
                     "Proposed a change to {item_id}. It's made only if the person applies it; until then read_item shows it as it was."
@@ -299,6 +370,25 @@ impl Server {
                 }
             }
             _ => Err(format!("humata has no tool {name:?}; see tools/list")),
+        }
+    }
+
+    /// Fails when the board has no item `id`, and gives its spec. While it
+    /// can't be read, as when the Mac is away, it goes unchecked.
+    async fn check_item(&self, id: &str) -> Result<Option<String>, String> {
+        let read = pb::ReadSpec {
+            session_id: self.session.clone(),
+            item_id: id.to_owned(),
+        };
+        match self.client.call(pb::request::Kind::ReadSpec(read)).await {
+            Ok(pb::response::Kind::Spec(spec)) => Ok(Some(spec.spec)),
+            Err(humata_wire::ClientError::Refused {
+                code: pb::ErrorCode::UnknownItem,
+                ..
+            }) => Err(format!(
+                "the board has no task or subtask {id}; take the id from board"
+            )),
+            _ => Ok(None),
         }
     }
 
@@ -455,6 +545,124 @@ fn found(results: &pb::SearchResults) -> String {
     text
 }
 
+/// The most of a turn read_turn gives, so it fits the agent's context.
+const TURN_TEXT: usize = 16 * 1024;
+/// The most of each tool's arguments or output in it.
+const TURN_PART: usize = 1500;
+
+/// Turn `turn` of `events` (counted from 1, as search hits count them) as
+/// an agent reads it. When it's too long, it starts at `event`, the hit.
+fn turn_text(events: &[pb::SessionEvent], turn: u32, event: &str) -> Option<String> {
+    use pb::session_event::Kind;
+    let mut at = 1;
+    let mut parts: Vec<(String, String)> = Vec::new();
+    for found in events {
+        if at == turn {
+            let part = match &found.kind {
+                Some(Kind::UserMessage(message)) => Some(format!("The person: {}", message.text)),
+                Some(Kind::AssistantMessage(message)) => Some(format!("Agent: {}", message.text)),
+                Some(Kind::ToolStarted(call)) => Some(format!(
+                    "Tool {}: {}",
+                    call.tool,
+                    cut(&call.arguments_json, TURN_PART)
+                )),
+                Some(Kind::ToolCompleted(done)) => Some(format!(
+                    "{}: {}",
+                    if done.success { "Output" } else { "Failed" },
+                    cut(&done.output, TURN_PART)
+                )),
+                _ => None,
+            };
+            if let Some(part) = part {
+                parts.push((found.id.clone(), part));
+            }
+        }
+        if matches!(found.kind, Some(Kind::TurnEnded(_))) {
+            at += 1;
+            if at > turn {
+                break;
+            }
+        }
+    }
+    if at < turn || (parts.is_empty() && at == turn && events.is_empty()) {
+        return None;
+    }
+    let total: usize = parts.iter().map(|(_, part)| part.len() + 1).sum();
+    let from = if total > TURN_TEXT {
+        parts.iter().position(|(id, _)| id == event).unwrap_or(0)
+    } else {
+        0
+    };
+    let mut text = String::new();
+    if from > 0 {
+        text.push_str("(Earlier in the turn left out.)\n");
+    }
+    for (_, part) in &parts[from..] {
+        if text.len() + part.len() > TURN_TEXT {
+            text.push_str("(The rest of the turn left out.)\n");
+            break;
+        }
+        text.push_str(part);
+        text.push('\n');
+    }
+    if text.is_empty() {
+        text.push_str("Nothing was said or done in this turn.");
+    }
+    Some(text)
+}
+
+fn cut(text: &str, most: usize) -> String {
+    if text.len() <= most {
+        return text.to_owned();
+    }
+    let mut end = most;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}… ({} bytes more)", &text[..end], text.len() - end)
+}
+
+/// The `replacements` of a spec edit: each `old_text` to `new_text`.
+pub(crate) fn replacements(arguments: &Value) -> Result<Vec<(String, String)>, String> {
+    let Some(listed) = arguments.get("replacements") else {
+        return Ok(Vec::new());
+    };
+    let bad = || "replacements must be a list of {old_text, new_text}".to_owned();
+    listed
+        .as_array()
+        .ok_or_else(bad)?
+        .iter()
+        .map(
+            |one| match (one["old_text"].as_str(), one["new_text"].as_str()) {
+                (Some(old), Some(new)) if !old.is_empty() => Ok((old.to_owned(), new.to_owned())),
+                _ => Err(bad()),
+            },
+        )
+        .collect()
+}
+
+/// `spec` with each replacement made, or why one can't be: its text must be
+/// there exactly once.
+pub(crate) fn replaced(spec: &str, replacements: &[(String, String)]) -> Result<String, String> {
+    let mut spec = spec.to_owned();
+    for (old, new) in replacements {
+        match spec.matches(old.as_str()).count() {
+            1 => spec = spec.replacen(old.as_str(), new, 1),
+            0 => {
+                return Err(format!(
+                    "the spec doesn't hold {old:?}; read_item it again and copy the text exactly"
+                ));
+            }
+            count => {
+                return Err(format!(
+                    "the spec holds {old:?} {count} times; give more of the text around it"
+                ));
+            }
+        }
+    }
+    Ok(spec)
+}
+
 fn required(value: Option<String>, field: &str) -> Result<String, String> {
     value
         .filter(|value| !value.is_empty())
@@ -521,7 +729,15 @@ fn tools() -> Value {
             "description": "Propose a new spec or title for a task or subtask. You can't change the board yourself: it changes only when the person applies your proposal; sessions working on it are told to read it again.",
             "inputSchema": object(json!({
                 "item_id": string("From board."),
-                "spec": string("The whole new spec, in Markdown; leave out to keep it."),
+                "spec": string("The whole new spec, in Markdown; leave out to keep it, or to give replacements."),
+                "replacements": {
+                    "type": "array",
+                    "description": "Changes to make to the spec as it is, instead of giving it whole: each old_text, there exactly once, becomes new_text.",
+                    "items": object(json!({
+                        "old_text": string("Copied exactly from the spec."),
+                        "new_text": string("What goes in its place."),
+                    }), &["old_text", "new_text"]),
+                },
                 "title": string("A new title; leave out to keep it."),
                 "note": string("What changed and why."),
             }), &["item_id"]),
@@ -557,11 +773,26 @@ fn tools() -> Value {
         },
         {
             "name": "search_sessions",
-            "description": "Search what was said and done in the sessions of this project and the others on this machine, and their review comments and specs: to find how something was done or decided before. Each hit names the session, turn and event.",
+            "description": "Search what was said and done in this project's sessions, and their review comments and specs: to find how something was done or decided before. Each hit names the session, turn and event; read_turn opens it.",
             "inputSchema": object(json!({
                 "query": string("Words to find, all of them. A time in it, such as \"last week\" or \"past 3 days\", narrows to then."),
-                "project_id": string("Only this project's sessions; defaults to every project on this machine."),
+                "project_id": string("Another project's sessions instead of this one's."),
+                "everywhere": {"type": "boolean", "description": "Every project's sessions instead of this one's."},
             }), &["query"]),
+        },
+        {
+            "name": "read_turn",
+            "description": "What was said and done in one turn of a session, from a search_sessions hit.",
+            "inputSchema": object(json!({
+                "session_id": string("From the hit."),
+                "turn": {"type": "integer", "minimum": 1, "description": "From the hit."},
+                "event_id": string("From the hit; where to start when the turn is long."),
+            }), &["session_id", "turn"]),
+        },
+        {
+            "name": "read_skill",
+            "description": "A project skill's text, by the name your instructions list it under. Read it before work it covers.",
+            "inputSchema": object(json!({"name": string("The skill's name.")}), &["name"]),
         },
     ])
 }
@@ -605,6 +836,49 @@ mod tests {
             client,
             session: session.to_owned(),
         }
+    }
+
+    fn said(id: &str, kind: pb::session_event::Kind) -> pb::SessionEvent {
+        pb::SessionEvent {
+            id: id.into(),
+            kind: Some(kind),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_turn_is_read_by_its_number_and_one_past_the_end_is_none() {
+        use pb::session_event::Kind;
+        let message = |id: &str, text: &str| {
+            said(
+                id,
+                Kind::UserMessage(pb::UserMessage {
+                    text: text.into(),
+                    ..Default::default()
+                }),
+            )
+        };
+        let ended = |id: &str| said(id, Kind::TurnEnded(pb::TurnEnded::default()));
+        let events = [
+            message("a", "first ask"),
+            ended("b"),
+            message("c", "second ask"),
+            ended("d"),
+        ];
+        let second = turn_text(&events, 2, "c").unwrap_or_default();
+        assert!(second.contains("second ask") && !second.contains("first ask"), "{second}");
+        assert_eq!(turn_text(&events, 4, ""), None);
+    }
+
+    #[test]
+    fn a_replacement_is_made_only_where_its_text_is_there_once() {
+        let edit = |old: &str| vec![(old.to_owned(), "Y".to_owned())];
+        assert_eq!(replaced("a X b", &edit("X")), Ok("a Y b".to_owned()));
+        assert!(replaced("a b", &edit("X")).is_err());
+        assert!(replaced("X X", &edit("X")).is_err());
+        let listed = json!({"replacements": [{"old_text": "", "new_text": "Y"}]});
+        assert!(replacements(&listed).is_err());
+        assert_eq!(replacements(&json!({})), Ok(Vec::new()));
     }
 
     #[tokio::test]

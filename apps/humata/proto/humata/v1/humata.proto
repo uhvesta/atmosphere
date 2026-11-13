@@ -218,6 +218,8 @@ message Request {
     GetSessionDefaults get_session_defaults = 106;
     // Sets the defaults for every project, or for one, which go over them.
     SetSessionDefaults set_session_defaults = 107;
+    // A project skill's text, for a session in the project.
+    ReadSkill read_skill = 108;
   }
 }
 
@@ -325,6 +327,7 @@ message Response {
     PluginsScanned plugins_scanned = 96;
     PluginList plugin_list = 97;
     SessionDefaults session_defaults = 98;
+    Skill skill = 99;
   }
 }
 
@@ -963,6 +966,11 @@ message SpecsSet {}
 message ReadSpec {
   string session_id = 1;
   string item_id = 2;
+}
+
+message ReadSkill {
+  string session_id = 1;
+  string name = 2;
 }
 
 message ForkSession {
@@ -1792,6 +1800,10 @@ message Usage {
   uint64 output_tokens = 3;
   // Copilot's premium requests; 0 for other backends.
   double premium_requests = 4;
+  // Of input_tokens, those read from the prompt cache and those written to
+  // it; 0 when the backend doesn't say.
+  uint64 cache_read_tokens = 5;
+  uint64 cache_write_tokens = 6;
 }
 
 // Where an item is on the board.

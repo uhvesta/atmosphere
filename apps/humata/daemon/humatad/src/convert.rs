@@ -104,11 +104,15 @@ pub fn event(event: &Event) -> pb::SessionEvent {
             input_tokens,
             output_tokens,
             premium_requests,
+            cache_read_tokens,
+            cache_write_tokens,
         } => Kind::Usage(pb::Usage {
             model: model.clone(),
             input_tokens: *input_tokens,
             output_tokens: *output_tokens,
             premium_requests: *premium_requests,
+            cache_read_tokens: *cache_read_tokens,
+            cache_write_tokens: *cache_write_tokens,
         }),
         EventKind::Checkpoint { snapshots } => Kind::Checkpoint(pb::Checkpoint {
             snapshots: wire_snapshots(snapshots),

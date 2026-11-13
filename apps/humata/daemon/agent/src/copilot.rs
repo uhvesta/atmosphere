@@ -788,6 +788,8 @@ impl Playing<'_> {
                 input_tokens: data["inputTokens"].as_u64().unwrap_or(0),
                 output_tokens: data["outputTokens"].as_u64().unwrap_or(0),
                 premium_requests: data["cost"].as_f64().unwrap_or(0.0),
+                cache_read_tokens: data["cacheReadTokens"].as_u64().unwrap_or(0),
+                cache_write_tokens: data["cacheWriteTokens"].as_u64().unwrap_or(0),
             },
             _ => return Ok(false),
         };

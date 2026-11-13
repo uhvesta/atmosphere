@@ -783,6 +783,8 @@ impl Playing<'_> {
                 + count("cache_read_input_tokens"),
             output_tokens: count("output_tokens"),
             premium_requests: 0.0,
+            cache_read_tokens: count("cache_read_input_tokens"),
+            cache_write_tokens: count("cache_creation_input_tokens"),
         })?;
         if event["is_error"].as_bool() == Some(true) {
             let errors = event["errors"]

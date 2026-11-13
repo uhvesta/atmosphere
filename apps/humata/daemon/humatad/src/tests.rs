@@ -3645,3 +3645,36 @@ async fn a_projects_session_defaults_go_over_every_projects_until_taken_out() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn a_session_reads_its_projects_skill_by_name_and_an_unknown_one_is_refused() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let made = project(&client, repository.path()).await;
+    let updated = client
+        .call(pb::request::Kind::UpdateProject(pb::UpdateProject {
+            project_id: made.id.clone(),
+            skills: Some(pb::Skills {
+                skills: vec![pb::Skill {
+                    name: "release".to_owned(),
+                    text: "Tag it.".to_owned(),
+                }],
+            }),
+            ..Default::default()
+        }))
+        .await;
+    assert!(updated.is_ok(), "{updated:?}");
+    let session = started(&client, start_in(&made.id)).await;
+    let read = |name: &str| {
+        client.call(pb::request::Kind::ReadSkill(pb::ReadSkill {
+            session_id: session.id.clone(),
+            name: name.to_owned(),
+        }))
+    };
+    let Ok(pb::response::Kind::Skill(skill)) = read("release").await else {
+        panic!("the skill isn't read")
+    };
+    assert_eq!(skill.text, "Tag it.");
+    assert!(read("deploy").await.is_err());
+}

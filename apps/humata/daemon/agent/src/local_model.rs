@@ -463,6 +463,8 @@ impl LocalModelRunner {
                         input_tokens: input,
                         output_tokens: output,
                         premium_requests: 0.0,
+                        cache_read_tokens: 0,
+                        cache_write_tokens: 0,
                     })?;
                 }
             }

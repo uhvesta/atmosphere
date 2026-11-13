@@ -885,6 +885,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_fork_keeps_its_parents_instructions_unless_given_its_own() {
+        let fixture = fixture(vec![rule("", vec![say("hi")])]);
+        let options = StartOptions {
+            name: "test".into(),
+            working_directory: fixture.work.path().to_owned(),
+            instructions: Some("Use tabs.".into()),
+            ..StartOptions::default()
+        };
+        let id = fixture.agent.start(options).await.expect("starts").id;
+        let kept = fixture
+            .agent
+            .fork(&id, ForkOptions::default())
+            .await
+            .expect("forked");
+        assert_eq!(kept.instructions.as_deref(), Some("Use tabs."));
+        let own = ForkOptions {
+            instructions: Some("Use spaces.".into()),
+            ..ForkOptions::default()
+        };
+        let replaced = fixture.agent.fork(&id, own).await.expect("forked");
+        assert_eq!(replaced.instructions.as_deref(), Some("Use spaces."));
+    }
+
+    #[tokio::test]
     async fn a_damaged_session_is_listed_with_why_and_can_be_removed() {
         let fixture = fixture(vec![rule("", vec![say("hi")])]);
         let kept = fixture.start().await;

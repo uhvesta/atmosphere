@@ -195,6 +195,12 @@ pub enum EventKind {
         input_tokens: u64,
         output_tokens: u64,
         premium_requests: f64,
+        /// Of `input_tokens`, those read from the prompt cache and those
+        /// written to it; 0 when the backend doesn't say.
+        #[serde(default)]
+        cache_read_tokens: u64,
+        #[serde(default)]
+        cache_write_tokens: u64,
     },
     /// The session's code at this point: each repository's snapshot, taken
     /// when its copy is made and at the end of every turn. A fork with the

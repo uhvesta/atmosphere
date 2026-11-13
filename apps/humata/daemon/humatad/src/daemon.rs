@@ -1406,6 +1406,10 @@ impl Daemon {
                 let spec = self.read_spec(read)?;
                 return Ok(Reply::Response(Response::Spec(spec)));
             }
+            Request::ReadSkill(read) => {
+                let skill = self.read_skill(read)?;
+                return Ok(Reply::Response(Response::Skill(skill)));
+            }
             Request::Search(search) => {
                 let results = self.search(std::mem::take(search), None).await?;
                 return Ok(Reply::Response(Response::SearchResults(results)));
@@ -1871,7 +1875,9 @@ impl Daemon {
             asked,
         };
         let mut sessions = self.list("").await?;
+        let every = sessions.sessions.clone();
         sessions.sessions.retain(|session| session.host == host);
+        let here = |id: &str| sessions.sessions.iter().any(|session| session.id == id);
         let in_project = |project: &str| {
             !project.is_empty()
                 && sessions
@@ -1896,6 +1902,13 @@ impl Daemon {
                 .sessions
                 .iter()
                 .any(|session| session.id == asked.session_id),
+            Some(Request::ReadSpec(read)) => here(&read.session_id),
+            Some(Request::ReadSkill(read)) => here(&read.session_id),
+            // A session another host runs, in a project of this host's, as
+            // search finds them.
+            Some(Request::ReadHistory(read)) => every
+                .iter()
+                .any(|session| session.id == read.session_id && in_project(&session.project_id)),
             Some(Request::Search(search)) => {
                 if !search.project_id.is_empty() && !in_project(&search.project_id) {
                     return Err(out_of_scope("another project's sessions"));

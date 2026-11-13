@@ -110,7 +110,11 @@ fn an_agent_in_one_project_finds_a_command_run_in_another() {
     humata.run(&["send", &ran, "run the tests", "--wait"]);
 
     let asking = session(&humata, &web, &script);
-    let found = search_as(root, &asking, serde_json::json!({"query": "cargo test"}));
+    let found = search_as(
+        root,
+        &asking,
+        serde_json::json!({"query": "cargo test", "everywhere": true}),
+    );
     let line = found
         .lines()
         .find(|line| line.contains("a tool call"))
@@ -130,6 +134,10 @@ fn an_agent_in_one_project_finds_a_command_run_in_another() {
         "{event} isn't the command in\n{history}"
     );
 
+    // By default only the asking session's project is searched.
+    let own = search_as(root, &asking, serde_json::json!({"query": "cargo test"}));
+    assert!(!own.contains(&ran), "{own}");
+
     // Only the project asked about, and a time before it ran finds nothing.
     let elsewhere = search_as(
         root,
@@ -140,7 +148,7 @@ fn an_agent_in_one_project_finds_a_command_run_in_another() {
     let earlier = search_as(
         root,
         &asking,
-        serde_json::json!({"query": "cargo yesterday"}),
+        serde_json::json!({"query": "cargo yesterday", "everywhere": true}),
     );
     assert!(!earlier.contains(&ran), "{earlier}");
 

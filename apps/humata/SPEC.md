@@ -995,15 +995,15 @@ turned on, and then deletes archived sessions after 45 days by default.
 
 #### T1 Tokens and agent tools
 
-- [ ] Local model: a message sent while a tool call runs doesn't split the
+- [x] Local model: a message sent while a tool call runs doesn't split the
   call from its result
-- [ ] Local model: a context budget shrinks old tool output at a stable
+- [x] Local model: a context budget shrinks old tool output at a stable
   point, and a full context says to fork or start anew
-- [ ] Local model: `read_file` takes an offset and limit, `edit_file`
+- [x] Local model: `read_file` takes an offset and limit, `edit_file`
   replaces text, shell output keeps its tail, a reply is one message
-- [ ] Skills listed by name with `read_skill`; specs in messages, so a
+- [x] Skills listed by name with `read_skill`; specs in messages, so a
   newer one replaces the old; a fork keeps its parent's instructions
-- [ ] MCP: `read_turn` opens a search hit; search defaults to the session's
+- [x] MCP: `read_turn` opens a search hit; search defaults to the session's
   project and says when there's more; "Mac away" errors say not to retry;
   the instructions match the tools; proposals check their ids and take
   replacements; Claude's usage keeps cache reads and writes apart

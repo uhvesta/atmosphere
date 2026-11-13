@@ -317,6 +317,9 @@ pub enum StoreError {
     #[error("there is no task or subtask {id:?}; list the project's items to find its id")]
     UnknownItem { id: String },
 
+    #[error("the project has no skill {name:?}; the session's instructions list the ones it has")]
+    UnknownSkill { name: String },
+
     #[error(
         "humatad has never seen session {id:?}; list sessions to find its id, or check that its host is reachable"
     )]
@@ -1041,12 +1044,12 @@ pub enum RelayError {
     NotATool,
 
     #[error(
-        "Humata on the Mac isn't connected to this host, so the board and review threads can't be reached; open Humata on the Mac and try again, the session's work is kept"
+        "Humata on the Mac isn't connected to this host, so the board, review threads and skills can't be reached; don't call this again now, go on with what you have and ask again later, the session's work is kept"
     )]
     NotWatched,
 
     #[error(
-        "Humata on the Mac didn't answer within {seconds}s; it may have lost its connection to this host, so try again"
+        "Humata on the Mac didn't answer within {seconds}s, so it has likely lost its connection to this host; don't call this again now, go on with what you have and ask again later"
     )]
     TimedOut { seconds: u64 },
 

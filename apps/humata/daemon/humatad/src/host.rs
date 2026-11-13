@@ -814,6 +814,7 @@ impl Host {
             | Request::Propose(_)
             | Request::UpdateProject(_)
             | Request::ReadSpec(_)
+            | Request::ReadSkill(_)
             | Request::LinkCommands(_)
             | Request::Search(_)
             | Request::ListPullRequests(_)

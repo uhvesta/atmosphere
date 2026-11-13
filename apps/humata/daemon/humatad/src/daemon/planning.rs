@@ -24,7 +24,8 @@ impl Daemon {
             Reply::Response(pb::response::Kind::History(history)) => history.events,
             _ => Vec::new(),
         };
-        self.decided(session, proposed(&events, session))
+        let spec_of = |id: &str| self.store.item(id).ok().map(|item| item.fields.spec);
+        self.decided(session, proposed(&events, session, spec_of))
     }
 
     /// What outside agents proposed for `project`'s board, oldest first,
@@ -363,6 +364,28 @@ impl Daemon {
         Ok(())
     }
 
+    /// The text of a skill of `session`'s project.
+    pub(super) fn read_skill(&self, read: &pb::ReadSkill) -> Result<pb::Skill, DaemonError> {
+        let unknown = || crate::error::StoreError::UnknownSkill {
+            name: read.name.clone(),
+        };
+        let project = self
+            .store
+            .placement(&read.session_id)?
+            .and_then(|placement| placement.project)
+            .ok_or_else(unknown)?;
+        let project = self.store.project(&project)?;
+        let skill = project
+            .skills
+            .iter()
+            .find(|skill| skill.name == read.name.trim())
+            .ok_or_else(unknown)?;
+        Ok(pb::Skill {
+            name: skill.name.clone(),
+            text: skill.text.clone(),
+        })
+    }
+
     /// The spec `item` of `session`'s board.
     pub(super) fn read_spec(&self, read: &pb::ReadSpec) -> Result<pb::Spec, DaemonError> {
         let item = self.store.item(&read.item_id)?;
@@ -410,8 +433,9 @@ impl Daemon {
                     )
             });
             let text = format!(
-                "The spec of {:?} changed. Read it again with read_item (id {}) before you go on, and say if it changes your plan.",
-                item.fields.title, item.id
+                "The spec of {:?} (id {}) changed. This is the whole new spec; it replaces the one you read \
+                 before. Say if it changes your plan.\n\n{}",
+                item.fields.title, item.id, item.fields.spec
             );
             if busy {
                 let message = pb::request::Kind::SendMessage(pb::SendMessage {
@@ -449,9 +473,10 @@ fn spec(item: &Item) -> pb::Spec {
 }
 
 /// What a session's instructions are made of, in order: its project's
-/// instructions, its own, its project's own skills in full, the other
-/// skills it gets by name, description and path, then the specs it reads,
-/// its task's before its subtask's.
+/// instructions, its own, its project's own skills by name and what
+/// they're for, to read with `read_skill`, the other skills it gets by
+/// name, description and path, then the specs it reads, its task's before
+/// its subtask's.
 pub(super) fn instructions(
     project: &Project,
     own: &str,
@@ -474,15 +499,20 @@ pub(super) fn instructions(
         section(own);
     }
     let projects = pb::SkillOrigin::Project as i32;
-    for skill in skills.iter().filter(|skill| skill.origin == projects) {
-        if let Some(text) = project
-            .skills
-            .iter()
-            .find(|own| own.name == skill.name)
-            .map(|own| own.text.trim())
-        {
-            section(&format!("# Skill: {}\n\n{text}", skill.name));
-        }
+    let own: Vec<String> = skills
+        .iter()
+        .filter(|skill| skill.origin == projects)
+        .filter(|skill| project.skills.iter().any(|own| own.name == skill.name))
+        .map(|skill| match skill.description.trim() {
+            "" => format!("- {}", skill.name),
+            about => format!("- {}: {about}", skill.name),
+        })
+        .collect();
+    if !own.is_empty() {
+        section(&format!(
+            "# Project skills\n\nBefore work one of these covers, read it with the read_skill tool.\n\n{}",
+            own.join("\n")
+        ));
     }
     let listed: Vec<String> = skills
         .iter()
@@ -527,7 +557,15 @@ fn spec_section(heading: &str, item: &Item) -> String {
 /// The proposals in `events`: calls to `propose_task` and
 /// `propose_spec_edit`, by whatever name the agent's CLI gives them, that
 /// succeeded.
-fn proposed(events: &[pb::SessionEvent], session: &str) -> Vec<pb::Proposal> {
+///
+/// A spec edit given as replacements gets them made in the spec as
+/// `spec_of` gives it now; once they no longer fit, as after it's applied,
+/// it says so and proposes no spec.
+fn proposed(
+    events: &[pb::SessionEvent],
+    session: &str,
+    spec_of: impl Fn(&str) -> Option<String>,
+) -> Vec<pb::Proposal> {
     use pb::session_event::Kind;
     let mut proposals: Vec<(pb::Proposal, bool)> = Vec::new();
     let mut turn = 0;
@@ -535,7 +573,7 @@ fn proposed(events: &[pb::SessionEvent], session: &str) -> Vec<pb::Proposal> {
         match &event.kind {
             Some(Kind::TurnStarted(_)) => turn += 1,
             Some(Kind::ToolStarted(call)) => {
-                if let Some(mut proposal) = proposal(call) {
+                if let Some(mut proposal) = proposal(call, &spec_of) {
                     proposal.session_id = session.to_owned();
                     proposal.turn = turn.max(1);
                     proposal.time_unix_ms = event.time_unix_ms;
@@ -559,7 +597,10 @@ fn proposed(events: &[pb::SessionEvent], session: &str) -> Vec<pb::Proposal> {
         .collect()
 }
 
-fn proposal(call: &pb::ToolStarted) -> Option<pb::Proposal> {
+fn proposal(
+    call: &pb::ToolStarted,
+    spec_of: &impl Fn(&str) -> Option<String>,
+) -> Option<pb::Proposal> {
     let kind = if call.tool.ends_with("propose_task") {
         pb::ProposalKind::Task
     } else if call.tool.ends_with("propose_spec_edit") {
@@ -575,7 +616,7 @@ fn proposal(call: &pb::ToolStarted) -> Option<pb::Proposal> {
             .unwrap_or_default()
             .to_owned()
     };
-    let proposal = pb::Proposal {
+    let mut proposal = pb::Proposal {
         id: call.call_id.clone(),
         kind: kind.into(),
         title: text("title"),
@@ -585,6 +626,20 @@ fn proposal(call: &pb::ToolStarted) -> Option<pb::Proposal> {
         note: text("note"),
         ..Default::default()
     };
+    let replacements = crate::mcp::replacements(&arguments).unwrap_or_default();
+    if kind == pb::ProposalKind::SpecEdit && !replacements.is_empty() {
+        match spec_of(&proposal.item_id).map(|spec| crate::mcp::replaced(&spec, &replacements)) {
+            Some(Ok(spec)) => proposal.spec = spec,
+            _ => {
+                if !proposal.note.is_empty() {
+                    proposal.note.push_str("\n\n");
+                }
+                proposal
+                    .note
+                    .push_str("Its changes to the spec no longer fit the spec as it is now.");
+            }
+        }
+    }
     let complete = match kind {
         pb::ProposalKind::SpecEdit => !proposal.item_id.is_empty(),
         _ => !proposal.title.is_empty(),
@@ -645,13 +700,17 @@ mod tests {
         let order = [
             at("Use tabs."),
             at("Be brief."),
-            at("Tag it."),
+            at("release"),
             at(".claude/skills/lint/SKILL.md"),
             at("Let people sign in."),
             at("The form."),
         ];
         assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
         assert!(order.iter().all(|at| *at != usize::MAX), "{text}");
+        assert!(
+            !text.contains("Tag it."),
+            "a project skill is read when needed: {text}"
+        );
 
         let alone = instructions(&project, "", &[], Some(&subtask), None);
         assert!(!alone.contains("Let people sign in."), "{alone}");
@@ -703,7 +762,7 @@ mod tests {
             call("e", "board", "{}"),
             done("e", true),
         ];
-        let found = proposed(&events, "s");
+        let found = proposed(&events, "s", |_| None);
         let ids: Vec<&str> = found.iter().map(|proposal| proposal.id.as_str()).collect();
         assert_eq!(ids, ["a", "c"]);
         assert_eq!(found[0].kind(), pb::ProposalKind::Task);
