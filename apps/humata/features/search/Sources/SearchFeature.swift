@@ -39,6 +39,9 @@ package struct SearchFeature {
         /// The text the last search was for, so the field writing back the
         /// same text doesn't search it again.
         var queried = ""
+        /// Numbers each search, so only the latest one's results show:
+        /// effects can start out of the order they were asked in.
+        var request = 0
 
         package init(projects: [Project] = [], projectID: String? = nil) {
             self.projects = projects
@@ -50,11 +53,13 @@ package struct SearchFeature {
         case binding(BindingAction<State>)
         /// The person pressed Return: search now.
         case submitted
+        /// Typing paused for the search numbered `request`.
+        case due(request: Int)
         /// Searched: plain, or with `related`.
-        case found(SearchResults, related: [String])
+        case found(request: Int, SearchResults, related: [String])
         /// Both searches are done.
-        case finished
-        case failed(String)
+        case finished(request: Int)
+        case failed(request: Int, String)
         case hitTapped(SearchHit)
         case delegate(Delegate)
 
@@ -72,8 +77,6 @@ package struct SearchFeature {
     @Dependency(\.continuousClock) var clock
     @Dependency(\.date) var date
     @Dependency(\.calendar) var calendar
-
-    private enum CancelID { case search }
 
     /// How long typing pauses before it's searched.
     static let pause = Duration.milliseconds(300)
@@ -96,7 +99,18 @@ package struct SearchFeature {
             case .binding:
                 return .none
 
-            case .found(let results, let related):
+            case .due(let request):
+                guard request == state.request else { return .none }
+                return run(state)
+
+            // A where clause holds for only the pattern before it, so each has one.
+            case .found(let request, _, _) where request != state.request,
+                .finished(let request) where request != state.request,
+                .failed(let request, _) where request != state.request:
+                // For text, a period or a project changed since.
+                return .none
+
+            case .found(_, let results, let related):
                 state.hits = results.hits
                 state.words = results.words
                 state.namedSince = results.since
@@ -110,7 +124,7 @@ package struct SearchFeature {
                 state.isSearching = false
                 return .none
 
-            case .failed(let message):
+            case .failed(_, let message):
                 state.isSearching = false
                 state.searched = true
                 state.failure = message
@@ -135,30 +149,39 @@ package struct SearchFeature {
         let text = state.text.trimmingCharacters(in: .whitespacesAndNewlines)
         state.queried = text
         state.searched = false
+        state.request += 1
         guard !text.isEmpty else {
             state.hits = []
             state.related = []
             state.isSearching = false
             state.failure = nil
-            return .cancel(id: CancelID.search)
+            return .none
         }
         state.isSearching = true
+        guard let pause else { return run(state) }
+        let request = state.request
+        return .run { send in
+            try await clock.sleep(for: pause)
+            await send(.due(request: request))
+        }
+    }
+
+    /// Searches the text plainly, then with related words.
+    private func run(_ state: State) -> Effect<Action> {
+        let (request, text) = (state.request, state.queried)
         let query = SearchQuery(text: text, projectID: state.projectID, since: since(state.period))
         return .run { send in
-            if let pause { try await clock.sleep(for: pause) }
-            await send(.found(try await daemon.search(query), related: []))
+            await send(.found(request: request, try await daemon.search(query), related: []))
             let related = await relatedWords.related(text)
             var widened = query
             widened.related = related
             if !related.isEmpty {
-                await send(.found(try await daemon.search(widened), related: related))
+                await send(.found(request: request, try await daemon.search(widened), related: related))
             }
-            await send(.finished)
+            await send(.finished(request: request))
         } catch: { error, send in
-            guard !(error is CancellationError) else { return }
-            await send(.failed(error.localizedDescription))
+            await send(.failed(request: request, error.localizedDescription))
         }
-        .cancellable(id: CancelID.search, cancelInFlight: true)
     }
 
     private func since(_ period: Period) -> Date? {

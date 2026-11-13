@@ -107,6 +107,44 @@ final class ReviewFeatureTests: XCTestCase {
         XCTAssertNotNil(store.state.commenting)
     }
 
+    func testATurnsChangesThatComeLateDontReplaceEverythingPickedAfter() async throws {
+        let (daemon, session) = try await session()
+        let (firstAsked, asked) = AsyncStream.makeStream(of: Void.self)
+        let (firstAnswers, answer) = AsyncStream.makeStream(of: Void.self)
+        let calls = LockIsolated(0)
+        var client = daemon.client
+        let changes = client.changes
+        client.changes = { session, query in
+            let call = calls.withValue {
+                $0 += 1
+                return $0
+            }
+            if call == 1 {
+                asked.yield()
+                for await _ in firstAnswers { break }
+            }
+            return try await changes(session, query)
+        }
+        let store = TestStore(initialState: ReviewFeature.State(sessionID: session.id, turns: 1)) {
+            ReviewFeature()
+        } withDependencies: {
+            $0.daemon = client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.rangePicked(.turn))
+        for await _ in firstAsked { break }
+        await store.send(.rangePicked(.session))
+        await store.receive(\.loaded)
+        answer.yield()
+        // The turn's, which changes nothing.
+        await store.receive(\.loaded)
+
+        XCTAssertTrue(store.state.canComment)
+        XCTAssertFalse(store.state.loading)
+        XCTAssertEqual(store.state.selected, sum)
+    }
+
     func testRevertingAsksFirstThenThrowsTheChangeAway() async throws {
         let (daemon, session) = try await session()
         let store = store(daemon, session)

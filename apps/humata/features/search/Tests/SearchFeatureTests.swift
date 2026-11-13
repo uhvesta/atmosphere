@@ -126,4 +126,49 @@ final class SearchFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.hits, [])
         XCTAssertFalse(store.state.isSearching)
     }
+
+    func testASlowEarlierSearchDoesNotReplaceTheResultsOfALaterOne() async throws {
+        let daemon = daemon()
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, approvalMode: .allowEverything))
+        try await daemon.client.send(session.id, "hello", .enqueue)
+        let (firstAsked, asked) = AsyncStream.makeStream(of: Void.self)
+        let (firstAnswers, answer) = AsyncStream.makeStream(of: Void.self)
+        let calls = LockIsolated(0)
+        var client = daemon.client
+        let search = client.search
+        client.search = { query in
+            let call = calls.withValue {
+                $0 += 1
+                return $0
+            }
+            if call == 1 {
+                asked.yield()
+                for await _ in firstAnswers { break }
+            }
+            return try await search(query)
+        }
+        let store = TestStore(initialState: SearchFeature.State()) {
+            SearchFeature()
+        } withDependencies: {
+            $0.daemon = client
+            $0.calendar = Self.calendar
+            $0.continuousClock = TestClock()
+            $0.date = .constant(daemon.start)
+        }
+        store.exhaustivity = .off
+
+        await store.send(\.binding.text, "cargo")
+        await store.send(.submitted)
+        for await _ in firstAsked { break }
+        await store.send(\.binding.text, "hello")
+        await store.send(.submitted)
+        await store.receive(\.finished)
+        answer.yield()
+        // The slow one's own end, which changes nothing.
+        await store.receive(\.finished)
+        await store.skipInFlightEffects()
+
+        XCTAssertEqual(store.state.words, "hello")
+        XCTAssertFalse(store.state.isSearching)
+    }
 }

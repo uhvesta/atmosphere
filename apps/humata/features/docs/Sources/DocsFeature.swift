@@ -127,7 +127,7 @@ package struct DocsFeature {
     @Dependency(\.daemon) var daemon
     @Dependency(\.uuid) var uuid
 
-    private enum CancelID { case list, read }
+    private enum CancelID { case list }
 
     package init() {}
 
@@ -255,7 +255,9 @@ package struct DocsFeature {
         } catch: { error, send in
             await send(.failed(error.localizedDescription))
         }
-        .cancellable(id: CancelID.read, cancelInFlight: true)
+        // Not cancelled by the next read: effects start out of the order
+        // they're asked in, so an older read could cancel a newer one.
+        // `.read` drops what's for a file no longer picked.
     }
 
     /// The lines picked, as the quote.

@@ -58,6 +58,9 @@ package struct ReviewFeature {
         /// Replies being written, by thread.
         package var replies: [ReviewThread.ID: String] = [:]
         package var loading = false
+        /// Numbers each load, so only the latest one's changes show: effects
+        /// can start out of the order they were asked in.
+        var request = 0
         package var sending = false
         @Presents package var alert: AlertState<Action.Alert>?
 
@@ -127,7 +130,8 @@ package struct ReviewFeature {
         case binding(BindingAction<State>)
         /// The view appeared, or the session's turn ended; reads it all again.
         case refresh
-        case loaded([RepositoryChanges], [ReviewThread])
+        case loaded(request: Int, [RepositoryChanges], [ReviewThread])
+        case loadFailed(request: Int, String)
         case wholeLoaded(FileDiff?)
         case failed(String)
         case rangePicked(RangeKind)
@@ -162,8 +166,6 @@ package struct ReviewFeature {
 
     @Dependency(\.daemon) var daemon
 
-    private enum CancelID { case load }
-
     package init() {}
 
     package var body: some ReducerOf<Self> {
@@ -176,7 +178,16 @@ package struct ReviewFeature {
             case .refresh:
                 return load(&state)
 
-            case .loaded(let repositories, let threads):
+            // A where clause holds for only the pattern before it, so each has one.
+            case .loaded(let request, _, _) where request != state.request,
+                .loadFailed(let request, _) where request != state.request:
+                // For another range or context than the one picked now.
+                return .none
+
+            case .loadFailed(_, let message):
+                return .send(.failed(message))
+
+            case .loaded(_, let repositories, let threads):
                 state.loading = false
                 state.repositories = repositories
                 state.threads = IdentifiedArray(uniqueElements: threads)
@@ -373,16 +384,16 @@ package struct ReviewFeature {
 
     private func load(_ state: inout State) -> Effect<Action> {
         state.loading = true
-        let session = state.sessionID
+        state.request += 1
+        let (request, session) = (state.request, state.sessionID)
         let query = ChangesQuery(range: state.range, context: state.context)
         return .run { send in
             async let changes = daemon.changes(session, query)
             async let threads = daemon.threads(session)
-            await send(.loaded(try await changes, try await threads))
+            await send(.loaded(request: request, try await changes, try await threads))
         } catch: { error, send in
-            await send(.failed(error.localizedDescription))
+            await send(.loadFailed(request: request, error.localizedDescription))
         }
-        .cancellable(id: CancelID.load, cancelInFlight: true)
     }
 
     private func loadWhole(_ state: State) -> Effect<Action> {

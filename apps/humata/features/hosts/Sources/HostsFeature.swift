@@ -383,7 +383,7 @@ package struct HostsFeature {
         .run { send in
             await send(.recoveriesLoaded(id, (try? await daemon.recoveries()) ?? []))
         }
-        .cancellable(id: RecoveriesLoad.id, cancelInFlight: true)
+        .cancellable(id: RecoveriesLoad.host(id), cancelInFlight: true)
     }
 
     /// Without an answer, nothing about them shows.
@@ -400,7 +400,7 @@ package struct HostsFeature {
         .run { send in
             await send(.skippedLoaded(id, (try? await daemon.skipped(id.isEmpty ? nil : id)) ?? []))
         }
-        .cancellable(id: SkippedLoad.id, cancelInFlight: true)
+        .cancellable(id: SkippedLoad.host(id), cancelInFlight: true)
     }
 
     private func check(_ id: RemoteHost.ID, in state: inout State) -> Effect<Action> {
@@ -413,8 +413,10 @@ package struct HostsFeature {
     }
 }
 
-private enum SkippedLoad: Hashable { case id }
-private enum RecoveriesLoad: Hashable { case id }
+// Keyed by host: a load for one host that starts late can't cancel the
+// load for the host picked after it.
+private enum SkippedLoad: Hashable { case host(RemoteHost.ID) }
+private enum RecoveriesLoad: Hashable { case host(RemoteHost.ID) }
 
 extension HostsFeature.Destination.State: Equatable {}
 

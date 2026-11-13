@@ -1258,11 +1258,10 @@ not an OAuth app.
   release later.
 - [x] The daemon uses `gh`'s token when This Mac has none, tested against
   stand-in `gh` scripts: signed in, signed out, printing nothing, missing
-- [ ] The release command signs, notarizes and uploads a draft (written;
-  its first run waits for the owner to publish, with `gh auth login` and
-  the Developer ID certificate on this Mac)
-- [ ] The check downloads, verifies and runs the release before publishing
-  (written; runs as part of that first release)
+- [x] The release command signs, notarizes and uploads a draft; it
+  shipped humata-v0.1.0
+- [x] The check downloads, verifies and runs the release before publishing;
+  humata-v0.1.0 passed it
 
 **Done when:** a release is on GitHub whose download Gatekeeper accepts
 and whose daemon and command line run.
