@@ -225,7 +225,9 @@ public struct MessageField: View {
     @Binding var text: String
     let prompt: Text?
     @Environment(\.dynamicTypeSize) private var typeSize
-    /// Typing goes here as the chat appears, with no click first.
+    /// Typing goes here as the chat appears, with no click first, on the
+    /// Mac. On the iPhone the keyboard waits for a tap, so opening a chat
+    /// to read it doesn't cover the thread.
     @FocusState private var focused: Bool
     let token: String?
     let removeToken: () -> Void
@@ -259,7 +261,11 @@ public struct MessageField: View {
                 // At the largest text, three lines leave the thread room.
                 .lineLimit(typeSize.isAccessibilitySize ? 1...3 : 1...8)
                 .focused($focused)
-                .onAppear { focused = true }
+                .onAppear {
+                    #if os(macOS)
+                        focused = true
+                    #endif
+                }
                 .onSubmit(submit)
                 .overlay(alignment: .leading) {
                     // The mark keeps the field from showing its prompt.

@@ -24,6 +24,8 @@ final class RootSnapshotTests: XCTestCase {
             _ = RootFeature().reduce(
                 into: &state, action: .updated(Update(workspace: workspace, fixes: [.reopenedParent(task: review.id)])))
         }
+        // Today as someone who already saw the swipe tip sees it.
+        state.today.list.offersSwipeTip = false
         return state
     }
 
