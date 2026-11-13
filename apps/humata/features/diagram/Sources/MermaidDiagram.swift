@@ -31,7 +31,7 @@ package struct MermaidDiagram: View {
                 } label: {
                     Image(nsImage: image)
                         .resizable()
-                        .aspectRatio(contentMode: .fit)
+                        .scaledToFit()
                         .frame(maxWidth: image.size.width)
                 }
                 .buttonStyle(.plain)

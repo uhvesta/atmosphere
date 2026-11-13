@@ -109,7 +109,7 @@ final class TerminalsFeatureTests: XCTestCase {
         } withDependencies: {
             $0.daemon = daemon.client
             $0.daemon.typeInTerminal = { _, data in
-                let keys = String(decoding: data, as: UTF8.self)
+                let keys = String(bytes: data, encoding: .utf8) ?? ""
                 // The first is slow to arrive.
                 if keys == "a" { try await Task.sleep(for: .milliseconds(50)) }
                 arrived.withValue { $0.append(keys) }

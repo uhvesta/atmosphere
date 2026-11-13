@@ -406,9 +406,11 @@ package struct SessionView: View {
                     canStartWork: store.session.planning
                 ) { store.send(.proposals($0)) }
             } else {
-                ToolCallView(call: call, select: { selecting = TextToSelect(text: $0) }) { request, approved in
-                    store.send(.answerPermission(requestID: request, approved: approved))
-                }
+                ToolCallView(
+                    call: call, select: { selecting = TextToSelect(text: $0) },
+                    answer: { request, approved in
+                        store.send(.answerPermission(requestID: request, approved: approved))
+                    })
                 if let failure = store.proposals.listFailure, store.state.proposes(call.id) {
                     Label("Couldn’t read this proposal: \(failure)", systemImage: "exclamationmark.triangle")
                         .font(.caption)
@@ -602,7 +604,7 @@ struct ToolCallView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button("Show All") { select(output) }
-                    .help("Open all of it to read and select; double-click the output to close it")
+                        .help("Open all of it to read and select; double-click the output to close it")
                         .buttonStyle(.link)
                         .font(.caption)
                 }

@@ -215,7 +215,8 @@ final class MacFlowSnapshotTests: XCTestCase {
         try await until { store.sidebar.sessions.count == 1 && store.daemon == .running }
         store.send(.sidebar(.selected(.session(session.id))))
         try await until { (store.session?.items.count ?? 0) >= 2 }
-        let source = "graph LR\n  App[Humata] -->|socket| Daemon[humatad]\n  Daemon -->|stdin| Agent[Claude Code]\n"
+        let source =
+            "graph LR\n  App[Humata] -->|socket| Daemon[humatad]\n  Daemon -->|stdin| Agent[Claude Code]\n"
             + "  Agent -->|events| Daemon\n  Daemon -->|watch| App"
         _ = try await MermaidRenderer.shared.image(source, dark: false)
         try await Task.sleep(for: .milliseconds(300))
