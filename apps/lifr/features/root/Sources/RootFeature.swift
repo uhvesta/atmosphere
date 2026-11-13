@@ -160,6 +160,9 @@ package struct RootFeature {
         package var isSettingsShown = false
         /// What the last sync fixed, until dismissed.
         package var syncBanner: SyncBanner?
+        /// What VoiceOver says next, such as that a sync asked for worked or
+        /// that tasks were closed elsewhere.
+        package var announcement: Announcement?
         /// Syncs in a row that failed for a reason the person can act on.
         package var syncFailures = 0
         /// The sync failure whose banner the person closed.
@@ -474,6 +477,7 @@ package struct RootFeature {
         /// The Mac's File › Sync Now.
         case syncNowTapped
         case syncNowFailed(String)
+        case syncNowSucceeded
         /// The banner's Review.
         case syncReviewTapped
         case syncReview(PresentationAction<SyncReviewFeature.Action>)
@@ -751,6 +755,9 @@ package struct RootFeature {
                 guard update.number > state.saves.latest || !update.fixes.isEmpty else { return .none }
                 if !update.fixes.isEmpty {
                     state.syncBanner = SyncBanner(update.fixes, in: update.workspace)
+                }
+                if let before = state.workspace, let closed = Announcement.closed(from: before, to: update.workspace) {
+                    state.announce(closed)
                 }
                 // Another device's records arrived during onboarding:
                 // there's nothing left to set up.
@@ -1155,8 +1162,14 @@ package struct RootFeature {
                 return .run { [sync] send in
                     if case .failed(let error) = await sync.sync().status {
                         await send(.syncNowFailed(error.description))
+                    } else {
+                        await send(.syncNowSucceeded)
                     }
                 }
+
+            case .syncNowSucceeded:
+                state.announce(String(localized: "Synced"))
+                return .none
 
             case .syncNowFailed(let reason):
                 state.notice = AlertState {
@@ -1877,6 +1890,35 @@ private enum ShownList {
         case .later: self = .later
         case .logbook: self = .logbook
         default: return nil
+        }
+    }
+}
+
+extension RootFeature.State {
+    /// Has VoiceOver say `message`, even when it's the same as last time.
+    fileprivate mutating func announce(_ message: String) {
+        announcement = Announcement(number: (announcement?.number ?? 0) + 1, message: message)
+    }
+}
+
+/// A message for VoiceOver, numbered so the same words twice are said twice.
+package struct Announcement: Equatable, Sendable {
+    package var number: Int
+    package var message: String
+
+    /// What says that tasks open in `before` were closed or deleted
+    /// elsewhere by `after`, or `nil` when none were.
+    static func closed(from before: Workspace, to after: Workspace) -> String? {
+        let closed = before.tasks.values.filter { task in
+            guard task.deletedAt == nil, task.isOpen, let now = after.tasks[task.id] else { return false }
+            return now.deletedAt != nil || !now.isOpen
+        }
+        switch closed.count {
+        case 0: return nil
+        case 1: return closed.first.map { String(localized: "“\($0.title)” closed elsewhere.") }
+        default:
+            let text = AttributedString(localized: "^[\(closed.count) task](inflect: true) closed elsewhere.")
+            return String(text.characters)
         }
     }
 }

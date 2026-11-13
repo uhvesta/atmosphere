@@ -483,6 +483,24 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(syncs.value, 2)
     }
 
+    func testOnlyAPullThatSyncsCounts() async {
+        let store = await load()
+        let results = LockIsolated<[SyncState.Status]>([.idle, .failed(.quotaExceeded), .idle])
+        var sync = SyncClient.off
+        sync.sync = { SyncState(status: results.withValue { $0.removeFirst() }) }
+        store.dependencies.sync = sync
+        var counts: [Int] = []
+
+        for _ in 0..<3 {
+            await store.send(.pulled)
+            await store.skipReceivedActions()
+            if store.state.alert != nil { await store.send(.alert(.dismiss)) }
+            counts.append(store.state.syncs)
+        }
+
+        XCTAssertEqual(counts, [1, 1, 2])
+    }
+
     func testPullingTellsASyncFailureAgainAfterASyncWorksOrItFailsAnotherWay() async {
         let store = await load()
         let results = LockIsolated<[SyncState.Status]>([

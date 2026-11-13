@@ -1279,6 +1279,51 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertNotNil(store.state.notice)
     }
 
+    func testSyncNowThatWorksIsSaid() async {
+        let store = makeStore(.mac)
+
+        await store.send(.syncNowTapped)
+        await store.receive(\.syncNowSucceeded)
+
+        XCTAssertNotNil(store.state.announcement)
+        XCTAssertNil(store.state.notice)
+    }
+
+    func testTasksClosedElsewhereAreSaidOnce() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let swim = records.task("Swim", in: health, due: 0)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = makeStore(.phone, store: client)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        XCTAssertNil(store.state.announcement)
+
+        // Another device closes one, then the same records arrive again.
+        let closed = try await withDependencies {
+            $0.uuid = UUIDGenerator { UUID() }
+            $0.date.now = now
+        } operation: {
+            try await client.setStatus(.done, run.id)
+        }
+        await store.send(.updated(Update(workspace: closed.workspace, number: closed.number)))
+        let first = try XCTUnwrap(store.state.announcement)
+        XCTAssertTrue(first.message.contains("Run"))
+        XCTAssertFalse(first.message.contains("Swim"))
+        await store.send(.updated(Update(workspace: closed.workspace, number: closed.number + 1)))
+        XCTAssertEqual(store.state.announcement, first)
+
+        // A change that closes nothing says nothing.
+        let renamed = try await withDependencies {
+            $0.uuid = UUIDGenerator { UUID() }
+            $0.date.now = now
+        } operation: {
+            try await client.edit(swim.id, Workspace.TaskEdit(title: "Swim 1 km"))
+        }
+        await store.send(.updated(Update(workspace: renamed.workspace, number: renamed.number + 1)))
+        XCTAssertEqual(store.state.announcement, first)
+        await task.cancel()
+    }
+
     func testTryAgainAfterAFailedFirstLoadLoadsEveryScreen() async {
         records.task("Run", in: health, due: 0)
         let workspace = records.workspace

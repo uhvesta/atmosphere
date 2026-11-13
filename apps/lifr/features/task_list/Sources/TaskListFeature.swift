@@ -32,6 +32,9 @@ package struct TaskListFeature {
         /// Why sync failed, as a pull last said, so the same failure isn't
         /// told on every pull.
         package var explainedSync: String?
+        /// How many pulls have finished syncing, so the view can say so
+        /// and tap once each time.
+        package var syncs = 0
         /// Tasks just closed here, kept where they were for a moment so a
         /// mis-pick can be undone in place.
         package var lingering: Set<UUID> = []
@@ -407,6 +410,7 @@ package struct TaskListFeature {
 
             case .pullSucceeded:
                 state.explainedSync = nil
+                state.syncs += 1
                 return .none
 
             case .pullFailed(let reason):

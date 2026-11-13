@@ -64,6 +64,9 @@ package struct RootView: View {
             }
         }
         .onReceive(Self.dayChanges) { _ in store.send(.dayChanged) }
+        .onChange(of: store.announcement) { _, said in
+            if let said { AccessibilityNotification.Announcement(said.message).post() }
+        }
         .alert($store.scope(state: \.lockAlert, action: \.lockAlert))
         .modifier(ShakeMenu(store: store))
         .task { await store.send(.task).finish() }

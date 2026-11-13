@@ -104,6 +104,9 @@ package struct TaskListView<Header: View>: View {
         .task { await store.send(.task).finish() }
         #if os(iOS)
             .refreshable { await store.send(.pulled).finish() }
+            // The spinner goes either way, so say it worked.
+            .sensoryFeedback(.success, trigger: store.syncs)
+            .onChange(of: store.syncs) { AccessibilityNotification.Announcement(String(localized: "Synced")).post() }
         #else
             .onKeyPress(keys: [.upArrow, .downArrow]) { press in
                 store.send(.cursorMoved(up: press.key == .upArrow, extending: press.modifiers.contains(.shift)))

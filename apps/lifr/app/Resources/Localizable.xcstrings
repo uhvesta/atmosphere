@@ -4163,6 +4163,9 @@
     "^[%lld task](inflect: true)" : {
 
     },
+    "^[%lld task](inflect: true) closed elsewhere." : {
+
+    },
     "^[%lld task](inflect: true) picked" : {
 
     },
@@ -4215,6 +4218,9 @@
 
     },
     "·" : {
+
+    },
+    "“%@” closed elsewhere." : {
 
     },
     "“%@” has open Sub tasks" : {
