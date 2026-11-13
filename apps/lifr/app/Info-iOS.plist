@@ -11,6 +11,11 @@
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>$(PRODUCT_BUNDLE_IDENTIFIER).continued.*</string>
+		<string>$(PRODUCT_BUNDLE_IDENTIFIER).refresh</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>

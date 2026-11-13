@@ -39,6 +39,10 @@ import UserNotifications
 #if canImport(UIKit)
     import UIKit
 #endif
+#if os(iOS)
+    import BackgroundTasks
+    import OSLog
+#endif
 #if os(macOS)
     import LifrSessionLive
 #endif
@@ -54,6 +58,8 @@ struct LifrApp: App {
             // bar with every window closed, so the work outlives windows.
             if case .success = Storage.opened { Storage.start() }
             NSApplication.shared.servicesProvider = Storage.services
+        #else
+            Storage.scheduleRefresh()
         #endif
     }
 
@@ -83,6 +89,11 @@ struct LifrApp: App {
                 .backgroundTask(.urlSession(ModelLibrary.backgroundSession)) {
                     _ = Storage.models
                     await ModelLibrary.caughtUp()
+                }
+                // Woken now and then while away, to sync, so reminders and
+                // widgets follow what other devices changed.
+                .backgroundTask(.appRefresh(Storage.refreshID)) {
+                    await Storage.refresh()
                 }
         #endif
     }
@@ -142,6 +153,33 @@ private final class Opening {
 
 @MainActor
 private enum Storage {
+    #if os(iOS)
+        /// The background refresh, listed in Info.plist.
+        nonisolated static let refreshID = (Bundle.main.bundleIdentifier ?? "lifr") + ".refresh"
+
+        /// Asks the system to wake Lifr to refresh in a while; it picks when.
+        static func scheduleRefresh() {
+            let request = BGAppRefreshTaskRequest(identifier: refreshID)
+            request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+            do {
+                try BGTaskScheduler.shared.submit(request)
+            } catch {
+                // Background App Refresh off, or the simulator: Lifr catches
+                // up when it opens instead.
+                Logger(subsystem: "lifr", category: "refresh")
+                    .notice("\(String(describing: error), privacy: .public)")
+            }
+        }
+
+        /// Syncs, then reschedules reminders and refreshes widgets, and
+        /// asks for the next refresh.
+        static func refresh() async {
+            scheduleRefresh()
+            guard case .success = opened else { return }
+            await root.send(.refreshedInBackground).finish()
+        }
+    #endif
+
     /// Launch with this argument to add sample records, for trying out the
     /// app without typing them in.
     static let sampleDataArgument = "-LifrSampleData"

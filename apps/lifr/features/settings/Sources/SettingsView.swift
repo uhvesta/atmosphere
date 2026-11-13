@@ -237,22 +237,10 @@ package struct SettingsView: View {
             case .installed(let path):
                 LabeledContent("Installed at", value: path)
             }
-            #if os(macOS)
-                Toggle(
-                    "Launch at login",
-                    isOn: Binding(
-                        get: { store.launchesAtLogin }, set: { store.send(.launchAtLoginToggled($0)) }))
-            #endif
         } header: {
             Text("Command line")
         } footer: {
-            #if os(macOS)
-                Text(
-                    "Then connect Claude Code with: claude mcp add lifr -- lifr mcp. Launch at login keeps Lifr in the "
-                        + "menu bar, so lifr never waits for it to start.")
-            #else
-                Text("Then connect Claude Code with: claude mcp add lifr -- lifr mcp")
-            #endif
+            Text("Then connect Claude Code with: claude mcp add lifr -- lifr mcp")
         }
     }
 }
@@ -407,6 +395,13 @@ private struct SyncSection: View {
                     get: { store.syncsContinuously }, set: { store.send(.syncContinuouslyToggled($0)) })
             )
             .disabled(isUnavailable)
+            #if os(macOS)
+                // Syncing all the time only helps while Lifr is open.
+                Toggle(
+                    "Keep Lifr in the menu bar at login",
+                    isOn: Binding(
+                        get: { store.launchesAtLogin }, set: { store.send(.launchAtLoginToggled($0)) }))
+            #endif
             Button("Sync Now") { store.send(.syncNowTapped) }
                 .disabled(store.sync.status == .syncing || store.sync.status == .failed(.notSetUp))
         } header: {
@@ -416,14 +411,17 @@ private struct SyncSection: View {
                 Text(error.description)
             } else if store.syncsContinuously {
                 Text(
-                    "Each change syncs with your other devices through iCloud as soon as you make it, and "
-                        + "Lifr checks for theirs every few minutes while it's open. A change made on two "
-                        + "devices at once that can't be merged waits for you to review it.")
+                    """
+                    Changes go to your other devices as you make them, and Lifr checks for theirs every 2 \
+                    minutes while it's open, and now and then in the background. A change made on two devices \
+                    at once that can't be merged waits for you to review it.
+                    """)
             } else {
                 Text(
-                    "Your records sync with your other devices through iCloud every so often, and when Lifr "
-                        + "opens. A change made on two devices at once that can't be merged waits for you to "
-                        + "review it.")
+                    """
+                    Lifr syncs when you open it, every 15 minutes while it's open, and when you choose Sync Now. \
+                    A change made on two devices at once that can't be merged waits for you to review it.
+                    """)
             }
         }
     }

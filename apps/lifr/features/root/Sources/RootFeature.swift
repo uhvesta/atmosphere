@@ -481,6 +481,8 @@ package struct RootFeature {
         case syncNowTapped
         case syncNowFailed(String)
         case syncNowSucceeded
+        /// The system woke Lifr, away, to catch up.
+        case refreshedInBackground
         /// The banner's Review.
         case syncReviewTapped
         case syncReview(PresentationAction<SyncReviewFeature.Action>)
@@ -1199,6 +1201,10 @@ package struct RootFeature {
                     }
                 }
 
+            case .refreshedInBackground:
+                guard !state.isWindow else { return .none }
+                return refreshInBackground(state)
+
             case .syncNowSucceeded:
                 state.announce(String(localized: "Synced"))
                 return .none
@@ -1588,22 +1594,58 @@ package struct RootFeature {
         guard let workspace = state.workspace else { return .none }
         // Worked out in the effect, off the main actor.
         return .run { [reminders, now, timeZone, locked = state.locksApp, counted = state.badgeCount] send in
-            let scheduled = workspace.scheduledReminders(now: now, timeZone: timeZone, hidingTitles: locked)
-            let badge = workspace.badgeCount(counted, now: now, timeZone: timeZone)
-            guard !Task.isCancelled else { return }
-            // Notifications that are off leave the reminders saved and
-            // ringing elsewhere; the detail screen says so when one is
-            // added. Any other failure is told once per launch.
-            var failure: String?
-            do {
-                try await reminders.schedule(scheduled)
-            } catch {
-                if await reminders.permission() != .denied { failure = String(describing: error) }
-            }
-            await reminders.setBadge(badge)
+            guard
+                let failure = await Self.schedule(
+                    workspace, with: reminders, now: now, timeZone: timeZone, locked: locked, counted: counted)
+            else { return }
             await send(.remindersScheduled(failure: failure))
         }
         .cancellable(id: CancelID.reminders, cancelInFlight: true)
+    }
+
+    /// Schedules `workspace`'s reminders and sets the badge. Returns nil
+    /// when cancelled first, otherwise why scheduling failed, if it did.
+    private static func schedule(
+        _ workspace: Workspace, with reminders: RemindersClient, now: Date, timeZone: TimeZone, locked: Bool,
+        counted: BadgeCount
+    ) async -> String?? {
+        let scheduled = workspace.scheduledReminders(now: now, timeZone: timeZone, hidingTitles: locked)
+        let badge = workspace.badgeCount(counted, now: now, timeZone: timeZone)
+        guard !Task.isCancelled else { return nil }
+        // Notifications that are off leave the reminders saved and
+        // ringing elsewhere; the detail screen says so when one is
+        // added. Any other failure is told once per launch.
+        var failure: String?
+        do {
+            try await reminders.schedule(scheduled)
+        } catch {
+            if await reminders.permission() != .denied { failure = String(describing: error) }
+        }
+        await reminders.setBadge(badge)
+        return .some(failure)
+    }
+
+    /// Syncs while Lifr is away, then rings this device's reminders and
+    /// shows its widgets as the records now are: one closed on another
+    /// device stops ringing here before Lifr next opens.
+    private func refreshInBackground(_ state: State) -> Effect<Action> {
+        let locked = state.locksApp
+        let counted = state.badgeCount
+        return .run { [sync, store, reminders, glance, now, timeZone] _ in
+            _ = await sync.sync()
+            let workspace: Workspace
+            do {
+                workspace = try await store.snapshot().workspace
+            } catch {
+                Logger(subsystem: "lifr", category: "refresh").error("\(String(describing: error), privacy: .public)")
+                return
+            }
+            _ = await Self.schedule(
+                workspace, with: reminders, now: now, timeZone: timeZone, locked: locked, counted: counted)
+            if let today = Self.glance(of: workspace, now: now, timeZone: timeZone, locked: locked) {
+                await glance.write(today)
+            }
+        }
     }
 
     /// Gives the widgets Today as `state` has it, and as it will be on each

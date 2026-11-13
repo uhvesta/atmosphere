@@ -1898,6 +1898,81 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testARefreshWhileAwayStopsTheReminderOfATaskClosedElsewhere() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let stretch = records.task("Stretch", in: health, due: 0)
+        records.reminder(.at(now + 60 * 60), on: run)
+        records.reminder(.at(now + 60 * 60), on: stretch)
+        let client = StoreClient.inMemory(records.workspace)
+        let reminders = RemindersClient.inMemory()
+        let (glance, written) = GlanceClient.inMemory()
+        // What another device closed arrives with the sync.
+        var sync = SyncClient.off
+        sync.sync = {
+            _ = try? await client.setStatus(.done, run.id)
+            return SyncState(status: .idle)
+        }
+        let store = makeStore(.phone, store: client, reminders: reminders, sync: sync)
+        store.dependencies.glance = glance
+
+        await store.send(.refreshedInBackground)
+        await store.finish()
+
+        XCTAssertEqual(reminders.scheduled.map(\.taskID), [stretch.id])
+        XCTAssertEqual(written.value?.rows.map(\.id), [stretch.id])
+    }
+
+    func testStartingTwiceSyncsOnOneTimer() async throws {
+        let syncs = LockIsolated(0)
+        var sync = SyncClient.off
+        sync.sync = {
+            syncs.withValue { $0 += 1 }
+            return SyncState()
+        }
+        let clock = TestClock()
+        let store = makeStore(.phone, sync: sync)
+        store.dependencies.continuousClock = clock
+        store.state.$syncsContinuously.withLock { $0 = false }
+
+        let first = await store.send(.task)
+        let second = await store.send(.task)
+        await clock.advance(by: .seconds(15 * 60))
+        for _ in 0..<100 where syncs.value < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        await clock.advance(by: .seconds(1))
+
+        // One on starting, then one a tick.
+        XCTAssertEqual(syncs.value, 2)
+        await first.cancel()
+        await second.cancel()
+    }
+
+    func testAChangeFromAnotherDeviceThatClosesATaskStopsItsReminder() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let stretch = records.task("Stretch", in: health, due: 0)
+        records.reminder(.at(now + 60 * 60), on: run)
+        records.reminder(.at(now + 60 * 60), on: stretch)
+        let (client, imports) = StoreClient.inMemorySyncing(records.workspace)
+        let reminders = RemindersClient.inMemory()
+        let store = makeStore(.phone, store: client, reminders: reminders)
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.receive(\.remindersScheduled)
+        XCTAssertEqual(Set(reminders.scheduled.map(\.taskID)), [run.id, stretch.id])
+
+        try await withDependencies { [now] in
+            $0.date.now = now
+            $0.uuid = UUIDGenerator { UUID() }
+        } operation: {
+            _ = try await imports.writer(as: .user(device: "Mac", surface: .mac)).setStatus(.done, run.id)
+        }
+        await store.receive(\.updated)
+        await store.receive(\.remindersScheduled)
+
+        XCTAssertEqual(reminders.scheduled.map(\.taskID), [stretch.id])
+        await task.cancel()
+    }
+
     func testComingToTheFrontSavesWhatTheWidgetMarkedDone() async throws {
         let run = records.task("Long run", in: health, due: 0)
         let move = records.task("Move house", in: health)
