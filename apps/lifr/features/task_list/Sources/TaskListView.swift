@@ -15,6 +15,9 @@ import SwiftUI
 package struct TaskListView<Header: View>: View {
     @Bindable package var store: StoreOf<TaskListFeature>
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The row VoiceOver is on, so it can move to a neighbour when the row
+    /// leaves the list instead of jumping to the top.
+    @AccessibilityFocusState private var focusedRow: UUID?
     private let header: Header
     private var emptyAction: (title: LocalizedStringKey, perform: () -> Void)?
     private var emptyBelowHeader = false
@@ -64,6 +67,7 @@ package struct TaskListView<Header: View>: View {
                 Section(section.title) {
                     ForEach(section.rows) { row in
                         TaskListRow(row: row, note: section.notes[row.id], store: store)
+                            .accessibilityFocused($focusedRow, equals: row.id)
                     }
                     .onMove(
                         perform: store.canReorder
@@ -91,6 +95,11 @@ package struct TaskListView<Header: View>: View {
                 BannerView(banner, undo: { store.send(.bannerUndoTapped) }, dismiss: { store.send(.bannerDismissed) })
                     .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
             }
+        }
+        .onChange(of: store.sections) { old, new in
+            // Only while VoiceOver is on a row, which is rarely.
+            guard let row = focusedRow, let next = new.focus(after: row, leaving: old) else { return }
+            focusedRow = next
         }
         // Rows move in, out and between sections, a sync's changes too.
         .animation(reduceMotion ? .easeInOut(duration: 0.2) : .snappy(duration: 0.25), value: store.sections)

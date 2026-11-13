@@ -44,5 +44,9 @@ final class BoardSnapshotTests: XCTestCase {
         assertSnapshot(of: screen(), as: .image(layout: .fixed(width: size.width, height: size.height)), named: "light")
         assertSnapshot(
             of: screen(.dark), as: .image(layout: .fixed(width: size.width, height: size.height)), named: "dark")
+        // The largest text size: cards grow taller and the columns scroll.
+        assertSnapshot(
+            of: screen().dynamicTypeSize(.accessibility5),
+            as: .image(layout: .fixed(width: size.width, height: size.height)), named: "largest-text")
     }
 }

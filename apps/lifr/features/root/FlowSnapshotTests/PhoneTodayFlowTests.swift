@@ -79,6 +79,18 @@ final class PhoneTodayFlowTests: PhoneFlowTestCase {
         flow.finish()
     }
 
+    /// The calendar at the largest text size: the month, a day's tasks and
+    /// every month on one page still read whole.
+    func testCalendarAtTheLargestTextSize() async {
+        let (store, flow) = app("calendar-largest-text", textSize: .accessibility5)
+        store.tab = .upcoming
+        store.send(.upcomingCalendarShown(true))
+        await flow.step("opened")
+        store.send(.calendar(.monthsTapped))
+        await flow.step("months")
+        flow.finish()
+    }
+
     /// Procrastinated, from Today.
     func testProcrastinated() async throws {
         let (store, flow) = app("procrastinated")

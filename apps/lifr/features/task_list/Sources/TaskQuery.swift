@@ -108,6 +108,19 @@ package struct TaskSection: Identifiable, Hashable, Sendable {
     }
 }
 
+extension [TaskSection] {
+    /// Where focus goes when `row` leaves the list: the row after it, or the
+    /// one before when it was last, among those still shown. Nil when
+    /// `row` is still shown, or nothing is.
+    package func focus(after row: UUID, leaving old: [TaskSection]) -> UUID? {
+        let shown = Set(flatMap { $0.rows.map(\.id) })
+        guard !shown.contains(row) else { return nil }
+        let before = old.flatMap { $0.rows.map(\.id) }
+        guard let index = before.firstIndex(of: row) else { return nil }
+        return before[index...].first(where: shown.contains) ?? before[..<index].last(where: shown.contains)
+    }
+}
+
 extension Workspace {
     /// `tasks` as rows, as of `now`.
     package func rows(_ tasks: [LifrTask], now: Date, timeZone: TimeZone) -> [TaskRowData] {

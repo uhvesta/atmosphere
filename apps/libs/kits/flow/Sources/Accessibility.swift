@@ -75,6 +75,24 @@
             return (object as? UIView)?.subviews ?? []
         }
 
+        /// What VoiceOver and Voice Control can't use: an element read as
+        /// nothing, and a control with no name to say. Each names the element
+        /// and how to fix it.
+        static func problems(in object: NSObject) -> [String] {
+            let controls: UIAccessibilityTraits = [.button, .link, .adjustable, .searchField, .image]
+            return readingOrder(elements(in: object)).compactMap { element in
+                let label = element.accessibilityLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                guard label.isEmpty else { return nil }
+                let value = element.accessibilityValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if !element.accessibilityTraits.isDisjoint(with: controls) {
+                    return "\(describe(element)) has no label, so Voice Control can't name it and VoiceOver reads "
+                        + "only its kind. Give it one with accessibilityLabel, or hide it if it's decoration."
+                }
+                guard value.isEmpty else { return nil }
+                return "\(describe(element)) reads as nothing. Give it a label, or hide it from accessibility."
+            }
+        }
+
         static func describe(_ element: NSObject) -> String {
             var parts = [traits(element.accessibilityTraits)]
             parts.append(quoted(element.accessibilityLabel))

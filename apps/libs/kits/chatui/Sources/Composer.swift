@@ -267,6 +267,7 @@ public struct MessageField: View {
                     #endif
                 }
                 .onSubmit(submit)
+                .modifier(TokenAccessibility(hasToken: token != nil, text: text))
                 .overlay(alignment: .leading) {
                     // The mark keeps the field from showing its prompt.
                     if token != nil, text.isEmpty, let prompt {
@@ -292,6 +293,22 @@ public struct MessageField: View {
                     text = new
                 }
             })
+    }
+}
+
+/// With a token, the field holds only the mark and shows no prompt, so
+/// VoiceOver would read it as nothing: names it and reads what's written,
+/// without the mark. Without one, the field reads as it always does.
+private struct TokenAccessibility: ViewModifier {
+    let hasToken: Bool
+    let text: String
+
+    // Switched on and off rather than added, so the field stays the same
+    // view and keeps the keyboard.
+    func body(content: Content) -> some View {
+        content
+            .accessibilityLabel(Text("Message"), isEnabled: hasToken)
+            .accessibilityValue(Text(verbatim: text), isEnabled: hasToken)
     }
 }
 

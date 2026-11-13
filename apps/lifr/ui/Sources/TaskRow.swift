@@ -131,9 +131,12 @@ package struct TaskRow: View {
     }
 }
 
-/// A label's name on a soft tint of its color.
+/// A label's name on a soft tint of its color; with Increase Contrast, a
+/// stronger tint and an outline in the color, so the chip's edge shows on
+/// any background.
 private struct LabelChip: View {
     var chip: TaskRowData.Chip
+    @Environment(\.colorSchemeContrast) private var contrast
 
     init(_ chip: TaskRowData.Chip) {
         self.chip = chip
@@ -145,7 +148,10 @@ private struct LabelChip: View {
             .lineLimit(1)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(Color(avenue: chip.color).opacity(0.18), in: Capsule())
+            .background(Color(avenue: chip.color).opacity(contrast == .increased ? 0.3 : 0.18), in: Capsule())
+            .overlay {
+                if contrast == .increased { Capsule().strokeBorder(Color(avenue: chip.color)) }
+            }
             .fixedSize()
     }
 }

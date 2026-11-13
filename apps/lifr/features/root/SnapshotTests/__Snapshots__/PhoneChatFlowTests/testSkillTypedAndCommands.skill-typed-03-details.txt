@@ -7,7 +7,7 @@
 [button] "What's overdue?"
 [button] "What did I finish this week?"
 [element] "Skill: add"
-[element] "" value: "​buy milk on saturday"
+[element] "Message" value: "buy milk on saturday"
 [button] "Add" hint: "Add photos or files"
 [button] "Model" value: "Apple Intelligence" hint: "Model, Thinking and Context Window"
 [button] "Dictate" hint: "Dictate, on this device"

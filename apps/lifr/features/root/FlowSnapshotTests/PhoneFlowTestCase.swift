@@ -55,7 +55,8 @@ class PhoneFlowTestCase: XCTestCase {
         inputs: Set<ModelInput> = [], readsPhotos: Bool = false, lock: LockClient = .always(),
         assistant: AssistantClient? = nil,
         photos: PhotoLibraryClient = .denied, files: [String: PickedFile] = [:],
-        tab: RootFeature.Tab = .today, style: UIUserInterfaceStyle = .light, speech: SpeechClient = .inMemory, tips: Bool = false
+        tab: RootFeature.Tab = .today, style: UIUserInterfaceStyle = .light, speech: SpeechClient = .inMemory,
+        tips: Bool = false, textSize: DynamicTypeSize = .large
     ) -> (StoreOf<RootFeature>, FlowRecorder) {
         // The gesture tips show only in a flow about them.
         for tip in GestureTip.allCases {
@@ -112,7 +113,9 @@ class PhoneFlowTestCase: XCTestCase {
                 }
             }
         }
-        let flow = FlowRecorder(name, RootView(store: store).environment(\.timeZone, .gmt), style: style)
+        let flow = FlowRecorder(
+            name, RootView(store: store).environment(\.timeZone, .gmt).dynamicTypeSize(textSize), style: style,
+            audits: true)
         store.send(.task)
         return (store, flow)
     }

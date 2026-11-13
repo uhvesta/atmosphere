@@ -332,6 +332,10 @@ private struct Row<Fields: View>: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
                 .accessibilityLabel(name.isEmpty ? String(localized: "Remove") : String(localized: "Remove \(name)"))
+                // Saying "Remove" alone works too; with several, Voice
+                // Control numbers them.
+                .accessibilityInputLabels(
+                    name.isEmpty ? [Text("Remove")] : [Text("Remove \(name)"), Text("Remove"), Text("Delete")])
         }
     }
 }

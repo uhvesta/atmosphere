@@ -16,15 +16,21 @@
         /// as it is.
         private let timeout: Duration
         private var count = 0
+        /// Whether each step also fails on what VoiceOver and Voice Control
+        /// can't name.
+        private let audits: Bool
 
         /// Hosts `view` in a window the size of an iPhone 17, in `style`, light
         /// or dark. `name` names the flow's references. A step waits at most
-        /// `timeout` for the screen to settle.
+        /// `timeout` for the screen to settle. With `audits`, each step also
+        /// fails on an element VoiceOver would read as nothing or a control
+        /// Voice Control can't name.
         public init(
             _ name: String, _ view: some View, size: CGSize = CGSize(width: 402, height: 874),
-            style: UIUserInterfaceStyle = .light, timeout: Duration = .seconds(5)
+            style: UIUserInterfaceStyle = .light, timeout: Duration = .seconds(5), audits: Bool = false
         ) {
             self.timeout = timeout
+            self.audits = audits
             _ = AccessibilityTree.automation
             UIView.setAnimationsEnabled(false)
             self.name = name
@@ -57,6 +63,11 @@
             assertSnapshot(
                 of: lines.joined(separator: "\n") + "\n", as: .lines, named: label, file: file, testName: testName,
                 line: line)
+            if audits {
+                for problem in AccessibilityTree.problems(in: window) {
+                    XCTFail("\(label): \(problem)", file: file, line: line)
+                }
+            }
             guard image else { return }
             let rendered = await stillImage()
             assertSnapshot(

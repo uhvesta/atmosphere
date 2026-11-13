@@ -136,6 +136,7 @@ private struct MonthBlock: View {
                         }
                     }
                 }
+                .dynamicTypeSize(...DynamicTypeSize.accessibility1)
                 .padding(.vertical, 6)
             }
         }
@@ -151,6 +152,7 @@ private struct WeekdayHeader: View {
             ForEach(Array(weekdaySymbols.enumerated()), id: \.offset) { _, symbol in
                 Text(symbol)
                     .font(.caption2)
+                    .dynamicTypeSize(...DynamicTypeSize.accessibility1)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
             }
@@ -180,6 +182,8 @@ private struct MonthGrid: View {
                     } label: {
                         Text(store.month?.monthTitle(locale) ?? "")
                             .font(.headline)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
                             .foregroundStyle(.primary)
                     }
                     .buttonStyle(.plain)
@@ -188,6 +192,8 @@ private struct MonthGrid: View {
                 #else
                     Text(store.month?.monthTitle(locale) ?? "")
                         .font(.headline)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
                         .accessibilityAddTraits(.isHeader)
                 #endif
                 Spacer()
@@ -213,6 +219,9 @@ private struct MonthGrid: View {
                         DayCell(day: day, isSelected: day.date == store.selected, store: store)
                     }
                 }
+                // Seven days to a row leave no room past the first
+                // accessibility size.
+                .dynamicTypeSize(...DynamicTypeSize.accessibility1)
             }
         }
         .padding(.vertical, 4)
@@ -227,6 +236,8 @@ private struct DayCell: View {
     var acceptsDrops = true
     var store: StoreOf<CalendarFeature>
     @State private var isTargeted = false
+    /// The circle grows with the number in it.
+    @ScaledMetric(relativeTo: .callout) private var circle = 30.0
 
     var body: some View {
         Button {
@@ -236,8 +247,10 @@ private struct DayCell: View {
                 Text("\(day.date.day)")
                     .font(.callout.weight(day.isToday ? .bold : .regular))
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
                     .foregroundStyle(numberStyle)
-                    .frame(width: 30, height: 30)
+                    .frame(width: circle, height: circle)
                     .background {
                         if isSelected {
                             Circle().fill(day.isToday ? Color.red : Color.accentColor)
@@ -257,6 +270,10 @@ private struct DayCell: View {
         }
         .buttonStyle(.plain)
         .modifier(DayDrop(day: day.date, isOn: acceptsDrops, isTargeted: $isTargeted, store: store))
+        // Holding a day shows it big, past the size the grid stops at.
+        .accessibilityShowsLargeContentViewer {
+            Text("\(day.date.day)")
+        }
         .accessibilityLabel(accessibilityLabel)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }

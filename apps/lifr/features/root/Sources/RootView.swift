@@ -1006,6 +1006,8 @@ private struct AddMenu: View {
         } label: {
             Label("Add", systemImage: "plus")
         }
+        // What else a person may call the + when they say what to tap.
+        .accessibilityInputLabels([Text("Add"), Text("Plus"), Text("New")])
     }
 }
 

@@ -11,6 +11,9 @@ public struct BoardColumn<Cards: View, Footer: View>: View {
     private let cards: Cards
     private let footer: Footer
     @State private var isTargeted = false
+    /// Wider as text grows, so cards keep room for their words; the board
+    /// scrolls sideways.
+    @ScaledMetric(relativeTo: .body) private var width = 200.0
 
     /// `countLabel` is what VoiceOver reads for the header, such as
     /// "To do, 3 tasks".
@@ -37,7 +40,7 @@ public struct BoardColumn<Cards: View, Footer: View>: View {
             footer
             Spacer(minLength: 40)
         }
-        .frame(width: 200, alignment: .topLeading)
+        .frame(width: width, alignment: .topLeading)
         .frame(maxHeight: .infinity, alignment: .top)
         .padding(8)
         .background(

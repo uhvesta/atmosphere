@@ -74,6 +74,7 @@ package struct BannerView: View {
                 Image(systemName: "xmark")
             }
             .accessibilityLabel("Dismiss")
+            .accessibilityInputLabels([Text("Dismiss"), Text("Close")])
         }
         .font(.callout)
         .padding(12)
