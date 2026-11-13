@@ -157,8 +157,8 @@ original spec; lettered ones were added since.
 | T1 Tokens and agent tools | Done |
 | U1 App jank | Done |
 | D1 Mermaid diagrams | Done |
-| D2 Focus view for Markdown | Planned |
-| D3 Versions of a Markdown file | Planned |
+| D2 Focus view for Markdown | Done |
+| D3 Versions of a Markdown file | Done |
 | U2 UX papercuts | Done |
 | S2 Compression | Planned |
 | S3 Daemon speed | Planned |
@@ -1058,14 +1058,14 @@ turned on, and then deletes archived sessions after 45 days by default.
 
 #### D2 Focus view for Markdown
 
-- [ ] A Markdown file or spec opens in a focus view: the rendered document
+- [x] A Markdown file or spec opens in a focus view: the rendered document
   wide, the session's chat beside it with its composer; inline comments
   sent into that chat; agent edits reload in place, keeping the scroll,
   with what changed marked
 
 #### D3 Versions of a Markdown file
 
-- [ ] Its versions, from the session's turn snapshots and the spec
+- [x] Its versions, from the session's turn snapshots and the spec
   journal, listed in the focus view; any one rendered, or compared with
   now as a rendered diff; restoring one writes it as a new change
 

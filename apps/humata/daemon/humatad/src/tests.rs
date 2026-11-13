@@ -828,6 +828,109 @@ async fn a_session_in_a_project_works_in_its_own_copy_and_lists_under_it() {
 }
 
 #[tokio::test]
+async fn a_files_versions_come_from_its_turns_and_one_is_restored_as_a_new_change() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let repository = git_repository();
+    let client = daemon(state.path(), Hosts::default()).await;
+    let project = project(&client, repository.path()).await;
+    let script = r##"{"rules": [
+        {"when": "first", "steps": [
+            {"step": "write_file", "path": "SPEC.md", "contents": "one\n"},
+            {"step": "say", "text": "Wrote it."}]},
+        {"when": "third", "steps": [
+            {"step": "write_file", "path": "SPEC.md", "contents": "two\n"},
+            {"step": "say", "text": "Changed it."}]},
+        {"when": "", "steps": [{"step": "say", "text": "Left it."}]}
+    ]}"##;
+    let session = started(
+        &client,
+        pb::request::Kind::StartSession(pb::StartSession {
+            backend: pb::Backend::Scripted.into(),
+            project_id: project.id.clone(),
+            backend_config: script.to_owned(),
+            approval_mode: pb::ApprovalMode::AllowEverything.into(),
+            ..Default::default()
+        }),
+    )
+    .await;
+    for (turn, text) in ["first", "second", "third"].into_iter().enumerate() {
+        send(&client, &session.id, text).await;
+        after_turns(&client, &session.id, turn + 1).await;
+    }
+
+    let versions = |path: &str| {
+        client.call(pb::request::Kind::ListFileVersions(pb::ListFileVersions {
+            session_id: session.id.clone(),
+            path: path.to_owned(),
+        }))
+    };
+    let turns = |listed: Result<pb::response::Kind, ClientError>| match listed {
+        Ok(pb::response::Kind::FileVersions(versions)) => versions
+            .versions
+            .iter()
+            .map(|version| version.turn)
+            .collect::<Vec<_>>(),
+        other => panic!("not listed: {other:?}"),
+    };
+    assert_eq!(turns(versions("SPEC.md").await), [1, 3]);
+    assert_eq!(turns(versions("README.md").await), [0]);
+    assert_eq!(turns(versions("NONE.md").await), Vec::<u32>::new());
+
+    let then = client
+        .call(pb::request::Kind::ReadFile(pb::ReadFile {
+            session_id: session.id.clone(),
+            path: "SPEC.md".to_owned(),
+            turn: Some(1),
+            ..Default::default()
+        }))
+        .await;
+    assert!(
+        matches!(&then, Ok(pb::response::Kind::FileContents(contents)) if contents.text == "one\n"),
+        "{then:?}"
+    );
+    let before = client
+        .call(pb::request::Kind::ReadFile(pb::ReadFile {
+            session_id: session.id.clone(),
+            path: "SPEC.md".to_owned(),
+            turn: Some(0),
+            ..Default::default()
+        }))
+        .await;
+    assert!(
+        refused_with(&before, pb::ErrorCode::InvalidRequest),
+        "{before:?}"
+    );
+
+    let restored = client
+        .call(pb::request::Kind::RestoreFileVersion(
+            pb::RestoreFileVersion {
+                session_id: session.id.clone(),
+                path: "SPEC.md".to_owned(),
+                turn: 1,
+            },
+        ))
+        .await;
+    assert!(
+        matches!(
+            &restored,
+            Ok(pb::response::Kind::FileVersionRestored(pb::FileVersionRestored {
+                contents: Some(contents),
+            })) if contents.text == "one\n"
+        ),
+        "{restored:?}"
+    );
+    let copy = PathBuf::from(&session.working_directory);
+    assert_eq!(
+        std::fs::read_to_string(copy.join("SPEC.md")).unwrap_or_else(|error| panic!("{error}")),
+        "one\n"
+    );
+    // The restore is a change of its own: the next turn's checkpoint keeps it.
+    send(&client, &session.id, "fourth").await;
+    after_turns(&client, &session.id, 4).await;
+    assert_eq!(turns(versions("SPEC.md").await), [1, 3, 4]);
+}
+
+#[tokio::test]
 async fn projects_and_their_sessions_survive_a_restart() {
     let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
     let repository = git_repository();

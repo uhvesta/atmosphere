@@ -12,6 +12,7 @@ pub mod bundle;
 mod error;
 mod land;
 mod review;
+mod versions;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -29,6 +30,7 @@ pub use review::{
     Action, Changes, Edit, FileDiff, FileRef, FileStatus, Hunk, HunkAt, Line, LineKind, Query,
     Range,
 };
+pub use versions::{file_at, versions};
 
 /// A repository a session works in, as the project names it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

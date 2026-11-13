@@ -38,9 +38,17 @@ package struct SessionView: View {
             if store.tab == .review {
                 ReviewView(store: store.scope(state: \.review, action: \.review))
             } else if store.tab == .files {
-                DocsView(store: store.scope(state: \.docs, action: \.docs))
+                if store.docs.focused {
+                    focus(DocsView(store: store.scope(state: \.docs, action: \.docs)))
+                } else {
+                    DocsView(store: store.scope(state: \.docs, action: \.docs))
+                }
             } else if store.tab == .spec {
-                SpecsView(store: store.scope(state: \.specs, action: \.specs))
+                if store.specs.focused != nil {
+                    focus(SpecsView(store: store.scope(state: \.specs, action: \.specs)))
+                } else {
+                    SpecsView(store: store.scope(state: \.specs, action: \.specs))
+                }
             } else if store.tab == .terminal {
                 TerminalsView(store: store.scope(state: \.terminals, action: \.terminals))
             } else {
@@ -304,6 +312,25 @@ package struct SessionView: View {
         let model = store.session.model.map { " · \($0)" } ?? ""
         let host = store.session.host.map { " on \($0)" } ?? ""
         return backend + model + host
+    }
+
+    /// A document wide, with the chat and its composer beside it, so what's
+    /// said about it goes into this chat.
+    private func focus(_ document: some View) -> some View {
+        HSplitView {
+            document
+                .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                ChatList(store: store)
+                    .alert($store.scope(state: \.proposals.alert, action: \.proposals.alert))
+                    .environment(\.codeQuoter, store.session.archived ? nil : quoter)
+                if !store.session.archived {
+                    SessionComposer(store: store)
+                        .padding([.horizontal, .bottom])
+                }
+            }
+            .frame(minWidth: 320, idealWidth: 400, maxWidth: 560, maxHeight: .infinity)
+        }
     }
 
     static func name(_ mode: ApprovalMode) -> String {

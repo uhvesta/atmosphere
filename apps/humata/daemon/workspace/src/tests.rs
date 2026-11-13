@@ -335,6 +335,55 @@ async fn a_folder_without_git_or_without_commits_is_refused() {
     );
 }
 
+#[tokio::test]
+async fn a_file_has_a_version_for_each_turn_that_changed_it() {
+    let dir = tempfile::tempdir().expect("a temporary folder");
+    let repository = repository(dir.path(), "app");
+    let workspaces = Workspaces::new(dir.path().join("worktrees"));
+    let checkouts = workspaces
+        .create("s", std::slice::from_ref(&repository), &[])
+        .await
+        .expect("created");
+    let work = checkouts[0].path.clone();
+    let mut checkpoints = Vec::new();
+    // Turn 0 has no SPEC.md; 1 writes it, 2 leaves it, 3 changes it.
+    for (turn, text) in [None, Some("one\n"), None, Some("two\n")]
+        .into_iter()
+        .enumerate()
+    {
+        if let Some(text) = text {
+            std::fs::write(work.join("SPEC.md"), text).expect("wrote");
+        }
+        let snapshot = workspaces
+            .snapshot("s", turn, &checkouts)
+            .await
+            .expect("snapshotted");
+        checkpoints.push(snapshot);
+    }
+
+    let turns = versions(&repository, &checkpoints, "SPEC.md")
+        .await
+        .expect("listed");
+    assert_eq!(turns, [1, 3]);
+    let first = file_at(&repository, &checkpoints, 1, "SPEC.md")
+        .await
+        .expect("read");
+    assert_eq!(first, "one\n");
+    let before = file_at(&repository, &checkpoints, 0, "SPEC.md").await;
+    assert!(
+        matches!(before, Err(WorkspaceError::NoSuchFileThen { turn: 0, .. })),
+        "{before:?}"
+    );
+    let later = file_at(&repository, &checkpoints, 9, "SPEC.md").await;
+    assert!(
+        matches!(
+            later,
+            Err(WorkspaceError::UnknownTurn { turn: 9, turns: 3 })
+        ),
+        "{later:?}"
+    );
+}
+
 mod land;
 mod review;
 

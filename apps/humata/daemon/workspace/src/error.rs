@@ -75,6 +75,15 @@ pub enum WorkspaceError {
     NoSuchFile { path: String, repository: String },
 
     #[error(
+        "{repository} had no file {path} after turn {turn}, so there is no version of it to show or restore from then. Read its versions again and pick one from the list"
+    )]
+    NoSuchFileThen {
+        path: String,
+        repository: String,
+        turn: usize,
+    },
+
+    #[error(
         "{branch:?} can't be a branch name. Pick another: no spaces, no `..`, and not starting with `-` or ending in `.lock`"
     )]
     BadBranch { branch: String },

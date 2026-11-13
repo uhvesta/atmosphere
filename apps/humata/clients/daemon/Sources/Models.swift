@@ -1696,6 +1696,21 @@ package struct FileContents: Hashable, Sendable {
     }
 }
 
+/// A version of a file in a session's folder: the code as a turn left it.
+package struct FileVersion: Hashable, Sendable, Identifiable {
+    /// The checkpoint it's from: 0 before the first turn, else the turn
+    /// that ended with it.
+    package var turn: Int
+    package var time: Date
+
+    package var id: Int { turn }
+
+    package init(turn: Int, time: Date) {
+        self.turn = turn
+        self.time = time
+    }
+}
+
 /// One level of a folder on a host: folders first, then files.
 package struct Folder: Equatable, Sendable {
     /// The absolute folder browsed from.

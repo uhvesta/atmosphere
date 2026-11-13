@@ -30,7 +30,7 @@ use crate::event::{
 use crate::import::{Importable, Imported};
 use crate::log::{EventLog, Rested};
 use crate::summary::Summary;
-use crate::{Agent, Model, Watch};
+use crate::{Agent, FileVersion, Model, Watch};
 
 const RECORD_FILE: &str = "session.json";
 const EVENTS_FILE: &str = "events.jsonl";
@@ -1573,6 +1573,77 @@ impl<R: Runner> Agent for LocalAgent<R> {
             merged.push((checkout, upstream, outcome));
         }
         Ok(merged)
+    }
+
+    async fn file_versions(
+        &self,
+        id: &SessionId,
+        path: &str,
+    ) -> Result<Vec<FileVersion>, AgentError> {
+        let session = self.session(id)?;
+        let repositories = session.lock().record.repositories.clone();
+        let Some((repository, path)) = in_repository(&repositories, path) else {
+            return Ok(Vec::new());
+        };
+        let (times, checkpoints): (Vec<i64>, Vec<Vec<Snapshot>>) = session
+            .log
+            .events()
+            .iter()
+            .filter_map(|event| {
+                let snapshots = event.kind.snapshots()?;
+                Some((event.time_unix_ms, snapshots.to_vec()))
+            })
+            .unzip();
+        let turns = humata_workspace::versions(repository, &checkpoints, path)
+            .await
+            .map_err(workspace_failed(id))?;
+        Ok(turns
+            .into_iter()
+            .map(|turn| FileVersion {
+                turn,
+                time_unix_ms: times.get(turn).copied().unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    async fn file_at(&self, id: &SessionId, path: &str, turn: usize) -> Result<String, AgentError> {
+        let session = self.session(id)?;
+        let repositories = session.lock().record.repositories.clone();
+        let (repository, relative) =
+            in_repository(&repositories, path).ok_or_else(|| AgentError::NotSnapshotted {
+                session: id.clone(),
+                path: path.to_owned(),
+            })?;
+        let checkpoints: Vec<Vec<Snapshot>> = session
+            .log
+            .events()
+            .iter()
+            .filter_map(|event| event.kind.snapshots())
+            .map(<[Snapshot]>::to_vec)
+            .collect();
+        humata_workspace::file_at(repository, &checkpoints, turn, relative)
+            .await
+            .map_err(workspace_failed(id))
+    }
+}
+
+/// The repository a path from the session's folder is in, and the path in
+/// it: the folder is its one repository's worktree, or holds a worktree of
+/// each.
+fn in_repository<'a>(
+    repositories: &'a [Repository],
+    path: &'a str,
+) -> Option<(&'a Repository, &'a str)> {
+    match repositories {
+        [] => None,
+        [only] => Some((only, path)),
+        _ => {
+            let (name, rest) = path.split_once('/')?;
+            let repository = repositories
+                .iter()
+                .find(|repository| repository.name == name)?;
+            Some((repository, rest))
+        }
     }
 }
 
