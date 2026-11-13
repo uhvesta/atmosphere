@@ -3,6 +3,7 @@ import Foundation
 import HumataAppFeature
 import HumataDaemonClient
 import HumataDaemonLive
+import HumataDiagram
 import HumataProjects
 import SwiftUI
 
@@ -19,6 +20,18 @@ struct HumataApp: App {
         $0.modelServer = .live
         $0.modelFiles = .live
         $0.appActivity = .live()
+    }
+
+    /// The message box of the session open in the main window, for a part
+    /// of a diagram.
+    private var diagramSender: DiagramSender? {
+        guard let session = store.session, !session.session.archived else { return nil }
+        let title = session.session.name.isEmpty ? "Session" : session.session.name
+        return DiagramSender(title: title) { [store] png, note in
+            store.send(.session(.presented(.imagePasted(png))))
+            let note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !note.isEmpty { store.send(.session(.presented(.quoted(note)))) }
+        }
     }
 
     private static var version: String {
@@ -41,6 +54,13 @@ struct HumataApp: App {
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
         .handlesExternalEvents(matching: ["*"])
+
+        WindowGroup("Diagram", for: DiagramWindowValue.self) { $value in
+            if let value {
+                DiagramWindow(source: value.source, sender: diagramSender)
+            }
+        }
+        .defaultSize(width: 900, height: 640)
 
         Settings {
             SettingsView(store: store)

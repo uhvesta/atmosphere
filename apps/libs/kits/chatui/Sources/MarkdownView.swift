@@ -24,6 +24,7 @@ public struct MarkdownText: View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(blocks.indices, id: \.self) { index in
                 MarkdownBlockView(block: blocks[index]).equatable()
+                    .environment(\.markdownUnfinished, isWriting && index == blocks.count - 1)
             }
         }
     }
@@ -41,10 +42,45 @@ public struct MarkdownText: View {
     }
 }
 
+/// Draws fenced code of some languages as something else, such as a
+/// diagram; nil for code it doesn't draw, which shows as code.
+public struct CodeBlockRenderer: Sendable {
+    let render: @MainActor @Sendable (_ language: String, _ code: String) -> AnyView?
+
+    public init(_ render: @escaping @MainActor @Sendable (_ language: String, _ code: String) -> AnyView?) {
+        self.render = render
+    }
+}
+
+/// Puts code from a reply into the composer as a quote.
+public struct CodeQuoter: Sendable {
+    let quote: @MainActor @Sendable (_ language: String?, _ code: String) -> Void
+
+    public init(_ quote: @escaping @MainActor @Sendable (_ language: String?, _ code: String) -> Void) {
+        self.quote = quote
+    }
+}
+
+extension EnvironmentValues {
+    /// How fenced code is drawn where it isn't shown as code.
+    @Entry public var codeBlockRenderer: CodeBlockRenderer?
+    /// Where a code block's Quote puts it; with none, there's no Quote.
+    @Entry public var codeQuoter: CodeQuoter?
+    /// A block still being written, so drawn as it reads rather than by a
+    /// renderer, which would redraw with every word.
+    @Entry var markdownUnfinished = false
+}
+
 private struct MarkdownBlockView: View, Equatable {
     let block: MarkdownBlock
     /// How many lists this block is inside.
     var depth = 0
+    @Environment(\.codeBlockRenderer) private var renderer
+    @Environment(\.markdownUnfinished) private var unfinished
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.block == rhs.block && lhs.depth == rhs.depth
+    }
 
     var body: some View {
         switch block {
@@ -56,7 +92,11 @@ private struct MarkdownBlockView: View, Equatable {
                 .padding(.top, level <= 2 ? 4 : 2)
                 .accessibilityAddTraits(.isHeader)
         case .code(let language, let code):
-            CodeBlock(language: language, code: code)
+            if !unfinished, let language, let drawn = renderer?.render(language, code) {
+                drawn
+            } else {
+                CodeBlock(language: language, code: code)
+            }
         case .quote(let blocks):
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(blocks.indices, id: \.self) { MarkdownBlockView(block: blocks[$0], depth: depth) }
@@ -186,6 +226,7 @@ private struct CodeBlock: View {
     let language: String?
     let code: String
     @State private var copied = false
+    @Environment(\.codeQuoter) private var quoter
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -197,6 +238,17 @@ private struct CodeBlock: View {
                         .accessibilityHidden(true)
                 }
                 Spacer()
+                if let quoter {
+                    Button {
+                        quoter.quote(language, code)
+                    } label: {
+                        Label("Quote", systemImage: "text.quote")
+                    }
+                    .font(.caption)
+                    .buttonStyle(.borderless)
+                    .help("Put this code in the message box as a quote")
+                    .accessibilityLabel(Text("Quote Code in Message"))
+                }
                 Button {
                     copyToClipboard(code)
                     copied = true

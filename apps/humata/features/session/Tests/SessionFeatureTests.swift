@@ -904,6 +904,14 @@ final class SessionFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.pastes, [])
     }
 
+    func testAQuoteGoesAfterWhatsTypedAndLeavesRoomToWrite() async {
+        let store = queueStore("quote") { $0.uuid = .incrementing }
+        await store.send(\.binding.draft, "look at this")
+        await store.send(.quoted("```\nlet x = 1\n```"))
+        XCTAssertEqual(store.state.draft, "look at this\n\n```\nlet x = 1\n```\n\n")
+        XCTAssertTrue(store.state.canSend)
+    }
+
     func testARemovedPasteIsNotSent() async {
         let store = queueStore("removed-paste") { $0.uuid = .incrementing }
         await store.send(\.binding.draft, String(repeating: "x", count: 2_000))

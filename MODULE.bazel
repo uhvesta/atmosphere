@@ -243,6 +243,12 @@ copilot_cli(
     platform = "linux_x64",
 )
 
+# mermaid.js, bundled to draw diagrams. See
+# apps/humata/features/diagram/mermaid.bzl.
+mermaid_js = use_repo_rule("//apps/humata/features/diagram:mermaid.bzl", "mermaid_js")
+
+mermaid_js(name = "mermaid_js")
+
 # Claude Code, one repository per platform, each fetched only when a build
 # for that platform uses it. See apps/humata/claude/claude.bzl.
 claude_cli = use_repo_rule("//apps/humata/claude:claude.bzl", "claude_cli")

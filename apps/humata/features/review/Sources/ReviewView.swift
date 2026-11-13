@@ -1,6 +1,7 @@
 import AppKit
 import ComposableArchitecture
 import HumataDaemonClient
+import HumataDiagram
 import SwiftUI
 
 /// A session's changes to review: the range to read, the files by
@@ -508,6 +509,8 @@ package struct MarkdownBlockView: View {
         case .paragraph:
             Text(block.inline)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        case .code where block.language == "mermaid":
+            MermaidDiagram(source: block.text)
         case .code:
             Text(block.text)
                 .font(.system(size: 12, design: .monospaced))
@@ -662,6 +665,8 @@ private struct CommentEditor: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel") { store.send(.commentCancelled) }
+                Button("Quote in Message") { store.send(.quoteTapped) }
+                    .help("Put these lines, with what you wrote, in the message box to send now")
                 Button("Add Comment") { store.send(.commentSaved) }
                     .buttonStyle(.borderedProminent)
                     .disabled(store.comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

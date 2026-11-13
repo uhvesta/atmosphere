@@ -96,6 +96,34 @@ package struct ReviewFeature {
             return diff(selected)
         }
 
+        /// The picked lines as a quote for the message box, with the comment
+        /// written so far. A diff's lines keep their marks: what was taken
+        /// out shows too.
+        func quote(_ picked: Commenting) -> String? {
+            let path = picked.file.path
+            if !picked.quote.isEmpty {
+                return CodeQuote.text(
+                    path: path, start: picked.startLine, end: picked.endLine, language: "", code: picked.quote,
+                    comment: comment)
+            }
+            guard let file else { return nil }
+            let lines = file.hunks.flatMap(\.lines)
+            let range = picked.startLine...picked.endLine
+            guard let first = lines.firstIndex(where: { $0.new.map(range.contains) ?? false }),
+                let last = lines.lastIndex(where: { $0.new.map(range.contains) ?? false })
+            else { return nil }
+            let picks = lines[first...last]
+            let marked = picks.contains { $0.kind != .context }
+            let code = picks.map { line in
+                guard marked else { return line.text }
+                return (line.kind == .added ? "+" : line.kind == .removed ? "-" : " ") + line.text
+            }
+            return CodeQuote.text(
+                path: path, start: picked.startLine, end: picked.endLine,
+                language: marked ? "diff" : CodeQuote.language(of: path), code: code.joined(separator: "\n"),
+                comment: comment)
+        }
+
         package func diff(_ file: FileRef) -> FileDiff? {
             repositories.first { $0.name == file.repository }?.files.first { $0.path == file.path }
         }
@@ -166,7 +194,17 @@ package struct ReviewFeature {
         case viewedToggled(FileRef)
         case editTapped(ChangeEdit)
         case edited
+        /// Puts the picked lines, with the comment written so far, in the
+        /// message box as a quote, instead of keeping them for the review.
+        case quoteTapped
         case alert(PresentationAction<Alert>)
+        case delegate(Delegate)
+
+        @CasePathable
+        package enum Delegate: Equatable {
+            /// Text for the message box.
+            case quote(String)
+        }
     }
 
     @Dependency(\.daemon) var daemon
@@ -177,8 +215,14 @@ package struct ReviewFeature {
         BindingReducer()
         Reduce { state, action in
             switch action {
-            case .binding, .alert(.dismiss):
+            case .binding, .alert(.dismiss), .delegate:
                 return .none
+
+            case .quoteTapped:
+                guard let picked = state.commenting, let quote = state.quote(picked) else { return .none }
+                state.commenting = nil
+                state.comment = ""
+                return .send(.delegate(.quote(quote)))
 
             case .refresh:
                 return load(&state)

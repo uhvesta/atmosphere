@@ -1,0 +1,54 @@
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# Mermaid blocks in Markdown drawn as diagrams, with the bundled mermaid.js
+# in a web view kept off screen and no network. The page and script land in
+# the bundle's Resources of whatever links this. Needs Xcode: build with
+# `--config=xcode`.
+swift_library(
+    name = "diagram",
+    package_name = "humata",
+    srcs = glob(["Sources/*.swift"]),
+    data = [":mermaid"],
+    module_name = "HumataDiagram",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = [
+        "//apps/humata/app:__subpackages__",
+        "//apps/humata/features:__subpackages__",
+    ],
+    deps = ["//apps/libs/kits/chatui"],
+)
+
+filegroup(
+    name = "mermaid",
+    srcs = [
+        "Resources/mermaid.html",
+        "@mermaid_js//:mermaid.min.js",
+    ],
+)
+
+# Draws real diagrams, so it runs the bundled mermaid.js.
+swift_library(
+    name = "tests_lib",
+    package_name = "humata",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":diagram"],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)
+
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "mermaid.bzl",
+    ],
+    tags = ["starlark"],
+)

@@ -81,6 +81,26 @@ final class ReviewFeatureTests: XCTestCase {
         }
     }
 
+    func testPickedLinesQuotedGoToTheMessageBoxWithTheCommentNotTheReview() async throws {
+        let (daemon, session) = try await session()
+        let store = store(daemon, session)
+        await store.send(.refresh)
+        await store.receive(\.loaded)
+        await store.send(.lineTapped(1, extending: false))
+        await store.send(.lineTapped(2, extending: true))
+        await store.send(.binding(.set(\.comment, "Why add?")))
+        await store.send(.quoteTapped) {
+            $0.commenting = nil
+            $0.comment = ""
+        }
+        // The new file's two lines, marked as added, then the comment.
+        let code = "+def add(a, b):\n+    return a + b"
+        await store.receive(
+            \.delegate.quote,
+            CodeQuote.text(path: "sum.py", start: 1, end: 2, language: "diff", code: code, comment: "Why add?"))
+        XCTAssertEqual(store.state.pending, 0)
+    }
+
     func testLinesCantBeCommentedOnInATurnsChanges() async throws {
         let (daemon, session) = try await session()
         let store = store(daemon, session)

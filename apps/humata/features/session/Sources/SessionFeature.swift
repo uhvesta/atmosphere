@@ -408,6 +408,9 @@ package struct SessionFeature {
         case imagesAdded([URL])
         /// An image pasted into the box.
         case imagePasted(Data)
+        /// Text added to the end of the box, such as code quoted from a
+        /// reply, a file or a diff.
+        case quoted(String)
         /// Paste Image was picked with no image on the clipboard.
         case noImageToPaste
         /// An image in the box is ready to send, or couldn't be read.
@@ -635,6 +638,15 @@ package struct SessionFeature {
                 }
                 state.$savedDraft.withLock { $0 = state.draft }
                 return .none
+
+            case .quoted(let text):
+                let draft = state.draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                state.draft = draft.isEmpty ? text + "\n\n" : state.draft + "\n\n" + text + "\n\n"
+                state.$savedDraft.withLock { $0 = state.draft }
+                return .none
+
+            case .review(.delegate(.quote(let text))):
+                return .send(.quoted(text))
 
             case .removePasteTapped(let id):
                 state.pastes.removeAll { $0.id == id }

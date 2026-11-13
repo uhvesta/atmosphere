@@ -3,6 +3,7 @@ import FlowKit
 import HumataAppFeature
 import HumataBoard
 import HumataDaemonClient
+import HumataDiagram
 import HumataHosts
 import HumataProjects
 import HumataReview
@@ -174,6 +175,62 @@ final class MacFlowSnapshotTests: XCTestCase {
         }
         await flow.step("sent")
         flow.finish()
+    }
+
+    /// A reply with a mermaid block shows it drawn; it opens large in its
+    /// own window, where a region dragged out can go to the chat.
+    func testADiagramInAReply() async throws {
+        let daemon = InMemoryDaemon { _ in
+            [
+                .say(
+                    """
+                    Here's how a message gets to the agent:
+
+                    ```mermaid
+                    graph LR
+                      App[Humata] -->|socket| Daemon[humatad]
+                      Daemon -->|stdin| Agent[Claude Code]
+                      Agent -->|events| Daemon
+                      Daemon -->|watch| App
+                    ```
+
+                    The daemon keeps the history, so the app can reconnect.
+                    """)
+            ]
+        }
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, name: "How it works"))
+        try await daemon.client.send(session.id, "Draw how a message gets to the agent", .enqueue)
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+            $0.uuid = .incrementing
+        }
+        let flow = FlowRecorder("diagram", AppView(store: store))
+
+        try await until { store.sidebar.sessions.count == 1 && store.daemon == .running }
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { (store.session?.items.count ?? 0) >= 2 }
+        let source = "graph LR\n  App[Humata] -->|socket| Daemon[humatad]\n  Daemon -->|stdin| Agent[Claude Code]\n"
+            + "  Agent -->|events| Daemon\n  Daemon -->|watch| App"
+        _ = try await MermaidRenderer.shared.image(source, dark: false)
+        try await Task.sleep(for: .milliseconds(300))
+        await flow.step("in the chat")
+        flow.finish()
+
+        let sender = DiagramSender(title: "How it works") { png, note in
+            store.send(.session(.presented(.imagePasted(png))))
+            store.send(.session(.presented(.quoted(note))))
+        }
+        let window = FlowRecorder("diagram-window", DiagramWindow(source: source, sender: sender))
+        _ = try await MermaidRenderer.shared.image(source, dark: false, scale: DiagramWindow.scale)
+        try await Task.sleep(for: .milliseconds(300))
+        await window.step("large")
+        window.finish()
     }
 
     /// A command long enough that it must show whole before it's allowed.

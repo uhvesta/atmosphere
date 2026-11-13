@@ -1,0 +1,11 @@
+[Window/StandardWindow] ""
+  [Image] "Diagram" help: "Drag across it to pick a part to send to the chat" id: diagram.large
+  [Toolbar] ""
+    [Button] "Zoom Out"
+    [StaticText] "" value: "Zoom"
+    [Button] "Zoom In"
+    [Button] "Fit"
+  [Button/CloseButton] ""
+  [Button/ZoomButton] ""
+  [Button/MinimizeButton] ""
+  [StaticText] ""

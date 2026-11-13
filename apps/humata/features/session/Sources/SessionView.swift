@@ -21,6 +21,13 @@ package struct SessionView: View {
         self.store = store
     }
 
+    /// A reply's code into the message box, as a quote.
+    private var quoter: CodeQuoter {
+        CodeQuoter { [store] language, code in
+            store.send(.quoted(CodeQuote.text(path: nil, start: nil, end: nil, language: language ?? "", code: code)))
+        }
+    }
+
     package var body: some View {
         VStack(spacing: 0) {
             header
@@ -38,6 +45,7 @@ package struct SessionView: View {
             } else {
                 chat
                     .alert($store.scope(state: \.proposals.alert, action: \.proposals.alert))
+                    .environment(\.codeQuoter, store.session.archived ? nil : quoter)
             }
             if store.disconnected, !store.session.hostOffline {
                 ChatNotice(

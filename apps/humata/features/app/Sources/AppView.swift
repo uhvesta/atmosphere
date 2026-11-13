@@ -1,5 +1,7 @@
+import ChatUI
 import ComposableArchitecture
 import HumataBoard
+import HumataDiagram
 import HumataHosts
 import HumataProjects
 import HumataSearch
@@ -71,6 +73,8 @@ package struct AppView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             DaemonBanner(store: store)
         }
+        // Mermaid blocks in chats drawn as diagrams.
+        .environment(\.codeBlockRenderer, MermaidRenderer.codeBlocks)
         .task {
             store.send(.task)
             // Not awaited, so the sidebar's poll, its notices and the Dock

@@ -54,6 +54,7 @@
     [TextField] "Comment" value: "Call it `total`; `add` reads like a verb."
     [StaticText] "" value: "It's sent with the review, with your other comments."
     [Button] "Cancel"
+    [Button] "Quote in Message" help: "Put these lines, with what you wrote, in the message box to send now"
     [Button] "Add Comment"
     [StaticText] "" value: "2" help: "Click to comment on this line; Shift-click to comment on several"
     [StaticText] "" value: "+" help: "Click to comment on this line; Shift-click to comment on several"
