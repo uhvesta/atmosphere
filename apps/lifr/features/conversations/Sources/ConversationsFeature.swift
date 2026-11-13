@@ -188,6 +188,9 @@ package struct ConversationsFeature {
         /// Asks before deleting every archived conversation.
         case deleteArchivedTapped
         case failed(any Error)
+        /// A save found a newer copy, written on another device, and kept
+        /// that one.
+        case newerKept(Conversation)
         case deleteFailed(any Error)
         case chats(IdentifiedActionOf<ChatFeature>)
         case confirm(PresentationAction<Confirm>)
@@ -376,6 +379,23 @@ package struct ConversationsFeature {
                 state.loadError = String(describing: error)
                 return .none
 
+            case .newerKept(let newer):
+                // A chat writing a reply keeps it: the reply is newer still,
+                // so it's kept over that copy when it's done.
+                guard state.conversations[id: newer.id] != nil, state.chats[id: newer.id]?.isWorking != true else {
+                    return .none
+                }
+                state.conversations[id: newer.id] = newer
+                state.chats[id: newer.id]?.conversation = newer
+                state.alert = AlertState {
+                    TextState("Changed on Another Device")
+                } message: {
+                    TextState(
+                        "“\(newer.title)” has newer messages from another device, so that copy is shown. "
+                            + "Make your change again if it's gone.")
+                }
+                return .none
+
             case .failed(let error):
                 state.alert = AlertState {
                     TextState("Conversations")
@@ -436,8 +456,19 @@ package struct ConversationsFeature {
         .cancellable(id: CancelID.related, cancelInFlight: true)
     }
 
+    /// Keeps `conversation`, or says a newer copy was kept instead.
     private func save(_ conversation: Conversation) -> Effect<Action> {
-        kept(saving: conversation.id) { [conversations] in try await conversations.save(conversation) }
+        let newer = LockIsolated<Conversation?>(nil)
+        let change = saves.enqueue(saving: conversation.id) { [conversations] in
+            let kept = try await conversations.save(conversation)
+            newer.setValue(kept)
+        }
+        return .run { send in
+            try await change.value
+            if let newer = newer.value { await send(.newerKept(newer)) }
+        } catch: { error, send in
+            await send(.failed(error))
+        }
     }
 
     private func delete(_ ids: [UUID], in state: inout State) -> Effect<Action> {

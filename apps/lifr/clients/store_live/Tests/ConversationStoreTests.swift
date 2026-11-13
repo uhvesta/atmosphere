@@ -61,6 +61,22 @@ final class ConversationStoreTests: XCTestCase {
         XCTAssertEqual(reloaded, [chat])
     }
 
+    func testSavingAnOlderCopyKeepsTheNewerOneAndReturnsIt() async throws {
+        let (store, _, _) = try store()
+        let older = conversation("Plan the week")
+        var newer = older
+        newer.messages.append(ChatMessage(id: UUID(), role: .assistant, text: "Here's a plan.", at: now + 60))
+        try await store.save(newer)
+
+        var renamed = older
+        renamed.rename("Week")
+        let kept = try await store.save(renamed)
+
+        XCTAssertEqual(kept, newer)
+        let loaded = try await store.load()
+        XCTAssertEqual(loaded, [newer])
+    }
+
     func testSyncingMovesAConversationToICloudAndStoppingBringsItBack() async throws {
         let (store, synced, local) = try store()
         var chat = conversation("Hello")

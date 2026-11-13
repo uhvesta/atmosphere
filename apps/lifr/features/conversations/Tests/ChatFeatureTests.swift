@@ -2100,7 +2100,7 @@ final class ChatFeatureTests: XCTestCase {
                 return count == 1
             }
             if first { try await Task.sleep(for: .milliseconds(200)) }
-            try await stored.save(conversation)
+            return try await stored.save(conversation)
         }
         let store = list(kept)
 
@@ -2274,6 +2274,26 @@ final class ChatFeatureTests: XCTestCase {
         var conversation = Conversation(id: UUID(), createdAt: now)
         conversation.messages = [ChatMessage(id: UUID(), role: .person, text: text, at: now)]
         return conversation
+    }
+
+    func testAChangeToAConversationAnotherDeviceWroteSinceShowsTheirsAndSaysSo() async throws {
+        let older = chat("Plan the week")
+        let kept = ConversationsClient.inMemory([older])
+        let store = list(kept)
+        await store.send(.task)
+        await store.skipReceivedActions()
+        var newer = older
+        newer.messages.append(ChatMessage(id: UUID(), role: .assistant, text: "Here's a plan.", at: now + 60))
+        _ = try await kept.save(newer)
+
+        await store.send(.archiveTapped(older.id))
+        await store.skipReceivedActions(strict: false)
+        await store.finish()
+
+        XCTAssertEqual(store.state.conversations[id: older.id], newer)
+        XCTAssertNotNil(store.state.alert)
+        let saved = try await kept.load()
+        XCTAssertEqual(saved, [newer])
     }
 
     func testArchivingMovesAConversationOutOfTheListAndBack() async throws {

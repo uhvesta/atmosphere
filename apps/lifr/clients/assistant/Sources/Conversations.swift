@@ -100,8 +100,9 @@ package struct ConversationsClient: Sendable {
     package var load: @Sendable () async throws -> [Conversation]
     /// Adds the conversation, or replaces the one with its ID, where its
     /// `isSynced` says: a synced one moves to iCloud, and one that stops
-    /// syncing leaves iCloud and stays here.
-    package var save: @Sendable (_ conversation: Conversation) async throws -> Void
+    /// syncing leaves iCloud and stays here. A newer copy already kept,
+    /// such as one another device wrote, stays and is returned instead.
+    package var save: @Sendable (_ conversation: Conversation) async throws -> Conversation?
     /// Removes conversations here and, if they were synced, from iCloud.
     package var delete: @Sendable (_ ids: [UUID]) async throws -> Void
 }
@@ -112,7 +113,13 @@ extension ConversationsClient {
         let stored = LockIsolated(Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) }))
         return ConversationsClient(
             load: { Array(stored.value.values) },
-            save: { conversation in stored.withValue { $0[conversation.id] = conversation } },
+            save: { conversation in
+                stored.withValue { stored in
+                    if let kept = stored[conversation.id], kept.updatedAt > conversation.updatedAt { return kept }
+                    stored[conversation.id] = conversation
+                    return nil
+                }
+            },
             delete: { ids in stored.withValue { for id in ids { $0[id] = nil } } }
         )
     }

@@ -143,17 +143,20 @@ package actor ConversationStore {
     }
 
     /// Saves into the store `isSynced` names, then removes any copy from
-    /// the other one.
-    package func save(_ conversation: Conversation) throws(ConversationStoreError) {
+    /// the other one. Returns the newer copy kept instead, such as one from
+    /// another device, when there is one.
+    @discardableResult
+    package func save(_ conversation: Conversation) throws(ConversationStoreError) -> Conversation? {
         let (target, other) = conversation.isSynced ? (synced, local) : (local, synced)
         do {
             let context = ModelContext(target)
-            try Self.upsert(conversation, in: context)
+            if let newer = try Self.upsert(conversation, in: context) { return newer }
             try context.save()
             let id = conversation.id
             let leaving = ModelContext(other)
             try leaving.delete(model: StoredConversation.self, where: #Predicate { $0.id == id })
             try leaving.save()
+            return nil
         } catch {
             throw .saveFailed(error)
         }
@@ -251,16 +254,19 @@ package actor ConversationStore {
     }
 
     /// Adds or replaces the conversation; a newer copy already there, such
-    /// as one from another device, wins.
-    private static func upsert(_ conversation: Conversation, in context: ModelContext) throws {
+    /// as one from another device, wins and is returned.
+    private static func upsert(_ conversation: Conversation, in context: ModelContext) throws -> Conversation? {
         let id = conversation.id
         let existing = try context.fetch(FetchDescriptor<StoredConversation>(predicate: #Predicate { $0.id == id }))
-        if let newest = existing.map(\.updatedAt).max(), newest > conversation.updatedAt { return }
+        if let newest = existing.max(by: { $0.updatedAt < $1.updatedAt }), newest.updatedAt > conversation.updatedAt {
+            return try Blob.decode(Conversation.self, from: newest.conversation ?? Data())
+        }
         existing.forEach(context.delete)
         let record = StoredConversation(id: id)
         record.updatedAt = conversation.updatedAt
         record.conversation = try Blob.encode(conversation)
         context.insert(record)
+        return nil
     }
 }
 
