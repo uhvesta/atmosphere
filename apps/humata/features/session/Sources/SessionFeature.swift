@@ -43,8 +43,9 @@ package struct SessionFeature {
             get { log }
             set {
                 log = newValue
-                chat = Chat()
-                for event in log { chat.add(event) }
+                var chat = Chat()
+                for event in newValue { chat.add(event) }
+                self.chat = chat
                 derive()
             }
         }
@@ -221,74 +222,32 @@ package struct SessionFeature {
         /// Whether a turn has started and not yet ended. Kept, as views
         /// read it on every key typed.
         package private(set) var isWorking = false
-        private static func working(_ events: IdentifiedArrayOf<SessionEvent>) -> Bool {
-            for event in events.reversed() {
-                switch event.kind {
-                case .turnStarted: return true
-                case .turnEnded, .idle: return false
-                default: continue
-                }
-            }
-            return false
-        }
 
-        /// Works out from the events what the chat shows, so views read it
-        /// instead of working it out again.
+        /// Takes from the chat what its events add up to, kept there as each
+        /// event comes, so views read it instead of working it out again.
+        /// Sets only what changed, so views showing the rest aren't drawn
+        /// again.
         private mutating func derive() {
-            isWorking = Self.working(log)
-            lastMessage = Self.lastMessage(log)
-            lastTurnFailed = Self.failed(log)
-            usage = Usage.total(log)
-            // A request waits until it's answered or its turn ends.
-            var waiting: [SessionEvent] = []
-            for event in log {
-                switch event.kind {
-                case .permissionRequested: waiting.append(event)
-                case .permissionCompleted(let request, _, _, _):
-                    waiting.removeAll { if case .permissionRequested(request, _, _) = $0.kind { true } else { false } }
-                case .turnEnded: waiting = []
-                default: continue
-                }
-            }
-            pendingPermissions = waiting
+            if isWorking != chat.working { isWorking = chat.working }
+            if lastMessage != chat.lastMessage { lastMessage = chat.lastMessage }
+            if lastTurnFailed != chat.lastTurnFailed { lastTurnFailed = chat.lastTurnFailed }
+            if !lastTurnFailed, retrying { retrying = false }
+            if usage != chat.usage { usage = chat.usage }
+            if pendingPermissions != chat.pendingPermissions { pendingPermissions = chat.pendingPermissions }
             if !answering.isEmpty {
                 let ids = Set(
-                    waiting.compactMap { event -> String? in
+                    pendingPermissions.compactMap { event -> String? in
                         if case .permissionRequested(let id, _, _) = event.kind { id } else { nil }
                     })
-                answering.formIntersection(ids)
+                let kept = answering.intersection(ids)
+                if kept != answering { answering = kept }
             }
-            queued = []
-            dropped = []
-            for event in log {
-                switch event.kind {
-                case .messageQueued(let id, let text, let images):
-                    // Again for one still queued: it was edited, or joined.
-                    if let index = queued.firstIndex(where: { $0.id == id }) {
-                        queued[index].text = text
-                        queued[index].images = images
-                    } else {
-                        queued.append(QueuedMessage(id: id, text: text, images: images))
-                    }
-                case .dequeued(let id, let wasDropped):
-                    if wasDropped, let message = queued.first(where: { $0.id == id }) { dropped.append(message) }
-                    queued.removeAll { $0.id == id }
-                case .userMessage: dropped = []
-                default: continue
-                }
-            }
+            if queued != chat.queued { queued = chat.queued }
             let putBack = putBack
-            dropped.removeAll { putBack.contains($0.id) }
-            retryableFailure = nil
-            if !lastTurnFailed { retrying = false }
-            if lastTurnFailed, lastMessage != nil {
-                for item in items.reversed() {
-                    if case .failure(let id, _) = item {
-                        retryableFailure = id
-                        break
-                    }
-                }
-            }
+            let dropped = chat.dropped.filter { !putBack.contains($0.id) }
+            if self.dropped != dropped { self.dropped = dropped }
+            let retryable = lastTurnFailed && lastMessage != nil ? chat.lastFailure : nil
+            if retryableFailure != retryable { retryableFailure = retryable }
         }
 
         /// Whether the agent is waiting on the person to answer a request.
@@ -301,25 +260,13 @@ package struct SessionFeature {
 
         /// The person's last message, to send again after a failed turn.
         package private(set) var lastMessage: String?
-        private static func lastMessage(_ events: IdentifiedArrayOf<SessionEvent>) -> String? {
-            for event in events.reversed() {
-                if case .userMessage(let text, _) = event.kind { return text }
-            }
-            return nil
-        }
 
         /// Whether the last turn failed and nothing has started since.
         package private(set) var lastTurnFailed = false
-        private static func failed(_ events: IdentifiedArrayOf<SessionEvent>) -> Bool {
-            for event in events.reversed() {
-                switch event.kind {
-                case .failed: return true
-                case .turnStarted, .userMessage: return false
-                default: continue
-                }
-            }
-            return false
-        }
+
+        /// How many turns have started and ended in the history.
+        var turnsStarted: Int { chat.turnsStarted }
+        var turnsEnded: Int { chat.turnsEnded }
 
         /// What's kept of a session looked away from while Humata runs:
         /// the view it showed and the file comments not sent yet.
@@ -345,11 +292,11 @@ package struct SessionFeature {
 
         /// Whether `call` is the agent proposing a task or a spec edit.
         func proposes(_ call: String) -> Bool {
-            events.contains { event in
-                guard case .toolStarted(call, let tool, _) = event.kind else { return false }
-                return tool.hasSuffix("propose_task") || tool.hasSuffix("propose_spec_edit")
-            }
+            chat.proposals.contains(call)
         }
+
+        /// The tool calls that propose a task or a spec edit.
+        var proposingCalls: Set<String> { chat.proposals }
 
         mutating func receive(_ event: SessionEvent) {
             receive([event])
@@ -358,9 +305,16 @@ package struct SessionFeature {
         /// Takes in `batch` and works out the chat once, so a history of
         /// thousands of events shows at once instead of one at a time.
         mutating func receive(_ batch: [SessionEvent]) {
-            var log = log
+            // The log is taken out while it's changed and put back once: the
+            // state is observed, and changing it where it is copies it whole
+            // for each event, which for a long history is seconds.
+            var log = self.log
+            self.log = []
             var added: [SessionEvent] = []
             var replaced = false
+            var stale = false
+            var streaming = self.streaming
+            var streamed = self.streamed
             for event in batch {
                 switch event.kind {
                 case .assistantDelta(let text):
@@ -387,23 +341,32 @@ package struct SessionFeature {
                 // Code may have changed off the Review tab: it reads again
                 // when next shown.
                 switch event.kind {
-                case .toolCompleted, .turnEnded: review.stale = true
+                case .toolCompleted, .turnEnded: stale = true
                 default: break
                 }
             }
-            guard replaced || !added.isEmpty else { return }
+            if stale { review.stale = true }
+            if streaming != self.streaming { self.streaming = streaming }
+            if streamed != self.streamed { self.streamed = streamed }
+            guard replaced || !added.isEmpty else {
+                self.log = log
+                return
+            }
             if replaced {
                 events = log
             } else {
-                // Live events go on the end of the chat; only a changed
-                // event means working it out again.
                 self.log = log
+                // Live events go on the end of the chat; only a changed
+                // event means working it out again. Taken out to change, as
+                // the log is.
+                var chat = self.chat
+                self.chat = Chat()
                 for event in added { chat.add(event) }
+                self.chat = chat
                 derive()
             }
             if batch.contains(where: { $0.kind == .turnStarted }) {
-                let started = log.filter { $0.kind == .turnStarted }.count
-                review.turns = max(review.turns, started)
+                review.turns = max(review.turns, chat.turnsStarted)
             }
         }
     }
@@ -641,7 +604,7 @@ package struct SessionFeature {
     private func markSeen(_ state: State) -> Effect<Action> {
         guard activity.isActive() else { return .none }
         let session = state.session.id
-        let seen = state.events.filter { if case .turnEnded = $0.kind { true } else { false } }.count
+        let seen = state.turnsEnded
         return .run { _ in try? await daemon.markSeen(session, seen) }
             .cancellable(id: CancelID.seen, cancelInFlight: true)
     }

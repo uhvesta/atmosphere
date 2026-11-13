@@ -31,14 +31,22 @@ public struct MarkdownText: View {
 
     /// What's been read of the reply, kept from one update to the next. It
     /// isn't observed: the text it's read from is.
-    private final class StreamBox {
+    @MainActor private final class StreamBox {
         private var stream = MarkdownStream()
 
         func blocks(of text: String, writing: Bool) -> [MarkdownBlock] {
+            // A finished text read lately isn't read again, as when its row
+            // scrolls away and back and this box starts over.
+            if !writing, let kept = Self.finished.object(forKey: text as NSString) { return kept.value }
             stream.update(text)
-            guard writing, let last = stream.blocks.last else { return stream.blocks }
+            guard writing, let last = stream.blocks.last else {
+                if !writing { Self.finished.setObject(Kept(stream.blocks), forKey: text as NSString) }
+                return stream.blocks
+            }
             return stream.blocks.dropLast() + [Markdown.inProgress(last)]
         }
+
+        @MainActor private static let finished = NSCache<NSString, Kept<[MarkdownBlock]>>()
     }
 }
 
@@ -155,6 +163,27 @@ struct InlineText: View {
         for range in code { string[range].backgroundColor = Color.secondary.opacity(0.15) }
         return string
     }
+
+    /// `styled(text)`, kept for the texts drawn lately, as a message is
+    /// drawn again each time its row comes back into view.
+    @MainActor static func cachedStyled(_ text: String) -> AttributedString {
+        let key = text as NSString
+        if let kept = styledTexts.object(forKey: key) { return kept.value }
+        let string = styled(text)
+        styledTexts.setObject(Kept(string), forKey: key)
+        return string
+    }
+
+    @MainActor private static let styledTexts = NSCache<NSString, Kept<AttributedString>>()
+}
+
+/// A value an `NSCache` can hold.
+final class Kept<Value> {
+    let value: Value
+
+    init(_ value: Value) {
+        self.value = value
+    }
 }
 
 private struct ListBlock: View {
@@ -227,6 +256,8 @@ private struct CodeBlock: View {
     let code: String
     @State private var copied = false
     @Environment(\.codeQuoter) private var quoter
+    /// Code longer than this many lines scrolls in a box of its own.
+    private static let boxedLines = 40
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -266,18 +297,32 @@ private struct CodeBlock: View {
             }
             .padding(.horizontal, 10)
             .padding(.top, 6)
-            ScrollView(.horizontal) {
-                Text(CodeSyntax.colored(code, language: language))
-                    .font(.system(.callout, design: .monospaced))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 10)
-                    .padding(.top, 4)
-                    .padding(.bottom, 10)
-                    .accessibilityLabel(language.map { Text("\(CodeSyntax.name(of: $0)) code") } ?? Text("Code"))
-                    .accessibilityValue(code)
-                    .accessibilityIdentifier(ModelText.identifier)
+            let preview = TextPreview(code, lines: Self.boxedLines, tallBytes: .max)
+            let text = Text(CodeSyntax.cachedColored(preview.shown, language: language))
+                .font(.system(.callout, design: .monospaced))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 10)
+                .padding(.top, 4)
+                .padding(.bottom, 10)
+                .accessibilityLabel(language.map { Text("\(CodeSyntax.name(of: $0)) code") } ?? Text("Code"))
+                .accessibilityValue(preview.shown)
+                .accessibilityIdentifier(ModelText.identifier)
+            if preview.isTall {
+                // Long code scrolls in a box of its own, so the reply
+                // around it stays quick to lay out.
+                ScrollView([.horizontal, .vertical]) { text }
+                    .frame(height: 480)
+            } else {
+                ScrollView(.horizontal) { text }
+                    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             }
-            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            if preview.isCut {
+                Text("Only the first 20,000 characters show here; Copy takes all of it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 8)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.fill.quaternary, in: .rect(cornerRadius: 10))

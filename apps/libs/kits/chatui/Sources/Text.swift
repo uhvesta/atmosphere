@@ -117,19 +117,93 @@ public struct SelectTextSheet: View {
         }
     }
 #else
-    struct SelectableText: View {
+    /// Text that can't be changed, to select any part of. A text view lays
+    /// out only what's on screen, so even a long log opens at once, where
+    /// SwiftUI's Text lays all of it out first.
+    struct SelectableText: NSViewRepresentable {
         let text: String
 
-        var body: some View {
-            ScrollView {
-                Text(text)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
+        func makeNSView(context: Context) -> NSScrollView {
+            let scroll = NSTextView.scrollableTextView()
+            scroll.drawsBackground = false
+            if let view = scroll.documentView as? NSTextView {
+                view.isEditable = false
+                view.isSelectable = true
+                view.isRichText = false
+                view.drawsBackground = false
+                view.textContainerInset = NSSize(width: 12, height: 16)
+                view.setAccessibilityIdentifier("selectable-text")
             }
+            return scroll
+        }
+
+        func updateNSView(_ scroll: NSScrollView, context: Context) {
+            // Set again only for other text: setting a long one lays it out
+            // again.
+            guard context.coordinator.text != text, let view = scroll.documentView as? NSTextView else { return }
+            context.coordinator.text = text
+            view.textStorage?.setAttributedString(
+                NSAttributedString(
+                    string: text,
+                    attributes: [
+                        .font: NSFont.preferredFont(forTextStyle: .body), .foregroundColor: NSColor.labelColor,
+                    ]))
+        }
+
+        func makeCoordinator() -> Shown { Shown() }
+
+        /// The text last put in the view.
+        final class Shown {
+            var text: String?
         }
     }
 #endif
+
+/// The start of a long text, for a chat to show without laying all of it
+/// out: all of a short text, and whether what shows is tall enough to
+/// scroll in a box of its own. Worked out once, as a text can be megabytes.
+public struct TextPreview: Hashable, Sendable {
+    /// What shows: the text, or its start, ending at a whole character.
+    public let shown: String
+    /// The whole text's length in characters when `shown` is only its
+    /// start; nil when it's all of it.
+    public let length: Int?
+    /// Whether `shown` has more lines, or more text, than reads well in the
+    /// chat's flow, so it goes in a box that scrolls.
+    public let isTall: Bool
+
+    /// Whether `shown` leaves some of the text out.
+    public var isCut: Bool { length != nil }
+
+    /// The start of `text`, up to `limit` bytes of UTF-8; tall past `lines`
+    /// lines or `tallBytes` bytes, as one long line wraps to many.
+    public init(_ text: String, limit: Int = 20_000, lines: Int = 24, tallBytes: Int = 2_000) {
+        let utf8 = text.utf8
+        if utf8.count <= limit {
+            shown = text
+            length = nil
+        } else {
+            var end = utf8.index(utf8.startIndex, offsetBy: max(limit, 0))
+            // Back to the start of a character, not into the middle of one.
+            while end > utf8.startIndex, UTF8.isContinuation(utf8[end]) { end = utf8.index(before: end) }
+            shown = String(text[..<end])
+            length = text.count
+        }
+        isTall = shown.utf8.count > tallBytes || Self.lines(in: shown, atMost: lines + 1) > lines
+    }
+
+    /// How many lines `text` has, counting no further than `limit`, so a
+    /// long text isn't read to its end to learn that it's long.
+    public static func lines(in text: String, atMost limit: Int) -> Int {
+        var lines = 1
+        guard lines < limit else { return limit }
+        for byte in text.utf8 where byte == UInt8(ascii: "\n") {
+            lines += 1
+            if lines >= limit { return limit }
+        }
+        return lines
+    }
+}
 
 extension View {
     /// Lets the Mac select any part of the text by dragging. On iOS a long

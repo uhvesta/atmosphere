@@ -183,4 +183,16 @@ extension CodeSyntax {
         }
         return string
     }
+
+    /// `colored(code, language:)`, kept for the code drawn lately, as a
+    /// reply's code is drawn again each time its row comes back into view.
+    @MainActor static func cachedColored(_ code: String, language: String?) -> AttributedString {
+        let key = "\(language ?? "")\u{0}\(code)" as NSString
+        if let kept = coloredCode.object(forKey: key) { return kept.value }
+        let string = colored(code, language: language)
+        coloredCode.setObject(Kept(string), forKey: key)
+        return string
+    }
+
+    @MainActor private static let coloredCode = NSCache<NSString, Kept<AttributedString>>()
 }

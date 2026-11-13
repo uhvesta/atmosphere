@@ -1,3 +1,4 @@
+import ChatUI
 import Foundation
 import HumataDaemonClient
 
@@ -42,7 +43,12 @@ package struct ToolCall: Hashable, Sendable {
     /// otherwise nil.
     package var subject: String?
     /// Nil while it runs.
-    package var output: String?
+    package var output: String? {
+        didSet { preview = output.map { TextPreview($0) } }
+    }
+    /// What the chat shows of the output, worked out once when it comes,
+    /// not each time the row is drawn.
+    package private(set) var preview: TextPreview?
     package var succeeded: Bool?
     package var permission: Permission?
     /// What it writes to its file, when its arguments say; nil for calls
@@ -57,6 +63,7 @@ package struct ToolCall: Hashable, Sendable {
         self.tool = tool
         self.subject = subject
         self.output = output
+        preview = output.map { TextPreview($0) }
         self.succeeded = succeeded
         self.permission = permission
         self.change = change
@@ -74,24 +81,6 @@ package struct ToolCall: Hashable, Sendable {
         }
 
         /// The lines going from `old` to `new` takes out and puts in.
-        /// The same as `between`, kept for the texts asked about lately, as
-        /// a card draws again with every change around it.
-        @MainActor
-        package static func cachedBetween(_ old: String, _ new: String) -> Change {
-            let key = "\(old)\u{0}\(new)" as NSString
-            if let kept = changes.object(forKey: key) { return kept.change }
-            let change = between(old, new)
-            changes.setObject(Kept(change: change), forKey: key)
-            return change
-        }
-
-        private final class Kept {
-            let change: Change
-            init(change: Change) { self.change = change }
-        }
-
-        @MainActor private static let changes = NSCache<NSString, Kept>()
-
         package static func between(_ old: String, _ new: String) -> Change {
             let old = old.isEmpty ? [] : old.components(separatedBy: "\n")
             let new = new.isEmpty ? [] : new.components(separatedBy: "\n")
@@ -199,6 +188,79 @@ struct Chat: Equatable {
     private var turn: [SessionEvent] = []
     private var rewound: Int?
 
+    /// Whether a turn has started and not yet ended.
+    private(set) var working = false
+    /// The person's last message.
+    private(set) var lastMessage: String?
+    /// Whether the last turn failed and nothing has started since.
+    private(set) var lastTurnFailed = false
+    /// The newest failure's row.
+    private(set) var lastFailure: String?
+    /// Everything the session's turns report used; nil if they report nothing.
+    private(set) var usage: Usage?
+    /// Requests for permission not answered yet, whose turn hasn't ended.
+    private(set) var pendingPermissions: [SessionEvent] = []
+    /// Messages waiting for their own turn, first to run first.
+    private(set) var queued: [QueuedMessage] = []
+    /// Queued messages that never ran, since the person last sent one.
+    private(set) var dropped: [QueuedMessage] = []
+    private(set) var turnsStarted = 0
+    private(set) var turnsEnded = 0
+    /// The tool calls proposing a task or a spec edit.
+    private(set) var proposals: Set<String> = []
+
+    /// Keeps what the events add up to, as each comes, so nothing reads
+    /// the whole history again for a new event.
+    private mutating func tally(_ event: SessionEvent) {
+        switch event.kind {
+        case .turnStarted:
+            working = true
+            lastTurnFailed = false
+            turnsStarted += 1
+        case .turnEnded:
+            working = false
+            turnsEnded += 1
+            pendingPermissions = []
+        case .idle:
+            working = false
+        case .userMessage(let text, _):
+            lastMessage = text
+            lastTurnFailed = false
+            dropped = []
+        case .failed:
+            lastTurnFailed = true
+            lastFailure = event.id
+        case .usage(let model, let input, let output, let premium):
+            var total = usage ?? Usage(model: model)
+            total.model = model
+            total.inputTokens += input
+            total.outputTokens += output
+            total.premiumRequests += premium
+            usage = total
+        case .permissionRequested:
+            pendingPermissions.append(event)
+        case .permissionCompleted(let request, _, _, _):
+            pendingPermissions.removeAll {
+                if case .permissionRequested(request, _, _) = $0.kind { true } else { false }
+            }
+        case .messageQueued(let id, let text, let images):
+            // Again for one still queued: it was edited, or joined.
+            if let index = queued.firstIndex(where: { $0.id == id }) {
+                queued[index].text = text
+                queued[index].images = images
+            } else {
+                queued.append(QueuedMessage(id: id, text: text, images: images))
+            }
+        case .dequeued(let id, let wasDropped):
+            if wasDropped, let message = queued.first(where: { $0.id == id }) { dropped.append(message) }
+            queued.removeAll { $0.id == id }
+        case .toolStarted(let callID, let tool, _):
+            if tool.hasSuffix("propose_task") || tool.hasSuffix("propose_spec_edit") { proposals.insert(callID) }
+        default:
+            break
+        }
+    }
+
     private mutating func answer(_ request: String, _ answer: Permission.Answer) {
         guard let index = requests[request] else { return }
         switch items[index] {
@@ -220,6 +282,7 @@ struct Chat: Equatable {
     }
 
     mutating func add(_ event: SessionEvent) {
+        tally(event)
         if case .usage = event.kind { turn.append(event) }
         if case .turnEnded = event.kind {
             defer { turn = [] }
