@@ -203,6 +203,8 @@ package struct RootFeature {
         @Shared(.locksApp) package var locksApp
         /// What the number on the app icon counts.
         @Shared(.badgeCount) package var badgeCount
+        /// When this device sums up the day, if it does.
+        @Shared(.dailySummary) package var dailySummary
         /// This device's copy of the synced default reminder, for Quick Add,
         /// widgets and Shortcuts.
         @Shared(.defaultReminder) package var defaultReminder
@@ -515,6 +517,7 @@ package struct RootFeature {
         case reminderStatusRequested(UUID)
         /// The badge setting changed.
         case badgeCountChanged
+        case dailySummaryChanged
         case today(TodayFeature.Action)
         case upcoming(UpcomingFeature.Action)
         case calendar(CalendarFeature.Action)
@@ -655,6 +658,9 @@ package struct RootFeature {
                     .run { [badgeCount = state.$badgeCount] send in
                         for await _ in badgeCount.publisher.dropFirst().values { await send(.badgeCountChanged) }
                     },
+                    .run { [dailySummary = state.$dailySummary] send in
+                        for await _ in dailySummary.publisher.dropFirst().values { await send(.dailySummaryChanged) }
+                    },
                     .run { [sync] _ in _ = await sync.sync() },
                     syncTimer(state),
                     saveWidgetMarks(),
@@ -731,7 +737,7 @@ package struct RootFeature {
                 }
                 return open(link, in: &state)
 
-            case .badgeCountChanged:
+            case .badgeCountChanged, .dailySummaryChanged:
                 return scheduleReminders(state)
 
             case .reminderOpened(let id):
@@ -1598,11 +1604,13 @@ package struct RootFeature {
     /// without titles while the lock is on.
     private func scheduleReminders(_ state: State) -> Effect<Action> {
         guard let workspace = state.workspace else { return .none }
+        let (locked, counted, summary) = (state.locksApp, state.badgeCount, state.dailySummary)
         // Worked out in the effect, off the main actor.
-        return .run { [reminders, now, timeZone, locked = state.locksApp, counted = state.badgeCount] send in
+        return .run { [reminders, now, timeZone] send in
             guard
                 let failure = await Self.schedule(
-                    workspace, with: reminders, now: now, timeZone: timeZone, locked: locked, counted: counted)
+                    workspace, with: reminders, now: now, timeZone: timeZone, locked: locked, counted: counted,
+                    summary: summary)
             else { return }
             await send(.remindersScheduled(failure: failure))
         }
@@ -1613,9 +1621,10 @@ package struct RootFeature {
     /// when cancelled first, otherwise why scheduling failed, if it did.
     private static func schedule(
         _ workspace: Workspace, with reminders: RemindersClient, now: Date, timeZone: TimeZone, locked: Bool,
-        counted: BadgeCount
+        counted: BadgeCount, summary: DailySummary
     ) async -> String?? {
-        let scheduled = workspace.scheduledReminders(now: now, timeZone: timeZone, hidingTitles: locked)
+        let scheduled = workspace.scheduledReminders(
+            now: now, timeZone: timeZone, hidingTitles: locked, summaryAt: summary.time)
         let badge = workspace.badgeCount(counted, now: now, timeZone: timeZone)
         guard !Task.isCancelled else { return nil }
         // Notifications that are off leave the reminders saved and
@@ -1637,6 +1646,7 @@ package struct RootFeature {
     private func refreshInBackground(_ state: State) -> Effect<Action> {
         let locked = state.locksApp
         let counted = state.badgeCount
+        let summary = state.dailySummary
         return .run { [sync, store, reminders, glance, now, timeZone] _ in
             _ = await sync.sync()
             let workspace: Workspace
@@ -1647,7 +1657,8 @@ package struct RootFeature {
                 return
             }
             _ = await Self.schedule(
-                workspace, with: reminders, now: now, timeZone: timeZone, locked: locked, counted: counted)
+                workspace, with: reminders, now: now, timeZone: timeZone, locked: locked, counted: counted,
+                summary: summary)
             if let today = Self.glance(of: workspace, now: now, timeZone: timeZone, locked: locked) {
                 await glance.write(today)
             }

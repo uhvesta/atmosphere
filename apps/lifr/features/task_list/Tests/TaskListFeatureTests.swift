@@ -404,6 +404,24 @@ final class TaskListFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.rows.map(\.id), [run.id])
     }
 
+    func testScrollingEndsThePauseAtOnce() async {
+        let stretch = records.task("Stretch", in: health)
+        let run = records.task("Run", in: health)
+        let store = await load()
+        let clock = TestClock()
+        store.dependencies.continuousClock = clock
+        store.dependencies.closedRowPause = .seconds(1.5)
+
+        await store.send(.rowAction(stretch.id, .status(.done)))
+        await store.receive(\.saved)
+        await store.send(.scrolled)
+        XCTAssertEqual(store.state.rows.map(\.id), [run.id])
+
+        await clock.advance(by: .seconds(1.5))
+        await store.receive(\.lingerEnded)
+        XCTAssertEqual(store.state.rows.map(\.id), [run.id])
+    }
+
     func testWithoutAPauseAClosedTaskLeavesAtOnce() async {
         let stretch = records.task("Stretch", in: health)
         let run = records.task("Run", in: health)

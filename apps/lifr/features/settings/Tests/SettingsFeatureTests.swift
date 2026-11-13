@@ -4,6 +4,7 @@ import LifrAPI
 import LifrAssistantClient
 import LifrCore
 import LifrLockClient
+import LifrRemindersClient
 import LifrSessionClient
 import LifrSettings
 import LifrStoreClient
@@ -138,6 +139,24 @@ final class SettingsFeatureTests: XCTestCase {
 
         await store.send(.procrastinatedDaysChanged(0))
         XCTAssertEqual(store.state.procrastinatedAfterDays, 1)
+        await store.skipInFlightEffects()
+    }
+
+    func testTurningTheDailySummaryOnAsksForNotificationsOnce() async throws {
+        let store = await settings(InMemorySession())
+        let asked = LockIsolated(0)
+        store.dependencies.reminders.requestPermission = {
+            asked.withValue { $0 += 1 }
+            return true
+        }
+        let nine = try TimeOfDay("09:00")
+        await store.send(.dailySummarySet(DailySummary.morning)).finish()
+        await store.send(.dailySummarySet(nine)).finish()
+        XCTAssertEqual(store.state.dailySummary.time, nine)
+        XCTAssertEqual(asked.value, 1)
+
+        await store.send(.dailySummarySet(nil))
+        XCTAssertNil(store.state.dailySummary.time)
         await store.skipInFlightEffects()
     }
 

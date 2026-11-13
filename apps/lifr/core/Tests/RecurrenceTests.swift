@@ -215,6 +215,24 @@ func recurrenceTests() -> [TestCase] {
                 try fixture.workspace.setRecurrence(.weekly(weekdays: []), of: race.id, in: fixture.context)
             }
         },
+        TestCase("given a new task that repeats, then it starts its own series; a new Sub task can't repeat") {
+            let fixture = try Fixture()
+            var new = Workspace.NewTask(title: "Weigh in", avenueID: fixture.health.id)
+            new.dueDate = try CalendarDate("2026-11-16")
+            new.repeats = .weekly(weekdays: [2])
+            let change = try fixture.workspace.createTask(new, in: fixture.context)
+            let created = change.previous.first { $0.value == nil }.flatMap { fixture.workspace.tasks[$0.key] }
+            let task = try created.unwrap()
+            try expectEqual(task.recurrence, Recurrence(rule: .weekly(weekdays: [2]), seriesID: task.id))
+            var sub = Workspace.NewTask(title: "Note it", parentID: task.id)
+            sub.repeats = .daily
+            try expectError(.subtaskCannotRepeat(task.id)) {
+                try fixture.workspace.createTask(sub, in: fixture.context)
+            }
+            var never = Workspace.NewTask(title: "Never", avenueID: fixture.health.id)
+            never.repeats = .weekly(weekdays: [])
+            try expectError(.invalidRecurrence) { try fixture.workspace.createTask(never, in: fixture.context) }
+        },
         TestCase("given a Project archived with a repeating task, then no next one is made") {
             let fixture = try Fixture()
             let task = try fixture.task("Taper", project: fixture.marathon)

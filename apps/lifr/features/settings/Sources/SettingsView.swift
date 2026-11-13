@@ -141,10 +141,31 @@ package struct SettingsView: View {
             Picker("App icon badge", selection: Binding($badgeCount)) {
                 ForEach(BadgeCount.allCases, id: \.self) { Text($0.title).tag($0) }
             }
+            Toggle(
+                "Daily summary",
+                isOn: Binding(
+                    get: { store.dailySummary.time != nil },
+                    set: { store.send(.dailySummarySet($0 ? DailySummary.morning : nil)) })
+            )
+            if let time = store.dailySummary.time {
+                DatePicker(
+                    "Summary at",
+                    selection: Binding(
+                        get: {
+                            Calendar.current.date(bySettingHour: time.hour, minute: time.minute, second: 0, of: Date())
+                                ?? Date()
+                        },
+                        set: { store.send(.dailySummarySet(TimeOfDay($0, in: .current))) }),
+                    displayedComponents: .hourAndMinute)
+            }
         } header: {
             Text("Reminders")
         } footer: {
-            Text("A new task with a due date gets this reminder on every device. The badge is per device.")
+            Text(
+                """
+                A new task with a due date gets this reminder on every device. The badge and the daily summary, \
+                which says what's due each day that has something due, are per device.
+                """)
         }
         AppearanceSection()
         Section {

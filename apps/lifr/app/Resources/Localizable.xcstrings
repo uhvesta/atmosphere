@@ -50,6 +50,16 @@
     "%@ Undo available." : {
 
     },
+    "%@ and %lld more" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ and %2$lld more"
+          }
+        }
+      }
+    },
     "%@ before due" : {
 
     },
@@ -582,6 +592,9 @@
 
     },
     "A new task with a due date gets the reminder, and the badge counts open tasks. This device only." : {
+
+    },
+    "A new task with a due date gets this reminder on every device. The badge and the daily summary, which says what's due each day that has something due, are per device." : {
 
     },
     "A new task with a due date gets this reminder on every device. The badge is per device." : {
@@ -1426,6 +1439,9 @@
 
     },
     "Custom…" : {
+
+    },
+    "Daily summary" : {
 
     },
     "Date Added" : {
@@ -2909,6 +2925,9 @@
     "Open Lifr and unlock it to see them." : {
 
     },
+    "Open Lifr to plan your day." : {
+
+    },
     "Open Lifr to see the task." : {
 
     },
@@ -3728,6 +3747,9 @@
     "Summary" : {
 
     },
+    "Summary at" : {
+
+    },
     "Sunset" : {
 
     },
@@ -4424,6 +4446,22 @@
 
     },
     "^[%lld task](inflect: true) closed elsewhere." : {
+
+    },
+    "^[%lld task](inflect: true) due today" : {
+
+    },
+    "^[%lld task](inflect: true) due today, %lld overdue" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "^[%1$lld task](inflect: true) due today, %2$lld overdue"
+          }
+        }
+      }
+    },
+    "^[%lld task](inflect: true) overdue" : {
 
     },
     "^[%lld task](inflect: true) picked" : {

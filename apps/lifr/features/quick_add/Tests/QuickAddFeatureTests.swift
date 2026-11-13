@@ -95,6 +95,21 @@ final class QuickAddFeatureTests: XCTestCase {
         XCTAssertEqual(task.priority, .high)
     }
 
+    func testEveryMondayInTheTitleMakesARepeatingTaskDueNextMonday() async throws {
+        _ = (health, home)
+        let store = try quickAdd()
+        await store.send(.binding(.set(\.avenueID, home.id)))
+        await store.send(.binding(.set(\.title, "Weigh in every Monday")))
+        XCTAssertEqual(store.state.finalTitle, "Weigh in")
+        await store.send(.addTapped)
+        let workspace = try await saved(store)
+
+        let task = try XCTUnwrap(workspace.tasks.values.first)
+        XCTAssertEqual(task.recurrence?.rule, .weekly(weekdays: [2]))
+        XCTAssertEqual(task.recurrence?.seriesID, task.id)
+        XCTAssertEqual(task.dueDate?.description, "2026-11-09")
+    }
+
     func testANewTaskWithADueDateGetsTheDefaultReminder() async throws {
         _ = (health, home)
         let store = try quickAdd()

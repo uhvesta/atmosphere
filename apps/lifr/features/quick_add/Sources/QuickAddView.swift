@@ -244,6 +244,7 @@ private struct PartChips: View {
         case .priority: "flag"
         case .label: "tag"
         case .avenue, .project: "folder"
+        case .repeats: "repeat"
         }
     }
 
@@ -256,6 +257,7 @@ private struct PartChips: View {
         case .avenue(let id): workspace.avenues[id]?.name ?? ""
         case .project(let avenue, let project):
             "\(workspace.avenues[avenue]?.name ?? "") › \(workspace.projects[project]?.name ?? "")"
+        case .repeats(let rule, let interval): Recurrence.describing(rule, every: interval)
         }
     }
 }

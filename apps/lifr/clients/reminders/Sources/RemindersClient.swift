@@ -15,14 +15,20 @@ package struct ScheduledReminder: Identifiable, Hashable, Sendable {
     /// notification offers only Snooze, so nobody changes a task they
     /// can't see.
     package var hidesTitle: Bool
+    /// The daily summary, which opens Today rather than a task.
+    package var isSummary: Bool
 
-    package init(id: UUID, taskID: UUID, title: String, body: String, fireAt: Date, hidesTitle: Bool = false) {
+    package init(
+        id: UUID, taskID: UUID, title: String, body: String, fireAt: Date, hidesTitle: Bool = false,
+        isSummary: Bool = false
+    ) {
         self.id = id
         self.taskID = taskID
         self.title = title
         self.body = body
         self.fireAt = fireAt
         self.hidesTitle = hidesTitle
+        self.isSummary = isSummary
     }
 }
 
@@ -35,10 +41,16 @@ extension Workspace {
     /// `now`, soonest first, at most `reminderLimit`. With `hidingTitles`,
     /// as when the app lock is on, each says only that a task is due, so
     /// the lock screen doesn't show what. Dates and times read as `locale`
-    /// writes them.
+    /// writes them. With `summaryAt`, the daily summaries come first and
+    /// the reminders fill the rest.
     package func scheduledReminders(
-        now: Date, timeZone: TimeZone, hidingTitles: Bool = false, locale: Locale = .current
+        now: Date, timeZone: TimeZone, hidingTitles: Bool = false, locale: Locale = .current,
+        summaryAt: TimeOfDay? = nil
     ) -> [ScheduledReminder] {
+        let summaries =
+            summaryAt.map {
+                dailySummaries(at: $0, now: now, timeZone: timeZone, hidingTitles: hidingTitles, locale: locale)
+            } ?? []
         let scheduled = reminders.values.compactMap { reminder -> ScheduledReminder? in
             guard let task = tasks[reminder.taskID], task.deletedAt == nil, task.isOpen,
                 avenues[task.avenueID]?.archivedAt == nil,
@@ -53,9 +65,9 @@ extension Workspace {
                 id: reminder.id, taskID: task.id, title: task.title,
                 body: dueText(task, locale) ?? displayCode(of: task), fireAt: fireAt)
         }
-        return Array(
-            scheduled.sorted { ($0.fireAt, $0.id.uuidString) < ($1.fireAt, $1.id.uuidString) }
-                .prefix(Self.reminderLimit))
+        let reminders = scheduled.sorted { ($0.fireAt, $0.id.uuidString) < ($1.fireAt, $1.id.uuidString) }
+            .prefix(Self.reminderLimit - summaries.count)
+        return (summaries + reminders).sorted { ($0.fireAt, $0.id.uuidString) < ($1.fireAt, $1.id.uuidString) }
     }
 
     private func dueText(_ task: LifrTask, _ locale: Locale) -> String? {

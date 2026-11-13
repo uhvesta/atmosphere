@@ -6,6 +6,7 @@ import LifrAssistantClient
 import LifrBugReport
 import LifrCore
 import LifrLockClient
+import LifrRemindersClient
 import LifrSessionClient
 import LifrSkills
 import LifrStoreClient
@@ -62,6 +63,8 @@ package struct SettingsFeature {
         /// The reminder a new task with a due date gets. Synced; this is
         /// the device's copy.
         @Shared(.defaultReminder) package var defaultReminder
+        /// When this device sums up the day, if it does.
+        @Shared(.dailySummary) package var dailySummary
         /// The chat's experiments, kept on this device and off until turned
         /// on.
         @Shared(.chatShowsSpeed) package var showsSpeed
@@ -124,6 +127,8 @@ package struct SettingsFeature {
         case event(SessionEvent)
         case procrastinatedDaysChanged(Int)
         case defaultReminderPicked(DefaultReminder)
+        /// The daily summary turned on at a time, moved, or turned off.
+        case dailySummarySet(TimeOfDay?)
         case agentAccessPicked(UUID, AgentAccess)
         case writePicked(String, Bool)
         case renewTapped(String)
@@ -168,6 +173,7 @@ package struct SettingsFeature {
     @Dependency(\.sync) private var sync
     @Dependency(\.date.now) private var now
     @Dependency(\.lock) private var lock
+    @Dependency(\.reminders) private var reminders
     @Dependency(\.deviceInfo) private var deviceInfo
 
     package init() {}
@@ -263,6 +269,13 @@ package struct SettingsFeature {
                 return .run { [store, settings] send in
                     await send(.saved(Result { try await store.setSettings(settings) }))
                 }
+
+            case .dailySummarySet(let time):
+                let wasOff = state.dailySummary.time == nil
+                state.$dailySummary.withLock { $0 = DailySummary(time: time) }
+                guard wasOff, time != nil else { return .none }
+                // Turning it on is the moment to ask, as for a reminder.
+                return .run { [reminders] _ in _ = try? await reminders.requestPermission() }
 
             case .agentAccessPicked(let id, let access):
                 return .run { [store] send in

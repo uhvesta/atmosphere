@@ -79,6 +79,8 @@ package struct Shortcuts: Sendable {
         new.priority = entry.priority ?? new.priority
         new.labelIDs = entry.labelIDs
         new.dueTime = entry.dueTime
+        new.repeats = entry.repeats?.rule
+        new.repeatInterval = entry.repeats?.interval ?? 1
         new.dueDate =
             entry.dueDate
             ?? {

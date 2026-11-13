@@ -68,6 +68,28 @@ package struct Recurrence: Hashable, Codable, Sendable {
         return next
     }
 
+    /// The first day `rule` falls on from `day`, counting `day` itself.
+    package static func firstDue(_ rule: Rule, every interval: Int, from day: CalendarDate) -> CalendarDate {
+        switch rule {
+        case .daily, .afterClosing:
+            return day
+        case .weekly(let weekdays):
+            for ahead in 0..<7 where weekdays.contains(day.adding(days: ahead).weekday) {
+                return day.adding(days: ahead)
+            }
+            return day
+        case .monthly(let target):
+            let this = Self.day(target, in: day.firstOfMonth)
+            return this >= day ? this : Self.day(target, in: day.firstOfMonth(adding: 1))
+        case .monthlyWeekday(let ordinal, let weekday):
+            let this = Self.weekday(ordinal, weekday, in: day.firstOfMonth)
+            return this >= day ? this : Self.weekday(ordinal, weekday, in: day.firstOfMonth(adding: 1))
+        case .yearly(let month, let target):
+            let this = Self.day(target, month: month, year: day.year)
+            return this >= day ? this : Self.day(target, month: month, year: day.year + 1)
+        }
+    }
+
     /// The first day the schedule falls on after `day`.
     func occurrence(after day: CalendarDate) -> CalendarDate {
         switch rule {
@@ -168,7 +190,10 @@ package struct Recurrence: Hashable, Codable, Sendable {
 
 extension Recurrence: CustomStringConvertible {
     /// Such as "Every 2 weeks on Mon, Thu" or "3 days after closing".
-    package var description: String {
+    package var description: String { Self.describing(rule, every: interval) }
+
+    /// Such as "Every week on Mon", for a repeat not yet on a task.
+    package static func describing(_ rule: Rule, every interval: Int) -> String {
         let symbols = CalendarDate.utcCalendar.shortWeekdaySymbols
         func name(_ weekday: Int) -> String { symbols.indices.contains(weekday - 1) ? symbols[weekday - 1] : "" }
         let every = interval == 1 ? "Every" : "Every \(interval)"

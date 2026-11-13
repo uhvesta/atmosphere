@@ -206,6 +206,28 @@ func projectAndAvenueTests() -> [TestCase] {
             try expectEqual(order.map(\.title), ["Three", "One", "Two"])
             try expectEqual(Set(change.previous.keys), [tasks[2].id])
         },
+        TestCase("given two devices reordering the same list, when they sync both ways, then they agree") {
+            let phone = try Fixture()
+            let tasks = try ["One", "Two", "Three"].map { try phone.task($0) }
+            let mac = Fixture(copying: phone, device: "Mac")
+            _ = try phone.workspace.reorder(task: tasks[2].id, after: nil, before: tasks[0].id, in: phone.context)
+            _ = try mac.workspace.reorder(task: tasks[0].id, after: tasks[2].id, before: nil, in: mac.context)
+            var orders: [[String]] = []
+            for (mine, theirs) in [(phone, mac), (mac, phone)] {
+                for base in tasks {
+                    let merged = RecordValue.merge(
+                        base: .task(base), mine: mine.workspace.tasks[base.id].map(RecordValue.task),
+                        theirs: theirs.workspace.tasks[base.id].map(RecordValue.task))
+                    guard case .merged(.task(let task)?) = merged else { throw Unexpected("no merge: \(merged)") }
+                    mine.workspace.importSynced(records: [RecordID(.task, task.id): .task(task)])
+                }
+                let order = tasks.compactMap { mine.workspace.tasks[$0.id] }
+                    .sorted { ($0.sortOrder, $0.id.uuidString) < ($1.sortOrder, $1.id.uuidString) }
+                orders.append(order.map(\.title))
+            }
+            try expectEqual(orders[0], orders[1])
+            try expectEqual(orders[0], ["Three", "Two", "One"])
+        },
         TestCase("given a task moved between two others, when it's undone, then it's back where it was") {
             let fixture = try Fixture()
             let tasks = try ["One", "Two", "Three"].map { try fixture.task($0) }

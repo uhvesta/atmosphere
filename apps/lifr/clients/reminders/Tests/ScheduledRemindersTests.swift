@@ -31,6 +31,40 @@ final class ScheduledRemindersTests: XCTestCase {
         XCTAssertFalse(body.contains("2026-11-04"), body)
     }
 
+    func testTheDailySummaryCountsEachDayFromTheNextTimeAndSkipsEmptyDays() {
+        records.task("Pay rent", in: health, due: -1)
+        records.task("Long run", in: health, due: 1, at: "07:00")
+        records.task("Stretch", in: health, due: 1)
+        records.task("Book physio", in: health, due: 3)
+        let done = records.task("Done tomorrow", in: health, due: 1)
+        records.setStatus(.done, of: done)
+        let summaries = records.workspace.scheduledReminders(
+            now: now, timeZone: .gmt, locale: Locale(identifier: "en_US"), summaryAt: try? TimeOfDay("08:00")
+        )
+        .filter(\.isSummary)
+
+        // Today's 08:00 has passed; each later day has the overdue rent.
+        let format = ISO8601DateFormatter()
+        XCTAssertEqual(summaries.count, DailySummary.days)
+        XCTAssertEqual(summaries.first?.fireAt, format.date(from: "2026-11-04T08:00:00Z"))
+        XCTAssertEqual(Set(summaries.map(\.id)).count, summaries.count)
+        XCTAssertTrue(summaries.first?.body.contains("Stretch") == true)
+        XCTAssertTrue(summaries.first?.body.contains("Long run") == true)
+        XCTAssertFalse(summaries.first?.body.contains("Done tomorrow") == true)
+
+        let locked = records.workspace.scheduledReminders(
+            now: now, timeZone: .gmt, hidingTitles: true, summaryAt: try? TimeOfDay("08:00"))
+        XCTAssertFalse(locked.contains { $0.body.contains("Stretch") })
+    }
+
+    func testTheDailySummaryIsOffUnlessATimeIsSet() {
+        records.task("Pay rent", in: health, due: 1)
+        XCTAssertFalse(scheduled.contains(where: \.isSummary))
+        XCTAssertNil(DailySummary(rawValue: "").time)
+        let raw = DailySummary(time: DailySummary.morning).rawValue
+        XCTAssertEqual(DailySummary(rawValue: raw).time, DailySummary.morning)
+    }
+
     func testTheBadgeCountsOverdueAndDueTodayOrOnlyOverdue() {
         records.task("Due yesterday", in: health, due: -1)
         records.task("Due today", in: health, due: 0)

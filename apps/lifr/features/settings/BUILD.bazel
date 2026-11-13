@@ -51,6 +51,7 @@ swift_library(
         "//apps/lifr/clients/assistant",
         "//apps/lifr/clients/lock",
         "//apps/lifr/clients/models",
+        "//apps/lifr/clients/reminders",
         "//apps/lifr/clients/session",
         "//apps/lifr/clients/store",
         "//apps/lifr/clients/sync",

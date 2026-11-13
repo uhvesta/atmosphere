@@ -208,6 +208,7 @@ private enum Storage {
         open: { root.send(.reminderOpened($0)) },
         changeStatus: { root.send(.reminderStatusRequested($0)) },
         review: { root.send(.syncReviewTapped) },
+        today: { root.send(.linkOpened(.today)) },
         shortcuts: { shortcuts })
 
     #if os(macOS)
@@ -412,17 +413,20 @@ private final class ReminderNotifications: NSObject, UNUserNotificationCenterDel
     private let open: @MainActor @Sendable (UUID) -> Void
     private let changeStatus: @MainActor @Sendable (UUID) -> Void
     private let review: @MainActor @Sendable () -> Void
+    private let today: @MainActor @Sendable () -> Void
     private let shortcuts: @MainActor @Sendable () -> Shortcuts
 
     init(
         open: @escaping @MainActor @Sendable (UUID) -> Void,
         changeStatus: @escaping @MainActor @Sendable (UUID) -> Void,
         review: @escaping @MainActor @Sendable () -> Void,
+        today: @escaping @MainActor @Sendable () -> Void,
         shortcuts: @escaping @MainActor @Sendable () -> Shortcuts
     ) {
         self.open = open
         self.changeStatus = changeStatus
         self.review = review
+        self.today = today
         self.shortcuts = shortcuts
     }
 
@@ -435,6 +439,10 @@ private final class ReminderNotifications: NSObject, UNUserNotificationCenterDel
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         if response.notification.request.content.userInfo[RemindersClient.reviewKey] != nil {
             await review()
+            return
+        }
+        if response.notification.request.content.userInfo[RemindersClient.summaryKey] != nil {
+            await today()
             return
         }
         guard let raw = response.notification.request.content.userInfo[RemindersClient.taskIDKey] as? String,

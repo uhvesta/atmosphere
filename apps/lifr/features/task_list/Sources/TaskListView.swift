@@ -111,6 +111,10 @@ package struct TaskListView<Header: View>: View {
             }
         }
         .task { await store.send(.task).finish() }
+        // Only while a closed task waits in place, which is briefly.
+        .onScrollPhaseChange { _, phase in
+            if phase == .interacting, !store.lingering.isEmpty { store.send(.scrolled) }
+        }
         #if os(iOS)
             .refreshable { await store.send(.pulled).finish() }
             // The spinner goes either way, so say it worked.

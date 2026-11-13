@@ -201,6 +201,9 @@ package struct TaskListFeature {
         case task
         /// A task closed here has stayed in place long enough.
         case lingerEnded(UUID)
+        /// The list started scrolling: tasks closed here leave now, so rows
+        /// don't move under a finger later.
+        case scrolled
         /// Try loading the records again, after they couldn't load.
         case retryTapped
         /// Pull to sync; ends when the sync does.
@@ -305,6 +308,13 @@ package struct TaskListFeature {
 
             case .lingerEnded(let id):
                 state.lingering.remove(id)
+                guard let snapshot = state.snapshot else { return .none }
+                state.show(snapshot, now: now, timeZone: timeZone)
+                return .none
+
+            case .scrolled:
+                guard !state.lingering.isEmpty else { return .none }
+                state.lingering = []
                 guard let snapshot = state.snapshot else { return .none }
                 state.show(snapshot, now: now, timeZone: timeZone)
                 return .none

@@ -14,6 +14,8 @@ package struct QuickEntry: Equatable, Sendable {
             case label(UUID)
             case avenue(UUID)
             case project(avenue: UUID, project: UUID)
+            /// "every Monday", "every 2 weeks", "daily".
+            case repeats(Recurrence.Rule, interval: Int)
         }
 
         package var kind: Kind
@@ -30,9 +32,21 @@ package struct QuickEntry: Equatable, Sendable {
     package var title: String
     package var parts: [Part]
 
+    /// The day named, or else the first day a repeat falls on from today,
+    /// or else today for a time alone.
     package var dueDate: CalendarDate? {
-        parts.lazy.compactMap { if case .due(let date) = $0.kind { date } else { nil } }.first
-            ?? (dueTime == nil ? nil : today)
+        if let date = parts.lazy.compactMap({ if case .due(let date) = $0.kind { date } else { nil } }).first {
+            return date
+        }
+        if let repeats { return Recurrence.firstDue(repeats.rule, every: repeats.interval, from: today) }
+        return dueTime == nil ? nil : today
+    }
+
+    /// How the task repeats, such as every week on Monday.
+    package var repeats: (rule: Recurrence.Rule, interval: Int)? {
+        parts.lazy.compactMap {
+            if case .repeats(let rule, let interval) = $0.kind { (rule, interval) } else { nil }
+        }.first
     }
 
     package var dueTime: TimeOfDay? {
@@ -139,6 +153,7 @@ private struct Reader {
         let hasDue = taken.contains { if case .due = $0 { true } else { false } }
         let hasTime = taken.contains { if case .time = $0 { true } else { false } }
         let hasPriority = taken.contains { if case .priority = $0 { true } else { false } }
+        let hasRepeat = taken.contains { if case .repeats = $0 { true } else { false } }
         let hasPlace = taken.contains {
             switch $0 {
             case .avenue, .project: true
@@ -149,6 +164,9 @@ private struct Reader {
         if !hasDue, let (date, count) = date(at: index) { found.append((.due(date), count)) }
         if !hasTime, let (time, count) = time(at: index) { found.append((.time(time), count)) }
         if !hasPriority, let priority = priority(at: index) { found.append((.priority(priority), 1)) }
+        if !hasRepeat, let (rule, interval, count) = repeats(at: index) {
+            found.append((.repeats(rule, interval: interval), count))
+        }
         if let label = label(at: index), !taken.contains(.label(label)) { found.append((.label(label), 1)) }
         if !hasPlace, let place = place(at: index) { found.append((place, 1)) }
         let kept = found.filter { _, count in !ignoring.contains(key(index, count)) }
@@ -290,6 +308,25 @@ private struct Reader {
         months["sept"] = 9
         return months
     }()
+
+    // MARK: Repeats
+
+    /// "every Monday", "every other week", "every 3 days", "every month on
+    /// the 15th" or "daily": the most words that read as a repeat. A week,
+    /// month or year with no day takes today's.
+    private func repeats(at index: Int) -> (Recurrence.Rule, Int, Int)? {
+        guard let word = key(index), ["every", "daily", "weekly", "monthly", "yearly"].contains(word) else {
+            return nil
+        }
+        for count in stride(from: min(7, words.count - index), through: 1, by: -1) {
+            var typed = (index..<index + count).compactMap(key)
+            if typed.count > 1, typed[0] == "every", typed[1] == "other" { typed[1] = "2" }
+            if let read = Recurrence.resolving(typed.joined(separator: " "), due: today) {
+                return (read.rule, read.interval, count)
+            }
+        }
+        return nil
+    }
 
     // MARK: Times
 

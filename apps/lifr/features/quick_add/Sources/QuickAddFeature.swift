@@ -274,6 +274,8 @@ package struct QuickAddFeature {
             entry?.dueTime
             ?? (state.addsTime && new.dueDate != nil ? TimeOfDay(state.pickedTime, in: timeZone) : nil)
         new.labelIDs = entry?.labelIDs ?? []
+        new.repeats = entry?.repeats?.rule
+        new.repeatInterval = entry?.repeats?.interval ?? 1
         if new.dueDate != nil, let trigger = state.defaultReminder.trigger(dueTime: new.dueTime) {
             new.reminders = [trigger]
         }

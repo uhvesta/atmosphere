@@ -30,6 +30,8 @@ extension RemindersClient {
     package static let taskIDKey = "taskID"
     /// The user info key that marks the notification asking for a review.
     package static let reviewKey = "review"
+    /// The user info key that marks the daily summary, which opens Today.
+    package static let summaryKey = "summary"
 
     /// Schedules through the system's notification center.
     package static func live(center: UNUserNotificationCenter = .current()) -> Self {
@@ -60,10 +62,15 @@ extension RemindersClient {
                     content.title = reminder.title
                     content.body = reminder.body
                     content.sound = .default
-                    content.threadIdentifier = reminder.taskID.uuidString
-                    content.userInfo = [taskIDKey: reminder.taskID.uuidString]
-                    content.categoryIdentifier =
-                        reminder.hidesTitle ? ReminderAction.hiddenCategory : ReminderAction.category
+                    if reminder.isSummary {
+                        content.threadIdentifier = summaryKey
+                        content.userInfo = [summaryKey: true]
+                    } else {
+                        content.threadIdentifier = reminder.taskID.uuidString
+                        content.userInfo = [taskIDKey: reminder.taskID.uuidString]
+                        content.categoryIdentifier =
+                            reminder.hidesTitle ? ReminderAction.hiddenCategory : ReminderAction.category
+                    }
                     // With its time zone, so the trigger fires at this
                     // instant even if the device's zone changes first.
                     let components = Calendar.current.dateComponents(

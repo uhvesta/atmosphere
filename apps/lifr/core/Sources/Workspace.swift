@@ -385,6 +385,9 @@ package struct Workspace: Hashable, Codable, Sendable {
         /// Reminders to add with it. One before the due date is left out
         /// when there's no due date.
         package var reminders: [Reminder.Trigger] = []
+        /// Makes it repeat. A Sub task can't.
+        package var repeats: Recurrence.Rule?
+        package var repeatInterval = 1
 
         package init(title: String, avenueID: UUID? = nil, projectID: UUID? = nil, parentID: UUID? = nil) {
             self.title = title
@@ -401,6 +404,7 @@ package struct Workspace: Hashable, Codable, Sendable {
             throw .startsAfterDue(start: start, due: due)
         }
         try checkLabels(new.labelIDs)
+        if new.repeats != nil, let parentID = new.parentID { throw .subtaskCannotRepeat(parentID) }
 
         let avenueID: UUID
         let projectID: UUID?
@@ -419,14 +423,17 @@ package struct Workspace: Hashable, Codable, Sendable {
         }
 
         let siblings = tasks.values.filter { $0.parentID == new.parentID && $0.avenueID == avenueID }
+        let id = context.newID()
+        let recurrence = new.repeats.map { Recurrence(rule: $0, interval: new.repeatInterval, seriesID: id) }
+        if let recurrence, !recurrence.isValid { throw .invalidRecurrence }
         let task = LifrTask(
-            id: context.newID(), code: uniqueCode(context), title: title, details: new.details,
+            id: id, code: uniqueCode(context), title: title, details: new.details,
             status: new.status, priority: new.priority, startDate: new.startDate,
             dueDate: new.dueDate, dueTime: new.dueTime, avenueID: avenueID, projectID: projectID,
             parentID: new.parentID, labelIDs: new.labelIDs,
             sortOrder: SortKey.between(siblings.map(\.sortOrder).max(), nil),
             createdAt: context.now, updatedAt: context.now, lastActivityAt: context.now,
-            closedAt: new.status.isClosed ? context.now : nil, deletedAt: nil
+            closedAt: new.status.isClosed ? context.now : nil, deletedAt: nil, recurrence: recurrence
         )
         var change = Change()
         change.previous[task.id] = .some(nil)

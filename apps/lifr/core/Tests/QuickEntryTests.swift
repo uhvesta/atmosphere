@@ -118,6 +118,32 @@ func quickEntryTests() -> [TestCase] {
             try expectEqual(entry.title, "Post #err")
             try expectEqual(entry.labelIDs, [])
         },
+        TestCase("given a repeat, then the task repeats and is due the first day it falls on") {
+            let fixture = try Fixture()
+            let cases: [(String, String, Recurrence.Rule, Int, String)] = [
+                ("Weigh in every Monday", "Weigh in", .weekly(weekdays: [2]), 1, "2026-11-16"),
+                ("Stretch daily", "Stretch", .daily, 1, "2026-11-11"),
+                ("Water plants every other week", "Water plants", .weekly(weekdays: [4]), 2, "2026-11-11"),
+                ("Pay rent every month on the 1st", "Pay rent", .monthly(day: 1), 1, "2026-12-01"),
+                ("Run every 3 days at 7am", "Run", .daily, 3, "2026-11-11"),
+                ("Stand up every weekday", "Stand up", .weekly(weekdays: [2, 3, 4, 5, 6]), 1, "2026-11-11"),
+            ]
+            for (line, title, rule, interval, due) in cases {
+                let entry = try read(line, fixture)
+                try expectEqual(entry.title, title)
+                try expectEqual(entry.repeats?.rule, rule)
+                try expectEqual(entry.repeats?.interval, interval)
+                try expectEqual(entry.dueDate, try CalendarDate(due))
+            }
+        },
+        TestCase("given a repeat and a day, then it's due that day; every alone is a word") {
+            let fixture = try Fixture()
+            let dated = try read("Weigh in every Monday on Nov 23", fixture)
+            try expectEqual(dated.dueDate, try CalendarDate("2026-11-23"))
+            let plain = try read("Read every page", fixture)
+            try expectEqual(plain.title, "Read every page")
+            try expectEqual(plain.parts, [])
+        },
         TestCase("given the clock, then tomorrow is the day after it in the time zone") {
             let zone = try TimeZone(identifier: "America/New_York").unwrap()
             let late = try ISO8601DateFormatter().date(from: "2026-11-12T04:59:00Z").unwrap()
