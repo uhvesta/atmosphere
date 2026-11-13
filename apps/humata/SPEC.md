@@ -162,7 +162,7 @@ original spec; lettered ones were added since.
 | U2 UX papercuts | Planned |
 | S2 Compression | Planned |
 | S3 Daemon speed | Planned |
-| G1 libghostty terminal | Planned |
+| G1 Ghostty terminal | Planned |
 | X Admin mode, gated by approvals | Done |
 
 ## Done milestones
@@ -1076,39 +1076,42 @@ turned on, and then deletes archived sessions after 45 days by default.
 - [ ] No whole-history copies on hot paths; archived sessions loaded when
   opened
 
-### A terminal on libghostty
+### A terminal on Ghostty
 
-The owner, 2026-11-13: hand as much of the terminal to Ghostty as
-possible, but not GhosttyKit, Ghostty's internal embedding API; font and
-colors from Settings only; `TERM` stays `xterm-256color` on hosts; no
-daemon or wire changes. cmux and boss both embed GhosttyKit (cmux a fork
-of it), so neither has a renderer to reuse. Proposed: ghostty-web, which
-runs libghostty-vt, Ghostty's stable terminal library, as WebAssembly
-with its own renderer, input and selection, in a web view like the
-Mermaid diagrams. The fallback is libghostty-vt with a renderer of our
-own. Waiting on the owner's pick.
+The owner, 2026-11-13: terminals drawn by GhosttyKit, Ghostty's own
+embedding library, pinned to one upstream commit and built from source
+with the repo's Zig under Bazel, the way boss pins it (boss's Apache-2.0
+notice kept where its build is adapted; nothing from cmux, which is GPL).
+Pinned at v1.4.0 rather than boss's commit, which needs Zig 0.16 where the
+repo has 0.17. The surface runs the bundled `humata terminal attach`,
+which pipes the host's terminal through humatad's socket, so the daemon
+and wire don't change and `TERM` stays `xterm-256color` on hosts. Ghostty
+reads only the config Humata writes from Settings, never
+`~/.config/ghostty`.
 
-#### G1 libghostty terminal
+#### G1 Ghostty terminal
 
-- [ ] Ghostty's terminal library, pinned by version and SHA-256 and
-  bundled into the app with no network; its MIT notice is listed
-- [ ] Terminals look and behave as before: the same tabs, replay on
-  reattach, resize sent to the host, and exit and reconnect notes
-- [ ] Drawn by Ghostty's terminal code: true color, wide and combining
+- [ ] GhosttyKit v1.4.0 built from its release tarball and pinned
+  dependencies by Bazel with the repo's Zig; Ghostty's MIT and boss's
+  Apache-2.0 notices are listed
+- [ ] `humata terminal attach <terminal> [--host <host>]` pipes a terminal
+  both ways: keys in order, replay on attach clearing what was drawn, the
+  pty's size sent on change, the shell's exit code as its own, and
+  reconnecting after a dropped connection
+- [ ] Terminals look and behave as before: the same tabs, the exit and
+  closed-elsewhere notes, and Reattach when the pipe ended otherwise
+- [ ] Drawn by Ghostty with Metal: true color, wide and combining
   characters and emoji, complex scripts, and no stutter while a command
   prints fast
-- [ ] Keys as a real terminal sends them: arrows and function keys in
-  every mode, Option as Meta, the kitty keyboard protocol, and input
-  methods for composed text
+- [ ] Keys as Ghostty sends them, Option as Meta, and input methods for
+  composed text; Humata keeps its own ⌘ shortcuts
 - [ ] Select with the mouse, copy with ⌘C, paste with ⌘V (bracketed when
   the program asks), and mouse reporting for programs like vim and htop
-- [ ] Scroll back through what printed with the wheel or trackpad; ⌘F
-  finds text in it
-- [ ] The font and size, and colors that follow light and dark mode, set
-  in Settings
+- [ ] Scroll back with the wheel or trackpad; ⌘F finds text in it
+- [ ] Settings › Terminal: the font and size, and a color theme with light
+  and dark palettes; Ghostty's own config files are never read
 - [ ] VoiceOver reads the screen
-- [ ] Programs that ask the terminal a question (cursor position, device
-  attributes) get their answer, in order with the keys typed
+- [ ] SwiftTerm removed
 
 ### Composer, rewind, skills, plugins and models
 
