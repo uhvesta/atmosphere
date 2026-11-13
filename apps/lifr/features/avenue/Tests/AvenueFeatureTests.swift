@@ -119,6 +119,40 @@ final class AvenueFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.avenues[0].projects.map(\.name), ["Stretching", "Half marathon"])
     }
 
+    func testDraggingAnAvenueOntoAnotherTakesItsPlace() async {
+        _ = (health, home)
+        let work = records.avenue("WORK", "Work")
+        let store = await avenues()
+
+        await store.send(.avenueDropped(health.id, onto: work.id))
+        await store.receive(\.moved.success)
+        XCTAssertEqual(store.state.avenues.map(\.name), ["Home", "Work", "Health"])
+
+        await store.send(.avenueDropped(work.id, onto: home.id))
+        await store.receive(\.moved.success)
+        XCTAssertEqual(store.state.avenues.map(\.name), ["Work", "Home", "Health"])
+    }
+
+    func testDraggingAProjectOntoOneInAnotherAvenueChangesNothing() async {
+        let marathon = records.project("Half marathon", in: health)
+        let garden = records.project("Garden", in: home)
+        let store = await avenues()
+
+        await store.send(.projectDropped(marathon.id, onto: garden.id))
+        XCTAssertEqual(store.state.avenues.map { $0.projects.map(\.name) }, [["Half marathon"], ["Garden"]])
+    }
+
+    func testDraggingAProjectOntoAnotherInItsAvenueTakesItsPlace() async {
+        records.project("Half marathon", in: health)
+        let stretch = records.project("Stretching", in: health)
+        let yoga = records.project("Yoga", in: health)
+        let store = await avenues()
+
+        await store.send(.projectDropped(yoga.id, onto: stretch.id))
+        await store.receive(\.moved.success)
+        XCTAssertEqual(store.state.avenues[0].projects.map(\.name), ["Half marathon", "Yoga", "Stretching"])
+    }
+
     func testATaskThatStartsLaterIsInItsOwnSectionUntilThatDay() async {
         records.task("Paint the fence", in: home, starts: 2)
         records.task("Sort the garage", in: home)

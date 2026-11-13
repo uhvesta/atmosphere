@@ -262,6 +262,7 @@ package struct TaskListRow: View {
         // from another app goes where the list sends it, as if dropped
         // beside the row.
         .dropDestination(for: String.self) { items, _ in
+            guard !OrderDrag.isAmong(items) else { return false }
             let ids = items.compactMap(UUID.init(uuidString:))
             if !ids.isEmpty, ids.count == items.count {
                 store.send(.droppedOnto(row.id, tasks: ids))

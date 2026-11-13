@@ -430,7 +430,8 @@ private struct MacRootView: View {
                         // Text from another app lands like ⌘V; a task
                         // dragged within the list is left to the list.
                         .dropDestination(for: String.self) { items, _ in
-                            guard !items.allSatisfy({ UUID(uuidString: $0) != nil }) else { return false }
+                            guard !items.allSatisfy({ UUID(uuidString: $0) != nil }), !OrderDrag.isAmong(items)
+                            else { return false }
                             store.send(.textPasted(items.joined(separator: "\n")))
                             return true
                         }
@@ -674,6 +675,7 @@ private struct AvenueItems: View {
         }
         .badge(avenue.openCount)
         .tag(RootFeature.SidebarItem.scope(.avenue(avenue.id)))
+        .draggable(OrderDrag.avenue(avenue.id).text)
         .modifier(TaskDrop(item: .scope(.avenue(avenue.id)), store: store))
         .contextMenu {
             Button("New Task in \(avenue.name)") { store.send(.newTaskInTapped(.avenue(avenue.id))) }
@@ -688,6 +690,7 @@ private struct AvenueItems: View {
                 .padding(.leading)
                 .badge(project.openCount)
                 .tag(RootFeature.SidebarItem.scope(.project(project.id)))
+                .draggable(OrderDrag.project(project.id).text)
                 .modifier(TaskDrop(item: .scope(.project(project.id)), store: store))
                 .contextMenu {
                     Button("New Task in \(project.name)") { store.send(.newTaskInTapped(.project(project.id))) }
@@ -710,6 +713,7 @@ private struct TaskDrop: ViewModifier {
     func body(content: Content) -> some View {
         content
             .dropDestination(for: String.self) { items, _ in
+                if OrderDrag.isAmong(items) { return reorder(items) }
                 let ids = items.compactMap(UUID.init(uuidString:))
                 if ids.count == items.count {
                     store.send(.tasksDropped(ids, on: item))
@@ -722,6 +726,24 @@ private struct TaskDrop: ViewModifier {
             }
             .listRowBackground(
                 isTargeted ? RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.2)) : nil)
+    }
+
+    /// An Avenue dropped onto an Avenue, or a Project onto a Project,
+    /// takes its place.
+    private func reorder(_ items: [String]) -> Bool {
+        for drag in items.compactMap(OrderDrag.init) {
+            switch (drag, item) {
+            case (.avenue(let id), .scope(.avenue(let target))):
+                store.send(.avenues(.avenueDropped(id, onto: target)))
+                return true
+            case (.project(let id), .scope(.project(let target))):
+                store.send(.avenues(.projectDropped(id, onto: target)))
+                return true
+            default:
+                continue
+            }
+        }
+        return false
     }
 }
 

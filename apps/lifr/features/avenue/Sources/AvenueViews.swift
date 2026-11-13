@@ -30,6 +30,44 @@ package struct MoveButtons: View {
 }
 
 /// Every Avenue with its open task count, and its active Projects under it.
+/// Drags an Avenue or Project row, and takes another of the same kind
+/// dropped onto it, outlining the row while one is over it.
+package struct OrderDrop: ViewModifier {
+    private let item: OrderDrag
+    private let dropped: (UUID) -> Void
+    @State private var isTargeted = false
+
+    /// `dropped` gets the ID of the Avenue or Project dropped onto `item`.
+    package init(_ item: OrderDrag, dropped: @escaping (UUID) -> Void) {
+        self.item = item
+        self.dropped = dropped
+    }
+
+    package func body(content: Content) -> some View {
+        content
+            .draggable(item.text)
+            .dropDestination(for: String.self) { items, _ in
+                let moved = items.compactMap(OrderDrag.init).compactMap { drag -> UUID? in
+                    switch (drag, item) {
+                    case (.avenue(let id), .avenue), (.project(let id), .project): id
+                    default: nil
+                    }
+                }
+                guard let id = moved.first else { return false }
+                dropped(id)
+                return true
+            } isTargeted: {
+                isTargeted = $0
+            }
+            .overlay {
+                if isTargeted {
+                    RoundedRectangle(cornerRadius: 6).strokeBorder(.tint, lineWidth: 2).padding(-4)
+                        .accessibilityHidden(true)
+                }
+            }
+    }
+}
+
 package struct AvenuesView<Footer: View>: View {
     @Bindable package var store: StoreOf<AvenuesFeature>
     /// Rows after the Avenues, such as the trash.
@@ -59,6 +97,7 @@ package struct AvenuesView<Footer: View>: View {
                         }
                     }
                     .accessibilityValue("\(avenue.openCount) open")
+                    .modifier(OrderDrop(.avenue(avenue.id)) { store.send(.avenueDropped($0, onto: avenue.id)) })
                     .contextMenu {
                         MoveButtons(
                             ids: store.avenues.map(\.id), id: avenue.id,
@@ -72,6 +111,7 @@ package struct AvenuesView<Footer: View>: View {
                                 .padding(.leading)
                         }
                         .accessibilityValue("\(project.openCount) open")
+                        .modifier(OrderDrop(.project(project.id)) { store.send(.projectDropped($0, onto: project.id)) })
                         .contextMenu {
                             MoveButtons(
                                 ids: avenue.projects.map(\.id), id: project.id,

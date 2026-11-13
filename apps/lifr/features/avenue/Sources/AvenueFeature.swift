@@ -308,6 +308,10 @@ package struct AvenuesFeature {
         case moveAvenue(UUID, up: Bool)
         /// Swaps a Project with the one above or below it in its Avenue.
         case moveProject(UUID, up: Bool)
+        /// An Avenue dragged onto another, to take its place.
+        case avenueDropped(UUID, onto: UUID)
+        /// A Project dragged onto another in its Avenue, to take its place.
+        case projectDropped(UUID, onto: UUID)
         case moved(Result<Saved, any Error>)
         case avenue(PresentationAction<AvenueFeature.Action>)
         case newAvenue(PresentationAction<NewAvenueFeature.Action>)
@@ -370,6 +374,22 @@ package struct AvenuesFeature {
                     await send(.moved(Result { try await store.reorder(project: id, after: lower, before: upper) }))
                 }
 
+            case .avenueDropped(let id, let target):
+                guard let (lower, upper) = Self.neighbours(of: id, onto: target, in: state.avenues.map(\.id))
+                else { return .none }
+                return .run { [store] send in
+                    await send(.moved(Result { try await store.reorder(avenue: id, after: lower, before: upper) }))
+                }
+
+            case .projectDropped(let id, let target):
+                // Only within its Avenue: in another, its tasks would get new codes.
+                guard let row = state.avenues.first(where: { $0.projects.contains { $0.id == id } }),
+                    let (lower, upper) = Self.neighbours(of: id, onto: target, in: row.projects.map(\.id))
+                else { return .none }
+                return .run { [store] send in
+                    await send(.moved(Result { try await store.reorder(project: id, after: lower, before: upper) }))
+                }
+
             case .moved(.success(let saved)):
                 guard state.saves.isLatest(saved) else { return .none }
                 state.show(saved.snapshot, now: now, timeZone: timeZone)
@@ -391,6 +411,21 @@ package struct AvenuesFeature {
         .ifLet(\.$avenue, action: \.avenue) { AvenueFeature() }
         .ifLet(\.$newAvenue, action: \.newAvenue) { NewAvenueFeature() }
         .ifLet(\.$alert, action: \.alert)
+    }
+
+    /// The rows to put `id` between so it takes `target`'s place in `ids`:
+    /// after it when moving down, before it when moving up. `nil` when
+    /// either isn't there or they're the same.
+    private static func neighbours(of id: UUID, onto target: UUID, in ids: [UUID]) -> (UUID?, UUID?)? {
+        guard id != target, let index = ids.firstIndex(of: id), let to = ids.firstIndex(of: target) else {
+            return nil
+        }
+        var rest = ids
+        rest.remove(at: index)
+        rest.insert(id, at: to)
+        let lower = to > 0 ? rest[to - 1] : nil
+        let upper = to + 1 < rest.count ? rest[to + 1] : nil
+        return (lower, upper)
     }
 
     /// The rows to put `id` between to move it one place up or down in
