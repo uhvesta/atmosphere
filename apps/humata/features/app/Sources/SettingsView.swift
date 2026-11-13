@@ -25,6 +25,9 @@ package struct SettingsView: View {
             StorageView(store: store.scope(state: \.storage, action: \.storage))
                 .tabItem { Label("Storage", systemImage: "internaldrive") }
                 .tag(SettingsTab.storage)
+            GitHubSettingsView(store: store.scope(state: \.github, action: \.github))
+                .tabItem { Label("GitHub", systemImage: "arrow.triangle.pull") }
+                .tag(SettingsTab.github)
             SkillsView(store: store.scope(state: \.skills, action: \.skills))
                 .tabItem { Label("Skills", systemImage: "books.vertical") }
                 .tag(SettingsTab.skills)

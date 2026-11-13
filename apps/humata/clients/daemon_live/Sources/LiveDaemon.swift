@@ -890,6 +890,21 @@ extension DaemonClient {
                 }
                 return pulls.pullRequests.map(PullRequest.init)
             },
+            pullRefresh: {
+                let request = Humata_V1_GetPullRefresh()
+                guard case .pullRefresh(let refresh) = try await daemon.call(.getPullRefresh(request)) else {
+                    throw DaemonError.unexpected("something other than how pull requests are read")
+                }
+                return PullRefresh(refresh)
+            },
+            setPullRefresh: { refresh in
+                var set = Humata_V1_SetPullRefresh()
+                set.settings = refresh.proto
+                guard case .pullRefresh(let kept) = try await daemon.call(.setPullRefresh(set)) else {
+                    throw DaemonError.unexpected("something other than how pull requests are read")
+                }
+                return PullRefresh(kept)
+            },
             updateFromBase: { session in
                 var update = Humata_V1_UpdateFromBase()
                 update.sessionID = session

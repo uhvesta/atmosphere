@@ -81,6 +81,18 @@ extension InMemoryDaemon {
         }
     }
 
+    func setPullRefresh(_ refresh: PullRefresh) throws -> PullRefresh {
+        guard PullRefresh.minutes.contains(refresh.everyMinutes) else {
+            throw DaemonError.refused(
+                .invalidRequest,
+                message: "Pull requests can be read every 1 to 1440 minutes, not \(refresh.everyMinutes).")
+        }
+        return state.withValue { state in
+            state.pullRefresh = refresh
+            return refresh
+        }
+    }
+
     func pullRequests(_ of: PullRequestsOf) -> [PullRequest] {
         state.value.pullRequests.filter { pull in
             switch of {

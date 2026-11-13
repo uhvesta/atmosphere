@@ -51,6 +51,24 @@ package struct Landed: Hashable, Sendable {
     }
 }
 
+/// How this Mac follows open pull requests on GitHub. Refreshing a task's
+/// reads them either way.
+package struct PullRefresh: Equatable, Sendable {
+    /// The fewest and most minutes between reads.
+    package static let minutes = 1...1440
+    /// What the Mac does until the person picks otherwise.
+    package static let standard = PullRefresh(automatic: true, everyMinutes: 2)
+
+    /// Read on their own every `everyMinutes`, or only when refreshed.
+    package var automatic: Bool
+    package var everyMinutes: Int
+
+    package init(automatic: Bool, everyMinutes: Int) {
+        self.automatic = automatic
+        self.everyMinutes = everyMinutes
+    }
+}
+
 /// A pull request a session opened, as last read from GitHub.
 package struct PullRequest: Identifiable, Hashable, Sendable {
     package enum State: Hashable, Sendable {

@@ -757,6 +757,11 @@ pub enum DaemonError {
     StorageDays { days: u32 },
 
     #[error(
+        "pull requests can be read every 1 to 1440 minutes, not {minutes}; pick a number in that range, or read them only when you ask"
+    )]
+    PullRefreshMinutes { minutes: u32 },
+
+    #[error(
         "{name:?} can't be deleted while its host {host} can't be reached: its files there would be left behind. Try again once {host} is back"
     )]
     DeleteOffline { name: String, host: String },
@@ -897,7 +902,8 @@ impl DaemonError {
             Self::ProjectInUse { .. } | Self::ItemHasSessions { .. } => pb::ErrorCode::Busy,
             Self::DeleteUnarchived { .. }
             | Self::DeleteForked { .. }
-            | Self::StorageDays { .. } => pb::ErrorCode::InvalidRequest,
+            | Self::StorageDays { .. }
+            | Self::PullRefreshMinutes { .. } => pb::ErrorCode::InvalidRequest,
             Self::CleanupRunning => pb::ErrorCode::Busy,
             Self::Seal { source } => source.code(),
             Self::DeleteOffline { .. } => pb::ErrorCode::HostUnavailable,

@@ -985,6 +985,8 @@ impl Host {
             | Request::GetStorage(_)
             | Request::SetStorageSettings(_)
             | Request::CleanUpStorage(_)
+            | Request::GetPullRefresh(_)
+            | Request::SetPullRefresh(_)
             | Request::SetModelServer(_)
             | Request::ListSkills(_)
             | Request::PickSkill(_)

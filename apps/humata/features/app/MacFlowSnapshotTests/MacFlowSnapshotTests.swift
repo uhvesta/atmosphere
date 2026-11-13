@@ -1454,6 +1454,37 @@ final class MacFlowSnapshotTests: XCTestCase {
         flow.finish()
     }
 
+    /// Settings › GitHub reads pull requests every two minutes by default;
+    /// they can be read every so many minutes, typed in, or only when asked.
+    func testSettingsGitHub() async throws {
+        let daemon = InMemoryDaemon()
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+        }
+        let flow = FlowRecorder(
+            "github", GitHubSettingsView(store: store.scope(state: \.github, action: \.github)))
+
+        store.send(.github(.task))
+        try await until { store.github.refresh != nil }
+        await flow.step("default")
+
+        store.send(.github(.everyPicked(.custom)))
+        store.send(.github(.binding(.set(\.customMinutes, "45"))))
+        store.send(.github(.customMinutesSubmitted))
+        try await until { store.github.refresh?.everyMinutes == 45 && !store.github.saving }
+        await flow.step("custom")
+
+        store.send(.github(.automaticPicked(false)))
+        try await until { store.github.refresh?.automatic == false && !store.github.saving }
+        await flow.step("manual")
+        flow.finish()
+    }
+
     /// Settings › Skills lists the skills on the Mac and a host, and each
     /// project's; two files named alike that one session would get must be
     /// picked between before a session starts, and New Session says so.

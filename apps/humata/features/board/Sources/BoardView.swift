@@ -395,11 +395,19 @@ struct ItemView: View {
                     HStack {
                         Text("Pull Requests")
                         Spacer()
+                        if store.pullsReadOnRefreshOnly {
+                            Text("Read only when you refresh")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         Button("Refresh", systemImage: "arrow.clockwise") { store.send(.refreshPullRequestsTapped) }
                             .labelStyle(.iconOnly)
                             .buttonStyle(.borderless)
                             .disabled(store.readingPullRequests)
-                            .help("Read them again from GitHub; Humata also does every few minutes")
+                            .help(
+                                store.pullsReadOnRefreshOnly
+                                    ? "Read them again from GitHub; Settings › GitHub has Humata read them only then"
+                                    : "Read them again from GitHub; Humata also does every few minutes")
                     }
                 }
             }

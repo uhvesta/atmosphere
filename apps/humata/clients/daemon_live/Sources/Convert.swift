@@ -827,6 +827,21 @@ extension PullRequest {
     }
 }
 
+extension PullRefresh {
+    init(_ refresh: Humata_V1_PullRefresh) {
+        self.init(
+            automatic: !refresh.manual,
+            everyMinutes: refresh.everyMinutes == 0 ? PullRefresh.standard.everyMinutes : Int(refresh.everyMinutes))
+    }
+
+    var proto: Humata_V1_PullRefresh {
+        var refresh = Humata_V1_PullRefresh()
+        refresh.manual = !automatic
+        refresh.everyMinutes = UInt32(clamping: everyMinutes)
+        return refresh
+    }
+}
+
 extension Landed {
     init(_ landed: Humata_V1_SessionLanded) {
         self.init(

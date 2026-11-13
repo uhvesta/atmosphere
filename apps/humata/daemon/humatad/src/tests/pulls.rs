@@ -566,3 +566,94 @@ async fn every_page_of_open_issues_is_imported_once() {
     assert!(again.items.is_empty());
     assert_eq!(again.skipped, 2);
 }
+
+async fn set_refresh(
+    client: &Client,
+    manual: bool,
+    every_minutes: u32,
+) -> Result<pb::response::Kind, humata_wire::ClientError> {
+    client
+        .call(pb::request::Kind::SetPullRefresh(pb::SetPullRefresh {
+            settings: Some(pb::PullRefresh {
+                manual,
+                every_minutes,
+            }),
+        }))
+        .await
+}
+
+async fn refresh_of(client: &Client) -> pb::PullRefresh {
+    let read = client
+        .call(pb::request::Kind::GetPullRefresh(pb::GetPullRefresh {}))
+        .await;
+    let Ok(pb::response::Kind::PullRefresh(refresh)) = read else {
+        panic!("{read:?}")
+    };
+    refresh
+}
+
+#[tokio::test]
+async fn how_pull_requests_are_followed_is_kept_across_a_restart() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = daemon(state.path(), Hosts::default()).await;
+    // Until set, they are read on their own every two minutes.
+    assert_eq!(
+        refresh_of(&client).await,
+        pb::PullRefresh {
+            manual: false,
+            every_minutes: 2,
+        }
+    );
+
+    let set = set_refresh(&client, true, 30).await;
+    let kept = pb::PullRefresh {
+        manual: true,
+        every_minutes: 30,
+    };
+    assert!(
+        matches!(&set, Ok(pb::response::Kind::PullRefresh(set)) if *set == kept),
+        "{set:?}"
+    );
+    drop(client);
+
+    let again = daemon(state.path(), Hosts::default()).await;
+    assert_eq!(refresh_of(&again).await, kept);
+    // No minutes is the default.
+    let set = set_refresh(&again, false, 0).await;
+    assert!(set.is_ok(), "{set:?}");
+    assert_eq!(refresh_of(&again).await.every_minutes, 2);
+}
+
+#[tokio::test]
+async fn minutes_past_a_day_are_refused_and_the_setting_stays() {
+    let state = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+    let client = daemon(state.path(), Hosts::default()).await;
+    let set = set_refresh(&client, false, 15).await;
+    assert!(set.is_ok(), "{set:?}");
+
+    let refused = set_refresh(&client, false, 1441).await;
+    assert!(
+        matches!(
+            refused,
+            Err(humata_wire::ClientError::Refused {
+                code: pb::ErrorCode::InvalidRequest,
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(refresh_of(&client).await.every_minutes, 15);
+    let a_day = set_refresh(&client, false, 1440).await;
+    assert!(a_day.is_ok(), "{a_day:?}");
+}
+
+#[tokio::test]
+async fn pull_requests_read_only_when_asked_are_still_read_when_asked() {
+    let landed = land_a_task().await;
+    let Landed { client, task, .. } = &landed;
+    let set = set_refresh(client, true, 0).await;
+    assert!(set.is_ok(), "{set:?}");
+    merge(&landed);
+    let read = pulls_of(client, &task.id, true).await;
+    assert_eq!(read[0].state(), pb::PullRequestState::Merged);
+}

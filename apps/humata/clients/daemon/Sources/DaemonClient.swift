@@ -247,6 +247,12 @@ package struct DaemonClient: Sendable {
     /// The pull requests of a session or a task, read again from GitHub
     /// first with `refresh`.
     package var pullRequests: @Sendable (_ of: PullRequestsOf, _ refresh: Bool) async throws -> [PullRequest]
+    /// How this Mac follows open pull requests: read on their own every few
+    /// minutes, or only when refreshed.
+    package var pullRefresh: @Sendable () async throws -> PullRefresh
+    /// Changes how open pull requests are followed, from now on; returns it
+    /// as kept.
+    package var setPullRefresh: @Sendable (_ refresh: PullRefresh) async throws -> PullRefresh
     /// Merges each repository's base into the session's copy; on conflicts,
     /// the agent is asked to resolve them.
     package var updateFromBase: @Sendable (_ session: String) async throws -> BaseUpdate

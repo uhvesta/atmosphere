@@ -47,6 +47,7 @@ fn app_only(request: &pb::request::Kind) -> bool {
             | Request::RevokeGrant(_)
             | Request::SetStorageSettings(_)
             | Request::CleanUpStorage(_)
+            | Request::SetPullRefresh(_)
     )
 }
 

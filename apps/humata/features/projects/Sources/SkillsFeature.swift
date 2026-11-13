@@ -9,6 +9,7 @@ package enum SettingsTab {
     package static let environments = "environments"
     package static let approvals = "approvals"
     package static let storage = "storage"
+    package static let github = "github"
     package static let skills = "skills"
     package static let plugins = "plugins"
     package static let models = "models"

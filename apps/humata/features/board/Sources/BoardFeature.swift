@@ -539,6 +539,9 @@ package struct ItemFeature {
         /// Its sessions' pull requests, as last read.
         package var pullRequests: [PullRequest] = []
         package var readingPullRequests = false
+        /// Whether Humata reads them only on Refresh, as Settings › GitHub
+        /// can have it, so the page says so.
+        package var pullsReadOnRefreshOnly = false
         /// The title and spec being edited; nil while they're only shown.
         package var draft: Draft?
         package var saving = false
@@ -622,6 +625,7 @@ package struct ItemFeature {
         case task
         case changesRead(Session.ID, files: Int)
         case pullRequestsRead([PullRequest])
+        case pullRefreshRead(PullRefresh)
         /// Reads its pull requests again from GitHub.
         case refreshPullRequestsTapped
         case editTapped
@@ -680,6 +684,10 @@ package struct ItemFeature {
                     if let pulls = try? await daemon.pullRequests(.item(item), false) {
                         await send(.pullRequestsRead(pulls))
                     }
+                    // Unread, the page just doesn't say they wait for Refresh.
+                    if let refresh = try? await daemon.pullRefresh() {
+                        await send(.pullRefreshRead(refresh))
+                    }
                     for session in sessions {
                         // A session whose copy is gone, or whose host is away,
                         // just shows no count.
@@ -706,6 +714,10 @@ package struct ItemFeature {
             case .pullRequestsRead(let pulls):
                 state.readingPullRequests = false
                 state.pullRequests = pulls
+                return .none
+
+            case .pullRefreshRead(let refresh):
+                state.pullsReadOnRefreshOnly = !refresh.automatic
                 return .none
 
             case .changesRead(let session, let files):

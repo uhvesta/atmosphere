@@ -62,8 +62,13 @@ struct LandView: View {
             TextField("Branch", text: $store.branch)
                 .help("A new branch in each repository the session changed")
             LabeledContent("Message") {
+                // Framed like the branch field, so it reads as one to type in.
                 TextEditor(text: $store.message)
                     .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .padding(4)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor)))
                     .frame(minHeight: 60, maxHeight: 140)
                     .accessibilityLabel("Message")
             }

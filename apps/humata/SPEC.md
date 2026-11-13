@@ -532,6 +532,12 @@ Structure:
   repository on the host; its snapshots stay, so its history and changes
   still read. A pull request closed without merging leaves things as they
   are.
+- **How often.** Settings › GitHub picks whether the Mac reads them on
+  its own (every 1, 2, 5, 10, 15, 30 or 60 minutes, or a custom 1 to 1440;
+  two by default) or only when asked. Only when asked, nothing reads them
+  but a task's Refresh, and the task's page says so beside it. A change
+  takes effect at once: the follower waits by the new interval, not out
+  the old one. Longer intervals spend less of GitHub's rate limit.
 - **Review comments.** Each read also brings in the pull request's review
   comments: a new one starts an inline thread on its file and lines, or
   joins the thread it replies to, marked with its author's GitHub login.

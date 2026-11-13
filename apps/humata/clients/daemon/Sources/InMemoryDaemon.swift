@@ -92,6 +92,7 @@ package final class InMemoryDaemon: Sendable {
         var viewed: [String: [FileRef: String]] = [:]
         var threads: [Thread] = []
         var pullRequests: [PullRequest] = []
+        var pullRefresh = PullRefresh.standard
         /// Each project's open issues on GitHub, by project.
         var issues: [String: [Issue]] = [:]
         /// The issues made tasks, as `project#number`.
@@ -626,6 +627,8 @@ package final class InMemoryDaemon: Sendable {
             search: { query in try self.search(query) },
             land: { session, request in try self.land(session, request) },
             pullRequests: { of, _ in self.pullRequests(of) },
+            pullRefresh: { self.state.value.pullRefresh },
+            setPullRefresh: { refresh in try self.setPullRefresh(refresh) },
             updateFromBase: { session in try self.updateFromBase(session) },
             importIssues: { project in try self.importIssues(project) },
             watch: { session in self.watch(session) }

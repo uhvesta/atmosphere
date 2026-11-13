@@ -699,6 +699,36 @@ final class BoardFeatureTests: XCTestCase {
         await store.finish()
     }
 
+    func testATaskPageSaysWhenPullRequestsAreReadOnlyOnRefresh() async throws {
+        let board = try await board()
+        let session = try await board.daemon.client.start(StartRequest(backend: .scripted, itemID: board.task.id))
+        _ = try await board.daemon.client.land(
+            session.id, LandRequest(branch: "login", message: "Log in", openPullRequests: true))
+        _ = try await board.daemon.client.setPullRefresh(PullRefresh(automatic: false, everyMinutes: 2))
+        let items = try await board.daemon.client.items(board.project.id)
+        let item = try XCTUnwrap(items.first { $0.id == board.task.id })
+        let store = TestStore(
+            initialState: ItemFeature.State(
+                project: board.project, item: item, parent: nil, subtasks: [], sessions: [session])
+        ) {
+            ItemFeature()
+        } withDependencies: {
+            $0.daemon = board.daemon.client
+        }
+        store.exhaustivity = .off
+
+        await store.send(.task)
+        await store.receive(\.pullRefreshRead)
+        XCTAssertTrue(store.state.pullsReadOnRefreshOnly)
+
+        // Refresh still reads them.
+        try board.daemon.mergePullRequests(of: session.id)
+        await store.send(.refreshPullRequestsTapped)
+        await store.receive(\.pullRequestsRead)
+        XCTAssertEqual(store.state.pullRequests.map(\.state), [.merged])
+        await store.finish()
+    }
+
     func testARefreshThatFailsStillShowsThePullRequestsThatDidRefresh() async throws {
         let board = try await board()
         let session = try await board.daemon.client.start(StartRequest(backend: .scripted, itemID: board.task.id))

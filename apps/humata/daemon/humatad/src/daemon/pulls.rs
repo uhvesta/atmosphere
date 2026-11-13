@@ -16,8 +16,16 @@ use crate::store::{Checks, NewThread, PullRequest, PullState, Standing, now_unix
 use pb::request::Kind as Request;
 use pb::response::Kind as Response;
 
-/// How often open pull requests are read again.
-const EVERY: Duration = Duration::from_secs(120);
+/// Minutes between reads of open pull requests, unless the person picks
+/// others in Settings › GitHub.
+const DEFAULT_MINUTES: u32 = 2;
+/// The longest wait between reads: a day.
+const MOST_MINUTES: u32 = 24 * 60;
+
+/// Whether pull requests are read only when the person asks.
+const MANUAL: &str = "pulls.manual";
+/// Minutes between reads while they are read on their own.
+const EVERY_MINUTES: &str = "pulls.every_minutes";
 
 /// Names the API to use instead of GitHub's, for GitHub Enterprise or a
 /// test.
@@ -158,6 +166,38 @@ impl Daemon {
         Ok(pulls)
     }
 
+    /// How open pull requests are followed, with the default's minutes
+    /// filled in.
+    pub(super) fn pull_refresh(&self) -> Result<pb::PullRefresh, DaemonError> {
+        let manual = self.store.setting(MANUAL)?.as_deref() == Some("1");
+        let every_minutes = self
+            .store
+            .setting(EVERY_MINUTES)?
+            .and_then(|minutes| minutes.parse().ok())
+            .filter(|minutes| (1..=MOST_MINUTES).contains(minutes))
+            .unwrap_or(DEFAULT_MINUTES);
+        Ok(pb::PullRefresh {
+            manual,
+            every_minutes,
+        })
+    }
+
+    /// Keeps how open pull requests are followed, and has the follower
+    /// wait by it from now on, not by what it was waiting out.
+    pub(super) fn set_pull_refresh(&self, refresh: &pb::PullRefresh) -> Result<(), DaemonError> {
+        let minutes = match refresh.every_minutes {
+            0 => DEFAULT_MINUTES,
+            minutes if minutes <= MOST_MINUTES => minutes,
+            minutes => return Err(DaemonError::PullRefreshMinutes { minutes }),
+        };
+        self.store
+            .set_setting(MANUAL, if refresh.manual { "1" } else { "0" })?;
+        self.store
+            .set_setting(EVERY_MINUTES, &minutes.to_string())?;
+        self.pull_refresh_changed.send_replace(());
+        Ok(())
+    }
+
     /// The pull requests of a session, or of a task's sessions, read from
     /// GitHub first with `refresh`.
     pub(super) async fn list_pulls(
@@ -218,7 +258,25 @@ impl Daemon {
         if let Err(error) = self.read_pulls(open).await {
             failed.get_or_insert(error);
         }
-        for session in &sessions {
+        if let Err(error) = self.finish_all(&sessions).await {
+            failed.get_or_insert(error);
+        }
+        failed.map_or(Ok(()), Err)
+    }
+
+    /// Tries again the clean-ups whose host couldn't be reached before,
+    /// without reading GitHub, for when pull requests are read only when
+    /// asked.
+    async fn retry_cleanups(&self) -> Result<(), DaemonError> {
+        let sessions = self.store.cleanups_pending()?;
+        self.finish_all(&sessions).await
+    }
+
+    /// Finishes each of `sessions` whose pull requests have all merged; one
+    /// that fails doesn't stop the others, and the first failure is returned.
+    async fn finish_all(&self, sessions: &[String]) -> Result<(), DaemonError> {
+        let mut failed = None;
+        for session in sessions {
             if let Err(error) = self.finish_if_merged(session).await {
                 failed.get_or_insert(error);
             }
@@ -470,19 +528,66 @@ impl Daemon {
     }
 }
 
-/// Reads open pull requests every few minutes while the daemon runs.
-pub(super) async fn follow(daemon: std::sync::Weak<Daemon>) {
-    let mut every = tokio::time::interval(EVERY);
-    every.tick().await;
+/// Reads open pull requests while the daemon runs, as often as Settings ›
+/// GitHub says, or never on its own when they are read only when asked.
+/// `changed` is told when that setting changes, which is waited by at once.
+pub(super) async fn follow(
+    daemon: std::sync::Weak<Daemon>,
+    mut changed: tokio::sync::watch::Receiver<()>,
+) {
+    // The first read waits a while, as the daemon has only just started.
+    let mut last = tokio::time::Instant::now();
     loop {
-        every.tick().await;
+        let refresh = match daemon.upgrade() {
+            // A setting that can't be read is followed as the default.
+            Some(daemon) => daemon.pull_refresh().unwrap_or_default(),
+            None => return,
+        };
+        let wait = next_read(&refresh, last.elapsed());
+        // Clean-ups that failed are still tried again at the default pace
+        // when pull requests are read only when asked; that reads no GitHub.
+        let reads = wait.is_some();
+        let wait = wait.unwrap_or_else(|| {
+            Duration::from_secs(u64::from(DEFAULT_MINUTES) * 60).saturating_sub(last.elapsed())
+        });
+        let read = tokio::time::sleep(wait);
+        tokio::select! {
+            () = read => {}
+            told = changed.changed() => {
+                // The daemon is gone once nothing can tell it any more.
+                if told.is_err() {
+                    return;
+                }
+                continue;
+            }
+        }
         let Some(daemon) = daemon.upgrade() else {
             return;
         };
+        last = tokio::time::Instant::now();
         // Missing a read is fine: the next one catches up, and the person
         // sees why when they open the task.
-        let _ = daemon.follow_pulls().await;
+        let _ = if reads {
+            daemon.follow_pulls().await
+        } else {
+            daemon.retry_cleanups().await
+        };
     }
+}
+
+/// How long after `since_last`, the time since the last read, the next read
+/// is, by `refresh`; none while pull requests are read only when asked.
+/// One overdue, as when the minutes were just made fewer, is now.
+fn next_read(refresh: &pb::PullRefresh, since_last: Duration) -> Option<Duration> {
+    if refresh.manual {
+        return None;
+    }
+    let minutes = match refresh.every_minutes {
+        0 => DEFAULT_MINUTES,
+        minutes => minutes.min(MOST_MINUTES),
+    };
+    let every = Duration::from_secs(u64::from(minutes) * 60);
+    Some(every.saturating_sub(since_last))
 }
 
 /// Whether reading more pull requests would fail the same way: no token, a
@@ -649,6 +754,50 @@ fn wire(pull: &PullRequest, item: Option<&str>) -> pb::PullRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_pull_requests_are_never_read_on_their_own() {
+        let manual = pb::PullRefresh {
+            manual: true,
+            every_minutes: 5,
+        };
+        assert_eq!(next_read(&manual, Duration::ZERO), None);
+        assert_eq!(next_read(&manual, Duration::from_secs(86_400)), None);
+    }
+
+    #[test]
+    fn automatic_pull_requests_are_read_once_their_minutes_pass() {
+        let every = |minutes| pb::PullRefresh {
+            manual: false,
+            every_minutes: minutes,
+        };
+        assert_eq!(
+            next_read(&every(5), Duration::from_secs(60)),
+            Some(Duration::from_secs(240))
+        );
+        assert_eq!(
+            next_read(&every(5), Duration::ZERO),
+            Some(Duration::from_secs(300))
+        );
+        // No minutes is the default.
+        assert_eq!(
+            next_read(&every(0), Duration::ZERO),
+            Some(Duration::from_secs(u64::from(DEFAULT_MINUTES) * 60))
+        );
+    }
+
+    #[test]
+    fn a_read_overdue_after_fewer_minutes_is_now() {
+        let one = pb::PullRefresh {
+            manual: false,
+            every_minutes: 1,
+        };
+        // Twenty minutes into waiting out an hour, one minute is past.
+        assert_eq!(
+            next_read(&one, Duration::from_secs(20 * 60)),
+            Some(Duration::ZERO)
+        );
+    }
 
     #[test]
     fn a_comment_keeps_the_lines_it_is_on_from_its_hunk() {

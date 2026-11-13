@@ -102,6 +102,9 @@ pub struct Daemon {
     /// Where its files are on the Mac, as Settings › Storage shows them.
     places: storage::Places,
     cleaning: std::sync::Mutex<storage::Cleaning>,
+    /// Told when how pull requests are followed changes, so the follower
+    /// waits by the new setting at once.
+    pull_refresh_changed: tokio::sync::watch::Sender<()>,
 }
 
 impl Daemon {
@@ -117,6 +120,7 @@ impl Daemon {
         build: String,
     ) -> Arc<Self> {
         let (tool_calls, calls) = mpsc::unbounded_channel();
+        let (pull_refresh_changed, pull_refresh_told) = tokio::sync::watch::channel(());
         local.set_env(hosts.coordinator_env.clone());
         let coordinator_env = std::sync::Mutex::new(hosts.coordinator_env);
         let model_server = local.model_server();
@@ -156,6 +160,7 @@ impl Daemon {
             approvals_changed: tokio::sync::Notify::new(),
             places,
             cleaning: std::sync::Mutex::default(),
+            pull_refresh_changed,
         });
         if let Err(error) = daemon.interrupt_unfinished_approvals() {
             eprintln!(
@@ -164,7 +169,7 @@ impl Daemon {
             );
         }
         tokio::spawn(answer_tool_calls(Arc::downgrade(&daemon), calls));
-        tokio::spawn(pulls::follow(Arc::downgrade(&daemon)));
+        tokio::spawn(pulls::follow(Arc::downgrade(&daemon), pull_refresh_told));
         daemon
     }
 
@@ -1526,6 +1531,13 @@ impl Daemon {
             Request::CleanUpStorage(clean) => {
                 self.start_cleanup(std::mem::take(clean))?;
                 return Ok(Reply::Response(Response::Storage(self.storage().await?)));
+            }
+            Request::GetPullRefresh(_) => {
+                return Ok(Reply::Response(Response::PullRefresh(self.pull_refresh()?)));
+            }
+            Request::SetPullRefresh(set) => {
+                self.set_pull_refresh(&set.settings.clone().unwrap_or_default())?;
+                return Ok(Reply::Response(Response::PullRefresh(self.pull_refresh()?)));
             }
             Request::DeclineProposal(decline) => {
                 let proposal = self.decline_proposal(decline).await?;

@@ -224,6 +224,10 @@ message Request {
     // and putting one back as a new change.
     ListFileVersions list_file_versions = 109;
     RestoreFileVersion restore_file_version = 110;
+    // For the Mac only: how often the Mac reads open pull requests from
+    // GitHub, or only when asked. Changing it is the app's only.
+    GetPullRefresh get_pull_refresh = 111;
+    SetPullRefresh set_pull_refresh = 112;
   }
 }
 
@@ -334,6 +338,7 @@ message Response {
     Skill skill = 99;
     FileVersions file_versions = 100;
     FileVersionRestored file_version_restored = 101;
+    PullRefresh pull_refresh = 102;
   }
 }
 
@@ -2755,6 +2760,24 @@ message ListPullRequests {
 
 message PullRequests {
   repeated PullRequest pull_requests = 1;
+}
+
+// Read with GetPullRefresh; SetPullRefresh answers it too, as it is after
+// the change.
+message GetPullRefresh {}
+
+message SetPullRefresh {
+  PullRefresh settings = 1;
+}
+
+// How the Mac follows open pull requests. Either way, ListPullRequests
+// with `refresh` reads them at once.
+message PullRefresh {
+  // Read them only when asked, never on their own.
+  bool manual = 1;
+  // While automatic, minutes between reads, 1 to 1440; 0 is the default
+  // of 2.
+  uint32 every_minutes = 2;
 }
 
 message UpdateFromBase {
