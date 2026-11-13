@@ -109,6 +109,41 @@ func syncTests() -> [TestCase] {
             try expect(saves.value > afterFirst)
             try expectEqual(try memory.load().lastSynced, clock.value)
         },
+        TestCase.async("given an edit made during a fetch of another device's change, then both are kept") {
+            let (cloud, phone, _) = pair()
+            await phone.syncer.sync()
+            let stored = Mutexed(Notebook())
+            let editsWhileFetching = Mutexed(false)
+            let connection = cloud.connection(device: "Mac")
+            let fetching = Cloud<Notebook>(
+                fetch: {
+                    let changes = try await connection.fetch()
+                    if editsWhileFetching.value { stored.update { $0.put(Note(id: shopping.id, title: "Groceries")) } }
+                    return changes
+                },
+                send: connection.send)
+            let store = SyncStore<Notebook>(
+                load: { stored.value },
+                importSynced: { synced in
+                    stored.update { notebook in for (id, value) in synced.records { notebook.items[id] = value } }
+                },
+                resolve: { _ in })
+            let mac = Syncer(cloud: fetching, store: store, storage: .inMemory())
+            await mac.sync()
+
+            phone.edit { notebook in
+                var note = shopping
+                note.body = "Milk"
+                notebook.put(note)
+            }
+            await phone.syncer.sync()
+            editsWhileFetching.update { $0 = true }
+            await mac.sync()
+
+            let note = try stored.value.note(shopping.id)
+            try expectEqual(note.title, "Groceries")
+            try expectEqual(note.body, "Milk")
+        },
         TestCase.async("given a note on one device, when both sync, then the other has it") {
             _ = try await synced()
         },

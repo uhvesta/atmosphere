@@ -170,9 +170,10 @@ public actor Syncer<Snapshot: SyncSnapshot> {
         do {
             let writesBefore = writes
             var ledger = try loadLedger()
-            var snapshot = try await load()
             let fetched = try await cloud.fetch()
-            snapshot = try await receive(fetched, into: snapshot, &ledger)
+            // The records are read once the cloud has answered, so an edit
+            // made while it was fetching is merged, not written over.
+            var snapshot = try await receive(fetched, into: try await load(), &ledger)
             // Sending again after the cloud refuses an item, with the other
             // device's version merged in. A few rounds settle a busy record.
             for _ in 0..<4 {
@@ -183,7 +184,7 @@ public actor Syncer<Snapshot: SyncSnapshot> {
                 ledger.saved(items.filter { !names.contains($0.name) })
                 try keep(ledger)
                 guard !refused.isEmpty else { break }
-                snapshot = try await receive(refused, into: snapshot, &ledger)
+                snapshot = try await receive(refused, into: try await load(), &ledger)
             }
             let synced = now()
             ledger.lastSynced = synced
