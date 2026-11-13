@@ -23,7 +23,7 @@
 [element] "Due" value: "Such as tomorrow, or none"
 [element] "Skill: change"
 [text] "Mark “Call the plumber” done"
-[element] "Move to" value: "Avenue key, or KEY/Project"
+[button] "Move to, Unchanged"
 [text] "I'd mark it done."
 [text] "Change task “Call the plumber”"
 [text] "Status:"

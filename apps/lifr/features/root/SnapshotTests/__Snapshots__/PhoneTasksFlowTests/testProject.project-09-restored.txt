@@ -9,7 +9,7 @@
 [button] "Remove due date"
 [button] "Avenue, Health"
 [text] "Progress"
-[text] "0 of 0 done"
+[text] "No tasks"
 [button] "Complete Project"
 [button] "Archive Project"
 [button] "Group by, Status"

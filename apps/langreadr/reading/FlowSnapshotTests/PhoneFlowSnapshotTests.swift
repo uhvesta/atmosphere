@@ -214,6 +214,7 @@ final class PhoneFlowSnapshotTests: XCTestCase {
         try await Sample.waitFor { reader.destination?.word?.note != nil }
         await flow.step("word-card")
         flow.tap("Say it")
+        try await Sample.waitFor { said.value.count == 2 }
         // The sentence's button sits below the half sheet's fold.
         reader.send(.destination(.presented(.word(.saySentenceTapped))))
         try await Sample.waitFor { said.value.count == 3 }
