@@ -408,6 +408,10 @@ const MIGRATIONS: &[&str] = &["
     -- grew. A session indexed before has none, which no event's id is, so
     -- it's indexed again from its start when it next changes.
     ALTER TABLE search_sessions ADD COLUMN last_event TEXT NOT NULL DEFAULT '';
+", "
+    -- A remote session's history is kept once, in its recovery copy: the
+    -- offline copy beside it is dropped where there is one.
+    DELETE FROM remote_histories WHERE id IN (SELECT session_id FROM recoveries);
 "];
 
 /// What reverting a board change did.
@@ -960,7 +964,9 @@ impl Store {
         Ok(sessions)
     }
 
-    /// Keeps `history` as `session`'s, if the session is cached.
+    /// Keeps `history` as `session`'s, if the session is cached, as builds
+    /// before recovery copies held it.
+    #[cfg(test)]
     pub fn cache_history(&self, session: &str, history: &pb::History) -> Result<(), StoreError> {
         let compressed = ruzstd::encoding::compress_to_vec(
             history.encode_to_vec().as_slice(),
@@ -981,37 +987,8 @@ impl Store {
             .map_err(self.failed())
     }
 
-    /// How many events `session`'s cached history holds; 0 if none is.
-    pub fn cached_history_len(&self, session: &str) -> Result<usize, StoreError> {
-        let counted: Option<Option<i64>> = self
-            .lock()
-            .query_row(
-                "SELECT events FROM remote_histories WHERE id = ?1",
-                [session],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(self.failed())?;
-        match counted {
-            None => Ok(0),
-            Some(Some(count)) => Ok(usize::try_from(count).unwrap_or(0)),
-            Some(None) => Ok(self
-                .cached_history(session)?
-                // Copies from before the parts of a reply were dropped once
-                // it was whole are counted as the host now keeps them.
-                .map_or(0, |history| {
-                    history
-                        .events
-                        .iter()
-                        .filter(|event| {
-                            !matches!(event.kind, Some(pb::session_event::Kind::AssistantDelta(_)))
-                        })
-                        .count()
-                })),
-        }
-    }
-
-    /// `session`'s history as last read, if it was.
+    /// `session`'s history as builds before recovery copies kept it, if
+    /// they did.
     pub fn cached_history(&self, session: &str) -> Result<Option<pb::History>, StoreError> {
         let compressed: Option<Vec<u8>> = self
             .lock()
@@ -2004,11 +1981,6 @@ mod tests {
             reopened.cached_history("a").ok().flatten(),
             Some(history.clone())
         );
-        assert_eq!(
-            reopened.cached_history_len("a").ok(),
-            Some(history.events.len())
-        );
-        assert_eq!(reopened.cached_history_len("b").ok(), Some(0));
 
         reopened
             .cache_sessions("build", &[session("a")])

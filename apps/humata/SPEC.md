@@ -160,7 +160,7 @@ original spec; lettered ones were added since.
 | D2 Focus view for Markdown | Done |
 | D3 Versions of a Markdown file | Done |
 | U2 UX papercuts | Done |
-| S2 Compression | In progress: a remote session's text is still kept twice |
+| S2 Compression | Done |
 | S3 Daemon speed | Done |
 | G1 Ghostty terminal | In progress |
 | X Admin mode, gated by approvals | Done |
@@ -1087,7 +1087,7 @@ turned on, and then deletes archived sessions after 45 days by default.
   as added parts; a rewind sends it whole again
 - [x] A backend's own state (Claude Code's transcript) sent only when it
   changed, its files kept apart by hash
-- [ ] A remote session's text kept once on the Mac, not as both its
+- [x] A remote session's text kept once on the Mac, not as both its
   offline copy and its recovery copy
 - [x] Compressing and decompressing never run on the executor or the main
   thread. While a sealed history is being opened, the session shows a

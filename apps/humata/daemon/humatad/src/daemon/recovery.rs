@@ -17,6 +17,49 @@ use crate::error::{DaemonError, StoreError};
 use crate::store::NewEvents;
 
 impl Daemon {
+    /// `session`'s history as this Mac keeps it for when its host can't be
+    /// reached: its recovery copy's, which is the only copy kept, or, for a
+    /// session last read before that was so and not backed up since, the
+    /// copy kept then. None if there's neither.
+    pub(super) async fn kept_history(
+        &self,
+        session: &str,
+    ) -> Result<Option<pb::History>, DaemonError> {
+        let found = {
+            let session = session.to_owned();
+            self.store
+                .apart(move |store| store.recovery_history(&session))
+                .await?
+        };
+        let Some((host, events)) = found else {
+            let session = session.to_owned();
+            return Ok(self
+                .store
+                .apart(move |store| store.cached_history(&session))
+                .await?);
+        };
+        // Parsed apart: a long history takes a while.
+        let parsed = self
+            .store
+            .apart(move |_| {
+                Ok(
+                    serde_json::from_slice::<Vec<humata_agent::Event>>(&events).map(|events| {
+                        pb::History {
+                            events: events.iter().map(convert::event).collect(),
+                        }
+                    }),
+                )
+            })
+            .await?;
+        parsed
+            .map(Some)
+            .map_err(|source| DaemonError::BadBackupHistory {
+                host,
+                session: session.to_owned(),
+                source,
+            })
+    }
+
     /// The folder of `session`'s mirrors: its project's, which its other
     /// sessions share, or its own outside a project.
     fn mirrors(&self, session: &str, project: Option<&str>) -> PathBuf {

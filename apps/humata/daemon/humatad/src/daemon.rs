@@ -1076,34 +1076,16 @@ impl Daemon {
         Ok(pb::Sessions { sessions: all })
     }
 
-    /// `session`'s history from its host, kept for when it is offline, or as
-    /// last kept if it is.
+    /// `session`'s history from its host, or, while it can't be reached, as
+    /// this Mac keeps it in the session's recovery copy.
     async fn history(&self, host: &str, read: pb::ReadHistory) -> Result<Reply, DaemonError> {
         let session = read.session_id.clone();
         match self
             .forward(host, pb::request::Kind::ReadHistory(read))
             .await
         {
-            Ok(Reply::Response(pb::response::Kind::History(history))) => {
-                // Kept again only when it has changed since, and written
-                // apart: compressing a long history takes a while.
-                if !host.is_empty()
-                    && self.store.cached_history_len(&session)? != history.events.len()
-                {
-                    let kept = history.clone();
-                    self.store
-                        .apart(move |store| store.cache_history(&session, &kept))
-                        .await?;
-                }
-                Ok(Reply::Response(pb::response::Kind::History(history)))
-            }
             Err(failure) if failure.code() == pb::ErrorCode::HostUnavailable => {
-                // Decompressed apart: a long history takes a while.
-                let kept = self
-                    .store
-                    .apart(move |store| store.cached_history(&session))
-                    .await?;
-                match kept {
+                match self.kept_history(&session).await? {
                     Some(history) => Ok(Reply::Response(pb::response::Kind::History(history))),
                     None => Err(failure),
                 }
@@ -1192,10 +1174,10 @@ impl Daemon {
         Ok((Some(project_id), item.map(|item| item.id)))
     }
 
-    /// Watches `session` on its host, keeping the Mac's copy of its history
-    /// up to date as each turn ends. While the host can't be reached, the
-    /// copy is sent instead and the stream ends, so the session can still
-    /// be read and the app knows to watch again.
+    /// Watches `session` on its host, backing up its history off the host
+    /// as each turn ends. While the host can't be reached, the recovery copy
+    /// is sent instead and the stream ends, so the session can still be read
+    /// and the app knows to watch again.
     async fn watch(&self, host: &str, watch: pb::WatchSession) -> Result<Reply, DaemonError> {
         let session = watch.session_id.clone();
         let request = pb::request::Kind::WatchSession(watch);
@@ -1205,13 +1187,7 @@ impl Daemon {
         let (response, mut upstream) = match self.forward(host, request).await {
             Ok(Reply::Stream { response, items }) => (response, items),
             Err(failure) if failure.code() == pb::ErrorCode::HostUnavailable => {
-                let kept = {
-                    let session = session.clone();
-                    self.store
-                        .apart(move |store| store.cached_history(&session))
-                        .await?
-                };
-                let Some(history) = kept else {
+                let Some(history) = self.kept_history(&session).await? else {
                     return Err(failure);
                 };
                 let (items, receiver) = mpsc::channel(history.events.len() + 1);
@@ -1233,23 +1209,20 @@ impl Daemon {
             }
             other => return other,
         };
-        let store = self.store.clone();
-        // A history grows by a turn at a time, so a copy is written only
-        // when it has more than the last, never part of the replay over a
-        // fuller one.
-        let mut kept = self.store.cached_history_len(&session)?;
         // The events the host sends first that this Mac already has: their
         // saves and turns were backed up when they happened, so replaying
         // them must not send the whole session over again.
-        let known = kept;
+        let known = self.store.recovery_events(&session)?.0 as usize;
         let (items, receiver) = mpsc::channel(64);
         let (daemon, host) = (self.me.clone(), host.to_owned());
         tokio::spawn(async move {
-            // The history so far, without the parts of replies since
-            // made whole, as the host keeps it.
-            let mut events: Vec<pb::SessionEvent> = Vec::new();
-            // Where the parts of the reply being streamed start in `events`.
-            let mut streaming: Option<usize> = None;
+            // How many events the history has so far, as the host keeps it:
+            // without the parts of replies since made whole.
+            let mut count = 0usize;
+            // How many turns it has ended.
+            let mut turns = 0u32;
+            // The ids of the parts of the reply being streamed.
+            let mut parts: Vec<String> = Vec::new();
             // Every event passed on, so a replay after re-watching passes on
             // only those not sent before. A history drops the parts of a
             // reply once it is whole, so it can't be skipped by count.
@@ -1258,36 +1231,6 @@ impl Daemon {
             // copies off the host are made at most once a minute, and the
             // turn's end makes one anyway.
             let mut backed_up_save: Option<std::time::Instant> = None;
-            // Copies of the history are compressed and written on a thread
-            // for blocking work, so a long one doesn't hold up an executor
-            // thread; one at a time, in order, skipping to the newest when
-            // several wait. It stops when the watch does.
-            let (copies, mut waiting) = mpsc::unbounded_channel::<pb::History>();
-            let writer = (store.clone(), session.clone());
-            tokio::task::spawn_blocking(move || {
-                let (store, session) = writer;
-                while let Some(mut history) = waiting.blocking_recv() {
-                    while let Ok(newer) = waiting.try_recv() {
-                        history = newer;
-                    }
-                    if let Err(error) = store.cache_history(&session, &history) {
-                        eprintln!("humatad: couldn't keep a copy of {session}'s history: {error}");
-                    }
-                }
-            });
-            let mut keep = |events: &Vec<pb::SessionEvent>| {
-                if events.len() <= kept {
-                    return;
-                }
-                let history = pb::History {
-                    events: events.clone(),
-                };
-                // Compressed and written by the writer apart. One that
-                // couldn't be written stays as it was; the next turn's copy
-                // has it all.
-                kept = events.len();
-                let _ = copies.send(history);
-            };
             loop {
                 let next = tokio::select! {
                     next = upstream.recv() => next,
@@ -1318,39 +1261,26 @@ impl Daemon {
                     }
                     match event.kind {
                         Some(pb::session_event::Kind::AssistantDelta(_)) => {
-                            streaming.get_or_insert(events.len());
+                            parts.push(event.id.clone());
                         }
                         Some(
                             pb::session_event::Kind::AssistantMessage(_)
                             | pb::session_event::Kind::TurnEnded(_),
                         ) => {
-                            if let Some(from) = streaming.take() {
-                                let tail = events.split_off(from);
-                                events.extend(tail.into_iter().filter(|kept| {
-                                    let part = matches!(
-                                        kept.kind,
-                                        Some(pb::session_event::Kind::AssistantDelta(_))
-                                    );
-                                    // The host's history drops the parts of
-                                    // a whole reply, so a replay never sends
-                                    // them again: they needn't be kept.
-                                    if part {
-                                        sent.remove(&kept.id);
-                                    }
-                                    !part
-                                }));
+                            // The host's history drops the parts of a whole
+                            // reply, so a replay never sends them again.
+                            for part in parts.drain(..) {
+                                sent.remove(&part);
+                                count -= 1;
                             }
                         }
                         _ => {}
                     }
-                    events.push(event.clone());
-                    // Once a turn, at its end: its checkpoint comes just
-                    // before, and a copy cut short of it is kept at the
-                    // watch's end.
-                    if matches!(event.kind, Some(pb::session_event::Kind::Idle(_))) {
-                        keep(&events);
+                    count += 1;
+                    if matches!(event.kind, Some(pb::session_event::Kind::TurnEnded(_))) {
+                        turns = turns.saturating_add(1);
                     }
-                    let replayed = events.len() <= known;
+                    let replayed = count <= known;
                     if !replayed
                         && matches!(event.kind, Some(pb::session_event::Kind::Saved(_)))
                         && backed_up_save.is_none_or(|at| at.elapsed() >= SAVE_BACKUP_EVERY)
@@ -1362,16 +1292,6 @@ impl Daemon {
                     }
                     if !replayed && matches!(event.kind, Some(pb::session_event::Kind::Idle(_))) {
                         if let Some(daemon) = daemon.upgrade() {
-                            let turns = events
-                                .iter()
-                                .filter(|event| {
-                                    matches!(
-                                        event.kind,
-                                        Some(pb::session_event::Kind::TurnEnded(_))
-                                    )
-                                })
-                                .count();
-                            let turns = u32::try_from(turns).unwrap_or(u32::MAX);
                             daemon.back_up_soon(&host, &session, Some(turns));
                         }
                     }
@@ -1380,7 +1300,6 @@ impl Daemon {
                     break;
                 }
             }
-            keep(&events);
         });
         Ok(Reply::Stream {
             response,

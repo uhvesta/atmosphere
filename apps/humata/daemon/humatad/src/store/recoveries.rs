@@ -257,6 +257,55 @@ impl Store {
             .map_err(self.failed())
     }
 
+    /// The history in `session`'s recovery copy, as the JSON list of its
+    /// events, and the host it is of; None without a copy. Its backend
+    /// files are left unread.
+    pub fn recovery_history(&self, session: &str) -> Result<Option<(String, Vec<u8>)>, StoreError> {
+        let connection = self.lock();
+        let read = (|| {
+            let found: Option<(String, Vec<u8>)> = connection
+                .query_row(
+                    "SELECT host, backup FROM recoveries WHERE session_id = ?1",
+                    [session],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            let mut statement = connection.prepare_cached(
+                "SELECT chunk FROM recovery_events WHERE session_id = ?1 ORDER BY part",
+            )?;
+            let chunks = statement
+                .query_map([session], |row| row.get::<_, Vec<u8>>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok((found, chunks))
+        })();
+        let (found, chunks) = read.map_err(self.failed())?;
+        drop(connection);
+        let Some((host, compressed)) = found else {
+            return Ok(None);
+        };
+        let events: Result<Vec<u8>, RecoveryDamage> = if chunks.is_empty() {
+            // A copy kept whole has its history in its record.
+            decompress(&compressed, "record").and_then(|record| {
+                pb::SessionBackup::decode(record.as_slice())
+                    .map(|backup| backup.events)
+                    .map_err(|source| RecoveryDamage::Record { source })
+            })
+        } else {
+            chunks
+                .iter()
+                .map(|chunk| decompress(chunk, "history"))
+                .collect::<Result<Vec<_>, _>>()
+                .and_then(|chunks| joined(&chunks).map_err(|part| RecoveryDamage::History { part }))
+        };
+        match events {
+            Ok(events) => Ok(Some((host, events))),
+            Err(source) => Err(StoreError::DamagedRecovery {
+                session: session.to_owned(),
+                source,
+            }),
+        }
+    }
+
     /// `session`'s recovery copy and the host it is of; None without one.
     /// A copy that can't be read is an error, not a missing copy.
     pub fn recovery(
@@ -441,6 +490,26 @@ mod tests {
             store.recovery("s"),
             Err(StoreError::DamagedRecovery { .. })
         ));
+    }
+
+    #[test]
+    fn a_copys_history_is_its_parts_joined() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let store = Store::open(&dir.path().join("humata.sqlite3")).expect("the store opens");
+        assert!(store.recovery_history("s").expect("read").is_none());
+        for (from, ids) in [(0, &["a", "b"][..]), (2, &["c"][..])] {
+            let (backup, new) = events(from, ids);
+            assert!(
+                store
+                    .keep_recovery("s", "far", "chat", &backup, &new)
+                    .expect("kept")
+            );
+        }
+        let (host, history) = store.recovery_history("s").expect("read").expect("a copy");
+        let history: Vec<serde_json::Value> = serde_json::from_slice(&history).expect("JSON");
+        let ids: Vec<_> = history.iter().map(|event| event["id"].clone()).collect();
+        assert_eq!(host, "far");
+        assert_eq!(ids, ["a", "b", "c"]);
     }
 
     #[test]
