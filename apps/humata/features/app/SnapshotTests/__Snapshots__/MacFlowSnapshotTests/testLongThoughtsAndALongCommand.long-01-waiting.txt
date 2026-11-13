@@ -1,0 +1,90 @@
+[Window/StandardWindow] "Fixtures"
+  [Outline] "Sidebar"
+    [Row/OutlineRow] ""
+      [StaticText] "Inbox, 1 blocked on you, 1 in all" value: "1"
+    [Row/OutlineRow] ""
+      [StaticText] "" value: "Hosts"
+    [Row/OutlineRow] ""
+      [StaticText] "" value: "Search Sessions"
+    [Row/OutlineRow] ""
+      [Heading] "Chats" help: "Bring in a Claude Code or Copilot session started outside Humata, with its history, Start a chat in no project, in a folder you pick or one of its own (⌘N)"
+    [Row/OutlineRow, selected] ""
+      [StaticText] "" value: "Fixtures"
+      [StaticText] "" value: "Active 9 mins ago"
+      [Image] "Waiting for you" help: "Waiting for you to answer a request" id: hand.raised.fill
+  [TextField/SearchField] ""
+    [Button] "Search"
+  [StaticText] "" value: "Fixtures"
+  [RadioGroup] "View" help: "The chat, the session's changes to review, the files in its folder, the specs it reads, or a terminal there (⌘1 to ⌘5)"
+    [RadioButton/Segment] "Chat" value: "1"
+    [RadioButton/Segment] "Files" value: "0"
+    [RadioButton/Segment] "Terminal" value: "0"
+  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is"
+  [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself"
+  [StaticText] "" value: "Approvals"
+  [PopUpButton] "" value: "Ask Every Time" help: "What the agent may do without asking"
+  [StaticText] "" value: "Scripted"
+  [OpaqueProviderGroup/OpaqueProviderList] ""
+    [StaticText] "" value: "Write the fixtures"
+    [Button, selected] "Thoughts" help: "Hides the thinking"
+    [StaticText] "" value: "Step 1: check the fixture for month 1 still parses.
+Step 2: check the fixture for month 2 still parses.
+Step 3: check the fixture for month 3 still parses.
+Step 4: check the fixture for month 4 still "
+    [Button, disabled] "cat > fixtures.csv <<'EOF'
+row-1,ok,2026
+row-2,ok,2026
+row-3,ok,2026
+row-4,ok,2026
+row-5,ok,2026
+row-6,ok,2026
+row-7,ok,2026
+row-8,ok,2026
+row-9,ok,2026
+row-10,ok,2026
+row-11,ok,2026
+row-12,ok,2026
+ro"
+    [StaticText] "" value: "Run `cat > fixtures.csv <<'EOF'
+row-1,ok,2026
+row-2,ok,2026
+row-3,ok,2026
+row-4,ok,2026
+row-5,ok,2026
+row-6,ok,2026
+row-7,ok,2026
+row-8,ok,2026
+row-9,ok,2026
+row-10,ok,2026
+row-11,ok,2026
+row-12,ok,20"
+    [Link] "Show All" help: "Only the first 20,000 characters show here; open all of them to read before you answer"
+    [StaticText] "" value: "Waiting for you: Approve or Deny over the message box (⇧⌘A, ⇧⌘D)."
+  [Image] "Block" id: hand.raised
+  [StaticText] "" value: "Run `cat > fixtures.csv <<'EOF'
+row-1,ok,2026
+row-2,ok,2026
+row-3,ok,2026
+row-4,ok,2026
+row-5,ok,2026
+row-6,ok,2026
+row-7,ok,2026
+row-8,ok,2026
+row-9,ok,2026
+row-10,ok,2026
+row-11,ok,2026
+row-12,ok,20"
+  [Button] "Deny" help: "Deny (⇧⌘D)"
+  [Button] "Approve" help: "Approve (⇧⌘A)"
+  [MenuButton] "More Answers" help: "Stop asking in this session"
+  [Button] "Stop and Edit" help: "Stop this turn and put your message back in the box"
+  [TextField] ""
+  [MenuButton] "Add" help: "Add photos or files" id: plus
+  [Button] "Stop" help: "Stop the reply, keeping what it has written" id: stop.fill
+  [Toolbar] ""
+    [Button] "Add Project"
+    [Button] "Hide Sidebar"
+  [Button/CloseButton] ""
+  [Button/ZoomButton] ""
+  [Button/MinimizeButton] ""
+  [StaticText] "" value: "Fixtures"

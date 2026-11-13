@@ -695,19 +695,38 @@ impl Host {
             .iter()
             .filter(|event| matches!(event.kind, humata_agent::EventKind::TurnEnded { .. }))
             .count();
+        // Only the events after the ones the daemon has, when its last is
+        // still where it was; otherwise, as after a rewind, all of them.
+        let have = usize::try_from(request.events_have).unwrap_or(usize::MAX);
+        let events_from = match have.checked_sub(1).and_then(|last| backup.events.get(last)) {
+            Some(last) if last.id.as_str() == request.last_event_id => have,
+            _ => 0,
+        };
+        // Backend files the daemon has the same of are only named.
+        let (mut backend_files, mut backend_unchanged) = (Vec::new(), Vec::new());
+        for file in backup.backend {
+            let sha256 = <sha2::Sha256 as sha2::Digest>::digest(&file.contents);
+            let unchanged = request
+                .backend_haves
+                .iter()
+                .any(|have| have.name == file.name && have.sha256 == sha256.as_slice());
+            if unchanged {
+                backend_unchanged.push(file.name);
+            } else {
+                backend_files.push(pb::BackendFile {
+                    name: file.name,
+                    contents: file.contents,
+                });
+            }
+        }
         let encode = |source| HostError::EncodeBackup { source };
         Ok(pb::SessionBackup {
             backend: backend.into(),
             record: serde_json::to_vec(&backup.record).map_err(encode)?,
-            events: serde_json::to_vec(&backup.events).map_err(encode)?,
-            backend_files: backup
-                .backend
-                .into_iter()
-                .map(|file| pb::BackendFile {
-                    name: file.name,
-                    contents: file.contents,
-                })
-                .collect(),
+            events: serde_json::to_vec(&backup.events[events_from..]).map_err(encode)?,
+            events_from: u32::try_from(events_from).unwrap_or(u32::MAX),
+            backend_files,
+            backend_unchanged,
             bundles,
             turns: u32::try_from(turns).unwrap_or(u32::MAX),
         })

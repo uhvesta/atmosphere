@@ -167,7 +167,10 @@ impl Daemon {
                 project: session.project_id.clone(),
                 item: session.item_id.clone(),
             };
-            let indexed = self.store.indexed(&session.id)?;
+            let indexed = {
+                let id = session.id.clone();
+                self.store.apart(move |store| store.indexed(&id)).await?
+            };
             let from = indexed.as_ref().map_or(0, |indexed| indexed.indexed.events);
             let settled = session.state() == pb::SessionState::Idle
                 || session.state() == pb::SessionState::Failed;
@@ -180,8 +183,10 @@ impl Daemon {
                         events: from,
                         turns: session.turns,
                     };
+                    let id = session.id.clone();
                     self.store
-                        .index(&session.id, &whereabouts, from, &unchanged, &[])?;
+                        .apart(move |store| store.index(&id, &whereabouts, from, &unchanged, &[]))
+                        .await?;
                 }
                 continue;
             }
@@ -211,13 +216,10 @@ impl Daemon {
                 events: events.len(),
                 turns: session.turns,
             };
-            self.store.index(
-                &session.id,
-                &whereabouts,
-                from,
-                &indexed,
-                &entries(&events, from),
-            )?;
+            let (id, entries) = (session.id.clone(), entries(&events, from));
+            self.store
+                .apart(move |store| store.index(&id, &whereabouts, from, &indexed, &entries))
+                .await?;
         }
         let store = self.store.clone();
         store

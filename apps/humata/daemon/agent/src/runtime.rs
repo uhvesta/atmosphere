@@ -507,7 +507,7 @@ impl<R: Runner> LocalAgent<R> {
             // A session left at rest was closed then; one read whole is
             // closed now, then put at rest, so only opening it reads it.
             if session.log.is_loaded() {
-                for kind in stopped(&session.log.events()?) {
+                for kind in session.log.with_events(stopped)? {
                     session.log.append(Event::now(kind))?;
                 }
                 session
@@ -1487,13 +1487,13 @@ impl<R: Runner> Agent for LocalAgent<R> {
         if record.repositories.is_empty() {
             return Ok(Vec::new());
         }
-        let checkpoints: Vec<Vec<Snapshot>> = session
-            .log
-            .events()?
-            .iter()
-            .filter_map(|event| event.kind.snapshots())
-            .map(<[Snapshot]>::to_vec)
-            .collect();
+        let checkpoints: Vec<Vec<Snapshot>> = session.log.with_events(|events| {
+            events
+                .iter()
+                .filter_map(|event| event.kind.snapshots())
+                .map(<[Snapshot]>::to_vec)
+                .collect()
+        })?;
         self.workspaces(id)?
             .changes(
                 id.as_str(),
@@ -1585,15 +1585,16 @@ impl<R: Runner> Agent for LocalAgent<R> {
         let Some((repository, path)) = in_repository(&repositories, path) else {
             return Ok(Vec::new());
         };
-        let (times, checkpoints): (Vec<i64>, Vec<Vec<Snapshot>>) = session
-            .log
-            .events()?
-            .iter()
-            .filter_map(|event| {
-                let snapshots = event.kind.snapshots()?;
-                Some((event.time_unix_ms, snapshots.to_vec()))
-            })
-            .unzip();
+        let (times, checkpoints): (Vec<i64>, Vec<Vec<Snapshot>>) =
+            session.log.with_events(|events| {
+                events
+                    .iter()
+                    .filter_map(|event| {
+                        let snapshots = event.kind.snapshots()?;
+                        Some((event.time_unix_ms, snapshots.to_vec()))
+                    })
+                    .unzip()
+            })?;
         let turns = humata_workspace::versions(repository, &checkpoints, path)
             .await
             .map_err(workspace_failed(id))?;
@@ -1614,13 +1615,13 @@ impl<R: Runner> Agent for LocalAgent<R> {
                 session: id.clone(),
                 path: path.to_owned(),
             })?;
-        let checkpoints: Vec<Vec<Snapshot>> = session
-            .log
-            .events()?
-            .iter()
-            .filter_map(|event| event.kind.snapshots())
-            .map(<[Snapshot]>::to_vec)
-            .collect();
+        let checkpoints: Vec<Vec<Snapshot>> = session.log.with_events(|events| {
+            events
+                .iter()
+                .filter_map(|event| event.kind.snapshots())
+                .map(<[Snapshot]>::to_vec)
+                .collect()
+        })?;
         humata_workspace::file_at(repository, &checkpoints, turn, relative)
             .await
             .map_err(workspace_failed(id))
@@ -1704,8 +1705,7 @@ async fn prepare(session: &Session, workspaces: Option<&Workspaces>) -> Result<(
         session: session.id.clone(),
     })?;
     let failed = workspace_failed(&session.id);
-    let history = session.log.events()?;
-    let from = last_checkpoint(&history);
+    let from = session.log.with_events(last_checkpoint)?;
     let made = workspaces
         .create(session.id.as_str(), &record.repositories, &from)
         .await;
@@ -1722,7 +1722,7 @@ async fn prepare(session: &Session, workspaces: Option<&Workspaces>) -> Result<(
         control.record = record;
     }
     if from.is_empty() {
-        let turn = checkpoints(&history);
+        let turn = session.log.with_events(checkpoints)?;
         let snapshots = workspaces
             .snapshot(session.id.as_str(), turn, &checkouts)
             .await

@@ -31,15 +31,13 @@
   [OpaqueProviderGroup/OpaqueProviderList] ""
     [StaticText] "" value: "Write the release notes for M1"
     [Button, disabled] "/code/humata/NOTES.md"
-    [Image] "Block" id: hand.raised
     [StaticText] "" value: "Write /code/humata/NOTES.md"
-    [Button] "Deny"
-    [Button] "Approve"
+    [StaticText] "" value: "Waiting for you: Approve or Deny over the message box (⇧⌘A, ⇧⌘D)."
   [Image] "Block" id: hand.raised
   [StaticText] "" value: "Write /code/humata/NOTES.md"
   [Button] "Deny" help: "Deny (⇧⌘D)"
   [Button] "Approve" help: "Approve (⇧⌘A)"
-  [MenuButton] "Go Down" help: "Stop asking in this session"
+  [MenuButton] "More Answers" help: "Stop asking in this session"
   [Button] "Pasted 8 KB, 340 lines" help: "Read what was pasted"
   [Button] "Remove" help: "Take it out of the message"
   [Button] "Queued: Then the changelog, and tag v1.0" help: "Change it before its turn starts, Take it out before its turn starts"

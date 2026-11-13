@@ -28,6 +28,7 @@
   [PopUpButton] "Approvals" value: "Ask Every Time" help: "What the agent may do without asking"
   [CheckBox/Toggle] "Experimental" value: "0" help: "Copilot's features still being tried out, from the next message. Fusion needs them to pick local models." id: flask
   [StaticText] "" value: "Copilot on build-box"
+  [BusyIndicator] "Loading the chat…" value: "0" id: chat.loading
   [OpaqueProviderGroup/OpaqueProviderList] ""
   [StaticText] "" value: "Can't reach build-box, so this is the session as it last was. Humata reconnects when you send a message; check build-box in Hosts if it doesn't."
   [TextField] ""

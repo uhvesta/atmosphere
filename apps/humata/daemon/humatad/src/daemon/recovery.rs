@@ -14,6 +14,7 @@ use humata_wire::{ClientError, pb};
 use super::Daemon;
 use crate::convert;
 use crate::error::{DaemonError, StoreError};
+use crate::store::NewEvents;
 
 impl Daemon {
     /// The folder of `session`'s mirrors: its project's, which its other
@@ -172,14 +173,53 @@ impl Daemon {
             let commits = bundle::tips(&mirror).await.unwrap_or_default();
             haves.push(pb::RepositoryCommits { name, commits });
         }
-        let request = pb::request::Kind::BackupSession(pb::BackupSession {
+        let (events_have, last_event_id) = {
+            let session = session.to_owned();
+            self.store
+                .apart(move |store| store.recovery_events(&session))
+                .await?
+        };
+        let backend_haves = {
+            let session = session.to_owned();
+            self.store
+                .apart(move |store| store.recovery_file_hashes(&session))
+                .await?
+        };
+        let mut request = pb::BackupSession {
             session_id: session.to_owned(),
             haves,
-        });
-        let mut backup = match self.ask(host, request).await? {
-            pb::response::Kind::SessionBackup(backup) => backup,
-            _ => return Err(unexpected(host, "the session's backup")),
+            events_have,
+            last_event_id,
+            backend_haves,
         };
+        // Asked again whole when what's sent doesn't follow on from the copy,
+        // as when two backups crossed.
+        for _ in 0..2 {
+            let ask = pb::request::Kind::BackupSession(request.clone());
+            let backup = match self.ask(host, ask).await? {
+                pb::response::Kind::SessionBackup(backup) => backup,
+                _ => return Err(unexpected(host, "the session's backup")),
+            };
+            if self.keep_backup(host, session, &folder, backup).await? {
+                return Ok(());
+            }
+            request.events_have = 0;
+            request.last_event_id.clear();
+            request.backend_haves.clear();
+        }
+        Err(unexpected(host, "a backup that follows on from the last"))
+    }
+
+    /// Keeps `backup` of `session` from `host`: its new commits into the
+    /// mirrors in `folder` and the rest into the store. False if its
+    /// events don't follow on from the copy's, keeping only the commits.
+    async fn keep_backup(
+        &self,
+        host: &str,
+        session: &str,
+        folder: &Path,
+        mut backup: pb::SessionBackup,
+    ) -> Result<bool, DaemonError> {
         for repository in std::mem::take(&mut backup.bundles) {
             if !is_folder_name(&repository.name) {
                 return Err(DaemonError::BadRepositoryName {
@@ -199,11 +239,28 @@ impl Daemon {
             })?;
         }
         let name = record_name(&backup.record);
+        let new_events = {
+            /// Only an event's id is read here.
+            #[derive(serde::Deserialize)]
+            struct Id {
+                id: String,
+            }
+            let events: Vec<Id> = serde_json::from_slice(&backup.events)
+                .map_err(|_| unexpected(host, "the session's history as JSON"))?;
+            NewEvents {
+                count: u32::try_from(events.len()).unwrap_or(u32::MAX),
+                last_id: events
+                    .last()
+                    .map(|event| event.id.clone())
+                    .unwrap_or_default(),
+            }
+        };
         let (session, host) = (session.to_owned(), host.to_owned());
-        self.store
-            .apart(move |store| store.keep_recovery(&session, &host, &name, &backup))
+        let kept = self
+            .store
+            .apart(move |store| store.keep_recovery(&session, &host, &name, &backup, &new_events))
             .await?;
-        Ok(())
+        Ok(kept)
     }
 
     /// Every recovery copy, and whether its host still has the session.

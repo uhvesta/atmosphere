@@ -245,6 +245,13 @@ impl EventLog {
         Ok(self.loaded(&mut inner, &mut |_, _| {})?.events.clone())
     }
 
+    /// `read` given the events so far, without copying them; the log stays
+    /// locked meanwhile, so `read` mustn't wait.
+    pub(crate) fn with_events<T>(&self, read: impl FnOnce(&[Event]) -> T) -> Result<T, AgentError> {
+        let mut inner = self.lock();
+        Ok(read(&self.loaded(&mut inner, &mut |_, _| {})?.events))
+    }
+
     pub(crate) fn summary(&self) -> Summary {
         self.lock().summary.clone()
     }

@@ -26,6 +26,7 @@ mod settings;
 
 pub use planning::{Decision, Skill};
 pub use pulls::{Checks, PullRequest, PullState, Standing};
+pub use recoveries::NewEvents;
 pub use review::{Comment, NewThread, Review, Thread};
 pub use search::{Entry, EntryKind, Found, Indexed, MARK_END, MARK_START, Query, Whereabouts};
 
@@ -379,6 +380,28 @@ const MIGRATIONS: &[&str] = &["
         SELECT id, history, history_events FROM remote_sessions WHERE history IS NOT NULL;
     ALTER TABLE remote_sessions DROP COLUMN history;
     ALTER TABLE remote_sessions DROP COLUMN history_events;
+", "
+    -- A recovery copy's history in parts, each the events new at one
+    -- backup as a compressed JSON array, so a backup adds only what's new.
+    -- A copy without parts has its history in its backup, as before.
+    CREATE TABLE recovery_events (
+        session_id TEXT NOT NULL,
+        part INTEGER NOT NULL,
+        events INTEGER NOT NULL,
+        last_event_id TEXT NOT NULL,
+        chunk BLOB NOT NULL,
+        PRIMARY KEY (session_id, part)
+    );
+    -- A recovery copy's backend files, such as Claude Code's transcript,
+    -- each compressed with the SHA-256 of what it holds, so a backup sends
+    -- only the ones that changed.
+    CREATE TABLE recovery_files (
+        session_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        sha256 BLOB NOT NULL,
+        contents BLOB NOT NULL,
+        PRIMARY KEY (session_id, name)
+    );
 "];
 
 /// What reverting a board change did.
@@ -836,6 +859,8 @@ impl Store {
             "DELETE FROM viewed_files WHERE session_id = ?1",
             "DELETE FROM agent_requests WHERE session_id = ?1",
             "DELETE FROM recoveries WHERE session_id = ?1",
+            "DELETE FROM recovery_events WHERE session_id = ?1",
+            "DELETE FROM recovery_files WHERE session_id = ?1",
             "DELETE FROM moved_sessions WHERE session_id = ?1",
             "DELETE FROM proposal_decisions WHERE session_id = ?1",
             "DELETE FROM search_entries WHERE session = ?1",

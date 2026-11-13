@@ -46,15 +46,29 @@ package struct DocsView: View {
         .alert($store.scope(state: \.alert, action: \.alert))
     }
 
+    /// The toolbar with its buttons' titles, or only their icons where the
+    /// pane is too narrow for the titles.
     private var toolbar: some View {
+        ViewThatFits(in: .horizontal) {
+            toolbar(labels: .titleOnly)
+            toolbar(labels: .iconOnly)
+        }
+        .controlSize(.small)
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+
+    private func toolbar<Style: LabelStyle>(labels: Style) -> some View {
         HStack(spacing: 10) {
             if store.isMarkdown || store.focused {
-                Toggle("Focus", isOn: Binding(get: { store.focused }, set: { _ in store.send(.focusToggled) }))
-                    .toggleStyle(.button)
-                    .help(
-                        store.focused
-                            ? "Show the folder's files beside the document again"
-                            : "Read the document wide, beside the chat and its composer")
+                Toggle(isOn: Binding(get: { store.focused }, set: { _ in store.send(.focusToggled) })) {
+                    Label("Focus", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+                .toggleStyle(.button)
+                .help(
+                    store.focused
+                        ? "Show the folder's files beside the document again"
+                        : "Read the document wide, beside the chat and its composer")
             }
             if store.focused, !store.files.isEmpty {
                 Picker(
@@ -69,9 +83,9 @@ package struct DocsView: View {
                 .help("The file shown")
             }
             if store.isMarkdown {
-                Toggle(
-                    "Rendered", isOn: Binding(get: { store.rendered }, set: { _ in store.send(.renderedToggled) })
-                )
+                Toggle(isOn: Binding(get: { store.rendered }, set: { _ in store.send(.renderedToggled) })) {
+                    Label("Rendered", systemImage: "doc.richtext")
+                }
                 .toggleStyle(.button)
                 .help("Show the Markdown as it reads, or its source")
             }
@@ -82,28 +96,34 @@ package struct DocsView: View {
             }
             .help("Read the folder again")
             if store.selected != nil {
-                Toggle(
-                    "Versions",
-                    isOn: Binding(get: { store.versions != nil }, set: { _ in store.send(.versionsToggled) })
-                )
+                Toggle(isOn: Binding(get: { store.versions != nil }, set: { _ in store.send(.versionsToggled) })) {
+                    Label("Versions", systemImage: "clock.arrow.circlepath")
+                }
                 .toggleStyle(.button)
                 .help("List the versions of this file the chat's turns left")
             }
             if let versions = store.versions, versions.selected != nil {
-                Toggle(
-                    "Compare with Now",
-                    isOn: Binding(get: { versions.comparing }, set: { _ in store.send(.compareToggled) })
-                )
+                Toggle(isOn: Binding(get: { versions.comparing }, set: { _ in store.send(.compareToggled) })) {
+                    Label("Compare with Now", systemImage: "arrow.left.arrow.right")
+                }
                 .toggleStyle(.button)
                 .help("Show this version and the file now as one document, with what changed since marked")
-                Button("Restore…") { store.send(.restoreTapped) }
-                    .disabled(versions.restoring)
-                    .help("Write this version over the file, as a change of its own")
+                Button {
+                    store.send(.restoreTapped)
+                } label: {
+                    Label("Restore…", systemImage: "arrow.uturn.backward")
+                }
+                .disabled(versions.restoring)
+                .help("Write this version over the file, as a change of its own")
                 if versions.restoring { ProgressView().controlSize(.small) }
             }
             Spacer()
-            Button(store.drafts.isEmpty ? "Send Comments" : "Send Comments (\(store.drafts.count))") {
+            Button {
                 store.send(.sendTapped)
+            } label: {
+                Label(
+                    store.drafts.isEmpty ? "Send Comments" : "Send Comments (\(store.drafts.count))",
+                    systemImage: "paperplane")
             }
             .buttonStyle(.borderedProminent)
             .disabled(store.drafts.isEmpty || store.sending)
@@ -112,9 +132,7 @@ package struct DocsView: View {
                     ? "Click a paragraph or a line to comment on it first; the comments are sent at once"
                     : "Send every comment to the chat as one message")
         }
-        .controlSize(.small)
-        .padding(.horizontal)
-        .padding(.vertical, 8)
+        .labelStyle(labels)
     }
 
     private var sidebar: some View {

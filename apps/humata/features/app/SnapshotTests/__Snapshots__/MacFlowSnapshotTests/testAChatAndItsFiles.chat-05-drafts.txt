@@ -23,6 +23,7 @@
   [PopUpButton] "" value: "Allow Everything" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
   [Button] "Refresh" help: "Read the folder again" id: arrow.clockwise
+  [CheckBox/Toggle] "Versions" value: "0" help: "List the versions of this file the chat's turns left"
   [Button] "Send Comments (2)" help: "Send every comment to the chat as one message"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""

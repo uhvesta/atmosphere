@@ -51,7 +51,7 @@
   [StaticText] "" value: "Claude Code"
   [StaticText] "" value: "2.1.322 (Claude Code)"
   [StaticText] "" value: "Anthropic Key"
-  [StaticText] "" value: "None, unless `claude` is signed in there"
+  [StaticText] "" value: "None, unless Claude Code is signed in there"
   [StaticText] "" value: "Setup"
   [StaticText] "" value: "Ran"
   [Heading] "Recovery Copies"

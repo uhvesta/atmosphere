@@ -1013,27 +1013,52 @@ impl Daemon {
                 .and_then(|listed| listed.as_ref().and_then(|(_, sessions)| sessions.clone()));
             answers.push((host, answer.map(pb::response::Kind::Sessions)));
         }
+        let mut listed = Vec::new();
         for (host, answer) in answers {
             let sessions = match answer {
                 Some(pb::response::Kind::Sessions(sessions)) => {
                     if !host.is_empty() {
                         self.update_once_idle(&host, &sessions.sessions)?;
                     }
-                    sessions.sessions
+                    Some(sessions.sessions)
                 }
-                _ if host.is_empty() => Vec::new(),
-                _ => {
-                    let mut cached = self.store.cached_sessions(&host)?;
-                    for session in &mut cached {
-                        session.host_offline = true;
-                    }
-                    cached
-                }
+                _ if host.is_empty() => Some(Vec::new()),
+                // Shown as it last was, read with the rest below.
+                _ => None,
             };
-            // What the daemon knows of them, read at once for all of them.
-            let ids: Vec<&str> = sessions.iter().map(|session| session.id.as_str()).collect();
-            let mut known = self.store.known_many(&ids)?;
-            let moved = self.store.moved_away_from(&host)?;
+            listed.push((host, sessions));
+        }
+        // What the daemon knows of them, read at once for all of them and
+        // off the executor, as the app lists every two seconds.
+        let (listed, known, mut moved) = self
+            .store
+            .apart(move |store| {
+                let mut all = Vec::with_capacity(listed.len());
+                let mut moved = HashMap::new();
+                for (host, sessions) in listed {
+                    let sessions = match sessions {
+                        Some(sessions) => sessions,
+                        None => {
+                            let mut cached = store.cached_sessions(&host)?;
+                            for session in &mut cached {
+                                session.host_offline = true;
+                            }
+                            cached
+                        }
+                    };
+                    moved.insert(host.clone(), store.moved_away_from(&host)?);
+                    all.push((host, sessions));
+                }
+                let ids: Vec<&str> = all
+                    .iter()
+                    .flat_map(|(_, sessions)| sessions.iter().map(|session| session.id.as_str()))
+                    .collect();
+                let known = store.known_many(&ids)?;
+                Ok((all, known, moved))
+            })
+            .await?;
+        for (host, sessions) in listed {
+            let moved = moved.remove(&host).unwrap_or_default();
             for mut session in sessions {
                 if moved.contains(&session.id) {
                     continue;
@@ -1041,7 +1066,7 @@ impl Daemon {
                 if !host.is_empty() && !session.host_offline {
                     self.back_up_soon(&host, &session.id, Some(session.turns));
                 }
-                let was = known.remove(&session.id);
+                let was = known.get(&session.id).cloned();
                 self.own_known(&mut session, &host, None, None, was)?;
                 if project.is_empty() || session.project_id == project {
                     all.push(session);

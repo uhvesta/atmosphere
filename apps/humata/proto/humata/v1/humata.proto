@@ -650,6 +650,19 @@ message BackupSession {
   // What the daemon's copy of each repository has already, so the bundles
   // leave out what is reachable from it.
   repeated RepositoryCommits haves = 2;
+  // How many of the session's events the daemon's copy has already, and
+  // the id of the last of them: when the host's history still has that
+  // event there, it sends only the ones after it.
+  uint32 events_have = 3;
+  string last_event_id = 4;
+  // The backend files the daemon's copy has, by their SHA-256: one the
+  // host still has the same is left out of the backup.
+  repeated BackendFileHash backend_haves = 5;
+}
+
+message BackendFileHash {
+  string name = 1;
+  bytes sha256 = 2;
 }
 
 // Commits in one of a session's repositories, by the name the session
@@ -673,6 +686,12 @@ message SessionBackup {
   repeated RepositoryBundle bundles = 5;
   // How many turns it had finished.
   uint32 turns = 6;
+  // Where in its history `events` starts: 0 for the whole of it, or the
+  // `events_have` asked with when only the newer events are sent.
+  uint32 events_from = 7;
+  // Backend files left out of `backend_files` as the daemon's copy has
+  // them already, as its `backend_haves` said.
+  repeated string backend_unchanged = 8;
 }
 
 message BackendFile {

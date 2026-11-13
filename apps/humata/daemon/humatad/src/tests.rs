@@ -2559,12 +2559,51 @@ async fn a_session_backed_up_from_one_host_carries_on_on_another_with_its_code()
         .call(pb::request::Kind::BackupSession(pb::BackupSession {
             session_id: session.id.clone(),
             haves: Vec::new(),
+            ..Default::default()
         }))
         .await;
     let Ok(pb::response::Kind::SessionBackup(backup)) = backed_up else {
         panic!("{backed_up:?}")
     };
     assert_eq!(backup.turns, 1);
+    assert_eq!(backup.events_from, 0);
+
+    // Asked again with the events it has, only the newer ones come; with
+    // a last event that isn't where it was, all of them.
+    let events: Vec<serde_json::Value> =
+        serde_json::from_slice(&backup.events).unwrap_or_else(|error| panic!("{error}"));
+    let last = events
+        .last()
+        .and_then(|event| event["id"].as_str())
+        .unwrap_or_default();
+    for (have, last_id, from) in [
+        (
+            events.len() - 1,
+            events[events.len() - 2]["id"].as_str().unwrap_or_default(),
+            events.len() - 1,
+        ),
+        (events.len(), last, events.len()),
+        (events.len(), "another", 0),
+    ] {
+        let again = first
+            .call(pb::request::Kind::BackupSession(pb::BackupSession {
+                session_id: session.id.clone(),
+                events_have: u32::try_from(have).unwrap_or(u32::MAX),
+                last_event_id: last_id.to_owned(),
+                ..Default::default()
+            }))
+            .await;
+        let Ok(pb::response::Kind::SessionBackup(again)) = again else {
+            panic!("{again:?}")
+        };
+        let sent: Vec<serde_json::Value> =
+            serde_json::from_slice(&again.events).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            usize::try_from(again.events_from).unwrap_or(usize::MAX),
+            from
+        );
+        assert_eq!(sent, events[from..]);
+    }
 
     // Another machine, with its own clone that has none of the snapshots.
     let second = host(&dir.path().join("second")).await;
@@ -2649,6 +2688,7 @@ async fn a_backup_leaves_out_the_commits_the_mac_has() {
                 .call(pb::request::Kind::BackupSession(pb::BackupSession {
                     session_id: session,
                     haves,
+                    ..Default::default()
                 }))
                 .await
             {
@@ -2732,6 +2772,7 @@ async fn a_session_lost_mid_turn_comes_back_with_the_files_written_so_far() {
         .call(pb::request::Kind::BackupSession(pb::BackupSession {
             session_id: session.id.clone(),
             haves: Vec::new(),
+            ..Default::default()
         }))
         .await;
     let Ok(pb::response::Kind::SessionBackup(backup)) = backed_up else {
@@ -3522,6 +3563,7 @@ async fn a_chat_in_no_folder_gets_a_folder_of_its_own_on_the_host_it_moves_to() 
         .call(pb::request::Kind::BackupSession(pb::BackupSession {
             session_id: session.id.clone(),
             haves: Vec::new(),
+            ..Default::default()
         }))
         .await;
     let Ok(pb::response::Kind::SessionBackup(backup)) = backed_up else {

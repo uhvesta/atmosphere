@@ -22,8 +22,10 @@
   [StaticText] "" value: "Approvals"
   [PopUpButton] "" value: "Allow Everything" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
+  [CheckBox/Toggle] "Focus" value: "0" help: "Read the document wide, beside the chat and its composer"
   [CheckBox/Toggle] "Rendered" value: "1" help: "Show the Markdown as it reads, or its source"
   [Button] "Refresh" help: "Read the folder again" id: arrow.clockwise
+  [CheckBox/Toggle] "Versions" value: "0" help: "List the versions of this file the chat's turns left"
   [Button, disabled] "Send Comments" help: "Click a paragraph or a line to comment on it first; the comments are sent at once"
   [Outline] "Sidebar"
     [Row/OutlineRow] ""

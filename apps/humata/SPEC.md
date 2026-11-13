@@ -160,8 +160,8 @@ original spec; lettered ones were added since.
 | D2 Focus view for Markdown | Done |
 | D3 Versions of a Markdown file | Done |
 | U2 UX papercuts | Done |
-| S2 Compression | In progress: sealing and the opening bar done |
-| S3 Daemon speed | In progress: one listing done |
+| S2 Compression | Done but a backend's text kept once |
+| S3 Daemon speed | Done |
 | G1 Ghostty terminal | Planned |
 | X Admin mode, gated by approvals | Done |
 | F2 Fresh clones | Planned |
@@ -1083,9 +1083,13 @@ turned on, and then deletes archived sessions after 45 days by default.
 
 - [x] Histories of archived or long-idle sessions sealed as zstd on a
   background thread; the live tail stays plain
-- [ ] Recovery copies take only what's new each turn; a remote session's
-  text kept once, not four times
-- [ ] Compressing and decompressing never run on the executor or the main
+- [x] Recovery copies take only the history that's new each turn, kept
+  as added parts; a rewind sends it whole again
+- [x] A backend's own state (Claude Code's transcript) sent only when it
+  changed, its files kept apart by hash
+- [ ] A remote session's text kept once on the Mac, not as both its
+  offline copy and its recovery copy
+- [x] Compressing and decompressing never run on the executor or the main
   thread. While a sealed history is being opened, the session shows a
   progress bar (bytes read of its size), or a spinner where the size
   isn't known; Settings › Storage shows sealing and cleanup progress the
@@ -1095,9 +1099,10 @@ turned on, and then deletes archived sessions after 45 days by default.
 
 - [x] The app's three two-second lists share one listing; remote rows are
   written only when they change
-- [ ] SQLite off the executor threads; search catch-up writes only what
-  changed; specs and comments indexed apart
-- [ ] No whole-history copies on hot paths; archived sessions loaded when
+- [x] SQLite off the executor threads on the two-second list and the
+  search catch-up; search catch-up writes only what changed; specs and
+  comments indexed apart
+- [x] No whole-history copies on hot paths; archived sessions loaded when
   opened
 
 ### A terminal on Ghostty

@@ -23,8 +23,8 @@
     [RadioButton/Segment] "Files" value: "0"
     [RadioButton/Segment] "Spec" value: "0"
     [RadioButton/Segment] "Terminal" value: "0"
-  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is"
-  [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself"
+  [MenuButton] "Fork" help: "Try something else from here, while this session stays as it is" id: arrow.triangle.branch
+  [MenuButton] "Folder" help: "The folder it works in, to look at or work in yourself" id: folder
   [PopUpButton] "Approvals" value: "Ask Every Time" help: "What the agent may do without asking"
   [StaticText] "" value: "Scripted"
   [OpaqueProviderGroup/OpaqueProviderList] ""
