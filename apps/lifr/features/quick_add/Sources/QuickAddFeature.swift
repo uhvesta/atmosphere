@@ -131,6 +131,10 @@ package struct QuickAddFeature {
     package enum Action: BindableAction {
         case binding(BindingAction<State>)
         case addTapped
+        /// The title field's text as typed. A line break in it becomes a
+        /// space, and one typed at the end adds, as Return does in a
+        /// one-line field.
+        case titleTyped(String)
         /// Text pasted to add a task for each of its lines, each read as
         /// the title is.
         case linesPasted(String)
@@ -192,6 +196,10 @@ package struct QuickAddFeature {
                 return .run { [store, new] send in
                     await send(.added(Result { try await store.createTask(new) }))
                 }
+
+            case .titleTyped(let typed):
+                state.title = Self.oneLine(typed)
+                return typed.last?.isNewline == true ? .send(.addTapped) : .none
 
             case .linesPasted(let text):
                 guard !state.isAdding, state.parent == nil, state.kind == .task else { return .none }
@@ -270,6 +278,11 @@ package struct QuickAddFeature {
             new.reminders = [trigger]
         }
         return new
+    }
+
+    /// `text` on one line: its line breaks become spaces.
+    package static func oneLine(_ text: String) -> String {
+        text.split(whereSeparator: \.isNewline).joined(separator: " ")
     }
 
     /// The lines of pasted text, without list markers such as "- ", "* ",

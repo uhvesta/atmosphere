@@ -227,6 +227,29 @@ final class QuickAddFeatureTests: XCTestCase {
         return try await store.dependencies.store.load()
     }
 
+    func testReturnTypedInTheTitleAddsTheTask() async throws {
+        _ = home
+        let store = try quickAdd()
+        await store.send(.binding(.set(\.avenueID, home.id)))
+
+        await store.send(.titleTyped("Buy paint tomorrow"))
+        await store.send(.titleTyped("Buy paint tomorrow\n"))
+        await store.receive(\.addTapped)
+        let workspace = try await saved(store)
+
+        XCTAssertEqual(workspace.tasks.values.map(\.title), ["Buy paint"])
+        XCTAssertEqual(workspace.tasks.values.first?.dueDate?.description, "2026-11-04")
+    }
+
+    func testALineBreakPastedIntoTheTitleBecomesASpace() async throws {
+        let store = try quickAdd()
+
+        await store.send(.titleTyped("Buy\npaint\r\nand brushes"))
+
+        XCTAssertEqual(store.state.title, "Buy paint and brushes")
+        await store.finish()
+    }
+
     func testPastedLinesAddATaskEachAsOneChangeReadingEachLikeTheTitle() async throws {
         _ = (health, home)
         let store = try quickAdd()

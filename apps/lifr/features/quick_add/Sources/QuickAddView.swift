@@ -26,7 +26,7 @@ package struct QuickAddView: View {
                 if #available(iOS 26, macOS 26, *) {
                     EntryField(
                         title: fieldTitle, line: store.title, parts: store.entry?.parts ?? [],
-                        changed: { store.title = $0 }, submitted: { store.send(.addTapped) }
+                        typed: { store.send(.titleTyped($0)) }
                     )
                     .focused($titleFocused)
                 } else {
@@ -263,14 +263,13 @@ private struct PartChips: View {
 
 /// The title as it's typed, with the words Quick Add reads, such as
 /// "tomorrow" or "#Health", tinted in place so it's clear which ones the
-/// chips stand for. Return adds, as in a one-line field.
+/// chips stand for.
 @available(iOS 26, macOS 26, *)
 private struct EntryField: View {
     let title: LocalizedStringKey
     let line: String
     let parts: [QuickEntry.Part]
-    let changed: (String) -> Void
-    let submitted: () -> Void
+    let typed: (String) -> Void
 
     @State private var text = AttributedString()
     @State private var selection = AttributedTextSelection()
@@ -295,7 +294,7 @@ private struct EntryField: View {
             .padding(.horizontal, -Self.inset.leading)
             .accessibilityLabel(Text(title))
             .onAppear { show(line) }
-            .onChange(of: text) { typed() }
+            .onChange(of: text) { passOn() }
             .onChange(of: line) { show(line) }
             .onChange(of: parts) { tint() }
     }
@@ -310,19 +309,13 @@ private struct EntryField: View {
         #endif
     }
 
-    /// Passes on what was typed. A return adds instead of starting a line,
-    /// and a pasted line break becomes a space.
-    private func typed() {
+    /// Passes on what was typed. The feature reads a line break; the
+    /// field drops it at once, so it stays one line.
+    private func passOn() {
         let typed = String(text.characters)
-        guard typed.contains(where: \.isNewline) else {
-            if typed != line { changed(typed) } else { tint() }
-            return
-        }
-        let submits = typed.last?.isNewline == true
-        let joined = typed.split(whereSeparator: \.isNewline).joined(separator: " ")
-        show(joined)
-        if joined != line { changed(joined) }
-        if submits { submitted() }
+        guard typed != line else { return tint() }
+        if typed.contains(where: \.isNewline) { show(QuickAddFeature.oneLine(typed)) }
+        self.typed(typed)
     }
 
     /// Shows `line` when it isn't what's typed, as after an add or a paste.
