@@ -9,7 +9,7 @@
 [button, selected] "Task"
 [button] "Project"
 [header, text] "Overdue"
-[element] "" value: "Call dentist tomorrow 3pm !high"
+[element] "Title" value: "Call dentist tomorrow 3pm !high"
 [button] "Fix the bike's back brake" value: "Procrastinated, Low priority, Overdue, Oct 29, HOME-0011"
 [button] "Paste" hint: "Adds a task for each line copied"
 [text] "Add a task for each line copied"

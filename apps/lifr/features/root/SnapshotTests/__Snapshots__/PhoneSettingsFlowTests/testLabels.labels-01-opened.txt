@@ -16,7 +16,7 @@
 [button] "Remind me, Never"
 [button] "App icon badge, Due today and overdue"
 [button] "Review Q4 roadmap" value: "In Progress, Urgent priority, Overdue, Nov 2, 1 of 3 Sub tasks closed, WORK-0006"
-[text] "A new task with a due date gets the reminder, and the badge counts open tasks. This device only."
+[text] "A new task with a due date gets this reminder on every device. The badge is per device."
 [button] "Long run, 10 km" value: "To Do, High priority, Overdue, Nov 3 7:00 AM, HEALTH-0004"
 [header, text] "Appearance"
 [button] "Accent color, Default"
