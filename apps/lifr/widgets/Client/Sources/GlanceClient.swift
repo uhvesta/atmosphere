@@ -12,15 +12,19 @@ package struct GlanceClient: Sendable {
     /// The tasks marked Done from a widget since Lifr last took them,
     /// leaving none marked.
     package var takeMarked: @Sendable () async throws -> Set<UUID>
+    /// The tasks added from the share sheet since Lifr last took them,
+    /// oldest first, leaving none.
+    package var takeShared: @Sendable () async throws -> [SharedTask] = { [] }
 }
 
 extension GlanceClient {
     /// Keeps what was last written, for tests.
     package static func inMemory(
-        marked: Set<UUID> = []
+        marked: Set<UUID> = [], shared: [SharedTask] = []
     ) -> (client: Self, written: LockIsolated<TodayGlance?>) {
         let written = LockIsolated<TodayGlance?>(nil)
         let marks = LockIsolated(marked)
+        let shares = LockIsolated(shared)
         return (
             GlanceClient(
                 write: { glance in written.setValue(glance) },
@@ -28,6 +32,12 @@ extension GlanceClient {
                     marks.withValue { marked in
                         defer { marked = [] }
                         return marked
+                    }
+                },
+                takeShared: {
+                    shares.withValue { shared in
+                        defer { shared = [] }
+                        return shared
                     }
                 }),
             written
@@ -38,8 +48,8 @@ extension GlanceClient {
 extension GlanceClient: TestDependencyKey {
     /// Widgets aren't part of most tests, so writing does nothing; tests of
     /// the widgets' Today use `inMemory`.
-    package static let testValue = GlanceClient(write: { _ in }, takeMarked: { [] })
-    package static let previewValue = GlanceClient(write: { _ in }, takeMarked: { [] })
+    package static let testValue = GlanceClient(write: { _ in }, takeMarked: { [] }, takeShared: { [] })
+    package static let previewValue = GlanceClient(write: { _ in }, takeMarked: { [] }, takeShared: { [] })
 }
 
 extension DependencyValues {

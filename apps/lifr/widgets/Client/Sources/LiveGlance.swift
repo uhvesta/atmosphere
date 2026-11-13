@@ -9,7 +9,10 @@ extension GlanceClient {
     /// same as the last one so the widgets' redraw budget lasts. With no
     /// file, such as an iPhone build without an App Group, does nothing.
     /// Takes what the widgets marked Done from `marks`.
-    package static func live(file: GlanceFile?, marks: MarksFile? = MarksFile.shared) -> Self {
+    /// Takes what was added from the share sheet from `shared`.
+    package static func live(
+        file: GlanceFile?, marks: MarksFile? = MarksFile.shared, shared: SharedTasksFile? = SharedTasksFile.shared
+    ) -> Self {
         let last = LockIsolated<TodayGlance?>(nil)
         let write: @Sendable (TodayGlance) async -> Void = { glance in
             guard let file else { return }
@@ -33,6 +36,6 @@ extension GlanceClient {
             if !marked.isEmpty { WidgetCenter.shared.reloadAllTimelines() }
             return marked
         }
-        return GlanceClient(write: write, takeMarked: take)
+        return GlanceClient(write: write, takeMarked: take, takeShared: { try shared?.take() ?? [] })
     }
 }

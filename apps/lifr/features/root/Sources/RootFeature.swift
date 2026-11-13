@@ -510,6 +510,9 @@ package struct RootFeature {
         /// The tasks marked Done from a widget were saved: the last save,
         /// if any did, and how many couldn't be.
         case widgetMarksSaved(Saved?, unsaved: Int)
+        /// The tasks added from the share sheet were saved, but `unsaved`
+        /// of them couldn't be.
+        case sharedTasksSaved(Saved?, unsaved: Int)
         /// Midnight passed, or the clock or time zone changed: what's due
         /// today, overdue or procrastinated is worked out again.
         case dayChanged
@@ -713,6 +716,7 @@ package struct RootFeature {
                     .run { [sync] _ in _ = await sync.sync() },
                     syncTimer(state),
                     saveWidgetMarks(),
+                    saveSharedTasks(),
                 ]
                 state.isRunning = true
                 state.biometry = lock.biometry()
@@ -1253,6 +1257,7 @@ package struct RootFeature {
                 // Away overnight, today is another day.
                 effects.append(reload())
                 effects.append(saveWidgetMarks())
+                effects.append(saveSharedTasks())
                 return .merge(effects)
 
             case .widgetMarksSaved(let saved, let unsaved):
@@ -1266,6 +1271,23 @@ package struct RootFeature {
                             """
                             A task with open Sub tasks needs you to decide what happens to them, and a save can \
                             fail. Open the task in Today and pick its status.
+                            """)
+                    }
+                }
+                guard let saved else { return .none }
+                return show(saved.snapshot, in: &state)
+
+            case .sharedTasksSaved(let saved, let unsaved):
+                if unsaved > 0 {
+                    state.notice = AlertState {
+                        TextState("Lifr couldn't add ^[\(unsaved) shared task](inflect: true)")
+                    } actions: {
+                        ButtonState(role: .cancel) { TextState("OK") }
+                    } message: {
+                        TextState(
+                            """
+                            They were taken from the share sheet but couldn't be saved. Share them again, or add \
+                            them with Quick Add.
                             """)
                     }
                 }
@@ -1806,6 +1828,40 @@ package struct RootFeature {
                 }
             }
             await send(.widgetMarksSaved(saved, unsaved: unsaved))
+        }
+    }
+
+    /// Saves the tasks added from the share sheet since Lifr last looked,
+    /// each in the Avenue picked, or the Inbox when that one's gone.
+    private func saveSharedTasks() -> Effect<Action> {
+        .run { [glance, store] send in
+            let shared: [SharedTask]
+            do {
+                shared = try await glance.takeShared()
+            } catch {
+                Logger(subsystem: "lifr", category: "share").error("\(String(describing: error), privacy: .public)")
+                return
+            }
+            guard !shared.isEmpty else { return }
+            let avenues: [UUID: Avenue]
+            do {
+                avenues = try await store.load().avenues
+            } catch {
+                await send(.sharedTasksSaved(nil, unsaved: shared.count))
+                return
+            }
+            let tasks = shared.map { task in
+                let avenue = task.avenueID.flatMap { avenues[$0] }.flatMap { $0.archivedAt == nil ? $0.id : nil }
+                var new = Workspace.NewTask(title: task.title, avenueID: avenue ?? Avenue.inboxID)
+                new.details = task.details
+                new.dueDate = task.due.flatMap { try? CalendarDate($0) }
+                return new
+            }
+            do {
+                await send(.sharedTasksSaved(try await store.createTasks(tasks), unsaved: 0))
+            } catch {
+                await send(.sharedTasksSaved(nil, unsaved: tasks.count))
+            }
         }
     }
 

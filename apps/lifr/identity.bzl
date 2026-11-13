@@ -80,6 +80,7 @@ def _lifr_identity_impl(repository_ctx):
         "# Empty unless user.bazelrc sets one: the iPhone widgets then have no data.",
         "IOS_APP_GROUP = {}".format(repr(ios_group)),
         "WIDGETS_BUNDLE_ID = {}".format(repr(bundle_id + ".widgets")),
+        "SHARE_BUNDLE_ID = {}".format(repr(bundle_id + ".share")),
         "# {}, or the prefix and .langreadr.".format(_LANGREADR),
         "LANGREADR_BUNDLE_ID = {}".format(repr(langreadr)),
         "HUMATA_BUNDLE_ID = {}".format(repr(prefix + ".humata")),

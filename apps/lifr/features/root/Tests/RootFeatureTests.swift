@@ -3,6 +3,7 @@ import Foundation
 import LifrAPI
 import LifrAvenue
 import LifrCore
+import LifrGlance
 import LifrGlanceClient
 import LifrLockClient
 import LifrModelsClient
@@ -2156,6 +2157,31 @@ final class RootFeatureTests: XCTestCase {
         await store.send(.notice(.dismiss))
         await store.send(.foregrounded)
         await store.finish()
+        XCTAssertNil(store.state.notice)
+    }
+
+    func testTasksFromTheShareSheetAreAddedWhereTheyWerePutAndAGoneAvenueMeansTheInbox() async throws {
+        let health = health
+        let shared = [
+            SharedTask(
+                id: UUID(), title: "Read this article", details: "https://example.com/article", avenueID: health.id,
+                due: "2026-11-20", sharedAt: now),
+            SharedTask(id: UUID(), title: "Gift idea", details: "", avenueID: UUID(), due: nil, sharedAt: now),
+        ]
+        let client = StoreClient.inMemory(records.workspace)
+        let store = makeStore(.phone, store: client)
+        store.dependencies.glance = GlanceClient.inMemory(shared: shared).client
+
+        await store.send(.foregrounded)
+        await store.receive(\.sharedTasksSaved)
+        await store.finish()
+
+        let tasks = try await client.load().tasks.values
+        let article = try XCTUnwrap(tasks.first { $0.title == "Read this article" })
+        XCTAssertEqual(article.avenueID, health.id)
+        XCTAssertEqual(article.details, "https://example.com/article")
+        XCTAssertEqual(article.dueDate, try CalendarDate("2026-11-20"))
+        XCTAssertEqual(tasks.first { $0.title == "Gift idea" }?.avenueID, Avenue.inboxID)
         XCTAssertNil(store.state.notice)
     }
 

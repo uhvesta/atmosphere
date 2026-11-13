@@ -117,7 +117,10 @@ apple_bundle_version(
     },
     fallback_build_label = "lifr_1_0",
     short_version_string = "1.0",
-    visibility = ["//apps/lifr/widgets:__pkg__"],
+    visibility = [
+        "//apps/lifr/share:__pkg__",
+        "//apps/lifr/widgets:__pkg__",
+    ],
 )
 
 macos_application(
@@ -137,8 +140,12 @@ macos_application(
         "//apps/lifr:is_signed": ":app_group",
         "//conditions:default": ":unsigned_mac",
     }),
-    # Today on the desktop and in Notification Center.
-    extensions = ["//apps/lifr/widgets:macos"],
+    # Today on the desktop and in Notification Center, and Lifr in the
+    # share menu.
+    extensions = [
+        "//apps/lifr/share:macos",
+        "//apps/lifr/widgets:macos",
+    ],
     infoplists = [
         "Info.plist",
         "Info-macOS.plist",
@@ -186,7 +193,10 @@ local_provisioning_profile(
     profile_name = "iOS Team Provisioning Profile: *",
     team_id = TEAM_ID,
     # The widgets' extension signs with it too.
-    visibility = ["//apps/lifr/widgets:__pkg__"],
+    visibility = [
+        "//apps/lifr/share:__pkg__",
+        "//apps/lifr/widgets:__pkg__",
+    ],
 )
 
 # The App Store profiles tools/testflight makes and installs, for the
@@ -228,13 +238,20 @@ lifr_strings(
     name = "strings",
     catalog = "Resources/Localizable.xcstrings",
     target_compatible_with = ["//bazel/xcode"],
-    deps = [":app_lib"],
+    deps = [
+        ":app_lib",
+        "//apps/lifr/share:share_lib",
+        "//apps/lifr/widgets:extension_lib",
+    ],
 )
 
 # The widgets show the app's words, so their bundles carry its catalog.
 exports_files(
     ["Resources/Localizable.xcstrings"],
-    visibility = ["//apps/lifr/widgets:__pkg__"],
+    visibility = [
+        "//apps/lifr/share:__pkg__",
+        "//apps/lifr/widgets:__pkg__",
+    ],
 )
 
 diff_test(

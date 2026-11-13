@@ -80,6 +80,8 @@ swift_library(
     linkopts = ["-Wl,-framework,AppIntents"],
     module_name = "LifrWidgets",
     target_compatible_with = ["//bazel/xcode"],
+    # The app's catalog lists its words.
+    visibility = ["//apps/lifr/app:__pkg__"],
     deps = [
         ":glance",
         ":views",

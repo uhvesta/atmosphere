@@ -180,6 +180,27 @@ final class GlanceTests: XCTestCase {
         XCTAssertEqual(try file.read(), [rows[0].id])
     }
 
+    func testSharedTasksAreTakenOnceInTheOrderTheyCame() throws {
+        let file = SharedTasksFile(url: try folder().appendingPathComponent("Share/Tasks.json"))
+        let first = SharedTask(
+            id: UUID(), title: "Read this", details: "https://example.com", avenueID: nil, due: nil, sharedAt: now)
+        let second = SharedTask(
+            id: UUID(), title: "Call back", details: "", avenueID: UUID(), due: "2026-11-20", sharedAt: now + 60)
+        XCTAssertEqual(try file.take(), [])
+        try file.append(first)
+        try file.append(second)
+        XCTAssertEqual(try file.take(), [first, second])
+        XCTAssertEqual(try file.take(), [])
+    }
+
+    func testOnlyThisUserCanReadTheSharedTasks() throws {
+        let file = SharedTasksFile(url: try folder().appendingPathComponent("Share/Tasks.json"))
+        try file.append(
+            SharedTask(id: UUID(), title: "Read this", details: "", avenueID: nil, due: nil, sharedAt: now))
+        let permissions = try FileManager.default.attributesOfItem(atPath: file.url.path)[.posixPermissions] as? Int
+        XCTAssertEqual(permissions, 0o600)
+    }
+
     func testTakingTheMarksLeavesNone() async throws {
         let file = MarksFile(url: try folder().appendingPathComponent("Widgets/Marked.json"))
         try file.toggle(rows[0].id)
