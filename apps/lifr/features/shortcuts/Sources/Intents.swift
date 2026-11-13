@@ -1,6 +1,7 @@
 import AppIntents
 import Foundation
 import LifrCore
+import LifrPasteboardClient
 
 /// A task, for Shortcuts and Siri.
 package struct TaskEntity: AppEntity {
@@ -501,6 +502,39 @@ package struct OpenAvenueIntent: AppIntent {
     }
 }
 
+/// Copies a plan prompt, for Siri: said aloud, a prompt is too long to hear
+/// and has nowhere to go, so it's put on the clipboard to paste.
+package struct CopyPlanPromptIntent: AppIntent {
+    package static let title: LocalizedStringResource = "Copy a Plan Prompt"
+    package static let description = IntentDescription(
+        """
+        Copies a prompt asking another chat assistant for a plan Lifr can read. It names your Avenues, \
+        Projects and labels, but no tasks. Paste the reply into a Lifr chat with /paste.
+        """)
+
+    @Parameter(title: "Goal", requestValueDialog: "What do you want to plan?")
+    package var goal: String
+
+    @AppDependency private var shortcuts: Shortcuts
+    private var pasteboard: PasteboardClient { .liveValue }
+
+    package init() {}
+
+    package static var parameterSummary: some ParameterSummary {
+        Summary("Copy a prompt to plan \(\.$goal)")
+    }
+
+    package func perform() async throws -> some IntentResult & ProvidesDialog {
+        let prompt = try await shortcuts.planPrompt(goal: goal)
+        await pasteboard.copy(prompt)
+        return .result(
+            dialog: """
+                Copied a prompt to plan \(goal). Paste it into a chat assistant, then paste its reply \
+                into a Lifr chat with /paste.
+                """)
+    }
+}
+
 /// What Siri offers without setting anything up.
 package struct LifrAppShortcuts: AppShortcutsProvider {
     package static var appShortcuts: [AppShortcut] {
@@ -528,5 +562,9 @@ package struct LifrAppShortcuts: AppShortcutsProvider {
             intent: OpenListIntent(),
             phrases: ["Open \(\.$list) in \(.applicationName)", "Show a list in \(.applicationName)"],
             shortTitle: "Open a List", systemImageName: "list.bullet")
+        AppShortcut(
+            intent: CopyPlanPromptIntent(),
+            phrases: ["Copy a plan prompt in \(.applicationName)", "Plan something with \(.applicationName)"],
+            shortTitle: "Copy a Plan Prompt", systemImageName: "doc.on.clipboard")
     }
 }

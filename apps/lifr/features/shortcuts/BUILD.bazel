@@ -17,6 +17,7 @@ swift_library(
     ],
     deps = [
         "//apps/lifr/api",
+        "//apps/lifr/clients/pasteboard",
         "//apps/lifr/clients/store",
         "//apps/lifr/core",
         "//apps/lifr/features/task_list",
