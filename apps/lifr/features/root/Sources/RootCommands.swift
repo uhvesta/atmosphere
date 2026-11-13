@@ -3,6 +3,7 @@ import LifrConversations
 import LifrCore
 import LifrLockClient
 import LifrSettings
+import LifrTaskDetail
 import LifrUI
 import SwiftUI
 
@@ -22,6 +23,51 @@ package struct RootCommands: Commands {
 
     /// The window in front's store.
     private var store: StoreOf<RootFeature> { focused ?? main }
+
+    /// Repeat, reminders, Avenue and labels for the open task, as its
+    /// detail offers them.
+    @ViewBuilder
+    private func detailMenus(_ detail: TaskDetailFeature.State?) -> some View {
+        Menu("Repeat") {
+            ForEach(detail?.repeatPresets ?? [], id: \.self) { preset in
+                Button(preset.title) { store.send(.detailShortcut(.repeats(preset))) }
+            }
+            Button("Custom…") { store.send(.detailShortcut(.customRepeat)) }
+            Divider()
+            Button("Never") { store.send(.detailShortcut(.repeats(nil))) }
+                .disabled(detail?.recurrence == nil)
+        }
+        .disabled(detail == nil || detail?.isSubtask == true)
+        Menu("Add Reminder") {
+            ForEach(detail?.reminderChoices ?? [], id: \.self) { choice in
+                Button(choice.title) { store.send(.detailShortcut(.reminder(choice))) }
+            }
+            Button("Custom…") { store.send(.detailShortcut(.customReminder)) }
+        }
+        .disabled(detail == nil)
+        Menu("Move to Avenue") {
+            ForEach(detail?.avenueChoices ?? []) { choice in
+                Toggle(
+                    choice.name,
+                    isOn: Binding(
+                        get: { detail?.avenueID == choice.id },
+                        set: { _ in store.send(.detailShortcut(.avenue(choice.id))) })
+                )
+            }
+        }
+        .disabled(detail == nil)
+        Menu("Labels") {
+            ForEach(detail?.labelChoices ?? []) { choice in
+                Toggle(
+                    "#\(choice.name)",
+                    isOn: Binding(
+                        get: { detail?.labelIDs.contains(choice.id) == true },
+                        set: { _ in store.send(.detailShortcut(.label(choice.id))) })
+                )
+            }
+        }
+        .disabled(detail?.labelChoices.isEmpty ?? true)
+    }
 
     package var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -141,6 +187,7 @@ package struct RootCommands: Commands {
                 .disabled(store.openTaskID == nil)
             Button("No Due Date") { store.send(.dueShortcut(.none)) }
                 .disabled(store.openTaskID == nil)
+            detailMenus(store.state.openDetail)
             Divider()
             // ⌘↑ and ⌘↓ in the list; menu keys would take them from text
             // fields.

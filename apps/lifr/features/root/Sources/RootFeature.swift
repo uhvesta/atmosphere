@@ -373,6 +373,11 @@ package struct RootFeature {
             currentList.flatMap { self[list: $0]?.detail?.id }
         }
 
+        /// The open task, for the Task menu.
+        package var openDetail: TaskDetailFeature.State? {
+            currentList.flatMap { self[list: $0]?.detail }
+        }
+
         /// Whether an Avenue or Project is on screen, which can show as a
         /// list or a board.
         package var showsScope: Bool {
@@ -402,6 +407,12 @@ package struct RootFeature {
     /// What the Edit and Task menus do to the list on screen.
     package enum ListShortcut: Hashable, Sendable {
         case duplicate, trash, selectAll, moveUp, moveDown
+    }
+
+    /// What the Task menu sets on the open task.
+    package enum DetailShortcut: Hashable, Sendable {
+        case repeats(RepeatPreset?), customRepeat, reminder(ReminderChoice), customReminder
+        case avenue(UUID), label(UUID)
     }
 
     /// Where a task list lives in `State`.
@@ -462,6 +473,7 @@ package struct RootFeature {
         case priorityShortcut(Priority)
         /// A due date shortcut, for the open task: today, tomorrow or none.
         case dueShortcut(DueShortcut)
+        case detailShortcut(DetailShortcut)
         /// Go to Task…
         case goToTaskTapped
         /// A chat command from the menu, for the conversation on screen.
@@ -980,6 +992,19 @@ package struct RootFeature {
             case .dueShortcut(let due):
                 guard let slot = state.currentList, state[list: slot]?.detail != nil else { return .none }
                 return .send(list(slot, .detail(.presented(.rescheduled(due.date(now: now, in: timeZone))))))
+
+            case .detailShortcut(let shortcut):
+                guard let slot = state.currentList, state[list: slot]?.detail != nil else { return .none }
+                let action: TaskDetailFeature.Action =
+                    switch shortcut {
+                    case .repeats(let preset): .repeatPicked(preset)
+                    case .customRepeat: .repeatCustomTapped
+                    case .reminder(let choice): .reminderPicked(choice)
+                    case .customReminder: .reminderCustomTapped
+                    case .avenue(let id): .avenuePicked(id)
+                    case .label(let id): .labelToggled(id)
+                    }
+                return .send(list(slot, .detail(.presented(action))))
 
             case .goTo(let item):
                 // Find puts the cursor in the search field.
@@ -2022,7 +2047,7 @@ extension RootFeature.Action {
         case .newTaskTapped, .newTaskInTapped, .newAvenueTapped, .newProjectTapped, .newSubtaskTapped,
             .statusShortcut, .undoTapped, .syncReviewTapped, .apiSwitched, .reportBugTapped, .recordStepsTapped,
             .redoTapped, .goTo, .priorityShortcut, .dueShortcut, .goToTaskTapped, .shortcutsTapped, .syncNowTapped,
-            .backTapped, .forwardTapped, .listShortcut:
+            .backTapped, .forwardTapped, .listShortcut, .detailShortcut:
             true
         default:
             false

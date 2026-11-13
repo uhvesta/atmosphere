@@ -1570,6 +1570,37 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testTheTaskMenuLabelsMovesAndRepeatsTheOpenTask() async throws {
+        let run = records.task("Run", in: health, due: 0)
+        let home = records.avenue("HOME", "Home")
+        let errand = records.label("errand")
+        let store = makeStore(.mac)
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.send(.goTo(.anytime))
+        await store.skipReceivedActions(strict: false)
+
+        // Nothing open, nothing changes.
+        await store.send(.detailShortcut(.label(errand.id)))
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.labelIDs, [])
+
+        await store.send(.anytime(.rowTapped(run.id)))
+        await store.skipReceivedActions(strict: false)
+        await store.send(.detailShortcut(.label(errand.id)))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.labelIDs, [errand.id])
+
+        let daily = try XCTUnwrap(store.state.openDetail?.repeatPresets.first)
+        await store.send(.detailShortcut(.repeats(daily)))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertNotNil(store.state.workspace?.tasks[run.id]?.recurrence)
+
+        await store.send(.detailShortcut(.avenue(home.id)))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertEqual(store.state.workspace?.tasks[run.id]?.avenueID, home.id)
+        await task.cancel()
+    }
+
     func testGoToShowsTheListOnEitherPlatform() async {
         let mac = makeStore(.mac)
         await mac.send(.goTo(.calendar))
