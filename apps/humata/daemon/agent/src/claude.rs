@@ -722,8 +722,7 @@ impl Playing<'_> {
         if self.links.session.is_none() {
             return Ok(());
         }
-        self.links.events.push((ours, theirs.to_owned()));
-        self.links.save(&self.path)
+        self.links.link(&self.path, ours, theirs.to_owned())
     }
 
     /// Answers the CLI's request: whether a tool may run, asked of the
