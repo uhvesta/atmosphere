@@ -2133,6 +2133,9 @@
     "Lifr on %@" : {
 
     },
+    "Lifr reads dates, Avenues and priorities in the line only in English, such as “tomorrow #home !high”. Set them below instead." : {
+
+    },
     "Lifr's default" : {
 
     },

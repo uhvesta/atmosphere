@@ -1,0 +1,7 @@
+[button] "Cancel"
+[button] "Add"
+[text] "Add a task for each line copied"
+[text] "Lifr reads dates, Avenues and priorities in the line only in English, such as “tomorrow #home !high”. Set them below instead."
+[button, toggle] "Add a time" value: "0"
+[button, toggle] "Add Sub tasks next" value: "0"
+[text] "Adds this task, then keeps Quick Add open for its Sub tasks."

@@ -68,6 +68,9 @@ final class QuickAddSnapshotTests: XCTestCase {
         assertSnapshot(of: screen(subtasks()), as: .accessibilityTree(size: size), named: "subtasks")
         assertSnapshot(of: screen(project()), as: .accessibilityTree(size: size), named: "project")
         assertSnapshot(of: screen(typed()), as: .accessibilityTree(size: size), named: "typed")
+        // A language the line isn't read in says so under the field.
+        let german = screen(state()).environment(\.locale, Locale(identifier: "de_DE"))
+        assertSnapshot(of: german, as: .accessibilityTree(size: size), named: "new-german")
     }
 
     func testImages() {

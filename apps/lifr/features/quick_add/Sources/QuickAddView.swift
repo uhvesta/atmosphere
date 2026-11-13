@@ -6,6 +6,7 @@ import SwiftUI
 package struct QuickAddView: View {
     @Bindable package var store: StoreOf<QuickAddFeature>
     @FocusState private var titleFocused: Bool
+    @Environment(\.locale) private var locale
 
     package init(store: StoreOf<QuickAddFeature>) {
         self.store = store
@@ -52,7 +53,8 @@ package struct QuickAddView: View {
                 }
             } footer: {
                 let entry = store.entry
-                if entry?.parts.isEmpty == false || store.error != nil {
+                let readsWords = locale.language.languageCode == .english
+                if entry?.parts.isEmpty == false || store.error != nil || !readsWords {
                     VStack(alignment: .leading, spacing: 8) {
                         if let entry, !entry.parts.isEmpty {
                             if #unavailable(iOS 26, macOS 26) {
@@ -68,6 +70,15 @@ package struct QuickAddView: View {
                         }
                         if let error = store.error {
                             Text(error).foregroundStyle(.red)
+                        }
+                        if !readsWords {
+                            // The line is read in English only, so say so
+                            // rather than silently reading nothing.
+                            Text(
+                                """
+                                Lifr reads dates, Avenues and priorities in the line only in English, such as \
+                                “tomorrow #home !high”. Set them below instead.
+                                """)
                         }
                     }
                 }
