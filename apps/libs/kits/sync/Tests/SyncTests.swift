@@ -222,6 +222,27 @@ func syncTests() -> [TestCase] {
             await phone.syncer.sync()
             try expectEqual(try phone.records.note(shopping.id).title, "Groceries")
         },
+        TestCase.async("given a device that can't save what it fetched, when it syncs again, then it has the change") {
+            let (_, phone, mac) = try await synced()
+            phone.edit { $0.put(Note(id: shopping.id, title: "Groceries")) }
+            await phone.syncer.sync()
+            mac.failsImport.update { $0 = true }
+            await mac.syncer.sync()
+            mac.failsImport.update { $0 = false }
+            let state = await mac.syncer.sync()
+            try expectEqual(state.status, .idle)
+            try expectEqual(try mac.records.note(shopping.id).title, "Groceries")
+        },
+        TestCase("given a ledger kept before unsaved changes were kept, when it's read, then it has none") {
+            var ledger = SyncLedger<Notebook>()
+            ledger.sent = [shopping.id]
+            let data = try JSONEncoder().encode(ledger)
+            var fields = try (JSONSerialization.jsonObject(with: data) as? [String: Any]).unwrap()
+            fields["unimported"] = nil
+            let old = try JSONSerialization.data(withJSONObject: fields)
+            let read = try JSONDecoder().decode(SyncLedger<Notebook>.self, from: old)
+            try expectEqual(read, ledger)
+        },
         TestCase.async("given a note one device can't read, when it syncs, then the other device keeps it") {
             let (_, phone, mac) = try await synced()
             let id = RecordID(NoteKind.note, shopping.id)

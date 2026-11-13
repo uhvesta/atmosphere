@@ -170,7 +170,9 @@ public actor Syncer<Snapshot: SyncSnapshot> {
         do {
             let writesBefore = writes
             var ledger = try loadLedger()
-            let fetched = try await cloud.fetch()
+            // What an import failed to write last time comes first, so what
+            // the cloud sends now is merged over it.
+            let fetched = ledger.unimported + (try await cloud.fetch())
             // The records are read once the cloud has answered, so an edit
             // made while it was fetching is merged, not written over.
             var snapshot = try await receive(fetched, into: try await load(), &ledger)
@@ -212,12 +214,17 @@ public actor Syncer<Snapshot: SyncSnapshot> {
         // too: a ledger kept ahead of a failed import would send this
         // device's older values back over the other device's change.
         var received = ledger
+        received.unimported = []
         let synced = received.receive(changes, into: snapshot)
         var imported = snapshot
         if !synced.isEmpty {
             do {
                 imported = try await store.importSynced(synced)
             } catch {
+                // The cloud won't send these again, so they're kept to merge
+                // on the next sync.
+                ledger.unimported = changes
+                try? keep(ledger)
                 throw SyncError.storeFailed(String(describing: error))
             }
         }

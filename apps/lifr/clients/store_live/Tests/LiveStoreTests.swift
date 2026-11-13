@@ -311,6 +311,7 @@ final class LiveStoreTests: XCTestCase {
 
         let early = try await store.load()
         XCTAssertEqual(early.tasks, [:])
+        XCTAssertEqual(early.unreadable, [RecordID(.task, task.id)], "sync leaves it as it is until it reads")
 
         let avenue = StoredAvenue(id: UUID())
         avenue.key = "HOME"
@@ -322,6 +323,7 @@ final class LiveStoreTests: XCTestCase {
 
         let later = try await store.load()
         XCTAssertEqual(later.tasks[task.id]?.title, "Arrived first")
+        XCTAssertEqual(later.unreadable, [])
         XCTAssertEqual(later.displayCode(of: try XCTUnwrap(later.tasks[task.id])), "HOME-7K2Q")
     }
 

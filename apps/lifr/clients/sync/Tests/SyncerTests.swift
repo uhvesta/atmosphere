@@ -226,6 +226,34 @@ final class SyncerTests: XCTestCase {
         }
     }
 
+    func testChangesThatCantBeSavedHereArriveOnTheNextSync() async throws {
+        try await run {
+            let (phone, mac, cloud, socks) = try await pair()
+            struct DiskFull: Error {}
+            let full = LockIsolated(true)
+            var store = mac.store
+            let importSynced = store.importSynced
+            store.importSynced = { changes in
+                if full.value { throw DiskFull() }
+                return try await importSynced(changes)
+            }
+            let clock = { [now] in now }
+            let failing = Syncer(
+                cloud: cloud.connection(device: "Mac"), store: store, storage: mac.storage, now: clock)
+            _ = try await phone.store.edit(socks, Workspace.TaskEdit(title: "Buy wool socks"))
+            await phone.syncer.sync()
+
+            let failed = await failing.sync()
+            guard case .failed = failed.status else { return XCTFail("got \(failed.status)") }
+            try await assertEqual({ try await mac.task(socks)?.title }, "Buy socks")
+
+            full.setValue(false)
+            let state = await failing.sync()
+            XCTAssertEqual(state.status, .idle)
+            try await assertEqual({ try await mac.task(socks)?.title }, "Buy wool socks")
+        }
+    }
+
     func testTheLedgerCarriesHeldRecordsAcrossLaunches() async throws {
         try await run {
             let (phone, mac, cloud, socks) = try await pair()

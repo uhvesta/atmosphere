@@ -26,8 +26,21 @@ public struct SyncLedger<Snapshot: SyncSnapshot>: Hashable, Codable, Sendable {
     /// The logs the cloud has.
     public var sent: Set<UUID> = []
     public var lastSynced: Date?
+    /// What the cloud sent that the store couldn't write yet. The cloud
+    /// doesn't send it again, so the next sync merges it first.
+    public var unimported: [CloudChange<Snapshot>] = []
 
     public init() {}
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        bases = try container.decode([RecordKey: Record?].self, forKey: .bases)
+        held = try container.decode([RecordKey: Held].self, forKey: .held)
+        sent = try container.decode(Set<UUID>.self, forKey: .sent)
+        lastSynced = try container.decodeIfPresent(Date.self, forKey: .lastSynced)
+        // Ledgers kept before this was added don't have it.
+        unimported = try container.decodeIfPresent([CloudChange<Snapshot>].self, forKey: .unimported) ?? []
+    }
 
     /// Merges what other devices sent with the records, and returns what to
     /// write. Records that can't merge are held with this device's values

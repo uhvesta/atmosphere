@@ -1680,6 +1680,38 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testRemindersThatCantBeScheduledAreExplainedOncePerLaunch() async {
+        records.task("Run", in: health, due: 0)
+        struct Refused: Error {}
+        let store = makeStore(.phone)
+        store.dependencies.reminders.schedule = { _ in throw Refused() }
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.receive(\.remindersScheduled)
+        XCTAssertNotNil(store.state.notice)
+
+        await store.send(.notice(.dismiss))
+        store.state.$badgeCount.withLock { $0 = .overdue }
+        await store.receive(\.badgeCountChanged)
+        await store.receive(\.remindersScheduled)
+        XCTAssertNil(store.state.notice)
+        await task.cancel()
+    }
+
+    func testRemindersRefusedBecauseNotificationsAreOffAreNotAnError() async {
+        records.task("Run", in: health, due: 0)
+        struct Refused: Error {}
+        let store = makeStore(.phone, reminders: RemindersClient.inMemory(permission: .denied))
+        store.dependencies.reminders.schedule = { _ in throw Refused() }
+
+        let task = await store.send(.task)
+        await store.receive(\.loaded)
+        await store.receive(\.remindersScheduled)
+        XCTAssertNil(store.state.notice)
+        await task.cancel()
+    }
+
     func testAReminderOpenedAtLaunchShowsItsTaskOnceTheRecordsLoad() async {
         let stretch = records.task("Stretch", in: health, due: 3)
         let store = makeStore(.mac)
