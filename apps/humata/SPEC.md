@@ -156,7 +156,7 @@ original spec; lettered ones were added since.
 | Q7 Spec tab: every spec a chat reads, in the chat | Done |
 | T1 Tokens and agent tools | Done |
 | U1 App jank | Done |
-| D1 Mermaid diagrams | Planned |
+| D1 Mermaid diagrams | Done |
 | D2 Focus view for Markdown | Planned |
 | D3 Versions of a Markdown file | Planned |
 | U2 UX papercuts | Planned |
@@ -1022,12 +1022,12 @@ turned on, and then deletes archived sessions after 45 days by default.
 
 #### D1 Mermaid diagrams
 
-- [ ] A `mermaid` block renders as a diagram wherever Markdown renders,
+- [x] A `mermaid` block renders as a diagram wherever Markdown renders,
   from a bundled mermaid.js in a web view with no network, cached by
   source, in light and dark; a broken one shows its source and error
-- [ ] A diagram opens large in its own window: zoom, pan, fit; drag out a
+- [x] A diagram opens large in its own window: zoom, pan, fit; drag out a
   region and send it to the chat as an image, with a note
-- [ ] Code sent to the chat: select lines in a file, a diff or a code
+- [x] Code sent to the chat: select lines in a file, a diff or a code
   block and send them as a quote with their path and lines, or with a
   comment, straight into the composer
 
@@ -1046,7 +1046,7 @@ turned on, and then deletes archived sessions after 45 days by default.
 
 #### U2 UX papercuts
 
-- [ ] Return doesn't approve; the composer is focused when a session opens
+- [x] Return doesn't approve; the composer is focused when a session opens
 - [ ] Fork, edit to a fork, update and answering show progress and can't
   be done twice
 - [ ] Each alert says what failed; search has Try Again; one word for
