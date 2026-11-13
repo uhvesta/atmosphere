@@ -221,9 +221,12 @@ extension StoreClient {
         }
     }
 
-    package func rename(label id: UUID, to name: String) async throws -> Saved {
+    /// Renames and recolors a label in one save; a name another label has
+    /// is refused and nothing changes.
+    package func edit(label id: UUID, name: String, color: String) async throws -> Saved {
         try await save { (workspace, _) throws(LifrError) in
-            try workspace.rename(label: id, to: name)
+            if workspace.labels[id]?.name != name { try workspace.rename(label: id, to: name) }
+            try workspace.recolor(label: id, to: color)
             return Change()
         }
     }

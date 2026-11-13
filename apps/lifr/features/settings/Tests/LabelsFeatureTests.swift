@@ -50,6 +50,32 @@ final class LabelsFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.rows.first { $0.id == errand.id }?.taskCount, 2)
     }
 
+    func testRecoloringALabelKeepsItsNameAndTasks() async throws {
+        let (store, errand, _) = editing()
+        await store.send(.rowTapped(errand.id))
+        await store.send(.edit(.presented(.binding(.set(\.color, "green")))))
+        await store.send(.edit(.presented(.saveTapped)))
+        await store.receive(\.delegate.saved)
+        await store.skipReceivedActions(strict: false)
+        XCTAssertNil(store.state.edit)
+        let row = try XCTUnwrap(store.state.rows.first { $0.id == errand.id })
+        XCTAssertEqual(row.color, "green")
+        XCTAssertEqual(row.name, "Errand")
+        XCTAssertEqual(row.taskCount, 2)
+    }
+
+    func testARefusedNameKeepsTheOldColorToo() async {
+        let (store, errand, _) = editing()
+        let color = store.state.rows.first { $0.id == errand.id }?.color
+        await store.send(.rowTapped(errand.id))
+        await store.send(.edit(.presented(.binding(.set(\.name, "phone")))))
+        await store.send(.edit(.presented(.binding(.set(\.color, "green")))))
+        await store.send(.edit(.presented(.saveTapped)))
+        await store.skipReceivedActions(strict: false)
+        XCTAssertNotNil(store.state.edit?.error)
+        XCTAssertEqual(store.state.rows.first { $0.id == errand.id }?.color, color)
+    }
+
     func testANameAnotherLabelHasIsRefusedAndSaysWhy() async {
         let (store, errand, _) = editing()
         await store.send(.rowTapped(errand.id))

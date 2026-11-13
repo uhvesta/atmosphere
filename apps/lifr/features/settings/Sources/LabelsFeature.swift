@@ -8,6 +8,7 @@ import LifrUI
 package struct LabelRow: Identifiable, Hashable, Sendable {
     package var id: UUID
     package var name: String
+    package var color: String
     package var taskCount: Int
 }
 
@@ -18,7 +19,9 @@ extension Workspace {
         return labels.values
             .sorted { ($0.name.localizedLowercase, $0.id.uuidString) < ($1.name.localizedLowercase, $1.id.uuidString) }
             .map { label in
-                LabelRow(id: label.id, name: label.name, taskCount: live.count { $0.labelIDs.contains(label.id) })
+                LabelRow(
+                    id: label.id, name: label.name, color: label.color,
+                    taskCount: live.count { $0.labelIDs.contains(label.id) })
             }
     }
 }
@@ -88,19 +91,29 @@ package struct EditLabelFeature {
     package struct State: Equatable {
         package let id: UUID
         package let original: String
+        package let originalColor: String
         package let taskCount: Int
         package var name: String
+        package var color: String
         /// The labels this one can merge into.
         package let others: [LabelRow]
         /// Why the last save failed, such as a name another label has.
         package var error: String?
         @Presents package var confirm: AlertState<Confirm>?
 
+        /// The colors to pick from, with the label's own first if it's
+        /// not one of them.
+        package var colorChoices: [String] {
+            Avenue.colors.contains(originalColor) ? Avenue.colors : [originalColor] + Avenue.colors
+        }
+
         package init(row: LabelRow, others: [LabelRow]) {
             id = row.id
             original = row.name
+            originalColor = row.color
             taskCount = row.taskCount
             name = row.name
+            color = row.color
             self.others = others
         }
     }
@@ -137,9 +150,11 @@ package struct EditLabelFeature {
             switch action {
             case .saveTapped:
                 let name = state.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard name != state.original else { return .run { _ in await dismiss() } }
-                return .run { [store, id = state.id] send in
-                    await send(.saved(Result { try await store.rename(label: id, to: name) }))
+                guard name != state.original || state.color != state.originalColor else {
+                    return .run { _ in await dismiss() }
+                }
+                return .run { [store, id = state.id, color = state.color] send in
+                    await send(.saved(Result { try await store.edit(label: id, name: name, color: color) }))
                 }
 
             case .cancelTapped:

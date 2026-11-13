@@ -47,6 +47,17 @@ struct EditLabelView: View {
                     TextField("Name", text: $store.name)
                         .onSubmit { store.send(.saveTapped) }
                         .submitLabel(.done)
+                    // A menu draws its images in one color, so the row's
+                    // icon shows the label's.
+                    Picker(selection: $store.color) {
+                        ForEach(store.colorChoices, id: \.self) { Text($0.capitalized).tag($0) }
+                    } label: {
+                        Label {
+                            Text("Color")
+                        } icon: {
+                            Image(systemName: "tag.fill").foregroundStyle(Color(avenue: store.color))
+                        }
+                    }
                 } footer: {
                     if let error = store.error {
                         Text(error).foregroundStyle(.red)

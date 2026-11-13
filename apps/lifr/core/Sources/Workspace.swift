@@ -339,6 +339,12 @@ package struct Workspace: Hashable, Codable, Sendable {
         labels[id] = label
     }
 
+    /// Gives a label one of `Avenue.colors`.
+    package mutating func recolor(label id: UUID, to color: String) throws(LifrError) {
+        guard labels[id] != nil else { throw .notFound(.label, id.uuidString) }
+        labels[id]?.color = color
+    }
+
     /// Deletes a label, giving every task that had it `other` instead, or
     /// nothing when `other` is `nil`.
     package mutating func merge(label id: UUID, into other: UUID?, in context: Context) throws(LifrError) -> Change {
