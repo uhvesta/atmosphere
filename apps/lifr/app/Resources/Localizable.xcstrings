@@ -324,6 +324,16 @@
         }
       }
     },
+    "%@, %@, %lld overdue" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, %2$@, %3$lld overdue"
+          }
+        }
+      }
+    },
     "%@, %@, overdue" : {
       "localizations" : {
         "en" : {
@@ -355,6 +365,15 @@
       }
     },
     "%@, 1 task" : {
+
+    },
+    "%@, Done" : {
+
+    },
+    "%@, In Progress" : {
+
+    },
+    "%@, overdue" : {
 
     },
     "%@, starts" : {
@@ -393,6 +412,16 @@
     },
     "%lld due" : {
 
+    },
+    "%lld due · %lld overdue" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld due · %2$lld overdue"
+          }
+        }
+      }
     },
     "%lld fields were changed again since, so they stay as they are now." : {
 
@@ -467,6 +496,9 @@
 
     },
     "%lld open" : {
+
+    },
+    "%lld overdue" : {
 
     },
     "%lld stalled" : {
@@ -714,6 +746,9 @@
     "Add task" : {
 
     },
+    "Add to Lifr" : {
+
+    },
     "Added" : {
 
     },
@@ -789,6 +824,9 @@
 
     },
     "All Checkpoints" : {
+
+    },
+    "All clear" : {
 
     },
     "All tasks" : {
@@ -950,6 +988,9 @@
     "Avenue" : {
 
     },
+    "Avenue in Lifr" : {
+
+    },
     "Avenue key, or KEY/Project" : {
 
     },
@@ -1047,6 +1088,9 @@
 
     },
     "Change Status" : {
+
+    },
+    "Change Status of %@" : {
 
     },
     "Change Status…" : {
@@ -1266,6 +1310,9 @@
 
     },
     "Copy this reply" : {
+
+    },
+    "Couldn't Add the Task" : {
 
     },
     "Couldn't Read the Plan" : {
@@ -2042,6 +2089,12 @@
     "House" : {
 
     },
+    "How many tasks are due today, and how many are overdue." : {
+
+    },
+    "How many tasks are open in each Avenue." : {
+
+    },
     "How the assistant should behave" : {
 
     },
@@ -2073,6 +2126,9 @@
 
     },
     "In use" : {
+
+    },
+    "Inbox" : {
 
     },
     "Include my text and screenshots" : {
@@ -2115,6 +2171,9 @@
 
     },
     "It was made here and there at once. Choose which to keep in Lifr." : {
+
+    },
+    "It's added when Lifr next opens." : {
 
     },
     "It's deleted here and from iCloud, and can't be undone. Tasks it changed stay." : {
@@ -2223,6 +2282,9 @@
     "Lifr can't open this link" : {
 
     },
+    "Lifr couldn't add ^[%lld shared task](inflect: true)" : {
+
+    },
     "Lifr couldn't confirm the task was added. Open Lifr to check Today before adding it again." : {
 
     },
@@ -2256,6 +2318,16 @@
         }
       }
     },
+    "Lifr couldn't keep the task to add at %@ (%@). Open Lifr and add it with Quick Add." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Lifr couldn't keep the task to add at %1$@ (%2$@). Open Lifr and add it with Quick Add."
+          }
+        }
+      }
+    },
     "Lifr couldn't read %@: %@. Unlock this device and try again." : {
       "localizations" : {
         "en" : {
@@ -2268,6 +2340,16 @@
     },
     "Lifr couldn't read that photo. Pick another, or take a screenshot of it and attach that." : {
 
+    },
+    "Lifr couldn't read the tasks added from the share sheet at %@ (%@). Share them again to add them." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Lifr couldn't read the tasks added from the share sheet at %1$@ (%2$@). Share them again to add them."
+          }
+        }
+      }
     },
     "Lifr couldn't read the tasks marked Done from a widget at %@ (%@). Check them in Lifr and mark them there." : {
       "localizations" : {
@@ -2411,6 +2493,9 @@
 
     },
     "Mark %@" : {
+
+    },
+    "Mark %@ Done" : {
 
     },
     "Mark All Won't Do" : {
@@ -2736,6 +2821,12 @@
     "No Avenues" : {
 
     },
+    "No Avenues yet" : {
+
+    },
+    "No Date" : {
+
+    },
     "No Due Date" : {
 
     },
@@ -2868,10 +2959,19 @@
     "Nothing" : {
 
     },
+    "Nothing due" : {
+
+    },
+    "Nothing due this week" : {
+
+    },
     "Nothing due today" : {
 
     },
     "Nothing is due today." : {
+
+    },
+    "Nothing open" : {
 
     },
     "Nothing to Paste" : {
@@ -2961,7 +3061,22 @@
     "Open Lifr to plan your day." : {
 
     },
+    "Open Lifr to see Today" : {
+
+    },
+    "Open Lifr to see Today here." : {
+
+    },
+    "Open Lifr to see Upcoming here." : {
+
+    },
     "Open Lifr to see the task." : {
+
+    },
+    "Open Lifr to see this Avenue here." : {
+
+    },
+    "Open Lifr to see your Avenues here." : {
 
     },
     "Open Task in New Window" : {
@@ -2986,6 +3101,9 @@
 
     },
     "Opens Lifr to Today, Upcoming or the calendar." : {
+
+    },
+    "Opens Quick Add in Lifr." : {
 
     },
     "Opens a task in Lifr." : {
@@ -3128,6 +3246,9 @@
 
     },
     "Project details" : {
+
+    },
+    "Project in %@" : {
 
     },
     "Project name" : {
@@ -3291,6 +3412,9 @@
 
     },
     "Renew" : {
+
+    },
+    "Reopen %@" : {
 
     },
     "Reopen Lifr" : {
@@ -4056,6 +4180,9 @@
     "These changed here and on another device in ways that can't both stand. Choose what to keep; you can undo it like any change." : {
 
     },
+    "They were taken from the share sheet but couldn't be saved. Share them again, or add them with Quick Add." : {
+
+    },
     "They're deleted from all your devices, and this can't be undone." : {
 
     },
@@ -4096,6 +4223,9 @@
     "This Weekend" : {
 
     },
+    "This build of Lifr can't take tasks from the share sheet. Copy the text and paste it into Quick Add instead." : {
+
+    },
     "This can't be undone. Tasks the assistant added or changed stay." : {
 
     },
@@ -4106,6 +4236,9 @@
 
     },
     "This model doesn't count its tokens, so the counts are guessed from the text's length." : {
+
+    },
+    "This month, with the days that have tasks due." : {
 
     },
     "Thoughts" : {
@@ -4141,7 +4274,13 @@
     "Today" : {
 
     },
+    "Today · %lld" : {
+
+    },
     "Today%@" : {
+
+    },
+    "Today's Count" : {
 
     },
     "Tomorrow" : {
@@ -4242,6 +4381,9 @@
 
     },
     "Unlock" : {
+
+    },
+    "Unlock Lifr to see them" : {
 
     },
     "Unlock Lifr to see your tasks" : {
@@ -4349,7 +4491,16 @@
     "What the assistant does while this skill is attached." : {
 
     },
+    "What this widget showed was archived, finished or deleted. Edit the widget to pick another." : {
+
+    },
     "What's New in Lifr" : {
+
+    },
+    "What's due on each of the next seven days." : {
+
+    },
+    "What's due today, and how much is overdue." : {
 
     },
     "What's on Today" : {
@@ -4505,6 +4656,9 @@
     "^[%lld month](inflect: true) after closing" : {
 
     },
+    "^[%lld open task](inflect: true)" : {
+
+    },
     "^[%lld task](inflect: true)" : {
 
     },
@@ -4543,6 +4697,9 @@
 
     },
     "batch %lld" : {
+
+    },
+    "due today" : {
 
     },
     "flash off" : {
