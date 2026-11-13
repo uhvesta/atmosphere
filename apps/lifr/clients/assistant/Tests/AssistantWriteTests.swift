@@ -37,6 +37,17 @@ final class AssistantWriteTests: XCTestCase {
         return (records, rent, plants)
     }
 
+    func testAChangeIsSavedAsTheModelThatProposedIt() async throws {
+        let (records, rent, _) = home()
+        let (tools, store) = tools(records.workspace)
+        _ = try await tools.change(TaskChange(code: records.workspace.displayCode(of: rent), status: "done"))
+
+        let saved = try await tools.applied(to: store, now: now, conversation: conversation, model: "Qwen3 4B")
+        let actor = try XCTUnwrap(saved.journal.last?.actor)
+        XCTAssertEqual(actor.client, "Qwen3 4B")
+        XCTAssertEqual(actor.surface, .assistant)
+    }
+
     func testChangesWaitForThePersonThenSaveAsOneChangeByTheAssistant() async throws {
         let (records, rent, plants) = home()
         let (tools, store) = tools(records.workspace)

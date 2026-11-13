@@ -23,7 +23,7 @@ package enum ActivityAuthor: Hashable, Sendable {
         case .surface(.mac): String(localized: "Mac")
         case .surface(.cli): String(localized: "Command line")
         case .surface(.mcp): "MCP"
-        case .surface(.assistant): String(localized: "Apple Intelligence")
+        case .surface(.assistant): String(localized: "Assistant")
         case .surface(.shortcuts): String(localized: "Shortcuts")
         case .lifr: String(localized: "Lifr")
         }
@@ -151,8 +151,7 @@ package struct ActivityFeature {
         private func author(_ actor: Actor) -> String {
             let place = ActivityAuthor(actor).title
             switch actor.kind {
-            case .agent where actor.surface != .assistant:
-                return String(localized: "\(actor.client ?? String(localized: "An agent")) · \(place)")
+            case .agent: return String(localized: "\(actor.client ?? String(localized: "An agent")) · \(place)")
             default: return place
             }
         }

@@ -916,12 +916,13 @@ package struct ChatFeature {
                 }
                 state.applying = id
                 let conversation = state.conversation.id
+                let model = state.conversation.messages.first { $0.id == id }?.model
                 return .run { [store, now, timeZone] send in
                     do {
                         let workspace = try await store.load()
                         let made = try await Proposal.make(
                             proposal.actions, on: workspace, now: now, timeZone: timeZone,
-                            conversation: conversation)
+                            conversation: conversation, model: model)
                         guard made.proposal.steps.map(\.before) == proposal.steps.map(\.before) else {
                             await send(.changedSince(messageID: id, made.proposal))
                             return

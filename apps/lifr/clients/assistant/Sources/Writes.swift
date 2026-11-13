@@ -10,9 +10,13 @@ package typealias AssistantOperation = @Sendable (inout Workspace, Context) thro
 /// so it can be found and reverted with the rest.
 package struct AssistantWrites: Sendable, Hashable {
     package var conversation: UUID
+    /// The model that proposed the changes, by name, which the journal
+    /// records them as.
+    package var model: String?
 
-    package init(conversation: UUID) {
+    package init(conversation: UUID, model: String? = nil) {
         self.conversation = conversation
+        self.model = model
     }
 }
 
@@ -326,10 +330,12 @@ extension AssistantTools {
     /// the assistant in the conversation, or `nil` when nothing.
     var operation: AssistantOperation? {
         let operations = proposed.value.map(\.operation)
-        guard !operations.isEmpty, let conversation = writes?.conversation else { return nil }
+        guard !operations.isEmpty, let writes else { return nil }
+        let conversation = writes.conversation
+        let model = writes.model
         return { workspace, context throws(LifrError) in
             var context = context
-            context.actor = .assistant(device: context.actor.device)
+            context.actor = .assistant(device: context.actor.device, model: model)
             var change = Change()
             for operation in operations {
                 change.merge(try operation(&workspace, context))

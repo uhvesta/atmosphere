@@ -27,13 +27,14 @@ extension AssistantKit.Proposal where Action == AssistantAction, Step == Journal
 
     /// The actions made on `workspace` without saving anything: what they
     /// would change now, and the operation that saves them as the assistant
-    /// in `conversation`. Throws the first that can't be made any more,
+    /// in `conversation`, as `model`. Throws the first that can't be made any more,
     /// such as for a task deleted since.
     package static func make(
-        _ actions: [AssistantAction], on workspace: Workspace, now: Date, timeZone: TimeZone, conversation: UUID
+        _ actions: [AssistantAction], on workspace: Workspace, now: Date, timeZone: TimeZone, conversation: UUID,
+        model: String? = nil
     ) async throws(ActionError) -> (proposal: Proposal, operation: AssistantOperation) {
         let tools = AssistantTools(
-            workspace: workspace, now: now, timeZone: timeZone, writes: AssistantWrites(conversation: conversation))
+            workspace: workspace, now: now, timeZone: timeZone, writes: AssistantWrites(conversation: conversation, model: model))
         for action in actions {
             try await tools.run(action)
         }

@@ -21,7 +21,7 @@ package struct Actor: Hashable, Codable, Sendable {
         case mac
         case cli
         case mcp
-        /// Apple Intelligence, in a conversation.
+        /// The on-device assistant, in a conversation.
         case assistant
         /// Shortcuts or Siri, through Lifr's App Intents.
         case shortcuts
@@ -40,9 +40,11 @@ package struct Actor: Hashable, Codable, Sendable {
         Actor(kind: .system, device: device, client: nil, surface: surface)
     }
 
-    /// The on-device assistant, acting in a conversation.
-    package static func assistant(device: String) -> Actor {
-        .agent("Apple Intelligence", device: device, surface: .assistant)
+    /// The on-device assistant, acting in a conversation, as the model that
+    /// answered: by its name, or Apple Intelligence for replies kept before
+    /// chats recorded it.
+    package static func assistant(device: String, model: String? = nil) -> Actor {
+        .agent(model ?? "Apple Intelligence", device: device, surface: .assistant)
     }
 }
 
