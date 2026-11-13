@@ -448,6 +448,10 @@ package struct RootFeature {
         case unlocked(Result<Void, any Error>)
         /// Another window locked or unlocked: every window follows.
         case lockMirrored(Bool)
+        /// The Mac app became the active app, or another app did. The lock
+        /// follows Lifr as a whole, so it comes on even when the first
+        /// window is closed and others are open.
+        case appActivated(Bool)
         case lockAlert(PresentationAction<Never>)
         /// The Mac's File › Sync Now.
         case syncNowTapped
@@ -1121,7 +1125,7 @@ package struct RootFeature {
                 guard state.syncsContinuously, state.sync.status != .syncing else { return .none }
                 return .run { [sync] _ in _ = await sync.sync() }
 
-            case .unlockTapped, .unlocked, .lockMirrored:
+            case .unlockTapped, .unlocked, .lockMirrored, .appActivated:
                 return .none
 
             case .syncReviewTapped:
@@ -1321,6 +1325,20 @@ package struct RootFeature {
         case .lockMirrored(true):
             state.isLocked = true
             return .none
+
+        case .appActivated(false):
+            if state.awayAt == nil { state.awayAt = now }
+            return .none
+
+        case .appActivated(true):
+            let away = state.awayAt
+            state.awayAt = nil
+            // Other windows follow the first one's lock.
+            guard !state.isWindow, state.locksApp, !state.isLocked, AppLock.locks(away: away, now: now) else {
+                return .none
+            }
+            state.isLocked = true
+            return .send(.unlockTapped)
 
         case .unlocked(.success), .lockMirrored(false):
             state.isLocked = false

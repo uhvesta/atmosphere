@@ -1857,9 +1857,11 @@ final class RootFeatureTests: XCTestCase {
 
     /// A phone store whose lock is on, confirming with `lock`, and the
     /// time it thinks it is.
-    private func locked(_ lock: LockClient) -> (TestStoreOf<RootFeature>, LockIsolated<Date>) {
+    private func locked(
+        _ lock: LockClient, on platform: RootFeature.Platform = .phone
+    ) -> (TestStoreOf<RootFeature>, LockIsolated<Date>) {
         let time = LockIsolated(now)
-        let store = makeStore(.phone)
+        let store = makeStore(platform)
         store.dependencies.lock = lock
         store.dependencies.date = DateGenerator { time.value }
         store.state.$locksApp.withLock { $0 = true }
@@ -1901,6 +1903,25 @@ final class RootFeatureTests: XCTestCase {
         await store.send(.backgrounded)
         time.setValue(now + 120)
         await store.send(.foregrounded)
+        XCTAssertTrue(store.state.isLocked)
+        await store.receive(\.unlocked)
+        XCTAssertFalse(store.state.isLocked)
+        await task.cancel()
+    }
+
+    func testTheMacComingBackToTheFrontAfterAMinuteLocksAgain() async {
+        let (store, time) = locked(.always(), on: .mac)
+        let task = await store.send(.task)
+        await store.receive(\.unlocked)
+
+        await store.send(.appActivated(false))
+        time.setValue(now + 30)
+        await store.send(.appActivated(true))
+        XCTAssertFalse(store.state.isLocked)
+
+        await store.send(.appActivated(false))
+        time.setValue(now + 120)
+        await store.send(.appActivated(true))
         XCTAssertTrue(store.state.isLocked)
         await store.receive(\.unlocked)
         XCTAssertFalse(store.state.isLocked)

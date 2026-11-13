@@ -181,7 +181,21 @@ private enum Storage {
         static func start() {
             guard running == nil else { return }
             running = Task { await root.send(.task).finish() }
+            let changes = [
+                (NSApplication.didBecomeActiveNotification, true), (NSApplication.didResignActiveNotification, false),
+            ]
+            activation = changes.map { name, active in
+                Task {
+                    for await _ in NotificationCenter.default.notifications(named: name) {
+                        root.send(.appActivated(active))
+                    }
+                }
+            }
         }
+
+        /// Tells the root store when Lifr comes to the front or leaves it, for
+        /// as long as Lifr runs.
+        private static var activation: [Task<Void, Never>] = []
     #endif
 
     /// The first window's store, which also syncs, schedules reminders and
