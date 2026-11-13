@@ -1,6 +1,6 @@
 //! The host role: runs sessions on this machine, on whichever backends it has.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -69,7 +69,16 @@ trait Backend: Send + Sync {
     ) -> BoxFuture<'a, SessionRecord>;
     fn history<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Vec<Event>>;
     fn summary<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Summary>;
-    fn watch<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Watch>;
+    fn watch_reporting<'a>(
+        &'a self,
+        session: &'a SessionId,
+        progress: humata_agent::Progress,
+    ) -> BoxFuture<'a, Watch>;
+    fn rest(
+        &self,
+        seal: HashSet<SessionId>,
+        progress: Box<dyn FnMut(usize, usize) + Send>,
+    ) -> BoxFuture<'_, usize>;
     fn sessions(&self) -> BoxFuture<'_, Vec<SessionRecord>>;
     fn update<'a>(
         &'a self,
@@ -214,8 +223,23 @@ where
     fn summary<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Summary> {
         Box::pin(async move { Agent::summary(self, session).await.map_err(Into::into) })
     }
-    fn watch<'a>(&'a self, session: &'a SessionId) -> BoxFuture<'a, Watch> {
-        Box::pin(async move { Agent::watch(self, session).await.map_err(Into::into) })
+    fn watch_reporting<'a>(
+        &'a self,
+        session: &'a SessionId,
+        progress: humata_agent::Progress,
+    ) -> BoxFuture<'a, Watch> {
+        Box::pin(async move {
+            Agent::watch_reporting(self, session, progress)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn rest(
+        &self,
+        seal: HashSet<SessionId>,
+        progress: Box<dyn FnMut(usize, usize) + Send>,
+    ) -> BoxFuture<'_, usize> {
+        Box::pin(async move { Agent::rest(self, seal, progress).await.map_err(Into::into) })
     }
     fn sessions(&self) -> BoxFuture<'_, Vec<SessionRecord>> {
         Box::pin(async move { Agent::sessions(self).await.map_err(Into::into) })
@@ -460,6 +484,35 @@ impl Host {
             ports: Arc::default(),
             model_server,
         })
+    }
+
+    /// Drops the histories of idle sessions no one watches from memory,
+    /// sealing those of `seal` on disk; `report` is told the sessions done
+    /// of the total. Says how many it sealed.
+    pub async fn rest(
+        &self,
+        seal: &HashSet<String>,
+        report: Arc<dyn Fn(usize, usize) + Send + Sync>,
+    ) -> Result<usize, HostError> {
+        let total = self
+            .owners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
+        let mut start = 0;
+        let mut sealed = 0;
+        for agent in self.backends.values() {
+            let seal = seal.iter().cloned().map(SessionId::new).collect();
+            let counted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let (told, report) = (Arc::clone(&counted), Arc::clone(&report));
+            let progress = Box::new(move |done: usize, of: usize| {
+                told.store(of, std::sync::atomic::Ordering::Relaxed);
+                report(start + done, total.max(start + of));
+            });
+            sealed += agent.rest(seal, progress).await?;
+            start += counted.load(std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(sealed)
     }
 
     /// Marks this host as serving on `socket`, which a [`pb::StopHost`]
@@ -1226,8 +1279,8 @@ impl Host {
             }
             Request::WatchSession(watch) => {
                 let session = SessionId::new(watch.session_id);
-                let watch = self.owner(&session)?.1.watch(&session).await?;
-                return Ok(stream(watch));
+                let backend = Arc::clone(self.owner(&session)?.1);
+                return Ok(stream(backend, session));
             }
             Request::OpenTerminal(open) => {
                 let folder = self.root(&open.session_id, &open.folder).await?;
@@ -1281,11 +1334,34 @@ impl Host {
     }
 }
 
-/// The history, then each new event, until the watcher goes away.
-fn stream(watch: Watch) -> Reply {
+/// How much of the history is read while it's read from disk, the history,
+/// then each new event, until the watcher goes away.
+fn stream(backend: Arc<dyn Backend>, session: SessionId) -> Reply {
     let (items, receiver) = mpsc::channel(64);
-    let Watch { history, mut live } = watch;
     tokio::spawn(async move {
+        let told = items.clone();
+        // A watcher that's behind misses a step of the progress, not an event.
+        let progress: humata_agent::Progress = Box::new(move |read, total| {
+            let _ = told.try_send(Ok(pb::StreamItem {
+                kind: Some(pb::stream_item::Kind::HistoryLoading(pb::HistoryLoading {
+                    read,
+                    total,
+                })),
+            }));
+        });
+        let watch = match backend.watch_reporting(&session, progress).await {
+            Ok(watch) => watch,
+            Err(error) => {
+                let _ = items
+                    .send(Err(pb::Error {
+                        code: error.code().into(),
+                        message: describe(&error),
+                    }))
+                    .await;
+                return;
+            }
+        };
+        let Watch { history, mut live } = watch;
         let item = |event: &Event| pb::StreamItem {
             kind: Some(pb::stream_item::Kind::SessionEvent(convert::event(event))),
         };

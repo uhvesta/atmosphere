@@ -990,6 +990,7 @@ name = "humata-agent"
 version = "0.0.0"
 dependencies = [
  "humata-workspace",
+ "ruzstd",
  "serde",
  "serde_json",
  "tempfile",

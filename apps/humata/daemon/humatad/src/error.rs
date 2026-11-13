@@ -684,6 +684,14 @@ pub enum DaemonError {
     CleanupRunning,
 
     #[error(
+        "couldn't seal old session histories; the ones not sealed stay as they were, and the next cleanup tries them again"
+    )]
+    Seal {
+        #[source]
+        source: Box<HostError>,
+    },
+
+    #[error(
         "couldn't remove the unused clone {path}; check that the folder is writable, or move it to the Trash yourself"
     )]
     RemoveClone {
@@ -830,6 +838,7 @@ impl DaemonError {
             | Self::DeleteForked { .. }
             | Self::StorageDays { .. } => pb::ErrorCode::InvalidRequest,
             Self::CleanupRunning => pb::ErrorCode::Busy,
+            Self::Seal { source } => source.code(),
             Self::DeleteOffline { .. } => pb::ErrorCode::HostUnavailable,
             Self::MoveWhileWorking { .. } => pb::ErrorCode::Busy,
             Self::AlreadyThere { .. } | Self::MoveForked { .. } => pb::ErrorCode::InvalidRequest,

@@ -28,7 +28,7 @@ use crate::event::{
     SendMode, SessionId, SessionRecord, SessionState, SessionUpdate, StartOptions,
 };
 use crate::import::{Importable, Imported};
-use crate::log::EventLog;
+use crate::log::{EventLog, Rested};
 use crate::summary::Summary;
 use crate::{Agent, Model, Watch};
 
@@ -198,7 +198,14 @@ impl Turn {
 
     /// Every event so far, this turn's included.
     pub fn history(&self) -> Vec<Event> {
-        self.session.log.events()
+        // A turn's session is never at rest, so this reads nothing.
+        match self.session.log.events() {
+            Ok(events) => events,
+            Err(error) => {
+                eprintln!("humata: couldn't read a running turn's history: {error}");
+                Vec::new()
+            }
+        }
     }
 
     pub fn emit(&self, kind: EventKind) -> Result<Event, AgentError> {
@@ -497,8 +504,15 @@ impl<R: Runner> LocalAgent<R> {
                     continue;
                 }
             };
-            for kind in stopped(&session.log.events()) {
-                session.log.append(Event::now(kind))?;
+            // A session left at rest was closed then; one read whole is
+            // closed now, then put at rest, so only opening it reads it.
+            if session.log.is_loaded() {
+                for kind in stopped(&session.log.events()?) {
+                    session.log.append(Event::now(kind))?;
+                }
+                session
+                    .log
+                    .rest(false, |events| stopped(events).is_empty())?;
             }
             sessions.insert(session.id.clone(), Arc::new(session));
         }
@@ -942,7 +956,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
         options: ForkOptions,
     ) -> Result<SessionRecord, AgentError> {
         let parent = self.session(id)?;
-        let mut events = parent.log.events();
+        let mut events = parent.log.events()?;
         if let Some(before) = &options.before {
             let index = events
                 .iter()
@@ -1039,7 +1053,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
             }
         }
         self.abort(id).await?;
-        let events = session.log.events();
+        let events = session.log.events()?;
         let index = events
             .iter()
             .position(|event| &event.id == before)
@@ -1101,7 +1115,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
 
     async fn undo_rewind(&self, id: &SessionId) -> Result<(), AgentError> {
         let session = self.session(id)?;
-        let events = session.log.events();
+        let events = session.log.events()?;
         let nothing = || AgentError::NothingToUndo {
             session: id.clone(),
         };
@@ -1129,7 +1143,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
             .join(REWINDS_FOLDER)
             .join(rewind.to_string())
             .join(EVENTS_FILE);
-        let mut restored = EventLog::open(backup)?.events();
+        let mut restored = EventLog::open(backup)?.events()?;
         let record = session.lock().record.clone();
         if !snapshots.is_empty() {
             let workspaces = self.workspaces(id)?;
@@ -1274,7 +1288,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
         let backend = self.runner.backup(&record)?;
         Ok(Backup {
             record,
-            events: session.log.events(),
+            events: session.log.events()?,
             backend,
         })
     }
@@ -1329,7 +1343,17 @@ impl<R: Runner> Agent for LocalAgent<R> {
     }
 
     async fn history(&self, id: &SessionId) -> Result<Vec<Event>, AgentError> {
-        Ok(self.session(id)?.log.events())
+        let session = self.session(id)?;
+        if session.log.is_loaded() {
+            return session.log.events();
+        }
+        // A history at rest is read from disk, off the executor.
+        tokio::task::spawn_blocking(move || session.log.events())
+            .await
+            .map_err(|source| AgentError::ReadStopped {
+                session: id.clone(),
+                source,
+            })?
     }
 
     async fn summary(&self, id: &SessionId) -> Result<Summary, AgentError> {
@@ -1337,8 +1361,71 @@ impl<R: Runner> Agent for LocalAgent<R> {
     }
 
     async fn watch(&self, id: &SessionId) -> Result<Watch, AgentError> {
-        let (history, live) = self.session(id)?.log.watch();
+        self.watch_reporting(id, Box::new(|_, _| {})).await
+    }
+
+    async fn watch_reporting(
+        &self,
+        id: &SessionId,
+        mut progress: crate::Progress,
+    ) -> Result<Watch, AgentError> {
+        let session = self.session(id)?;
+        if session.log.is_loaded() {
+            let (history, live) = session.log.watch(&mut *progress)?;
+            return Ok(Watch { history, live });
+        }
+        // A history at rest is read from disk, off the executor.
+        let (history, live) =
+            tokio::task::spawn_blocking(move || session.log.watch(&mut *progress))
+                .await
+                .map_err(|source| AgentError::ReadStopped {
+                    session: id.clone(),
+                    source,
+                })??;
         Ok(Watch { history, live })
+    }
+
+    async fn rest(
+        &self,
+        seal: std::collections::HashSet<SessionId>,
+        mut progress: Box<dyn FnMut(usize, usize) + Send>,
+    ) -> Result<usize, AgentError> {
+        let sessions: Vec<Arc<Session>> = self.lock().values().cloned().collect();
+        let total = sessions.len();
+        progress(0, total);
+        let mut sealed = 0;
+        for (done, session) in sessions.into_iter().enumerate() {
+            let idle = {
+                let control = session.lock();
+                control.running.is_none() && !control.turn_open && control.queue.is_empty()
+            };
+            if idle {
+                let id = session.id.clone();
+                let sealing = seal.contains(&id);
+                // Compressing is slow work: off the executor.
+                let rested = tokio::task::spawn_blocking(move || {
+                    session
+                        .log
+                        .rest(sealing, |events| stopped(events).is_empty())
+                })
+                .await
+                .map_err(|source| AgentError::ReadStopped {
+                    session: id.clone(),
+                    source,
+                })?;
+                match rested {
+                    Ok(Rested::Resting { sealed: true }) => sealed += 1,
+                    Ok(_) => {}
+                    // One that can't rest stays in memory, as it was.
+                    Err(error) => eprintln!(
+                        "humata: couldn't put session {id}'s history at rest: {}",
+                        describe(&error)
+                    ),
+                }
+            }
+            progress(done + 1, total);
+        }
+        Ok(sealed)
     }
 
     async fn sessions(&self) -> Result<Vec<SessionRecord>, AgentError> {
@@ -1402,7 +1489,7 @@ impl<R: Runner> Agent for LocalAgent<R> {
         }
         let checkpoints: Vec<Vec<Snapshot>> = session
             .log
-            .events()
+            .events()?
             .iter()
             .filter_map(|event| event.kind.snapshots())
             .map(<[Snapshot]>::to_vec)
@@ -1546,7 +1633,7 @@ async fn prepare(session: &Session, workspaces: Option<&Workspaces>) -> Result<(
         session: session.id.clone(),
     })?;
     let failed = workspace_failed(&session.id);
-    let history = session.log.events();
+    let history = session.log.events()?;
     let from = last_checkpoint(&history);
     let made = workspaces
         .create(session.id.as_str(), &record.repositories, &from)
@@ -1765,7 +1852,7 @@ fn load(dir: &Path) -> Result<Session, AgentError> {
             path: record_path,
             source,
         })?;
-    let log = EventLog::open(dir.join(EVENTS_FILE))?;
+    let log = EventLog::open_resting(dir.join(EVENTS_FILE))?;
     Ok(Session {
         id: record.id.clone(),
         dir: dir.to_owned(),

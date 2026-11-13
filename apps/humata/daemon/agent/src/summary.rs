@@ -2,13 +2,14 @@
 //! sessions doesn't read every session's whole history.
 
 use humata_workspace::Snapshot;
+use serde::{Deserialize, Serialize};
 
 use crate::event::{Event, EventKind, PermissionKind, SessionState};
 
 /// How much of the last message a row shows.
 const MAX_CHARS: usize = 300;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Summary {
     /// Turns that ended.
     pub turns: u32,
@@ -30,7 +31,7 @@ pub struct Summary {
     open: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pending {
     pub request_id: String,
     pub kind: PermissionKind,

@@ -81,6 +81,9 @@ pub struct Watch {
     pub live: broadcast::Receiver<Event>,
 }
 
+/// Told the bytes read of the total as a history kept on disk is read.
+pub type Progress = Box<dyn FnMut(u64, u64) + Send>;
+
 /// A coding agent that runs sessions.
 pub trait Agent: Send + Sync {
     type Error: std::error::Error + Send + Sync + 'static;
@@ -180,6 +183,29 @@ pub trait Agent: Send + Sync {
 
     fn watch(&self, session: &SessionId)
     -> impl Future<Output = Result<Watch, Self::Error>> + Send;
+
+    /// As [`Agent::watch`], telling `progress` the bytes read of the total
+    /// while a history kept on disk is read first.
+    fn watch_reporting(
+        &self,
+        session: &SessionId,
+        progress: Progress,
+    ) -> impl Future<Output = Result<Watch, Self::Error>> + Send {
+        drop(progress);
+        self.watch(session)
+    }
+
+    /// Drops the histories of idle sessions no one watches from memory,
+    /// sealing those of `seal` on disk, telling `progress` the sessions
+    /// done of the total. Says how many it sealed.
+    fn rest(
+        &self,
+        seal: std::collections::HashSet<SessionId>,
+        progress: Box<dyn FnMut(usize, usize) + Send>,
+    ) -> impl Future<Output = Result<usize, Self::Error>> + Send {
+        drop((seal, progress));
+        std::future::ready(Ok(0))
+    }
 
     fn sessions(&self) -> impl Future<Output = Result<Vec<SessionRecord>, Self::Error>> + Send;
 

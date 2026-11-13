@@ -10,6 +10,15 @@ pub enum AgentError {
     UnknownSession { session: SessionId },
 
     #[error(
+        "reading session {session}'s history stopped part way, as humatad is stopping or the read failed unexpectedly; open the session again, and if it keeps failing, restart humatad"
+    )]
+    ReadStopped {
+        session: SessionId,
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
+    #[error(
         "session {session} is on this host already, so it can't be restored here; it may have come back on its own. List the sessions to check, or restore onto another host"
     )]
     SessionExists { session: SessionId },
@@ -131,6 +140,15 @@ pub enum AgentError {
 
     #[error("couldn't write {path}; check that it is writable and the disk has room")]
     Write {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(
+        "the sealed, older part of the session history {path} is damaged, so the session can't be opened. The recent part beside it is intact: restoring the session from a backup brings the rest back, while removing the sealed file opens it with only the recent part"
+    )]
+    CorruptSealedHistory {
         path: PathBuf,
         #[source]
         source: std::io::Error,
