@@ -1078,35 +1078,37 @@ turned on, and then deletes archived sessions after 45 days by default.
 
 ### A terminal on libghostty
 
-Proposed 2026-11-13, waiting on the owner's sign-off of the structure:
-terminals drawn by libghostty-vt, Ghostty's terminal library, instead of
-SwiftTerm. libghostty-vt keeps the screen, scrollback and modes and encodes
-keys and mouse; it doesn't draw and doesn't talk to a pty, so the bytes
-still come from the host over the protocol as they do now, and the app
-draws the screen itself with Metal. The wire and the daemon don't change.
+The owner, 2026-11-13: hand as much of the terminal to Ghostty as
+possible, but not GhosttyKit, Ghostty's internal embedding API; font and
+colors from Settings only; `TERM` stays `xterm-256color` on hosts; no
+daemon or wire changes. cmux and boss both embed GhosttyKit (cmux a fork
+of it), so neither has a renderer to reuse. Proposed: ghostty-web, which
+runs libghostty-vt, Ghostty's stable terminal library, as WebAssembly
+with its own renderer, input and selection, in a web view like the
+Mermaid diagrams. The fallback is libghostty-vt with a renderer of our
+own. Waiting on the owner's pick.
 
 #### G1 libghostty terminal
 
-- [ ] libghostty-vt, pinned by version and SHA-256 like llama.cpp, builds
-  into the app with no Zig step; its MIT notice is listed
+- [ ] Ghostty's terminal library, pinned by version and SHA-256 and
+  bundled into the app with no network; its MIT notice is listed
 - [ ] Terminals look and behave as before: the same tabs, replay on
   reattach, resize sent to the host, and exit and reconnect notes
-- [ ] Drawn with Metal: crisp text at any scale, true color, wide and
-  combining characters and emoji, a blinking cursor, and no stutter while
-  a command prints fast
+- [ ] Drawn by Ghostty's terminal code: true color, wide and combining
+  characters and emoji, complex scripts, and no stutter while a command
+  prints fast
 - [ ] Keys as a real terminal sends them: arrows and function keys in
   every mode, Option as Meta, the kitty keyboard protocol, and input
   methods for composed text
-- [ ] Select with the mouse (a word on double-click, a line on triple),
-  copy with ⌘C, paste with ⌘V (bracketed when the program asks), and
-  mouse reporting for programs like vim and htop
+- [ ] Select with the mouse, copy with ⌘C, paste with ⌘V (bracketed when
+  the program asks), and mouse reporting for programs like vim and htop
 - [ ] Scroll back through what printed with the wheel or trackpad; ⌘F
   finds text in it
 - [ ] The font and size, and colors that follow light and dark mode, set
   in Settings
-- [ ] VoiceOver reads the screen and announces new output
+- [ ] VoiceOver reads the screen
 - [ ] Programs that ask the terminal a question (cursor position, device
-  attributes, colors) get their answer, in order with the keys typed
+  attributes) get their answer, in order with the keys typed
 
 ### Composer, rewind, skills, plugins and models
 
