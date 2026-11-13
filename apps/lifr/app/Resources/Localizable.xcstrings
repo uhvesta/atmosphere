@@ -32,6 +32,9 @@
     "%@ (fork)" : {
 
     },
+    "%@ (new)" : {
+
+    },
     "%@ Nothing changed." : {
 
     },

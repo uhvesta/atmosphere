@@ -182,6 +182,8 @@ struct DraftEditor: View {
     }
 
     var body: some View {
+        let avenues = PlaceChoice.all(in: meanings.workspace, adding: plan.avenues, projects: false)
+        let places = PlaceChoice.all(in: meanings.workspace, adding: plan.avenues, projects: true)
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(plan.avenues.indices, id: \.self) { index in
@@ -209,9 +211,9 @@ struct DraftEditor: View {
                         plan.projects.remove(at: index)
                     }
                     HStack(alignment: .top) {
-                        Meaning(meanings.place(project.wrappedValue.avenue)) {
-                            TextField("Avenue", text: project.avenue).accessibilityLabel("Avenue")
-                        }
+                        PlacePicker(title: "Avenue", place: project.avenue.optional, choices: avenues, none: "Choose")
+                            .labelsHidden()
+                            .fixedSize()
                         Meaning(meanings.day(project.wrappedValue.due)) {
                             TextField("Due", text: project.due.orEmpty).accessibilityLabel("Due")
                                 .accessibilityValue(Self.spoken(project.wrappedValue.due))
@@ -219,10 +221,10 @@ struct DraftEditor: View {
                     }
                     .font(.caption)
                     .padding(.leading, 28)
-                    Tasks(tasks: project.tasks, showsPlace: false, place: meanings.place, day: meanings.day)
+                    Tasks(tasks: project.tasks, places: nil, day: meanings.day)
                         .padding(.leading)
                 }
-                Tasks(tasks: $plan.tasks, showsPlace: true, place: meanings.place, day: meanings.day)
+                Tasks(tasks: $plan.tasks, places: places, day: meanings.day)
                 if let problem {
                     Label(problem, systemImage: "exclamationmark.triangle")
                         .font(.caption)
@@ -243,9 +245,8 @@ struct DraftEditor: View {
 /// Tasks with their Sub tasks, each editable.
 private struct Tasks: View {
     @Binding var tasks: [Plan.TaskDraft]
-    /// Whether a task says where it goes, which tasks in a new Project don't.
-    let showsPlace: Bool
-    let place: (String?) -> String?
+    /// Where a task can go; nil for tasks in a new Project, which go in it.
+    let places: [PlaceChoice]?
     let day: (String?) -> String?
 
     var body: some View {
@@ -268,14 +269,13 @@ private struct Tasks: View {
                     TextField("Due", text: task.due.orEmpty).accessibilityLabel("Due")
                         .accessibilityValue(DraftEditor.spoken(task.wrappedValue.due))
                 }
-                if showsPlace {
+                if let places {
                     if let parent = task.wrappedValue.parent {
                         Text("Under \(parent)").font(.caption).foregroundStyle(.secondary)
                     } else {
-                        Meaning(place(task.wrappedValue.place)) {
-                            TextField("Avenue or KEY/Project", text: task.place.orEmpty).accessibilityLabel(
-                                "Avenue or KEY/Project")
-                        }
+                        PlacePicker(title: "Place", place: task.place, choices: places, none: "Choose")
+                            .labelsHidden()
+                            .fixedSize()
                     }
                 }
             }

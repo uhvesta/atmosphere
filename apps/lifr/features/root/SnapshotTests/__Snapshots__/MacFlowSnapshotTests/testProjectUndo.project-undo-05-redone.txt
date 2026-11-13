@@ -51,7 +51,7 @@
       [PopUpButton] "" value: "Health"
     [Row/OutlineRow] ""
       [StaticText] "" value: "Archived"
-      [StaticText] "" value: "0 of 0 done"
+      [StaticText] "" value: "No tasks"
     [Row/OutlineRow] ""
       [Button] "Restore Project"
     [Row/OutlineRow] ""

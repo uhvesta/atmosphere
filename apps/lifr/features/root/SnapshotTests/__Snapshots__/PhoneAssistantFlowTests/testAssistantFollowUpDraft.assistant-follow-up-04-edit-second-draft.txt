@@ -18,7 +18,7 @@
 [text] "Now add a Reading Avenue"
 [button] "Priority, No priority"
 [element] "Due" value: "None"
-[element] "Avenue or KEY/Project" value: "SPORTS"
+[button] "Place, SPORTS"
 [text] "I added Reading, and a run to start with."
 [button] "Copy" hint: "Copy this reply"
 [button] "Retry" hint: "Write this reply again"

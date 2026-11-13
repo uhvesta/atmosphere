@@ -34,10 +34,11 @@ struct ChangesEditor: View {
     let done: () -> Void
 
     var body: some View {
+        let places = PlaceChoice.all(in: workspace, projects: true)
         ProposalEditor(
             titles: edit.actions.map(title), kept: $edit.kept, problem: edit.problem, isBusy: isBusy, done: done
         ) { index in
-            ActionFields(action: $edit.actions[index])
+            ActionFields(action: $edit.actions[index], places: places)
         }
     }
 
@@ -58,6 +59,8 @@ struct ChangesEditor: View {
 /// What one change sets, to edit. A field left empty stays as it is.
 private struct ActionFields: View {
     @Binding var action: AssistantAction
+    /// Where a task can be moved to.
+    let places: [PlaceChoice]
 
     var body: some View {
         switch action {
@@ -87,10 +90,7 @@ private struct ActionFields: View {
                 TextField("Due", text: task.due.orEmpty, prompt: Text("Such as tomorrow, or none"))
                     .labelsHidden()
             }
-            LabeledContent("Move to") {
-                TextField("Move to", text: task.place.orEmpty, prompt: Text("Avenue key, or KEY/Project"))
-                    .labelsHidden()
-            }
+            PlacePicker(title: "Move to", place: task.place, choices: places, none: "Unchanged")
         case .project(let change):
             let project = Binding {
                 change

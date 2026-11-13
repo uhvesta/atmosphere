@@ -95,4 +95,4 @@
     [StaticText] "" value: "Due"
     [TextField] "Due"
     [StaticText] "" value: "Move to"
-    [TextField] "Move to"
+    [PopUpButton] "" value: "Unchanged"
