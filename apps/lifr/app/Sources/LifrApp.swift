@@ -26,6 +26,7 @@ import LifrStoreClient
 import LifrStoreLive
 import LifrSyncClient
 import LifrSyncLive
+import LifrWatchLink
 import SwiftUI
 import UserNotifications
 
@@ -63,6 +64,9 @@ struct LifrApp: App {
             NSApplication.shared.servicesProvider = Storage.services
         #else
             Storage.scheduleRefresh()
+            if case .success = Storage.opened {
+                WatchSession.shared.activate { await Storage.saveFromWatch($0) }
+            }
         #endif
     }
 
@@ -287,7 +291,16 @@ private enum Storage {
         values.session = session
         values.sync = sync
         values.lock = .live()
-        values.glance = .live(file: GlanceFile.shared)
+        var glance = GlanceClient.live(file: GlanceFile.shared)
+        #if os(iOS)
+            // The Watch shows the same Today.
+            let write = glance.write
+            glance.write = { today in
+                await write(today)
+                WatchSession.shared.send(today)
+            }
+        #endif
+        values.glance = glance
         // Sample records stay out of the device's search.
         if !ProcessInfo.processInfo.arguments.contains(sampleDataArgument) { values.spotlight = .live() }
     }
@@ -387,6 +400,44 @@ private enum Storage {
             store: store, locksApp: { Shared(.locksApp).wrappedValue }, now: { Date() }, timeZone: .current,
             defaultReminder: { Shared(.defaultReminder).wrappedValue.trigger(dueTime: $0) })
     }()
+
+    #if os(iOS)
+        /// What the Watch asks for, saved as a change made on this iPhone.
+        /// Like Shortcuts' changes, it shows on the open screens, and the
+        /// Today sent back to the Watch has it.
+        private static let watch: Shortcuts? =
+            if case .success(let live) = opened {
+                Shortcuts(
+                    store: .live(live, actor: actor, announces: true).telling(sync),
+                    locksApp: { Shared(.locksApp).wrappedValue }, now: { Date() }, timeZone: .current,
+                    defaultReminder: { Shared(.defaultReminder).wrappedValue.trigger(dueTime: $0) })
+            } else {
+                nil
+            }
+
+        /// Saves a change made on the Watch, or says in a notification why
+        /// it wasn't, since Lifr may not be showing.
+        static func saveFromWatch(_ request: WatchRequest) async {
+            guard let watch else { return }
+            do {
+                switch request {
+                case .setStatus(let id, let status):
+                    _ = try await watch.setStatus(TaskStatus(status), of: id)
+                case .add(let title):
+                    _ = try await watch.add(title, avenue: nil, due: .none)
+                case .snooze(let id):
+                    try await watch.snooze(id, until: Date() + ReminderAction.snoozeInterval)
+                }
+            } catch {
+                let content = UNMutableNotificationContent()
+                content.title = String(localized: "Couldn't save the change made on the Watch")
+                content.body = String(
+                    localized: "\(error.localizedDescription) Open Lifr on the iPhone and make it there.")
+                let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+                try? await UNUserNotificationCenter.current().add(request)
+            }
+        }
+    #endif
 
     /// On the Mac each save reaches every window's store, so a change in
     /// one window shows in the others.
@@ -517,6 +568,21 @@ private final class ReminderNotifications: NSObject, UNUserNotificationCenterDel
             }
             NSApplication.shared.activate()
             add(text)
+        }
+    }
+#endif
+
+#if os(iOS)
+    extension TaskStatus {
+        /// The status picked on the Watch.
+        fileprivate init(_ status: WatchStatus) {
+            switch status {
+            case .todo: self = .todo
+            case .inProgress: self = .inProgress
+            case .procrastinated: self = .procrastinated
+            case .done: self = .done
+            case .wontDo: self = .wontDo
+            }
         }
     }
 #endif

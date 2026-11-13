@@ -49,6 +49,7 @@ build:linux_x86_64_gnu --no@rules_go//go/config:static
 build:xcode_toolchains --@apple_support//platforms:macos_arm64_platform=//bazel/xcode:macos_arm64
 build:xcode_toolchains --@apple_support//platforms:ios_arm64_platform=//bazel/xcode:ios_arm64
 build:xcode_toolchains --@apple_support//platforms:ios_sim_arm64_platform=//bazel/xcode:ios_sim_arm64
+build:xcode_toolchains --@apple_support//platforms:watchos_arm64_platform=//bazel/xcode:watchos_arm64
 build:xcode_toolchains --macos_cpus=arm64
 # Swift binaries and tests otherwise target the SDK's macOS, so a newer Xcode
 # builds tests this Mac can't load. Matches the Mac app's minimum_os_version.

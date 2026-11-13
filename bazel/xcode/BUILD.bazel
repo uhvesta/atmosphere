@@ -41,6 +41,8 @@ _PLATFORMS = {
     "ios_arm64": "ios_arm64",
     "ios_sim_arm64": "ios_sim_arm64",
     "macos_arm64": "darwin_arm64",
+    # The Watch simulator, for Lifr's Watch app.
+    "watchos_arm64": "watchos_arm64",
 }
 
 [

@@ -132,6 +132,11 @@ single_version_override(
     ],
 )
 
+# The SDKs whose system modules rules_swift scans: its default Mac and iPhone
+# ones, and the Watch simulator's for Lifr's Watch app.
+system_sdk = use_extension("@rules_swift//swift:extensions.bzl", "system_sdk")
+system_sdk.configure_sdks(names = ["WatchSimulator"])
+
 # MARK: - Swift packages
 
 # Third-party Swift packages for the Xcode apps, from apps/lifr/Package.swift.

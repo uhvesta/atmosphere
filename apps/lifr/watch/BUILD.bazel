@@ -1,0 +1,141 @@
+load("@bazel_skylib//rules:write_file.bzl", "write_file")
+load("@lifr_identity//:defs.bzl", "BUNDLE_ID")
+load("@rules_apple//apple:macos.bzl", "macos_unit_test")
+load("@rules_apple//apple:watchos.bzl", "watchos_application", "watchos_extension")
+load("@rules_swift//swift:swift_library.bzl", "swift_library")
+
+# Lifr on the Watch: Today from the iPhone, a status picked for a task, a
+# task said into the Inbox, complications and the iPhone's reminder
+# buttons. The Watch never opens the records: the iPhone sends Today after
+# each change and saves what the Watch asks for.
+
+# What travels between the iPhone and the Watch, and the system's
+# connection that carries it. No TCA, so the iPhone's app links it cheaply.
+swift_library(
+    name = "link",
+    package_name = "lifr",
+    srcs = glob(["Link/Sources/*.swift"]),
+    module_name = "LifrWatchLink",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/lifr/app:__pkg__"],
+    deps = ["//apps/lifr/widgets:glance"],
+)
+
+swift_library(
+    name = "feature",
+    package_name = "lifr",
+    srcs = glob(["Feature/Sources/*.swift"]),
+    module_name = "LifrWatchFeature",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":link",
+        "//apps/lifr/widgets:glance",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+swift_library(
+    name = "app_lib",
+    package_name = "lifr",
+    srcs = glob(["App/Sources/*.swift"]),
+    module_name = "LifrWatchApp",
+    target_compatible_with = ["//bazel/xcode"],
+    # The app's catalog lists its words.
+    visibility = ["//apps/lifr/app:__pkg__"],
+    deps = [
+        ":feature",
+        ":link",
+        "//apps/lifr/widgets:glance",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+# The iPhone app the Watch app goes with.
+write_file(
+    name = "companion_plist",
+    out = "Companion.plist",
+    content = [
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+        "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">",
+        "<plist version=\"1.0\">",
+        "<dict>",
+        "\t<key>WKCompanionAppBundleIdentifier</key>",
+        "\t<string>%s</string>" % BUNDLE_ID,
+        "</dict>",
+        "</plist>",
+        "",
+    ],
+)
+
+# Watch builds are unsigned and run on the simulator only: a device or
+# TestFlight build needs the Watch's App IDs and profiles first.
+watchos_application(
+    name = "watch",
+    bundle_id = BUNDLE_ID + ".watchkitapp",
+    bundle_name = "Lifr",
+    extensions = [":complications"],
+    infoplists = [
+        "App/Info.plist",
+        ":companion_plist",
+    ],
+    minimum_os_version = "11.0",
+    resources = ["//apps/lifr/app:Resources/Localizable.xcstrings"],
+    # Built inside the iPhone app only: the lint aspects need a Rust
+    # toolchain for the top-level target's platform, and there is none for
+    # watchOS.
+    tags = ["manual"],
+    target_compatible_with = ["//bazel/xcode"],
+    version = "//apps/lifr/app:ios_version",
+    visibility = ["//apps/lifr/app:__pkg__"],
+    deps = [":app_lib"],
+)
+
+swift_library(
+    name = "complications_lib",
+    package_name = "lifr",
+    srcs = glob(["Complications/Sources/*.swift"]),
+    module_name = "LifrComplications",
+    target_compatible_with = ["//bazel/xcode"],
+    visibility = ["//apps/lifr/app:__pkg__"],
+    deps = ["//apps/lifr/widgets:glance"],
+)
+
+watchos_extension(
+    name = "complications",
+    # A WidgetKit extension, not a watchOS 2 app extension.
+    application_extension = True,
+    bundle_id = BUNDLE_ID + ".watchkitapp.complications",
+    bundle_name = "LifrComplications",
+    infoplists = ["Complications/Info.plist"],
+    minimum_os_version = "11.0",
+    resources = ["//apps/lifr/app:Resources/Localizable.xcstrings"],
+    # Built inside the iPhone app only: the lint aspects need a Rust
+    # toolchain for the top-level target's platform, and there is none for
+    # watchOS.
+    tags = ["manual"],
+    target_compatible_with = ["//bazel/xcode"],
+    version = "//apps/lifr/app:ios_version",
+    deps = [":complications_lib"],
+)
+
+swift_library(
+    name = "tests_lib",
+    package_name = "lifr",
+    testonly = True,
+    srcs = glob(["Tests/*.swift"]),
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [
+        ":feature",
+        ":link",
+        "//apps/lifr/clients/reminders",
+        "//apps/lifr/widgets:glance",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+macos_unit_test(
+    name = "tests",
+    minimum_os_version = "15.0",
+    target_compatible_with = ["//bazel/xcode"],
+    deps = [":tests_lib"],
+)

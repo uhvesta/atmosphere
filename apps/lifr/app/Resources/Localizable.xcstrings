@@ -392,6 +392,12 @@
     "%@, overdue" : {
 
     },
+    "%@, sending…" : {
+
+    },
+    "%@, sent to the iPhone's Inbox" : {
+
+    },
     "%@, starts" : {
 
     },
@@ -1498,6 +1504,9 @@
         }
       }
     },
+    "Couldn't send the change to the iPhone" : {
+
+    },
     "Couldn't show older changes" : {
 
     },
@@ -2117,6 +2126,9 @@
     "Goal" : {
 
     },
+    "Goes to the Inbox. Say or write it like Quick Add: \"Call Mum tomorrow 6pm\"." : {
+
+    },
     "Going on from an earlier point. What came after is kept." : {
 
     },
@@ -2157,6 +2169,9 @@
 
     },
     "House" : {
+
+    },
+    "How many tasks are due today or overdue." : {
 
     },
     "How many tasks are due today, and how many are overdue." : {
@@ -2499,6 +2514,9 @@
     "Lifr's lock is off" : {
 
     },
+    "Lifr's lock is on. Open Lifr on the iPhone to see them." : {
+
+    },
     "Lifr, an app is connected" : {
 
     },
@@ -2550,6 +2568,9 @@
 
     },
     "Lock with passcode" : {
+
+    },
+    "Locked" : {
 
     },
     "Logbook" : {
@@ -2914,6 +2935,9 @@
     "Next Month" : {
 
     },
+    "Next Task" : {
+
+    },
     "Next Version" : {
 
     },
@@ -3079,6 +3103,9 @@
     "Nothing due today" : {
 
     },
+    "Nothing due today." : {
+
+    },
     "Nothing is due today." : {
 
     },
@@ -3167,6 +3194,12 @@
 
     },
     "Open Lifr and unlock it to see them." : {
+
+    },
+    "Open Lifr on the iPhone" : {
+
+    },
+    "Open Lifr on the iPhone to send Today here." : {
 
     },
     "Open Lifr to plan your day." : {
@@ -3909,6 +3942,9 @@
     "Shows after the next reply" : {
 
     },
+    "Shows its statuses" : {
+
+    },
     "Shows the thinking" : {
 
     },
@@ -4206,6 +4242,9 @@
     "The Inbox is already there. You can add, rename or archive Avenues any time." : {
 
     },
+    "The Watch couldn't read Today from the iPhone (%@). Update Lifr on both, then open it on the iPhone to send Today again." : {
+
+    },
     "The assistant couldn't answer" : {
 
     },
@@ -4250,6 +4289,9 @@
 
     },
     "The first message" : {
+
+    },
+    "The iPhone couldn't read a change made on the Watch (%@), so it wasn't saved. Update Lifr on both, then make the change again." : {
 
     },
     "The instructions are %lld characters; the most is %lld, so the assistant still has room for your records. Shorten them, then save." : {
@@ -4464,6 +4506,9 @@
 
     },
     "Today's backup couldn't be written (%@). Free some space on this device; Lifr tries again when it next opens." : {
+
+    },
+    "Today's first open task, and how many are left." : {
 
     },
     "Tomorrow" : {
@@ -4848,6 +4893,12 @@
     "^[%lld month](inflect: true) after closing" : {
 
     },
+    "^[%lld more](inflect: true)" : {
+
+    },
+    "^[%lld more](inflect: true) on the iPhone" : {
+
+    },
     "^[%lld open task](inflect: true)" : {
 
     },
@@ -4874,6 +4925,9 @@
 
     },
     "^[%lld task](inflect: true) picked" : {
+
+    },
+    "^[%lld task](inflect: true) today" : {
 
     },
     "^[%lld week](inflect: true) after closing" : {

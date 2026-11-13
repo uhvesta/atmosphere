@@ -45,6 +45,7 @@ swift_library(
         "//apps/lifr/core",
         "//apps/lifr/features/root",
         "//apps/lifr/features/shortcuts",
+        "//apps/lifr/watch:link",
         "//apps/lifr/widgets:client",
         "//apps/lifr/widgets:glance",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
@@ -105,6 +106,12 @@ ios_application(
     version = ":ios_version",
     # For the generated Xcode project (//apps/lifr:xcodeproj).
     visibility = ["@rules_xcodeproj//xcodeproj:generated"],
+    # Today on the Watch, on the simulator only until the Watch's App IDs
+    # and profiles exist for device and TestFlight builds.
+    watch_application = select({
+        "@apple_support//constraints:simulator": "//apps/lifr/watch:watch",
+        "//conditions:default": None,
+    }),
     deps = [":app_lib"],
 )
 
@@ -123,6 +130,7 @@ apple_bundle_version(
     short_version_string = "1.0",
     visibility = [
         "//apps/lifr/share:__pkg__",
+        "//apps/lifr/watch:__pkg__",
         "//apps/lifr/widgets:__pkg__",
     ],
 )
@@ -245,6 +253,8 @@ lifr_strings(
     deps = [
         ":app_lib",
         "//apps/lifr/share:share_lib",
+        "//apps/lifr/watch:app_lib",
+        "//apps/lifr/watch:complications_lib",
         "//apps/lifr/widgets:extension_lib",
     ],
 )
@@ -254,6 +264,7 @@ exports_files(
     ["Resources/Localizable.xcstrings"],
     visibility = [
         "//apps/lifr/share:__pkg__",
+        "//apps/lifr/watch:__pkg__",
         "//apps/lifr/widgets:__pkg__",
     ],
 )
