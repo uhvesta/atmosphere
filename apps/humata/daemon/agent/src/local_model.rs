@@ -133,6 +133,15 @@ pub enum LocalModelError {
     },
 
     #[error(
+        "the chat no longer fits in the context of {model} (the server at {url} said: {body}). Fork the chat from a later message, start a new session, or load the model with a longer context"
+    )]
+    ContextFull {
+        url: String,
+        model: String,
+        body: String,
+    },
+
+    #[error(
         "the model server at {url} answered {status} when asked for its models: {body}. Check base_url, and api_key if it needs one"
     )]
     ListStatus {
@@ -306,6 +315,7 @@ impl Runner for LocalModelRunner {
                     Some(humata) if humata.owns(&call.name) => humata
                         .call(&call.name, &call.arguments)
                         .await
+                        .map(|(success, output)| (success, truncated(output)))
                         .unwrap_or_else(|failure| (false, describe(&failure))),
                     _ => run_tool(&turn, &self.env, &call.name, &call.arguments).await?,
                 };
@@ -624,6 +634,13 @@ fn stream(
     if status != 200 {
         let mut text = String::new();
         let _ = reader.by_ref().take(4096).read_to_string(&mut text);
+        if context_full(status, &text) {
+            return Err(LocalModelError::ContextFull {
+                url: url.to_owned(),
+                model: model.to_owned(),
+                body: text.trim().to_owned(),
+            });
+        }
         return Err(LocalModelError::Status {
             url: url.to_owned(),
             model: model.to_owned(),
@@ -722,10 +739,15 @@ fn user_content(text: &str, names: &[String], folder: Option<&Path>) -> Value {
 }
 
 /// The conversation so far as chat messages: the instructions, then each
-/// message, reply and tool call in the history. The images of the latest
-/// message that has any, read from `images`, go with it as data URLs; an
-/// earlier message's are only noted, since sending every image again each
-/// turn costs tokens and can make the request too large.
+/// message, reply and tool call in the history. A reply's text and the
+/// calls it made go in one message, each call followed by its result, and
+/// a message the person sent while calls ran comes after their results.
+/// The images of the latest message that has any, read from `images`, go
+/// with it as data URLs; an earlier message's are only noted, since
+/// sending every image again each turn costs tokens and can make the
+/// request too large. Once tool output outgrows [`TOOL_OUTPUT_KEPT`], the
+/// oldest is left out, a step at a time so what's sent stays the same
+/// between steps and the server can reuse what it read before.
 fn messages(instructions: Option<&str>, history: &[Event], images: Option<&Path>) -> Vec<Value> {
     let mut system = String::from(
         "You are a coding agent working in the person's project folder. Use the tools to read, change and run things there, then say briefly what you did.",
@@ -735,24 +757,20 @@ fn messages(instructions: Option<&str>, history: &[Event], images: Option<&Path>
         system.push_str(instructions);
     }
     let mut messages = vec![json!({"role": "system", "content": system})];
-    // Calls with no result yet. One a restart cut off never gets one, and
-    // servers refuse a call without its result, so it's given one.
-    let mut open: Vec<&str> = Vec::new();
-    let close = |messages: &mut Vec<Value>, open: &mut Vec<&str>| {
-        for call_id in open.drain(..) {
-            messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": INTERRUPTED}));
-        }
-    };
     let latest = history.iter().rposition(
         |event| matches!(&event.kind, EventKind::UserMessage { images, .. } if !images.is_empty()),
     );
+    let dropped = dropped_output(history);
+    let mut output_seen = 0_usize;
+    let mut reply = Said::default();
+    // Sent while the reply's calls ran, so after their results.
+    let mut waiting: Vec<Value> = Vec::new();
     for (index, event) in history.iter().enumerate() {
         match &event.kind {
             EventKind::UserMessage {
                 text,
                 images: names,
             } => {
-                close(&mut messages, &mut open);
                 let content = if Some(index) == latest || names.is_empty() {
                     user_content(text, names, images)
                 } else {
@@ -760,39 +778,110 @@ fn messages(instructions: Option<&str>, history: &[Event], images: Option<&Path>
                     let noun = if count == 1 { "image" } else { "images" };
                     json!(format!("[{count} {noun} sent here earlier]\n{text}"))
                 };
-                messages.push(json!({"role": "user", "content": content}));
+                waiting.push(json!({"role": "user", "content": content}));
+                if reply.calls.is_empty() {
+                    reply.end(&mut messages, &mut waiting);
+                }
             }
             EventKind::AssistantMessage { text } => {
-                close(&mut messages, &mut open);
-                messages.push(json!({"role": "assistant", "content": text}));
+                reply.end(&mut messages, &mut waiting);
+                reply.text = Some(text.clone());
+            }
+            // A new reply, or a new turn, starts here.
+            EventKind::Usage { .. } | EventKind::TurnStarted | EventKind::TurnEnded { .. } => {
+                reply.end(&mut messages, &mut waiting);
             }
             EventKind::ToolStarted {
                 call_id,
                 tool,
                 arguments_json,
-            } => {
-                open.push(call_id);
-                messages.push(json!({
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": call_id,
-                        "type": "function",
-                        "function": {"name": tool, "arguments": arguments_json},
-                    }],
-                }));
-            }
+            } => reply.calls.push((
+                json!({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": tool, "arguments": arguments_json},
+                }),
+                None,
+            )),
             EventKind::ToolCompleted {
                 call_id, output, ..
             } => {
-                open.retain(|open| open != call_id);
-                messages.push(json!({"role": "tool", "tool_call_id": call_id, "content": output}));
+                output_seen += output.len();
+                let content = if output_seen <= dropped {
+                    DROPPED.to_owned()
+                } else {
+                    output.clone()
+                };
+                if let Some((_, result)) = reply
+                    .calls
+                    .iter_mut()
+                    .find(|(call, result)| result.is_none() && call["id"] == call_id.as_str())
+                {
+                    *result = Some(content);
+                }
             }
             _ => {}
         }
     }
-    close(&mut messages, &mut open);
+    reply.end(&mut messages, &mut waiting);
     messages
+}
+
+/// Tool output kept for the model; past it, the oldest is left out.
+const TOOL_OUTPUT_KEPT: usize = 64 * 1024;
+/// How much more is left out each time the output outgrows what's kept.
+const TOOL_OUTPUT_STEP: usize = TOOL_OUTPUT_KEPT / 2;
+
+/// How many bytes of the history's tool output, oldest first, are left
+/// out: none until there's more than [`TOOL_OUTPUT_KEPT`], then whole
+/// steps, so the point moves only when another step's worth has come.
+fn dropped_output(history: &[Event]) -> usize {
+    let total: usize = history
+        .iter()
+        .map(|event| match &event.kind {
+            EventKind::ToolCompleted { output, .. } => output.len(),
+            _ => 0,
+        })
+        .sum();
+    match total.checked_sub(TOOL_OUTPUT_KEPT) {
+        None | Some(0) => 0,
+        Some(over) => over.div_ceil(TOOL_OUTPUT_STEP) * TOOL_OUTPUT_STEP,
+    }
+}
+
+/// What an old tool result is replaced with once it's left out.
+const DROPPED: &str =
+    "(This output was left out to save room. Run the tool again if it's still needed.)";
+
+/// A reply being put together from the history: its text and its calls,
+/// each with its result once that's in.
+#[derive(Default)]
+struct Said {
+    text: Option<String>,
+    calls: Vec<(Value, Option<String>)>,
+}
+
+impl Said {
+    /// Adds the reply, if there is one, and then the messages that waited
+    /// for it. A call that never got a result, as when a restart cut it
+    /// off, is given one: servers refuse a call without its result.
+    fn end(&mut self, messages: &mut Vec<Value>, waiting: &mut Vec<Value>) {
+        let Said { text, calls } = std::mem::take(self);
+        if !calls.is_empty() {
+            let tool_calls: Vec<&Value> = calls.iter().map(|(call, _)| call).collect();
+            messages.push(json!({"role": "assistant", "content": text, "tool_calls": tool_calls}));
+            for (call, result) in &calls {
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call["id"],
+                    "content": result.as_deref().unwrap_or(INTERRUPTED),
+                }));
+            }
+        } else if let Some(text) = text {
+            messages.push(json!({"role": "assistant", "content": text}));
+        }
+        messages.append(waiting);
+    }
 }
 
 /// The result given a tool call that was cut off before it finished.
@@ -813,8 +902,12 @@ fn tools() -> Value {
         ),
         tool(
             "read_file",
-            "Returns a file's contents, or a folder's list.",
-            json!({"type": "object", "properties": {"path": path}, "required": ["path"]}),
+            "Returns a file's lines, or a folder's list. A long file comes a part at a time: give offset, the first line to read (from 1), and limit, how many.",
+            json!({"type": "object", "properties": {
+                "path": path,
+                "offset": {"type": "integer", "minimum": 1},
+                "limit": {"type": "integer", "minimum": 1},
+            }, "required": ["path"]}),
         ),
         tool(
             "list_folder",
@@ -823,8 +916,18 @@ fn tools() -> Value {
         ),
         tool(
             "write_file",
-            "Writes a file, replacing what it held.",
+            "Writes a file, replacing what it held. To change part of a file, use edit_file.",
             json!({"type": "object", "properties": {"path": path, "contents": {"type": "string"}}, "required": ["path", "contents"]}),
+        ),
+        tool(
+            "edit_file",
+            "Replaces old_text in a file with new_text. old_text must be there exactly once, unless every is true, which replaces each.",
+            json!({"type": "object", "properties": {
+                "path": path,
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+                "every": {"type": "boolean"},
+            }, "required": ["path", "old_text", "new_text"]}),
         ),
     ])
 }
@@ -837,6 +940,17 @@ struct ShellArguments {
 #[derive(Deserialize)]
 struct ReadArguments {
     path: PathBuf,
+    offset: Option<usize>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct EditArguments {
+    path: PathBuf,
+    old_text: String,
+    new_text: String,
+    #[serde(default)]
+    every: bool,
 }
 
 #[derive(Deserialize)]
@@ -877,11 +991,15 @@ async fn run_tool(
         },
         "read_file" => match serde_json::from_str::<ReadArguments>(arguments) {
             Err(error) => bad(error),
-            Ok(ReadArguments { path }) => match inside(&root, &path) {
+            Ok(ReadArguments {
+                path,
+                offset,
+                limit,
+            }) => match inside(&root, &path) {
                 None => outside(&path),
                 Some(target) if target.is_dir() => list(&target, &path).await,
                 Some(target) => match tokio::fs::read_to_string(&target).await {
-                    Ok(contents) => (true, truncated(contents)),
+                    Ok(contents) => (true, lines(&contents, offset, limit)),
                     Err(error) => (false, format!("Couldn't read {}: {error}", path.display())),
                 },
             },
@@ -906,6 +1024,25 @@ async fn run_tool(
                         .await?
                     {
                         write(&target, &path, &contents).await
+                    } else {
+                        denied()
+                    }
+                }
+            },
+        },
+        "edit_file" => match serde_json::from_str::<EditArguments>(arguments) {
+            Err(error) => bad(error),
+            Ok(edit) => match inside(&root, &edit.path) {
+                None => outside(&edit.path),
+                Some(target) => {
+                    if turn
+                        .ask(
+                            PermissionKind::Write,
+                            format!("Edit {}", edit.path.display()),
+                        )
+                        .await?
+                    {
+                        edited(&target, &edit).await
                     } else {
                         denied()
                     }
@@ -940,9 +1077,110 @@ async fn shell(root: &Path, env: &Env, command: &str) -> (bool, String) {
             if let Some(code) = output.status.code().filter(|code| *code != 0) {
                 text.push_str(&format!("\n(exit status {code})"));
             }
-            (output.status.success(), truncated(text))
+            (output.status.success(), tail_kept(text))
         }
     }
+}
+
+/// The lines asked for, or as many from the start as fit, saying which
+/// they are and where to go on when there are more.
+fn lines(contents: &str, offset: Option<usize>, limit: Option<usize>) -> String {
+    let all: Vec<&str> = contents.lines().collect();
+    let first = offset.unwrap_or(1).max(1);
+    if first > all.len().max(1) {
+        return format!(
+            "The file has {} lines, so none start at {first}.",
+            all.len()
+        );
+    }
+    let mut text = String::new();
+    let mut last = first - 1;
+    for line in all.iter().skip(first - 1).take(limit.unwrap_or(usize::MAX)) {
+        if text.len() + line.len() + 1 > MAX_OUTPUT && last >= first {
+            break;
+        }
+        text.push_str(line);
+        text.push('\n');
+        last += 1;
+    }
+    if first > 1 || last < all.len() {
+        text.push_str(&format!("(lines {first}–{last} of {}", all.len()));
+        if last < all.len() {
+            text.push_str(&format!("; offset {} goes on", last + 1));
+        }
+        text.push(')');
+    }
+    truncated(text)
+}
+
+/// Replaces the text an edit names: once when it's there once, or each
+/// time when asked to; otherwise says why it didn't.
+async fn edited(target: &Path, edit: &EditArguments) -> (bool, String) {
+    let path = edit.path.display();
+    let contents = match tokio::fs::read_to_string(target).await {
+        Ok(contents) => contents,
+        Err(error) => return (false, format!("Couldn't read {path}: {error}")),
+    };
+    if edit.old_text.is_empty() {
+        return (false, "old_text is empty; give the text to replace.".into());
+    }
+    let count = contents.matches(edit.old_text.as_str()).count();
+    if count == 0 {
+        return (
+            false,
+            format!("{path} doesn't hold old_text; read it again and copy the text exactly."),
+        );
+    }
+    if count > 1 && !edit.every {
+        return (
+            false,
+            format!(
+                "{path} holds old_text {count} times; give more of the text around it, or set every to replace each."
+            ),
+        );
+    }
+    let changed = contents.replace(edit.old_text.as_str(), &edit.new_text);
+    match tokio::fs::write(target, changed).await {
+        Ok(()) => (true, format!("Edited {path} ({count} replaced)")),
+        Err(error) => (false, format!("Couldn't write {path}: {error}")),
+    }
+}
+
+/// Whether a server refused a request for being longer than the model's
+/// context, as Ollama, llama.cpp, LM Studio, MLX and vLLM say it.
+fn context_full(status: u16, body: &str) -> bool {
+    let body = body.to_ascii_lowercase();
+    matches!(status, 400 | 413 | 422 | 500)
+        && (body.contains("context")
+            || body.contains("too long")
+            || body.contains("too many tokens"))
+        && (body.contains("exceed")
+            || body.contains("length")
+            || body.contains("window")
+            || body.contains("too long")
+            || body.contains("too many"))
+}
+
+/// A command's output, cut in the middle when long: its start says what
+/// ran, its end how it went.
+fn tail_kept(text: String) -> String {
+    if text.len() <= MAX_OUTPUT {
+        return text;
+    }
+    let mut head = MAX_OUTPUT / 4;
+    while !text.is_char_boundary(head) {
+        head -= 1;
+    }
+    let mut tail = text.len() - (MAX_OUTPUT - head);
+    while !text.is_char_boundary(tail) {
+        tail += 1;
+    }
+    format!(
+        "{}\n(… {} bytes cut here …)\n{}",
+        &text[..head],
+        tail - head,
+        &text[tail..]
+    )
 }
 
 async fn write(target: &Path, path: &Path, contents: &str) -> (bool, String) {
@@ -1255,7 +1493,6 @@ mod tests {
             [
                 "user: write a",
                 "assistant: Writing it.",
-                "assistant: (tool call)",
                 "tool: Wrote src/a.txt",
             ]
         );
@@ -1544,7 +1781,8 @@ mod tests {
             .filter(|message| message["role"] == "tool")
             .filter_map(|message| message["tool_call_id"].as_str())
             .collect();
-        assert_eq!(results, vec!["c2", "c1"]);
+        assert_eq!(results.len(), 2);
+        assert!(results.contains(&"c1") && results.contains(&"c2"));
         // Each result comes before the person's next message.
         assert_eq!(
             messages.last().map(|message| &message["content"]),
@@ -1592,5 +1830,142 @@ mod tests {
                 crate::images::base64(&[2])
             )]
         );
+    }
+
+    fn started(id: &str) -> EventKind {
+        EventKind::ToolStarted {
+            call_id: id.into(),
+            tool: "shell".into(),
+            arguments_json: "{}".into(),
+        }
+    }
+
+    fn completed(id: &str, output: &str) -> EventKind {
+        EventKind::ToolCompleted {
+            call_id: id.into(),
+            success: true,
+            output: output.into(),
+        }
+    }
+
+    fn user(text: &str) -> EventKind {
+        EventKind::UserMessage {
+            text: text.into(),
+            images: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_message_sent_while_a_tool_runs_comes_after_its_result() {
+        let history = [
+            user("go"),
+            EventKind::AssistantMessage {
+                text: "Looking.".into(),
+            },
+            started("c1"),
+            user("also check the tests"),
+            completed("c1", "ok"),
+            started("c2"),
+            completed("c2", "ok"),
+        ]
+        .map(Event::now);
+        let messages = messages(None, &history, None);
+        let roles: Vec<&str> = messages
+            .iter()
+            .skip(1)
+            .filter_map(|message| message["role"].as_str())
+            .collect();
+        assert_eq!(roles, vec!["user", "assistant", "tool", "tool", "user"]);
+        // The reply's text and both its calls are one message.
+        assert_eq!(messages[2]["content"], json!("Looking."));
+        assert_eq!(messages[2]["tool_calls"].as_array().map(Vec::len), Some(2));
+        assert_eq!(messages[5]["content"], json!("also check the tests"));
+    }
+
+    fn outputs(history: &[Event]) -> Vec<String> {
+        messages(None, history, None)
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .filter_map(|message| message["content"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    #[test]
+    fn old_tool_output_is_left_out_a_step_at_a_time() {
+        let big = "x".repeat(TOOL_OUTPUT_KEPT / 4);
+        let mut history = vec![Event::now(user("go"))];
+        for index in 0..4 {
+            history.push(Event::now(started(&format!("c{index}"))));
+            history.push(Event::now(completed(&format!("c{index}"), &big)));
+        }
+        // Exactly what's kept: nothing left out.
+        assert!(outputs(&history).iter().all(|output| *output == big));
+
+        history.push(Event::now(started("c4")));
+        history.push(Event::now(completed("c4", "small")));
+        let first = outputs(&history);
+        assert_eq!(first.iter().filter(|output| *output == DROPPED).count(), 2);
+        assert_eq!(first.last().map(String::as_str), Some("small"));
+
+        // A little more doesn't move what's left out, so what was sent
+        // before is sent the same.
+        history.push(Event::now(started("c5")));
+        history.push(Event::now(completed("c5", "small")));
+        assert_eq!(outputs(&history)[..5], first[..]);
+    }
+
+    #[test]
+    fn a_long_file_is_read_a_part_at_a_time() {
+        let contents: String = (1..=10).map(|line| format!("line {line}\n")).collect();
+        let part = lines(&contents, Some(3), Some(2));
+        assert!(part.starts_with("line 3\nline 4\n"));
+        assert!(!part.contains("line 5"));
+        assert!(part.contains("offset 5"));
+        assert_eq!(lines(&contents, None, None).matches("line ").count(), 10);
+        assert!(!lines(&contents, Some(20), None).contains("line 1"));
+    }
+
+    #[tokio::test]
+    async fn an_edit_replaces_text_found_once_and_refuses_text_found_twice() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let target = folder.path().join("a.py");
+        std::fs::write(&target, "x = 1\ny = 1\n").expect("written");
+        let edit = |old: &str, every: bool| EditArguments {
+            path: "a.py".into(),
+            old_text: old.into(),
+            new_text: "= 2".into(),
+            every,
+        };
+        assert!(edited(&target, &edit("x = 1", false)).await.0);
+        assert_eq!(
+            std::fs::read_to_string(&target).ok().as_deref(),
+            Some("= 2\ny = 1\n")
+        );
+        assert!(!edited(&target, &edit("= ", false)).await.0);
+        assert!(!edited(&target, &edit("z", false)).await.0);
+        assert!(edited(&target, &edit("= ", true)).await.0);
+    }
+
+    #[test]
+    fn long_command_output_keeps_its_end() {
+        let text = format!("start\n{}\nexit status 1", "x".repeat(MAX_OUTPUT * 2));
+        let kept = tail_kept(text);
+        assert!(kept.len() < MAX_OUTPUT + 100);
+        assert!(kept.starts_with("start"));
+        assert!(kept.ends_with("exit status 1"));
+    }
+
+    #[test]
+    fn a_context_refusal_is_told_apart_from_other_failures() {
+        assert!(context_full(
+            400,
+            r#"{"error":"the request exceeds the available context size"}"#
+        ));
+        assert!(context_full(
+            400,
+            "This model's maximum context length is 8192 tokens."
+        ));
+        assert!(!context_full(404, "model not found"));
+        assert!(!context_full(400, "bad request"));
     }
 }
