@@ -3,6 +3,7 @@
 //! asked. A host that's offline is searched as last indexed.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::PoisonError;
 
 use humata_wire::{Reply, pb};
 
@@ -14,6 +15,9 @@ use crate::store::{Entry, EntryKind, Found, Indexed, Query, Whereabouts};
 const OUTPUT_INDEXED: usize = 4_000;
 /// Hits when the request doesn't say.
 const DEFAULT_LIMIT: usize = 50;
+/// How long a search waits for the index to catch up before searching what
+/// was indexed.
+const CATCH_UP_WAIT: std::time::Duration = std::time::Duration::from_millis(1_500);
 
 impl Daemon {
     /// The hits for `search`. `scope`, for an agent on a host, is the
@@ -40,7 +44,14 @@ impl Daemon {
             }
             (Some(_), false) => vec![search.project_id.clone()],
         };
-        let sessions = self.catch_up().await?;
+        self.catch_up_soon().await;
+        let sessions: HashMap<String, String> = self
+            .list("")
+            .await?
+            .sessions
+            .into_iter()
+            .map(|session| (session.id, session.name))
+            .collect();
         let (since, until) = match range {
             Some(range) => {
                 let since = self.store.local_time(&range.since)?;
@@ -110,9 +121,44 @@ impl Daemon {
         })
     }
 
-    /// Indexes what every session did since it was last indexed, and
-    /// returns each session's name by its id.
-    async fn catch_up(&self) -> Result<HashMap<String, String>, DaemonError> {
+    /// Catches the index up in the background, waiting a little for it: a
+    /// search then finds what was just said, yet a host slow to give a
+    /// history can't hold it up, and searches what was indexed before.
+    async fn catch_up_soon(&self) {
+        let Some(daemon) = self.me.upgrade() else {
+            return;
+        };
+        // One catching up already is waited on instead of starting another.
+        let mut done = {
+            let mut catching_up = self
+                .catching_up
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            match catching_up.as_ref() {
+                Some(running) if !*running.borrow() => running.clone(),
+                _ => {
+                    let (finished, done) = tokio::sync::watch::channel(false);
+                    tokio::spawn(async move {
+                        if let Err(error) = daemon.catch_up().await {
+                            eprintln!(
+                                "humatad: couldn't bring the search index up to date: {}",
+                                humata_wire::describe(&error)
+                            );
+                        }
+                        finished.send_replace(true);
+                    });
+                    *catching_up = Some(done.clone());
+                    done
+                }
+            }
+        };
+        // Given up, it goes on, and the next search may find what it adds.
+        let _ = tokio::time::timeout(CATCH_UP_WAIT, done.wait_for(|done| *done)).await;
+    }
+
+    /// Indexes what every session did since it was last indexed. A session
+    /// whose turns and whereabouts are as indexed isn't read or written.
+    async fn catch_up(&self) -> Result<(), DaemonError> {
         let _indexing = self.indexing.lock().await;
         let sessions = self.list("").await?.sessions;
         for session in &sessions {
@@ -122,19 +168,21 @@ impl Daemon {
                 item: session.item_id.clone(),
             };
             let indexed = self.store.indexed(&session.id)?;
-            let from = indexed.as_ref().map_or(0, |indexed| indexed.events);
+            let from = indexed.as_ref().map_or(0, |indexed| indexed.indexed.events);
             let settled = session.state() == pb::SessionState::Idle
                 || session.state() == pb::SessionState::Failed;
-            if indexed
-                .as_ref()
-                .is_some_and(|indexed| indexed.turns == session.turns && settled)
+            if let Some(indexed) = &indexed
+                && indexed.indexed.turns == session.turns
+                && settled
             {
-                let unchanged = Indexed {
-                    events: from,
-                    turns: session.turns,
-                };
-                self.store
-                    .index(&session.id, &whereabouts, from, &unchanged, &[])?;
+                if indexed.whereabouts != whereabouts {
+                    let unchanged = Indexed {
+                        events: from,
+                        turns: session.turns,
+                    };
+                    self.store
+                        .index(&session.id, &whereabouts, from, &unchanged, &[])?;
+                }
                 continue;
             }
             let read = pb::ReadHistory {
@@ -171,11 +219,11 @@ impl Daemon {
                 &entries(&events, from),
             )?;
         }
-        self.store.index_comments_and_specs()?;
-        Ok(sessions
-            .into_iter()
-            .map(|session| (session.id, session.name))
-            .collect())
+        let store = self.store.clone();
+        store
+            .apart(|store| store.index_comments_and_specs().map(drop))
+            .await?;
+        Ok(())
     }
 }
 

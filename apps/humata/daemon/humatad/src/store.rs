@@ -366,6 +366,19 @@ const MIGRATIONS: &[&str] = &["
     -- place or no further: each is indexed again from its start.
     DELETE FROM search_entries WHERE kind IN ('message', 'reply', 'tool_call', 'tool_output');
     DELETE FROM search_sessions;
+", "
+    -- Remote sessions' histories, apart from their info: the info is read
+    -- and written at every listing, and a long history beside it made each
+    -- of those slower.
+    CREATE TABLE remote_histories (
+        id TEXT PRIMARY KEY,
+        history BLOB NOT NULL,
+        events INTEGER
+    );
+    INSERT INTO remote_histories (id, history, events)
+        SELECT id, history, history_events FROM remote_sessions WHERE history IS NOT NULL;
+    ALTER TABLE remote_sessions DROP COLUMN history;
+    ALTER TABLE remote_sessions DROP COLUMN history_events;
 "];
 
 /// What reverting a board change did.
@@ -737,6 +750,45 @@ impl Store {
         read.map_err(self.failed())
     }
 
+    /// What the daemon knows of each of `sessions` that's placed, by its id,
+    /// in one read for a whole listing.
+    pub fn known_many(
+        &self,
+        sessions: &[&str],
+    ) -> Result<std::collections::HashMap<String, Known>, StoreError> {
+        let ids = serde_json::Value::from(sessions.to_vec()).to_string();
+        let connection = self.lock();
+        let read = (|| {
+            let mut statement = connection.prepare_cached(
+                "SELECT sessions.id, sessions.host, sessions.project_id, sessions.item_id,
+                     sessions.seen_turns, sessions.planning, items.title,
+                     EXISTS (SELECT 1 FROM agent_requests
+                         WHERE agent_requests.session_id = sessions.id
+                             AND answered_unix_ms IS NULL)
+                 FROM sessions LEFT JOIN items ON items.id = sessions.item_id
+                 WHERE sessions.id IN (SELECT value FROM json_each(?1))",
+            )?;
+            let rows = statement.query_map([ids], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    Known {
+                        placement: Placement {
+                            host: row.get(1)?,
+                            project: row.get(2)?,
+                            item: row.get(3)?,
+                            seen_turns: row.get(4)?,
+                        },
+                        planning: row.get(5)?,
+                        item_title: row.get(6)?,
+                        asking: row.get(7)?,
+                    },
+                ))
+            })?;
+            rows.collect::<rusqlite::Result<_>>()
+        })();
+        read.map_err(self.failed())
+    }
+
     /// Records that the person has seen `turns` of the session's finished
     /// turns, unless more were seen already.
     pub fn mark_seen(&self, session: &str, turns: u32) -> Result<(), StoreError> {
@@ -767,6 +819,7 @@ impl Store {
             "DELETE FROM cleaned_sessions WHERE session_id = ?1",
             "DELETE FROM spec_notes WHERE session_id = ?1",
             "DELETE FROM remote_sessions WHERE id = ?1",
+            "DELETE FROM remote_histories WHERE id = ?1",
             "DELETE FROM sessions WHERE id = ?1",
         ];
         let mut connection = self.lock();
@@ -786,37 +839,46 @@ impl Store {
         host: &str,
         sessions: &[pb::SessionInfo],
     ) -> Result<(), StoreError> {
-        // Hosts are listed every two seconds and seldom change: write only
-        // when they did.
-        let mut listed: Vec<&pb::SessionInfo> = sessions.iter().collect();
-        listed.sort_by(|a, b| a.id.cmp(&b.id));
-        let cached = self.cached_sessions(host)?;
-        if cached.len() == listed.len() && cached.iter().zip(&listed).all(|(a, b)| a == *b) {
+        // Hosts are listed every two seconds and seldom change: only the
+        // sessions that did are written, and one only active again within
+        // the minute isn't.
+        let cached: std::collections::HashMap<String, pb::SessionInfo> = self
+            .cached_sessions(host)?
+            .into_iter()
+            .map(|session| (session.id.clone(), session))
+            .collect();
+        let changed: Vec<&pb::SessionInfo> = sessions
+            .iter()
+            .filter(|session| {
+                cached
+                    .get(&session.id)
+                    .is_none_or(|was| !same_but_lately_active(was, session))
+            })
+            .collect();
+        let listed: std::collections::HashSet<&str> =
+            sessions.iter().map(|session| session.id.as_str()).collect();
+        let gone: Vec<&str> = cached
+            .keys()
+            .map(String::as_str)
+            .filter(|id| !listed.contains(id))
+            .collect();
+        if changed.is_empty() && gone.is_empty() {
             return Ok(());
         }
         let mut connection = self.lock();
         let transaction = connection.transaction().map_err(self.failed())?;
         let kept = (|| {
-            transaction.execute(
-                "CREATE TEMP TABLE IF NOT EXISTS listed (id TEXT PRIMARY KEY)",
-                [],
-            )?;
-            transaction.execute("DELETE FROM temp.listed", [])?;
-            for session in sessions {
+            for session in changed {
                 transaction.execute(
                     "INSERT INTO remote_sessions (id, host, info) VALUES (?1, ?2, ?3)
                      ON CONFLICT (id) DO UPDATE SET host = excluded.host, info = excluded.info",
                     params![session.id, host, session.encode_to_vec()],
                 )?;
-                transaction.execute(
-                    "INSERT OR IGNORE INTO temp.listed (id) VALUES (?1)",
-                    [&session.id],
-                )?;
             }
-            transaction.execute(
-                "DELETE FROM remote_sessions WHERE host = ?1 AND id NOT IN (SELECT id FROM temp.listed)",
-                [host],
-            )?;
+            for id in gone {
+                transaction.execute("DELETE FROM remote_sessions WHERE id = ?1", [id])?;
+                transaction.execute("DELETE FROM remote_histories WHERE id = ?1", [id])?;
+            }
             Ok(())
         })();
         kept.and_then(|()| transaction.commit())
@@ -850,7 +912,9 @@ impl Store {
         );
         self.lock()
             .execute(
-                "UPDATE remote_sessions SET history = ?2, history_events = ?3 WHERE id = ?1",
+                "INSERT INTO remote_histories (id, history, events)
+                     SELECT id, ?2, ?3 FROM remote_sessions WHERE id = ?1
+                 ON CONFLICT (id) DO UPDATE SET history = excluded.history, events = excluded.events",
                 params![
                     session,
                     compressed,
@@ -866,7 +930,7 @@ impl Store {
         let counted: Option<Option<i64>> = self
             .lock()
             .query_row(
-                "SELECT history_events FROM remote_sessions WHERE id = ?1 AND history IS NOT NULL",
+                "SELECT events FROM remote_histories WHERE id = ?1",
                 [session],
                 |row| row.get(0),
             )
@@ -896,13 +960,12 @@ impl Store {
         let compressed: Option<Vec<u8>> = self
             .lock()
             .query_row(
-                "SELECT history FROM remote_sessions WHERE id = ?1",
+                "SELECT history FROM remote_histories WHERE id = ?1",
                 [session],
                 |row| row.get(0),
             )
             .optional()
-            .map_err(self.failed())?
-            .flatten();
+            .map_err(self.failed())?;
         Ok(compressed.and_then(|compressed| {
             let mut bytes = Vec::new();
             let mut decoder =
@@ -914,9 +977,18 @@ impl Store {
 
     /// Forgets what was cached of `host`'s sessions.
     pub fn forget_host(&self, host: &str) -> Result<(), StoreError> {
-        self.lock()
-            .execute("DELETE FROM remote_sessions WHERE host = ?1", [host])
-            .map(drop)
+        let mut connection = self.lock();
+        let transaction = connection.transaction().map_err(self.failed())?;
+        transaction
+            .execute(
+                "DELETE FROM remote_histories WHERE id IN
+                     (SELECT id FROM remote_sessions WHERE host = ?1)",
+                [host],
+            )
+            .and_then(|_| {
+                transaction.execute("DELETE FROM remote_sessions WHERE host = ?1", [host])
+            })
+            .and_then(|_| transaction.commit())
             .map_err(self.failed())
     }
 
@@ -1474,6 +1546,18 @@ fn from_text<T: serde::de::DeserializeOwned>(
     })
 }
 
+/// Whether `now` is as `was` but for when it was last active, within the
+/// minute: what a listing shows the same.
+fn same_but_lately_active(was: &pb::SessionInfo, now: &pb::SessionInfo) -> bool {
+    const WITHIN_MS: i64 = 60_000;
+    if (now.last_active_unix_ms - was.last_active_unix_ms).abs() >= WITHIN_MS {
+        return false;
+    }
+    let mut was = was.clone();
+    was.last_active_unix_ms = now.last_active_unix_ms;
+    was == *now
+}
+
 fn text<T: serde::Serialize>(value: T) -> String {
     match serde_json::to_value(value) {
         Ok(serde_json::Value::String(text)) => text,
@@ -1908,6 +1992,67 @@ mod tests {
             .cache_sessions("build", &[session("a", "A"), session("b", "Renamed")])
             .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(names(&store), ["A", "Renamed"]);
+    }
+
+    #[test]
+    fn a_session_only_active_again_within_the_minute_is_not_written_again() {
+        let dir = tempfile::tempdir().unwrap_or_else(|error| panic!("{error}"));
+        let store = store(dir.path());
+        let session = |active: i64| pb::SessionInfo {
+            id: "a".to_owned(),
+            name: "A".to_owned(),
+            last_active_unix_ms: active,
+            ..pb::SessionInfo::default()
+        };
+        let active = |store: &Store| -> Vec<i64> {
+            store
+                .cached_sessions("build")
+                .unwrap_or_else(|error| panic!("{error}"))
+                .into_iter()
+                .map(|session| session.last_active_unix_ms)
+                .collect()
+        };
+        store
+            .cache_sessions("build", &[session(1_000)])
+            .unwrap_or_else(|error| panic!("{error}"));
+        store
+            .cache_sessions("build", &[session(31_000)])
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(active(&store), [1_000]);
+        store
+            .cache_sessions("build", &[session(121_000)])
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(active(&store), [121_000]);
+    }
+
+    #[test]
+    fn what_is_known_of_many_sessions_is_read_at_once() {
+        let dir = tempfile::tempdir().expect("a temporary folder");
+        let store = store(dir.path());
+        let project = store
+            .add_project(
+                "one".into(),
+                repositories("/code/one"),
+                BTreeMap::new(),
+                String::new(),
+                Vec::new(),
+            )
+            .expect("added");
+        store
+            .place("s1", "build", Some(&project.id), None)
+            .expect("placed");
+        store.place("s2", "", None, None).expect("placed");
+        let known = store.known_many(&["s1", "s2", "unplaced"]).expect("read");
+        assert_eq!(known.len(), 2);
+        assert_eq!(
+            known.get("s1").map(|known| known.placement.clone()),
+            store.placement("s1").expect("read")
+        );
+        assert_eq!(
+            known.get("s2").map(|known| known.placement.host.as_str()),
+            Some("")
+        );
+        assert_eq!(known.get("s1"), store.known("s1").expect("read").as_ref());
     }
 
     #[test]

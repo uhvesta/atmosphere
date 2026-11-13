@@ -1,6 +1,8 @@
 //! The Mac's recovery copies of sessions on other machines, and the hosts
 //! sessions were moved away from.
 
+use std::collections::HashSet;
+
 use humata_wire::pb;
 use prost::Message;
 use rusqlite::{OptionalExtension, params};
@@ -131,10 +133,23 @@ impl Store {
                 params![session, to],
             )?;
             transaction.execute("DELETE FROM remote_sessions WHERE id = ?1", [session])?;
+            transaction.execute("DELETE FROM remote_histories WHERE id = ?1", [session])?;
             Ok(())
         })();
         moved.map_err(self.failed())?;
         transaction.commit().map_err(self.failed())
+    }
+
+    /// The sessions moved away from `host`.
+    pub fn moved_away_from(&self, host: &str) -> Result<HashSet<String>, StoreError> {
+        let connection = self.lock();
+        let read = (|| {
+            let mut statement = connection
+                .prepare_cached("SELECT session_id FROM moved_sessions WHERE host = ?1")?;
+            let rows = statement.query_map([host], |row| row.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<HashSet<String>>>()
+        })();
+        read.map_err(self.failed())
     }
 
     /// Whether `session` was moved away from `host`.

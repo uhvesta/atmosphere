@@ -63,6 +63,13 @@ pub struct Indexed {
     pub turns: u32,
 }
 
+/// A session as the index last saw it, and where it was then.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexedAt {
+    pub indexed: Indexed,
+    pub whereabouts: Whereabouts,
+}
+
 /// Where a session is, kept with its entries so a search can be narrowed
 /// to a project or task.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -111,22 +118,32 @@ pub const MARK_START: char = '\u{E000}';
 pub const MARK_END: char = '\u{E001}';
 
 impl Store {
-    /// How far `session` is indexed; None if it isn't yet.
-    pub fn indexed(&self, session: &str) -> Result<Option<Indexed>, StoreError> {
+    /// How far `session` is indexed, and where it was then; None if it
+    /// isn't yet.
+    pub fn indexed(&self, session: &str) -> Result<Option<IndexedAt>, StoreError> {
         use rusqlite::OptionalExtension as _;
         let connection = self.lock();
         connection
-            .query_row(
-                "SELECT events, turns FROM search_sessions WHERE id = ?1",
-                params![session],
-                |row| {
-                    Ok(Indexed {
-                        events: row.get::<_, i64>(0)?.try_into().unwrap_or(0),
-                        turns: row.get(1)?,
-                    })
-                },
+            .prepare_cached(
+                "SELECT events, turns, host, project, item FROM search_sessions WHERE id = ?1",
             )
-            .optional()
+            .and_then(|mut statement| {
+                statement
+                    .query_row(params![session], |row| {
+                        Ok(IndexedAt {
+                            indexed: Indexed {
+                                events: row.get::<_, i64>(0)?.try_into().unwrap_or(0),
+                                turns: row.get(1)?,
+                            },
+                            whereabouts: Whereabouts {
+                                host: row.get(2)?,
+                                project: row.get(3)?,
+                                item: row.get(4)?,
+                            },
+                        })
+                    })
+                    .optional()
+            })
             .map_err(self.failed())
     }
 
@@ -174,25 +191,41 @@ impl Store {
         indexing.map_err(self.failed())
     }
 
-    /// Indexes every review comment and spec again, as they are now.
-    pub fn index_comments_and_specs(&self) -> Result<(), StoreError> {
-        let connection = self.lock();
-        connection
-            .execute_batch(
-                "BEGIN;
-                 DELETE FROM search_entries WHERE kind IN ('comment', 'spec');
-                 INSERT INTO search_entries (text, kind, session, event, turn, time, project, item, thread)
-                    SELECT comments.text, 'comment', threads.session_id, '', 0,
-                        comments.created_unix_ms, '', '', threads.id
-                    FROM review_comments AS comments
-                    JOIN review_threads AS threads ON threads.id = comments.thread_id;
-                 INSERT INTO search_entries (text, kind, session, event, turn, time, project, item, thread)
-                    SELECT title || char(10) || spec, 'spec', '', '', 0, updated_unix_ms,
-                        project_id, id, 0
-                    FROM items;
-                 COMMIT;",
-            )
-            .map_err(self.failed())
+    /// Indexes the review comments again if any was added, changed or
+    /// removed since they were last indexed, and the specs likewise, each
+    /// apart: a search after neither changed writes nothing. Returns how
+    /// many of the two were indexed again.
+    pub fn index_comments_and_specs(&self) -> Result<usize, StoreError> {
+        use rusqlite::OptionalExtension as _;
+        let mut connection = self.lock();
+        let indexing = (|| {
+            let mut again = 0;
+            for part in [&COMMENTS, &SPECS] {
+                let now: String = connection.query_row(part.signature, [], |row| row.get(0))?;
+                let had: Option<String> = connection
+                    .query_row(
+                        "SELECT value FROM settings WHERE key = ?1",
+                        [part.key],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if had.as_deref() == Some(now.as_str()) {
+                    continue;
+                }
+                let transaction = connection.transaction()?;
+                transaction.execute("DELETE FROM search_entries WHERE kind = ?1", [part.kind])?;
+                transaction.execute(part.insert, [])?;
+                transaction.execute(
+                    "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                     ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                    params![part.key, now],
+                )?;
+                transaction.commit()?;
+                again += 1;
+            }
+            Ok(again)
+        })();
+        indexing.map_err(self.failed())
     }
 
     /// The entries `query` finds, best match first.
@@ -266,6 +299,43 @@ impl Store {
             .map_err(self.failed())
     }
 }
+
+/// Comments or specs, as the index holds them: what tells whether any
+/// changed since they were indexed, where that is kept, and how they're
+/// indexed.
+struct Indexes {
+    kind: &'static str,
+    /// Its key in the settings.
+    key: &'static str,
+    /// Changes when one is added, removed or edited.
+    signature: &'static str,
+    insert: &'static str,
+}
+
+const COMMENTS: Indexes = Indexes {
+    kind: "comment",
+    key: "search.comments",
+    signature: "SELECT count(*) || ':' || coalesce(max(id), 0) || ':' || total(length(text))
+        FROM review_comments",
+    insert:
+        "INSERT INTO search_entries (text, kind, session, event, turn, time, project, item, thread)
+        SELECT comments.text, 'comment', threads.session_id, '', 0,
+            comments.created_unix_ms, '', '', threads.id
+        FROM review_comments AS comments
+        JOIN review_threads AS threads ON threads.id = comments.thread_id",
+};
+
+const SPECS: Indexes = Indexes {
+    kind: "spec",
+    key: "search.specs",
+    signature: "SELECT count(*) || ':' || coalesce(max(updated_unix_ms), 0) || ':'
+            || total(length(title) + length(spec))
+        FROM items",
+    insert:
+        "INSERT INTO search_entries (text, kind, session, event, turn, time, project, item, thread)
+        SELECT title || char(10) || spec, 'spec', '', '', 0, updated_unix_ms, project_id, id, 0
+        FROM items",
+};
 
 fn insert(transaction: &Transaction<'_>, session: &str, entry: &Entry) -> rusqlite::Result<()> {
     transaction.execute(
@@ -349,7 +419,7 @@ mod tests {
             store
                 .indexed("s1")
                 .expect("read")
-                .map(|indexed| indexed.events),
+                .map(|indexed| indexed.indexed.events),
             Some(2)
         );
     }
@@ -412,6 +482,69 @@ mod tests {
             .expect("indexed");
         assert_eq!(
             store.search(&query("\"rename\"")).expect("searched").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn specs_are_indexed_again_only_when_one_changed() {
+        use crate::board::{Author, ItemFields, ItemPatch, Priority, Status};
+        let (_dir, store) = store();
+        let project = store
+            .add_project(
+                "one".into(),
+                vec![humata_agent::Repository {
+                    name: "one".into(),
+                    path: "/code/one".into(),
+                }],
+                std::collections::BTreeMap::new(),
+                String::new(),
+                Vec::new(),
+            )
+            .expect("added");
+        let author = Author::on(humata_wire::pb::ChangeSurface::Mcp);
+        let item = store
+            .add_item(
+                &project.id,
+                ItemFields {
+                    parent_id: None,
+                    status: Status::Todo,
+                    priority: Priority::None,
+                    title: "Tidy".into(),
+                    spec: "rename the schema".into(),
+                },
+                &author,
+            )
+            .expect("added");
+        assert_eq!(store.index_comments_and_specs().expect("indexed"), 2);
+        assert_eq!(store.index_comments_and_specs().expect("indexed"), 0);
+        assert_eq!(
+            store.search(&query("\"schema\"")).expect("searched").len(),
+            1
+        );
+
+        store
+            .update_item(
+                &item.id,
+                ItemPatch {
+                    spec: Some("rename the migrations".into()),
+                    ..ItemPatch::default()
+                },
+                &author,
+            )
+            .expect("updated");
+        assert_eq!(store.index_comments_and_specs().expect("indexed"), 1);
+        assert!(
+            store
+                .search(&query("\"schema\""))
+                .expect("searched")
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .search(&query("\"migrations\""))
+                .expect("searched")
+                .len(),
             1
         );
     }

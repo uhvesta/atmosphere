@@ -23,6 +23,18 @@ const REWATCH_FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(1
 const REWATCH_LONGEST_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// How long a list waits for each host before showing it as it last was.
 const HOST_LIST_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long a host's listing of its sessions is given to every caller
+/// after it was made, as the app, the board and search list at once.
+const LISTING_KEPT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A host's listing of its sessions: None until it's made, then when it
+/// was and what the host said, None if it didn't in time.
+type Listed = Option<(std::time::Instant, Option<pb::Sessions>)>;
+
+/// A host's listing of its sessions, shared by every caller meanwhile.
+struct Listing {
+    answer: tokio::sync::watch::Receiver<Listed>,
+}
 /// The least time between copies off a host made for saves part way
 /// through a turn.
 const SAVE_BACKUP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
@@ -76,6 +88,12 @@ pub struct Daemon {
     /// Held while the search index catches up, so two searches don't index
     /// one session's events twice.
     indexing: tokio::sync::Mutex<()>,
+    /// Told when the search index caught up, while it catches up in the
+    /// background, so a search waits on that one instead of starting another.
+    catching_up: std::sync::Mutex<Option<tokio::sync::watch::Receiver<bool>>>,
+    /// Each host's listing of its sessions, under way or just made, shared
+    /// by every caller meanwhile.
+    listings: std::sync::Mutex<HashMap<String, Listing>>,
     /// Told when an approval is asked for or decided.
     approvals_changed: tokio::sync::Notify,
     /// Where its files are on the Mac, as Settings › Storage shows them.
@@ -129,6 +147,8 @@ impl Daemon {
             forwards: std::sync::Mutex::default(),
             next_forward: std::sync::atomic::AtomicU64::new(0),
             indexing: tokio::sync::Mutex::new(()),
+            catching_up: std::sync::Mutex::default(),
+            listings: std::sync::Mutex::default(),
             approvals_changed: tokio::sync::Notify::new(),
             places,
             cleaning: std::sync::Mutex::default(),
@@ -516,9 +536,22 @@ impl Daemon {
         project: Option<&str>,
         item: Option<&str>,
     ) -> Result<(), DaemonError> {
+        let known = self.store.known(&session.id)?;
+        self.own_known(session, host, project, item, known)
+    }
+
+    /// [`Daemon::own`], given what the daemon knows of `session`, read
+    /// before.
+    fn own_known(
+        &self,
+        session: &mut pb::SessionInfo,
+        host: &str,
+        project: Option<&str>,
+        item: Option<&str>,
+        known: Option<crate::store::Known>,
+    ) -> Result<(), DaemonError> {
         // Sessions are listed every two seconds and are seldom placed anew,
         // so the placement is written only when it would change.
-        let known = self.store.known(&session.id)?;
         let placed = known.as_ref().is_some_and(|known| {
             known.placement.host == host
                 && (project.is_none() || known.placement.project.is_some())
@@ -879,6 +912,68 @@ impl Daemon {
         Ok(())
     }
 
+    /// `host`'s listing of its sessions: the one under way or made in the
+    /// last [`LISTING_KEPT`], or a new one. The listing gives up at
+    /// [`HOST_LIST_WAIT`], and keeps what it got as the host's sessions.
+    fn listing(&self, host: &str) -> Result<tokio::sync::watch::Receiver<Listed>, DaemonError> {
+        let mut listings = self.listings.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(listing) = listings.get(host) {
+            let fresh = match &*listing.answer.borrow() {
+                None => true,
+                Some((at, _)) => at.elapsed() < LISTING_KEPT,
+            };
+            if fresh {
+                return Ok(listing.answer.clone());
+            }
+        }
+        let remote = self.remote(host)?;
+        let (hosts_file, build) = (self.hosts_file.clone(), self.build.clone());
+        let store = self.store.clone();
+        let named = host.to_owned();
+        let (told, answer) = tokio::sync::watch::channel(None);
+        tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + HOST_LIST_WAIT;
+            // Connecting goes on past the deadline, so the next listing
+            // may have the host; asking it doesn't.
+            let connecting = {
+                let remote = remote.clone();
+                tokio::spawn(async move { remote.client(&hosts_file, &build).await })
+            };
+            let asked = async {
+                let client = connecting.await.ok()?.ok()?;
+                let request = pb::request::Kind::ListSessions(pb::ListSessions::default());
+                match remote.call(&client, request).await.ok()? {
+                    pb::response::Kind::Sessions(sessions) => Some(sessions),
+                    _ => None,
+                }
+            };
+            let sessions = tokio::time::timeout_at(deadline, asked)
+                .await
+                .ok()
+                .flatten();
+            if let Some(sessions) = &sessions {
+                let (kept, host) = (sessions.sessions.clone(), named.clone());
+                if let Err(error) = store
+                    .apart(move |store| store.cache_sessions(&host, &kept))
+                    .await
+                {
+                    eprintln!(
+                        "humatad: couldn't keep {named}'s sessions for while it's offline: {}",
+                        describe(&error)
+                    );
+                }
+            }
+            told.send_replace(Some((std::time::Instant::now(), sessions)));
+        });
+        listings.insert(
+            host.to_owned(),
+            Listing {
+                answer: answer.clone(),
+            },
+        );
+        Ok(answer)
+    }
+
     async fn list(&self, project: &str) -> Result<pb::Sessions, DaemonError> {
         let mut all = Vec::new();
         // Every host at once, each given a little while: a slow one shows
@@ -886,16 +981,8 @@ impl Daemon {
         // so the next list may have it.
         let mut asking = Vec::new();
         for host in self.remote_names() {
-            let remote = self.remote(&host)?;
-            let (hosts_file, build) = (self.hosts_file.clone(), self.build.clone());
-            let answer = tokio::spawn(async move {
-                let request = pb::request::Kind::ListSessions(pb::ListSessions::default());
-                match remote.client(&hosts_file, &build).await {
-                    Ok(client) => remote.call(&client, request).await.ok(),
-                    Err(_) => None,
-                }
-            });
-            asking.push((host, answer));
+            let listing = self.listing(&host)?;
+            asking.push((host, listing));
         }
         let deadline = tokio::time::Instant::now() + HOST_LIST_WAIT;
         let local = self
@@ -911,19 +998,18 @@ impl Daemon {
                 _ => None,
             },
         )];
-        for (host, answer) in asking {
-            let answer = tokio::time::timeout_at(deadline, answer)
+        for (host, mut listing) in asking {
+            let answer = tokio::time::timeout_at(deadline, listing.wait_for(Option::is_some))
                 .await
                 .ok()
                 .and_then(Result::ok)
-                .flatten();
-            answers.push((host, answer));
+                .and_then(|listed| listed.as_ref().and_then(|(_, sessions)| sessions.clone()));
+            answers.push((host, answer.map(pb::response::Kind::Sessions)));
         }
         for (host, answer) in answers {
             let sessions = match answer {
                 Some(pb::response::Kind::Sessions(sessions)) => {
                     if !host.is_empty() {
-                        self.store.cache_sessions(&host, &sessions.sessions)?;
                         self.update_once_idle(&host, &sessions.sessions)?;
                     }
                     sessions.sessions
@@ -937,14 +1023,19 @@ impl Daemon {
                     cached
                 }
             };
+            // What the daemon knows of them, read at once for all of them.
+            let ids: Vec<&str> = sessions.iter().map(|session| session.id.as_str()).collect();
+            let mut known = self.store.known_many(&ids)?;
+            let moved = self.store.moved_away_from(&host)?;
             for mut session in sessions {
-                if self.store.moved_away(&session.id, &host)? {
+                if moved.contains(&session.id) {
                     continue;
                 }
                 if !host.is_empty() && !session.host_offline {
                     self.back_up_soon(&host, &session.id, Some(session.turns));
                 }
-                self.own(&mut session, &host, None, None)?;
+                let was = known.remove(&session.id);
+                self.own_known(&mut session, &host, None, None, was)?;
                 if project.is_empty() || session.project_id == project {
                     all.push(session);
                 }
@@ -975,7 +1066,12 @@ impl Daemon {
                 Ok(Reply::Response(pb::response::Kind::History(history)))
             }
             Err(failure) if failure.code() == pb::ErrorCode::HostUnavailable => {
-                match self.store.cached_history(&session)? {
+                // Decompressed apart: a long history takes a while.
+                let kept = self
+                    .store
+                    .apart(move |store| store.cached_history(&session))
+                    .await?;
+                match kept {
                     Some(history) => Ok(Reply::Response(pb::response::Kind::History(history))),
                     None => Err(failure),
                 }
@@ -1075,7 +1171,13 @@ impl Daemon {
         let (response, mut upstream) = match self.forward(host, request).await {
             Ok(Reply::Stream { response, items }) => (response, items),
             Err(failure) if failure.code() == pb::ErrorCode::HostUnavailable => {
-                let Some(history) = self.store.cached_history(&session)? else {
+                let kept = {
+                    let session = session.clone();
+                    self.store
+                        .apart(move |store| store.cached_history(&session))
+                        .await?
+                };
+                let Some(history) = kept else {
                     return Err(failure);
                 };
                 let (items, receiver) = mpsc::channel(history.events.len().max(1));
