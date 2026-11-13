@@ -99,7 +99,7 @@ package struct LibraryFeature {
                         return try ImportFailure.reading { () throws(ImportError) in
                             try Importer.html(html, source: .web(url))
                         }
-                    case .text, .photo, .file:
+                    case .text:
                         return try ImportFailure.reading { () throws(ImportError) in try Importer.text(text) }
                     }
                 }(&state)
@@ -190,6 +190,11 @@ package struct LibraryFeature {
                 }
                 state.settings = SettingsFeature.State(languages: languages)
                 return .none
+            case .importing(.dismiss):
+                // Closing the sheet stops reading what it was given, such as
+                // a page still downloading.
+                state.isImporting = false
+                return .cancel(id: Drafting.one)
             case .importing, .reader, .alert, .settings, .deleting:
                 return .none
             }
@@ -218,6 +223,9 @@ package struct LibraryFeature {
         .ifLet(\.$deleting, action: \.deleting)
     }
 
+    /// The draft being read.
+    private enum Drafting: Hashable { case one }
+
     /// Reads a draft with `read`, sending what it came to.
     private func draft(_ read: @escaping @Sendable () async throws(ImportFailure) -> Draft) -> (inout State) -> Effect<
         Action
@@ -232,6 +240,7 @@ package struct LibraryFeature {
                     await send(.drafted(.failure(error)))
                 }
             }
+            .cancellable(id: Drafting.one, cancelInFlight: true)
         }
     }
 
@@ -281,8 +290,9 @@ package enum ImportFailure: Error, Equatable, CustomStringConvertible {
 }
 
 /// The ways in.
-package enum ImportKind: String, Identifiable, Hashable, Sendable, CaseIterable {
-    case text, photo, web, file
+/// What the import sheet takes: a photo or file is picked without it.
+package enum ImportKind: String, Identifiable, Hashable, Sendable {
+    case text, web
 
     package var id: String { rawValue }
 }

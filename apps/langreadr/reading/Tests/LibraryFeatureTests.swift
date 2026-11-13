@@ -75,6 +75,28 @@ final class LibraryFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.importing?.isImporting, false, "the link stays, to fix and try again")
     }
 
+    func testClosingTheSheetStopsFetchingThePage() async {
+        let fetched = LockIsolated(false)
+        let store = library(
+            services: .fake(page: { _ throws(PageError) in
+                try? await Task.sleep(for: .seconds(60))
+                fetched.setValue(!Task.isCancelled)
+                return "<p>Hola.</p>"
+            }))
+        await store.send(.importTapped(.web))
+        await store.send(.importing(.presented(.binding(.set(\.text, "example.com/story")))))
+        await store.send(.importing(.presented(.importTapped)))
+        await store.receive(\.importing.presented.delegate.submit)
+        XCTAssertTrue(store.state.isImporting)
+
+        await store.send(.importing(.dismiss))
+        await store.finish()
+        XCTAssertFalse(store.state.isImporting)
+        XCTAssertFalse(fetched.value, "the download was stopped")
+        XCTAssertTrue(store.state.books.isEmpty)
+        XCTAssertNil(store.state.alert)
+    }
+
     func testAWebPagesArticleIsTheBook() async throws {
         let html = "<html><nav>Menú</nav><article><h1>El río</h1><p>El agua corre.</p></article></html>"
         let store = library(services: .fake(page: { _ throws(PageError) in html }))
