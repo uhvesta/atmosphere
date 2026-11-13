@@ -109,6 +109,15 @@ package struct DaemonClient: Sendable {
     package var files: @Sendable (_ session: String) async throws -> ChatFiles
     /// A file in the session's folder, by its path from `files`.
     package var readFile: @Sendable (_ session: String, _ path: String) async throws -> FileContents
+    /// The versions of a file in the session's folder that its turns left,
+    /// oldest first; none for a file outside its repositories.
+    package var fileVersions: @Sendable (_ session: String, _ path: String) async throws -> [FileVersion]
+    /// A file in the session's folder as checkpoint `turn` had it.
+    package var readFileVersion: @Sendable (_ session: String, _ path: String, _ turn: Int) async throws -> FileContents
+    /// Writes a version over the file, as a change of its own; returns the
+    /// file as it is now.
+    package var restoreFileVersion:
+        @Sendable (_ session: String, _ path: String, _ turn: Int) async throws -> FileContents
     /// One level of `directory`, under the folder `place` names.
     package var listFolder: @Sendable (_ place: HostPlace, _ directory: String) async throws -> Folder
     /// A file under the folder `place` names, by its path from `listFolder`.

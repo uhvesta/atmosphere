@@ -400,6 +400,38 @@ extension DaemonClient {
                 }
                 return FileContents(contents)
             },
+            fileVersions: { session, path in
+                var list = Humata_V1_ListFileVersions()
+                list.sessionID = session
+                list.path = path
+                guard case .fileVersions(let versions) = try await daemon.call(.listFileVersions(list)) else {
+                    throw DaemonError.unexpected("something other than the file's versions")
+                }
+                return versions.versions.map {
+                    FileVersion(turn: Int($0.turn), time: Date(timeIntervalSince1970: Double($0.timeUnixMs) / 1000))
+                }
+            },
+            readFileVersion: { session, path, turn in
+                var read = Humata_V1_ReadFile()
+                read.sessionID = session
+                read.path = path
+                read.turn = UInt32(clamping: turn)
+                guard case .fileContents(let contents) = try await daemon.call(.readFile(read)) else {
+                    throw DaemonError.unexpected("something other than the file's contents")
+                }
+                return FileContents(contents)
+            },
+            restoreFileVersion: { session, path, turn in
+                var restore = Humata_V1_RestoreFileVersion()
+                restore.sessionID = session
+                restore.path = path
+                restore.turn = UInt32(clamping: turn)
+                guard case .fileVersionRestored(let restored) = try await daemon.call(.restoreFileVersion(restore))
+                else {
+                    throw DaemonError.unexpected("something other than the restored file")
+                }
+                return FileContents(restored.contents)
+            },
             listFolder: { place, directory in
                 var list = Humata_V1_ListFolder()
                 list.host = place.host ?? ""

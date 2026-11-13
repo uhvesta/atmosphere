@@ -164,6 +164,11 @@ pub enum AgentError {
         source: serde_json::Error,
     },
 
+    #[error(
+        "{path} in session {session}'s folder isn't in one of its repositories, so its turns didn't save versions of it; only files in a repository have versions"
+    )]
+    NotSnapshotted { session: SessionId, path: String },
+
     #[error("couldn't make or update session {session}'s copy of its code")]
     Workspace {
         session: SessionId,

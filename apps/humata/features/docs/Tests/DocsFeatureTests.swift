@@ -126,6 +126,145 @@ final class DocsFeatureTests: XCTestCase {
     }
 }
 
+@MainActor
+final class DocsFocusAndVersionsTests: XCTestCase {
+    private let first = "# Plan\n\nShip the reader.\n\nThen the chat.\n"
+    private let second = "# Plan\n\nShip the reader first.\n\nThen the chat.\n"
+
+    /// A chat whose agent writes the first plan, then the second.
+    private func chat() async throws -> (InMemoryDaemon, Session) {
+        let (first, second) = (first, second)
+        let daemon = InMemoryDaemon { text in
+            switch text {
+            case "Write": [.write(path: "plan.md", contents: first), .write(path: "notes.txt", contents: "a\n")]
+            case "Change": [.write(path: "plan.md", contents: second)]
+            default: [.say("Done.")]
+            }
+        }
+        let session = try await daemon.client.start(StartRequest(backend: .scripted, approvalMode: .allowEverything))
+        try await daemon.client.send(session.id, "Write", .enqueue)
+        return (daemon, session)
+    }
+
+    private func store(_ daemon: InMemoryDaemon, _ session: Session) -> TestStoreOf<DocsFeature> {
+        let store = TestStore(initialState: DocsFeature.State(sessionID: session.id)) {
+            DocsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    func testFocusShowsTheFileOnItsOwnAndBack() async throws {
+        let (daemon, session) = try await chat()
+        let store = store(daemon, session)
+        await store.send(.focusToggled) {
+            $0.focused = true
+        }
+        await store.send(.focusToggled) {
+            $0.focused = false
+        }
+    }
+
+    func testAnEditReloadsWithWhatChangedMarkedUntilAnotherFileIsPicked() async throws {
+        let (daemon, session) = try await chat()
+        let store = store(daemon, session)
+        await store.send(.refresh)
+        await store.receive(\.read)
+        XCTAssertEqual(store.state.changed, [], "Nothing is marked the first time a file is read")
+
+        try await daemon.client.send(session.id, "Change", .enqueue)
+        await store.send(.refresh)
+        await store.receive(\.read)
+        XCTAssertEqual(store.state.changed, [3])
+        XCTAssertEqual(store.state.lines?[2], "Ship the reader first.")
+
+        // Read again unchanged, it keeps its marks.
+        await store.send(.refresh)
+        await store.receive(\.read)
+        XCTAssertEqual(store.state.changed, [3])
+
+        await store.send(.fileSelected("notes.txt")) {
+            $0.changed = []
+        }
+    }
+
+    func testAVersionIsShownComparedWithNowAndRestoredAsANewChange() async throws {
+        let (daemon, session) = try await chat()
+        try await daemon.client.send(session.id, "Change", .enqueue)
+        let store = store(daemon, session)
+        await store.send(.refresh)
+        await store.receive(\.read)
+
+        await store.send(.versionsToggled)
+        await store.receive(\.versionsListed)
+        XCTAssertEqual(store.state.versions?.list?.map(\.turn), [1, 2])
+
+        await store.send(.versionPicked(1))
+        await store.receive(\.versionRead)
+        XCTAssertEqual(store.state.versions?.lines?[2], "Ship the reader.")
+
+        await store.send(.compareToggled)
+        await store.receive(\.compared)
+        let comparison = try XCTUnwrap(store.state.versions?.comparison)
+        XCTAssertEqual(comparison.filter { $0.change == .removed }.map(\.block.text), ["Ship the reader."])
+        XCTAssertEqual(comparison.filter { $0.change == .added }.map(\.block.text), ["Ship the reader first."])
+        XCTAssertEqual(comparison.filter { $0.change == .kept }.count, 2)
+
+        await store.send(.restoreTapped)
+        XCTAssertNotNil(store.state.alert, "Restoring asks first")
+        await store.send(.alert(.presented(.restore(path: "plan.md", turn: 1))))
+        await store.receive(\.restored)
+        XCTAssertNil(store.state.versions?.selected)
+        XCTAssertEqual(store.state.lines?[2], "Ship the reader.")
+        XCTAssertEqual(store.state.changed, [3])
+        let now = try await daemon.client.readFile(session.id, "plan.md")
+        XCTAssertEqual(now.text, first)
+
+        // The restore is a change of its own, kept by the next turn.
+        try await daemon.client.send(session.id, "Carry on", .enqueue)
+        await store.send(.refresh)
+        await store.receive(\.versionsListed)
+        XCTAssertEqual(store.state.versions?.list?.map(\.turn), [1, 2, 3])
+    }
+
+    func testADismissedRestoreChangesNothing() async throws {
+        let (daemon, session) = try await chat()
+        try await daemon.client.send(session.id, "Change", .enqueue)
+        let store = store(daemon, session)
+        await store.send(.refresh)
+        await store.receive(\.read)
+        await store.send(.versionsToggled)
+        await store.receive(\.versionsListed)
+        await store.send(.versionPicked(1))
+        await store.receive(\.versionRead)
+        await store.send(.restoreTapped)
+        await store.send(.alert(.dismiss))
+        XCTAssertEqual(store.state.versions?.selected, 1)
+        let now = try await daemon.client.readFile(session.id, "plan.md")
+        XCTAssertEqual(now.text, second)
+    }
+
+    func testVersionsThatCantBeReadShowAnAlert() async throws {
+        let daemon = InMemoryDaemon()
+        var state = DocsFeature.State(sessionID: "gone")
+        state.selected = "plan.md"
+        let store = TestStore(initialState: state) {
+            DocsFeature()
+        } withDependencies: {
+            $0.daemon = daemon.client
+        }
+        store.exhaustivity = .off
+        await store.send(.versionsToggled)
+        await store.receive(\.versionsFailed) {
+            $0.versions = nil
+        }
+        XCTAssertNotNil(store.state.alert)
+    }
+}
+
 extension SessionEvent {
     fileprivate var isUserMessage: Bool {
         if case .userMessage = kind { true } else { false }

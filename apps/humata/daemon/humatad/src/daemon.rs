@@ -1726,6 +1726,8 @@ impl Daemon {
             Request::ListFiles(list) => self.host_of(&list.session_id).await?,
             Request::ReadFile(read) if read.session_id.is_empty() => read.host.clone(),
             Request::ReadFile(read) => self.host_of(&read.session_id).await?,
+            Request::ListFileVersions(list) => self.host_of(&list.session_id).await?,
+            Request::RestoreFileVersion(restore) => self.host_of(&restore.session_id).await?,
             Request::ListFolder(list) if list.session_id.is_empty() => list.host.clone(),
             Request::ListFolder(list) => self.host_of(&list.session_id).await?,
             Request::MarkSeen(mark) => {

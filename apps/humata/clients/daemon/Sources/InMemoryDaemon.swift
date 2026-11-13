@@ -535,6 +535,9 @@ package final class InMemoryDaemon: Sendable {
                 }
                 return FileContents(path: path, text: text)
             },
+            fileVersions: { session, path in try self.fileVersions(session, path) },
+            readFileVersion: { session, path, turn in try self.readFileVersion(session, path, turn) },
+            restoreFileVersion: { session, path, turn in try self.restoreFileVersion(session, path, turn) },
             listFolder: { place, directory in try self.listFolder(place, directory) },
             readFileAt: { place, path in try self.readFile(at: place, path) },
             items: { project in try self.items(project) },

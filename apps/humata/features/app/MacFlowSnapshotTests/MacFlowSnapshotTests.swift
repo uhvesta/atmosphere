@@ -4,6 +4,7 @@ import HumataAppFeature
 import HumataBoard
 import HumataDaemonClient
 import HumataDiagram
+import HumataDocs
 import HumataHosts
 import HumataProjects
 import HumataReview
@@ -484,6 +485,133 @@ final class MacFlowSnapshotTests: XCTestCase {
         try await until { store.session?.isWorking == false && store.session?.items.count ?? 0 >= 4 }
         await flow.step("sent")
         flow.finish()
+    }
+
+    /// A spec a session writes, read wide in Files beside the chat: an
+    /// edit the chat asks for reloads in place, with what changed marked.
+    func testAFocusedDocument() async throws {
+        let daemon = InMemoryDaemon { text in
+            if text.contains("passkey") {
+                return [
+                    .write(path: "SPEC.md", contents: Self.spec(signIn: "Sign in with a passkey; no passwords.")),
+                    .say("The spec now asks for a passkey."),
+                ]
+            }
+            return [
+                .write(path: "SPEC.md", contents: Self.spec(signIn: "Sign in with an email and a password.")),
+                .say("Wrote the spec in SPEC.md."),
+            ]
+        }
+        let project = try await daemon.client.createProject("reader", [Repository(path: "/code/reader")], "")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "Spec", approvalMode: .allowEverything, projectID: project.id))
+        try await daemon.client.send(session.id, "Write the spec", .enqueue)
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+            $0.uuid = .incrementing
+        }
+        let flow = FlowRecorder("focus", AppView(store: store))
+
+        try await until { store.sidebar.sessions.count == 1 && store.daemon == .running }
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { store.session != nil }
+        store.send(.session(.presented(.tabPicked(.files))))
+        try await until { store.session?.docs.selected == "SPEC.md" && store.session?.docs.lines != nil }
+        store.send(.session(.presented(.docs(.focusToggled))))
+        try await until { store.session?.historyLoaded == true }
+        await flow.step("focused")
+
+        store.send(.session(.presented(.binding(.set(\.draft, "Ask for a passkey instead")))))
+        store.send(.session(.presented(.sendTapped(.enqueue))))
+        try await until { store.session?.isWorking == false && store.session?.docs.changed.isEmpty == false }
+        await flow.step("changed")
+        flow.finish()
+    }
+
+    /// A spec's versions, from the turns that changed it: one read, compared
+    /// with now as a rendered diff, and restored as a change of its own.
+    func testVersionsOfADocument() async throws {
+        let daemon = InMemoryDaemon { text in
+            if text.contains("passkey") {
+                return [
+                    .write(path: "SPEC.md", contents: Self.spec(signIn: "Sign in with a passkey; no passwords.")),
+                    .say("The spec now asks for a passkey."),
+                ]
+            }
+            return [
+                .write(path: "SPEC.md", contents: Self.spec(signIn: "Sign in with an email and a password.")),
+                .say("Wrote the spec in SPEC.md."),
+            ]
+        }
+        let project = try await daemon.client.createProject("reader", [Repository(path: "/code/reader")], "")
+        let session = try await daemon.client.start(
+            StartRequest(backend: .scripted, name: "Spec", approvalMode: .allowEverything, projectID: project.id))
+        try await daemon.client.send(session.id, "Write the spec", .enqueue)
+        try await daemon.client.send(session.id, "Ask for a passkey instead", .enqueue)
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.date = .constant(Date(timeIntervalSince1970: 1_794_000_600))
+            $0.daemon = daemon.client
+            $0.daemonService = .previewValue
+            $0.notifications = .previewValue
+            $0.continuousClock = TestClock()
+            $0.uuid = .incrementing
+        }
+        let flow = FlowRecorder("versions", AppView(store: store))
+        let docs = { (action: DocsFeature.Action) in _ = store.send(.session(.presented(.docs(action)))) }
+
+        try await until { store.sidebar.sessions.count == 1 && store.daemon == .running }
+        store.send(.sidebar(.selected(.session(session.id))))
+        try await until { store.session != nil }
+        store.send(.session(.presented(.tabPicked(.files))))
+        try await until { store.session?.docs.selected == "SPEC.md" && store.session?.docs.lines != nil }
+        docs(.focusToggled)
+        docs(.versionsToggled)
+        try await until { store.session?.docs.versions?.list?.count == 2 }
+        await flow.step("versions")
+
+        docs(.versionPicked(1))
+        try await until { store.session?.docs.versions?.lines != nil }
+        await flow.step("version")
+
+        docs(.compareToggled)
+        try await until { store.session?.docs.versions?.comparison != nil }
+        await flow.step("compared")
+
+        docs(.restoreTapped)
+        try await until { store.session?.docs.alert != nil }
+        await flow.step("restore")
+
+        docs(.alert(.presented(.restore(path: "SPEC.md", turn: 1))))
+        try await until {
+            store.session?.docs.versions?.selected == nil && store.session?.docs.changed.isEmpty == false
+        }
+        await flow.step("restored")
+        flow.finish()
+    }
+
+    /// A short spec for the reader app, saying how people sign in.
+    nonisolated private static func spec(signIn: String) -> String {
+        """
+        # Reader
+
+        Import a book or an article, then read it a page at a time.
+
+        ## Accounts
+
+        \(signIn)
+
+        ## Words
+
+        Tap a word to hear it and see what it means.
+        """
     }
 
     /// A session on a subtask moves it and its task across the board, to

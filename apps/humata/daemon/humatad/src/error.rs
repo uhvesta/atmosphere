@@ -43,6 +43,15 @@ pub enum HostError {
         source: std::io::Error,
     },
 
+    #[error(
+        "couldn't write {path}; check that the folder is writable and the disk has room, then restore the version again"
+    )]
+    WriteFile {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("{path:?} isn't in the folder being browsed; give a path from its list of files")]
     NotInFolder { path: String },
 
@@ -221,7 +230,8 @@ impl HostError {
                 | AgentError::BadBackendFile { .. }
                 | AgentError::NoCodeToLand { .. }
                 | AgentError::DeleteUnarchived { .. }
-                | AgentError::DeleteForked { .. },
+                | AgentError::DeleteForked { .. }
+                | AgentError::NotSnapshotted { .. },
             ) => pb::ErrorCode::InvalidRequest,
             Self::Agent(AgentError::Workspace {
                 source: WorkspaceError::ChangeGone { .. },
@@ -234,6 +244,7 @@ impl HostError {
                     | WorkspaceError::UnknownTurn { .. }
                     | WorkspaceError::UnknownBranch { .. }
                     | WorkspaceError::NoSuchFile { .. }
+                    | WorkspaceError::NoSuchFileThen { .. }
                     | WorkspaceError::BadBranch { .. }
                     | WorkspaceError::BranchTaken { .. }
                     | WorkspaceError::NoBase { .. }
@@ -272,7 +283,8 @@ impl HostError {
             | Self::CreateFolder { .. }
             | Self::CreateChatFolder { .. }
             | Self::ReadFolder { .. }
-            | Self::ReadFile { .. } => pb::ErrorCode::StorageFailed,
+            | Self::ReadFile { .. }
+            | Self::WriteFile { .. } => pb::ErrorCode::StorageFailed,
         }
     }
 }

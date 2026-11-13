@@ -72,6 +72,16 @@ pub struct Model {
     pub default_effort: Option<String>,
 }
 
+/// One version of a file in a session's folder: the code as a turn left it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileVersion {
+    /// The checkpoint it's from: 0 before the first turn, else the turn
+    /// that ended with it.
+    pub turn: usize,
+    /// When that checkpoint was taken, in milliseconds since 1970 in UTC.
+    pub time_unix_ms: i64,
+}
+
 /// A session's history so far, and every event after it.
 #[derive(Debug)]
 pub struct Watch {
@@ -270,4 +280,22 @@ pub trait Agent: Send + Sync {
         &self,
         session: &SessionId,
     ) -> impl Future<Output = Result<Vec<(Checkout, String, Merged)>, Self::Error>> + Send;
+
+    /// The versions of `path`, from the session's folder, that its turns
+    /// left, oldest first: each checkpoint where it differs from the one
+    /// before. None for a file outside its repositories, which aren't
+    /// snapshotted.
+    fn file_versions(
+        &self,
+        session: &SessionId,
+        path: &str,
+    ) -> impl Future<Output = Result<Vec<FileVersion>, Self::Error>> + Send;
+
+    /// `path`, from the session's folder, as checkpoint `turn` has it.
+    fn file_at(
+        &self,
+        session: &SessionId,
+        path: &str,
+        turn: usize,
+    ) -> impl Future<Output = Result<String, Self::Error>> + Send;
 }

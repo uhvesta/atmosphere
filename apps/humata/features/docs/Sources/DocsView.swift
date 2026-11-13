@@ -5,7 +5,8 @@ import HumataReview
 import SwiftUI
 
 /// A chat's folder: its files, the selected one rendered or as source, and
-/// the comments waiting to be sent.
+/// the comments waiting to be sent. Focused, the file is wide, with a file
+/// picker for the sidebar, and its versions can be listed beside it.
 package struct DocsView: View {
     @Bindable var store: StoreOf<DocsFeature>
 
@@ -26,11 +27,18 @@ package struct DocsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 HStack(spacing: 0) {
-                    sidebar
-                        .frame(width: 250)
-                    Divider()
-                    content
+                    if !store.focused {
+                        sidebar
+                            .frame(width: 250)
+                        Divider()
+                    }
+                    shown
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if store.versions != nil {
+                        Divider()
+                        VersionsList(store: store)
+                            .frame(width: 230)
+                    }
                 }
             }
         }
@@ -40,6 +48,26 @@ package struct DocsView: View {
 
     private var toolbar: some View {
         HStack(spacing: 10) {
+            if store.isMarkdown || store.focused {
+                Toggle("Focus", isOn: Binding(get: { store.focused }, set: { _ in store.send(.focusToggled) }))
+                    .toggleStyle(.button)
+                    .help(
+                        store.focused
+                            ? "Show the folder's files beside the document again"
+                            : "Read the document wide, beside the chat and its composer")
+            }
+            if store.focused, !store.files.isEmpty {
+                Picker(
+                    "File", selection: Binding(get: { store.selected ?? "" }, set: { store.send(.fileSelected($0)) })
+                ) {
+                    ForEach(store.files) { file in
+                        Text(file.path).tag(file.path)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 240)
+                .help("The file shown")
+            }
             if store.isMarkdown {
                 Toggle(
                     "Rendered", isOn: Binding(get: { store.rendered }, set: { _ in store.send(.renderedToggled) })
@@ -53,6 +81,26 @@ package struct DocsView: View {
                 Image(systemName: "arrow.clockwise")
             }
             .help("Read the folder again")
+            if store.selected != nil {
+                Toggle(
+                    "Versions",
+                    isOn: Binding(get: { store.versions != nil }, set: { _ in store.send(.versionsToggled) })
+                )
+                .toggleStyle(.button)
+                .help("List the versions of this file the chat's turns left")
+            }
+            if let versions = store.versions, versions.selected != nil {
+                Toggle(
+                    "Compare with Now",
+                    isOn: Binding(get: { versions.comparing }, set: { _ in store.send(.compareToggled) })
+                )
+                .toggleStyle(.button)
+                .help("Show this version and the file now as one document, with what changed since marked")
+                Button("Restore…") { store.send(.restoreTapped) }
+                    .disabled(versions.restoring)
+                    .help("Write this version over the file, as a change of its own")
+                if versions.restoring { ProgressView().controlSize(.small) }
+            }
             Spacer()
             Button(store.drafts.isEmpty ? "Send Comments" : "Send Comments (\(store.drafts.count))") {
                 store.send(.sendTapped)
@@ -95,6 +143,41 @@ package struct DocsView: View {
         .listStyle(.sidebar)
     }
 
+    /// The file now, or the version picked.
+    @ViewBuilder private var shown: some View {
+        if let versions = store.versions, let turn = versions.selected {
+            VStack(spacing: 0) {
+                Label(
+                    "\(versions.path) as \(DocsFeature.name(turn)) left it"
+                        + (versions.comparing ? ", compared with now" : ""),
+                    systemImage: "clock.arrow.circlepath"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+                .background(.fill.quinary)
+                Divider()
+                if versions.comparing {
+                    if let comparison = versions.comparison {
+                        ComparedDocument(blocks: comparison)
+                    } else {
+                        ProgressView("Comparing…")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                } else if let lines = versions.lines {
+                    VersionFile(lines: lines, rendered: store.isMarkdown && store.rendered)
+                } else {
+                    ProgressView("Reading the version…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+        } else {
+            content
+        }
+    }
+
     @ViewBuilder private var content: some View {
         if let path = store.selected, let lines = store.lines {
             if store.isMarkdown && store.rendered {
@@ -129,6 +212,8 @@ private struct RenderedFile: View {
                                 Rectangle().fill(Color.accentColor).frame(width: 3)
                             }
                         }
+                        .padding(.leading, 6)
+                        .changedMark((block.startLine...block.endLine).contains { store.changed.contains($0) })
                         .background(
                             store.picked?.covers(block.endLine, in: path) == true
                                 ? Color.accentColor.opacity(0.15) : .clear, in: .rect(cornerRadius: 4)
@@ -147,8 +232,9 @@ private struct RenderedFile: View {
                     }
                 }
             }
-            .frame(maxWidth: 720, alignment: .leading)
+            .frame(maxWidth: store.focused ? 820 : 720, alignment: .leading)
             .padding()
+            .frame(maxWidth: .infinity, alignment: store.focused ? .center : .leading)
         }
     }
 
@@ -181,7 +267,8 @@ private struct SourceFile: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(
                             store.picked?.covers(number, in: path) == true
-                                ? Color.accentColor.opacity(0.18) : .clear
+                                ? Color.accentColor.opacity(0.18)
+                                : store.changed.contains(number) ? Color.orange.opacity(0.12) : .clear
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -209,6 +296,92 @@ private struct SourceFile: View {
 
     private func drafts(on line: Int) -> [DocsFeature.Draft] {
         store.drafts.filter { $0.picked.path == path && $0.picked.endLine == line }
+    }
+}
+
+/// A version of a file, to read: rendered when it's Markdown, else its source.
+private struct VersionFile: View {
+    let lines: [String]
+    let rendered: Bool
+
+    var body: some View {
+        ScrollView {
+            if rendered {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(MarkdownBlock.cached(lines)) { block in
+                        MarkdownBlockView(block: block)
+                            .padding(.leading, 16)
+                    }
+                }
+                .frame(maxWidth: 820, alignment: .leading)
+                .padding()
+                .frame(maxWidth: .infinity)
+            } else {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("\(index + 1)")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 40, alignment: .trailing)
+                            Text(line)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .font(.system(size: 12, design: .monospaced))
+                        .padding(.vertical, 1)
+                    }
+                }
+                .padding(.vertical, 8)
+            }
+        }
+        .textSelection(.enabled)
+    }
+}
+
+/// The selected file's versions, newest first, with the file now on top.
+private struct VersionsList: View {
+    let store: StoreOf<DocsFeature>
+
+    /// Stands for the file now, which isn't a version.
+    private static let now = -1
+
+    var body: some View {
+        let versions = store.versions
+        List(
+            selection: Binding(
+                get: { versions?.selected ?? Self.now },
+                set: { store.send(.versionPicked($0 == Self.now ? nil : $0)) })
+        ) {
+            Section("Versions") {
+                Text("Now").tag(Self.now)
+                if let list = versions?.list {
+                    ForEach(list.reversed()) { version in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(version.turn == 0 ? "Before the first turn" : "After turn \(version.turn)")
+                            Text(version.time, format: .dateTime.month().day().hour().minute())
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(version.turn)
+                    }
+                    if list.isEmpty {
+                        Text(
+                            "No versions yet. Turns are snapshotted in a project's repositories, once each turn "
+                                + "ends; a file outside them, or in a chat with no repository, has none."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                } else {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Reading the versions…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .listStyle(.sidebar)
     }
 }
 

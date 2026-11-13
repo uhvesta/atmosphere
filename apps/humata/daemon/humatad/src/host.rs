@@ -82,6 +82,17 @@ trait Backend: Send + Sync {
         query: &'a Query,
     ) -> BoxFuture<'a, Vec<humata_agent::Changes>>;
     fn edit_changes<'a>(&'a self, session: &'a SessionId, edit: &'a Edit) -> BoxFuture<'a, ()>;
+    fn file_versions<'a>(
+        &'a self,
+        session: &'a SessionId,
+        path: &'a str,
+    ) -> BoxFuture<'a, Vec<humata_agent::FileVersion>>;
+    fn file_at<'a>(
+        &'a self,
+        session: &'a SessionId,
+        path: &'a str,
+        turn: usize,
+    ) -> BoxFuture<'a, String>;
     fn land<'a>(
         &'a self,
         session: &'a SessionId,
@@ -245,6 +256,29 @@ where
     fn edit_changes<'a>(&'a self, session: &'a SessionId, edit: &'a Edit) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             Agent::edit_changes(self, session, edit)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn file_versions<'a>(
+        &'a self,
+        session: &'a SessionId,
+        path: &'a str,
+    ) -> BoxFuture<'a, Vec<humata_agent::FileVersion>> {
+        Box::pin(async move {
+            Agent::file_versions(self, session, path)
+                .await
+                .map_err(Into::into)
+        })
+    }
+    fn file_at<'a>(
+        &'a self,
+        session: &'a SessionId,
+        path: &'a str,
+        turn: usize,
+    ) -> BoxFuture<'a, String> {
+        Box::pin(async move {
+            Agent::file_at(self, session, path, turn)
                 .await
                 .map_err(Into::into)
         })
@@ -1194,9 +1228,50 @@ impl Host {
                 let folder = self.folder(&SessionId::new(list.session_id)).await?;
                 Response::Files(crate::files::list_apart(folder).await?)
             }
-            Request::ReadFile(read) => {
-                let root = self.root(&read.session_id, &read.root).await?;
-                Response::FileContents(crate::files::read_apart(root, read.path).await?)
+            Request::ReadFile(read) => match read.turn {
+                Some(turn) if !read.session_id.is_empty() => {
+                    let session = SessionId::new(read.session_id);
+                    let text = self
+                        .owner(&session)?
+                        .1
+                        .file_at(&session, &read.path, turn as usize)
+                        .await?;
+                    Response::FileContents(crate::files::version(&read.path, text))
+                }
+                _ => {
+                    let root = self.root(&read.session_id, &read.root).await?;
+                    Response::FileContents(crate::files::read_apart(root, read.path).await?)
+                }
+            },
+            Request::ListFileVersions(list) => {
+                let session = SessionId::new(list.session_id);
+                let versions = self
+                    .owner(&session)?
+                    .1
+                    .file_versions(&session, &list.path)
+                    .await?;
+                Response::FileVersions(pb::FileVersions {
+                    versions: versions
+                        .into_iter()
+                        .map(|version| pb::FileVersion {
+                            turn: u32::try_from(version.turn).unwrap_or(u32::MAX),
+                            time_unix_ms: version.time_unix_ms,
+                        })
+                        .collect(),
+                })
+            }
+            Request::RestoreFileVersion(restore) => {
+                let session = SessionId::new(restore.session_id.clone());
+                let text = self
+                    .owner(&session)?
+                    .1
+                    .file_at(&session, &restore.path, restore.turn as usize)
+                    .await?;
+                let folder = self.folder(&session).await?;
+                crate::files::write_apart(folder.clone(), restore.path.clone(), text).await?;
+                Response::FileVersionRestored(pb::FileVersionRestored {
+                    contents: Some(crate::files::read_apart(folder, restore.path).await?),
+                })
             }
             Request::ListFolder(list) => {
                 let root = self.root(&list.session_id, &list.root).await?;

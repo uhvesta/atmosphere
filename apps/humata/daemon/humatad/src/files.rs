@@ -235,6 +235,77 @@ pub fn read(root: &Path, path: &str) -> Result<pb::FileContents, HostError> {
     })
 }
 
+/// `text`, a version of the file at `path`, as it's sent to be shown: cut
+/// if it's large, or marked as binary.
+pub fn version(path: &str, text: String) -> pb::FileContents {
+    let size = text.len() as u64;
+    if text.contains('\0') {
+        return pb::FileContents {
+            path: path.to_owned(),
+            binary: true,
+            size,
+            ..pb::FileContents::default()
+        };
+    }
+    let mut text = text;
+    let truncated = size > LARGEST_FILE;
+    if truncated {
+        let mut end = usize::try_from(LARGEST_FILE).unwrap_or(usize::MAX);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    pb::FileContents {
+        path: path.to_owned(),
+        text,
+        size,
+        truncated,
+        ..pb::FileContents::default()
+    }
+}
+
+/// `write`, on a thread for blocking work.
+pub async fn write_apart(root: PathBuf, path: String, text: String) -> Result<(), HostError> {
+    let folder = root.clone();
+    tokio::task::spawn_blocking(move || write(&root, &path, &text))
+        .await
+        .map_err(|source| HostError::ReadFiles {
+            path: folder,
+            source,
+        })?
+}
+
+/// Writes `text` as the file at `path` under `root`, which it mustn't lead
+/// out of, over what's there or as a new file in a folder that is.
+pub fn write(root: &Path, path: &str, text: &str) -> Result<(), HostError> {
+    let relative = Path::new(path);
+    if path.is_empty() || !plain(relative) {
+        return Err(HostError::NotInFolder {
+            path: path.to_owned(),
+        });
+    }
+    let full = root.join(relative);
+    // What's there, or the folder it goes in, must be inside the root, so a
+    // linked file or folder can't lead out.
+    let there = if full.exists() {
+        full.canonicalize()
+    } else {
+        full.parent()
+            .map_or_else(|| root.canonicalize(), Path::canonicalize)
+    };
+    let inside = match (there, root.canonicalize()) {
+        (Ok(there), Ok(root)) => there.starts_with(root),
+        _ => false,
+    };
+    if !inside || full.is_dir() {
+        return Err(HostError::NotInFolder {
+            path: path.to_owned(),
+        });
+    }
+    std::fs::write(&full, text).map_err(|source| HostError::WriteFile { path: full, source })
+}
+
 fn slashed(path: &Path) -> String {
     path.components()
         .map(|component| component.as_os_str().to_string_lossy())
@@ -255,6 +326,41 @@ mod tests {
         std::fs::write(dir.path().join(".git/HEAD"), "ref").expect("a hidden file");
         std::fs::write(dir.path().join(".env"), "SECRET=1").expect("a hidden file");
         dir
+    }
+
+    #[test]
+    fn a_version_is_written_in_the_folder_and_never_outside_it() {
+        let dir = folder();
+        write(dir.path(), "plan.md", "# Plan, again\n").expect("wrote");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("plan.md")).expect("read"),
+            "# Plan, again\n"
+        );
+        write(dir.path(), "docs/new.md", "new").expect("wrote a new file");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("docs/new.md")).expect("read"),
+            "new"
+        );
+        for outside in ["../out.md", "/tmp/out.md", "", "docs"] {
+            assert!(
+                matches!(
+                    write(dir.path(), outside, "x"),
+                    Err(HostError::NotInFolder { .. })
+                ),
+                "{outside:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_large_version_is_cut_and_a_binary_one_isnt_shown() {
+        let large = "a".repeat(usize::try_from(LARGEST_FILE).expect("fits") + 10);
+        let cut = version("big.md", large);
+        assert!(cut.truncated);
+        assert_eq!(cut.text.len() as u64, LARGEST_FILE);
+        let binary = version("blob.md", "a\0b".to_owned());
+        assert!(binary.binary);
+        assert!(binary.text.is_empty());
     }
 
     #[test]

@@ -220,6 +220,10 @@ message Request {
     SetSessionDefaults set_session_defaults = 107;
     // A project skill's text, for a session in the project.
     ReadSkill read_skill = 108;
+    // A file's versions in a session's folder, from its turns' snapshots,
+    // and putting one back as a new change.
+    ListFileVersions list_file_versions = 109;
+    RestoreFileVersion restore_file_version = 110;
   }
 }
 
@@ -328,6 +332,8 @@ message Response {
     PluginList plugin_list = 97;
     SessionDefaults session_defaults = 98;
     Skill skill = 99;
+    FileVersions file_versions = 100;
+    FileVersionRestored file_version_restored = 101;
   }
 }
 
@@ -1362,6 +1368,44 @@ message ReadFile {
   string host = 3;
   // An absolute folder on the host; empty for its home.
   string root = 4;
+  // The file as the session's checkpoint after this turn had it (0: before
+  // the first turn), from ListFileVersions; unset for the file as it is.
+  optional uint32 turn = 5;
+}
+
+// The versions of a file in a session's folder that its turns left, from
+// their snapshots. Only files in the session's repositories have them.
+message ListFileVersions {
+  string session_id = 1;
+  // As ListFiles gives it.
+  string path = 2;
+}
+
+message FileVersion {
+  // The checkpoint it's from: 0 before the first turn, else the turn that
+  // ended with it.
+  uint32 turn = 1;
+  // Milliseconds since 1970 in UTC.
+  int64 time_unix_ms = 2;
+}
+
+message FileVersions {
+  // Each checkpoint where the file differs from the version before, oldest
+  // first; empty for a file outside the session's repositories.
+  repeated FileVersion versions = 1;
+}
+
+// Writes a version of a file over the file in the session's folder, as a
+// change of its own that the next checkpoint keeps.
+message RestoreFileVersion {
+  string session_id = 1;
+  string path = 2;
+  uint32 turn = 3;
+}
+
+message FileVersionRestored {
+  // The file as it is now.
+  FileContents contents = 1;
 }
 
 message FileContents {
