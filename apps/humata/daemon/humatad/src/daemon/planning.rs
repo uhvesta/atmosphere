@@ -548,11 +548,16 @@ pub(super) fn instructions(
     text
 }
 
+/// A spec as the instructions give it: under a heading with the item's id,
+/// so the agent can name it to tools without listing the board, and saying
+/// that a newer copy sent later in the chat replaces it.
 fn spec_section(heading: &str, item: &Item) -> String {
     format!(
-        "# {heading}: {}\n\n{}",
+        "# {heading}: {} (id {})\n\n{}\n\n(If a later message gives a newer spec of {}, it replaces this one.)",
         item.fields.title,
-        item.fields.spec.trim()
+        item.id,
+        item.fields.spec.trim(),
+        item.id
     )
 }
 
@@ -716,6 +721,35 @@ mod tests {
 
         let alone = instructions(&project, "", &[], Some(&subtask), None);
         assert!(!alone.contains("Let people sign in."), "{alone}");
+    }
+
+    #[test]
+    fn each_spec_in_the_instructions_carries_its_items_id() {
+        let project = Project {
+            id: "p".into(),
+            name: "p".into(),
+            repositories: Vec::new(),
+            urls: std::collections::BTreeMap::new(),
+            instructions: String::new(),
+            created_unix_ms: 0,
+            skills: Vec::new(),
+            plugins: Vec::new(),
+            defaults: None,
+        };
+        let mut task = item("login", None, "Let people sign in.");
+        task.id = "id-of-task".into();
+        let mut subtask = item("form", Some("id-of-task"), "The form.");
+        subtask.id = "id-of-subtask".into();
+        let text = instructions(&project, "", &[], Some(&subtask), Some(&task));
+        let at = |part: &str| text.find(part).unwrap_or(usize::MAX);
+        let order = [
+            at("id-of-task"),
+            at("Let people sign in."),
+            at("id-of-subtask"),
+            at("The form."),
+        ];
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{text}");
+        assert!(order.iter().all(|at| *at != usize::MAX), "{text}");
     }
 
     fn event(kind: pb::session_event::Kind) -> pb::SessionEvent {

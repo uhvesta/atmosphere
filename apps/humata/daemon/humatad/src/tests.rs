@@ -3173,7 +3173,10 @@ async fn a_spec_note_waits_for_a_message_that_is_delivered() {
     send(&client, &session.id, "hello").await;
     after_turns(&client, &session.id, 2).await;
     let sent = sent_to(&client, &session.id).await;
-    assert!(sent[1].contains(&task.id), "the note came: {sent:?}");
+    assert!(
+        sent[1].contains(&task.id) && sent[1].contains("Sign in with a passkey."),
+        "the note came, with the item's id and its new spec: {sent:?}"
+    );
 }
 
 #[tokio::test]

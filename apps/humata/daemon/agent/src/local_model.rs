@@ -1,7 +1,8 @@
 //! The local-model backend: a model behind an OpenAI-compatible server, such
 //! as Ollama or llama.cpp's, so iterating costs no tokens. The model works in
-//! the session's folder with four tools: `shell` and `write_file`, which
-//! ask the person first, and `read_file` and `list_folder`.
+//! the session's folder with its tools: `shell`, `write_file` and
+//! `edit_file`, which ask the person first, and `read_file`, `list_folder`,
+//! `search_files` and `find_files`, which don't.
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -297,9 +298,19 @@ impl Runner for LocalModelRunner {
             }
         };
 
+        // Sized once a turn, so what's left out moves only a step at a time.
+        let context = server_context(
+            self.http.clone(),
+            &base_url,
+            request.api_key.clone(),
+            request.model.clone(),
+        )
+        .await;
+        let budget = budget(context, &offered);
+
         let mut calls = 0_usize;
         for _ in 0..MAX_STEPS {
-            let reply = self.reply(&turn, &request, &offered, apps).await?;
+            let reply = self.reply(&turn, &request, &offered, budget, apps).await?;
             if reply.calls.is_empty() {
                 return Ok(());
             }
@@ -375,6 +386,7 @@ impl LocalModelRunner {
         turn: &Turn,
         request: &Request,
         tools: &Value,
+        budget: usize,
         apps: bool,
     ) -> Result<Reply, LocalModelError> {
         let mut waiting = false;
@@ -384,6 +396,7 @@ impl LocalModelRunner {
                 turn.record().instructions.as_deref(),
                 &turn.history(),
                 Some(&turn.images_folder()),
+                budget,
             );
             match self.complete(turn, request, tools, messages).await {
                 Err(LocalModelError::Connect { .. }) if apps => {
@@ -539,16 +552,53 @@ pub(crate) async fn server_models(
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     // ureq blocks, so it's asked on its own thread; one that panicked lists
     // nothing.
-    tokio::task::spawn_blocking(move || list_models(&http, &url, api_key.as_deref()))
-        .await
-        .unwrap_or_else(|_| Ok(Vec::new()))
+    tokio::task::spawn_blocking(move || {
+        listing(&http, &url, api_key.as_deref()).map(|listed| list_models(&listed))
+    })
+    .await
+    .unwrap_or_else(|_| Ok(Vec::new()))
 }
 
-fn list_models(
-    http: &ureq::Agent,
-    url: &str,
-    api_key: Option<&str>,
-) -> Result<Vec<Model>, LocalModelError> {
+/// How many tokens `model` takes in, if the server at `base_url` lists it:
+/// llama.cpp, vLLM, LM Studio and others each name it differently. None
+/// when the server is down or doesn't say.
+async fn server_context(
+    http: ureq::Agent,
+    base_url: &str,
+    api_key: Option<String>,
+    model: String,
+) -> Option<u64> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    tokio::task::spawn_blocking(move || {
+        listing(&http, &url, api_key.as_deref())
+            .ok()
+            .and_then(|listed| listed_context(&listed, &model))
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn listed_context(listed: &Value, model: &str) -> Option<u64> {
+    let entry = listed["data"]
+        .as_array()?
+        .iter()
+        .find(|entry| entry["id"] == model)?;
+    [
+        &entry["context_length"],
+        &entry["max_context_length"],
+        &entry["max_model_len"],
+        &entry["context_window"],
+        &entry["meta"]["n_ctx"],
+        &entry["meta"]["n_ctx_train"],
+    ]
+    .into_iter()
+    .find_map(Value::as_u64)
+    .filter(|tokens| *tokens > 0)
+}
+
+/// The server's `/models` answer.
+fn listing(http: &ureq::Agent, url: &str, api_key: Option<&str>) -> Result<Value, LocalModelError> {
     let mut request = http.get(url).header("Accept", "application/json");
     if let Some(key) = api_key {
         request = request.header("Authorization", format!("Bearer {key}"));
@@ -576,10 +626,14 @@ fn list_models(
             body: text.trim().to_owned(),
         });
     }
-    let listed: Value = serde_json::from_str(&text).map_err(|source| LocalModelError::Decode {
+    serde_json::from_str(&text).map_err(|source| LocalModelError::Decode {
         url: url.to_owned(),
         source,
-    })?;
+    })
+}
+
+/// The models in a `/models` answer, by id.
+fn list_models(listed: &Value) -> Vec<Model> {
     let mut models: Vec<Model> = listed["data"]
         .as_array()
         .into_iter()
@@ -605,7 +659,7 @@ fn list_models(
         })
         .collect();
     models.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(models)
+    models
 }
 
 /// Sends the request and passes on each part of the streamed reply, until it
@@ -747,10 +801,16 @@ fn user_content(text: &str, names: &[String], folder: Option<&Path>) -> Value {
 /// The images of the latest message that has any, read from `images`, go
 /// with it as data URLs; an earlier message's are only noted, since
 /// sending every image again each turn costs tokens and can make the
-/// request too large. Once tool output outgrows [`TOOL_OUTPUT_KEPT`], the
-/// oldest is left out, a step at a time so what's sent stays the same
+/// request too large. Once what's sent outgrows `budget` bytes, the oldest
+/// tool calls' long arguments, such as a write's contents, and their
+/// output are left out, a step at a time so what's sent stays the same
 /// between steps and the server can reuse what it read before.
-fn messages(instructions: Option<&str>, history: &[Event], images: Option<&Path>) -> Vec<Value> {
+fn messages(
+    instructions: Option<&str>,
+    history: &[Event],
+    images: Option<&Path>,
+    budget: usize,
+) -> Vec<Value> {
     let mut system = String::from(
         "You are a coding agent working in the person's project folder. Use the tools to read, change and run things there, then say briefly what you did.",
     );
@@ -758,12 +818,21 @@ fn messages(instructions: Option<&str>, history: &[Event], images: Option<&Path>
         system.push_str("\n\n");
         system.push_str(instructions);
     }
-    let mut messages = vec![json!({"role": "system", "content": system})];
     let latest = history.iter().rposition(
         |event| matches!(&event.kind, EventKind::UserMessage { images, .. } if !images.is_empty()),
     );
-    let dropped = dropped_output(history);
-    let mut output_seen = 0_usize;
+    // Each call's arguments with their long strings left out, where any are.
+    let shortened: Vec<Option<String>> = history
+        .iter()
+        .map(|event| match &event.kind {
+            EventKind::ToolStarted { arguments_json, .. } => shortened(arguments_json),
+            _ => None,
+        })
+        .collect();
+    let dropped = left_out(system.len(), history, budget);
+    let mut messages = vec![json!({"role": "system", "content": system})];
+    // How much leaving out the calls so far saves, oldest first.
+    let mut seen = 0_usize;
     let mut reply = Said::default();
     // Sent while the reply's calls ran, so after their results.
     let mut waiting: Vec<Value> = Vec::new();
@@ -797,19 +866,32 @@ fn messages(instructions: Option<&str>, history: &[Event], images: Option<&Path>
                 call_id,
                 tool,
                 arguments_json,
-            } => reply.calls.push((
-                json!({
-                    "id": call_id,
-                    "type": "function",
-                    "function": {"name": tool, "arguments": arguments_json},
-                }),
-                None,
-            )),
+            } => {
+                let arguments = match &shortened[index] {
+                    Some(short) => {
+                        seen += arguments_json.len().saturating_sub(short.len());
+                        if seen <= dropped {
+                            short
+                        } else {
+                            arguments_json
+                        }
+                    }
+                    None => arguments_json,
+                };
+                reply.calls.push((
+                    json!({
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": tool, "arguments": arguments},
+                    }),
+                    None,
+                ));
+            }
             EventKind::ToolCompleted {
                 call_id, output, ..
             } => {
-                output_seen += output.len();
-                let content = if output_seen <= dropped {
+                seen += output.len();
+                let content = if seen <= dropped {
                     DROPPED.to_owned()
                 } else {
                     output.clone()
@@ -829,26 +911,83 @@ fn messages(instructions: Option<&str>, history: &[Event], images: Option<&Path>
     messages
 }
 
-/// Tool output kept for the model; past it, the oldest is left out.
-const TOOL_OUTPUT_KEPT: usize = 64 * 1024;
-/// How much more is left out each time the output outgrows what's kept.
-const TOOL_OUTPUT_STEP: usize = TOOL_OUTPUT_KEPT / 2;
+/// About how many bytes of text a token is; few, so a budget sized from
+/// tokens errs small.
+const BYTES_PER_TOKEN: usize = 3;
+/// What's sent of the conversation when the server doesn't say how much
+/// the model takes in.
+const UNKNOWN_CONTEXT_SENT: usize = 64 * 1024;
+/// The least that's sent, however small the model's context, so a step
+/// still leaves room for a turn's work.
+const LEAST_SENT: usize = 8 * 1024;
 
-/// How many bytes of the history's tool output, oldest first, are left
-/// out: none until there's more than [`TOOL_OUTPUT_KEPT`], then whole
-/// steps, so the point moves only when another step's worth has come.
-fn dropped_output(history: &[Event]) -> usize {
-    let total: usize = history
-        .iter()
-        .map(|event| match &event.kind {
-            EventKind::ToolCompleted { output, .. } => output.len(),
-            _ => 0,
-        })
-        .sum();
-    match total.checked_sub(TOOL_OUTPUT_KEPT) {
+/// How many bytes of the conversation are sent with each request: three
+/// quarters of a model's context of `context_tokens`, leaving the rest for
+/// its reply, less what describing `tools` takes, since that goes with
+/// every request too.
+fn budget(context_tokens: Option<u64>, tools: &Value) -> usize {
+    let whole = match context_tokens.and_then(|tokens| usize::try_from(tokens).ok()) {
+        Some(tokens) => tokens.saturating_mul(BYTES_PER_TOKEN) / 4 * 3,
+        None => UNKNOWN_CONTEXT_SENT,
+    };
+    whole
+        .saturating_sub(tools.to_string().len())
+        .max(LEAST_SENT)
+}
+
+/// How many bytes of the oldest tool calls' arguments and output are left
+/// out to keep what's sent within `budget`: everything counts, the
+/// instructions (`system` bytes) and every message as well, but only tool
+/// calls are left out. None until there's more than the budget, then whole
+/// steps of half of it, so the point moves only when another step's worth
+/// has come.
+fn left_out(system: usize, history: &[Event], budget: usize) -> usize {
+    let sent: usize = system
+        + history
+            .iter()
+            .map(|event| match &event.kind {
+                EventKind::UserMessage { text, .. } | EventKind::AssistantMessage { text } => {
+                    text.len()
+                }
+                EventKind::ToolStarted { arguments_json, .. } => arguments_json.len(),
+                EventKind::ToolCompleted { output, .. } => output.len(),
+                _ => 0,
+            })
+            .sum::<usize>();
+    let step = (budget / 2).max(1);
+    match sent.checked_sub(budget) {
         None | Some(0) => 0,
-        Some(over) => over.div_ceil(TOOL_OUTPUT_STEP) * TOOL_OUTPUT_STEP,
+        Some(over) => over.div_ceil(step) * step,
     }
+}
+
+/// A string argument longer than this is left out of an old call.
+const ARGUMENT_KEPT: usize = 200;
+
+/// A call's arguments with each string longer than [`ARGUMENT_KEPT`], such
+/// as a write's contents or an edit's texts, replaced by a note of its
+/// size; None when there's none to leave out or they aren't JSON.
+fn shortened(arguments: &str) -> Option<String> {
+    fn shorten(value: &mut Value) -> bool {
+        match value {
+            Value::String(text) if text.len() > ARGUMENT_KEPT => {
+                *text = format!("({} bytes, left out to save room)", text.len());
+                true
+            }
+            Value::Array(values) => values
+                .iter_mut()
+                .fold(false, |cut, value| shorten(value) || cut),
+            Value::Object(fields) => fields
+                .values_mut()
+                .fold(false, |cut, value| shorten(value) || cut),
+            _ => false,
+        }
+    }
+    if arguments.len() <= ARGUMENT_KEPT {
+        return None;
+    }
+    let mut parsed: Value = serde_json::from_str(arguments).ok()?;
+    shorten(&mut parsed).then(|| parsed.to_string())
 }
 
 /// What an old tool result is replaced with once it's left out.
@@ -917,6 +1056,16 @@ fn tools() -> Value {
             json!({"type": "object", "properties": {"path": path}}),
         ),
         tool(
+            "search_files",
+            "Finds the lines that hold text, any case, in the files under a folder (the project folder when no path is given), as path:line: text. Asks nobody, so use it rather than grep in shell.",
+            json!({"type": "object", "properties": {"text": {"type": "string"}, "path": path}, "required": ["text"]}),
+        ),
+        tool(
+            "find_files",
+            "Lists the files and folders under a folder (the project folder when no path is given) whose path holds name, any case. Asks nobody, so use it rather than find in shell.",
+            json!({"type": "object", "properties": {"name": {"type": "string"}, "path": path}, "required": ["name"]}),
+        ),
+        tool(
             "write_file",
             "Writes a file, replacing what it held. To change part of a file, use edit_file.",
             json!({"type": "object", "properties": {"path": path, "contents": {"type": "string"}}, "required": ["path", "contents"]}),
@@ -957,6 +1106,20 @@ struct EditArguments {
 
 #[derive(Deserialize)]
 struct ListArguments {
+    #[serde(default)]
+    path: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct SearchArguments {
+    text: String,
+    #[serde(default)]
+    path: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct FindArguments {
+    name: String,
     #[serde(default)]
     path: PathBuf,
 }
@@ -1014,6 +1177,26 @@ async fn run_tool(
             Ok(ListArguments { path }) => match inside(&root, &path) {
                 None => outside(&path),
                 Some(target) => list(&target, &path).await,
+            },
+        },
+        "search_files" => match serde_json::from_str::<SearchArguments>(arguments) {
+            Err(error) => bad(error),
+            Ok(SearchArguments { text, .. }) if text.is_empty() => {
+                (false, "Give text to search for.".to_owned())
+            }
+            Ok(SearchArguments { text, path }) => match folder(&root, &path) {
+                None => outside(&path),
+                Some(folder) => looked(move || search_files(&root, &folder, &text)).await,
+            },
+        },
+        "find_files" => match serde_json::from_str::<FindArguments>(arguments) {
+            Err(error) => bad(error),
+            Ok(FindArguments { name, .. }) if name.is_empty() => {
+                (false, "Give name, part of the paths to find.".to_owned())
+            }
+            Ok(FindArguments { name, path }) => match folder(&root, &path) {
+                None => outside(&path),
+                Some(folder) => looked(move || find_files(&root, &folder, &name)).await,
             },
         },
         "write_file" => match serde_json::from_str::<WriteArguments>(arguments) {
@@ -1289,6 +1472,161 @@ async fn list(target: &Path, path: &Path) -> (bool, String) {
     (true, truncated(names.join("\n")))
 }
 
+/// The folder a search looks under: the project folder when `path` is
+/// empty or `.`, else `path` in it.
+fn folder(root: &Path, path: &Path) -> Option<PathBuf> {
+    if path.as_os_str().is_empty() || path == Path::new(".") {
+        Some(root.to_owned())
+    } else {
+        inside(root, path)
+    }
+}
+
+/// Runs a search off the executor, since it reads many files.
+async fn looked(search: impl FnOnce() -> (bool, String) + Send + 'static) -> (bool, String) {
+    tokio::task::spawn_blocking(search)
+        .await
+        .unwrap_or_else(|_| (false, "The search failed; try again.".to_owned()))
+}
+
+/// The most a search_files or find_files call answers with.
+const MOST_FOUND: usize = 100;
+/// The most files a search looks at, so one over a huge folder ends.
+const MOST_LOOKED_AT: usize = 20_000;
+/// Files larger than this aren't searched: they're seldom source.
+const LARGEST_SEARCHED: u64 = 1024 * 1024;
+/// Folders a search doesn't go into: version control, dependencies and
+/// build output, which are large and seldom what's meant.
+const NOT_SEARCHED: [&str; 7] = [
+    ".git",
+    "node_modules",
+    "target",
+    ".build",
+    "DerivedData",
+    "__pycache__",
+    ".venv",
+];
+
+/// Calls `each` with every file and folder under `folder`, folders before
+/// what they hold, not following links, until it returns false or
+/// [`MOST_LOOKED_AT`] have been seen. Says whether it saw them all.
+fn walk(folder: &Path, each: &mut dyn FnMut(&Path, bool) -> bool) -> bool {
+    let mut looked_at = 0_usize;
+    let mut folders = vec![folder.to_owned()];
+    while let Some(folder) = folders.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        let mut inner = Vec::new();
+        for entry in entries {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let path = entry.path();
+            if kind.is_dir() {
+                if NOT_SEARCHED.contains(&name.as_ref()) || name.starts_with("bazel-") {
+                    continue;
+                }
+                inner.push(path.clone());
+            } else if !kind.is_file() {
+                continue;
+            }
+            looked_at += 1;
+            if looked_at > MOST_LOOKED_AT || !each(&path, kind.is_dir()) {
+                return false;
+            }
+        }
+        // Popped from the end, so reversed to go in name order.
+        folders.extend(inner.into_iter().rev());
+    }
+    true
+}
+
+/// `path` as the model gives it to the other tools: relative to the
+/// project folder.
+fn shown(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The lines under `folder` that hold `text`, in any case.
+fn search_files(root: &Path, folder: &Path, text: &str) -> (bool, String) {
+    let wanted = text.to_lowercase();
+    let mut found = Vec::new();
+    let all = walk(folder, &mut |path, is_folder| {
+        if is_folder || std::fs::metadata(path).map_or(true, |data| data.len() > LARGEST_SEARCHED) {
+            return true;
+        }
+        let Ok(bytes) = std::fs::read(path) else {
+            return true;
+        };
+        // A NUL early on means it isn't text.
+        if bytes.iter().take(8192).any(|byte| *byte == 0) {
+            return true;
+        }
+        let contents = String::from_utf8_lossy(&bytes);
+        for (number, line) in contents.lines().enumerate() {
+            if line.to_lowercase().contains(&wanted) {
+                let line = line.trim();
+                let mut end = line.len().min(200);
+                while !line.is_char_boundary(end) {
+                    end -= 1;
+                }
+                found.push(format!(
+                    "{}:{}: {}",
+                    shown(root, path),
+                    number + 1,
+                    &line[..end]
+                ));
+                if found.len() >= MOST_FOUND {
+                    return false;
+                }
+            }
+        }
+        true
+    });
+    answer(found, all, &format!("No file holds {text:?}."))
+}
+
+/// The files and folders under `folder` whose path holds `name`, in any
+/// case; folders end in /.
+fn find_files(root: &Path, folder: &Path, name: &str) -> (bool, String) {
+    let wanted = name.to_lowercase();
+    let mut found = Vec::new();
+    let all = walk(folder, &mut |path, is_folder| {
+        // Matched below the folder, so its own name doesn't match it all.
+        let below = shown(folder, path);
+        if below.to_lowercase().contains(&wanted) {
+            let path = shown(root, path);
+            found.push(if is_folder { format!("{path}/") } else { path });
+        }
+        found.len() < MOST_FOUND
+    });
+    answer(found, all, &format!("No path holds {name:?}."))
+}
+
+fn answer(found: Vec<String>, all: bool, none: &str) -> (bool, String) {
+    if found.is_empty() {
+        let none = if all {
+            none.to_owned()
+        } else {
+            format!("{none} Not every file was looked at; give a path to look in.")
+        };
+        return (true, none);
+    }
+    let mut text = found.join("\n");
+    if !all {
+        text.push_str("\n(There may be more; give a path, or more of the text, to narrow it.)");
+    }
+    (true, truncated(text))
+}
+
 fn denied() -> (bool, String) {
     (false, "The person denied this.".into())
 }
@@ -1368,21 +1706,34 @@ mod tests {
     }
 
     fn serve_on(listener: TcpListener, replies: Vec<(u16, String)>) -> FakeServer {
+        serve_listing(listener, json!({"object": "list", "data": []}), replies)
+    }
+
+    /// Like [`serve_on`], answering each `GET` with `listing` and not
+    /// taking a reply for it.
+    fn serve_listing(
+        listener: TcpListener,
+        listing: Value,
+        replies: Vec<(u16, String)>,
+    ) -> FakeServer {
         let port = listener.local_addr().expect("an address").port();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let kept = requests.clone();
         tokio::spawn(async move {
-            for (status, body) in replies {
+            let mut replies = replies.into_iter();
+            loop {
                 let Ok((socket, _)) = listener.accept().await else {
                     return;
                 };
                 let mut socket = tokio::io::BufReader::new(socket);
                 let mut length = 0;
+                let mut get = false;
                 loop {
                     let mut line = String::new();
                     if socket.read_line(&mut line).await.unwrap_or(0) == 0 {
                         return;
                     }
+                    get |= line.starts_with("GET ");
                     let line = line.trim_end().to_ascii_lowercase();
                     if line.is_empty() {
                         break;
@@ -1395,6 +1746,19 @@ mod tests {
                 if socket.read_exact(&mut request).await.is_err() {
                     return;
                 }
+                if get {
+                    let body = listing.to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.get_mut().write_all(response.as_bytes()).await;
+                    let _ = socket.get_mut().shutdown().await;
+                    continue;
+                }
+                let Some((status, body)) = replies.next() else {
+                    return;
+                };
                 if let Ok(request) = serde_json::from_slice(&request) {
                     kept.lock().expect("not poisoned").push(request);
                 }
@@ -1757,7 +2121,8 @@ mod tests {
             {"id": "apple", "object": "model"},
             {"id": "blank", "object": "model", "detail": "  "},
         ]});
-        let server = serve(vec![(200, list.to_string())]).await;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listens");
+        let server = serve_listing(listener, list, Vec::new());
         let runner = LocalModelRunner::new(LocalModelConfig::default());
         let models = server_models(runner.http.clone(), &server.base_url, None)
             .await
@@ -1835,7 +2200,7 @@ mod tests {
             },
         ]
         .map(Event::now);
-        let messages = messages(None, &history, None);
+        let messages = messages(None, &history, None, UNKNOWN_CONTEXT_SENT);
         let results: Vec<&str> = messages
             .iter()
             .filter(|message| message["role"] == "tool")
@@ -1876,7 +2241,7 @@ mod tests {
             },
         ]
         .map(Event::now);
-        let messages = messages(None, &history, Some(folder.path()));
+        let messages = messages(None, &history, Some(folder.path()), UNKNOWN_CONTEXT_SENT);
         let images: Vec<&str> = messages
             .iter()
             .filter_map(|message| message["content"].as_array())
@@ -1929,7 +2294,7 @@ mod tests {
             completed("c2", "ok"),
         ]
         .map(Event::now);
-        let messages = messages(None, &history, None);
+        let messages = messages(None, &history, None, UNKNOWN_CONTEXT_SENT);
         let roles: Vec<&str> = messages
             .iter()
             .skip(1)
@@ -1943,7 +2308,7 @@ mod tests {
     }
 
     fn outputs(history: &[Event]) -> Vec<String> {
-        messages(None, history, None)
+        messages(None, history, None, UNKNOWN_CONTEXT_SENT)
             .iter()
             .filter(|message| message["role"] == "tool")
             .filter_map(|message| message["content"].as_str().map(str::to_owned))
@@ -1952,26 +2317,165 @@ mod tests {
 
     #[test]
     fn old_tool_output_is_left_out_a_step_at_a_time() {
-        let big = "x".repeat(TOOL_OUTPUT_KEPT / 4);
+        let big = "x".repeat(UNKNOWN_CONTEXT_SENT / 4);
         let mut history = vec![Event::now(user("go"))];
-        for index in 0..4 {
+        for index in 0..3 {
             history.push(Event::now(started(&format!("c{index}"))));
             history.push(Event::now(completed(&format!("c{index}"), &big)));
         }
-        // Exactly what's kept: nothing left out.
+        // Within the budget: nothing left out.
         assert!(outputs(&history).iter().all(|output| *output == big));
 
-        history.push(Event::now(started("c4")));
-        history.push(Event::now(completed("c4", "small")));
+        history.push(Event::now(started("c3")));
+        history.push(Event::now(completed("c3", &big)));
         let first = outputs(&history);
-        assert_eq!(first.iter().filter(|output| *output == DROPPED).count(), 2);
-        assert_eq!(first.last().map(String::as_str), Some("small"));
+        assert_eq!(first[..2], [DROPPED, DROPPED]);
+        assert_eq!(first[2..], [big.clone(), big.clone()]);
 
         // A little more doesn't move what's left out, so what was sent
         // before is sent the same.
-        history.push(Event::now(started("c5")));
-        history.push(Event::now(completed("c5", "small")));
-        assert_eq!(outputs(&history)[..5], first[..]);
+        history.push(Event::now(started("c4")));
+        history.push(Event::now(completed("c4", "small")));
+        assert_eq!(outputs(&history)[..4], first[..]);
+    }
+
+    /// The arguments each call in `history` is sent with.
+    fn arguments(history: &[Event], budget: usize) -> Vec<Value> {
+        messages(None, history, None, budget)
+            .iter()
+            .filter_map(|message| message["tool_calls"].as_array())
+            .flatten()
+            .filter_map(|call| call["function"]["arguments"].as_str())
+            .map(|arguments| serde_json::from_str(arguments).expect("still JSON"))
+            .collect()
+    }
+
+    #[test]
+    fn old_writes_are_sent_without_their_contents_and_the_newest_whole() {
+        let budget = 32 * 1024;
+        let contents = "y".repeat(budget / 2);
+        let mut history = vec![Event::now(user("write three files"))];
+        for index in 0..3 {
+            history.push(Event::now(EventKind::ToolStarted {
+                call_id: format!("w{index}"),
+                tool: "write_file".into(),
+                arguments_json: json!({"path": format!("f{index}"), "contents": contents})
+                    .to_string(),
+            }));
+            history.push(Event::now(completed(&format!("w{index}"), "Wrote it.")));
+        }
+        let sent = arguments(&history, budget);
+        assert_eq!(sent.len(), 3);
+        // Each is still the same call, to the same file.
+        for (index, call) in sent.iter().enumerate() {
+            assert_eq!(call["path"], format!("f{index}"));
+        }
+        assert_ne!(sent[0]["contents"], contents.as_str());
+        assert_eq!(sent[2]["contents"], contents.as_str());
+        let size: usize = messages(None, &history, None, budget)
+            .iter()
+            .map(|message| message.to_string().len())
+            .sum();
+        assert!(size <= budget + budget / 8, "{size} bytes sent");
+
+        // Under a budget they fit in, every write goes whole.
+        let roomy = arguments(&history, 4 * budget);
+        assert!(
+            roomy
+                .iter()
+                .all(|call| call["contents"] == contents.as_str())
+        );
+    }
+
+    #[test]
+    fn long_messages_count_toward_the_budget_too() {
+        let budget = 16 * 1024;
+        let output = "o".repeat(budget / 4);
+        let with = |message: &str| {
+            [
+                started("c0"),
+                completed("c0", &output),
+                user(message),
+                started("c1"),
+                completed("c1", "new"),
+            ]
+            .map(Event::now)
+        };
+        let results = |history: &[Event]| -> Vec<String> {
+            messages(None, history, None, budget)
+                .iter()
+                .filter(|message| message["role"] == "tool")
+                .filter_map(|message| message["content"].as_str().map(str::to_owned))
+                .collect()
+        };
+        assert_eq!(results(&with("short")), [output.clone(), "new".to_owned()]);
+        assert_eq!(results(&with(&"m".repeat(budget)))[0], DROPPED);
+    }
+
+    #[test]
+    fn the_budget_is_sized_from_the_models_context() {
+        let tools = tools();
+        let small = budget(Some(8_192), &tools);
+        let large = budget(Some(131_072), &tools);
+        assert!(small < large, "{small} {large}");
+        // Under the context's bytes, so the reply has room.
+        assert!(small < 8_192 * BYTES_PER_TOKEN, "{small}");
+        // The tools' descriptions go with every request, so they come off it.
+        assert_eq!(
+            budget(None, &tools),
+            UNKNOWN_CONTEXT_SENT - tools.to_string().len()
+        );
+        // However small the context, a turn still has room to work.
+        assert_eq!(budget(Some(16), &tools), LEAST_SENT);
+    }
+
+    #[test]
+    fn a_models_context_is_read_from_how_its_server_lists_it() {
+        let listed = json!({"data": [
+            {"id": "lm", "context_length": 32_768},
+            {"id": "vllm", "max_model_len": 16_384},
+            {"id": "llama", "meta": {"n_ctx_train": 8_192}},
+            {"id": "ollama"},
+        ]});
+        assert_eq!(listed_context(&listed, "lm"), Some(32_768));
+        assert_eq!(listed_context(&listed, "vllm"), Some(16_384));
+        assert_eq!(listed_context(&listed, "llama"), Some(8_192));
+        assert_eq!(listed_context(&listed, "ollama"), None);
+        assert_eq!(listed_context(&listed, "missing"), None);
+    }
+
+    #[test]
+    fn files_are_searched_and_found_without_asking_and_skip_git() {
+        let folder = tempfile::tempdir().expect("a temporary folder");
+        let root = folder.path();
+        std::fs::create_dir_all(root.join("src/deep")).expect("made");
+        std::fs::create_dir_all(root.join(".git")).expect("made");
+        std::fs::write(
+            root.join("src/deep/login.rs"),
+            "fn a() {}\nfn Sign_In() {}\n",
+        )
+        .expect("written");
+        std::fs::write(root.join("README"), "nothing here\n").expect("written");
+        std::fs::write(root.join(".git/config"), "sign_in\n").expect("written");
+
+        let (ok, found) = search_files(root, root, "sign_in");
+        assert!(ok);
+        assert_eq!(found, "src/deep/login.rs:2: fn Sign_In() {}");
+
+        let (ok, found) = find_files(root, &root.join("src"), "LOGIN");
+        assert!(ok);
+        assert_eq!(found, "src/deep/login.rs");
+        let (_, folders) = find_files(root, root, "deep");
+        assert_eq!(folders, "src/deep/\nsrc/deep/login.rs");
+
+        // Nothing found isn't a failure.
+        let (ok, _) = search_files(root, root, "absent");
+        assert!(ok);
+        assert_eq!(folder_of(root, "../up"), None);
+    }
+
+    fn folder_of(root: &Path, path: &str) -> Option<PathBuf> {
+        folder(root, Path::new(path))
     }
 
     #[test]

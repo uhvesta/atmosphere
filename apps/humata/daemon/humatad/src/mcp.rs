@@ -124,18 +124,11 @@ impl Server {
                     "protocolVersion": version,
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": "humata", "version": crate::VERSION},
-                    "instructions": "Humata is directing this session. board and read_item \
-                        show the project's tasks, subtasks and specs; you can't change them, \
-                        but propose_task and propose_spec_edit suggest changes the person \
-                        applies. ask_person asks them something and request_move asks them \
-                        to move your task once it's done. Answer each review thread you're \
-                        sent with reply_to_thread. search_sessions finds earlier work and \
-                        read_turn opens a hit; read_skill reads a project skill your \
-                        instructions list.",
+                    "instructions": instructions(self.place().await),
                 })
             }
             "ping" => json!({}),
-            "tools/list" => json!({"tools": tools()}),
+            "tools/list" => json!({"tools": tools(self.place().await)}),
             "tools/call" => {
                 let name = params["name"].as_str().unwrap_or_default();
                 let empty = json!({});
@@ -161,7 +154,7 @@ impl Server {
     async fn call(&self, name: &str, arguments: &Value) -> Result<String, String> {
         let text = |field: &str| arguments[field].as_str().map(str::trim).map(str::to_owned);
         match name {
-            "board" => self.board().await,
+            "board" => self.board(arguments["all"] == json!(true)).await,
             "search_sessions" => {
                 let query = required(text("query"), "query")?;
                 // This session's project, unless asked for another or for
@@ -430,31 +423,24 @@ impl Server {
         }
     }
 
-    async fn board(&self) -> Result<String, String> {
+    /// Where this session is, to offer only the tools that work there. When
+    /// humatad can't say, every tool is offered.
+    async fn place(&self) -> Place {
+        match self.session().await {
+            Err(_) => Place::Unknown,
+            Ok(session) if session.project_id.is_empty() => Place::Alone,
+            Ok(session) if session.item_id.is_empty() => Place::Project,
+            Ok(_) => Place::Task,
+        }
+    }
+
+    async fn board(&self, all: bool) -> Result<String, String> {
         let session = self.session().await?;
         if session.project_id.is_empty() {
             return Ok("This session isn't in a project, so it has no board.".to_owned());
         }
         let items = self.items(&session.project_id).await?;
-        if items.is_empty() {
-            return Ok("The board is empty; propose_task to suggest one.".to_owned());
-        }
-        let mut text = String::from("Tasks, with their subtasks under them:\n");
-        for item in &items {
-            let indent = if item.parent_id.is_empty() { "" } else { "  " };
-            let yours = if item.id == session.item_id {
-                "  <- this session works on it"
-            } else {
-                ""
-            };
-            text.push_str(&format!(
-                "{indent}- [{}] {} (id {}){yours}\n",
-                status_name(item.status()),
-                item.title,
-                item.id
-            ));
-        }
-        Ok(text)
+        Ok(board_text(&items, &session.item_id, all))
     }
 
     async fn threads(&self) -> Result<Vec<pb::ReviewThread>, String> {
@@ -468,6 +454,74 @@ impl Server {
             other => Err(unexpected(&other)),
         }
     }
+}
+
+/// Where a session is, which decides the tools it gets: one outside a
+/// project has no board to read or propose to, and one on no task has none
+/// to ask to move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Place {
+    /// humatad couldn't say, as when it's restarting.
+    Unknown,
+    /// A free chat, in no project.
+    Alone,
+    /// In a project, on no task.
+    Project,
+    /// On a task or subtask.
+    Task,
+}
+
+impl Place {
+    fn has_board(self) -> bool {
+        self != Place::Alone
+    }
+
+    fn has_task(self) -> bool {
+        matches!(self, Place::Unknown | Place::Task)
+    }
+}
+
+/// The board as an agent reads it: the open items and the session's own,
+/// each with its task, unless `all`; and how many are left out.
+fn board_text(items: &[pb::Item], own: &str, all: bool) -> String {
+    if items.is_empty() {
+        return "The board is empty; propose_task to suggest one.".to_owned();
+    }
+    let wanted = |item: &pb::Item| {
+        all || item.id == own
+            || !matches!(item.status(), pb::ItemStatus::Done | pb::ItemStatus::WontDo)
+    };
+    let shown: Vec<bool> = items
+        .iter()
+        .map(|item| {
+            wanted(item)
+                || items
+                    .iter()
+                    .any(|child| child.parent_id == item.id && wanted(child))
+        })
+        .collect();
+    let mut text = String::from("Tasks, with their subtasks under them:\n");
+    for (item, _) in items.iter().zip(&shown).filter(|(_, shown)| **shown) {
+        let indent = if item.parent_id.is_empty() { "" } else { "  " };
+        let yours = if item.id == own {
+            "  <- this session works on it"
+        } else {
+            ""
+        };
+        text.push_str(&format!(
+            "{indent}- [{}] {} (id {}){yours}\n",
+            status_name(item.status()),
+            item.title,
+            item.id
+        ));
+    }
+    let left_out = shown.iter().filter(|shown| !**shown).count();
+    if left_out > 0 {
+        text.push_str(&format!(
+            "{left_out} done or won't-do items are left out; call board with all to list them too.\n"
+        ));
+    }
+    text
 }
 
 fn describe_thread(thread: &pb::ReviewThread) -> String {
@@ -504,8 +558,9 @@ fn describe_thread(thread: &pb::ReviewThread) -> String {
 /// The most hits search_sessions gives an agent, so they fit its context.
 const SEARCH_HITS: u32 = 20;
 
-/// Search results as an agent reads them: where each hit is and the text
-/// around it, the words found in bold.
+/// Search results as an agent reads them: grouped by session, best first,
+/// so each session's id is said once; under it where each hit is and the
+/// text around it, the words found in bold.
 fn found(results: &pb::SearchResults) -> String {
     if results.hits.is_empty() {
         return format!(
@@ -513,34 +568,49 @@ fn found(results: &pb::SearchResults) -> String {
             results.words
         );
     }
-    let mut text = String::new();
+    // Specs belong to no session; they're grouped under "".
+    let mut sessions: Vec<&str> = Vec::new();
     for hit in &results.hits {
-        let snippet = hit
-            .snippet
-            .replace([crate::store::MARK_START, crate::store::MARK_END], "**")
-            .replace('\n', " ");
-        let related = if hit.related { " (a related word)" } else { "" };
-        let place = match hit.kind() {
-            pb::SearchHitKind::Spec => format!("the spec of {}", hit.item_id),
-            pb::SearchHitKind::Comment => format!(
-                "a review comment on {} ({}), thread {}",
-                hit.session_name, hit.session_id, hit.thread_id
-            ),
-            kind => format!(
-                "{} ({}), turn {}, {}, event {}",
-                hit.session_name,
-                hit.session_id,
-                hit.turn,
-                match kind {
-                    pb::SearchHitKind::Message => "the person's message",
-                    pb::SearchHitKind::Reply => "the agent's reply",
-                    pb::SearchHitKind::ToolCall => "a tool call",
-                    _ => "a tool's output",
-                },
-                hit.event_id
-            ),
-        };
-        text.push_str(&format!("- {place}{related}: {snippet}\n"));
+        if !sessions.contains(&hit.session_id.as_str()) {
+            sessions.push(&hit.session_id);
+        }
+    }
+    let mut text = String::new();
+    for session in sessions {
+        let hits: Vec<&pb::SearchHit> = results
+            .hits
+            .iter()
+            .filter(|hit| hit.session_id == session)
+            .collect();
+        match hits.first() {
+            Some(first) if !session.is_empty() => {
+                text.push_str(&format!("Session {} ({session}):\n", first.session_name))
+            }
+            _ => text.push_str("Specs:\n"),
+        }
+        for hit in hits {
+            let snippet = hit
+                .snippet
+                .replace([crate::store::MARK_START, crate::store::MARK_END], "**")
+                .replace('\n', " ");
+            let related = if hit.related { " (a related word)" } else { "" };
+            let place = match hit.kind() {
+                pb::SearchHitKind::Spec => format!("item {}", hit.item_id),
+                pb::SearchHitKind::Comment => format!("review thread {}", hit.thread_id),
+                kind => format!(
+                    "turn {}, {}, event {}",
+                    hit.turn,
+                    match kind {
+                        pb::SearchHitKind::Message => "the person",
+                        pb::SearchHitKind::Reply => "the agent",
+                        pb::SearchHitKind::ToolCall => "a tool call",
+                        _ => "a tool's output",
+                    },
+                    hit.event_id
+                ),
+            };
+            text.push_str(&format!("  - {place}{related}: {snippet}\n"));
+        }
     }
     text
 }
@@ -700,14 +770,57 @@ fn status_named(name: &str) -> Option<pb::ItemStatus> {
         .find(|status| status_name(*status) == name)
 }
 
-fn tools() -> Value {
+/// What the server tells the agent at the start, naming only the tools it
+/// has at `place`.
+fn instructions(place: Place) -> String {
+    let mut text = String::from("Humata is directing this session.");
+    if place.has_board() {
+        text.push_str(
+            " board and read_item show the project's tasks, subtasks and specs; you can't \
+             change them, but propose_task and propose_spec_edit suggest changes the person \
+             applies.",
+        );
+    }
+    text.push_str(" ask_person asks the person something.");
+    if place.has_task() {
+        text.push_str(" request_move asks them to move your task once it's done.");
+    }
+    if place.has_board() {
+        text.push_str(" Answer each review thread you're sent with reply_to_thread.");
+    }
+    text.push_str(" search_sessions finds earlier work and read_turn opens a hit.");
+    if place.has_board() {
+        text.push_str(" read_skill reads a project skill your instructions list.");
+    }
+    text
+}
+
+/// The tools a session at `place` has: outside a project, none for a board,
+/// proposals, review or project skills; on no task, none to ask to move it.
+/// Each listed tool costs tokens on every request, so only those that work
+/// there are offered.
+fn tools(place: Place) -> Value {
+    let wanted = |tool: &Value| match tool["name"].as_str().unwrap_or_default() {
+        "ask_person" | "search_sessions" | "read_turn" => true,
+        "request_move" => place.has_task(),
+        _ => place.has_board(),
+    };
+    let Value::Array(every) = every_tool() else {
+        return json!([]);
+    };
+    Value::Array(every.into_iter().filter(|tool| wanted(tool)).collect())
+}
+
+fn every_tool() -> Value {
     let object = |properties: Value, required: &[&str]| json!({"type": "object", "properties": properties, "required": required});
     let string = |description: &str| json!({"type": "string", "description": description});
     json!([
         {
             "name": "board",
-            "description": "The board of the project this session is in: each task, its subtasks, their ids and statuses, and which one this session works on.",
-            "inputSchema": object(json!({}), &[]),
+            "description": "The board of the project this session is in: its open tasks and subtasks and this session's own, their ids and statuses, and which one this session works on.",
+            "inputSchema": object(json!({
+                "all": {"type": "boolean", "description": "Done and won't-do items too."},
+            }), &[]),
         },
         {
             "name": "read_item",
@@ -882,6 +995,102 @@ mod tests {
         let listed = json!({"replacements": [{"old_text": "", "new_text": "Y"}]});
         assert!(replacements(&listed).is_err());
         assert_eq!(replacements(&json!({})), Ok(Vec::new()));
+    }
+
+    fn names(place: Place) -> Vec<String> {
+        tools(place)
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    #[test]
+    fn a_session_gets_only_the_tools_that_work_where_it_is() {
+        let alone = names(Place::Alone);
+        assert_eq!(alone, ["ask_person", "search_sessions", "read_turn"]);
+
+        let project = names(Place::Project);
+        assert!(project.iter().any(|name| name == "board"), "{project:?}");
+        assert!(project.iter().any(|name| name == "propose_task"));
+        assert!(!project.iter().any(|name| name == "request_move"));
+
+        let task = names(Place::Task);
+        assert!(task.iter().any(|name| name == "request_move"), "{task:?}");
+        assert_eq!(task, names(Place::Unknown));
+        assert_eq!(task.len(), project.len() + 1);
+    }
+
+    fn board_item(id: &str, parent: &str, status: pb::ItemStatus) -> pb::Item {
+        pb::Item {
+            id: id.into(),
+            parent_id: parent.into(),
+            title: format!("title of {id}"),
+            status: status.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_board_lists_open_items_and_the_sessions_own_unless_asked_for_all() {
+        use pb::ItemStatus::{Done, InProgress, Todo, WontDo};
+        let items = [
+            board_item("old-task", "", Done),
+            board_item("old-sub", "old-task", Done),
+            board_item("closed-task", "", Done),
+            board_item("open-sub", "closed-task", Todo),
+            board_item("dropped", "", WontDo),
+            board_item("open-task", "", InProgress),
+        ];
+        let listed = board_text(&items, "old-sub", false);
+        let shown = |id: &str| listed.contains(&format!("(id {id})"));
+        // Open items, the session's own, and the task of each.
+        for id in [
+            "old-task",
+            "old-sub",
+            "closed-task",
+            "open-sub",
+            "open-task",
+        ] {
+            assert!(shown(id), "{id}: {listed}");
+        }
+        assert!(!shown("dropped"), "{listed}");
+
+        let all = board_text(&items, "old-sub", true);
+        assert!(all.contains("(id dropped)"), "{all}");
+    }
+
+    fn hit(session: &str, turn: u32) -> pb::SearchHit {
+        pb::SearchHit {
+            kind: pb::SearchHitKind::Message.into(),
+            session_id: session.into(),
+            session_name: format!("name of {session}"),
+            event_id: format!("event-{turn}"),
+            turn,
+            snippet: "the words".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn search_hits_name_each_session_once_and_keep_every_hit() {
+        let results = pb::SearchResults {
+            hits: vec![hit("first", 1), hit("second", 2), hit("first", 3)],
+            ..Default::default()
+        };
+        let text = found(&results);
+        assert_eq!(text.matches("(first)").count(), 1, "{text}");
+        assert_eq!(text.matches("(second)").count(), 1, "{text}");
+        for event in ["event-1", "event-2", "event-3"] {
+            assert!(text.contains(event), "{event}: {text}");
+        }
+        // The best session comes first, with both its hits under it.
+        let at = |part: &str| text.find(part).unwrap_or(usize::MAX);
+        assert!(
+            at("event-1") < at("event-3") && at("event-3") < at("(second)"),
+            "{text}"
+        );
     }
 
     #[tokio::test]

@@ -115,11 +115,14 @@ fn an_agent_in_one_project_finds_a_command_run_in_another() {
         &asking,
         serde_json::json!({"query": "cargo test", "everywhere": true}),
     );
+    // Hits come under the session they're in, which is named once.
     let line = found
         .lines()
+        .skip_while(|line| !line.contains(&ran))
+        .skip(1)
+        .take_while(|line| line.starts_with(' '))
         .find(|line| line.contains("a tool call"))
-        .unwrap_or_else(|| panic!("the command wasn't found: {found}"));
-    assert!(line.contains(&ran), "{line}");
+        .unwrap_or_else(|| panic!("the command wasn't found under {ran}: {found}"));
     assert!(line.contains("turn 2"), "{line}");
     let event = line
         .split("event ")

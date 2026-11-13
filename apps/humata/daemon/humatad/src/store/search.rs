@@ -205,7 +205,7 @@ impl Store {
                     coalesce(nullif(entries.project, ''), sessions.project, ''),
                     coalesce(nullif(entries.item, ''), sessions.item, ''),
                     coalesce(sessions.host, ''), entries.thread,
-                    snippet(search_entries, 0, char(57344), char(57345), '…', 16)
+                    snippet(search_entries, 0, char(57344), char(57345), '…', 32)
                  FROM search_entries AS entries
                  LEFT JOIN search_sessions AS sessions ON sessions.id = entries.session
                  WHERE search_entries MATCH ?1
