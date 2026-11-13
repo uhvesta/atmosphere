@@ -13,9 +13,10 @@ package struct AvenueWidgetView: View {
     package enum Content: Hashable, Sendable {
         /// Lifr hasn't written its Avenues yet.
         case notWritten
-        /// The picked Avenue was archived or deleted.
+        /// The picked Avenue or Project was archived, finished or deleted.
         case gone
         case avenue(AvenueGlance)
+        case project(AvenueGlance)
     }
 
     package var content: Content
@@ -32,8 +33,8 @@ package struct AvenueWidgetView: View {
             case .notWritten:
                 note("Open Lifr to see this Avenue here.")
             case .gone:
-                note("This Avenue was archived or deleted. Edit the widget to pick another.")
-            case .avenue(let avenue):
+                note("What this widget showed was archived, finished or deleted. Edit the widget to pick another.")
+            case .avenue(let avenue), .project(let avenue):
                 header(avenue)
                 titles(avenue)
             }
@@ -44,8 +45,11 @@ package struct AvenueWidgetView: View {
     }
 
     private var url: URL? {
-        guard case .avenue(let avenue) = content else { return nil }
-        return DeepLink.avenue(avenue.id).url
+        switch content {
+        case .avenue(let avenue): return DeepLink.avenue(avenue.id).url
+        case .project(let project): return DeepLink.project(project.id).url
+        case .notWritten, .gone: return nil
+        }
     }
 
     private func note(_ text: LocalizedStringResource) -> some View {

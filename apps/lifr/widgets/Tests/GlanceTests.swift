@@ -86,6 +86,33 @@ final class GlanceTests: XCTestCase {
         XCTAssertEqual(locked.avenues?.map(\.rows), [[]])
     }
 
+    func testProjectsKeepOnlyCountsWhileLockedAndCarryOverMidnight() {
+        let project = AvenueGlance(
+            id: UUID(), name: "Move house", symbol: "folder.fill", color: "teal", count: 2, overdue: 1, rows: rows)
+        let midnight = now + 86_400
+        let tomorrow = TodayGlance(asOf: now, from: midnight, until: midnight + 86_400, rows: [], locked: false)
+
+        let glance = TodayGlance(
+            asOf: now, from: now, until: midnight, rows: rows, locked: false, later: [tomorrow], projects: [project])
+        XCTAssertEqual(glance.at(midnight)?.projects, [project])
+
+        let locked = TodayGlance(asOf: now, from: now, until: midnight, rows: rows, locked: true, projects: [project])
+        XCTAssertEqual(locked.projects?.map(\.count), [2])
+        XCTAssertEqual(locked.projects?.map(\.rows), [[]])
+    }
+
+    func testARowWrittenBeforeRowsHadDetailsReadsAsPlain() throws {
+        let json = Data(
+            #"""
+            {"id": "00000000-0000-0000-0000-000000000001", "title": "Renew passport", "code": "ADMIN-0001",
+             "isOverdue": true}
+            """#.utf8)
+        let row = try JSONDecoder().decode(TodayGlance.Row.self, from: json)
+        XCTAssertEqual(row, rows[0])
+        XCTAssertFalse(row.isInProgress)
+        XCTAssertNil(row.dueMinutes)
+    }
+
     func testTheFileReadsBackWhatWasWritten() throws {
         let file = GlanceFile(url: try folder().appendingPathComponent("Widgets/Today.json"))
         let tomorrow = TodayGlance(asOf: now, from: now + 86_400, until: now + 172_800, rows: [], locked: false)

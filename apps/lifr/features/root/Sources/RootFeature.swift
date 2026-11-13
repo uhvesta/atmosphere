@@ -1817,8 +1817,16 @@ package struct RootFeature {
         guard starts.count == 16 else { return nil }
         func glanced(_ rows: [TaskRowData]) -> [TodayGlance.Row] {
             rows.map { row in
-                let isOverdue = if case .overdue = row.due { true } else { false }
-                return TodayGlance.Row(id: row.id, title: row.title, code: row.code, isOverdue: isOverdue)
+                let (isOverdue, time): (Bool, TimeOfDay?) =
+                    switch row.due {
+                    case .overdue(_, let time): (true, time)
+                    case .today(let time), .later(_, let time): (false, time)
+                    case nil: (false, nil)
+                    }
+                return TodayGlance.Row(
+                    id: row.id, title: row.title, code: row.code, isOverdue: isOverdue,
+                    isInProgress: row.status == .inProgress, dueMinutes: time.map { $0.hour * 60 + $0.minute },
+                    color: row.avenueColor)
             }
         }
         func rows(at date: Date) -> [TodayGlance.Row] {
@@ -1831,6 +1839,17 @@ package struct RootFeature {
             return AvenueGlance(
                 id: avenue.id, name: avenue.name, symbol: avenue.symbol, color: avenue.color, count: rows.count,
                 overdue: rows.count(where: \.isOverdue), rows: Array(rows.prefix(8)))
+        }
+        let projects = workspace.avenueRows.flatMap { avenue in
+            workspace.projects.values.filter { $0.avenueID == avenue.id && $0.status == .active }
+                .sorted { ($0.sortOrder, $0.createdAt) < ($1.sortOrder, $1.createdAt) }
+                .map { project in
+                    let rows = glanced(
+                        workspace.rows(open.filter { $0.projectID == project.id }, now: now, timeZone: timeZone))
+                    return AvenueGlance(
+                        id: project.id, name: project.name, symbol: "folder.fill", color: avenue.color,
+                        count: rows.count, overdue: rows.count(where: \.isOverdue), rows: Array(rows.prefix(8)))
+                }
         }
         let thisMonth = CalendarDate(now, in: timeZone).firstOfMonth
         let months = thisMonth..<thisMonth.firstOfMonth(adding: 2)
@@ -1845,7 +1864,7 @@ package struct RootFeature {
         }
         return TodayGlance(
             asOf: now, from: start, until: starts[1], rows: rows(at: now), locked: locked, later: later,
-            avenues: avenues, dueCounts: dueCounts)
+            avenues: avenues, projects: projects, dueCounts: dueCounts)
     }
 
     /// Lists every task not in the Trash, and each open Avenue and Project,

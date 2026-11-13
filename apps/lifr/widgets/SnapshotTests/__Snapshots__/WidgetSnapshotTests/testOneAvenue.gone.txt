@@ -1,1 +1,1 @@
-[text] "This Avenue was archived or deleted. Edit the widget to pick another."
+[text] "What this widget showed was archived, finished or deleted. Edit the widget to pick another."

@@ -14,6 +14,8 @@ struct LifrWidgets: WidgetBundle {
         UpcomingWidget()
         AvenuesWidget()
         CalendarWidget()
+        CountWidget()
+        QuickAddWidget()
         #if os(iOS)
             NewTaskControl()
         #endif
@@ -96,16 +98,20 @@ struct AvenuesWidget: Widget {
 }
 
 #if os(iOS)
-    /// An Avenue the Avenues widget can show, from what Lifr last wrote.
+    /// An Avenue or Project the Avenues widget can show, from what Lifr
+    /// last wrote.
     struct AvenueOption: AppEntity {
-        static let typeDisplayRepresentation: TypeDisplayRepresentation = "Avenue"
+        static let typeDisplayRepresentation: TypeDisplayRepresentation = "Avenue or Project"
         static let defaultQuery = Query()
 
         var id: UUID
         var name: String
+        var isProject = false
 
         var displayRepresentation: DisplayRepresentation {
-            DisplayRepresentation(title: "\(name)")
+            isProject
+                ? DisplayRepresentation(title: "\(name)", subtitle: "Project")
+                : DisplayRepresentation(title: "\(name)")
         }
 
         struct Query: EntityQuery {
@@ -118,7 +124,9 @@ struct AvenuesWidget: Widget {
             }
 
             private func options() -> [AvenueOption] {
-                (readGlance()?.avenues ?? []).map { AvenueOption(id: $0.id, name: $0.name) }
+                let glance = readGlance()
+                return (glance?.avenues ?? []).map { AvenueOption(id: $0.id, name: $0.name) }
+                    + (glance?.projects ?? []).map { AvenueOption(id: $0.id, name: $0.name, isProject: true) }
             }
         }
     }
@@ -126,10 +134,11 @@ struct AvenuesWidget: Widget {
     /// Which Avenue the Avenues widget shows: all of them when none is
     /// picked.
     struct PickAvenueIntent: WidgetConfigurationIntent {
-        static let title: LocalizedStringResource = "Pick an Avenue"
-        static let description = IntentDescription("Shows one Avenue's tasks, or every Avenue when none is picked.")
+        static let title: LocalizedStringResource = "Pick an Avenue or Project"
+        static let description = IntentDescription(
+            "Shows one Avenue's or Project's tasks, or every Avenue when none is picked.")
 
-        @Parameter(title: "Avenue")
+        @Parameter(title: "Avenue or Project")
         var avenue: AvenueOption?
 
         init() {}
@@ -252,6 +261,32 @@ struct CalendarWidget: Widget {
     }
 }
 
+/// How many tasks are on Today and how many are overdue, and nothing else.
+struct CountWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "Count", provider: TodayProvider()) { entry in
+            CountTileView(glance: entry.glance)
+                .containerBackground(.fill.tertiary, for: .widget)
+        }
+        .configurationDisplayName("Today's Count")
+        .description("How many tasks are due today, and how many are overdue.")
+        .supportedFamilies([.systemSmall])
+    }
+}
+
+/// A tile that opens Quick Add.
+struct QuickAddWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "QuickAdd", provider: TodayProvider()) { _ in
+            QuickAddTileView()
+                .containerBackground(.fill.tertiary, for: .widget)
+        }
+        .configurationDisplayName("New Task")
+        .description("Opens Quick Add in Lifr.")
+        .supportedFamilies([.systemSmall])
+    }
+}
+
 #if os(iOS)
     /// A Control Center and Action button control that opens Quick Add.
     struct NewTaskControl: ControlWidget {
@@ -360,7 +395,8 @@ struct AvenuesEntryView: View {
 
     private func content(_ id: UUID) -> AvenueWidgetView.Content {
         guard let avenues = entry.glance?.avenues else { return .notWritten }
-        return avenues.first { $0.id == id }.map { .avenue($0) } ?? .gone
+        if let avenue = avenues.first(where: { $0.id == id }) { return .avenue(avenue) }
+        return entry.glance?.projects?.first { $0.id == id }.map { .project($0) } ?? .gone
     }
 }
 

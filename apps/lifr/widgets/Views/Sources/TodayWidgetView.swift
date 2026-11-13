@@ -162,6 +162,12 @@ package struct TodayWidgetView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .accessibilityLabel(label(row, isMarked: isMarked))
+                    if let due = dueTime(row, on: glance), !isMarked {
+                        Text(due, format: .dateTime.hour().minute())
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             if glance.rows.count > size.rows {
@@ -175,9 +181,11 @@ package struct TodayWidgetView: View {
     /// The task's circle: a button that marks it when set to complete with
     /// one tap, otherwise a link that opens the statuses to pick.
     @ViewBuilder private func glyph(_ row: TodayGlance.Row, isMarked: Bool) -> some View {
-        let circle = Image(systemName: isMarked ? "checkmark.circle.fill" : "circle")
+        let symbol = isMarked ? "checkmark.circle.fill" : row.isInProgress ? "circle.lefthalf.filled" : "circle"
+        let tint = row.isOverdue ? Color.red : row.color.map { Color(widgetAvenue: $0) } ?? Color.orange
+        let circle = Image(systemName: symbol)
             .font(.subheadline)
-            .foregroundStyle(isMarked ? Color.secondary : row.isOverdue ? Color.red : Color.orange)
+            .foregroundStyle(isMarked ? Color.secondary : tint)
         if let marks {
             marks(row, AnyView(circle))
                 .accessibilityLabel(isMarked ? Text("Reopen \(row.title)") : Text("Mark \(row.title) Done"))
@@ -189,7 +197,15 @@ package struct TodayWidgetView: View {
 
     private func label(_ row: TodayGlance.Row, isMarked: Bool) -> Text {
         if isMarked { return Text("\(row.title), Done") }
-        return row.isOverdue ? Text("\(row.title), overdue") : Text(row.title)
+        if row.isOverdue { return Text("\(row.title), overdue") }
+        return row.isInProgress ? Text("\(row.title), In Progress") : Text(row.title)
+    }
+
+    /// When on its day `row` is due, if it has a time; an overdue one's
+    /// time was on an earlier day, so it has none here.
+    private func dueTime(_ row: TodayGlance.Row, on glance: TodayGlance) -> Date? {
+        guard let minutes = row.dueMinutes, !row.isOverdue else { return nil }
+        return Calendar.current.date(byAdding: .minute, value: minutes, to: glance.from)
     }
 
     /// `label`, opening `link` when tapped.

@@ -68,6 +68,33 @@ final class WidgetSnapshotTests: XCTestCase {
         assertWidget(glance, .medium, marked: marked, named: "medium")
     }
 
+    func testRowsShowWhatsInProgressTheirTimeAndAvenueColor() {
+        var detailed = rows
+        detailed[1].isInProgress = true
+        detailed[1].color = "teal"
+        detailed[2].dueMinutes = 9 * 60 + 30
+        detailed[2].color = "purple"
+        let midnight = Calendar.current.startOfDay(for: now)
+        let glance = TodayGlance(asOf: now, from: midnight, until: midnight + 86_400, rows: detailed, locked: false)
+        assertWidget(glance, .medium, named: "medium")
+    }
+
+    func testTiles() {
+        let size = size(.small)
+        let glance = TodayGlance(asOf: now, from: now, until: now + 86_400, rows: rows, locked: true)
+        let tiles: [(String, AnyView)] = [
+            ("count", AnyView(CountTileView(glance: glance))),
+            ("count-clear", AnyView(CountTileView(glance: TodayGlance(
+                asOf: now, from: now, until: now + 86_400, rows: [], locked: false)))),
+            ("quick-add", AnyView(QuickAddTileView())),
+        ]
+        for (name, tile) in tiles {
+            let view = tile.padding(16).frame(width: size.width, height: size.height).background(Color(white: 0.95))
+            assertSnapshot(of: view, as: .image(layout: .fixed(width: size.width, height: size.height)), named: name)
+            assertSnapshot(of: view, as: .accessibilityTree(size: size), named: name)
+        }
+    }
+
     func testLocked() {
         let glance = TodayGlance(asOf: now, from: now, until: now + 86_400, rows: rows, locked: true)
         assertWidget(glance, .small, named: "small")
