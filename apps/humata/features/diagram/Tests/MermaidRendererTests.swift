@@ -37,9 +37,9 @@ final class MermaidRendererTests: XCTestCase {
         let renderer = MermaidRenderer(resources: resources)
         async let first = renderer.image("graph TD\n  A --> B", dark: false)
         async let second = renderer.image("sequenceDiagram\n  A->>B: hi", dark: true)
-        let (a, b) = try await (first, second)
-        XCTAssertGreaterThan(a.size.width, 0)
-        XCTAssertGreaterThan(b.size.width, 0)
+        let (flow, sequence) = try await (first, second)
+        XCTAssertGreaterThan(flow.size.width, 0)
+        XCTAssertGreaterThan(sequence.size.width, 0)
     }
 
     func testWithoutMermaidNothingCanBeDrawn() async {
