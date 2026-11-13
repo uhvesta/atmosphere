@@ -249,6 +249,12 @@ mermaid_js = use_repo_rule("//apps/humata/features/diagram:mermaid.bzl", "mermai
 
 mermaid_js(name = "mermaid_js")
 
+# GhosttyKit, which draws the terminals, built from Ghostty's pinned
+# source. See apps/humata/features/terminal/ghostty/ghostty_kit.bzl.
+ghostty_kit = use_repo_rule("//apps/humata/features/terminal/ghostty:ghostty_kit.bzl", "ghostty_kit")
+
+ghostty_kit(name = "ghostty_kit")
+
 # Claude Code, one repository per platform, each fetched only when a build
 # for that platform uses it. See apps/humata/claude/claude.bzl.
 claude_cli = use_repo_rule("//apps/humata/claude:claude.bzl", "claude_cli")

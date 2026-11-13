@@ -1,0 +1,8 @@
+filegroup(
+    name = "starlark",
+    srcs = [
+        "BUILD.bazel",
+        "ghostty_kit.bzl",
+    ],
+    tags = ["starlark"],
+)

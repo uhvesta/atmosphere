@@ -32,6 +32,7 @@ swift_library(
     deps = [
         ":terminal",
         "//apps/humata/clients/daemon",
+        "@ghostty_kit//:GhosttyKit",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )
