@@ -563,6 +563,9 @@
     "A task with a longer title" : {
 
     },
+    "A task with open Sub tasks needs you to decide what happens to them, and a save can fail. Open the task in Today and pick its status." : {
+
+    },
     "ABC-1" : {
 
     },
@@ -2146,6 +2149,16 @@
         }
       }
     },
+    "Lifr couldn't keep a task marked Done from a widget at %@ (%@). Open Lifr and mark it there." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Lifr couldn't keep a task marked Done from a widget at %1$@ (%2$@). Open Lifr and mark it there."
+          }
+        }
+      }
+    },
     "Lifr couldn't read %@: %@. Unlock this device and try again." : {
       "localizations" : {
         "en" : {
@@ -2158,6 +2171,16 @@
     },
     "Lifr couldn't read that photo. Pick another, or take a screenshot of it and attach that." : {
 
+    },
+    "Lifr couldn't read the tasks marked Done from a widget at %@ (%@). Check them in Lifr and mark them there." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Lifr couldn't read the tasks marked Done from a widget at %1$@ (%2$@). Check them in Lifr and mark them there."
+          }
+        }
+      }
     },
     "Lifr couldn't save the change: %@ Open Lifr to check, then try again." : {
 
@@ -2298,6 +2321,16 @@
     },
     "Mark To Do" : {
 
+    },
+    "Marked %@ %@." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Marked %1$@ %2$@."
+          }
+        }
+      }
     },
     "Marks a task in Lifr as done." : {
 
@@ -3811,7 +3844,13 @@
     "The task changed again since, here or on another device, and undoing would lose that change. Open the task to change it back by hand." : {
 
     },
+    "The task has ^[%lld open Sub task](inflect: true). Open Lifr to decide what happens to them, then try again." : {
+
+    },
     "The task needs a title. Say or type what to add." : {
+
+    },
+    "The widget couldn't mark ^[%lld task](inflect: true) Done" : {
 
     },
     "The widgets couldn't read Today from %@ (%@). Open Lifr to write it again." : {

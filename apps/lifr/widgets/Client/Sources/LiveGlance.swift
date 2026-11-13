@@ -8,9 +8,10 @@ extension GlanceClient {
     /// Writes to `file` and redraws the widgets, skipping a Today that's the
     /// same as the last one so the widgets' redraw budget lasts. With no
     /// file, such as an iPhone build without an App Group, does nothing.
-    package static func live(file: GlanceFile?) -> Self {
+    /// Takes what the widgets marked Done from `marks`.
+    package static func live(file: GlanceFile?, marks: MarksFile? = MarksFile.shared) -> Self {
         let last = LockIsolated<TodayGlance?>(nil)
-        return GlanceClient(write: { glance in
+        let write: @Sendable (TodayGlance) async -> Void = { glance in
             guard let file else { return }
             var same = glance
             same.asOf = last.value?.asOf ?? glance.asOf
@@ -23,6 +24,15 @@ extension GlanceClient {
             }
             last.setValue(glance)
             WidgetCenter.shared.reloadAllTimelines()
-        })
+        }
+        let take: @Sendable () async throws -> Set<UUID> = {
+            guard let marks else { return [] }
+            let marked = try marks.take()
+            // The widgets stop striking them through, whether or not the
+            // saves change Today.
+            if !marked.isEmpty { WidgetCenter.shared.reloadAllTimelines() }
+            return marked
+        }
+        return GlanceClient(write: write, takeMarked: take)
     }
 }

@@ -29,23 +29,28 @@ final class WidgetSnapshotTests: XCTestCase {
         }
     }
 
-    private func widget(_ glance: TodayGlance?, _ size: TodayWidgetView.Size) -> some View {
-        TodayWidgetView(glance: glance, size: size)
+    private func widget(
+        _ glance: TodayGlance?, _ size: TodayWidgetView.Size, marked: Set<UUID>? = nil
+    ) -> some View {
+        // Set to complete with one tap, a circle is a plain button.
+        let marks: ((TodayGlance.Row, AnyView) -> AnyView)? =
+            marked == nil ? nil : { _, circle in AnyView(Button {} label: { circle }.buttonStyle(.plain)) }
+        return TodayWidgetView(glance: glance, size: size, marked: marked ?? [], marks: marks)
             .padding(16)
             .frame(width: self.size(size).width, height: self.size(size).height)
             .background(Color(white: 0.95))
     }
 
     private func assertWidget(
-        _ glance: TodayGlance?, _ size: TodayWidgetView.Size, named name: String, file: StaticString = #filePath,
-        testName: String = #function, line: UInt = #line
+        _ glance: TodayGlance?, _ size: TodayWidgetView.Size, marked: Set<UUID>? = nil, named name: String,
+        file: StaticString = #filePath, testName: String = #function, line: UInt = #line
     ) {
         assertSnapshot(
-            of: widget(glance, size),
+            of: widget(glance, size, marked: marked),
             as: .image(layout: .fixed(width: self.size(size).width, height: self.size(size).height)),
             named: name, file: file, testName: testName, line: line)
         assertSnapshot(
-            of: widget(glance, size), as: .accessibilityTree(size: self.size(size)), named: name, file: file,
+            of: widget(glance, size, marked: marked), as: .accessibilityTree(size: self.size(size)), named: name, file: file,
             testName: testName, line: line)
     }
 
@@ -54,6 +59,13 @@ final class WidgetSnapshotTests: XCTestCase {
         assertWidget(glance, .small, named: "small")
         assertWidget(glance, .medium, named: "medium")
         assertWidget(glance, .large, named: "large")
+    }
+
+    func testCompletingWithOneTap() {
+        let marked: Set = [rows[1].id]
+        let glance = TodayGlance(asOf: now, from: now, until: now + 86_400, rows: rows, locked: false)
+            .marking(marked)
+        assertWidget(glance, .medium, marked: marked, named: "medium")
     }
 
     func testLocked() {

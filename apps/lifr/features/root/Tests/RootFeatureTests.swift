@@ -3,6 +3,7 @@ import Foundation
 import LifrAPI
 import LifrAvenue
 import LifrCore
+import LifrGlanceClient
 import LifrLockClient
 import LifrModelsClient
 import LifrQuickAdd
@@ -1883,6 +1884,31 @@ final class RootFeatureTests: XCTestCase {
         XCTAssertEqual(reminders.scheduled.map(\.taskID), [run.id])
         XCTAssertFalse(reminders.scheduled.contains { $0.title.contains("Run") || $0.body.contains("HEALTH") })
         await task.cancel()
+    }
+
+    func testComingToTheFrontSavesWhatTheWidgetMarkedDone() async throws {
+        let run = records.task("Long run", in: health, due: 0)
+        let move = records.task("Move house", in: health)
+        records.task("Pack the kitchen", in: health, parent: move)
+        let client = StoreClient.inMemory(records.workspace)
+        let store = makeStore(.phone, store: client)
+        store.dependencies.glance = GlanceClient.inMemory(marked: [run.id, move.id]).client
+
+        await store.send(.foregrounded)
+        await store.receive(\.widgetMarksSaved)
+        await store.finish()
+
+        let tasks = try await client.load().tasks
+        XCTAssertEqual(tasks[run.id]?.status, .done)
+        // Its open Sub task is the person's to decide about.
+        XCTAssertEqual(tasks[move.id]?.status, .todo)
+        XCTAssertNotNil(store.state.notice)
+
+        // Taken once: coming back again saves nothing more.
+        await store.send(.notice(.dismiss))
+        await store.send(.foregrounded)
+        await store.finish()
+        XCTAssertNil(store.state.notice)
     }
 
     func testComingToTheFrontSyncs() async {

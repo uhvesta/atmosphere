@@ -279,6 +279,44 @@ final class ShortcutsTests: XCTestCase {
         XCTAssertEqual(comments.map(\.body), ["Felt good"])
     }
 
+    func testFinishingATaskWithOpenSubTasksChangesNothing() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let home = records.avenue("HOME", "Home")
+        let move = records.task("Move house", in: home)
+        let pack = records.task("Pack the kitchen", in: home, parent: move)
+        let store = StoreClient.inMemory(records.workspace)
+        let now = now
+        let shortcuts = Shortcuts(store: store, locksApp: { false }, now: { now }, timeZone: .gmt)
+
+        do {
+            _ = try await shortcuts.setStatus(.done, of: move.id)
+            XCTFail("Expected it to fail")
+        } catch {
+            XCTAssertEqual(error as? ShortcutError, .openSubtasks(1))
+        }
+        let tasks = try await store.load().tasks
+        XCTAssertEqual(tasks[move.id]?.status, .todo)
+        XCTAssertEqual(tasks[pack.id]?.status, .todo)
+    }
+
+    func testStartingAClosedSubTaskReopensItsParent() async throws {
+        var records = RecordsBuilder(now: now, timeZone: .gmt)
+        let home = records.avenue("HOME", "Home")
+        let move = records.task("Move house", in: home)
+        let pack = records.task("Pack the kitchen", in: home, parent: move)
+        records.setStatus(.done, of: pack)
+        records.setStatus(.done, of: move)
+        let store = StoreClient.inMemory(records.workspace)
+        let now = now
+        let shortcuts = Shortcuts(store: store, locksApp: { false }, now: { now }, timeZone: .gmt)
+
+        _ = try await shortcuts.setStatus(.inProgress, of: pack.id)
+
+        let tasks = try await store.load().tasks
+        XCTAssertEqual(tasks[pack.id]?.status, .inProgress)
+        XCTAssertEqual(tasks[move.id]?.isOpen, true)
+    }
+
     func testATaskInTheTrashCantBeChanged() async throws {
         let (shortcuts, store) = shortcuts()
         let runs = try await shortcuts.openTasks(matching: "run")

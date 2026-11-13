@@ -91,7 +91,8 @@ final class MacFlowSnapshotTests: XCTestCase {
             $0.speech = speech
             $0.date = DateGenerator { time.value }
             $0.lock = lock
-            $0.glance = GlanceClient { [widgets] glance in await widgets.show(glance) }
+            $0.glance = GlanceClient(
+                write: { [widgets] glance in await widgets.show(glance) }, takeMarked: { [] })
             $0.timeZone = .gmt
             $0.bugRecorder = BugRecorder(now: { time.value })
             $0.bugReports = bugReports

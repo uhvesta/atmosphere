@@ -7,7 +7,9 @@ import WidgetKit
 /// titles where there's room. Only counts while the app lock is on.
 ///
 /// Tapping the header opens Today, a title opens its task, a task's circle
-/// opens it with the statuses to pick, and + opens Quick Add.
+/// opens it with the statuses to pick, and + opens Quick Add. Set to
+/// complete with one tap, the circle marks the task Done instead and the row
+/// stays, struck through, so a mis-tap shows and another tap undoes it.
 package struct TodayWidgetView: View {
     /// How much room the widget has.
     package enum Size: Hashable, Sendable {
@@ -25,10 +27,20 @@ package struct TodayWidgetView: View {
 
     package var glance: TodayGlance?
     package var size: Size
+    /// The tasks marked Done from the widget that Lifr hasn't saved yet.
+    package var marked: Set<UUID>
+    /// Wraps a task's circle in the button that marks it, or unmarks it
+    /// when it's marked; nil while the circle opens the statuses to pick.
+    package var marks: ((TodayGlance.Row, AnyView) -> AnyView)?
 
-    package init(glance: TodayGlance?, size: Size) {
+    package init(
+        glance: TodayGlance?, size: Size, marked: Set<UUID> = [],
+        marks: ((TodayGlance.Row, AnyView) -> AnyView)? = nil
+    ) {
         self.glance = glance
         self.size = size
+        self.marked = marked
+        self.marks = marks
     }
 
     package var body: some View {
@@ -138,21 +150,18 @@ package struct TodayWidgetView: View {
     private func list(_ glance: TodayGlance) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(glance.rows.prefix(size.rows)) { row in
+                let isMarked = marked.contains(row.id)
                 HStack(spacing: 6) {
-                    link(.task(row.id, picksStatus: true)) {
-                        Image(systemName: "circle")
-                            .font(.subheadline)
-                            .foregroundStyle(row.isOverdue ? Color.red : Color.orange)
-                    }
-                    .accessibilityLabel(Text("Change Status of \(row.title)"))
+                    glyph(row, isMarked: isMarked)
                     link(.task(row.id, picksStatus: false)) {
                         Text(row.title)
                             .font(.subheadline)
-                            .foregroundStyle(Color.primary)
+                            .strikethrough(isMarked)
+                            .foregroundStyle(isMarked ? Color.secondary : Color.primary)
                             .lineLimit(1)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .accessibilityLabel(row.isOverdue ? Text("\(row.title), overdue") : Text(row.title))
+                    .accessibilityLabel(label(row, isMarked: isMarked))
                 }
             }
             if glance.rows.count > size.rows {
@@ -161,6 +170,26 @@ package struct TodayWidgetView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// The task's circle: a button that marks it when set to complete with
+    /// one tap, otherwise a link that opens the statuses to pick.
+    @ViewBuilder private func glyph(_ row: TodayGlance.Row, isMarked: Bool) -> some View {
+        let circle = Image(systemName: isMarked ? "checkmark.circle.fill" : "circle")
+            .font(.subheadline)
+            .foregroundStyle(isMarked ? Color.secondary : row.isOverdue ? Color.red : Color.orange)
+        if let marks {
+            marks(row, AnyView(circle))
+                .accessibilityLabel(isMarked ? Text("Reopen \(row.title)") : Text("Mark \(row.title) Done"))
+        } else {
+            link(.task(row.id, picksStatus: true)) { circle }
+                .accessibilityLabel(Text("Change Status of \(row.title)"))
+        }
+    }
+
+    private func label(_ row: TodayGlance.Row, isMarked: Bool) -> Text {
+        if isMarked { return Text("\(row.title), Done") }
+        return row.isOverdue ? Text("\(row.title), overdue") : Text(row.title)
     }
 
     /// `label`, opening `link` when tapped.

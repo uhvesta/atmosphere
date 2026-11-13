@@ -459,6 +459,9 @@ package struct RootFeature {
         /// The app came to the front: lock it if it was away long enough,
         /// and sync what changed meanwhile.
         case foregrounded
+        /// The tasks marked Done from a widget were saved: the last save,
+        /// if any did, and how many couldn't be.
+        case widgetMarksSaved(Saved?, unsaved: Int)
         /// Midnight passed, or the clock or time zone changed: what's due
         /// today, overdue or procrastinated is worked out again.
         case dayChanged
@@ -652,6 +655,7 @@ package struct RootFeature {
                     },
                     .run { [sync] _ in _ = await sync.sync() },
                     syncTimer(state),
+                    saveWidgetMarks(),
                 ]
                 state.isRunning = true
                 state.biometry = lock.biometry()
@@ -1149,7 +1153,25 @@ package struct RootFeature {
                 }
                 // Away overnight, today is another day.
                 effects.append(reload())
+                effects.append(saveWidgetMarks())
                 return .merge(effects)
+
+            case .widgetMarksSaved(let saved, let unsaved):
+                if unsaved > 0 {
+                    state.notice = AlertState {
+                        TextState("The widget couldn't mark ^[\(unsaved) task](inflect: true) Done")
+                    } actions: {
+                        ButtonState(role: .cancel) { TextState("OK") }
+                    } message: {
+                        TextState(
+                            """
+                            A task with open Sub tasks needs you to decide what happens to them, and a save can \
+                            fail. Open the task in Today and pick its status.
+                            """)
+                    }
+                }
+                guard let saved else { return .none }
+                return show(saved.snapshot, in: &state)
 
             case .dayChanged:
                 // Lifr can stay open for days: what has aged out of undo and
@@ -1589,6 +1611,39 @@ package struct RootFeature {
             await glance.write(today)
         }
         .cancellable(id: CancelID.glance, cancelInFlight: true)
+    }
+
+    /// Saves the tasks marked Done from a widget since Lifr last looked.
+    /// One closed or trashed since is left as it is.
+    private func saveWidgetMarks() -> Effect<Action> {
+        .run { [glance, store] send in
+            let marked: Set<UUID>
+            do {
+                marked = try await glance.takeMarked()
+            } catch {
+                Logger(subsystem: "lifr", category: "widgets").error("\(String(describing: error), privacy: .public)")
+                return
+            }
+            guard !marked.isEmpty else { return }
+            let tasks: [UUID: LifrTask]
+            do {
+                tasks = try await store.load().tasks
+            } catch {
+                await send(.widgetMarksSaved(nil, unsaved: marked.count))
+                return
+            }
+            var saved: Saved?
+            var unsaved = 0
+            for id in marked.sorted(by: { $0.uuidString < $1.uuidString }) {
+                guard let task = tasks[id], task.isOpen, task.deletedAt == nil else { continue }
+                do {
+                    saved = try await store.setStatus(.done, id)
+                } catch {
+                    unsaved += 1
+                }
+            }
+            await send(.widgetMarksSaved(saved, unsaved: unsaved))
+        }
     }
 
     private static func glance(of workspace: Workspace, now: Date, timeZone: TimeZone, locked: Bool) -> TodayGlance? {

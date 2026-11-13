@@ -2,6 +2,7 @@ import AppIntents
 import Foundation
 import LifrCore
 import LifrPasteboardClient
+import LifrUI
 
 /// A task, for Shortcuts and Siri.
 package struct TaskEntity: AppEntity {
@@ -199,7 +200,7 @@ package struct SetStatusIntent: AppIntent {
 
     package func perform() async throws -> some IntentResult & ProvidesDialog {
         let task = try await shortcuts.setStatus(status.status, of: task.id)
-        return .result(dialog: "Changed the status of \(task.name).")
+        return .result(dialog: "Marked \(task.name) \(status.status.title).")
     }
 }
 

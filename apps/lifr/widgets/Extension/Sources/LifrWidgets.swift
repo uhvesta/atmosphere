@@ -20,16 +20,29 @@ struct LifrWidgets: WidgetBundle {
     }
 }
 
-/// How many tasks are on Today, and the first few where there's room.
+/// How many tasks are on Today, and the first few where there's room. On
+/// iPhone it can be set to complete a task with one tap.
 struct TodayWidget: Widget {
     var body: some WidgetConfiguration {
-        StaticConfiguration(kind: "Today", provider: TodayProvider()) { entry in
-            TodayEntryView(entry: entry)
-                .containerBackground(.fill.tertiary, for: .widget)
-        }
-        .configurationDisplayName("Today")
-        .description("What's due today, and how much is overdue.")
-        .supportedFamilies(families)
+        #if os(iOS)
+            AppIntentConfiguration(
+                kind: "Today", intent: TodaySettingsIntent.self, provider: TodaySettingsProvider()
+            ) { entry in
+                TodayEntryView(entry: entry)
+                    .containerBackground(.fill.tertiary, for: .widget)
+            }
+            .configurationDisplayName("Today")
+            .description("What's due today, and how much is overdue.")
+            .supportedFamilies(families)
+        #else
+            StaticConfiguration(kind: "Today", provider: TodayProvider()) { entry in
+                TodayEntryView(entry: entry)
+                    .containerBackground(.fill.tertiary, for: .widget)
+            }
+            .configurationDisplayName("Today")
+            .description("What's due today, and how much is overdue.")
+            .supportedFamilies(families)
+        #endif
     }
 
     private var families: [WidgetFamily] {
@@ -157,6 +170,75 @@ struct AvenuesWidget: Widget {
     }
 #endif
 
+#if os(iOS)
+    /// What tapping a task's circle in the Today widget does.
+    struct TodaySettingsIntent: WidgetConfigurationIntent {
+        static let title: LocalizedStringResource = "Today"
+        static let description = IntentDescription("Choose what tapping a task's circle does.")
+
+        @Parameter(
+            title: "Complete with One Tap",
+            description: """
+                Tapping a task's circle marks it Done, and tapping it again undoes that. Lifr saves it the \
+                next time it opens. When off, the circle opens the task with its statuses to pick.
+                """,
+            default: false)
+        var completesWithOneTap: Bool
+
+        init() {}
+    }
+
+    /// Marks a task Done from the Today widget, or unmarks it, for Lifr to
+    /// save the next time it opens.
+    struct MarkDoneIntent: AppIntent {
+        static let title: LocalizedStringResource = "Mark Done from the Widget"
+        static let isDiscoverable = false
+
+        @Parameter(title: "Task")
+        var task: String
+
+        init() {}
+
+        init(task: UUID) {
+            self.task = task.uuidString
+        }
+
+        func perform() async throws -> some IntentResult {
+            guard let id = UUID(uuidString: task), let file = MarksFile.shared else { return .result() }
+            try file.toggle(id)
+            return .result()
+        }
+    }
+
+    /// Today's timeline, with what the circle does.
+    struct TodaySettingsProvider: AppIntentTimelineProvider {
+        func placeholder(in context: TimelineProviderContext) -> TodayEntry {
+            TodayProvider().placeholder(in: context)
+        }
+
+        func snapshot(
+            for configuration: TodaySettingsIntent, in context: TimelineProviderContext
+        ) async -> TodayEntry {
+            let now = Date()
+            return TodayEntry(
+                date: now, glance: readGlance()?.at(now), marked: readMarks(),
+                completesWithOneTap: configuration.completesWithOneTap)
+        }
+
+        func timeline(
+            for configuration: TodaySettingsIntent, in context: TimelineProviderContext
+        ) async -> Timeline<TodayEntry> {
+            let today = todayTimeline(at: Date())
+            let entries = today.entries.map { entry in
+                var entry = entry
+                entry.completesWithOneTap = configuration.completesWithOneTap
+                return entry
+            }
+            return Timeline(entries: entries, policy: today.policy)
+        }
+    }
+#endif
+
 /// This month, with the days that have tasks due marked.
 struct CalendarWidget: Widget {
     var body: some WidgetConfiguration {
@@ -194,6 +276,10 @@ struct CalendarWidget: Widget {
 struct TodayEntry: TimelineEntry {
     var date: Date
     var glance: TodayGlance?
+    /// The tasks marked Done from the widget that Lifr hasn't saved yet.
+    var marked: Set<UUID> = []
+    /// Whether a task's circle marks it Done rather than opening Lifr.
+    var completesWithOneTap = false
 }
 
 /// Reads what the app last wrote: Today, and what it will be after
@@ -222,19 +308,31 @@ struct TodayProvider: TimelineProvider {
 /// Each day the app last wrote from `now` on, then one saying to open Lifr.
 private func todayTimeline(at now: Date) -> Timeline<TodayEntry> {
     let days = readGlance()?.days.filter { $0.until > now } ?? []
-    let entries = days.map { TodayEntry(date: max($0.from, now), glance: $0) }
+    let marked = readMarks()
+    let entries = days.map { TodayEntry(date: max($0.from, now), glance: $0, marked: marked) }
     // Past the last day only the app knows Today: say to open it.
     let end = days.last?.until ?? Calendar.current.startOfDay(for: now).addingTimeInterval(24 * 60 * 60)
     return Timeline(entries: entries + [TodayEntry(date: max(end, now), glance: nil)], policy: .after(end))
 }
 
-/// What the app last wrote, or nil when it hasn't or the file can't be read.
+/// What the app last wrote, without the tasks marked Done from the widget
+/// in its counts, or nil when it hasn't written or the file can't be read.
 private func readGlance() -> TodayGlance? {
     do throws(GlanceError) {
-        return try GlanceFile.shared?.read()
+        return try GlanceFile.shared?.read()?.marking(readMarks())
     } catch {
         Logger(subsystem: "lifr", category: "widgets").error("\(error.description, privacy: .public)")
         return nil
+    }
+}
+
+/// The tasks marked Done from the widget that Lifr hasn't saved yet.
+private func readMarks() -> Set<UUID> {
+    do throws(MarksError) {
+        return try MarksFile.shared?.read() ?? []
+    } catch {
+        Logger(subsystem: "lifr", category: "widgets").error("\(error.description, privacy: .public)")
+        return []
     }
 }
 
@@ -338,9 +436,22 @@ struct TodayEntryView: View {
         case .accessoryCircular: TodayAccessoryView(glance: entry.glance, shape: .circular)
         case .accessoryRectangular: TodayAccessoryView(glance: entry.glance, shape: .rectangular)
         case .accessoryInline: TodayAccessoryView(glance: entry.glance, shape: .inline)
-        case .systemMedium: TodayWidgetView(glance: entry.glance, size: .medium)
-        case .systemLarge, .systemExtraLarge: TodayWidgetView(glance: entry.glance, size: .large)
+        case .systemMedium: TodayWidgetView(glance: entry.glance, size: .medium, marked: entry.marked, marks: marks)
+        case .systemLarge, .systemExtraLarge:
+            TodayWidgetView(glance: entry.glance, size: .large, marked: entry.marked, marks: marks)
         default: TodayWidgetView(glance: entry.glance, size: .small)
         }
+    }
+
+    /// The button a task's circle becomes when set to complete with one tap.
+    private var marks: ((TodayGlance.Row, AnyView) -> AnyView)? {
+        #if os(iOS)
+            guard entry.completesWithOneTap else { return nil }
+            return { row, circle in
+                AnyView(Button(intent: MarkDoneIntent(task: row.id)) { circle }.buttonStyle(.plain))
+            }
+        #else
+            nil
+        #endif
     }
 }

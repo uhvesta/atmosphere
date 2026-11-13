@@ -291,6 +291,8 @@ package struct Shortcuts: Sendable {
             saved = try await reported(save)
         } catch LifrError.notFound {
             throw ShortcutError.noTask
+        } catch LifrError.openSubtasks(_, let open), LifrError.wontDoNeedsCascade(_, let open) {
+            throw ShortcutError.openSubtasks(open.count)
         }
         return item(saved.workspace.tasks[id] ?? task, in: saved.workspace)
     }
@@ -343,6 +345,9 @@ package enum ShortcutError: Error, Hashable, Sendable, CustomStringConvertible {
     case noTask
     /// The new task's title was empty.
     case noTitle
+    /// Closing the task would leave this many open Sub tasks, which only
+    /// the person can decide about.
+    case openSubtasks(Int)
     /// The store saved, but the new task wasn't in what it returned.
     case notSaved
     /// The records couldn't be read or saved, for this reason.
@@ -358,6 +363,12 @@ package enum ShortcutError: Error, Hashable, Sendable, CustomStringConvertible {
             String(localized: "That task isn't in Lifr any more. Pick another.")
         case .noTitle:
             String(localized: "The task needs a title. Say or type what to add.")
+        case .openSubtasks(let count):
+            String(
+                localized: """
+                    The task has ^[\(count) open Sub task](inflect: true). Open Lifr to decide what happens to \
+                    them, then try again.
+                    """)
         case .notSaved:
             String(
                 localized: "Lifr couldn't confirm the task was added. Open Lifr to check Today before adding it again.")

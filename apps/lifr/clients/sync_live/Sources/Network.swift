@@ -1,3 +1,4 @@
+import CloudKit
 import Foundation
 import Network
 
@@ -5,10 +6,14 @@ import Network
     import UIKit
 #endif
 
-/// Each time the network comes back after being away. A path that was
-/// fine from the start isn't a return.
+/// Each time the network comes back after being away, and each time the
+/// iCloud account changes, such as signing in. A path that was fine from
+/// the start isn't a return.
 @Sendable func networkReturns() -> AsyncStream<Void> {
     AsyncStream { continuation in
+        nonisolated(unsafe) let account = NotificationCenter.default.addObserver(
+            forName: .CKAccountChanged, object: nil, queue: nil
+        ) { _ in continuation.yield() }
         let monitor = NWPathMonitor()
         let wasAway = LockedFlag()
         monitor.pathUpdateHandler = { path in
@@ -18,7 +23,10 @@ import Network
                 wasAway.set()
             }
         }
-        continuation.onTermination = { _ in monitor.cancel() }
+        continuation.onTermination = { _ in
+            monitor.cancel()
+            NotificationCenter.default.removeObserver(account)
+        }
         monitor.start(queue: DispatchQueue(label: "lifr.network", qos: .utility))
     }
 }

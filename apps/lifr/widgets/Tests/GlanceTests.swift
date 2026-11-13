@@ -144,6 +144,36 @@ final class GlanceTests: XCTestCase {
         XCTAssertEqual(try file.read()?.asOf, now.addingTimeInterval(120))
     }
 
+    func testATapMarksATaskAndAnotherUnmarksIt() throws {
+        let file = MarksFile(url: try folder().appendingPathComponent("Widgets/Marked.json"))
+        XCTAssertEqual(try file.read(), [])
+        XCTAssertTrue(try file.toggle(rows[0].id))
+        XCTAssertTrue(try file.toggle(rows[1].id))
+        XCTAssertFalse(try file.toggle(rows[1].id))
+        XCTAssertEqual(try file.read(), [rows[0].id])
+    }
+
+    func testTakingTheMarksLeavesNone() async throws {
+        let file = MarksFile(url: try folder().appendingPathComponent("Widgets/Marked.json"))
+        try file.toggle(rows[0].id)
+        let client = GlanceClient.live(file: nil, marks: file)
+        let taken = try await client.takeMarked()
+        XCTAssertEqual(taken, [rows[0].id])
+        let again = try await client.takeMarked()
+        XCTAssertEqual(again, [])
+    }
+
+    func testMarkedRowsStayButAreCountedNoMore() {
+        let tomorrow = TodayGlance(asOf: now, from: now + 86_400, until: now + 2 * 86_400, rows: rows, locked: false)
+        let glance = TodayGlance(
+            asOf: now, from: now, until: now + 86_400, rows: rows, locked: false, later: [tomorrow])
+        let marked = glance.marking([rows[0].id])
+        XCTAssertEqual(marked.rows, rows)
+        XCTAssertEqual(marked.count, 1)
+        XCTAssertEqual(marked.overdue, 0)
+        XCTAssertEqual(marked.later.first?.count, 1)
+    }
+
     func testTheLiveClientWithNoFileDoesNothing() async {
         await GlanceClient.live(file: nil).write(
             TodayGlance(asOf: now, from: now, until: now + 86_400, rows: rows, locked: false))
