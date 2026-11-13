@@ -17,10 +17,12 @@ extension Review {
         var mine = gels
         mine.title = "Buy race gels and salt"
         mine.projectID = nil
+        mine.updatedAt = now.addingTimeInterval(-26 * 60 * 60)
         var theirs = gels
         theirs.title = "Buy energy gels"
         theirs.avenueID = home.id
         theirs.projectID = nil
+        theirs.updatedAt = now.addingTimeInterval(-2 * 60 * 60)
 
         var bagMine = bag
         bagMine.priority = .high

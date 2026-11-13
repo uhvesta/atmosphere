@@ -16,6 +16,10 @@
           - mine: "Health"
           - theirs: "Home"
           - title: "Avenue"
+    ▿ mineChanged: Optional<Date>
+      - some: 2026-11-02T08:00:00Z
+    ▿ theirsChanged: Optional<Date>
+      - some: 2026-11-03T08:00:00Z
     - title: "Task “Buy race gels and salt”"
   ▿ SyncReviewRow
     - device: "Mac"
@@ -25,4 +29,8 @@
     ▿ kind: Kind
       ▿ removed: (1 element)
         - by: SyncSide.theirs
+    ▿ mineChanged: Optional<Date>
+      - some: 2026-11-03T10:00:00Z
+    ▿ theirsChanged: Optional<Date>
+      - some: 2026-11-03T10:00:00Z
     - title: "Task “Pack the bag”"

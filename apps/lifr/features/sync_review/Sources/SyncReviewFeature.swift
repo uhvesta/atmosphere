@@ -144,6 +144,9 @@ package struct SyncReviewRow: Identifiable, Hashable, Sendable {
     /// The other device's name.
     package var device: String
     package var kind: Kind
+    /// When each side last changed the record, for the records that keep it.
+    package var mineChanged: Date?
+    package var theirsChanged: Date?
 
     package init(_ item: Review.Item, in workspace: Workspace) {
         let conflict = item.conflict
@@ -151,6 +154,8 @@ package struct SyncReviewRow: Identifiable, Hashable, Sendable {
         device = item.device
         let noun = Self.noun(conflict.record.kind)
         title = conflict.title.map { "\(noun) “\($0)”" } ?? noun
+        if case .task(let task) = conflict.mine { mineChanged = task.updatedAt }
+        if case .task(let task) = conflict.theirs { theirsChanged = task.updatedAt }
         switch conflict.kind {
         case .removed(let side):
             kind = .removed(by: side)

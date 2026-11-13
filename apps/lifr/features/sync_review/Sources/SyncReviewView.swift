@@ -9,6 +9,7 @@ import SwiftUI
 /// field, or Keep and Delete for a record one device deleted.
 package struct SyncReviewView: View {
     let store: StoreOf<SyncReviewFeature>
+    @Environment(\.timeZone) private var timeZone
 
     package init(store: StoreOf<SyncReviewFeature>) {
         self.store = store
@@ -34,8 +35,10 @@ package struct SyncReviewView: View {
                     case .fields(let questions):
                         ForEach(questions) { question in
                             Picker(question.title, selection: choice(row.id, question.field)) {
-                                Text("\(store.thisDevice): \(question.mine)").tag(SyncSide.mine)
-                                Text("\(row.device): \(question.theirs)").tag(SyncSide.theirs)
+                                option("\(store.thisDevice): \(question.mine)", changed: row.mineChanged)
+                                    .tag(SyncSide.mine)
+                                option("\(row.device): \(question.theirs)", changed: row.theirsChanged)
+                                    .tag(SyncSide.theirs)
                             }
                             .pickerStyle(.inline)
                         }
@@ -63,6 +66,20 @@ package struct SyncReviewView: View {
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Done") { store.send(.doneTapped) }
+            }
+        }
+    }
+
+    /// A side's value, with when that side changed it if that's known, so
+    /// the newer one can be told apart.
+    private func option(_ value: String, changed: Date?) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+            if let changed {
+                let style = Date.FormatStyle(timeZone: timeZone).month(.abbreviated).day().hour().minute()
+                Text("Changed \(changed.formatted(style))")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
         }
     }

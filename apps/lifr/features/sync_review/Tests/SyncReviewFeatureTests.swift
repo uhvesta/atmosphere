@@ -26,6 +26,12 @@ final class SyncReviewFeatureTests: XCTestCase {
         XCTAssertEqual(rows[1].kind, .removed(by: .theirs))
     }
 
+    func testTheRowsSayWhenEachDeviceChangedATask() {
+        let row = state().rows[0]
+        XCTAssertEqual(row.mineChanged, now.addingTimeInterval(-26 * 60 * 60))
+        XCTAssertEqual(row.theirsChanged, now.addingTimeInterval(-2 * 60 * 60))
+    }
+
     func testDoneWithNoChoicesKeepsThisDevicesValues() async throws {
         let resolved = LockIsolated<Review.Choices?>(nil)
         let initial = state()

@@ -72,7 +72,11 @@ package struct ProjectDetailView: View {
 
     private var progress: some View {
         LabeledContent {
-            Text("\(store.taskCount - store.openCount) of \(store.taskCount) done")
+            if store.taskCount == 0 {
+                Text("No tasks")
+            } else {
+                Text("\(store.taskCount - store.openCount) of \(store.taskCount) done")
+            }
         } label: {
             switch store.status {
             case .active: Text("Progress")
