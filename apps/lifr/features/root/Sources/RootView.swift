@@ -187,6 +187,7 @@ package struct RootView: View {
         .modifier(RegistersUndo(store: store))
         .alert($store.scope(state: \.notice, action: \.notice))
         .onOpenURL { store.send(.urlOpened($0)) }
+        .modifier(HandsOff(store: store))
         .onContinueUserActivity(SpotlightClient.activityType) { activity in
             switch SpotlightClient.target(in: activity) {
             case (.task, let id)?: store.send(.linkOpened(.task(id, picksStatus: false)))
@@ -1149,5 +1150,30 @@ private struct PresentsOnboarding: ViewModifier {
                     .interactiveDismissDisabled()
             }
         #endif
+    }
+}
+
+/// Offers the open task to the person's other devices, and opens one they
+/// hand over. The activity carries only the task's link, never its title.
+private struct HandsOff: ViewModifier {
+    let store: StoreOf<RootFeature>
+
+    func body(content: Content) -> some View {
+        content
+            .userActivity(DeepLink.handoffType, isActive: store.handoffTaskID != nil) { activity in
+                guard let id = store.handoffTaskID, let url = DeepLink.task(id, picksStatus: false).url else { return }
+                activity.isEligibleForHandoff = true
+                activity.isEligibleForSearch = false
+                #if os(iOS)
+                    activity.isEligibleForPrediction = false
+                #endif
+                activity.userInfo = [DeepLink.handoffKey: url.absoluteString]
+            }
+            .onContinueUserActivity(DeepLink.handoffType) { activity in
+                guard let text = activity.userInfo?[DeepLink.handoffKey] as? String, let url = URL(string: text),
+                    let link = DeepLink(url)
+                else { return }
+                store.send(.linkOpened(link))
+            }
     }
 }

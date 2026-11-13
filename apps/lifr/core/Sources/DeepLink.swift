@@ -23,6 +23,11 @@ package enum DeepLink: Hashable, Sendable {
 
     package static let scheme = "lifr"
 
+    /// The Handoff activity for the open task, which carries its link in
+    /// `userInfo` under `handoffKey`.
+    package static let handoffType = "lifr.open-task"
+    package static let handoffKey = "link"
+
     /// The link `url` names, or nil when it isn't a Lifr link or names
     /// nothing Lifr has.
     package init?(_ url: URL) {

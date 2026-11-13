@@ -407,6 +407,12 @@ package struct RootFeature {
             openTaskID ?? currentList.flatMap { self[list: $0]?.cursor }
         }
 
+        /// The open task, for Handoff to the person's other devices; none
+        /// while the lock is on.
+        package var handoffTaskID: UUID? {
+            isLocked ? nil : openTaskID
+        }
+
         /// Where the person is now.
         package var here: Place {
             platform == .phone

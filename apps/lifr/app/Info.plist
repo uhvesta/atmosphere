@@ -35,6 +35,10 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>lifr.open-task</string>
+	</array>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Avesta Barzegar</string>
 </dict>

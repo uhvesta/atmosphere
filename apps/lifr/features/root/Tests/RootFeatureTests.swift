@@ -1912,6 +1912,21 @@ final class RootFeatureTests: XCTestCase {
         await task.cancel()
     }
 
+    func testTheOpenTaskIsOfferedToTheOtherDevicesButNotWhileLocked() async {
+        let run = records.task("Run", in: health, due: 0)
+        let mac = makeStore(.mac)
+        let task = await mac.send(.task)
+        await mac.receive(\.loaded)
+        XCTAssertNil(mac.state.handoffTaskID)
+        await mac.send(.linkOpened(.task(run.id, picksStatus: false)))
+        await mac.skipReceivedActions(strict: false)
+        XCTAssertEqual(mac.state.handoffTaskID, run.id)
+        var locked = mac.state
+        locked.isLocked = true
+        XCTAssertNil(locked.handoffTaskID)
+        await task.cancel()
+    }
+
     func testASavedFiltersLinkShowsItsTasks() async {
         let urgent = records.savedFilter("Urgent", TaskFilter(priorities: [.high]))
         let mac = makeStore(.mac)
