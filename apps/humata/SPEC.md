@@ -160,8 +160,8 @@ original spec; lettered ones were added since.
 | D2 Focus view for Markdown | Done |
 | D3 Versions of a Markdown file | Done |
 | U2 UX papercuts | Done |
-| S2 Compression | Planned |
-| S3 Daemon speed | Planned |
+| S2 Compression | In progress: sealing and the opening bar done |
+| S3 Daemon speed | In progress: one listing done |
 | G1 Ghostty terminal | Planned |
 | X Admin mode, gated by approvals | Done |
 | F2 Fresh clones | Planned |
@@ -1081,7 +1081,7 @@ turned on, and then deletes archived sessions after 45 days by default.
 
 #### S2 Compression
 
-- [ ] Histories of archived or long-idle sessions sealed as zstd on a
+- [x] Histories of archived or long-idle sessions sealed as zstd on a
   background thread; the live tail stays plain
 - [ ] Recovery copies take only what's new each turn; a remote session's
   text kept once, not four times
@@ -1093,7 +1093,7 @@ turned on, and then deletes archived sessions after 45 days by default.
 
 #### S3 Daemon speed
 
-- [ ] The app's three two-second lists share one listing; remote rows are
+- [x] The app's three two-second lists share one listing; remote rows are
   written only when they change
 - [ ] SQLite off the executor threads; search catch-up writes only what
   changed; specs and comments indexed apart
